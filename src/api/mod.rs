@@ -111,7 +111,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/video/workflows", get(compat::empty_list))
         .route("/api/video/:action", post(compat::not_ported).get(compat::empty_object))
         .route("/api/channels/catalog", get(compat::empty_list))
-        .route("/api/executions/active", get(compat::empty_list))
+        .route("/api/executions/active", get(core::active_executions))
         .route("/api/webhooks/:id", post(compat::not_ported));
 
     for kind in collections::COLLECTIONS {

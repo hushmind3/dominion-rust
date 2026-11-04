@@ -712,6 +712,21 @@ pub async fn commands(State(state): State<AppState>) -> Json<Value> {
     Json(json!([]))
 }
 
+pub async fn active_executions(State(state): State<AppState>) -> Json<Value> {
+    let items = state
+        .store
+        .all("execution")
+        .into_iter()
+        .filter(|execution| {
+            execution
+                .get("status")
+                .and_then(|value| value.as_str())
+                == Some("running")
+        })
+        .collect::<Vec<_>>();
+    Json(json!(items))
+}
+
 pub async fn execution_operations(
     State(state): State<AppState>,
     Path(id): Path<String>,
