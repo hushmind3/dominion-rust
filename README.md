@@ -22,11 +22,13 @@ src/
     chat.rs          스트리밍 채팅 + 도구 호출 루프 + 승인 요청
     tools.rs         Rust 네이티브 도구 (파일/셸/HTTP/검색/메모리/스킬)
     jobs.rs          내구성 있는 작업 큐 + 자동화 스케줄러
-    learning.rs      장기기억·스킬 초안 추출 (재학습)
+    learning.rs      원문 증거 검증·학습 스냅샷·체크포인트
+    memory.rs        에이전트/채널 격리·한국어 검색·정정 이력
+    discord.rs       자체 Discord REST 수신·라우팅·전송 기록
     llm.rs           계획/검토/학습용 비스트리밍 호출
     workflows.rs     순차 워크플로 실행 ({{input}} / {{previous}})
     rooms.rs         멀티 에이전트 라운드테이블 실행
-    goals.rs         자율 목표 루프 (도구 사용 · DONE 판정)
+    goals.rs         자율 목표 하네스 (계획·실행·증거 검증·수정)
     compact.rs       대화 컨텍스트 압축 (요약 체크포인트)
     models.rs        로컬 모델 런타임 (llama.cpp) · HF 검색/다운로드
     oauth.rs         GitHub/Google OAuth 설정·state·토큰 교환
@@ -120,73 +122,57 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 모델이 영어로 사고하는 경우(예: DeepSeek) 추론 텍스트를 한국어로 번역해
 저장합니다. GLM-5.3 / Kimi-K3.1-Pro는 처음부터 한국어로 사고합니다.
 
-### 자율 목표 하네스
+### 자체 기억·실행 하네스
 
-`/goal` 은 단순 반복이 아니라 다음 단계를 돕니다.
+OpenClaw/Hermes의 코드나 엔진을 가져오지 않습니다. 실행·기억·학습·회의·채널 드라이버는
+이 저장소의 Rust 모듈이며, 기존 Rust 라이브러리 외에 새 의존성은 추가하지 않았습니다.
 
-1. **plan** — 목표를 3~5단계 계획으로 분해
-2. **execute** — 실제 Rust 도구로 단계 수행
-3. **review** — 별도 모델 호출이 도구 증거만 보고 `{complete, gaps}` 판정
-4. **repair** — 미완료면 지적된 gaps 를 넣어 다시 실행
-5. **evidence gate** — 행동형 목표인데 성공한 도구 호출이 없거나, 목표에 적힌
-   파일이 실제로 없으면 `completed` 로 만들지 않고 `needs_review` 로 남깁니다.
+- **장기기억**: 에이전트와 채널 연결/서버/대화방을 분리합니다. 로컬 개인 기억은
+  Discord에 자동 공개하지 않습니다. 한국어 조사·띄어쓰기에 대응하는 자체 검색을 사용합니다.
+- **학습**: 성공한 턴의 고정된 메시지 스냅샷만 처리합니다. 사용자 원문 또는 실제 성공한
+  도구 결과의 메시지 ID·정확한 인용을 검증합니다. 모델의 주장은 사실로 승격하지 않습니다.
+  정정 시 이전 기억은 보존하고 새 값으로 대체하며, 학습 위치를 저장해 재처리를 막습니다.
+- **스킬**: 자동 추출 절차는 비활성 `draft`로 저장합니다. 사용자가 검토 후 활성화합니다.
+- **목표**: plan → execute → review → repair를 수행하며, Rust가 파일 상태·실제 도구
+  결과를 따로 검증합니다. 읽기 도구나 실패한 셸 명령만으로 행동형 목표를 완료할 수 없습니다.
+- **회의·워크플로**: 에이전트별 화자와 단계 커서를 보존합니다. 실제 모의 모델 서버로
+  9명 에이전트의 독립 발언과 완료된 발언의 재실행 방지를 검증합니다.
+- **복구**: 실행 중이던 외부 작업이나 전송의 결과가 불확실하면 `needs_review`로 남겨
+  중복 실행을 막습니다. 안전하게 완료된 단계부터만 복구합니다.
 
-#### 장기기억과 재학습
+여기서 재학습은 **기억·재사용 절차 개선**입니다. 모델 가중치를 훈련하는 기능은 아닙니다.
+상세한 계약·검증 조건·Discord 연결 방법은 [ENGINE.md](ENGINE.md)를 참고하세요.
 
-턴이 끝나면 `autoLearning`(기본 켜짐)에 따라 `learn` 작업이 큐에 들어갑니다.
+### 실행 제한·취소
 
-1. 최근 30개 메시지와 실제 도구 실행 결과를 읽음
-2. 모델에게 **JSON만** 요구: `{memories:[{text,type,importance,scope}], skill:{...}|null}`
-3. 중복을 정규화해 제거하고 최대 8개를 `memory` 레코드로 저장
-4. 재사용 가능한 절차가 있으면 `skill`을 **draft(비활성)** 로 저장
-5. 다음 턴부터 관련 기억·활성 스킬이 시스템 프롬프트에 자동 주입됨
+한 턴은 최대 8라운드·40회 도구 호출·10분입니다. 제한에 도달하면 실패로 기록합니다.
+셸의 0이 아닌 종료 코드와 MCP `isError`도 실패로 기록하고, 도구 인수·결과를 보존합니다.
+OpenAI 호환 네이티브 도구 호출과 텍스트 도구 프로토콜(`toolMode: compat`)을 지원합니다.
 
-기억은 `type`(fact/preference/decision/procedure/lesson)과 `importance`로
-점수화해 검색하고, 도구별 성공/실패 통계(`tool_stat`)도 함께 넣어
-실패가 잦은 도구를 피하도록 안내합니다.
-
-모델 제공자는 **OpenAI 호환 엔드포인트만** 사용합니다. Anthropic 네이티브
-형식은 엔진에서 제거했습니다.
-
-## 보안
-
-- 쓰기 요청은 `Origin` 이 `http://127.0.0.1:<port>` / `http://localhost:<port>`
-  일 때만 허용합니다. 외부 웹페이지의 로컬 API 호출은 403 입니다.
-- `DOMINION_ADMIN_TOKEN` 을 설정하면 모든 쓰기 요청에
-  `X-Dominion-Token` 헤더가 필요합니다.
-- CORS 는 permissive 가 아니라 위 두 origin 만 허용합니다.
+같은 세션의 동시 턴은 거부합니다. 취소는 모델 응답이나 승인 대기 중에도 작동합니다.
+`POST /api/sessions/:id/cancel`, `POST /api/executions/:id/cancel`을 사용합니다.
 
 ### 작업 큐
 
-`POST /api/workflows/:id/run` 과 `POST /api/rooms/:id/run` 은 job 레코드를
-`queued` 로 저장하고 Rust 워커가 순서대로 실행합니다.
+작업은 SQLite에 먼저 저장한 뒤 원자적으로 선점합니다. 기본 4개 워커이며
+`DOMINION_JOB_WORKERS=1..16`으로 설정할 수 있습니다. 목표 검토가 필요한 결과를
+부모 job에서 `completed`로 덮어쓰지 않습니다.
 
-- **워크플로**: 단계마다 실제 엔진 턴을 실행하고 `{{input}}`/`{{previous}}` 를
-  치환합니다. 진행 상황은 `stepIndex`/`stepTotal` 로 job에 저장되며,
-  실패하면 `status: failed` + `error` 로 남고 성공으로 표시하지 않습니다.
-- **회의실**: 참여 에이전트가 `rounds` 만큼 발언하며 직전 발언을 보고
-  이어갑니다. 모든 발언은 하나의 세션에 저장됩니다.
-- **자율 목표**: `/goal` 로 등록한 목표를 최대 N회 반복하며 실제 도구로
-  수행합니다. 모델이 `DONE` 을 선언하면 완료, 아니면 `needs_review` 로
-  남깁니다.
-- **자동화**: 30초마다 `nextAt` 이 지난 automation을 큐에 넣습니다.
-- **복구**: 부팅 시 `running` job 은 `queued` 로 되돌리고, 3회 이상 실패한
-  job 은 `needs_review`, `running` execution 은 `interrupted` 로 회수합니다.
+- `POST /api/workflows/:id/run` — 정의와 단계별 결과를 고정하여 순서대로 실행
+- `POST /api/rooms/:id/run` — 참여 에이전트가 화자를 구분하여 발언
+- `POST /api/goals` — 증거 검증을 포함한 목표 실행
+- automation — 30초마다 예정된 작업을 큐에 등록
 
-### 실행 제한
+### Discord
 
-한 턴은 최대 8라운드, 도구 40회, 10분입니다. 실제 스트림 `usage` 를 누적해
-`execution.tokens` 에 기록합니다. 같은 세션에 동시에 두 턴이 들어오면
-`Session is already running` 으로 거부합니다.
+`연결` 화면에서 Bot Token·서버 ID·채널 ID와 에이전트 또는 최대 9명 회의실을 지정합니다.
+저장하고 활성화하면 자체 Rust 드라이버가 Discord 공식 REST v10을 약 5초마다 조회합니다.
+토큰은 암호화되며 API 응답에서 제외됩니다. 기존 Node/OpenClaw 설정은 자동 가동하지 않습니다.
 
-### 실행 기록과 취소
-
-모든 엔진 턴은 `execution` 레코드를 만들고 모델 호출 수·도구 호출 수·
-반복 횟수를 기록합니다. 도구 호출은 `execution_operation` 으로 남습니다.
-
-`POST /api/sessions/:id/cancel` 은 스트리밍 중에도 다음 청크에서 중단하고
-`execution.status = cancelled` 로 기록합니다. `POST /api/executions/:id/cancel`
-은 해당 세션을 중단시킵니다.
+외부 봇과 대화하려면 허용 봇 ID를 지정하고 DOMINION 봇을 멘션해야 합니다.
+봇 응답은 연결별 분당 2회로 제한하며 봇 메시지의 도구 실행·사용자 기억 학습은 차단합니다.
+사람의 도구 실행은 명시적 옵션과 허용 사용자 ID가 있어야 가능합니다.
+실제 Discord 연결에는 사용자의 봇 토큰과 서버 권한이 필요합니다.
 
 ### MCP
 
@@ -198,23 +184,6 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 모델 도구 목록에 합칩니다. stdio 서버는 자식 프로세스로, HTTP 서버는
 JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적으로 승인
 대기이며, `policy.autoApproveMcp` 로 자동 승인할 수 있습니다.
-
-### 장기기억과 재학습
-
-턴이 끝나면 `autoLearning`(기본 켜짐)에 따라 `learn` 작업이 큐에 들어갑니다.
-
-1. 최근 30개 메시지와 실제 도구 실행 결과를 읽음
-2. 모델에게 **JSON만** 요구: `{memories:[{text,type,importance,scope}], skill:{...}|null}`
-3. 중복을 정규화해 제거하고 최대 8개를 `memory` 레코드로 저장
-4. 재사용 가능한 절차가 있으면 `skill`을 **draft(비활성)** 로 저장
-5. 다음 턴부터 관련 기억·활성 스킬이 시스템 프롬프트에 자동 주입됨
-
-기억은 `type`(fact/preference/decision/procedure/lesson)과 `importance`로
-점수화해 검색하고, 도구별 성공/실패 통계(`tool_stat`)도 함께 넣어
-실패가 잦은 도구를 피하도록 안내합니다.
-
-모델 제공자는 **OpenAI 호환 엔드포인트만** 사용합니다. Anthropic 네이티브
-형식은 엔진에서 제거했습니다.
 
 ## 보안
 
@@ -231,7 +200,7 @@ Node 구현의 다음 기능은 Rust로 옮기지 않았습니다. 해당 경로
 - MLX 런타임 (llama.cpp GGUF만 지원)
 - 다운로드 일시정지/재개 (시작·취소·재시작은 지원)
 - OAuth 실제 동의/토큰 발급 검증 — 사용자의 GitHub/Google 앱 자격 증명 필요 (구현·state 검증·토큰 교환 경로는 완료)
-- 메신저 채널 어댑터 (Slack/Discord/Telegram) — 봇 토큰 필요
+- Slack/Telegram 등 Discord 이외의 메신저 어댑터 (카탈로그는 유지, 실행 드라이버 미구현)
 - 동영상 생성 파이프라인
 - 설치 파일 자동 적용 (데스크톱 셸의 설치 기능 필요)
 
@@ -242,7 +211,12 @@ cargo test --release
 ```
 
 - `tests/e2e.rs` 는 실제 바이너리 + 가짜 OpenAI 호환 서버를 띄워
-  SSE 채팅, SQLite 영속화, 토큰 집계, Origin 차단, 동시 세션 거부를 검증합니다.
+  SSE 채팅, SQLite 영속화, 토큰 집계, Origin 차단, 동시 세션 거부,
+  명령 실패 증거·텍스트 도구 프로토콜·반복 제한·대기 중 취소·도구 비활성화를 검증합니다.
+
+- 학습은 모의 모델로 출처·스냅샷·중복 방지·정정·실패 시 체크포인트 보존을 검증합니다.
+- 목표는 실제 파일 변경과 거짓 완료 차단, 회의는 9명 독립 발언·재실행 방지를 검증합니다.
+- Discord는 모의 HTTP 서버로 인증·메시지 순서·전송 정책·취소·복구·토큰 비공개를 검증합니다.
 
 - 볼트 암호화/변조 거부
 - 레코드 CRUD 및 클라이언트 필드(`id`, `createdAt`, `updatedAt`)

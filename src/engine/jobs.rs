@@ -44,17 +44,36 @@ impl JobContext {
 
     /// Merge a patch into the persisted job record and notify listeners.
     pub fn patch(&self, patch: Value) {
-        let Some(mut job) = self.state.store.get("job", &self.job_id) else {
-            return;
-        };
-        if let (Value::Object(target), Value::Object(source)) = (&mut job, patch) {
-            for (key, value) in source {
-                target.insert(key, value);
-            }
+        if let Err(error) = self.checkpoint(patch) {
+            self.state.store.audit(
+                "job.checkpoint_failed",
+                json!({"jobId":self.job_id,"error":error}),
+            );
         }
-        if let Some(saved) = self.state.store.put("job", &job) {
-            self.state.bus.record("job", &saved);
+    }
+
+    pub fn checkpoint(&self, patch: Value) -> Result<(), String> {
+        let job = self
+            .state
+            .store
+            .get("job", &self.job_id)
+            .ok_or("작업 체크포인트를 찾을 수 없습니다.")?;
+        if job["cancelRequested"].as_bool() == Some(true) {
+            return Err("사용자 요청으로 실행이 중단되었습니다.".into());
         }
+        let saved = self
+            .state
+            .store
+            .patch_if(
+                "job",
+                &self.job_id,
+                "cancelRequested",
+                job.get("cancelRequested").unwrap_or(&Value::Null),
+                &patch,
+            )
+            .ok_or("작업 체크포인트가 변경되었거나 실행이 중단되었습니다.")?;
+        self.state.bus.record("job", &saved);
+        Ok(())
     }
 }
 
@@ -64,6 +83,7 @@ pub fn enqueue(state: &AppState, kind: &str, input: Value) -> Option<Value> {
         &json!({
             "kind": kind,
             "status": "queued",
+            "queuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
             "input": input,
             "attempts": 0,
             "stepIndex": 0,
@@ -73,9 +93,10 @@ pub fn enqueue(state: &AppState, kind: &str, input: Value) -> Option<Value> {
     );
     if let Some(job) = &job {
         state.bus.record("job", job);
-        state
-            .store
-            .audit("job.queued", json!({ "kind": kind, "jobId": job.get("id") }));
+        state.store.audit(
+            "job.queued",
+            json!({ "kind": kind, "jobId": job.get("id") }),
+        );
     }
     job
 }
@@ -87,14 +108,58 @@ pub fn recover(state: &AppState) {
         if job.get("status").and_then(|value| value.as_str()) != Some("running") {
             continue;
         }
-        let attempts = job.get("attempts").and_then(|value| value.as_u64()).unwrap_or(0);
+        let attempts = job
+            .get("attempts")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
         let mut updated = job.clone();
         updated["recovered"] = json!(true);
-        updated["status"] = json!(if attempts >= 3 { "needs_review" } else { "queued" });
+        let uncertain = [
+            "/inFlight",
+            "/promptState/inFlight",
+            "/goalState/inFlight",
+            "/goalState/reviewPending",
+            "/roomState/inFlight",
+            "/workflowState/inFlight",
+            "/discordState/inFlight",
+        ]
+        .iter()
+        .any(|path| {
+            job.pointer(path)
+                .is_some_and(|value| !value.is_null() && value != &json!(false))
+        });
+        updated["status"] = json!(if attempts >= 3 || uncertain {
+            "needs_review"
+        } else {
+            "queued"
+        });
+        if uncertain {
+            updated["error"] =
+                json!("재시작 전 작업 결과를 확정할 수 없습니다. 실행 기록을 확인하세요.");
+        }
         state.store.put("job", &updated);
-        state
-            .store
-            .audit("job.recovered", json!({ "jobId": job.get("id"), "attempts": attempts }));
+        if uncertain || attempts >= 3 {
+            if let Some(id) = job.pointer("/input/goalId").and_then(Value::as_str) {
+                if let Some(mut goal) = state.store.get("goal", id) {
+                    if matches!(
+                        goal["status"].as_str(),
+                        Some("completed" | "cancelled" | "failed" | "needs_review")
+                    ) {
+                        continue;
+                    }
+                    goal["status"] = json!("needs_review");
+                    goal["phase"] = json!("needs_review");
+                    goal["gaps"] = json!([
+                        "재시작 전 실행 결과가 확정되지 않았습니다. 실행 증거를 확인하세요."
+                    ]);
+                    state.store.put("goal", &goal);
+                }
+            }
+        }
+        state.store.audit(
+            "job.recovered",
+            json!({ "jobId": job.get("id"), "attempts": attempts }),
+        );
     }
     for execution in state.store.all("execution") {
         if execution.get("status").and_then(|value| value.as_str()) == Some("running") {
@@ -105,19 +170,33 @@ pub fn recover(state: &AppState) {
             state.store.put("execution", &updated);
         }
     }
+    for mut operation in state.store.all("execution_operation") {
+        if operation["status"] == "running" {
+            operation["status"] = json!("interrupted");
+            operation["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            state.store.put("execution_operation", &operation);
+        }
+    }
 }
 
 /// Starts the durable job worker plus the automation scheduler.
 pub fn start(state: AppState) {
-    let worker_state = state.clone();
-    tokio::spawn(async move {
-        loop {
-            match next_queued(&worker_state) {
-                Some(job) => run_job(worker_state.clone(), job).await,
-                None => tokio::time::sleep(Duration::from_millis(400)).await,
+    let workers = std::env::var("DOMINION_JOB_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4)
+        .clamp(1, 16);
+    for _ in 0..workers {
+        let worker_state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                match next_queued(&worker_state) {
+                    Some(job) => run_job(worker_state.clone(), job).await,
+                    None => tokio::time::sleep(Duration::from_millis(400)).await,
+                }
             }
-        }
-    });
+        });
+    }
 
     tokio::spawn(async move {
         loop {
@@ -133,13 +212,39 @@ fn next_queued(state: &AppState) -> Option<Value> {
         .all("job")
         .into_iter()
         .filter(|job| job.get("status").and_then(|value| value.as_str()) == Some("queued"))
+        .filter(|job| {
+            job.get("availableAt")
+                .and_then(Value::as_str)
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .is_none_or(|at| at <= chrono::Utc::now())
+        })
         .collect::<Vec<_>>();
     queued.sort_by(|a, b| {
-        let left = a.get("createdAt").and_then(|value| value.as_str()).unwrap_or("");
-        let right = b.get("createdAt").and_then(|value| value.as_str()).unwrap_or("");
+        let left = a
+            .get("queuedAt")
+            .or_else(|| a.get("createdAt"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let right = b
+            .get("queuedAt")
+            .or_else(|| b.get("createdAt"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         left.cmp(right)
     });
-    queued.into_iter().next()
+    queued.into_iter().find_map(|job| {
+        let id = job.get("id")?.as_str()?;
+        state.store.patch_if(
+            "job",
+            id,
+            "status",
+            &json!("queued"),
+            &json!({
+                "status": "running", "startedAt": chrono::Utc::now().to_rfc3339(),
+                "attempts": job["attempts"].as_u64().unwrap_or(0) + 1,
+            }),
+        )
+    })
 }
 
 async fn run_job(state: AppState, job: Value) {
@@ -153,12 +258,7 @@ async fn run_job(state: AppState, job: Value) {
     }
     let context = JobContext::new(state.clone(), job_id.clone());
 
-    let mut running = job.clone();
-    running["status"] = json!("running");
-    running["startedAt"] = json!(chrono::Utc::now().to_rfc3339());
-    running["attempts"] = json!(job.get("attempts").and_then(|value| value.as_u64()).unwrap_or(0) + 1);
-    state.store.put("job", &running);
-    state.bus.record("job", &running);
+    state.bus.record("job", &job);
 
     let kind = job
         .get("kind")
@@ -172,31 +272,51 @@ async fn run_job(state: AppState, job: Value) {
         "goal" => goals::run(&context, &job).await,
         "prompt" => run_prompt(&context, &job).await,
         "learn" => learning::run(&context, &job).await,
+        "discord" => crate::engine::discord::run(&context, &job).await,
         other => Err(format!("지원하지 않는 작업 종류입니다: {other}")),
     };
 
     match result {
         Ok(result) => {
+            let status = result
+                .get("status")
+                .and_then(Value::as_str)
+                .filter(|status| matches!(*status, "needs_review" | "cancelled" | "failed"))
+                .unwrap_or("completed");
             context.patch(json!({
-                "status": "completed",
+                "status": status,
                 "result": result,
                 "finishedAt": chrono::Utc::now().to_rfc3339(),
                 "events": context.events.lock().unwrap().clone(),
             }));
-            state
-                .store
-                .audit("job.completed", json!({ "jobId": job_id, "kind": kind }));
+            state.store.audit(
+                &format!("job.{status}"),
+                json!({ "jobId": job_id, "kind": kind }),
+            );
         }
         Err(error) => {
+            if error.starts_with("deferred:") {
+                context.patch(json!({"status":"queued","availableAt":(chrono::Utc::now()+chrono::Duration::seconds(1)).to_rfc3339(),
+                    "attempts":job["attempts"].as_u64().unwrap_or(1).saturating_sub(1),"error":error}));
+                return;
+            }
+            let status = if error.starts_with("needs_review:") {
+                "needs_review"
+            } else if error.contains("중단") || error.contains("cancelled") {
+                "cancelled"
+            } else {
+                "failed"
+            };
             context.patch(json!({
-                "status": "failed",
+                "status": status,
                 "error": error,
                 "finishedAt": chrono::Utc::now().to_rfc3339(),
                 "events": context.events.lock().unwrap().clone(),
             }));
-            state
-                .store
-                .audit("job.failed", json!({ "jobId": job_id, "kind": kind, "error": error }));
+            state.store.audit(
+                "job.failed",
+                json!({ "jobId": job_id, "kind": kind, "error": error }),
+            );
         }
     }
 }
@@ -211,11 +331,31 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
     if prompt.trim().is_empty() {
         return Err("작업 입력(prompt)이 비어 있습니다.".into());
     }
+    if let Some(result) = job.pointer("/promptState/result") {
+        return Ok(result.clone());
+    }
+    if job
+        .pointer("/promptState/inFlight")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return Ok(
+            json!({"status":"needs_review","reason":"중단된 프롬프트 작업 결과를 확인해야 합니다."}),
+        );
+    }
+    let session_id = job
+        .get("sessionId")
+        .or_else(|| input.get("sessionId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let session_id = match session_id {
+        Some(id) => id,
+        None => context.state.store.put("session",&json!({"title":prompt.chars().take(40).collect::<String>(),"agentId":input.get("agentId")}))
+            .and_then(|session|session["id"].as_str().map(str::to_string)).ok_or("작업 세션을 저장할 수 없습니다.")?,
+    };
+    context.checkpoint(json!({"sessionId":session_id,"promptState":{"inFlight":true}}))?;
     let request = TurnRequest {
-        session_id: input
-            .get("sessionId")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
+        session_id: Some(session_id),
         input: prompt,
         agent_id: input
             .get("agentId")
@@ -239,10 +379,12 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
 
     let message = run_quiet(&context.state, &request).await?;
 
-    Ok(json!({
+    let result = json!({
         "sessionId": message.as_ref().and_then(|item| item.get("session_id")),
         "messageId": message.as_ref().and_then(|item| item.get("id")),
-    }))
+    });
+    context.checkpoint(json!({"promptState":{"inFlight":false,"result":result}}))?;
+    Ok(result)
 }
 
 fn schedule_automations(state: &AppState) {
@@ -264,7 +406,10 @@ fn schedule_automations(state: &AppState) {
             .get("kind")
             .and_then(|value| value.as_str())
             .unwrap_or("prompt");
-        let input = automation.get("input").cloned().unwrap_or_else(|| json!({}));
+        let input = automation
+            .get("input")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let job_kind = if kind == "meeting" { "room" } else { kind };
         if !matches!(job_kind, "prompt" | "workflow" | "room" | "learn" | "goal") {
             continue;
@@ -306,8 +451,12 @@ mod tests {
     #[test]
     fn enqueue_creates_a_queued_job() {
         let state = temp_state();
-        let job = enqueue(&state, "workflow", json!({ "workflowId": "w1", "input": "hi" }))
-            .expect("job");
+        let job = enqueue(
+            &state,
+            "workflow",
+            json!({ "workflowId": "w1", "input": "hi" }),
+        )
+        .expect("job");
         assert_eq!(job["status"], "queued");
         assert_eq!(job["kind"], "workflow");
         assert_eq!(job["stepTotal"], 0);
@@ -324,7 +473,12 @@ mod tests {
     #[test]
     fn recover_requeues_running_jobs() {
         let state = temp_state();
-        let job = enqueue(&state, "workflow", json!({ "workflowId": "w", "input": "" })).unwrap();
+        let job = enqueue(
+            &state,
+            "workflow",
+            json!({ "workflowId": "w", "input": "" }),
+        )
+        .unwrap();
         let mut running = job.clone();
         running["status"] = json!("running");
         running["attempts"] = json!(1);
@@ -355,5 +509,53 @@ mod tests {
         let stored = state.store.get("job", &id).unwrap();
         assert_eq!(stored["status"], "failed");
         assert!(stored["error"].as_str().unwrap().contains("회의실"));
+    }
+
+    #[test]
+    fn uncertain_goal_recovery_updates_job_and_goal_without_replaying() {
+        let state = temp_state();
+        state
+            .store
+            .put("goal", &json!({"id":"g","status":"running","goal":"write"}));
+        state.store.put(
+            "job",
+            &json!({"id":"j","kind":"goal","status":"running","attempts":1,
+            "input":{"goalId":"g"},"goalState":{"inFlight":true}}),
+        );
+        recover(&state);
+        assert_eq!(
+            state.store.get("job", "j").unwrap()["status"],
+            "needs_review"
+        );
+        assert_eq!(
+            state.store.get("goal", "g").unwrap()["status"],
+            "needs_review"
+        );
+        assert!(next_queued(&state).is_none());
+    }
+
+    #[tokio::test]
+    async fn goal_review_state_is_preserved_on_the_parent_job() {
+        let state = temp_state();
+        state
+            .store
+            .put("goal", &json!({"id":"g","status":"running","goal":"실행"}));
+        let job = state
+            .store
+            .put(
+                "job",
+                &json!({"id":"j","kind":"goal","status":"running","attempts":1,
+            "input":{"goalId":"g"},"goalState":{"inFlight":true}}),
+            )
+            .unwrap();
+        run_job(state.clone(), job).await;
+        assert_eq!(
+            state.store.get("job", "j").unwrap()["status"],
+            "needs_review"
+        );
+        assert_eq!(
+            state.store.get("goal", "g").unwrap()["status"],
+            "needs_review"
+        );
     }
 }

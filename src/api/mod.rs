@@ -1,11 +1,11 @@
 pub mod channels;
 pub mod collections;
-pub mod dev;
-pub mod models;
-pub mod video;
-pub mod oauth;
 pub mod compat;
 pub mod core;
+pub mod dev;
+pub mod models;
+pub mod oauth;
+pub mod video;
 
 use crate::state::AppState;
 use axum::{
@@ -39,7 +39,10 @@ pub fn router(state: AppState) -> Router {
             "/api/providers",
             get(core::list_providers).post(core::save_provider),
         )
-        .route("/api/providers/:id", axum::routing::delete(core::delete_provider))
+        .route(
+            "/api/providers/:id",
+            axum::routing::delete(core::delete_provider),
+        )
         .route("/api/providers/:id/models", get(core::provider_models))
         // agents
         .route("/api/agents", get(core::list_agents).post(core::save_agent))
@@ -96,9 +99,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/model-library/runtime/unload", post(models::unload))
         .route("/api/model-library/download", post(models::download))
         .route("/api/model-library/import", post(models::import))
-        .route("/api/model-library/jobs/:id/:action", post(models::job_action))
+        .route(
+            "/api/model-library/jobs/:id/:action",
+            post(models::job_action),
+        )
         .route("/api/dev/status", get(dev::status))
-        .route("/api/dev/config", get(dev::get_config).post(dev::save_config))
+        .route(
+            "/api/dev/config",
+            get(dev::get_config).post(dev::save_config),
+        )
         .route("/api/dev/connect", post(dev::connect))
         .route("/api/dev/diff", get(dev::diff))
         .route("/api/dev/jobs/:id", get(dev::get_job))
@@ -110,16 +119,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/oauth/providers/:id", post(oauth::save))
         .route("/api/oauth/:id/start", get(oauth::start))
         .route("/api/oauth/:id/callback", get(oauth::callback))
-        .route(
-            "/api/oauth/:id",
-            axum::routing::delete(oauth::disconnect),
-        )
+        .route("/api/oauth/:id", axum::routing::delete(oauth::disconnect))
         .route("/api/youtube/status", get(compat::youtube_status))
         .route("/api/youtube/uploads", get(compat::empty_list))
         .route("/api/youtube/uploads/:id", get(video::job))
         .route("/api/youtube/:action", post(compat::not_ported))
         .route("/api/video/status", get(video::status))
-        .route("/api/video/config", get(video::get_config).post(video::save_config))
+        .route(
+            "/api/video/config",
+            get(video::get_config).post(video::save_config),
+        )
         .route("/api/video/outputs", get(video::outputs_handler))
         .route("/api/video/locations", get(video::locations))
         .route("/api/video/models", get(video::empty_list))
@@ -131,6 +140,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/video/:action", post(video::not_available))
         .route("/api/system/pick-folder", post(compat::not_ported))
         .route("/api/channels/catalog", get(channels::catalog_handler))
+        .route("/api/channels", get(channels::list).post(channels::save))
+        .route(
+            "/api/channels/:id",
+            get(channels::one)
+                .post(channels::update)
+                .delete(channels::remove),
+        )
+        .route("/api/channels/:id/diagnose", post(channels::diagnose))
         .route("/api/executions/active", get(core::active_executions))
         .route("/api/webhooks/:id", post(compat::not_ported));
 
@@ -146,11 +163,14 @@ pub fn router(state: AppState) -> Router {
                     .delete(collections::remove)
                     .post(collections::save),
             )
-            .route(&format!("/api/{kind}/:id/:action"), post(collections::action));
+            .route(
+                &format!("/api/{kind}/:id/:action"),
+                post(collections::action),
+            );
     }
 
-    let static_files = ServeDir::new(state.config.web_dir.clone())
-        .append_index_html_on_directories(true);
+    let static_files =
+        ServeDir::new(state.config.web_dir.clone()).append_index_html_on_directories(true);
 
     let port = state.config.port;
     let origins = vec![
@@ -201,20 +221,15 @@ async fn api_not_found(OriginalUri(uri): OriginalUri) -> Response {
 /// immediately instead of showing an old bundle after a restart.
 async fn no_stale_ui(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-cache"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     response
 }
 
 /// Rejects cross-origin writes so a random website cannot drive the local
 /// computer-control API. An optional admin token protects writes further.
-async fn guard_writes(
-    State(state): State<AppState>,
-    request: Request,
-    next: Next,
-) -> Response {
+async fn guard_writes(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let method = request.method().clone();
     if !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) {
         let port = state.config.port;

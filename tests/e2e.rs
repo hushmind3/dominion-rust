@@ -1,11 +1,294 @@
 //! End-to-end test: runs the real binary, a fake OpenAI-compatible model, and
 //! exercises HTTP/SSE, persistence and the cross-origin write guard.
 
+use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+fn scripted_provider(
+    reply: impl Fn(&Value) -> Vec<Value> + Send + Sync + 'static,
+) -> (u16, Arc<Mutex<Vec<Value>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let observed = requests.clone();
+    let reply = Arc::new(reply);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                break;
+            };
+            let observed = observed.clone();
+            let reply = reply.clone();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let end = loop {
+                    let read = stream.read(&mut chunk).unwrap_or(0);
+                    if read == 0 {
+                        return;
+                    }
+                    bytes.extend_from_slice(&chunk[..read]);
+                    if let Some(at) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        break at + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&bytes[..end]);
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|length| length.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                while bytes.len() < end + length {
+                    let read = stream.read(&mut chunk).unwrap_or(0);
+                    if read == 0 {
+                        return;
+                    }
+                    bytes.extend_from_slice(&chunk[..read]);
+                }
+                let body: Value = serde_json::from_slice(&bytes[end..end + length]).unwrap();
+                observed.lock().unwrap().push(body.clone());
+                let events = reply(&body);
+                let mut payload = events
+                    .iter()
+                    .map(|event| format!("data: {event}\n\n"))
+                    .collect::<String>();
+                payload.push_str("data: [DONE]\n\n");
+                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",payload.len());
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    (port, requests)
+}
+
+struct TestApp {
+    _child: ChildGuard,
+    _root: PathBuf,
+    base: String,
+    client: reqwest::blocking::Client,
+}
+
+impl TestApp {
+    fn new(provider_port: u16, tool_mode: &str) -> Self {
+        let root = temp_root();
+        let port = free_port();
+        let child = Command::new(env!("CARGO_BIN_EXE_dominion-rust"))
+            .env("DOMINION_PORT", port.to_string())
+            .env("DOMINION_DATA", root.join("runtime"))
+            .env("DOMINION_WEB", root.join("web"))
+            .env("DOMINION_WORKSPACE", &root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let app = Self {
+            _child: ChildGuard(child),
+            _root: root,
+            base: format!("http://127.0.0.1:{port}"),
+            client: reqwest::blocking::Client::new(),
+        };
+        wait_health(port, 20);
+        app.post("/api/providers",&json!({"name":"mock","baseUrl":format!("http://127.0.0.1:{provider_port}/v1"),"model":"mock","enabled":true,"toolMode":tool_mode}));
+        app
+    }
+    fn post(&self, path: &str, body: &Value) -> Value {
+        self.client
+            .post(format!("{}{path}", self.base))
+            .json(body)
+            .send()
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .unwrap()
+    }
+    fn get(&self, path: &str) -> Value {
+        self.client
+            .get(format!("{}{path}", self.base))
+            .send()
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .unwrap()
+    }
+    fn chat(&self, body: &Value) -> String {
+        self.client
+            .post(format!("{}/api/chat", self.base))
+            .json(body)
+            .send()
+            .unwrap()
+            .text()
+            .unwrap()
+    }
+}
+
+#[test]
+fn command_failure_persists_actual_evidence() {
+    let (port, _) = scripted_provider(|request| {
+        let saw_tool = request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["role"] == "tool");
+        if saw_tool {
+            vec![
+                json!({"choices":[{"delta":{"content":"명령 실패를 확인했습니다."},"finish_reason":"stop"}]}),
+            ]
+        } else {
+            vec![
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"failed-shell","type":"function","function":{"name":"shell_exec","arguments":"{\"command\":\"exit 7\"}"}}]},"finish_reason":"tool_calls"}]}),
+            ]
+        }
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let session = app.post("/api/sessions", &json!({"title":"failure"}));
+    let stream =
+        app.chat(&json!({"sessionId":session["id"],"input":"실패 명령 실행","autoLearning":false}));
+    assert!(stream.contains("tool_error"), "{stream}");
+    assert!(!stream.contains("\"type\":\"tool_end\""));
+    let executions = app.get("/api/executions");
+    let operations = app.get(&format!(
+        "/api/executions/{}/operations",
+        executions[0]["id"].as_str().unwrap()
+    ));
+    assert_eq!(operations[0]["status"], "failed");
+    assert_eq!(operations[0]["arguments"]["command"], "exit 7");
+    assert_eq!(operations[0]["result"]["exitCode"], 7);
+}
+
+#[test]
+fn compatibility_tools_are_available_and_round_limit_is_a_failure() {
+    let (port, requests) = scripted_provider(|_| {
+        vec![
+            json!({"choices":[{"delta":{"content":"<tool_call>{\"name\":\"workspace_list\",\"arguments\":{}}</tool_call>"},"finish_reason":"stop"}]}),
+        ]
+    });
+    let app = TestApp::new(port, "compat");
+    let session = app.post("/api/sessions", &json!({"title":"limit"}));
+    let stream =
+        app.chat(&json!({"sessionId":session["id"],"input":"계속 확인","autoLearning":false}));
+    assert!(stream.contains("모델 반복 제한"), "{stream}");
+    let calls = requests.lock().unwrap();
+    assert_eq!(calls.len(), 8);
+    assert!(calls[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("workspace_list"));
+    assert!(calls[0].get("tools").is_none());
+    assert_eq!(app.get("/api/executions")[0]["status"], "failed");
+    let messages = app.get(&format!(
+        "/api/sessions/{}/messages",
+        session["id"].as_str().unwrap()
+    ));
+    assert!(messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["role"] == "assistant")
+        .all(|row| row["tool_calls"].is_array()));
+}
+
+#[test]
+fn cancelling_a_stalled_model_does_not_wait_for_network_data() {
+    let (port, _) = scripted_provider(|_| {
+        std::thread::sleep(Duration::from_secs(5));
+        vec![json!({"choices":[{"delta":{"content":"too late"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let session = app.post("/api/sessions", &json!({"title":"cancel"}));
+    let id = session["id"].as_str().unwrap().to_string();
+    let base = app.base.clone();
+    let chat_id = id.clone();
+    let started = Instant::now();
+    let turn = std::thread::spawn(move || {
+        reqwest::blocking::Client::new()
+            .post(format!("{base}/api/chat"))
+            .json(&json!({"sessionId":chat_id,"input":"wait","autoLearning":false}))
+            .send()
+            .unwrap()
+            .text()
+            .unwrap()
+    });
+    while app
+        .get("/api/executions/active")
+        .as_array()
+        .unwrap()
+        .is_empty()
+    {
+        assert!(started.elapsed() < Duration::from_secs(3));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    app.post(&format!("/api/sessions/{id}/cancel"), &json!({}));
+    let stream = turn.join().unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "cancellation stalled"
+    );
+    assert!(stream.contains("중단"));
+    assert!(!stream.contains("too late"));
+    assert_eq!(app.get("/api/executions")[0]["status"], "cancelled");
+}
+
+#[test]
+fn disabled_tools_cannot_be_enabled_by_the_model() {
+    let (port, _) = scripted_provider(|_| {
+        vec![
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"forbidden","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"forbidden.txt\",\"content\":\"should never exist\"}"}}]},"finish_reason":"tool_calls"}]}),
+        ]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let stream = app.chat(&json!({"input":"대화만","toolsEnabled":false,"autoLearning":false}));
+    assert!(stream.contains("도구가 비활성"), "{stream}");
+    assert!(!app._root.join("forbidden.txt").exists());
+    assert!(app.get("/api/approvals").as_array().unwrap().is_empty());
+    assert_eq!(app.get("/api/executions")[0]["status"], "failed");
+}
+
+#[test]
+fn reused_model_call_ids_do_not_overwrite_prior_tool_evidence() {
+    let (port, _) = scripted_provider(|request| {
+        let count = request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .count();
+        if count >= 2 {
+            vec![
+                json!({"choices":[{"delta":{"content":"두 번 확인했습니다."},"finish_reason":"stop"}]}),
+            ]
+        } else {
+            vec![
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"reused","type":"function","function":{"name":"workspace_list","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}),
+            ]
+        }
+    });
+    let app = TestApp::new(port, "native");
+    let stream = app.chat(&json!({"input":"두 번 확인","autoLearning":false}));
+    assert!(stream.contains("두 번 확인했습니다."), "{stream}");
+    let execution = &app.get("/api/executions")[0];
+    let operations = app.get(&format!(
+        "/api/executions/{}/operations",
+        execution["id"].as_str().unwrap()
+    ));
+    let operations = operations.as_array().unwrap();
+    assert_eq!(operations.len(), 2);
+    assert_ne!(operations[0]["id"], operations[1]["id"]);
+    assert!(operations
+        .iter()
+        .all(|operation| operation["status"] == "completed"));
+}
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")

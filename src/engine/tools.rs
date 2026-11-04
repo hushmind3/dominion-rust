@@ -9,6 +9,8 @@ pub struct ToolContext<'a> {
     pub workspace: &'a Path,
     pub store: &'a Store,
     pub state: &'a crate::state::AppState,
+    pub session_id: &'a str,
+    pub agent_id: Option<&'a str>,
 }
 
 /// OpenAI-style tool definitions handed to the model.
@@ -34,7 +36,7 @@ pub fn definitions() -> Vec<Value> {
         tool("terminal_exec", "Run an executable with an argument array without a shell (approval required)", object(json!({"command": text("Executable"), "args": json!({"type": "array", "items": {"type": "string"}})}), vec!["command"])),
         tool("web_search", "Search the public web for current information", object(json!({"query": text("Search query")}), vec!["query"])),
         tool("http_fetch", "Fetch a URL and return its readable text content", object(json!({"url": text("HTTP or HTTPS URL")}), vec!["url"])),
-        tool("memory_store", "Save a concise durable fact for future sessions", object(json!({"text": text("Fact to remember"), "scope": text("Optional scope")}), vec!["text"])),
+        tool("memory_store", "Save a grounded memory for this agent. Quote the user's exact words; invented facts are rejected. Shared memories are managed by the user.", object(json!({"text": text("Fact to remember, maximum 1600 characters"), "evidenceQuote": text("Exact quote from the current user message supporting the fact"), "sourceMessageId": text("Optional earlier source message ID"), "type": json!({"type":"string","enum":["fact","preference","decision","procedure","lesson"]}), "key": text("Optional stable fact key; a new value replaces the previous value for this key"), "scope": json!({"type":"string","enum":["agent"]})}), vec!["text", "evidenceQuote"])),
         tool("memory_search", "Find saved knowledge relevant to a topic", object(json!({"query": text("Search query")}), vec!["query"])),
         tool("skill_propose", "Draft a reusable skill for user review", object(json!({"name": text("Skill name"), "instructions": text("Reusable instructions")}), vec!["name", "instructions"])),
         tool("account_status", "List OAuth accounts connected to DOMINION", object(json!({}), vec![])),
@@ -113,49 +115,32 @@ pub async fn execute(ctx: &ToolContext<'_>, name: &str, args: &Value) -> Result<
             http_fetch(&url).await
         }
         "memory_store" => {
-            let text = required_arg(args, "text")?;
-            let scope = string_arg(args, "scope").unwrap_or("global");
-            let record = ctx.store.put(
-                "memory",
-                &json!({
-                    "text": text,
-                    "scope": scope,
-                    "source": "agent",
-                    "createdAt": chrono::Utc::now().to_rfc3339(),
-                }),
+            let scope = crate::engine::memory::MemoryScope::for_session(
+                ctx.store,
+                ctx.session_id,
+                ctx.agent_id,
             );
-            Ok(json!({ "stored": true, "memory": record }))
+            crate::engine::memory::store_tool(ctx.store, &scope, args)
         }
         "memory_search" => {
-            let query = required_arg(args, "query")?.to_lowercase();
-            let tokens: Vec<&str> = query
-                .split_whitespace()
-                .filter(|token| token.len() > 1)
-                .collect();
-            let mut scored: Vec<(usize, Value)> = ctx
-                .store
-                .all("memory")
-                .into_iter()
-                .filter_map(|memory| {
-                    let text = memory
-                        .get("text")
-                        .and_then(|value| value.as_str())?
-                        .to_lowercase();
-                    let score = tokens
-                        .iter()
-                        .filter(|token| text.contains(**token))
-                        .count();
-                    (score > 0 || tokens.is_empty()).then_some((score, memory))
-                })
-                .collect();
-            scored.sort_by(|a, b| b.0.cmp(&a.0));
+            let query = required_arg(args, "query")?;
+            let scope = crate::engine::memory::MemoryScope::for_session(
+                ctx.store,
+                ctx.session_id,
+                ctx.agent_id,
+            );
             Ok(json!({
-                "results": scored.into_iter().take(10).map(|(_, memory)| memory).collect::<Vec<_>>()
+                "results": crate::engine::memory::retrieve(ctx.store, &scope, &query, 10)
             }))
         }
         "skill_propose" => {
             let name = required_arg(args, "name")?;
             let instructions = required_arg(args, "instructions")?;
+            let scope = crate::engine::memory::MemoryScope::for_session(
+                ctx.store,
+                ctx.session_id,
+                ctx.agent_id,
+            );
             let record = ctx.store.put(
                 "skill",
                 &json!({
@@ -165,6 +150,10 @@ pub async fn execute(ctx: &ToolContext<'_>, name: &str, args: &Value) -> Result<
                     "enabled": false,
                     "status": "draft",
                     "source": "agent",
+                    "scope": "agent",
+                    "sessionId": ctx.session_id,
+                    "agentId": ctx.agent_id,
+                    "partitionKey": scope.partition_key,
                     "createdAt": chrono::Utc::now().to_rfc3339(),
                 }),
             );
@@ -179,12 +168,9 @@ pub async fn execute(ctx: &ToolContext<'_>, name: &str, args: &Value) -> Result<
 }
 
 async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> {
-    let token = crate::engine::oauth::access_token(ctx.state, "github").ok_or(
-        "GitHub 계정이 연결되지 않았습니다. 설정 > 계정 연동에서 연결하세요.",
-    )?;
-    let method = string_arg(args, "method")
-        .unwrap_or("GET")
-        .to_uppercase();
+    let token = crate::engine::oauth::access_token(ctx.state, "github")
+        .ok_or("GitHub 계정이 연결되지 않았습니다. 설정 > 계정 연동에서 연결하세요.")?;
+    let method = string_arg(args, "method").unwrap_or("GET").to_uppercase();
     if !matches!(method.as_str(), "GET" | "POST" | "PATCH" | "PUT" | "DELETE") {
         return Err("지원하지 않는 HTTP 메서드입니다.".into());
     }
@@ -192,8 +178,8 @@ async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String
     if !path.starts_with('/') || path.contains("..") {
         return Err("GitHub API 경로는 / 로 시작해야 합니다.".into());
     }
-    let method = reqwest::Method::from_bytes(method.as_bytes())
-        .map_err(|error| error.to_string())?;
+    let method =
+        reqwest::Method::from_bytes(method.as_bytes()).map_err(|error| error.to_string())?;
     let mut request = reqwest::Client::new()
         .request(method, format!("https://api.github.com{path}"))
         .header("Authorization", format!("Bearer {token}"))
@@ -402,7 +388,10 @@ async fn web_search(query: &str) -> Result<Value, String> {
         .post("https://html.duckduckgo.com/html/")
         .form(&[("q", query)])
         .timeout(Duration::from_secs(25))
-        .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+        )
         .send()
         .await
         .map_err(|error| error.to_string())?;
@@ -413,7 +402,9 @@ async fn web_search(query: &str) -> Result<Value, String> {
             continue;
         };
         let rest = &chunk[href_start + 6..];
-        let Some(href_end) = rest.find('"') else { continue };
+        let Some(href_end) = rest.find('"') else {
+            continue;
+        };
         let href = decode_ddg(&rest[..href_end]);
         let title = rest[href_end..]
             .find('>')
@@ -431,7 +422,10 @@ async fn web_search(query: &str) -> Result<Value, String> {
 }
 
 fn decode_ddg(raw: &str) -> String {
-    let href = raw.strip_prefix("//").map(|rest| format!("https://{rest}")).unwrap_or_else(|| raw.to_string());
+    let href = raw
+        .strip_prefix("//")
+        .map(|rest| format!("https://{rest}"))
+        .unwrap_or_else(|| raw.to_string());
     if let Some(index) = href.find("uddg=") {
         let value = &href[index + 5..];
         let value = value.split('&').next().unwrap_or(value);
@@ -452,7 +446,11 @@ fn percent_decode(value: &str) -> String {
                 continue;
             }
         }
-        out.push(if bytes[index] == b'+' { b' ' } else { bytes[index] });
+        out.push(if bytes[index] == b'+' {
+            b' '
+        } else {
+            bytes[index]
+        });
         index += 1;
     }
     String::from_utf8_lossy(&out).to_string()
@@ -501,9 +499,7 @@ mod tests {
     fn tool_definitions_cover_the_engine() {
         let names = definitions()
             .into_iter()
-            .filter_map(|definition| {
-                definition["function"]["name"].as_str().map(str::to_string)
-            })
+            .filter_map(|definition| definition["function"]["name"].as_str().map(str::to_string))
             .collect::<Vec<_>>();
         for expected in [
             "workspace_read",
@@ -512,7 +508,10 @@ mod tests {
             "memory_store",
             "memory_search",
         ] {
-            assert!(names.iter().any(|name| name == expected), "{expected} missing");
+            assert!(
+                names.iter().any(|name| name == expected),
+                "{expected} missing"
+            );
         }
         assert!(requires_approval("shell_exec"));
         assert!(!requires_approval("workspace_read"));

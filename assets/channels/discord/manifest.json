@@ -2,13 +2,15 @@
   "id": "discord",
   "name": "Discord",
   "category": "community",
-  "mode": "gateway",
-  "docs": "https://discord.com/developers/docs/topics/gateway",
-  "description": "Gateway WebSocket · 서버와 DM",
+  "mode": "rest-poll",
+  "docs": "https://docs.discord.com/developers/resources/message",
+  "description": "DOMINION Rust 직접 연결 · 지정 서버·채널의 메시지 수신과 응답",
   "features": [
-    "dm",
-    "groups",
-    "replies"
+    "text channels",
+    "threads",
+    "replies",
+    "1–9 agents",
+    "allowed bots"
   ],
   "fields": [
     {
@@ -16,11 +18,37 @@
       "label": "Bot Token",
       "type": "secret",
       "required": true
+    },
+    {
+      "key": "guildId",
+      "label": "서버 ID",
+      "type": "text",
+      "required": true
+    },
+    {
+      "key": "channelId",
+      "label": "채널·스레드 ID",
+      "type": "text",
+      "required": true
+    },
+    {
+      "key": "allowedUserIds",
+      "label": "허용 사용자 ID · 쉼표 구분 · 비우면 채널 사용자",
+      "type": "text"
+    },
+    {
+      "key": "allowedBotIds",
+      "label": "대화할 외부 봇 ID · 쉼표 구분 · 비우면 봇 무시",
+      "type": "text"
     }
   ],
   "instructions": [
-    "Discord Developer Portal에서 Bot 생성",
-    "Message Content Intent를 활성화",
-    "OAuth2 초대 URL로 서버에 봇 추가"
+    "Discord Developer Portal에서 Bot을 만들고 Bot Token 입력",
+    "Message Content Intent 활성화 후 봇을 서버에 초대",
+    "VIEW_CHANNEL · READ_MESSAGE_HISTORY · SEND_MESSAGES 권한 부여",
+    "Discord 개발자 모드에서 서버·채널 ID를 복사해 입력",
+    "처음 활성화한 시점부터 새 메시지를 수신합니다 (약 5초 간격). 기존 봇과 동시에 같은 Token을 운용하지 마세요.",
+    "외부 봇은 허용 ID와 DOMINION 봇 멘션이 모두 필요합니다. 자동 봇 응답은 분당 2회로 제한됩니다.",
+    "회의실은 최대 9명. @에이전트이름으로 발언자를 지정할 수 있습니다."
   ]
 }

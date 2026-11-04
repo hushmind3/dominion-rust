@@ -48,22 +48,57 @@ impl AppState {
             .lock()
             .unwrap()
             .insert(session_id.to_string());
+        self.store.put(
+            "session_cancel",
+            &serde_json::json!({"id":session_id,"cancelledAt":chrono::Utc::now().to_rfc3339()}),
+        );
+        // Cancellation survives a restart and cannot be cleared for old queued
+        // work merely because the user starts a fresh foreground turn.
+        for job in self.store.all("job") {
+            let matches = [
+                "/sessionId",
+                "/input/sessionId",
+                "/goalState/sessionId",
+                "/roomState/sessionId",
+                "/workflowState/sessionId",
+            ]
+            .iter()
+            .any(|path| job.pointer(path).and_then(serde_json::Value::as_str) == Some(session_id));
+            if matches && matches!(job["status"].as_str(), Some("queued" | "running")) {
+                if let Some(id) = job["id"].as_str() {
+                    if let Some(saved) = self.store.patch_if("job",id,"status",&job["status"],&serde_json::json!({
+                        "status":"cancelled","cancelRequested":true,"finishedAt":chrono::Utc::now().to_rfc3339(),"error":"사용자 요청으로 실행이 중단되었습니다."
+                    })) { self.bus.record("job",&saved); }
+                }
+            }
+        }
+        for mut goal in self.store.all("goal") {
+            if goal["sessionId"].as_str() == Some(session_id)
+                && matches!(goal["status"].as_str(), Some("queued" | "running"))
+            {
+                goal["status"] = serde_json::json!("cancelled");
+                goal["phase"] = serde_json::json!("cancelled");
+                goal["finishedAt"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
+                if let Some(saved) = self.store.put("goal", &goal) {
+                    self.bus.record("goal", &saved);
+                }
+            }
+        }
     }
 
     pub fn clear_cancel(&self, session_id: &str) {
         self.cancelled.lock().unwrap().remove(session_id);
+        self.store.remove("session_cancel", session_id);
     }
 
     pub fn is_cancelled(&self, session_id: &str) -> bool {
         self.cancelled.lock().unwrap().contains(session_id)
+            || self.store.get("session_cancel", session_id).is_some()
     }
 
     /// Returns false when the session already has a running turn.
     pub fn begin_session(&self, session_id: &str) -> bool {
-        self.active
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string())
+        self.active.lock().unwrap().insert(session_id.to_string())
     }
 
     pub fn end_session(&self, session_id: &str) {
@@ -123,6 +158,39 @@ mod tests {
             assert!(!state.begin_session("s1"));
         }
         assert!(state.begin_session("s1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cancellation_survives_restart_and_old_jobs_stay_cancelled() {
+        let (state, dir) = temp_state();
+        state.store.put("job",&serde_json::json!({"id":"old","kind":"prompt","status":"queued","input":{"sessionId":"s"}}));
+        state.store.put(
+            "job",
+            &serde_json::json!({"id":"running","kind":"room","status":"running","sessionId":"s"}),
+        );
+        state.cancel_session("s");
+        let restarted = AppState::new(
+            state.config.clone(),
+            state.store.clone(),
+            Vault::open(&state.config.key_path()),
+        );
+        assert!(restarted.is_cancelled("s"));
+        restarted.clear_cancel("s");
+        assert!(!restarted.is_cancelled("s"));
+        assert_eq!(
+            restarted.store.get("job", "old").unwrap()["status"],
+            "cancelled"
+        );
+        assert!(
+            crate::engine::jobs::JobContext::new(restarted.clone(), "running".into())
+                .checkpoint(serde_json::json!({"status":"completed"}))
+                .is_err()
+        );
+        assert_eq!(
+            restarted.store.get("job", "running").unwrap()["status"],
+            "cancelled"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

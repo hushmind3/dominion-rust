@@ -24,7 +24,20 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .store
         .get("workflow", workflow_id)
         .ok_or_else(|| "워크플로를 찾을 수 없습니다.".to_string())?;
-    let steps = workflow
+    let existing = job
+        .get("workflowState")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if existing.get("inFlight").and_then(Value::as_bool) == Some(true) {
+        return Ok(
+            json!({"workflowId":workflow_id,"sessionId":existing.get("sessionId"),"status":"needs_review","reason":"중단된 단계의 도구 실행 여부를 확인해야 합니다."}),
+        );
+    }
+    let definition = existing
+        .get("definition")
+        .cloned()
+        .unwrap_or_else(|| workflow.clone());
+    let steps = definition
         .get("steps")
         .and_then(|value| value.as_array())
         .cloned()
@@ -34,7 +47,6 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     }
 
     let state = &context.state;
-    let existing = job.get("workflowState").cloned().unwrap_or_else(|| json!({}));
     let mut outputs = existing
         .get("outputs")
         .and_then(|value| value.as_array())
@@ -67,7 +79,24 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     };
 
     let total = steps.len();
+    if outputs.len() > total {
+        return Err("워크플로 체크포인트 단계 수가 실행 계획과 다릅니다.".into());
+    }
+    for (index, output) in outputs.iter().enumerate() {
+        if output.get("stepId") != steps[index].get("id") {
+            return Err("워크플로 체크포인트 단계 ID가 변경되었습니다.".into());
+        }
+    }
+    context.checkpoint(json!({
+        "sessionId": session_id,
+        "workflowState": { "sessionId": session_id, "outputs": outputs, "definition": definition, "inFlight": false },
+    }))?;
     for index in outputs.len()..total {
+        if state.is_cancelled(&session_id) {
+            return Ok(
+                json!({"workflowId":workflow_id,"sessionId":session_id,"outputs":outputs,"status":"cancelled"}),
+            );
+        }
         let step = &steps[index];
         let step_name = step
             .get("name")
@@ -94,6 +123,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             return Err(format!("{step_name} 단계의 지시문이 비어 있습니다."));
         }
 
+        context.checkpoint(json!({
+            "workflowState": { "sessionId": session_id, "outputs": outputs, "definition": definition, "inFlight": true, "activeStepIndex": index },
+        }))?;
         let request = TurnRequest {
             session_id: Some(session_id.clone()),
             input: prompt,
@@ -102,7 +134,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             model: optional(step, "model"),
             tools_enabled: true,
             thinking: None,
-        auto_learning: false,
+            auto_learning: false,
             reasoning_effort: None,
             reasoning_language: None,
             system_override: Some(format!(
@@ -116,9 +148,16 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             )),
         };
 
-        let message = run_quiet(state, &request)
-            .await?
-            .ok_or_else(|| format!("{step_name} 단계가 빈 응답을 반환했습니다."))?;
+        let message = match run_quiet(state, &request).await {
+            Ok(Some(message)) => message,
+            Ok(None) => return Err(format!("{step_name} 단계가 빈 응답을 반환했습니다.")),
+            Err(_) if state.is_cancelled(&session_id) => {
+                return Ok(
+                    json!({"workflowId":workflow_id,"sessionId":session_id,"outputs":outputs,"status":"cancelled"}),
+                )
+            }
+            Err(error) => return Err(error),
+        };
         outputs.push(json!({
             "stepId": step.get("id"),
             "name": step_name,
@@ -126,11 +165,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             "messageId": message.get("id"),
         }));
 
-        context.patch(json!({
+        context.checkpoint(json!({
             "stepIndex": index + 1,
             "stepTotal": total,
-            "workflowState": { "sessionId": session_id, "outputs": outputs },
-        }));
+            "workflowState": { "sessionId": session_id, "outputs": outputs, "definition": definition, "inFlight": false },
+        }))?;
         context.emit(json!({
             "type": "workflow_step_done",
             "stepIndex": index,
@@ -148,6 +187,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "workflowId": workflow_id,
         "sessionId": session_id,
         "outputs": outputs,
+        "status": if state.is_cancelled(&session_id) {"cancelled"} else {"completed"},
     }))
 }
 
@@ -161,14 +201,43 @@ fn optional(value: &Value, key: &str) -> Option<String> {
 
 /// `{{input}}` is the run payload, `{{previous}}` the last step output.
 pub fn render(template: &str, input: &str, previous: &str) -> String {
-    template
-        .replace("{{input}}", input)
-        .replace("{{previous}}", previous)
+    // Substitute only placeholders in the template. User input and prior
+    // output may themselves contain braces and must stay literal.
+    let mut rendered = String::new();
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        rendered.push_str(&rest[..start]);
+        rest = &rest[start..];
+        if let Some(next) = rest.strip_prefix("{{input}}") {
+            rendered.push_str(input);
+            rest = next;
+        } else if let Some(next) = rest.strip_prefix("{{previous}}") {
+            rendered.push_str(previous);
+            rest = next;
+        } else {
+            rendered.push_str("{{");
+            rest = &rest[2..];
+        }
+    }
+    rendered.push_str(rest);
+    rendered
 }
 
 #[cfg(test)]
 mod tests {
     use super::render;
+
+    #[test]
+    fn substitutions_do_not_interpret_placeholder_text_in_payloads() {
+        assert_eq!(
+            render(
+                "{{input}} / {{previous}}",
+                "literal {{previous}}",
+                "literal {{input}}"
+            ),
+            "literal {{previous}} / literal {{input}}"
+        );
+    }
 
     #[test]
     fn substitutes_run_input_and_previous_step() {

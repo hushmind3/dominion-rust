@@ -86,9 +86,11 @@ impl Store {
 
     pub fn count(&self, kind: &str) -> usize {
         let conn = self.conn.lock().unwrap();
-        conn.query_row("SELECT COUNT(*) FROM records WHERE kind=?1", [kind], |row| {
-            row.get::<_, i64>(0)
-        })
+        conn.query_row(
+            "SELECT COUNT(*) FROM records WHERE kind=?1",
+            [kind],
+            |row| row.get::<_, i64>(0),
+        )
         .unwrap_or(0) as usize
     }
 
@@ -124,6 +126,60 @@ impl Store {
             .ok()?;
         }
         self.get(kind, &id)
+    }
+
+    /// Durable idempotency key. Unlike `put`, this never overwrites a record.
+    pub fn put_if_absent(&self, kind: &str, value: &Value) -> Option<Value> {
+        let id = value.get("id")?.as_str().filter(|id| !id.is_empty())?;
+        let conn = self.conn.lock().unwrap();
+        let changed = conn
+            .execute(
+                "INSERT OR IGNORE INTO records(kind, id, data) VALUES(?1, ?2, ?3)",
+                params![kind, id, value.to_string()],
+            )
+            .ok()?;
+        if changed != 1 {
+            return None;
+        }
+        conn.query_row(
+            "SELECT data, id, created_at, updated_at FROM records WHERE kind=?1 AND id=?2",
+            params![kind, id],
+            record_from_row,
+        )
+        .ok()
+    }
+
+    /// Compare-and-patch under the connection lock, used to claim queued work.
+    pub fn patch_if(
+        &self,
+        kind: &str,
+        id: &str,
+        field: &str,
+        expected: &Value,
+        patch: &Value,
+    ) -> Option<Value> {
+        let conn = self.conn.lock().unwrap();
+        let mut record = conn
+            .query_row(
+                "SELECT data, id, created_at, updated_at FROM records WHERE kind=?1 AND id=?2",
+                params![kind, id],
+                record_from_row,
+            )
+            .ok()?;
+        if record.get(field).unwrap_or(&Value::Null) != expected {
+            return None;
+        }
+        for (key, value) in patch.as_object()? {
+            if key != "id" {
+                record[key] = value.clone();
+            }
+        }
+        conn.execute(
+            "UPDATE records SET data=?3, updated_at=datetime('now') WHERE kind=?1 AND id=?2",
+            params![kind, id, record.to_string()],
+        )
+        .ok()?;
+        Some(record)
     }
 
     pub fn remove(&self, kind: &str, id: &str) -> bool {
@@ -218,19 +274,15 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
             "INSERT INTO audit(id, event, detail) VALUES(?1, ?2, ?3)",
-            params![
-                uuid::Uuid::new_v4().to_string(),
-                event,
-                detail.to_string()
-            ],
+            params![uuid::Uuid::new_v4().to_string(), event, detail.to_string()],
         );
     }
 
     pub fn recent_audit(&self, limit: usize) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = match conn.prepare(
-            "SELECT id, event, detail, created_at FROM audit ORDER BY rowid DESC LIMIT ?1",
-        ) {
+        let mut stmt = match conn
+            .prepare("SELECT id, event, detail, created_at FROM audit ORDER BY rowid DESC LIMIT ?1")
+        {
             Ok(stmt) => stmt,
             Err(_) => return Vec::new(),
         };
@@ -307,7 +359,10 @@ mod tests {
     fn records_round_trip_with_client_fields() {
         let (store, dir) = temp_store();
         let saved = store
-            .put("provider", &json!({ "name": "Local", "baseUrl": "http://127.0.0.1:4399/v1" }))
+            .put(
+                "provider",
+                &json!({ "name": "Local", "baseUrl": "http://127.0.0.1:4399/v1" }),
+            )
             .expect("saved");
         let id = saved["id"].as_str().unwrap().to_string();
         assert_eq!(saved["name"], "Local");
@@ -317,7 +372,10 @@ mod tests {
         assert_eq!(fetched["baseUrl"], "http://127.0.0.1:4399/v1");
 
         let updated = store
-            .put("provider", &json!({ "id": id, "name": "Renamed", "baseUrl": "http://x" }))
+            .put(
+                "provider",
+                &json!({ "id": id, "name": "Renamed", "baseUrl": "http://x" }),
+            )
             .unwrap();
         assert_eq!(updated["name"], "Renamed");
         assert_eq!(store.all("provider").len(), 1);
@@ -344,6 +402,43 @@ mod tests {
         assert_eq!(messages[1]["tool_calls"][0]["id"], "c1");
         store.clear_messages("s1");
         assert!(store.messages("s1").is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_workers_claim_a_job_only_once() {
+        let (store, dir) = temp_store();
+        store
+            .put_if_absent("job", &json!({"id":"one","status":"queued"}))
+            .unwrap();
+        assert!(store
+            .put_if_absent("job", &json!({"id":"one","status":"overwritten"}))
+            .is_none());
+        let workers: Vec<_> = (0..12)
+            .map(|_| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    store
+                        .patch_if(
+                            "job",
+                            "one",
+                            "status",
+                            &json!("queued"),
+                            &json!({"status":"running"}),
+                        )
+                        .is_some()
+                })
+            })
+            .collect();
+        assert_eq!(
+            workers
+                .into_iter()
+                .filter_map(|worker| worker.join().ok())
+                .filter(|claimed| *claimed)
+                .count(),
+            1
+        );
+        assert_eq!(store.get("job", "one").unwrap()["status"], "running");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

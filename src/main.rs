@@ -87,7 +87,10 @@ async fn main() {
     let store = match Store::open(&config.db_path()) {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("cannot open database {}: {error}", config.db_path().display());
+            eprintln!(
+                "cannot open database {}: {error}",
+                config.db_path().display()
+            );
             std::process::exit(1);
         }
     };
@@ -167,6 +170,7 @@ async fn main() {
 
     engine::jobs::recover(&state);
     engine::jobs::start(state.clone());
+    engine::discord::start(state.clone());
     let app = api::router(state);
 
     println!(
@@ -288,7 +292,6 @@ fn install_app(target: &Path) -> Result<PathBuf, String> {
         env!("CARGO_PKG_VERSION"),
         env!("CARGO_PKG_VERSION")
     );
-    std::fs::write(target.join("Contents/Info.plist"), plist)
-        .map_err(|error| error.to_string())?;
+    std::fs::write(target.join("Contents/Info.plist"), plist).map_err(|error| error.to_string())?;
     Ok(target.to_path_buf())
 }

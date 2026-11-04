@@ -17,7 +17,6 @@ pub const COLLECTIONS: &[&str] = &[
     "automations",
     "workflows",
     "rooms",
-    "channels",
     "jobs",
     "executions",
     "knowledge",
@@ -183,6 +182,13 @@ pub async fn action(
         ),
         ("execution", "cancel") => {
             if let Some(mut execution) = state.store.get("execution", &id) {
+                if execution["status"] != "running" {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({"error":"진행 중인 실행만 취소할 수 있습니다."})),
+                    )
+                        .into_response();
+                }
                 if let Some(session_id) = execution
                     .get("sessionId")
                     .and_then(|value| value.as_str())

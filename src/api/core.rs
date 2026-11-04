@@ -117,10 +117,7 @@ fn public_provider(state: &AppState, mut provider: Value) -> Value {
     provider
 }
 
-pub async fn save_provider(
-    State(state): State<AppState>,
-    Json(body): Json<Value>,
-) -> Response {
+pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let name = body
         .get("name")
         .and_then(|value| value.as_str())
@@ -135,7 +132,10 @@ pub async fn save_provider(
         .trim_end_matches('/')
         .to_string();
     if name.is_empty() || base_url.is_empty() {
-        return error(StatusCode::BAD_REQUEST, "제공자 이름과 baseUrl 이 필요합니다.");
+        return error(
+            StatusCode::BAD_REQUEST,
+            "제공자 이름과 baseUrl 이 필요합니다.",
+        );
     }
     let parsed = match reqwest::Url::parse(&base_url) {
         Ok(url) if matches!(url.scheme(), "http" | "https") => url,
@@ -169,12 +169,19 @@ pub async fn save_provider(
         .get("enabled")
         .and_then(|value| value.as_bool())
         .unwrap_or(true));
-    record["toolMode"] = json!(match body.get("toolMode").and_then(|value| value.as_str()) {
-        Some("native") => "native",
-        Some("compat") => "compat",
-        Some("auto") => "auto",
-        _ => if kind == "ollama" { "compat" } else { "auto" },
-    });
+    record["toolMode"] = json!(
+        match body.get("toolMode").and_then(|value| value.as_str()) {
+            Some("native") => "native",
+            Some("compat") => "compat",
+            Some("auto") => "auto",
+            _ =>
+                if kind == "ollama" {
+                    "compat"
+                } else {
+                    "auto"
+                },
+        }
+    );
     if let Value::Object(ref mut map) = record {
         map.remove("apiKey");
         map.remove("hasKey");
@@ -194,25 +201,23 @@ pub async fn save_provider(
         .store
         .put("provider", &record)
         .unwrap_or_else(|| json!({ "id": id }));
-    state.store.audit("provider.saved", json!({ "providerId": saved.get("id") }));
+    state
+        .store
+        .audit("provider.saved", json!({ "providerId": saved.get("id") }));
     state.bus.record("provider", &saved);
     Json(public_provider(&state, saved)).into_response()
 }
 
-pub async fn delete_provider(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Json<Value> {
+pub async fn delete_provider(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     state.store.remove("provider", &id);
     state.store.remove_secret(&format!("provider:{id}"));
-    state.bus.emit(json!({ "type": "record", "kind": "provider", "removed": id }));
+    state
+        .bus
+        .emit(json!({ "type": "record", "kind": "provider", "removed": id }));
     Json(json!({ "ok": true }))
 }
 
-pub async fn provider_models(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn provider_models(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(provider) = state.store.get("provider", &id) else {
         return error(StatusCode::NOT_FOUND, "제공자를 찾을 수 없습니다.");
     };
@@ -231,7 +236,9 @@ pub async fn provider_models(
     } else {
         format!("{base}/models")
     };
-    let key = state.read_secret(&format!("provider:{id}")).unwrap_or_default();
+    let key = state
+        .read_secret(&format!("provider:{id}"))
+        .unwrap_or_default();
 
     let client = reqwest::Client::new();
     let mut request = client.get(&url).timeout(Duration::from_secs(12));
@@ -300,7 +307,9 @@ pub async fn save_agent(State(state): State<AppState>, Json(body): Json<Value>) 
 
 pub async fn delete_agent(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     state.store.remove("agent", &id);
-    state.bus.emit(json!({ "type": "record", "kind": "agent", "removed": id }));
+    state
+        .bus
+        .emit(json!({ "type": "record", "kind": "agent", "removed": id }));
     Json(json!({ "ok": true }))
 }
 
@@ -310,10 +319,7 @@ pub async fn list_sessions(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.store.all("session")))
 }
 
-pub async fn create_session(
-    State(state): State<AppState>,
-    Json(body): Json<Value>,
-) -> Json<Value> {
+pub async fn create_session(State(state): State<AppState>, Json(body): Json<Value>) -> Json<Value> {
     let mut record = body.clone();
     if record
         .get("title")
@@ -332,23 +338,19 @@ pub async fn create_session(
     Json(saved)
 }
 
-pub async fn get_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     match state.store.get("session", &id) {
         Some(record) => Json(record).into_response(),
         None => error(StatusCode::NOT_FOUND, "세션을 찾을 수 없습니다."),
     }
 }
 
-pub async fn delete_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Json<Value> {
+pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     state.store.remove("session", &id);
     state.store.clear_messages(&id);
-    state.bus.emit(json!({ "type": "record", "kind": "session", "removed": id }));
+    state
+        .bus
+        .emit(json!({ "type": "record", "kind": "session", "removed": id }));
     Json(json!({ "ok": true }))
 }
 
@@ -382,19 +384,15 @@ pub async fn rename_session(
     Json(saved).into_response()
 }
 
-pub async fn clear_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Json<Value> {
+pub async fn clear_session(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     state.store.clear_messages(&id);
-    state.bus.emit(json!({ "type": "record", "kind": "session", "id": id }));
+    state
+        .bus
+        .emit(json!({ "type": "record", "kind": "session", "id": id }));
     Json(json!({ "ok": true }))
 }
 
-pub async fn fork_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn fork_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(source) = state.store.get("session", &id) else {
         return error(StatusCode::NOT_FOUND, "세션을 찾을 수 없습니다.");
     };
@@ -445,10 +443,7 @@ pub async fn list_approvals(State(state): State<AppState>) -> Json<Value> {
     Json(json!(pending))
 }
 
-pub async fn resolve_approval(
-    State(state): State<AppState>,
-    Json(body): Json<Value>,
-) -> Response {
+pub async fn resolve_approval(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let id = body
         .get("id")
         .and_then(|value| value.as_str())
@@ -677,7 +672,13 @@ pub async fn capabilities(State(state): State<AppState>) -> Json<Value> {
                 "available": true,
             }))
         })
-        .chain(state.store.all("capability").into_iter().map(|record| record))
+        .chain(
+            state
+                .store
+                .all("capability")
+                .into_iter()
+                .map(|record| record),
+        )
         .collect::<Vec<_>>();
     Json(json!({ "items": tools, "updatedAt": chrono::Utc::now().to_rfc3339() }))
 }
@@ -704,10 +705,7 @@ pub async fn active_executions(State(state): State<AppState>) -> Json<Value> {
         .all("execution")
         .into_iter()
         .filter(|execution| {
-            execution
-                .get("status")
-                .and_then(|value| value.as_str())
-                == Some("running")
+            execution.get("status").and_then(|value| value.as_str()) == Some("running")
         })
         .collect::<Vec<_>>();
     Json(json!(items))
@@ -733,22 +731,16 @@ pub async fn export_skill(State(state): State<AppState>, Path(id): Path<String>)
     }
 }
 
-pub async fn cancel_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Json<Value> {
-    let running = state
-        .store
-        .all("execution")
-        .iter()
-        .any(|execution| {
-            execution.get("sessionId").and_then(|value| value.as_str()) == Some(id.as_str())
-                && execution.get("status").and_then(|value| value.as_str()) == Some("running")
-        });
+pub async fn cancel_session(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
+    let running = state.store.all("execution").iter().any(|execution| {
+        execution.get("sessionId").and_then(|value| value.as_str()) == Some(id.as_str())
+            && execution.get("status").and_then(|value| value.as_str()) == Some("running")
+    });
     state.cancel_session(&id);
-    state
-        .store
-        .audit("session.cancel", json!({ "sessionId": id, "running": running }));
+    state.store.audit(
+        "session.cancel",
+        json!({ "sessionId": id, "running": running }),
+    );
     Json(json!({ "cancelled": running }))
 }
 
@@ -765,7 +757,9 @@ pub async fn get_goal(State(state): State<AppState>, Path(id): Path<String>) -> 
 
 pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     state.store.remove("goal", &id);
-    state.bus.emit(json!({ "type": "record", "kind": "goal", "removed": id }));
+    state
+        .bus
+        .emit(json!({ "type": "record", "kind": "goal", "removed": id }));
     Json(json!({ "ok": true }))
 }
 
@@ -779,6 +773,13 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     if text.is_empty() {
         return error(StatusCode::BAD_REQUEST, "목표 내용이 필요합니다.");
     }
+    let criteria = body
+        .get("successCriteria")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    if let Err(message) = engine::goals::validate_criteria(&criteria) {
+        return error(StatusCode::BAD_REQUEST, &message);
+    }
     let executor = body.get("executor").cloned().unwrap_or_else(|| json!({}));
     let max_iterations = body
         .get("maxIterations")
@@ -789,6 +790,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         "goal",
         &json!({
             "goal": text,
+            "successCriteria": criteria,
             "executor": executor,
             "status": "queued",
             "iterations": 0,
@@ -796,7 +798,10 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "createdAt": chrono::Utc::now().to_rfc3339(),
         }),
     ) else {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "목표를 저장할 수 없습니다.");
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "목표를 저장할 수 없습니다.",
+        );
     };
     state.bus.record("goal", &record);
     let goal_id = record
@@ -825,7 +830,10 @@ pub async fn compact_session(
         .get("providerId")
         .and_then(|value| value.as_str())
         .unwrap_or("");
-    let model = body.get("model").and_then(|value| value.as_str()).unwrap_or("");
+    let model = body
+        .get("model")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     match engine::compact::run(&state, &id, provider_id, model).await {
         Ok(result) => Json(result).into_response(),
         Err(message) => error(StatusCode::BAD_REQUEST, &message),
@@ -846,18 +854,21 @@ pub async fn skill_catalog_meta(State(state): State<AppState>) -> Json<Value> {
 }
 
 pub async fn import_skill(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
-    let id = body.get("id").and_then(|value| value.as_str()).unwrap_or("");
+    let id = body
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     match engine::skills::import(&state, id) {
         Ok(record) => Json(record).into_response(),
         Err(message) => error(StatusCode::BAD_REQUEST, &message),
     }
 }
 
-pub async fn import_skill_repo(
-    State(state): State<AppState>,
-    Json(body): Json<Value>,
-) -> Response {
-    let repo = body.get("repo").and_then(|value| value.as_str()).unwrap_or("");
+pub async fn import_skill_repo(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    let repo = body
+        .get("repo")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     match engine::skills::import_repo(&state, repo) {
         Ok(result) => Json(result).into_response(),
         Err(message) => error(StatusCode::BAD_REQUEST, &message),
@@ -865,17 +876,19 @@ pub async fn import_skill_repo(
 }
 
 pub async fn mcp_catalog(Query(query): Query<HashMap<String, String>>) -> Response {
-    let mut endpoint = match reqwest::Url::parse(
-        "https://registry.modelcontextprotocol.io/v0.1/servers",
-    ) {
-        Ok(url) => url,
-        Err(message) => return error(StatusCode::INTERNAL_SERVER_ERROR, &message.to_string()),
-    };
+    let mut endpoint =
+        match reqwest::Url::parse("https://registry.modelcontextprotocol.io/v0.1/servers") {
+            Ok(url) => url,
+            Err(message) => return error(StatusCode::INTERNAL_SERVER_ERROR, &message.to_string()),
+        };
     let search = query.get("q").cloned().unwrap_or_default();
     if search.len() >= 3 {
         endpoint.query_pairs_mut().append_pair("search", &search);
     }
-    endpoint.query_pairs_mut().append_pair("version", "latest").append_pair("limit", "60");
+    endpoint
+        .query_pairs_mut()
+        .append_pair("version", "latest")
+        .append_pair("limit", "60");
 
     let response = reqwest::Client::new()
         .get(endpoint)
