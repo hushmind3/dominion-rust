@@ -65,7 +65,7 @@ pub fn router(state: AppState) -> Router {
         // compatibility surface
         .route("/api/mcp/presets", get(compat::mcp_presets))
         .route("/api/mcp/catalog", get(compat::empty_list))
-        .route("/api/mcp/discover", get(compat::empty_list))
+        .route("/api/mcp/discover", get(core::mcp_discover))
         .route("/api/skill-catalog", get(compat::skill_catalog))
         .route("/api/skill-catalog/meta", get(compat::empty_object))
         .route("/api/model-library/catalog", get(compat::empty_list))

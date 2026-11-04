@@ -57,6 +57,27 @@ async fn main() {
         println!("migrated plaintext provider key into the vault: {id}");
     }
 
+    // Early Rust builds stored collection routes under their plural URL
+    // segment. Move them to the singular kinds the engine uses.
+    for (plural, singular) in [
+        ("memories", "memory"),
+        ("skills", "skill"),
+        ("automations", "automation"),
+        ("workflows", "workflow"),
+        ("rooms", "room"),
+        ("channels", "channel"),
+        ("jobs", "job"),
+        ("executions", "execution"),
+        ("goals", "goal"),
+    ] {
+        for record in state.store.all(plural) {
+            if let Some(id) = record.get("id").and_then(|value| value.as_str()) {
+                state.store.put(singular, &record);
+                state.store.remove(plural, id);
+            }
+        }
+    }
+
     // A restart cannot resume an in-flight approval prompt. Mark them so the
     // UI never offers a stale "approve" that would do nothing.
     for approval in state.store.all("approval") {
@@ -67,6 +88,8 @@ async fn main() {
             state.store.put("approval", &stale);
         }
     }
+
+    engine::jobs::start(state.clone());
 
     let app = api::router(state);
 

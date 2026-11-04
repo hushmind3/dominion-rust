@@ -1,3 +1,4 @@
+use crate::engine::mcp;
 use crate::engine::tools::{self, ToolContext};
 use crate::state::AppState;
 use futures_util::StreamExt;
@@ -8,6 +9,56 @@ use tokio::sync::oneshot;
 
 const MAX_ROUNDS: usize = 8;
 const HISTORY_LIMIT: usize = 40;
+
+/// One logical turn: a user prompt, optional agent/provider/model overrides.
+/// Workflows, rooms and the chat UI all go through this.
+#[derive(Clone, Debug)]
+pub struct TurnRequest {
+    pub session_id: Option<String>,
+    pub input: String,
+    pub agent_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub model: Option<String>,
+    pub tools_enabled: bool,
+    pub thinking: Option<bool>,
+    pub reasoning_effort: Option<String>,
+    pub system_override: Option<String>,
+}
+
+impl TurnRequest {
+    pub fn from_value(value: &Value) -> Result<Self, String> {
+        let text = value
+            .get("input")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if text.is_empty() {
+            return Err("메시지가 비어 있습니다.".into());
+        }
+        let string = |key: &str| {
+            value
+                .get(key)
+                .and_then(|item| item.as_str())
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+        };
+        Ok(Self {
+            session_id: string("sessionId"),
+            input: text,
+            agent_id: string("agentId"),
+            provider_id: string("providerId"),
+            model: string("model"),
+            tools_enabled: value
+                .get("toolsEnabled")
+                .and_then(|item| item.as_bool())
+                .unwrap_or(true),
+            thinking: value.get("thinking").and_then(|item| item.as_bool()),
+            reasoning_effort: string("reasoningEffort"),
+            system_override: string("systemOverride"),
+        })
+    }
+}
 
 #[derive(Default)]
 struct ToolCall {
@@ -27,35 +78,53 @@ struct ProviderRef {
     name: String,
     base_url: String,
     api_key: String,
+    kind: String,
     model: String,
 }
 
-/// Runs one chat turn: model call, streaming deltas, approval-gated tool
-/// execution, persistence, and the final `done` event.
+/// SSE entry point used by `POST /api/chat`.
 pub async fn run(state: AppState, input: Value, tx: UnboundedSender<Value>) {
-    if let Err(message) = execute_turn(&state, &input, &tx).await {
-        let _ = tx.send(json!({ "type": "error", "message": message }));
-        let session_id = input.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
-        let _ = tx.send(json!({ "type": "done", "sessionId": session_id }));
+    let session_hint = input
+        .get("sessionId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let result = match TurnRequest::from_value(&input) {
+        Ok(request) => run_turn(&state, &request, &tx).await,
+        Err(message) => Err(message),
+    };
+
+    match result {
+        Ok(Some(message)) => {
+            let _ = tx.send(json!({
+                "type": "assistant_saved",
+                "messageId": message.get("id"),
+                "sessionId": message.get("session_id"),
+            }));
+            let _ = tx.send(json!({
+                "type": "done",
+                "sessionId": message.get("session_id").cloned().unwrap_or(json!(session_hint)),
+            }));
+        }
+        Ok(None) => {
+            let _ = tx.send(json!({ "type": "done", "sessionId": session_hint }));
+        }
+        Err(message) => {
+            let _ = tx.send(json!({ "type": "error", "message": message }));
+            let _ = tx.send(json!({ "type": "done", "sessionId": session_hint }));
+        }
     }
 }
 
-async fn execute_turn(
+/// Executes a full turn (model + tools + persistence) without owning the SSE
+/// transport, so background jobs can reuse exactly the same engine.
+pub async fn run_turn(
     state: &AppState,
-    input: &Value,
+    request: &TurnRequest,
     tx: &UnboundedSender<Value>,
-) -> Result<(), String> {
-    let text = input
-        .get("input")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if text.is_empty() {
-        return Err("메시지가 비어 있습니다.".into());
-    }
-
-    let session = ensure_session(state, input, &text)?;
+) -> Result<Option<Value>, String> {
+    let session = ensure_session(state, request)?;
     let session_id = session
         .get("id")
         .and_then(|value| value.as_str())
@@ -65,36 +134,27 @@ async fn execute_turn(
     let user_message = state.store.write_message(&json!({
         "session_id": session_id,
         "role": "user",
-        "content": text,
-        "agent_id": input.get("agentId"),
+        "content": request.input,
+        "agent_id": request.agent_id,
     }));
     if let Some(message) = &user_message {
         state.bus.message(message);
     }
-    retitle_if_placeholder(state, &session, &text);
+    retitle_if_placeholder(state, &session, &request.input);
 
-    let provider = match select_provider(state, input, &session)? {
-        Ok(provider) => provider,
-        Err(message) => {
-            let _ = tx.send(json!({ "type": "error", "message": message }));
-            let _ = tx.send(json!({ "type": "done", "sessionId": session_id }));
-            return Ok(());
-        }
-    };
-
-    let system = system_prompt(state, input, &session);
+    let provider = select_provider(state, request, &session)?;
+    let system = system_prompt(state, request);
     let mut messages = vec![json!({ "role": "system", "content": system })];
-    messages.extend(history(state, &session_id, &provider));
+    messages.extend(history(state, &session_id));
 
-    let tools_enabled = input
-        .get("toolsEnabled")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true);
-    let tool_definitions = if tools_enabled {
+    let mut tool_definitions = if request.tools_enabled {
         tools::definitions()
     } else {
         Vec::new()
     };
+    if request.tools_enabled {
+        tool_definitions.extend(mcp::definitions(state).await);
+    }
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
@@ -110,7 +170,7 @@ async fn execute_turn(
             &provider,
             &messages,
             &tool_definitions,
-            input,
+            request,
             tx,
         )
         .await?;
@@ -126,7 +186,6 @@ async fn execute_turn(
             break;
         }
 
-        // Feed the model's tool requests back so it can see the results.
         messages.push(json!({
             "role": "assistant",
             "content": completion.content,
@@ -139,13 +198,18 @@ async fn execute_turn(
 
         for call in &completion.tool_calls {
             if tx.is_closed() {
-                return Ok(());
+                return Ok(None);
             }
             let arguments: Value =
                 serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
             let _ = tx.send(json!({ "type": "tool_start", "name": call.name, "id": call.id }));
 
-            let allowed = if tools::requires_approval(&call.name) {
+            let needs_approval = if call.name.starts_with("mcp__") {
+                mcp::requires_approval(state, &call.name)
+            } else {
+                tools::requires_approval(&call.name)
+            };
+            let allowed = if needs_approval {
                 request_approval(state, tx, &call.name, &arguments).await
             } else {
                 true
@@ -156,7 +220,12 @@ async fn execute_turn(
                     workspace: &state.config.workspace,
                     store: &state.store,
                 };
-                match tools::execute(&context, &call.name, &arguments).await {
+                let outcome = if call.name.starts_with("mcp__") {
+                    mcp::call(state, &call.name, &arguments).await
+                } else {
+                    tools::execute(&context, &call.name, &arguments).await
+                };
+                match outcome {
                     Ok(value) => {
                         let _ = tx.send(json!({
                             "type": "tool_end",
@@ -203,26 +272,21 @@ async fn execute_turn(
         }
     }
 
-    if !final_content.trim().is_empty() || !final_reasoning.trim().is_empty() {
-        let saved = state.store.write_message(&json!({
-            "session_id": session_id,
-            "role": "assistant",
-            "content": final_content,
-            "reasoning": final_reasoning,
-            "agent_id": input.get("agentId"),
-        }));
-        if let Some(message) = &saved {
-            state.bus.message(message);
-            let _ = tx.send(json!({
-                "type": "assistant_saved",
-                "messageId": message.get("id"),
-                "sessionId": session_id,
-            }));
-        }
+    if final_content.trim().is_empty() && final_reasoning.trim().is_empty() {
+        return Ok(None);
     }
 
-    let _ = tx.send(json!({ "type": "done", "sessionId": session_id }));
-    Ok(())
+    let saved = state.store.write_message(&json!({
+        "session_id": session_id,
+        "role": "assistant",
+        "content": final_content,
+        "reasoning": final_reasoning,
+        "agent_id": request.agent_id,
+    }));
+    if let Some(message) = &saved {
+        state.bus.message(message);
+    }
+    Ok(saved)
 }
 
 fn retitle_if_placeholder(state: &AppState, session: &Value, text: &str) {
@@ -241,21 +305,20 @@ fn retitle_if_placeholder(state: &AppState, session: &Value, text: &str) {
     }
 }
 
-fn ensure_session(state: &AppState, input: &Value, text: &str) -> Result<Value, String> {
-    let requested = input.get("sessionId").and_then(|value| value.as_str());
-    if let Some(id) = requested {
+fn ensure_session(state: &AppState, request: &TurnRequest) -> Result<Value, String> {
+    if let Some(id) = &request.session_id {
         if let Some(session) = state.store.get("session", id) {
             return Ok(session);
         }
     }
-    let title = text.chars().take(40).collect::<String>();
+    let title = request.input.chars().take(40).collect::<String>();
     let session = state.store.put(
         "session",
         &json!({
             "title": title,
-            "agentId": input.get("agentId"),
-            "providerId": input.get("providerId"),
-            "model": input.get("model"),
+            "agentId": request.agent_id,
+            "providerId": request.provider_id,
+            "model": request.model,
         }),
     );
     session.ok_or_else(|| "세션을 만들 수 없습니다.".to_string())
@@ -263,24 +326,23 @@ fn ensure_session(state: &AppState, input: &Value, text: &str) -> Result<Value, 
 
 fn select_provider(
     state: &AppState,
-    input: &Value,
+    request: &TurnRequest,
     session: &Value,
-) -> Result<Result<ProviderRef, String>, String> {
-    let agent = input
-        .get("agentId")
-        .and_then(|value| value.as_str())
+) -> Result<ProviderRef, String> {
+    let agent = request
+        .agent_id
+        .as_deref()
         .and_then(|id| state.store.get("agent", id));
 
-    let provider_id = input
-        .get("providerId")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+    let provider_id = request
+        .provider_id
+        .clone()
         .or_else(|| {
             agent
                 .as_ref()
                 .and_then(|agent| agent.get("providerId"))
                 .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
         .or_else(|| {
@@ -305,13 +367,13 @@ fn select_provider(
     };
 
     let Some(provider) = provider else {
-        return Ok(Err(
+        return Err(
             "모델 제공자가 설정되지 않았습니다. 모델 관리에서 OpenAI 호환 제공자를 추가하세요.".into(),
-        ));
+        );
     };
 
     if provider.get("enabled").and_then(|value| value.as_bool()) == Some(false) {
-        return Ok(Err("선택한 제공자가 비활성 상태입니다.".into()));
+        return Err("선택한 제공자가 비활성 상태입니다.".into());
     }
 
     let id = provider
@@ -326,14 +388,13 @@ fn select_provider(
         .trim_end_matches('/')
         .to_string();
     if base_url.is_empty() {
-        return Ok(Err("제공자에 baseUrl 이 없습니다.".into()));
+        return Err("제공자에 baseUrl 이 없습니다.".into());
     }
 
-    let model = input
-        .get("model")
-        .and_then(|value| value.as_str())
+    let model = request
+        .model
+        .clone()
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
         .or_else(|| {
             agent
                 .as_ref()
@@ -361,8 +422,7 @@ fn select_provider(
         })
         .unwrap_or_default();
 
-    let _ = id;
-    Ok(Ok(ProviderRef {
+    Ok(ProviderRef {
         name: provider
             .get("name")
             .and_then(|value| value.as_str())
@@ -370,11 +430,16 @@ fn select_provider(
             .to_string(),
         base_url,
         api_key,
+        kind: provider
+            .get("kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or("openai")
+            .to_string(),
         model,
-    }))
+    })
 }
 
-fn system_prompt(state: &AppState, input: &Value, _session: &Value) -> String {
+fn system_prompt(state: &AppState, request: &TurnRequest) -> String {
     let mut prompt = String::from(
         "You are DOMINION, an agentic AI workspace running on a Rust engine. \
          Answer in Korean unless the user writes in another language. \
@@ -386,7 +451,7 @@ fn system_prompt(state: &AppState, input: &Value, _session: &Value) -> String {
         state.config.workspace.display(),
         chrono::Local::now().format("%Y-%m-%d")
     ));
-    if let Some(agent_id) = input.get("agentId").and_then(|value| value.as_str()) {
+    if let Some(agent_id) = &request.agent_id {
         if let Some(agent) = state.store.get("agent", agent_id) {
             if let Some(extra) = agent.get("systemPrompt").and_then(|value| value.as_str()) {
                 if !extra.trim().is_empty() {
@@ -396,10 +461,14 @@ fn system_prompt(state: &AppState, input: &Value, _session: &Value) -> String {
             }
         }
     }
+    if let Some(extra) = &request.system_override {
+        prompt.push_str("\n\n");
+        prompt.push_str(extra);
+    }
     prompt
 }
 
-fn history(state: &AppState, session_id: &str, provider: &ProviderRef) -> Vec<Value> {
+fn history(state: &AppState, session_id: &str) -> Vec<Value> {
     let all = state.store.messages(session_id);
     let start = all.len().saturating_sub(HISTORY_LIMIT);
     all[start..]
@@ -422,12 +491,6 @@ fn history(state: &AppState, session_id: &str, provider: &ProviderRef) -> Vec<Va
                 _ => None,
             }
         })
-        .map(|mut message| {
-            if provider.model.is_empty() {
-                message["content"] = json!("");
-            }
-            message
-        })
         .collect()
 }
 
@@ -436,9 +499,13 @@ async fn stream_completion(
     provider: &ProviderRef,
     messages: &[Value],
     tools: &[Value],
-    input: &Value,
+    request: &TurnRequest,
     tx: &UnboundedSender<Value>,
 ) -> Result<Completion, String> {
+    if provider.kind == "anthropic" {
+        return stream_anthropic(client, provider, messages, tools, request, tx).await;
+    }
+
     let mut body = json!({
         "model": provider.model,
         "messages": messages,
@@ -448,22 +515,17 @@ async fn stream_completion(
     if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
-    if let Some(effort) = input.get("reasoningEffort").and_then(|value| value.as_str()) {
-        if !effort.is_empty() {
-            body["reasoning_effort"] = json!(effort);
-        }
+    if let Some(effort) = &request.reasoning_effort {
+        body["reasoning_effort"] = json!(effort);
     }
-    if input.get("thinking").and_then(|value| value.as_bool()) == Some(false) {
+    if request.thinking == Some(false) {
         body["chat_template_kwargs"] = json!({ "enable_thinking": false });
     }
 
     let response = client
         .post(format!("{}/chat/completions", provider.base_url))
         .header("Content-Type", "application/json")
-        .header(
-            "Authorization",
-            format!("Bearer {}", provider.api_key),
-        )
+        .header("Authorization", format!("Bearer {}", provider.api_key))
         .json(&body)
         .send()
         .await
@@ -579,6 +641,176 @@ async fn stream_completion(
     Ok(completion)
 }
 
+/// Anthropic Messages API streaming adapter.
+async fn stream_anthropic(
+    client: &reqwest::Client,
+    provider: &ProviderRef,
+    messages: &[Value],
+    tools: &[Value],
+    request: &TurnRequest,
+    tx: &UnboundedSender<Value>,
+) -> Result<Completion, String> {
+    let system = messages
+        .iter()
+        .filter(|message| message.get("role").and_then(|value| value.as_str()) == Some("system"))
+        .filter_map(|message| message.get("content").and_then(|value| value.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let converted: Vec<Value> = messages
+        .iter()
+        .filter_map(|message| {
+            let role = message.get("role")?.as_str()?;
+            if role == "system" {
+                return None;
+            }
+            let content = message
+                .get("content")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            Some(json!({ "role": if role == "assistant" { "assistant" } else { "user" }, "content": content }))
+        })
+        .collect();
+
+    let mut body = json!({
+        "model": provider.model,
+        "system": system,
+        "messages": converted,
+        "max_tokens": 4096,
+        "stream": true,
+    });
+    if !tools.is_empty() {
+        body["tools"] = json!(tools
+            .iter()
+            .filter_map(|definition| {
+                let function = definition.get("function")?;
+                Some(json!({
+                    "name": function.get("name")?,
+                    "description": function.get("description"),
+                    "input_schema": function.get("parameters"),
+                }))
+            })
+            .collect::<Vec<_>>());
+    }
+    let _ = request;
+
+    let response = client
+        .post(format!("{}/messages", provider.base_url))
+        .header("content-type", "application/json")
+        .header("x-api-key", provider.api_key.clone())
+        .header("anthropic-version", "2023-06-01")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| format!("{} 연결 실패: {error}", provider.name))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "{} 호출 실패 (HTTP {status}): {}",
+            provider.name,
+            text.chars().take(600).collect::<String>()
+        ));
+    }
+
+    let mut completion = Completion::default();
+    let mut calls: Vec<ToolCall> = Vec::new();
+    let mut buffer = String::new();
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("스트림 오류: {error}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        buffer = buffer.replace("\r\n", "\n");
+        while let Some(separator) = buffer.find("\n\n") {
+            let block: String = buffer.drain(..separator + 2).collect();
+            let payload = block
+                .lines()
+                .filter(|line| line.starts_with("data:"))
+                .map(|line| line[5..].trim_start())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if payload.is_empty() {
+                continue;
+            }
+            let Ok(piece) = serde_json::from_str::<Value>(&payload) else {
+                continue;
+            };
+            let kind = piece.get("type").and_then(|value| value.as_str()).unwrap_or("");
+            match kind {
+                "content_block_delta" => {
+                    let delta = &piece["delta"];
+                    match delta.get("type").and_then(|value| value.as_str()) {
+                        Some("text_delta") => {
+                            if let Some(text) = delta.get("text").and_then(|value| value.as_str()) {
+                                if !text.is_empty() {
+                                    completion.content.push_str(text);
+                                    let _ = tx.send(json!({ "type": "text", "text": text }));
+                                }
+                            }
+                        }
+                        Some("thinking_delta") => {
+                            if let Some(text) = delta.get("thinking").and_then(|value| value.as_str())
+                            {
+                                if !text.is_empty() {
+                                    completion.reasoning.push_str(text);
+                                    let _ = tx.send(json!({ "type": "reasoning", "text": text }));
+                                }
+                            }
+                        }
+                        Some("input_json_delta") => {
+                            if let Some(partial) =
+                                delta.get("partial_json").and_then(|value| value.as_str())
+                            {
+                                if let Some(call) = calls.last_mut() {
+                                    call.arguments.push_str(partial);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                "content_block_start" => {
+                    if let Some(block) = piece.get("content_block") {
+                        if block.get("type").and_then(|value| value.as_str()) == Some("tool_use") {
+                            calls.push(ToolCall {
+                                id: block
+                                    .get("id")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                name: block
+                                    .get("name")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                arguments: String::new(),
+                            });
+                        }
+                    }
+                }
+                "error" => {
+                    return Err(format!("모델 오류: {}", piece.get("error").cloned().unwrap_or_default()));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    completion.tool_calls = calls
+        .into_iter()
+        .filter(|call| !call.name.is_empty())
+        .map(|mut call| {
+            if call.id.is_empty() {
+                call.id = uuid::Uuid::new_v4().to_string();
+            }
+            call
+        })
+        .collect();
+    Ok(completion)
+}
+
 async fn request_approval(
     state: &AppState,
     tx: &UnboundedSender<Value>,
@@ -620,7 +852,9 @@ async fn request_approval(
             "requestedAt": chrono::Utc::now().to_rfc3339(),
         }),
     );
-    state.bus.approval(record.as_ref().unwrap_or(&json!({})));
+    state
+        .bus
+        .approval(record.as_ref().unwrap_or(&json!({})));
     let _ = tx.send(json!({
         "type": "approval",
         "id": id,

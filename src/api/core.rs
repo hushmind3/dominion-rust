@@ -494,8 +494,8 @@ pub async fn save_policy(State(state): State<AppState>, Json(body): Json<Value>)
 
 // -------------------------------------------------------------------- tools
 
-pub async fn list_tools() -> Json<Value> {
-    let items = engine::tools::definitions()
+pub async fn list_tools(State(state): State<AppState>) -> Json<Value> {
+    let mut items = engine::tools::definitions()
         .into_iter()
         .filter_map(|definition| {
             let function = definition.get("function")?;
@@ -507,6 +507,37 @@ pub async fn list_tools() -> Json<Value> {
                 "approval": engine::tools::requires_approval(&name),
                 "source": "builtin",
             }))
+        })
+        .collect::<Vec<_>>();
+
+    for tool in engine::mcp::tools(&state).await {
+        let qualified = tool.qualified();
+        items.push(json!({
+            "name": qualified,
+            "description": format!("[MCP · {}] {}", tool.server_name, tool.description),
+            "parameters": tool.schema,
+            "approval": engine::mcp::requires_approval(&state, &qualified),
+            "source": "mcp",
+            "server": tool.server_name,
+        }));
+    }
+    Json(json!(items))
+}
+
+pub async fn mcp_discover(State(state): State<AppState>) -> Json<Value> {
+    let items = engine::mcp::tools(&state)
+        .await
+        .into_iter()
+        .map(|tool| {
+            let qualified = tool.qualified();
+            json!({
+                "server": tool.server_name,
+                "name": qualified,
+                "tool": tool.tool,
+                "description": tool.description,
+                "parameters": tool.schema,
+                "approval": engine::mcp::requires_approval(&state, &qualified),
+            })
         })
         .collect::<Vec<_>>();
     Json(json!(items))

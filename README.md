@@ -21,6 +21,10 @@ src/
   engine/
     chat.rs          스트리밍 채팅 + 도구 호출 루프 + 승인 요청
     tools.rs         Rust 네이티브 도구 (파일/셸/HTTP/검색/메모리/스킬)
+    jobs.rs          내구성 있는 작업 큐 + 자동화 스케줄러
+    workflows.rs     순차 워크플로 실행 ({{input}} / {{previous}})
+    rooms.rs         멀티 에이전트 라운드테이블 실행
+    mcp.rs           MCP stdio/HTTP 클라이언트 + 도구 네임스페이스
   api/
     core.rs          핵심 API
     collections.rs   JSON 컬렉션 CRUD
@@ -63,7 +67,9 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 | 승인 | `GET/POST /api/approvals` |
 | 정책 | `GET/POST /api/policy` |
 | 컬렉션 | `agents`, `memories`, `skills`, `mcp`, `automations`, `workflows`, `rooms`, `channels`, `jobs`, `executions`, `goals` |
-| 기타 | `GET /api/tools`, `GET /api/audit`, `POST /api/translate` |
+| 작업 | `GET /api/jobs`, `POST /api/workflows/:id/run`, `POST /api/rooms/:id/run` |
+| MCP | `GET /api/mcp`, `GET /api/mcp/discover`, `GET /api/tools` (`mcp__서버__도구`) |
+| 기타 | `GET /api/audit`, `POST /api/translate` |
 
 ## 엔진 동작
 
@@ -78,6 +84,25 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 
 도구 실행은 모두 감사 로그(`audit`)에 기록됩니다.
 
+### 작업 큐
+
+`POST /api/workflows/:id/run` 과 `POST /api/rooms/:id/run` 은 job 레코드를
+`queued` 로 저장하고 Rust 워커가 순서대로 실행합니다.
+
+- **워크플로**: 단계마다 실제 엔진 턴을 실행하고 `{{input}}`/`{{previous}}` 를
+  치환합니다. 진행 상황은 `stepIndex`/`stepTotal` 로 job에 저장되며,
+  실패하면 `status: failed` + `error` 로 남고 성공으로 표시하지 않습니다.
+- **회의실**: 참여 에이전트가 `rounds` 만큼 발언하며 직전 발언을 보고
+  이어갑니다. 모든 발언은 하나의 세션에 저장됩니다.
+- **자동화**: 30초마다 `nextAt` 이 지난 automation을 큐에 넣습니다.
+
+### MCP
+
+활성화된 MCP 서버(`kind: mcp`)의 도구를 `mcp__{server}__{tool}` 이름으로
+모델 도구 목록에 합칩니다. stdio 서버는 자식 프로세스로, HTTP 서버는
+JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적으로 승인
+대기이며, `policy.autoApproveMcp` 로 자동 승인할 수 있습니다.
+
 ## 보안
 
 - API 키는 레코드 JSON에 저장하지 않습니다.
@@ -91,11 +116,10 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 Node 구현의 다음 기능은 Rust로 옮기지 않았습니다. 해당 경로는 HTML 대신 명시적인 JSON 오류(`501`, `ported: false`)를 반환합니다.
 
 - 로컬 모델 런타임 (llama.cpp / MLX 다운로드·로드)
-- MCP 서버 프로세스 관리 및 원격 도구 호출
+- MCP 마켓플레이스 카탈로그 검색 (서버 등록·도구 호출은 지원)
 - OAuth 연동 (Google/GitHub/YouTube)
 - 메신저 채널 어댑터 (Slack/Discord/Telegram)
 - 개발 스튜디오 (git 빌드/패키징)
-- 워크플로·회의실 실행 오케스트레이션 (작업은 큐에 등록됨)
 
 ## 검증
 
@@ -108,3 +132,6 @@ cargo test --release
 - 메시지 추론/도구 호출 보존
 - 워크스페이스 경로 이탈 차단
 - 도구 정의/승인 플래그
+- 워크플로 프롬프트 치환
+- 작업 큐 등록/실패 기록
+- MCP 이름 네임스페이스 및 정책 기반 승인

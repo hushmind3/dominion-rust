@@ -24,13 +24,32 @@ pub const COLLECTIONS: &[&str] = &[
     "knowledge",
 ];
 
+/// URL segments are plural (`/api/jobs`) while the store groups records by a
+/// singular kind (`job`), matching the Node data model.
+pub fn store_kind(route_kind: &str) -> &str {
+    match route_kind {
+        "memories" => "memory",
+        "skills" => "skill",
+        "automations" => "automation",
+        "workflows" => "workflow",
+        "rooms" => "room",
+        "channels" => "channel",
+        "jobs" => "job",
+        "executions" => "execution",
+        "goals" => "goal",
+        other => other,
+    }
+}
+
 fn kind_from_uri(uri: &axum::http::Uri) -> String {
-    uri.path()
-        .trim_start_matches('/')
-        .split('/')
-        .nth(1)
-        .unwrap_or_default()
-        .to_string()
+    store_kind(
+        uri.path()
+            .trim_start_matches('/')
+            .split('/')
+            .nth(1)
+            .unwrap_or_default(),
+    )
+    .to_string()
 }
 
 fn id_from_uri(uri: &axum::http::Uri) -> Option<String> {
@@ -59,6 +78,28 @@ pub async fn save(
             Json(json!({ "error": "레코드 객체가 필요합니다." })),
         )
             .into_response();
+    }
+    let mut body = body;
+    if kind == "mcp" {
+        let id = body
+            .get("id")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        body["id"] = json!(id);
+        if let Some(key) = body
+            .get("apiKey")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty() && !value.starts_with("••"))
+            .map(str::to_string)
+        {
+            state.save_secret(&format!("mcp:{id}"), &key);
+        }
+        if let Value::Object(ref mut map) = body {
+            map.remove("apiKey");
+        }
+        crate::engine::mcp::invalidate();
     }
     match state.store.put(&kind, &body) {
         Some(record) => {
@@ -95,6 +136,10 @@ pub async fn one(State(state): State<AppState>, OriginalUri(uri): OriginalUri) -
 pub async fn remove(State(state): State<AppState>, OriginalUri(uri): OriginalUri) -> Json<Value> {
     let kind = kind_from_uri(&uri);
     if let Some(id) = id_from_uri(&uri) {
+        if kind == "mcp" {
+            state.store.remove_secret(&format!("mcp:{id}"));
+            crate::engine::mcp::invalidate();
+        }
         state.store.remove(&kind, &id);
         state
             .bus
@@ -121,14 +166,28 @@ pub async fn action(
         .to_string();
 
     match (kind.as_str(), action.as_str()) {
-        ("workflows", "run") => spawn_job(state, "workflow", json!({ "workflowId": id, "input": body })).await,
-        ("rooms", "run") => spawn_job(state, "room", json!({ "roomId": id, "input": body })).await,
-        ("channels", "diagnose") => Json(json!({
+        ("workflow", "run") => enqueue_job(
+            &state,
+            "workflow",
+            json!({
+                "workflowId": id,
+                "input": body.get("input").cloned().unwrap_or(json!("")),
+            }),
+        ),
+        ("room", "run") => enqueue_job(
+            &state,
+            "room",
+            json!({
+                "roomId": id,
+                "goal": body.get("goal").or_else(|| body.get("input")).cloned().unwrap_or(json!("")),
+            }),
+        ),
+        ("channel", "diagnose") => Json(json!({
             "verified": false,
             "message": "Rust 런타임에서는 채널 어댑터가 아직 연결되지 않았습니다.",
         }))
         .into_response(),
-        ("skills", "export") => match state.store.get("skill", &id) {
+        ("skill", "export") => match state.store.get("skill", &id) {
             Some(skill) => Json(skill).into_response(),
             None => (
                 StatusCode::NOT_FOUND,
@@ -144,26 +203,13 @@ pub async fn action(
     }
 }
 
-async fn spawn_job(state: AppState, kind: &str, input: Value) -> Response {
-    let job = state.store.put(
-        "job",
-        &json!({
-            "kind": kind,
-            "status": "queued",
-            "input": input,
-            "stepIndex": 0,
-            "stepTotal": 0,
-        }),
-    );
-    if let Some(job) = job {
-        state.bus.record("job", &job);
-        let _ = state.store.audit("job.queued", json!({ "kind": kind, "job": job }));
-        Json(job).into_response()
-    } else {
-        (
+fn enqueue_job(state: &AppState, kind: &str, input: Value) -> Response {
+    match crate::engine::jobs::enqueue(state, kind, input) {
+        Some(job) => Json(job).into_response(),
+        None => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "작업을 만들 수 없습니다." })),
         )
-            .into_response()
+            .into_response(),
     }
 }
