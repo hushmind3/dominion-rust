@@ -25,6 +25,8 @@ src/
     workflows.rs     순차 워크플로 실행 ({{input}} / {{previous}})
     rooms.rs         멀티 에이전트 라운드테이블 실행
     goals.rs         자율 목표 루프 (도구 사용 · DONE 판정)
+    compact.rs       대화 컨텍스트 압축 (요약 체크포인트)
+    skills.rs        SKILL.md 카탈로그 스캔 · 가져오기
     dev.rs           소스 개발 스튜디오 (git · npm · vite 미리보기)
     mcp.rs           MCP stdio/HTTP 클라이언트 + 도구 네임스페이스
   api/
@@ -72,7 +74,9 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 | 작업 | `GET /api/jobs`, `POST /api/workflows/:id/run`, `POST /api/rooms/:id/run`, `POST /api/goals` |
 | 실행 기록 | `GET /api/executions`, `GET /api/executions/:id/operations`, `POST /api/executions/:id/cancel`, `POST /api/sessions/:id/cancel` |
 | 개발 스튜디오 | `GET /api/dev/status`, `POST /api/dev/connect`, `GET /api/dev/diff`, `POST /api/dev/{setup,test,build,package,commit}`, `POST /api/dev/preview/{start,stop}` |
-| MCP | `GET /api/mcp`, `GET /api/mcp/discover`, `GET /api/tools` (`mcp__서버__도구`) |
+| MCP | `GET /api/mcp`, `GET /api/mcp/discover`, `GET /api/mcp/catalog` (공식 Registry), `GET /api/tools` (`mcp__서버__도구`) |
+| 스킬 | `GET /api/skill-catalog`, `POST /api/skill-catalog/import`, `POST /api/skills/import-repo`, `GET /api/skills/:id/export` |
+| 컨텍스트 | `POST /api/sessions/:id/compact` |
 | 기타 | `GET /api/audit`, `POST /api/translate` |
 
 ## 엔진 동작
@@ -132,9 +136,9 @@ JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적
 Node 구현의 다음 기능은 Rust로 옮기지 않았습니다. 해당 경로는 HTML 대신 명시적인 JSON 오류(`501`, `ported: false`)를 반환합니다.
 
 - 로컬 모델 런타임 (llama.cpp / MLX 다운로드·로드)
-- MCP 마켓플레이스 카탈로그 검색 (서버 등록·도구 호출은 지원)
-- OAuth 연동 (Google/GitHub/YouTube)
-- 메신저 채널 어댑터 (Slack/Discord/Telegram)
+- OAuth 연동 (Google/GitHub/YouTube) — 클라이언트 자격 증명 필요
+- 메신저 채널 어댑터 (Slack/Discord/Telegram) — 봇 토큰 필요
+- 동영상 생성 파이프라인
 - 설치 파일 자동 적용 (데스크톱 셸의 설치 기능 필요)
 
 ## 검증
@@ -154,3 +158,5 @@ cargo test --release
 - 실행 기록/취소 상태 전이
 - 자율 목표 실패 경로
 - 개발 스튜디오 설정 저장 및 패키지 경로 해석
+- 스킬 카탈로그 스캔/가져오기
+- 컨텍스트 압축 요약과 히스토리 대체

@@ -1,4 +1,6 @@
 pub mod chat;
+pub mod compact;
+pub mod skills;
 pub mod dev;
 pub mod goals;
 pub mod jobs;

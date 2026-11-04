@@ -18,14 +18,6 @@ pub async fn empty_object() -> Json<Value> {
 }
 
 
-pub async fn skill_catalog(State(state): State<AppState>) -> Json<Value> {
-    let items = state.store.all("skill");
-    Json(json!({
-        "items": items,
-        "total": items.len(),
-        "updatedAt": chrono::Utc::now().to_rfc3339(),
-    }))
-}
 
 pub async fn model_runtime() -> Json<Value> {
     Json(json!({

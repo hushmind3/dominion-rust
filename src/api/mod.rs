@@ -54,7 +54,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/:id/rename", post(core::rename_session))
         .route("/api/sessions/:id/clear", post(core::clear_session))
         .route("/api/sessions/:id/fork", post(core::fork_session))
-        .route("/api/sessions/:id/compact", post(compat::not_ported))
+        .route("/api/sessions/:id/compact", post(core::compact_session))
         .route("/api/sessions/:id/cancel", post(core::cancel_session))
         .route(
             "/api/executions/:id/operations",
@@ -76,10 +76,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/commands", get(core::commands))
         // compatibility surface
         .route("/api/mcp/presets", get(core::mcp_presets))
-        .route("/api/mcp/catalog", get(compat::empty_list))
+        .route("/api/mcp/catalog", get(core::mcp_catalog))
         .route("/api/mcp/discover", get(core::mcp_discover))
-        .route("/api/skill-catalog", get(compat::skill_catalog))
-        .route("/api/skill-catalog/meta", get(compat::empty_object))
+        .route("/api/skill-catalog", get(core::skill_catalog))
+        .route("/api/skill-catalog/meta", get(core::skill_catalog_meta))
+        .route("/api/skill-catalog/import", post(core::import_skill))
+        .route("/api/skills/import-repo", post(core::import_skill_repo))
         .route("/api/model-library/catalog", get(compat::empty_list))
         .route("/api/model-library/installed", get(compat::empty_list))
         .route("/api/model-library/jobs", get(compat::empty_list))

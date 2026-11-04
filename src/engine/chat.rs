@@ -585,9 +585,28 @@ fn system_prompt(state: &AppState, request: &TurnRequest) -> String {
 }
 
 fn history(state: &AppState, session_id: &str) -> Vec<Value> {
-    let all = state.store.messages(session_id);
+    let mut all = state.store.messages(session_id);
+    let mut prefix = Vec::new();
+    if let Some(compaction) = state.store.get("session_compaction", session_id) {
+        let through = compaction
+            .get("throughMessageId")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if let Some(index) = all.iter().position(|row| {
+            row.get("id").and_then(|value| value.as_str()) == Some(through)
+        }) {
+            all.drain(..=index);
+            if let Some(summary) = compaction.get("summary").and_then(|value| value.as_str()) {
+                prefix.push(json!({
+                    "role": "system",
+                    "content": format!("이전 대화 요약(압축됨):\n{summary}"),
+                }));
+            }
+        }
+    }
     let start = all.len().saturating_sub(HISTORY_LIMIT);
-    all[start..]
+    let mut out = prefix;
+    out.extend(all[start..]
         .iter()
         .filter_map(|message| {
             let role = message.get("role")?.as_str()?;
@@ -607,7 +626,8 @@ fn history(state: &AppState, session_id: &str) -> Vec<Value> {
                 _ => None,
             }
         })
-        .collect()
+        .collect::<Vec<_>>());
+    out
 }
 
 async fn stream_completion(

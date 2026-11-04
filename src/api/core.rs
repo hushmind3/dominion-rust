@@ -1,7 +1,7 @@
 use crate::engine;
 use crate::state::AppState;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -11,6 +11,7 @@ use axum::{
 };
 use futures_util::Stream;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -812,6 +813,137 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     let mut payload = record.clone();
     payload["jobId"] = job_id;
     Json(payload).into_response()
+}
+
+pub async fn compact_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let provider_id = body
+        .get("providerId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let model = body.get("model").and_then(|value| value.as_str()).unwrap_or("");
+    match engine::compact::run(&state, &id, provider_id, model).await {
+        Ok(result) => Json(result).into_response(),
+        Err(message) => error(StatusCode::BAD_REQUEST, &message),
+    }
+}
+
+pub async fn skill_catalog(State(state): State<AppState>) -> Json<Value> {
+    Json(engine::skills::catalog(&state))
+}
+
+pub async fn skill_catalog_meta(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "roots": engine::skills::roots(&state).into_iter().map(|(source, path)| json!({
+            "source": source,
+            "path": path.to_string_lossy(),
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+pub async fn import_skill(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    let id = body.get("id").and_then(|value| value.as_str()).unwrap_or("");
+    match engine::skills::import(&state, id) {
+        Ok(record) => Json(record).into_response(),
+        Err(message) => error(StatusCode::BAD_REQUEST, &message),
+    }
+}
+
+pub async fn import_skill_repo(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    let repo = body.get("repo").and_then(|value| value.as_str()).unwrap_or("");
+    match engine::skills::import_repo(&state, repo) {
+        Ok(result) => Json(result).into_response(),
+        Err(message) => error(StatusCode::BAD_REQUEST, &message),
+    }
+}
+
+pub async fn mcp_catalog(Query(query): Query<HashMap<String, String>>) -> Response {
+    let mut endpoint = match reqwest::Url::parse(
+        "https://registry.modelcontextprotocol.io/v0.1/servers",
+    ) {
+        Ok(url) => url,
+        Err(message) => return error(StatusCode::INTERNAL_SERVER_ERROR, &message.to_string()),
+    };
+    let search = query.get("q").cloned().unwrap_or_default();
+    if search.len() >= 3 {
+        endpoint.query_pairs_mut().append_pair("search", &search);
+    }
+    endpoint.query_pairs_mut().append_pair("version", "latest").append_pair("limit", "60");
+
+    let response = reqwest::Client::new()
+        .get(endpoint)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) if response.status().is_success() => response,
+        Ok(response) => {
+            return error(
+                StatusCode::BAD_GATEWAY,
+                &format!("MCP registry HTTP {}", response.status()),
+            )
+        }
+        Err(message) => return error(StatusCode::BAD_GATEWAY, &message.to_string()),
+    };
+    let value: Value = match response.json().await {
+        Ok(value) => value,
+        Err(message) => return error(StatusCode::BAD_GATEWAY, &message.to_string()),
+    };
+    let mut seen = std::collections::HashSet::new();
+    let items = value
+        .get("servers")
+        .and_then(|value| value.as_array())
+        .map(|servers| {
+            servers
+                .iter()
+                .filter_map(|entry| {
+                    let server = entry.get("server").unwrap_or(entry);
+                    let name = server.get("name").and_then(|value| value.as_str())?;
+                    if !seen.insert(name.to_string()) {
+                        return None;
+                    }
+                    let packages = server
+                        .get("packages")
+                        .and_then(|value| value.as_array())
+                        .map(|items| {
+                            items.iter().find(|package| {
+                                package
+                                    .get("registryType")
+                                    .or_else(|| package.get("registry_type"))
+                                    .and_then(|value| value.as_str())
+                                    == Some("npm")
+                            })
+                        })
+                        .flatten();
+                    let remote = server
+                        .get("remotes")
+                        .and_then(|value| value.as_array())
+                        .and_then(|items| {
+                            items.iter().find(|remote| {
+                                remote
+                                    .get("url")
+                                    .and_then(|value| value.as_str())
+                                    .map(|url| url.starts_with("https://"))
+                                    .unwrap_or(false)
+                            })
+                        });
+                    Some(json!({
+                        "name": name,
+                        "description": server.get("description"),
+                        "packageName": packages.and_then(|package| package.get("identifier")),
+                        "url": remote.and_then(|remote| remote.get("url")),
+                    }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Json(json!(items)).into_response()
 }
 
 fn error(status: StatusCode, message: &str) -> Response {
