@@ -8,6 +8,7 @@ use std::time::Duration;
 pub struct ToolContext<'a> {
     pub workspace: &'a Path,
     pub store: &'a Store,
+    pub state: &'a crate::state::AppState,
 }
 
 /// OpenAI-style tool definitions handed to the model.
@@ -36,6 +37,8 @@ pub fn definitions() -> Vec<Value> {
         tool("memory_store", "Save a concise durable fact for future sessions", object(json!({"text": text("Fact to remember"), "scope": text("Optional scope")}), vec!["text"])),
         tool("memory_search", "Find saved knowledge relevant to a topic", object(json!({"query": text("Search query")}), vec!["query"])),
         tool("skill_propose", "Draft a reusable skill for user review", object(json!({"name": text("Skill name"), "instructions": text("Reusable instructions")}), vec!["name", "instructions"])),
+        tool("account_status", "List OAuth accounts connected to DOMINION", object(json!({}), vec![])),
+        tool("github_api", "Call the GitHub REST API as the connected account. Write methods require approval (approval required)", object(json!({"method": json!({"type": "string", "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"]}), "path": text("GitHub API path beginning with /"), "body": json!({"type": "object"})}), vec!["method", "path"])),
     ]
 }
 
@@ -49,7 +52,7 @@ fn tool(name: &str, description: &str, parameters: Value) -> Value {
 pub fn requires_approval(name: &str) -> bool {
     matches!(
         name,
-        "workspace_write" | "file_write" | "shell_exec" | "terminal_exec"
+        "workspace_write" | "file_write" | "shell_exec" | "terminal_exec" | "github_api"
     )
 }
 
@@ -167,8 +170,47 @@ pub async fn execute(ctx: &ToolContext<'_>, name: &str, args: &Value) -> Result<
             );
             Ok(json!({ "proposed": true, "skill": record }))
         }
+        "account_status" => Ok(json!({
+            "providers": crate::engine::oauth::status(ctx.state),
+        })),
+        "github_api" => github_api(ctx, args).await,
         other => Err(format!("Unknown tool: {other}")),
     }
+}
+
+async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> {
+    let token = crate::engine::oauth::access_token(ctx.state, "github").ok_or(
+        "GitHub 계정이 연결되지 않았습니다. 설정 > 계정 연동에서 연결하세요.",
+    )?;
+    let method = string_arg(args, "method")
+        .unwrap_or("GET")
+        .to_uppercase();
+    if !matches!(method.as_str(), "GET" | "POST" | "PATCH" | "PUT" | "DELETE") {
+        return Err("지원하지 않는 HTTP 메서드입니다.".into());
+    }
+    let path = required_arg(args, "path")?;
+    if !path.starts_with('/') || path.contains("..") {
+        return Err("GitHub API 경로는 / 로 시작해야 합니다.".into());
+    }
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let mut request = reqwest::Client::new()
+        .request(method, format!("https://api.github.com{path}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "DOMINION")
+        .timeout(Duration::from_secs(30));
+    if let Some(body) = args.get("body").filter(|value| !value.is_null()) {
+        request = request.json(body);
+    }
+    let response = request.send().await.map_err(|error| error.to_string())?;
+    let status = response.status().as_u16();
+    let text = response.text().await.unwrap_or_default();
+    let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!(text));
+    Ok(json!({
+        "status": status,
+        "body": parsed.to_string().chars().take(20_000).collect::<String>(),
+    }))
 }
 
 fn required_arg(args: &Value, key: &str) -> Result<String, String> {

@@ -6,6 +6,7 @@ pub mod goals;
 pub mod jobs;
 pub mod mcp;
 pub mod models;
+pub mod oauth;
 pub mod rooms;
 pub mod tools;
 pub mod workflows;

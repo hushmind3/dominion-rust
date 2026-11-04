@@ -1,6 +1,7 @@
 pub mod collections;
 pub mod dev;
 pub mod models;
+pub mod oauth;
 pub mod compat;
 pub mod core;
 
@@ -101,9 +102,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/dev/preview/:action", post(dev::preview))
         .route("/api/dev/update", post(dev::update))
         .route("/api/dev/:kind", post(dev::start_job))
-        .route("/api/oauth/providers", get(compat::oauth_providers))
-        .route("/api/oauth/providers/:id", post(compat::not_ported))
-        .route("/api/oauth/:id/start", get(compat::not_ported))
+        .route("/api/oauth/providers", get(oauth::providers))
+        .route("/api/oauth/providers/:id", post(oauth::save))
+        .route("/api/oauth/:id/start", get(oauth::start))
+        .route("/api/oauth/:id/callback", get(oauth::callback))
+        .route(
+            "/api/oauth/:id",
+            axum::routing::delete(oauth::disconnect),
+        )
         .route("/api/youtube/status", get(compat::youtube_status))
         .route("/api/youtube/:action", get(compat::empty_list).post(compat::not_ported))
         .route("/api/video/config", get(compat::empty_object).post(compat::not_ported))

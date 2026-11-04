@@ -287,6 +287,7 @@ async fn run_turn_body(
                 let context = ToolContext {
                     workspace: &state.config.workspace,
                     store: &state.store,
+                    state,
                 };
                 let outcome = if call.name.starts_with("mcp__") {
                     mcp::call(state, &call.name, &arguments).await

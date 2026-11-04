@@ -20,12 +20,6 @@ pub async fn empty_object() -> Json<Value> {
 
 
 
-pub async fn oauth_providers() -> Json<Value> {
-    Json(json!([
-        { "id": "google", "configured": false, "connected": false, "callback": "" },
-        { "id": "github", "configured": false, "connected": false, "callback": "" }
-    ]))
-}
 
 pub async fn youtube_status() -> Json<Value> {
     Json(json!({ "connected": false, "channel": null }))

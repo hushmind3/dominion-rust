@@ -27,6 +27,7 @@ src/
     goals.rs         자율 목표 루프 (도구 사용 · DONE 판정)
     compact.rs       대화 컨텍스트 압축 (요약 체크포인트)
     models.rs        로컬 모델 런타임 (llama.cpp) · HF 검색/다운로드
+    oauth.rs         GitHub/Google OAuth 설정·state·토큰 교환
     skills.rs        SKILL.md 카탈로그 스캔 · 가져오기
     dev.rs           소스 개발 스튜디오 (git · npm · vite 미리보기)
     mcp.rs           MCP stdio/HTTP 클라이언트 + 도구 네임스페이스
@@ -79,6 +80,7 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 | 스킬 | `GET /api/skill-catalog`, `POST /api/skill-catalog/import`, `POST /api/skills/import-repo`, `GET /api/skills/:id/export` |
 | 컨텍스트 | `POST /api/sessions/:id/compact` |
 | 로컬 모델 | `GET /api/model-library/{catalog,details,installed,jobs,runtime}`, `POST /api/model-library/{download,import}`, `POST /api/model-library/runtime/{load,unload}` |
+| 계정 연동 | `GET /api/oauth/providers`, `POST /api/oauth/providers/:id`, `GET /api/oauth/:id/start`, `GET /api/oauth/:id/callback`, `DELETE /api/oauth/:id` |
 | 기타 | `GET /api/audit`, `POST /api/translate` |
 
 ## 엔진 동작
@@ -146,7 +148,7 @@ Node 구현의 다음 기능은 Rust로 옮기지 않았습니다. 해당 경로
 
 - MLX 런타임 (llama.cpp GGUF만 지원)
 - 다운로드 일시정지/재개 (시작·취소·재시작은 지원)
-- OAuth 연동 (Google/GitHub/YouTube) — 클라이언트 자격 증명 필요
+- OAuth 실제 동의/토큰 발급 검증 — 사용자의 GitHub/Google 앱 자격 증명 필요 (구현·state 검증·토큰 교환 경로는 완료)
 - 메신저 채널 어댑터 (Slack/Discord/Telegram) — 봇 토큰 필요
 - 동영상 생성 파이프라인
 - 설치 파일 자동 적용 (데스크톱 셸의 설치 기능 필요)
@@ -171,3 +173,4 @@ cargo test --release
 - 스킬 카탈로그 스캔/가져오기
 - 컨텍스트 압축 요약과 히스토리 대체
 - 로컬 GGUF 설치/가져오기/언로드
+- OAuth state 만료/재사용 차단, 자격 증명 암호화
