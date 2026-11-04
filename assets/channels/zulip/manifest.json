@@ -1,0 +1,40 @@
+{
+  "id": "zulip",
+  "name": "Zulip",
+  "category": "workplace",
+  "mode": "polling",
+  "docs": "https://zulip.com/api/",
+  "description": "REST API + 이벤트 큐 · 스트림과 DM",
+  "features": [
+    "dm",
+    "groups",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "site",
+      "label": "Zulip 서버 URL",
+      "type": "url",
+      "required": true,
+      "placeholder": "https://yourorg.zulipchat.com"
+    },
+    {
+      "key": "email",
+      "label": "봇 이메일",
+      "type": "text",
+      "required": true,
+      "placeholder": "bot@yourorg.zulipchat.com"
+    },
+    {
+      "key": "apiKey",
+      "label": "API Key",
+      "type": "secret",
+      "required": true
+    }
+  ],
+  "instructions": [
+    "Zulip 설정 → 봇 계정에서 Generic bot을 생성하고 API 키를 복사",
+    "서버 URL과 봇 이메일, API 키를 입력",
+    "스트림과 DM 모두 수신하며 같은 위치에 답장합니다"
+  ]
+}

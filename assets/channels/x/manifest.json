@@ -1,0 +1,43 @@
+{
+  "id": "x",
+  "name": "X / Twitter",
+  "category": "community",
+  "mode": "polling",
+  "docs": "https://docs.x.com/x-api",
+  "description": "API v2 · OAuth 1.0a · 멘션 수신과 답글",
+  "features": [
+    "groups",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "apiKey",
+      "label": "API Key (Consumer Key)",
+      "type": "secret",
+      "required": true
+    },
+    {
+      "key": "apiSecret",
+      "label": "API Secret (Consumer Secret)",
+      "type": "secret",
+      "required": true
+    },
+    {
+      "key": "accessToken",
+      "label": "Access Token",
+      "type": "secret",
+      "required": true
+    },
+    {
+      "key": "accessSecret",
+      "label": "Access Token Secret",
+      "type": "secret",
+      "required": true
+    }
+  ],
+  "instructions": [
+    "X 개발자 포털에서 앱을 만들고 OAuth 1.0a (Read and Write) 권한으로 키 4개를 발급",
+    "무료 등급은 읽기(멘션 조회)가 제한되며, 쓰기 한도도 월 단위로 제한됩니다",
+    "답글은 270자로 잘리고 30초마다 멘션을 확인합니다"
+  ]
+}

@@ -19,8 +19,6 @@ cat > "$PLIST" <<PL
     <key>DOMINION_WEB</key><string>$REPO/web/dist</string>
   </dict>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>ThrottleInterval</key><integer>3</integer>
   <key>StandardOutPath</key><string>$HOME/Library/Logs/dominion-rust.log</string>
   <key>StandardErrorPath</key><string>$HOME/Library/Logs/dominion-rust.log</string>
 </dict></plist>

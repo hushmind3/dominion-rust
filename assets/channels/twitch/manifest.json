@@ -1,0 +1,45 @@
+{
+  "id": "twitch",
+  "name": "Twitch Chat",
+  "category": "community",
+  "mode": "gateway",
+  "docs": "https://dev.twitch.tv/docs/chat/irc/",
+  "description": "IRC over WebSocket · 채팅방 실시간 수신",
+  "features": [
+    "groups",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "channel",
+      "label": "채널명",
+      "type": "text",
+      "required": true,
+      "placeholder": "twitch_channel"
+    },
+    {
+      "key": "username",
+      "label": "봇 계정명",
+      "type": "text",
+      "required": true,
+      "placeholder": "my_bot"
+    },
+    {
+      "key": "clientId",
+      "label": "Client ID (선택)",
+      "type": "text",
+      "required": false
+    },
+    {
+      "key": "token",
+      "label": "OAuth Token (chat:read chat:edit)",
+      "type": "secret",
+      "required": true
+    }
+  ],
+  "instructions": [
+    "Twitch 개발자 콘솔에서 앱을 만들고 OAuth 토큰을 발급 (chat:read, chat:edit)",
+    "토큰은 oauth: 접두사를 제외한 값만 입력",
+    "봇 계정명과 입장할 채널명을 입력"
+  ]
+}

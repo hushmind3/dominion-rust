@@ -13,16 +13,19 @@ pub async fn empty_list() -> Json<Value> {
     Json(json!([]))
 }
 
-pub async fn empty_object() -> Json<Value> {
-    Json(json!({}))
-}
 
 
 
 
 
 pub async fn youtube_status() -> Json<Value> {
-    Json(json!({ "connected": false, "channel": null }))
+    Json(json!({
+        "connected": false,
+        "uploadAllowed": false,
+        "account": null,
+        "uploads": [],
+        "channel": null,
+    }))
 }
 
 

@@ -1,0 +1,17 @@
+{
+  "id": "teams",
+  "name": "Microsoft Teams",
+  "category": "workplace",
+  "mode": "webhook",
+  "docs": "https://learn.microsoft.com/en-us/microsoftteams/platform/bots/what-are-bots",
+  "description": "Teams Bot Framework · 추가 구현 예정",
+  "features": [
+    "dm",
+    "groups"
+  ],
+  "fields": [],
+  "instructions": [
+    "Azure Bot 등록과 Microsoft Entra 앱 권한 필요",
+    "Bot Framework JWT 검증·토큰 갱신 후 연결 가능"
+  ]
+}

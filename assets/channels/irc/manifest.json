@@ -1,0 +1,61 @@
+{
+  "id": "irc",
+  "name": "IRC",
+  "category": "community",
+  "mode": "socket",
+  "docs": "https://ircv3.net/",
+  "description": "IRCv3 · 직접 TCP/TLS 연결 · 별도 봇 등록 불필요",
+  "features": [
+    "groups",
+    "dm",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "host",
+      "label": "Server Host",
+      "type": "text",
+      "required": true,
+      "placeholder": "irc.libera.chat"
+    },
+    {
+      "key": "port",
+      "label": "Port",
+      "type": "text",
+      "required": true,
+      "placeholder": "6697"
+    },
+    {
+      "key": "nick",
+      "label": "Nickname",
+      "type": "text",
+      "required": true,
+      "placeholder": "dominion-bot"
+    },
+    {
+      "key": "channel",
+      "label": "Channels",
+      "type": "text",
+      "required": true,
+      "placeholder": "#dominion"
+    },
+    {
+      "key": "password",
+      "label": "Server / NickServ Password",
+      "type": "secret",
+      "required": false
+    },
+    {
+      "key": "tls",
+      "label": "TLS 사용 (true/false)",
+      "type": "text",
+      "required": false,
+      "placeholder": "true"
+    }
+  ],
+  "instructions": [
+    "IRC 네트워크 주소와 포트를 입력 (TLS는 보통 6697)",
+    "사용할 닉네임과 입장할 채널을 입력",
+    "서버가 닉네임 등록을 요구하면 NickServ 비밀번호를 입력"
+  ]
+}

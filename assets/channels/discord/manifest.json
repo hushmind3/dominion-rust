@@ -1,0 +1,26 @@
+{
+  "id": "discord",
+  "name": "Discord",
+  "category": "community",
+  "mode": "gateway",
+  "docs": "https://discord.com/developers/docs/topics/gateway",
+  "description": "Gateway WebSocket · 서버와 DM",
+  "features": [
+    "dm",
+    "groups",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "token",
+      "label": "Bot Token",
+      "type": "secret",
+      "required": true
+    }
+  ],
+  "instructions": [
+    "Discord Developer Portal에서 Bot 생성",
+    "Message Content Intent를 활성화",
+    "OAuth2 초대 URL로 서버에 봇 추가"
+  ]
+}

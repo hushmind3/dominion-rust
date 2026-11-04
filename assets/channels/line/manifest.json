@@ -1,0 +1,33 @@
+{
+  "id": "line",
+  "name": "LINE",
+  "category": "messaging",
+  "mode": "webhook",
+  "docs": "https://developers.line.biz/en/docs/messaging-api/overview/",
+  "description": "Messaging API · 공식 웹훅",
+  "features": [
+    "dm",
+    "groups",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "token",
+      "label": "Channel Access Token",
+      "type": "secret",
+      "required": true
+    },
+    {
+      "key": "channelSecret",
+      "label": "Channel Secret",
+      "type": "secret",
+      "required": true
+    }
+  ],
+  "instructions": [
+    "LINE Developers에서 Messaging API 채널 생성",
+    "채널 접근 토큰과 Secret 등록",
+    "공개 HTTPS Webhook URL을 채널 설정에 입력"
+  ],
+  "requiresPublicUrl": true
+}

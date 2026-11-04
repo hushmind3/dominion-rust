@@ -1,14 +1,17 @@
+pub mod channels;
 pub mod collections;
 pub mod dev;
 pub mod models;
+pub mod video;
 pub mod oauth;
 pub mod compat;
 pub mod core;
 
 use crate::state::AppState;
 use axum::{
-    extract::OriginalUri,
-    http::StatusCode,
+    extract::{OriginalUri, Request},
+    http::{header, HeaderValue, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, get, post},
     Json, Router,
@@ -103,6 +106,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/dev/update", post(dev::update))
         .route("/api/dev/:kind", post(dev::start_job))
         .route("/api/oauth/providers", get(oauth::providers))
+        .route("/api/oauth/connections", get(channels::connections))
         .route("/api/oauth/providers/:id", post(oauth::save))
         .route("/api/oauth/:id/start", get(oauth::start))
         .route("/api/oauth/:id/callback", get(oauth::callback))
@@ -111,12 +115,22 @@ pub fn router(state: AppState) -> Router {
             axum::routing::delete(oauth::disconnect),
         )
         .route("/api/youtube/status", get(compat::youtube_status))
-        .route("/api/youtube/:action", get(compat::empty_list).post(compat::not_ported))
-        .route("/api/video/config", get(compat::empty_object).post(compat::not_ported))
-        .route("/api/video/open-models", get(compat::empty_list))
-        .route("/api/video/workflows", get(compat::empty_list))
-        .route("/api/video/:action", post(compat::not_ported).get(compat::empty_object))
-        .route("/api/channels/catalog", get(compat::empty_list))
+        .route("/api/youtube/uploads", get(compat::empty_list))
+        .route("/api/youtube/uploads/:id", get(video::job))
+        .route("/api/youtube/:action", post(compat::not_ported))
+        .route("/api/video/status", get(video::status))
+        .route("/api/video/config", get(video::get_config).post(video::save_config))
+        .route("/api/video/outputs", get(video::outputs_handler))
+        .route("/api/video/locations", get(video::locations))
+        .route("/api/video/models", get(video::empty_list))
+        .route("/api/video/catalog", get(video::empty_list))
+        .route("/api/video/files", get(video::empty_list))
+        .route("/api/video/jobs/:id", get(video::job))
+        .route("/api/video/open-models", post(video::not_available))
+        .route("/api/video/workflows", get(video::empty_list))
+        .route("/api/video/:action", post(video::not_available))
+        .route("/api/system/pick-folder", post(compat::not_ported))
+        .route("/api/channels/catalog", get(channels::catalog_handler))
         .route("/api/executions/active", get(core::active_executions))
         .route("/api/webhooks/:id", post(compat::not_ported));
 
@@ -141,6 +155,7 @@ pub fn router(state: AppState) -> Router {
     router
         .route("/api/*rest", any(api_not_found))
         .fallback_service(static_files)
+        .layer(middleware::from_fn(no_stale_ui))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -154,4 +169,15 @@ async fn api_not_found(OriginalUri(uri): OriginalUri) -> Response {
         })),
     )
         .into_response()
+}
+
+/// HTML is served without a long-lived cache so a rebuilt UI is picked up
+/// immediately instead of showing an old bundle after a restart.
+async fn no_stale_ui(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    );
+    response
 }

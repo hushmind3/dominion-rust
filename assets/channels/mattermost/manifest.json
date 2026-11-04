@@ -1,0 +1,33 @@
+{
+  "id": "mattermost",
+  "name": "Mattermost",
+  "category": "workplace",
+  "mode": "gateway",
+  "docs": "https://developers.mattermost.com/api-documentation/",
+  "description": "REST v4 + WebSocket · 자체 호스팅 팀 채팅",
+  "features": [
+    "dm",
+    "groups",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "baseUrl",
+      "label": "Server URL",
+      "type": "url",
+      "required": true,
+      "placeholder": "https://mattermost.example.com"
+    },
+    {
+      "key": "token",
+      "label": "Bot Access Token",
+      "type": "secret",
+      "required": true
+    }
+  ],
+  "instructions": [
+    "Mattermost 서버에서 봇 계정을 만들고 Personal Access Token을 발급",
+    "시스템 콘솔에서 통합 기능과 토큰 인증을 허용",
+    "서버 주소와 토큰을 등록하면 봇이 채널 메시지를 받아 답장합니다"
+  ]
+}

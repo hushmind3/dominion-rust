@@ -1,0 +1,13 @@
+{
+  "id": "imessage",
+  "name": "iMessage",
+  "category": "messaging",
+  "mode": "gateway",
+  "docs": "https://support.apple.com/guide/messages/welcome/mac",
+  "description": "macOS 전용 브리지 검토",
+  "features": [
+    "dm",
+    "groups"
+  ],
+  "fields": []
+}

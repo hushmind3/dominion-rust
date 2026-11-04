@@ -1,0 +1,12 @@
+{
+  "id": "kakaotalk",
+  "name": "KakaoTalk Channel",
+  "category": "messaging",
+  "mode": "webhook",
+  "docs": "https://i.kakao.com/docs",
+  "description": "카카오 i 오픈빌더 스킬 서버 검토",
+  "features": [
+    "dm"
+  ],
+  "fields": []
+}

@@ -1,0 +1,39 @@
+{
+  "id": "signal",
+  "name": "Signal",
+  "category": "messaging",
+  "mode": "gateway",
+  "docs": "https://github.com/bbernhard/signal-cli-rest-api",
+  "description": "signal-cli REST bridge · 별도 실행기 필요",
+  "features": [
+    "dm",
+    "groups",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "bridgeUrl",
+      "label": "signal-cli REST URL",
+      "type": "url",
+      "required": true,
+      "placeholder": "http://127.0.0.1:8080"
+    },
+    {
+      "key": "phoneNumber",
+      "label": "Signal 계정 전화번호",
+      "type": "text",
+      "required": true,
+      "placeholder": "+821012345678"
+    },
+    {
+      "key": "token",
+      "label": "Bridge Bearer Token (선택)",
+      "type": "secret"
+    }
+  ],
+  "instructions": [
+    "signal-cli-rest-api 설치 및 Signal 계정 연결",
+    "REST 또는 JSON-RPC 모드를 시작",
+    "/v1/receive WebSocket 사용 가능 여부 확인"
+  ]
+}

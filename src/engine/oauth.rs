@@ -65,6 +65,7 @@ pub fn status(state: &AppState) -> Vec<Value> {
                 "account": record.get("account").cloned().unwrap_or(Value::Null),
                 "callback": callback_url(state, provider.id),
                 "scopes": provider.scopes,
+                "scope": provider.scopes,
             })
         })
         .collect()

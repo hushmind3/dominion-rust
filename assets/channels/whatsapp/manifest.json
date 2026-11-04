@@ -1,0 +1,51 @@
+{
+  "id": "whatsapp",
+  "name": "WhatsApp Business",
+  "category": "messaging",
+  "mode": "webhook",
+  "docs": "https://developers.facebook.com/docs/whatsapp/cloud-api/",
+  "description": "Meta Cloud API · 공식 Business 웹훅",
+  "features": [
+    "dm",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "token",
+      "label": "System User Access Token",
+      "type": "secret",
+      "required": true
+    },
+    {
+      "key": "appSecret",
+      "label": "Meta App Secret",
+      "type": "secret",
+      "required": true
+    },
+    {
+      "key": "verifyToken",
+      "label": "Webhook Verify Token",
+      "type": "secret",
+      "required": true
+    },
+    {
+      "key": "phoneNumberId",
+      "label": "Phone Number ID",
+      "type": "text",
+      "required": true
+    },
+    {
+      "key": "graphVersion",
+      "label": "Graph API 버전",
+      "type": "text",
+      "required": true,
+      "placeholder": "v23.0"
+    }
+  ],
+  "instructions": [
+    "Meta Developer App에 WhatsApp 제품 설정",
+    "WhatsApp 전화번호 ID 및 Access Token 등록",
+    "공개 HTTPS Webhook URL을 설정하고 messages 이벤트 구독"
+  ],
+  "requiresPublicUrl": true
+}

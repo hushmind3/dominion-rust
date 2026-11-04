@@ -1,0 +1,32 @@
+{
+  "id": "slack",
+  "name": "Slack",
+  "category": "workplace",
+  "mode": "socket",
+  "docs": "https://docs.slack.dev/apis/events-api/using-socket-mode/",
+  "description": "Socket Mode · 공개 웹훅 불필요",
+  "features": [
+    "dm",
+    "groups",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "token",
+      "label": "Bot Token (xoxb-)",
+      "type": "secret",
+      "required": true
+    },
+    {
+      "key": "appToken",
+      "label": "App-level Token (xapp-)",
+      "type": "secret",
+      "required": true
+    }
+  ],
+  "instructions": [
+    "Slack App 생성 후 Socket Mode 켜기",
+    "App Token에 connections:write 스코프 부여",
+    "Bot Token에 chat:write 및 필요한 이벤트 구독 스코프 설정"
+  ]
+}

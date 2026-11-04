@@ -1,0 +1,17 @@
+{
+  "id": "googlechat",
+  "name": "Google Chat",
+  "category": "workplace",
+  "mode": "webhook",
+  "docs": "https://developers.google.com/workspace/chat/overview",
+  "description": "Google Workspace Chat App · 추가 구현 예정",
+  "features": [
+    "dm",
+    "groups"
+  ],
+  "fields": [],
+  "instructions": [
+    "Google Cloud에서 Chat App 구성",
+    "검증된 요청 인증과 API 권한 위임 어댑터 필요"
+  ]
+}

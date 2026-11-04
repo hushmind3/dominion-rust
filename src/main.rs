@@ -16,6 +16,34 @@ use vault::Vault;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    if args.iter().any(|arg| arg == "--stop") {
+        let label = format!("gui/{}/com.hushmind.dominion.rust", user_id());
+        let _ = std::process::Command::new("launchctl")
+            .args(["bootout", &label])
+            .status();
+        println!("DOMINION stop requested ({label})");
+        return;
+    }
+    if args.iter().any(|arg| arg == "--start") {
+        let label = format!("gui/{}/com.hushmind.dominion.rust", user_id());
+        let started = std::process::Command::new("launchctl")
+            .args(["kickstart", "-k", &label])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !started {
+            let plist = format!(
+                "{}/Library/LaunchAgents/com.hushmind.dominion.rust.plist",
+                std::env::var("HOME").unwrap_or_default()
+            );
+            let _ = std::process::Command::new("launchctl")
+                .args(["bootstrap", &format!("gui/{}", user_id()), &plist])
+                .status();
+        }
+        println!("DOMINION start requested ({label})");
+        return;
+    }
     if args.iter().any(|arg| arg == "--install-app") {
         let target = args
             .iter()
@@ -42,6 +70,7 @@ async fn main() {
         }
     }
     let bundled = config::bundle_home().is_some();
+    reexec_repo_binary();
     let open_browser = bundled || args.iter().any(|arg| arg == "--open");
 
     let config = Config::from_env();
@@ -151,6 +180,39 @@ async fn main() {
 
     if let Err(error) = axum::serve(listener, app).await {
         eprintln!("server error: {error}");
+    }
+}
+
+fn user_id() -> String {
+    std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|text| text.trim().to_string())
+        .unwrap_or_else(|| "501".to_string())
+}
+
+/// A bundled app is only a bootstrap: hand over to the current repo binary so
+/// rebuilds take effect without reinstalling the .app.
+fn reexec_repo_binary() {
+    if std::env::var("DOMINION_NO_REEXEC").is_ok() {
+        return;
+    }
+    let Some(home) = config::bundle_home() else {
+        return;
+    };
+    let repo = home.join("target/release/dominion-rust");
+    if !repo.is_file() {
+        return;
+    }
+    if std::env::current_exe().ok().as_deref() == Some(repo.as_path()) {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let _ = std::process::Command::new(&repo).arg("--open").exec();
     }
 }
 

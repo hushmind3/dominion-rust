@@ -1,0 +1,40 @@
+{
+  "id": "matrix",
+  "name": "Matrix",
+  "category": "decentralized",
+  "mode": "polling",
+  "docs": "https://spec.matrix.org/latest/client-server-api/",
+  "description": "Client-Server API · Matrix 홈서버와 룸",
+  "features": [
+    "dm",
+    "groups",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "homeserver",
+      "label": "Homeserver URL",
+      "type": "url",
+      "required": true,
+      "placeholder": "https://matrix.example.org"
+    },
+    {
+      "key": "userId",
+      "label": "Bot User ID",
+      "type": "text",
+      "required": true,
+      "placeholder": "@bot:example.org"
+    },
+    {
+      "key": "token",
+      "label": "Access Token",
+      "type": "secret",
+      "required": true
+    }
+  ],
+  "instructions": [
+    "Matrix 계정 또는 봇 계정을 생성",
+    "홈서버 주소·User ID·Access Token 등록",
+    "E2EE 룸은 별도 암호화 브리지가 필요합니다"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "wecom",
+  "name": "WeCom",
+  "category": "workplace",
+  "mode": "webhook",
+  "docs": "https://developer.work.weixin.qq.com/document/",
+  "description": "WeCom 기업용 메신저 · 연결 코드 없음",
+  "features": [
+    "dm",
+    "groups"
+  ],
+  "fields": [],
+  "instructions": [
+    "현재 DOMINION에 이 채널 연결 코드가 없습니다. 원본 채널 문서를 참고하여 독립 어댑터를 추가해야 합니다."
+  ]
+}

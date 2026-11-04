@@ -1,0 +1,32 @@
+{
+  "id": "nostr",
+  "name": "Nostr",
+  "category": "decentralized",
+  "mode": "gateway",
+  "docs": "https://github.com/nostr-protocol/nips",
+  "description": "릴레이 WebSocket · BIP-340 서명 · 계정 발급 불필요",
+  "features": [
+    "dm",
+    "replies"
+  ],
+  "fields": [
+    {
+      "key": "relays",
+      "label": "릴레이 주소 (쉼표로 구분)",
+      "type": "text",
+      "required": true,
+      "placeholder": "wss://relay.damus.io,wss://nos.lol"
+    },
+    {
+      "key": "privateKey",
+      "label": "개인키 (hex 또는 nsec)",
+      "type": "secret",
+      "required": true
+    }
+  ],
+  "instructions": [
+    "Nostr 개인키(hex 64자 또는 nsec)를 입력 — 새로 만들려면 아무 클라이언트에서 키를 생성",
+    "릴레이 주소를 쉼표로 구분해 입력",
+    "자신에게 온 kind-1 멘션에 답글을 게시합니다 (암호화 DM 아님)"
+  ]
+}

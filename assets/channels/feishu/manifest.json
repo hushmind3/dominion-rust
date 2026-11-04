@@ -1,0 +1,16 @@
+{
+  "id": "feishu",
+  "name": "Feishu / Lark",
+  "category": "workplace",
+  "mode": "webhook",
+  "docs": "https://open.feishu.cn/document/",
+  "description": "Feishu 기업 협업 메시지 · 연결 코드 없음",
+  "features": [
+    "dm",
+    "groups"
+  ],
+  "fields": [],
+  "instructions": [
+    "현재 DOMINION에 이 채널 연결 코드가 없습니다. 원본 채널 문서를 참고하여 독립 어댑터를 추가해야 합니다."
+  ]
+}
