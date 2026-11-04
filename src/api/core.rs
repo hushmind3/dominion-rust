@@ -525,35 +525,10 @@ pub async fn list_tools(State(state): State<AppState>) -> Json<Value> {
     Json(json!(items))
 }
 
-pub async fn mcp_presets(State(state): State<AppState>) -> Json<Value> {
-    let workspace = state.config.workspace.to_string_lossy().to_string();
-    let home = std::env::var("HOME").unwrap_or_else(|_| workspace.clone());
-    Json(json!([
-        {
-            "id": "filesystem",
-            "name": "Filesystem",
-            "package": "@modelcontextprotocol/server-filesystem",
-            "description": "지정한 폴더의 파일을 읽고 씁니다.",
-            "args": [home],
-            "category": "파일",
-        },
-        {
-            "id": "git",
-            "name": "Git",
-            "package": "@modelcontextprotocol/server-git",
-            "description": "작업공간 저장소의 브랜치·변경 이력·커밋을 확인합니다.",
-            "args": ["--repository", workspace],
-            "category": "개발 도구",
-        },
-        {
-            "id": "memory",
-            "name": "Memory",
-            "package": "@modelcontextprotocol/server-memory",
-            "description": "엔티티·관계·메모를 로컬 지식 그래프에 저장합니다.",
-            "args": [],
-            "category": "기억",
-        }
-    ]))
+pub async fn mcp_presets() -> Json<Value> {
+    // Filesystem, git, memory and shell are native Rust tools. Do not push
+    // third-party npm MCP servers for capabilities the engine already owns.
+    Json(json!([]))
 }
 
 pub async fn mcp_discover(State(state): State<AppState>) -> Json<Value> {

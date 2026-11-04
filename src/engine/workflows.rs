@@ -103,6 +103,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             tools_enabled: true,
             thinking: None,
             reasoning_effort: None,
+            reasoning_language: None,
             system_override: Some(format!(
                 "You are executing step {} of the workflow \"{}\". \
                  Produce the step result directly and concisely.",

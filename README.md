@@ -40,16 +40,25 @@ web/                 React 프론트엔드 (Vite)
 
 ## 실행
 
+**평소:** `/Applications/DOMINION.app` 더블클릭 → 이미 도는 Rust 서버에 Chrome만 연결.
+**서버는 로그인 시 자동 시작되고, 죽으면 launchd가 다시 띄웁니다.**
+
 ```bash
-./start-rust.command
+./target/release/dominion-rust --install-app /Applications/DOMINION.app
+./scripts/install-launch-agent.sh
 ```
 
-스크립트가 하는 일:
+`DOMINION.app`의 실행 파일은 셸/AppleScript가 아니라 **Rust 바이너리 자체**입니다.
+`--open` 이면 서버 기동 후 Chrome을 열고, 이미 4317이 사용 중이면 브라우저만 엽니다.
+번들 앱은 `Contents/Resources/home`에 저장소 경로를 기록해 Finder에서 실행해도
+`runtime/`, `web/dist`를 정확히 찾습니다.
 
-1. `cargo build --release`
-2. `web/dist` 가 없으면 `npm run build` (Node는 빌드 도구로만 사용)
-3. `127.0.0.1:4317` 에 Rust 서버 기동
-4. Chrome으로 `http://127.0.0.1:4317` 열기
+개발 중 수동 실행:
+
+```bash
+./start-rust.command          # 소스가 바뀐 경우에만 빌드
+DOMINION_FORCE_BUILD=1 ./start-rust.command
+```
 
 수동 실행:
 
@@ -103,6 +112,12 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 채팅 엔진은 원격 제공자와 동일한 경로로 로컬 모델을 사용합니다. 언로드하면
 프로세스 그룹을 종료하고 제공자를 제거합니다.
 
+### 추론 언어
+
+`reasoningLanguage: "ko"` 이면 시스템 프롬프트로 한국어 사고를 지시하고,
+모델이 영어로 사고하는 경우(예: DeepSeek) 추론 텍스트를 한국어로 번역해
+저장합니다. GLM-5.3 / Kimi-K3.1-Pro는 처음부터 한국어로 사고합니다.
+
 ### 작업 큐
 
 `POST /api/workflows/:id/run` 과 `POST /api/rooms/:id/run` 은 job 레코드를
@@ -128,6 +143,10 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 은 해당 세션을 중단시킵니다.
 
 ### MCP
+
+파일·셸·git·메모리는 **Rust 내장 도구**가 담당하므로 npm 기반 MCP preset을
+기본 제공하지 않습니다. 외부 MCP 서버를 직접 등록했을 때만 해당 프로세스가
+뜨고, DOMINION 엔진 자체는 Rust로 유지됩니다.
 
 활성화된 MCP 서버(`kind: mcp`)의 도구를 `mcp__{server}__{tool}` 이름으로
 모델 도구 목록에 합칩니다. stdio 서버는 자식 프로세스로, HTTP 서버는

@@ -22,6 +22,7 @@ pub struct TurnRequest {
     pub tools_enabled: bool,
     pub thinking: Option<bool>,
     pub reasoning_effort: Option<String>,
+    pub reasoning_language: Option<String>,
     pub system_override: Option<String>,
 }
 
@@ -55,6 +56,7 @@ impl TurnRequest {
                 .unwrap_or(true),
             thinking: value.get("thinking").and_then(|item| item.as_bool()),
             reasoning_effort: string("reasoningEffort"),
+            reasoning_language: string("reasoningLanguage"),
             system_override: string("systemOverride"),
         })
     }
@@ -356,6 +358,14 @@ async fn run_turn_body(
         }
     }
 
+    if request.reasoning_language.as_deref() == Some("ko")
+        && crate::engine::translate::needs_korean(&final_reasoning)
+    {
+        if let Some(korean) = crate::engine::translate::to_korean(&final_reasoning).await {
+            final_reasoning = korean;
+        }
+    }
+
     if final_content.trim().is_empty() && final_reasoning.trim().is_empty() {
         return Ok(None);
     }
@@ -577,6 +587,11 @@ fn system_prompt(state: &AppState, request: &TurnRequest) -> String {
                 }
             }
         }
+    }
+    if request.reasoning_language.as_deref() == Some("ko") {
+        prompt.push_str(
+            "\n\nWrite every internal reasoning / thinking step in Korean (한국어).              The final answer must also be in Korean unless the user asks otherwise.",
+        );
     }
     if let Some(extra) = &request.system_override {
         prompt.push_str("\n\n");

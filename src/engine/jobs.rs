@@ -204,6 +204,7 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
         tools_enabled: true,
         thinking: None,
         reasoning_effort: None,
+        reasoning_language: None,
         system_override: None,
     };
 

@@ -37,26 +37,8 @@ if [ ! -f web/dist/index.html ] || [ "${DOMINION_REBUILD_WEB:-0}" = "1" ]; then
   fi
 fi
 
-PIDS=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null || true)
-for pid in ${(f)PIDS}; do
-  [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null || true
-done
-
 echo "Starting Rust engine on http://127.0.0.1:$PORT"
 DOMINION_PORT="$PORT" \
 DOMINION_WEB="${DOMINION_WEB:-web/dist}" \
 DOMINION_DATA="${DOMINION_DATA:-runtime}" \
-nohup "$BIN" > /tmp/dominion-rust.log 2>&1 &
-
-for _ in {1..40}; do
-  sleep 0.25
-  if curl -sf -m 2 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
-    open -a "Google Chrome" "http://127.0.0.1:$PORT" 2>/dev/null || open "http://127.0.0.1:$PORT"
-    echo "DOMINION (rust) is running: http://127.0.0.1:$PORT"
-    exit 0
-  fi
-done
-
-echo "서버가 시작되지 않았습니다. 로그: /tmp/dominion-rust.log"
-tail -20 /tmp/dominion-rust.log
-exit 1
+exec "$BIN" --open

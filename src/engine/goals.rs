@@ -101,6 +101,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             tools_enabled: true,
             thinking: None,
             reasoning_effort: None,
+            reasoning_language: None,
             system_override: Some(
                 "You are executing a durable autonomous goal. Act with real tools, \
                  report honestly, and only write DONE when the goal is verified complete."

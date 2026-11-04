@@ -10,10 +10,40 @@ use config::Config;
 use db::Store;
 use serde_json::json;
 use state::AppState;
+use std::path::{Path, PathBuf};
 use vault::Vault;
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--install-app") {
+        let target = args
+            .iter()
+            .position(|arg| arg == "--install-app")
+            .and_then(|index| args.get(index + 1))
+            .cloned()
+            .unwrap_or_else(|| "/Applications/DOMINION.app".to_string());
+        match install_app(Path::new(&target)) {
+            Ok(path) => {
+                println!("installed {}", path.display());
+                println!("double-click it from Finder/Applications");
+                return;
+            }
+            Err(error) => {
+                eprintln!("install failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(index) = args.iter().position(|arg| arg == "--home") {
+        if let Some(home) = args.get(index + 1) {
+            std::env::set_var("DOMINION_HOME", home);
+        }
+    }
+    let bundled = config::bundle_home().is_some();
+    let open_browser = bundled || args.iter().any(|arg| arg == "--open");
+
     let config = Config::from_env();
     if let Err(error) = std::fs::create_dir_all(&config.data_dir) {
         eprintln!(
@@ -33,8 +63,7 @@ async fn main() {
     let vault = Vault::open(&config.key_path());
     let state = AppState::new(config.clone(), store, vault);
 
-    // Migrate keys written by early builds that kept `apiKey` inline. The
-    // record must never carry a plaintext secret again.
+    // Migrate keys written by early builds that kept `apiKey` inline.
     for provider in state.store.all("provider") {
         let Some(plaintext) = provider
             .get("apiKey")
@@ -89,17 +118,24 @@ async fn main() {
         }
     }
 
-    engine::jobs::start(state.clone());
-
-    let app = api::router(state);
-
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", config.port)).await {
         Ok(listener) => listener,
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            // Double-clicking the app while it already runs just opens the UI.
+            println!("DOMINION already running on port {}", config.port);
+            if open_browser {
+                open_url(config.port);
+            }
+            return;
+        }
         Err(error) => {
             eprintln!("cannot bind 127.0.0.1:{}: {error}", config.port);
             std::process::exit(1);
         }
     };
+
+    engine::jobs::start(state.clone());
+    let app = api::router(state);
 
     println!(
         "DOMINION (rust engine) listening on http://127.0.0.1:{}",
@@ -109,7 +145,66 @@ async fn main() {
     println!("  web       : {}", config.web_dir.display());
     println!("  workspace : {}", config.workspace.display());
 
+    if open_browser {
+        open_url(config.port);
+    }
+
     if let Err(error) = axum::serve(listener, app).await {
         eprintln!("server error: {error}");
     }
+}
+
+/// Opens the UI in Chrome when available, otherwise the default browser.
+fn open_url(port: u16) {
+    let url = format!("http://127.0.0.1:{port}");
+    let chrome = std::process::Command::new("open")
+        .args(["-a", "Google Chrome", &url])
+        .status();
+    if chrome.map(|status| !status.success()).unwrap_or(true) {
+        let _ = std::process::Command::new("open").arg(&url).status();
+    }
+}
+
+/// Builds a macOS app bundle whose executable *is* this Rust binary, so
+/// double-clicking starts the server without a shell or AppleScript wrapper.
+fn install_app(target: &Path) -> Result<PathBuf, String> {
+    let home = std::env::current_dir().map_err(|error| error.to_string())?;
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let macos = target.join("Contents/MacOS");
+    let resources = target.join("Contents/Resources");
+    std::fs::create_dir_all(&macos).map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&resources).map_err(|error| error.to_string())?;
+
+    let binary = macos.join("DOMINION");
+    std::fs::copy(&exe, &binary).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755));
+    }
+
+    std::fs::write(resources.join("home"), home.to_string_lossy().as_bytes())
+        .map_err(|error| error.to_string())?;
+
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleName</key><string>DOMINION</string>
+<key>CFBundleDisplayName</key><string>DOMINION</string>
+<key>CFBundleIdentifier</key><string>com.hushmind.dominion.rust</string>
+<key>CFBundleExecutable</key><string>DOMINION</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>{}</string>
+<key>CFBundleVersion</key><string>{}</string>
+<key>LSUIElement</key><true/>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+"#,
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(target.join("Contents/Info.plist"), plist)
+        .map_err(|error| error.to_string())?;
+    Ok(target.to_path_buf())
 }

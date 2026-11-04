@@ -9,6 +9,7 @@ pub mod models;
 pub mod oauth;
 pub mod rooms;
 pub mod tools;
+pub mod translate;
 pub mod workflows;
 
 use crate::state::AppState;

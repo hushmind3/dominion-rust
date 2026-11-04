@@ -132,6 +132,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 tools_enabled: true,
                 thinking: None,
                 reasoning_effort: None,
+            reasoning_language: None,
                 system_override: Some(format!(
                     "You are participant {name} in a roundtable. Address the shared goal, \
                      react to prior speakers, and contribute an independent perspective. \
