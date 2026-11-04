@@ -5,6 +5,7 @@ pub mod dev;
 pub mod goals;
 pub mod jobs;
 pub mod mcp;
+pub mod models;
 pub mod rooms;
 pub mod tools;
 pub mod workflows;

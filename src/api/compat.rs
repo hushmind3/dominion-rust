@@ -19,14 +19,6 @@ pub async fn empty_object() -> Json<Value> {
 
 
 
-pub async fn model_runtime() -> Json<Value> {
-    Json(json!({
-        "status": "stopped",
-        "engine": "rust",
-        "name": null,
-        "id": null,
-    }))
-}
 
 pub async fn oauth_providers() -> Json<Value> {
     Json(json!([

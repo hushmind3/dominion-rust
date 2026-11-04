@@ -26,6 +26,7 @@ src/
     rooms.rs         멀티 에이전트 라운드테이블 실행
     goals.rs         자율 목표 루프 (도구 사용 · DONE 판정)
     compact.rs       대화 컨텍스트 압축 (요약 체크포인트)
+    models.rs        로컬 모델 런타임 (llama.cpp) · HF 검색/다운로드
     skills.rs        SKILL.md 카탈로그 스캔 · 가져오기
     dev.rs           소스 개발 스튜디오 (git · npm · vite 미리보기)
     mcp.rs           MCP stdio/HTTP 클라이언트 + 도구 네임스페이스
@@ -77,6 +78,7 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 | MCP | `GET /api/mcp`, `GET /api/mcp/discover`, `GET /api/mcp/catalog` (공식 Registry), `GET /api/tools` (`mcp__서버__도구`) |
 | 스킬 | `GET /api/skill-catalog`, `POST /api/skill-catalog/import`, `POST /api/skills/import-repo`, `GET /api/skills/:id/export` |
 | 컨텍스트 | `POST /api/sessions/:id/compact` |
+| 로컬 모델 | `GET /api/model-library/{catalog,details,installed,jobs,runtime}`, `POST /api/model-library/{download,import}`, `POST /api/model-library/runtime/{load,unload}` |
 | 기타 | `GET /api/audit`, `POST /api/translate` |
 
 ## 엔진 동작
@@ -91,6 +93,13 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 5. 최종 답변을 저장하고 `assistant_saved` + `done` 전송
 
 도구 실행은 모두 감사 로그(`audit`)에 기록됩니다.
+
+### 로컬 모델
+
+`llama-server`(llama.cpp)를 Rust가 직접 관리합니다. 모델 로드 시
+`127.0.0.1:4319` 에 서버를 띄우고 `dominion-native` 제공자를 자동 등록하므로,
+채팅 엔진은 원격 제공자와 동일한 경로로 로컬 모델을 사용합니다. 언로드하면
+프로세스 그룹을 종료하고 제공자를 제거합니다.
 
 ### 작업 큐
 
@@ -135,7 +144,8 @@ JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적
 
 Node 구현의 다음 기능은 Rust로 옮기지 않았습니다. 해당 경로는 HTML 대신 명시적인 JSON 오류(`501`, `ported: false`)를 반환합니다.
 
-- 로컬 모델 런타임 (llama.cpp / MLX 다운로드·로드)
+- MLX 런타임 (llama.cpp GGUF만 지원)
+- 다운로드 일시정지/재개 (시작·취소·재시작은 지원)
 - OAuth 연동 (Google/GitHub/YouTube) — 클라이언트 자격 증명 필요
 - 메신저 채널 어댑터 (Slack/Discord/Telegram) — 봇 토큰 필요
 - 동영상 생성 파이프라인
@@ -160,3 +170,4 @@ cargo test --release
 - 개발 스튜디오 설정 저장 및 패키지 경로 해석
 - 스킬 카탈로그 스캔/가져오기
 - 컨텍스트 압축 요약과 히스토리 대체
+- 로컬 GGUF 설치/가져오기/언로드

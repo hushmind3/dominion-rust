@@ -1,5 +1,6 @@
 pub mod collections;
 pub mod dev;
+pub mod models;
 pub mod compat;
 pub mod core;
 
@@ -82,14 +83,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/skill-catalog/meta", get(core::skill_catalog_meta))
         .route("/api/skill-catalog/import", post(core::import_skill))
         .route("/api/skills/import-repo", post(core::import_skill_repo))
-        .route("/api/model-library/catalog", get(compat::empty_list))
-        .route("/api/model-library/installed", get(compat::empty_list))
-        .route("/api/model-library/jobs", get(compat::empty_list))
-        .route("/api/model-library/runtime", get(compat::model_runtime))
-        .route(
-            "/api/model-library/:action",
-            post(compat::not_ported).get(compat::empty_object),
-        )
+        .route("/api/model-library/catalog", get(models::catalog))
+        .route("/api/model-library/details", get(models::details))
+        .route("/api/model-library/installed", get(models::installed))
+        .route("/api/model-library/jobs", get(models::jobs))
+        .route("/api/model-library/runtime", get(models::runtime))
+        .route("/api/model-library/runtime/load", post(models::load))
+        .route("/api/model-library/runtime/unload", post(models::unload))
+        .route("/api/model-library/download", post(models::download))
+        .route("/api/model-library/import", post(models::import))
+        .route("/api/model-library/jobs/:id/:action", post(models::job_action))
         .route("/api/dev/status", get(dev::status))
         .route("/api/dev/config", get(dev::get_config).post(dev::save_config))
         .route("/api/dev/connect", post(dev::connect))
