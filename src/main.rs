@@ -33,6 +33,30 @@ async fn main() {
     let vault = Vault::open(&config.key_path());
     let state = AppState::new(config.clone(), store, vault);
 
+    // Migrate keys written by early builds that kept `apiKey` inline. The
+    // record must never carry a plaintext secret again.
+    for provider in state.store.all("provider") {
+        let Some(plaintext) = provider
+            .get("apiKey")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let Some(id) = provider.get("id").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if !state.store.has_secret(&format!("provider:{id}")) {
+            state.save_secret(&format!("provider:{id}"), plaintext);
+        }
+        let mut clean = provider.clone();
+        if let serde_json::Value::Object(ref mut map) = clean {
+            map.remove("apiKey");
+        }
+        state.store.put("provider", &clean);
+        println!("migrated plaintext provider key into the vault: {id}");
+    }
+
     // A restart cannot resume an in-flight approval prompt. Mark them so the
     // UI never offers a stale "approve" that would do nothing.
     for approval in state.store.all("approval") {
