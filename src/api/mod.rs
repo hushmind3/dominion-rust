@@ -9,8 +9,8 @@ pub mod core;
 
 use crate::state::AppState;
 use axum::{
-    extract::{OriginalUri, Request},
-    http::{header, HeaderValue, StatusCode},
+    extract::{OriginalUri, Request, State},
+    http::{header, HeaderName, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, get, post},
@@ -152,11 +152,37 @@ pub fn router(state: AppState) -> Router {
     let static_files = ServeDir::new(state.config.web_dir.clone())
         .append_index_html_on_directories(true);
 
+    let port = state.config.port;
+    let origins = vec![
+        format!("http://127.0.0.1:{port}")
+            .parse::<HeaderValue>()
+            .expect("origin"),
+        format!("http://localhost:{port}")
+            .parse::<HeaderValue>()
+            .expect("origin"),
+    ];
+    let cors = CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            HeaderName::from_static("x-dominion-token"),
+        ]);
+
     router
         .route("/api/*rest", any(api_not_found))
         .fallback_service(static_files)
         .layer(middleware::from_fn(no_stale_ui))
-        .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn_with_state(state.clone(), guard_writes))
+        .layer(cors)
         .with_state(state)
 }
 
@@ -180,4 +206,49 @@ async fn no_stale_ui(request: Request, next: Next) -> Response {
         HeaderValue::from_static("no-cache"),
     );
     response
+}
+
+/// Rejects cross-origin writes so a random website cannot drive the local
+/// computer-control API. An optional admin token protects writes further.
+async fn guard_writes(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+    if !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        let port = state.config.port;
+        if let Some(origin) = request
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|value| value.to_str().ok())
+        {
+            let allowed = origin == format!("http://127.0.0.1:{port}")
+                || origin == format!("http://localhost:{port}");
+            if !allowed {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "cross-origin write blocked" })),
+                )
+                    .into_response();
+            }
+        }
+        if let Ok(token) = std::env::var("DOMINION_ADMIN_TOKEN") {
+            if !token.trim().is_empty() {
+                let provided = request
+                    .headers()
+                    .get("x-dominion-token")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("");
+                if provided != token {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({ "error": "admin token required" })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+    next.run(request).await
 }

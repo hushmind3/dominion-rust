@@ -8,6 +8,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 
 const MAX_ROUNDS: usize = 8;
+const MAX_TOOL_CALLS: usize = 40;
+const MAX_ELAPSED: Duration = Duration::from_secs(600);
 const HISTORY_LIMIT: usize = 40;
 
 /// One logical turn: a user prompt, optional agent/provider/model overrides.
@@ -74,6 +76,7 @@ struct Completion {
     content: String,
     reasoning: String,
     tool_calls: Vec<ToolCall>,
+    usage: u64,
 }
 
 struct ProviderRef {
@@ -82,6 +85,7 @@ struct ProviderRef {
     api_key: String,
     kind: String,
     model: String,
+    tool_mode: String,
 }
 
 /// SSE entry point used by `POST /api/chat`.
@@ -133,6 +137,10 @@ pub async fn run_turn(
         .ok_or("Session has no id")?
         .to_string();
     state.clear_cancel(&session_id);
+    if !state.begin_session(&session_id) {
+        return Err("Session is already running".into());
+    }
+    let _session_guard = state.session_guard(&session_id);
 
     let execution = state.store.put(
         "execution",
@@ -171,6 +179,7 @@ struct Metrics {
     model_calls: u32,
     tool_calls: u32,
     iterations: u32,
+    tokens: u64,
 }
 
 async fn run_turn_body(
@@ -198,17 +207,30 @@ async fn run_turn_body(
     retitle_if_placeholder(state, &session, &request.input);
 
     let provider = select_provider(state, request, &session)?;
-    let system = system_prompt(state, request);
+    let system = system_prompt(state, request, &request.input);
     let mut messages = vec![json!({ "role": "system", "content": system })];
     messages.extend(history(state, session_id));
 
-    let mut tool_definitions = if request.tools_enabled {
+    let mut tool_definitions = if request.tools_enabled && provider.tool_mode != "compat" {
         tools::definitions()
     } else {
         Vec::new()
     };
-    if request.tools_enabled {
+    if request.tools_enabled && provider.tool_mode != "compat" {
         tool_definitions.extend(mcp::definitions(state).await);
+    }
+    if request.tools_enabled && provider.tool_mode == "compat" {
+        // Weak/local models without native function calling get a text
+        // protocol instead of silently losing tool access.
+        let manual = tool_manual(&tool_definitions).await;
+        if let Some(first) = messages.first_mut() {
+            let existing = first
+                .get("content")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            first["content"] = json!(format!("{existing}\n\n{manual}"));
+        }
     }
 
     let client = reqwest::Client::builder()
@@ -218,10 +240,18 @@ async fn run_turn_body(
 
     let mut final_content = String::new();
     let mut final_reasoning = String::new();
+    let mut total_tokens: u64 = 0;
+    let started_at = std::time::Instant::now();
 
     for round in 0..MAX_ROUNDS {
         if state.is_cancelled(session_id) {
             return Err("실행이 중단되었습니다.".into());
+        }
+        if started_at.elapsed() > MAX_ELAPSED {
+            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
+        }
+        if metrics.lock().unwrap().tool_calls as usize >= MAX_TOOL_CALLS {
+            return Err(format!("도구 호출 제한({MAX_TOOL_CALLS}회)을 초과했습니다."));
         }
         {
             let mut counters = metrics.lock().unwrap();
@@ -229,7 +259,7 @@ async fn run_turn_body(
             counters.iterations = round as u32 + 1;
         }
 
-        let completion = stream_completion(
+        let mut completion = stream_completion(
             state,
             &client,
             &provider,
@@ -244,23 +274,57 @@ async fn run_turn_body(
         if !completion.reasoning.is_empty() {
             final_reasoning.push_str(&completion.reasoning);
         }
+        // Intermediate preambles are stored with their tool-call message, so
+        // the final message keeps only the last substantive answer.
         if !completion.content.is_empty() {
-            final_content.push_str(&completion.content);
+            final_content = completion.content.clone();
+        }
+        total_tokens += completion.usage;
+        metrics.lock().unwrap().tokens = total_tokens;
+
+        if completion.tool_calls.is_empty()
+            && request.tools_enabled
+            && provider.tool_mode != "native"
+        {
+            let (parsed, cleaned) = parse_text_tool_calls(&completion.content);
+            if !parsed.is_empty() {
+                completion.content = cleaned;
+                completion.tool_calls = parsed
+                    .into_iter()
+                    .map(|(name, arguments)| ToolCall {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        name,
+                        arguments,
+                    })
+                    .collect();
+            }
         }
 
         if completion.tool_calls.is_empty() {
             break;
         }
 
+        let tool_calls_json = completion.tool_calls.iter().map(|call| json!({
+            "id": call.id,
+            "type": "function",
+            "function": { "name": call.name, "arguments": call.arguments }
+        })).collect::<Vec<_>>();
         messages.push(json!({
             "role": "assistant",
             "content": completion.content,
-            "tool_calls": completion.tool_calls.iter().map(|call| json!({
-                "id": call.id,
-                "type": "function",
-                "function": { "name": call.name, "arguments": call.arguments }
-            })).collect::<Vec<_>>(),
+            "tool_calls": tool_calls_json,
         }));
+        // Persist the tool-call chain so a restart keeps the exact context the
+        // model saw instead of only the final answer.
+        if let Some(saved) = state.store.write_message(&json!({
+            "session_id": session_id,
+            "role": "assistant",
+            "content": completion.content,
+            "agent_id": request.agent_id,
+            "tool_calls": tool_calls_json,
+        })) {
+            state.bus.message(&saved);
+        }
 
         for call in &completion.tool_calls {
             if tx.is_closed() {
@@ -350,11 +414,21 @@ async fn run_turn_body(
                 state.bus.record("execution_operation", &operation);
             }
 
+            let tool_content = result.to_string();
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call.id,
-                "content": result.to_string(),
+                "content": tool_content,
             }));
+            if let Some(saved) = state.store.write_message(&json!({
+                "session_id": session_id,
+                "role": "tool",
+                "content": tool_content,
+                "tool_call_id": call.id,
+                "agent_id": request.agent_id,
+            })) {
+                state.bus.message(&saved);
+            }
         }
     }
 
@@ -397,6 +471,7 @@ fn finalize_execution(
     };
     let counters = metrics.lock().unwrap();
     record["iterations"] = json!(counters.iterations);
+    record["tokens"] = json!(counters.tokens);
     record["modelCalls"] = json!(counters.model_calls);
     record["toolCalls"] = json!(counters.tool_calls);
     record["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
@@ -549,6 +624,18 @@ fn select_provider(
         })
         .unwrap_or_default();
 
+    let kind = provider
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or("openai")
+        .to_string();
+    let tool_mode = provider
+        .get("toolMode")
+        .and_then(|value| value.as_str())
+        .filter(|value| matches!(*value, "native" | "compat" | "auto"))
+        .map(str::to_string)
+        .unwrap_or_else(|| if kind == "ollama" { "compat".into() } else { "auto".into() });
+
     Ok(ProviderRef {
         name: provider
             .get("name")
@@ -557,16 +644,13 @@ fn select_provider(
             .to_string(),
         base_url,
         api_key,
-        kind: provider
-            .get("kind")
-            .and_then(|value| value.as_str())
-            .unwrap_or("openai")
-            .to_string(),
+        kind,
         model,
+        tool_mode,
     })
 }
 
-fn system_prompt(state: &AppState, request: &TurnRequest) -> String {
+fn system_prompt(state: &AppState, request: &TurnRequest, query: &str) -> String {
     let mut prompt = String::from(
         "You are DOMINION, an agentic AI workspace running on a Rust engine. \
          Answer in Korean unless the user writes in another language. \
@@ -588,6 +672,10 @@ fn system_prompt(state: &AppState, request: &TurnRequest) -> String {
             }
         }
     }
+    if let Some(context) = context_block(state, query) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&context);
+    }
     if request.reasoning_language.as_deref() == Some("ko") {
         prompt.push_str(
             "\n\nWrite every internal reasoning / thinking step in Korean (한국어).              The final answer must also be in Korean unless the user asks otherwise.",
@@ -598,6 +686,149 @@ fn system_prompt(state: &AppState, request: &TurnRequest) -> String {
         prompt.push_str(extra);
     }
     prompt
+}
+
+async fn tool_manual(native: &[Value]) -> String {
+    let mut manual = String::from(
+        "You cannot use native function calling. To call a tool, output exactly one line:\n\
+         <tool_call>{\"name\":\"tool_name\",\"arguments\":{...}}</tool_call>\n\
+         Available tools:",
+    );
+    let mut seen = std::collections::HashSet::new();
+    for definition in native {
+        let function = &definition["function"];
+        let name = function.get("name").and_then(|value| value.as_str()).unwrap_or("");
+        if name.is_empty() || !seen.insert(name.to_string()) {
+            continue;
+        }
+        manual.push_str(&format!(
+            "\n- {}: {}",
+            name,
+            function.get("description").and_then(|value| value.as_str()).unwrap_or("")
+        ));
+    }
+    manual
+}
+
+/// Parses text-based tool calls used by small models and `toolMode: compat`.
+pub fn parse_text_tool_calls(content: &str) -> (Vec<(String, String)>, String) {
+    let mut calls = Vec::new();
+    let mut cleaned = content.to_string();
+
+    while let Some(start) = cleaned.find("<tool_call>") {
+        let Some(end) = cleaned[start..].find("</tool_call>") else { break };
+        let end = start + end + "</tool_call>".len();
+        let block = cleaned[start + "<tool_call>".len()..end - "</tool_call>".len()].to_string();
+        if let Some(call) = parse_tool_json(&block) {
+            calls.push(call);
+        }
+        cleaned.replace_range(start..end, "");
+    }
+
+    // ```json {"tool": ...} ``` fences
+    if calls.is_empty() {
+        let mut rest = String::new();
+        let mut cursor = 0;
+        while let Some(open) = cleaned[cursor..].find("```") {
+            let open = cursor + open;
+            let after = open + 3;
+            let Some(close) = cleaned[after..].find("```") else { break };
+            let close = after + close;
+            let body = &cleaned[after..close];
+            let body = body.trim_start_matches(|ch| ch == 'j' || ch == 's' || ch == 'o' || ch == 'n' || ch == '\n');
+            if let Some(call) = parse_tool_json(body) {
+                calls.push(call);
+                rest.push_str(&cleaned[cursor..open]);
+                cursor = close + 3;
+            } else {
+                rest.push_str(&cleaned[cursor..close + 3]);
+                cursor = close + 3;
+            }
+        }
+        rest.push_str(&cleaned[cursor..]);
+        if !calls.is_empty() {
+            cleaned = rest;
+        }
+    }
+    (calls, cleaned.trim().to_string())
+}
+
+fn parse_tool_json(text: &str) -> Option<(String, String)> {
+    let value: Value = serde_json::from_str(text.trim()).ok()?;
+    let name = value
+        .get("name")
+        .or_else(|| value.get("tool"))
+        .and_then(|item| item.as_str())?
+        .to_string();
+    let arguments = value
+        .get("arguments")
+        .or_else(|| value.get("args"))
+        .or_else(|| value.get("parameters"))
+        .or_else(|| value.get("input"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    Some((name, arguments.to_string()))
+}
+
+/// Relevant memories and enabled skills are injected every turn, matching the
+/// Node engine's memoryContext + enabled-skill behavior.
+fn context_block(state: &AppState, query: &str) -> Option<String> {
+    let tokens: Vec<String> = query
+        .to_lowercase()
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| token.chars().count() > 1)
+        .map(str::to_string)
+        .collect();
+
+    let mut memories = state
+        .store
+        .all("memory")
+        .into_iter()
+        .filter_map(|memory| {
+            let text = memory.get("text").and_then(|v| v.as_str())?.to_string();
+            let lower = text.to_lowercase();
+            let score = tokens.iter().filter(|token| lower.contains(token.as_str())).count();
+            (score > 0).then_some((score, text))
+        })
+        .collect::<Vec<_>>();
+    memories.sort_by(|a, b| b.0.cmp(&a.0));
+    memories.truncate(5);
+
+    let mut skills = state
+        .store
+        .all("skill")
+        .into_iter()
+        .filter(|skill| skill.get("enabled").and_then(|v| v.as_bool()) != Some(false))
+        .filter_map(|skill| {
+            let name = skill.get("name").and_then(|v| v.as_str())?.to_string();
+            let instructions = skill
+                .get("instructions")
+                .or_else(|| skill.get("description"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .chars()
+                .take(700)
+                .collect::<String>();
+            Some((name, instructions))
+        })
+        .collect::<Vec<_>>();
+    skills.truncate(5);
+
+    if memories.is_empty() && skills.is_empty() {
+        return None;
+    }
+    let mut block = String::from("Relevant context from previous sessions:");
+    for (_, text) in &memories {
+        block.push_str("\n- 기억: ");
+        block.push_str(&text.chars().take(400).collect::<String>());
+    }
+    if !skills.is_empty() {
+        block.push_str("\n\nEnabled skills (follow when applicable):");
+        for (name, instructions) in &skills {
+            block.push_str(&format!("\n- {name}: {instructions}"));
+        }
+    }
+    Some(block)
 }
 
 fn history(state: &AppState, session_id: &str) -> Vec<Value> {
@@ -631,7 +862,18 @@ fn history(state: &AppState, session_id: &str) -> Vec<Value> {
                 .and_then(|value| value.as_str())
                 .unwrap_or("");
             match role {
-                "user" | "assistant" if !content.trim().is_empty() => {
+                "assistant" => {
+                    let tool_calls = message.get("tool_calls").cloned().filter(|v| !v.is_null());
+                    if content.trim().is_empty() && tool_calls.is_none() {
+                        return None;
+                    }
+                    let mut item = json!({ "role": "assistant", "content": content });
+                    if let Some(calls) = tool_calls {
+                        item["tool_calls"] = calls;
+                    }
+                    Some(item)
+                }
+                "user" if !content.trim().is_empty() => {
                     Some(json!({ "role": role, "content": content }))
                 }
                 "tool" => Some(json!({
@@ -725,6 +967,13 @@ async fn stream_completion(
             };
             if let Some(error) = piece.get("error") {
                 return Err(format!("모델 오류: {error}"));
+            }
+            if let Some(total) = piece
+                .get("usage")
+                .and_then(|usage| usage.get("total_tokens"))
+                .and_then(|value| value.as_u64())
+            {
+                completion.usage = total;
             }
             let Some(delta) = piece
                 .get("choices")
@@ -902,6 +1151,25 @@ async fn stream_anthropic(
             };
             let kind = piece.get("type").and_then(|value| value.as_str()).unwrap_or("");
             match kind {
+                "message_start" => {
+                    if let Some(input) = piece
+                        .get("message")
+                        .and_then(|message| message.get("usage"))
+                        .and_then(|usage| usage.get("input_tokens"))
+                        .and_then(|value| value.as_u64())
+                    {
+                        completion.usage += input;
+                    }
+                }
+                "message_delta" => {
+                    if let Some(output) = piece
+                        .get("usage")
+                        .and_then(|usage| usage.get("output_tokens"))
+                        .and_then(|value| value.as_u64())
+                    {
+                        completion.usage += output;
+                    }
+                }
                 "content_block_delta" => {
                     let delta = &piece["delta"];
                     match delta.get("type").and_then(|value| value.as_str()) {
@@ -1042,4 +1310,36 @@ async fn request_approval(
         state.store.put("approval", &record);
     }
     allowed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_text_tool_calls;
+
+    #[test]
+    fn parses_xml_style_tool_calls() {
+        let (calls, cleaned) = parse_text_tool_calls(
+            "확인하겠습니다.\n<tool_call>{\"name\":\"workspace_read\",\"arguments\":{\"path\":\"a.txt\"}}</tool_call>",
+        );
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "workspace_read");
+        assert!(calls[0].1.contains("a.txt"));
+        assert!(!cleaned.contains("tool_call"));
+    }
+
+    #[test]
+    fn parses_fenced_json_tool_calls() {
+        let (calls, _) = parse_text_tool_calls(
+            "```json\n{\"tool\":\"shell_exec\",\"args\":{\"command\":\"ls\"}}\n```",
+        );
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "shell_exec");
+    }
+
+    #[test]
+    fn ignores_normal_text() {
+        let (calls, cleaned) = parse_text_tool_calls("그냥 일반 답변입니다.");
+        assert!(calls.is_empty());
+        assert_eq!(cleaned, "그냥 일반 답변입니다.");
+    }
 }

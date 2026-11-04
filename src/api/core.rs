@@ -164,6 +164,12 @@ pub async fn save_provider(
         .get("enabled")
         .and_then(|value| value.as_bool())
         .unwrap_or(true));
+    record["toolMode"] = json!(match body.get("toolMode").and_then(|value| value.as_str()) {
+        Some("native") => "native",
+        Some("compat") => "compat",
+        Some("auto") => "auto",
+        _ => if kind == "ollama" { "compat" } else { "auto" },
+    });
     if let Value::Object(ref mut map) = record {
         map.remove("apiKey");
         map.remove("hasKey");

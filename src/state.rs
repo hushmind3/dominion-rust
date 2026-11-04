@@ -16,6 +16,8 @@ pub struct AppState {
     pub approvals: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     /// Sessions the user asked to stop. The engine checks between rounds/tools.
     pub cancelled: Arc<Mutex<HashSet<String>>>,
+    /// Sessions currently executing. Prevents two turns racing on one history.
+    pub active: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AppState {
@@ -27,6 +29,7 @@ impl AppState {
             vault: Arc::new(vault),
             approvals: Arc::new(Mutex::new(HashMap::new())),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
+            active: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -53,5 +56,73 @@ impl AppState {
 
     pub fn is_cancelled(&self, session_id: &str) -> bool {
         self.cancelled.lock().unwrap().contains(session_id)
+    }
+
+    /// Returns false when the session already has a running turn.
+    pub fn begin_session(&self, session_id: &str) -> bool {
+        self.active
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string())
+    }
+
+    pub fn end_session(&self, session_id: &str) {
+        self.active.lock().unwrap().remove(session_id);
+    }
+
+    pub fn session_guard(&self, session_id: &str) -> SessionGuard {
+        SessionGuard {
+            state: self.clone(),
+            id: session_id.to_string(),
+        }
+    }
+}
+
+/// Releases the session lock even when the turn returns early via `?`.
+pub struct SessionGuard {
+    state: AppState,
+    id: String,
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.state.end_session(&self.id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::db::Store;
+    use crate::vault::Vault;
+
+    fn temp_state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("dominion-state-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let store = Store::open(&cfg.db_path()).unwrap();
+        let vault = Vault::open(&cfg.key_path());
+        (AppState::new(cfg, store, vault), dir)
+    }
+
+    #[test]
+    fn session_lock_rejects_a_second_turn() {
+        let (state, dir) = temp_state();
+        assert!(state.begin_session("s1"));
+        assert!(!state.begin_session("s1"));
+        state.end_session("s1");
+        assert!(state.begin_session("s1"));
+        {
+            let _guard = state.session_guard("s1");
+            assert!(!state.begin_session("s1"));
+        }
+        assert!(state.begin_session("s1"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

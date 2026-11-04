@@ -165,6 +165,7 @@ async fn main() {
         }
     };
 
+    engine::jobs::recover(&state);
     engine::jobs::start(state.clone());
     let app = api::router(state);
 

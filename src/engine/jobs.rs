@@ -80,6 +80,33 @@ pub fn enqueue(state: &AppState, kind: &str, input: Value) -> Option<Value> {
     job
 }
 
+/// Recovers work left behind by a crash: running jobs are re-queued (unless
+/// they already exhausted retries) and running executions become interrupted.
+pub fn recover(state: &AppState) {
+    for job in state.store.all("job") {
+        if job.get("status").and_then(|value| value.as_str()) != Some("running") {
+            continue;
+        }
+        let attempts = job.get("attempts").and_then(|value| value.as_u64()).unwrap_or(0);
+        let mut updated = job.clone();
+        updated["recovered"] = json!(true);
+        updated["status"] = json!(if attempts >= 3 { "needs_review" } else { "queued" });
+        state.store.put("job", &updated);
+        state
+            .store
+            .audit("job.recovered", json!({ "jobId": job.get("id"), "attempts": attempts }));
+    }
+    for execution in state.store.all("execution") {
+        if execution.get("status").and_then(|value| value.as_str()) == Some("running") {
+            let mut updated = execution.clone();
+            updated["status"] = json!("interrupted");
+            updated["reason"] = json!("백엔드가 재시작되어 실행이 중단되었습니다.");
+            updated["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            state.store.put("execution", &updated);
+        }
+    }
+}
+
 /// Starts the durable job worker plus the automation scheduler.
 pub fn start(state: AppState) {
     let worker_state = state.clone();
@@ -290,6 +317,27 @@ mod tests {
         running["status"] = json!("running");
         state.store.put("job", &running);
         assert!(next_queued(&state).is_none());
+    }
+
+    #[test]
+    fn recover_requeues_running_jobs() {
+        let state = temp_state();
+        let job = enqueue(&state, "workflow", json!({ "workflowId": "w", "input": "" })).unwrap();
+        let mut running = job.clone();
+        running["status"] = json!("running");
+        running["attempts"] = json!(1);
+        state.store.put("job", &running);
+        recover(&state);
+        let stored = state.store.get("job", job["id"].as_str().unwrap()).unwrap();
+        assert_eq!(stored["status"], "queued");
+        assert_eq!(stored["recovered"], true);
+
+        running["attempts"] = json!(3);
+        running["status"] = json!("running");
+        state.store.put("job", &running);
+        recover(&state);
+        let stored = state.store.get("job", job["id"].as_str().unwrap()).unwrap();
+        assert_eq!(stored["status"], "needs_review");
     }
 
     #[test]
