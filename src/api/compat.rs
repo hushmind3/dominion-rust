@@ -17,9 +17,6 @@ pub async fn empty_object() -> Json<Value> {
     Json(json!({}))
 }
 
-pub async fn mcp_presets() -> Json<Value> {
-    Json(json!([]))
-}
 
 pub async fn skill_catalog(State(state): State<AppState>) -> Json<Value> {
     let items = state.store.all("skill");

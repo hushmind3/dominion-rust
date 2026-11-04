@@ -130,6 +130,59 @@ pub async fn run_turn(
         .and_then(|value| value.as_str())
         .ok_or("Session has no id")?
         .to_string();
+    state.clear_cancel(&session_id);
+
+    let execution = state.store.put(
+        "execution",
+        &json!({
+            "sessionId": session_id,
+            "agentId": request.agent_id,
+            "providerId": request.provider_id,
+            "model": request.model,
+            "status": "running",
+            "startedAt": chrono::Utc::now().to_rfc3339(),
+            "iterations": 0,
+            "modelCalls": 0,
+            "toolCalls": 0,
+            "tokens": 0,
+        }),
+    );
+    let execution_id = execution
+        .as_ref()
+        .and_then(|record| record.get("id"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    if let Some(record) = &execution {
+        state.bus.record("execution", record);
+    }
+
+    let metrics = std::sync::Mutex::new(Metrics::default());
+    let result =
+        run_turn_body(state, request, tx, &session_id, &metrics, &execution_id).await;
+    finalize_execution(state, &execution_id, &result, &metrics);
+    result
+}
+
+#[derive(Default)]
+struct Metrics {
+    model_calls: u32,
+    tool_calls: u32,
+    iterations: u32,
+}
+
+async fn run_turn_body(
+    state: &AppState,
+    request: &TurnRequest,
+    tx: &UnboundedSender<Value>,
+    session_id: &str,
+    metrics: &std::sync::Mutex<Metrics>,
+    execution_id: &str,
+) -> Result<Option<Value>, String> {
+    let session = state
+        .store
+        .get("session", session_id)
+        .ok_or("Session not found")?;
 
     let user_message = state.store.write_message(&json!({
         "session_id": session_id,
@@ -145,7 +198,7 @@ pub async fn run_turn(
     let provider = select_provider(state, request, &session)?;
     let system = system_prompt(state, request);
     let mut messages = vec![json!({ "role": "system", "content": system })];
-    messages.extend(history(state, &session_id));
+    messages.extend(history(state, session_id));
 
     let mut tool_definitions = if request.tools_enabled {
         tools::definitions()
@@ -165,12 +218,23 @@ pub async fn run_turn(
     let mut final_reasoning = String::new();
 
     for round in 0..MAX_ROUNDS {
+        if state.is_cancelled(session_id) {
+            return Err("실행이 중단되었습니다.".into());
+        }
+        {
+            let mut counters = metrics.lock().unwrap();
+            counters.model_calls += 1;
+            counters.iterations = round as u32 + 1;
+        }
+
         let completion = stream_completion(
+            state,
             &client,
             &provider,
             &messages,
             &tool_definitions,
             request,
+            session_id,
             tx,
         )
         .await?;
@@ -200,8 +264,12 @@ pub async fn run_turn(
             if tx.is_closed() {
                 return Ok(None);
             }
+            if state.is_cancelled(session_id) {
+                return Err("실행이 중단되었습니다.".into());
+            }
             let arguments: Value =
                 serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
+            let started_at = chrono::Utc::now().to_rfc3339();
             let _ = tx.send(json!({ "type": "tool_start", "name": call.name, "id": call.id }));
 
             let needs_approval = if call.name.starts_with("mcp__") {
@@ -215,7 +283,7 @@ pub async fn run_turn(
                 true
             };
 
-            let result = if allowed {
+            let (result, ok) = if allowed {
                 let context = ToolContext {
                     workspace: &state.config.workspace,
                     store: &state.store,
@@ -232,7 +300,7 @@ pub async fn run_turn(
                             "name": call.name,
                             "id": call.id,
                         }));
-                        value
+                        (value, true)
                     }
                     Err(error) => {
                         let _ = tx.send(json!({
@@ -241,7 +309,7 @@ pub async fn run_turn(
                             "id": call.id,
                             "error": error,
                         }));
-                        json!({ "error": error })
+                        (json!({ "error": error }), false)
                     }
                 }
             } else {
@@ -251,9 +319,10 @@ pub async fn run_turn(
                     "id": call.id,
                     "error": "사용자가 실행을 거부했습니다.",
                 }));
-                json!({ "error": "Denied by the user" })
+                (json!({ "error": "Denied by the user" }), false)
             };
 
+            metrics.lock().unwrap().tool_calls += 1;
             state.store.audit(
                 "tool.call",
                 json!({
@@ -263,6 +332,20 @@ pub async fn run_turn(
                     "round": round,
                 }),
             );
+            let operation = state.store.put(
+                "execution_operation",
+                &json!({
+                    "runId": execution_id,
+                    "callId": call.id,
+                    "tool": call.name,
+                    "status": if ok { "completed" } else { "failed" },
+                    "startedAt": started_at,
+                    "finishedAt": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
+            if let Some(operation) = operation {
+                state.bus.record("execution_operation", &operation);
+            }
 
             messages.push(json!({
                 "role": "tool",
@@ -287,6 +370,39 @@ pub async fn run_turn(
         state.bus.message(message);
     }
     Ok(saved)
+}
+
+fn finalize_execution(
+    state: &AppState,
+    execution_id: &str,
+    result: &Result<Option<Value>, String>,
+    metrics: &std::sync::Mutex<Metrics>,
+) {
+    if execution_id.is_empty() {
+        return;
+    }
+    let Some(mut record) = state.store.get("execution", execution_id) else {
+        return;
+    };
+    let counters = metrics.lock().unwrap();
+    record["iterations"] = json!(counters.iterations);
+    record["modelCalls"] = json!(counters.model_calls);
+    record["toolCalls"] = json!(counters.tool_calls);
+    record["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    match result {
+        Ok(_) => record["status"] = json!("completed"),
+        Err(message) if message.contains("중단") => {
+            record["status"] = json!("cancelled");
+            record["reason"] = json!(message);
+        }
+        Err(message) => {
+            record["status"] = json!("failed");
+            record["reason"] = json!(message);
+        }
+    }
+    if let Some(saved) = state.store.put("execution", &record) {
+        state.bus.record("execution", &saved);
+    }
 }
 
 fn retitle_if_placeholder(state: &AppState, session: &Value, text: &str) {
@@ -495,15 +611,18 @@ fn history(state: &AppState, session_id: &str) -> Vec<Value> {
 }
 
 async fn stream_completion(
+    state: &AppState,
     client: &reqwest::Client,
     provider: &ProviderRef,
     messages: &[Value],
     tools: &[Value],
     request: &TurnRequest,
+    session_id: &str,
     tx: &UnboundedSender<Value>,
 ) -> Result<Completion, String> {
     if provider.kind == "anthropic" {
-        return stream_anthropic(client, provider, messages, tools, request, tx).await;
+        return stream_anthropic(state, client, provider, messages, tools, request, session_id, tx)
+            .await;
     }
 
     let mut body = json!({
@@ -547,6 +666,9 @@ async fn stream_completion(
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
+        if state.is_cancelled(session_id) {
+            return Err("실행이 중단되었습니다.".into());
+        }
         let chunk = chunk.map_err(|error| format!("스트림 오류: {error}"))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         buffer = buffer.replace("\r\n", "\n");
@@ -643,11 +765,13 @@ async fn stream_completion(
 
 /// Anthropic Messages API streaming adapter.
 async fn stream_anthropic(
+    state: &AppState,
     client: &reqwest::Client,
     provider: &ProviderRef,
     messages: &[Value],
     tools: &[Value],
     request: &TurnRequest,
+    session_id: &str,
     tx: &UnboundedSender<Value>,
 ) -> Result<Completion, String> {
     let system = messages
@@ -720,6 +844,9 @@ async fn stream_anthropic(
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
+        if state.is_cancelled(session_id) {
+            return Err("실행이 중단되었습니다.".into());
+        }
         let chunk = chunk.map_err(|error| format!("스트림 오류: {error}"))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         buffer = buffer.replace("\r\n", "\n");

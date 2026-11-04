@@ -24,6 +24,7 @@ src/
     jobs.rs          내구성 있는 작업 큐 + 자동화 스케줄러
     workflows.rs     순차 워크플로 실행 ({{input}} / {{previous}})
     rooms.rs         멀티 에이전트 라운드테이블 실행
+    goals.rs         자율 목표 루프 (도구 사용 · DONE 판정)
     mcp.rs           MCP stdio/HTTP 클라이언트 + 도구 네임스페이스
   api/
     core.rs          핵심 API
@@ -67,7 +68,8 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 | 승인 | `GET/POST /api/approvals` |
 | 정책 | `GET/POST /api/policy` |
 | 컬렉션 | `agents`, `memories`, `skills`, `mcp`, `automations`, `workflows`, `rooms`, `channels`, `jobs`, `executions`, `goals` |
-| 작업 | `GET /api/jobs`, `POST /api/workflows/:id/run`, `POST /api/rooms/:id/run` |
+| 작업 | `GET /api/jobs`, `POST /api/workflows/:id/run`, `POST /api/rooms/:id/run`, `POST /api/goals` |
+| 실행 기록 | `GET /api/executions`, `GET /api/executions/:id/operations`, `POST /api/executions/:id/cancel`, `POST /api/sessions/:id/cancel` |
 | MCP | `GET /api/mcp`, `GET /api/mcp/discover`, `GET /api/tools` (`mcp__서버__도구`) |
 | 기타 | `GET /api/audit`, `POST /api/translate` |
 
@@ -94,7 +96,19 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
   실패하면 `status: failed` + `error` 로 남고 성공으로 표시하지 않습니다.
 - **회의실**: 참여 에이전트가 `rounds` 만큼 발언하며 직전 발언을 보고
   이어갑니다. 모든 발언은 하나의 세션에 저장됩니다.
+- **자율 목표**: `/goal` 로 등록한 목표를 최대 N회 반복하며 실제 도구로
+  수행합니다. 모델이 `DONE` 을 선언하면 완료, 아니면 `needs_review` 로
+  남깁니다.
 - **자동화**: 30초마다 `nextAt` 이 지난 automation을 큐에 넣습니다.
+
+### 실행 기록과 취소
+
+모든 엔진 턴은 `execution` 레코드를 만들고 모델 호출 수·도구 호출 수·
+반복 횟수를 기록합니다. 도구 호출은 `execution_operation` 으로 남습니다.
+
+`POST /api/sessions/:id/cancel` 은 스트리밍 중에도 다음 청크에서 중단하고
+`execution.status = cancelled` 로 기록합니다. `POST /api/executions/:id/cancel`
+은 해당 세션을 중단시킵니다.
 
 ### MCP
 
@@ -135,3 +149,5 @@ cargo test --release
 - 워크플로 프롬프트 치환
 - 작업 큐 등록/실패 기록
 - MCP 이름 네임스페이스 및 정책 기반 승인
+- 실행 기록/취소 상태 전이
+- 자율 목표 실패 경로

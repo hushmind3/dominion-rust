@@ -524,6 +524,37 @@ pub async fn list_tools(State(state): State<AppState>) -> Json<Value> {
     Json(json!(items))
 }
 
+pub async fn mcp_presets(State(state): State<AppState>) -> Json<Value> {
+    let workspace = state.config.workspace.to_string_lossy().to_string();
+    let home = std::env::var("HOME").unwrap_or_else(|_| workspace.clone());
+    Json(json!([
+        {
+            "id": "filesystem",
+            "name": "Filesystem",
+            "package": "@modelcontextprotocol/server-filesystem",
+            "description": "지정한 폴더의 파일을 읽고 씁니다.",
+            "args": [home],
+            "category": "파일",
+        },
+        {
+            "id": "git",
+            "name": "Git",
+            "package": "@modelcontextprotocol/server-git",
+            "description": "작업공간 저장소의 브랜치·변경 이력·커밋을 확인합니다.",
+            "args": ["--repository", workspace],
+            "category": "개발 도구",
+        },
+        {
+            "id": "memory",
+            "name": "Memory",
+            "package": "@modelcontextprotocol/server-memory",
+            "description": "엔티티·관계·메모를 로컬 지식 그래프에 저장합니다.",
+            "args": [],
+            "category": "기억",
+        }
+    ]))
+}
+
 pub async fn mcp_discover(State(state): State<AppState>) -> Json<Value> {
     let items = engine::mcp::tools(&state)
         .await
@@ -678,6 +709,109 @@ pub async fn commands(State(state): State<AppState>) -> Json<Value> {
         }
     }
     Json(json!([]))
+}
+
+pub async fn execution_operations(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<Value> {
+    let items = state
+        .store
+        .all("execution_operation")
+        .into_iter()
+        .filter(|record| record.get("runId").and_then(|value| value.as_str()) == Some(id.as_str()))
+        .collect::<Vec<_>>();
+    Json(json!(items))
+}
+
+pub async fn export_skill(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    match state.store.get("skill", &id) {
+        Some(skill) => Json(skill).into_response(),
+        None => error(StatusCode::NOT_FOUND, "스킬을 찾을 수 없습니다."),
+    }
+}
+
+pub async fn cancel_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<Value> {
+    let running = state
+        .store
+        .all("execution")
+        .iter()
+        .any(|execution| {
+            execution.get("sessionId").and_then(|value| value.as_str()) == Some(id.as_str())
+                && execution.get("status").and_then(|value| value.as_str()) == Some("running")
+        });
+    state.cancel_session(&id);
+    state
+        .store
+        .audit("session.cancel", json!({ "sessionId": id, "running": running }));
+    Json(json!({ "cancelled": running }))
+}
+
+pub async fn list_goals(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(state.store.all("goal")))
+}
+
+pub async fn get_goal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    match state.store.get("goal", &id) {
+        Some(goal) => Json(goal).into_response(),
+        None => error(StatusCode::NOT_FOUND, "목표를 찾을 수 없습니다."),
+    }
+}
+
+pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
+    state.store.remove("goal", &id);
+    state.bus.emit(json!({ "type": "record", "kind": "goal", "removed": id }));
+    Json(json!({ "ok": true }))
+}
+
+pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    let text = body
+        .get("goal")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "목표 내용이 필요합니다.");
+    }
+    let executor = body.get("executor").cloned().unwrap_or_else(|| json!({}));
+    let max_iterations = body
+        .get("maxIterations")
+        .cloned()
+        .unwrap_or_else(|| json!(5));
+
+    let Some(record) = state.store.put(
+        "goal",
+        &json!({
+            "goal": text,
+            "executor": executor,
+            "status": "queued",
+            "iterations": 0,
+            "maxIterations": max_iterations,
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+        }),
+    ) else {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "목표를 저장할 수 없습니다.");
+    };
+    state.bus.record("goal", &record);
+    let goal_id = record
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let job = crate::engine::jobs::enqueue(&state, "goal", json!({ "goalId": goal_id }));
+    let job_id = job
+        .as_ref()
+        .and_then(|job| job.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    let mut payload = record.clone();
+    payload["jobId"] = job_id;
+    Json(payload).into_response()
 }
 
 fn error(status: StatusCode, message: &str) -> Response {

@@ -1,6 +1,6 @@
 use crate::engine::chat::TurnRequest;
 use crate::engine::run_quiet;
-use crate::engine::{rooms, workflows};
+use crate::engine::{goals, rooms, workflows};
 use crate::state::AppState;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -17,7 +17,7 @@ pub struct JobContext {
 }
 
 impl JobContext {
-    fn new(state: AppState, job_id: String) -> Self {
+    pub fn new(state: AppState, job_id: String) -> Self {
         Self {
             state,
             job_id,
@@ -142,6 +142,7 @@ async fn run_job(state: AppState, job: Value) {
     let result = match kind.as_str() {
         "workflow" => workflows::run(&context, &job).await,
         "room" | "meeting" => rooms::run(&context, &job).await,
+        "goal" => goals::run(&context, &job).await,
         "prompt" | "learn" => run_prompt(&context, &job).await,
         other => Err(format!("지원하지 않는 작업 종류입니다: {other}")),
     };
@@ -235,7 +236,7 @@ fn schedule_automations(state: &AppState) {
             .unwrap_or("prompt");
         let input = automation.get("input").cloned().unwrap_or_else(|| json!({}));
         let job_kind = if kind == "meeting" { "room" } else { kind };
-        if !matches!(job_kind, "prompt" | "workflow" | "room" | "learn") {
+        if !matches!(job_kind, "prompt" | "workflow" | "room" | "learn" | "goal") {
             continue;
         }
         enqueue(state, job_kind, input);

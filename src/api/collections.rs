@@ -20,7 +20,6 @@ pub const COLLECTIONS: &[&str] = &[
     "channels",
     "jobs",
     "executions",
-    "goals",
     "knowledge",
 ];
 
@@ -182,6 +181,31 @@ pub async fn action(
                 "goal": body.get("goal").or_else(|| body.get("input")).cloned().unwrap_or(json!("")),
             }),
         ),
+        ("execution", "cancel") => {
+            if let Some(mut execution) = state.store.get("execution", &id) {
+                if let Some(session_id) = execution
+                    .get("sessionId")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                {
+                    state.cancel_session(&session_id);
+                }
+                execution["status"] = json!("cancelled");
+                execution["reason"] = json!("사용자 요청으로 취소");
+                execution["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
+                let saved = state.store.put("execution", &execution);
+                if let Some(saved) = &saved {
+                    state.bus.record("execution", saved);
+                }
+                Json(saved.unwrap_or(execution)).into_response()
+            } else {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "실행 기록을 찾을 수 없습니다." })),
+                )
+                    .into_response()
+            }
+        }
         ("channel", "diagnose") => Json(json!({
             "verified": false,
             "message": "Rust 런타임에서는 채널 어댑터가 아직 연결되지 않았습니다.",

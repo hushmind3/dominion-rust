@@ -54,6 +54,17 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/:id/clear", post(core::clear_session))
         .route("/api/sessions/:id/fork", post(core::fork_session))
         .route("/api/sessions/:id/compact", post(compat::not_ported))
+        .route("/api/sessions/:id/cancel", post(core::cancel_session))
+        .route(
+            "/api/executions/:id/operations",
+            get(core::execution_operations),
+        )
+        .route("/api/skills/:id/export", get(core::export_skill))
+        .route("/api/goals", get(core::list_goals).post(core::create_goal))
+        .route(
+            "/api/goals/:id",
+            get(core::get_goal).delete(core::delete_goal),
+        )
         // approvals
         .route(
             "/api/approvals",
@@ -63,7 +74,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/capabilities", get(core::capabilities))
         .route("/api/commands", get(core::commands))
         // compatibility surface
-        .route("/api/mcp/presets", get(compat::mcp_presets))
+        .route("/api/mcp/presets", get(core::mcp_presets))
         .route("/api/mcp/catalog", get(compat::empty_list))
         .route("/api/mcp/discover", get(core::mcp_discover))
         .route("/api/skill-catalog", get(compat::skill_catalog))

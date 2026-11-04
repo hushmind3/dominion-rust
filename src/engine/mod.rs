@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod goals;
 pub mod jobs;
 pub mod mcp;
 pub mod rooms;
