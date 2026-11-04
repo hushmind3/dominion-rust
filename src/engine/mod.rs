@@ -3,6 +3,8 @@ pub mod compact;
 pub mod skills;
 pub mod dev;
 pub mod goals;
+pub mod llm;
+pub mod learning;
 pub mod jobs;
 pub mod mcp;
 pub mod models;

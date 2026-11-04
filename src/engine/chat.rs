@@ -25,6 +25,7 @@ pub struct TurnRequest {
     pub thinking: Option<bool>,
     pub reasoning_effort: Option<String>,
     pub reasoning_language: Option<String>,
+    pub auto_learning: bool,
     pub system_override: Option<String>,
 }
 
@@ -59,6 +60,10 @@ impl TurnRequest {
             thinking: value.get("thinking").and_then(|item| item.as_bool()),
             reasoning_effort: string("reasoningEffort"),
             reasoning_language: string("reasoningLanguage"),
+            auto_learning: value
+                .get("autoLearning")
+                .and_then(|item| item.as_bool())
+                .unwrap_or(true),
             system_override: string("systemOverride"),
         })
     }
@@ -83,7 +88,6 @@ struct ProviderRef {
     name: String,
     base_url: String,
     api_key: String,
-    kind: String,
     model: String,
     tool_mode: String,
 }
@@ -171,6 +175,15 @@ pub async fn run_turn(
     let result =
         run_turn_body(state, request, tx, &session_id, &metrics, &execution_id).await;
     finalize_execution(state, &execution_id, &result, &metrics);
+
+    if request.auto_learning && matches!(&result, Ok(Some(_))) {
+        crate::engine::learning::enqueue(
+            state,
+            &session_id,
+            request.provider_id.as_deref().unwrap_or(""),
+            request.model.as_deref().unwrap_or(""),
+        );
+    }
     result
 }
 
@@ -390,6 +403,7 @@ async fn run_turn_body(
             };
 
             metrics.lock().unwrap().tool_calls += 1;
+            record_tool_stat(state, &call.name, ok);
             state.store.audit(
                 "tool.call",
                 json!({
@@ -644,7 +658,6 @@ fn select_provider(
             .to_string(),
         base_url,
         api_key,
-        kind,
         model,
         tool_mode,
     })
@@ -770,6 +783,20 @@ fn parse_tool_json(text: &str) -> Option<(String, String)> {
     Some((name, arguments.to_string()))
 }
 
+fn record_tool_stat(state: &AppState, name: &str, ok: bool) {
+    let mut stat = state.store.get("tool_stat", name).unwrap_or_else(|| {
+        json!({ "id": name, "attempts": 0, "successes": 0, "failures": 0 })
+    });
+    let attempts = stat.get("attempts").and_then(|v| v.as_u64()).unwrap_or(0) + 1;
+    let successes = stat.get("successes").and_then(|v| v.as_u64()).unwrap_or(0) + u64::from(ok);
+    let failures = stat.get("failures").and_then(|v| v.as_u64()).unwrap_or(0) + u64::from(!ok);
+    stat["attempts"] = json!(attempts);
+    stat["successes"] = json!(successes);
+    stat["failures"] = json!(failures);
+    stat["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    state.store.put("tool_stat", &stat);
+}
+
 /// Relevant memories and enabled skills are injected every turn, matching the
 /// Node engine's memoryContext + enabled-skill behavior.
 fn context_block(state: &AppState, query: &str) -> Option<String> {
@@ -786,13 +813,30 @@ fn context_block(state: &AppState, query: &str) -> Option<String> {
         .into_iter()
         .filter_map(|memory| {
             let text = memory.get("text").and_then(|v| v.as_str())?.to_string();
+            let kind = memory
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("fact")
+                .to_string();
+            let importance = memory
+                .get("importance")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.5);
             let lower = text.to_lowercase();
-            let score = tokens.iter().filter(|token| lower.contains(token.as_str())).count();
-            (score > 0).then_some((score, text))
+            let overlap = tokens
+                .iter()
+                .filter(|token| lower.contains(token.as_str()))
+                .count() as f64;
+            let relevant = overlap > 0.0 || (kind == "lesson" && importance >= 0.8);
+            relevant.then_some((
+                overlap * 3.0 + importance * 2.0,
+                kind,
+                text,
+            ))
         })
         .collect::<Vec<_>>();
-    memories.sort_by(|a, b| b.0.cmp(&a.0));
-    memories.truncate(5);
+    memories.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    memories.truncate(6);
 
     let mut skills = state
         .store
@@ -814,18 +858,35 @@ fn context_block(state: &AppState, query: &str) -> Option<String> {
         .collect::<Vec<_>>();
     skills.truncate(5);
 
-    if memories.is_empty() && skills.is_empty() {
+    let mut reliability = Vec::new();
+    for stat in state.store.all("tool_stat") {
+        let attempts = stat.get("attempts").and_then(|v| v.as_u64()).unwrap_or(0);
+        let successes = stat.get("successes").and_then(|v| v.as_u64()).unwrap_or(0);
+        let failures = stat.get("failures").and_then(|v| v.as_u64()).unwrap_or(0);
+        if attempts >= 3 && failures * 2 >= attempts {
+            let name = stat.get("id").and_then(|v| v.as_str()).unwrap_or("tool");
+            reliability.push(format!("{name}: {successes}/{attempts} 성공"));
+        }
+    }
+
+    if memories.is_empty() && skills.is_empty() && reliability.is_empty() {
         return None;
     }
     let mut block = String::from("Relevant context from previous sessions:");
-    for (_, text) in &memories {
-        block.push_str("\n- 기억: ");
+    for (_, kind, text) in &memories {
+        block.push_str(&format!("\n- [{kind}] "));
         block.push_str(&text.chars().take(400).collect::<String>());
     }
     if !skills.is_empty() {
         block.push_str("\n\nEnabled skills (follow when applicable):");
         for (name, instructions) in &skills {
             block.push_str(&format!("\n- {name}: {instructions}"));
+        }
+    }
+    if !reliability.is_empty() {
+        block.push_str("\n\nTool reliability (from past runs — prefer alternatives when low):");
+        for line in &reliability {
+            block.push_str(&format!("\n- {line}"));
         }
     }
     Some(block)
@@ -898,11 +959,6 @@ async fn stream_completion(
     session_id: &str,
     tx: &UnboundedSender<Value>,
 ) -> Result<Completion, String> {
-    if provider.kind == "anthropic" {
-        return stream_anthropic(state, client, provider, messages, tools, request, session_id, tx)
-            .await;
-    }
-
     let mut body = json!({
         "model": provider.model,
         "messages": messages,
@@ -1045,200 +1101,6 @@ async fn stream_completion(
         })
         .collect();
 
-    Ok(completion)
-}
-
-/// Anthropic Messages API streaming adapter.
-async fn stream_anthropic(
-    state: &AppState,
-    client: &reqwest::Client,
-    provider: &ProviderRef,
-    messages: &[Value],
-    tools: &[Value],
-    request: &TurnRequest,
-    session_id: &str,
-    tx: &UnboundedSender<Value>,
-) -> Result<Completion, String> {
-    let system = messages
-        .iter()
-        .filter(|message| message.get("role").and_then(|value| value.as_str()) == Some("system"))
-        .filter_map(|message| message.get("content").and_then(|value| value.as_str()))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
-    let converted: Vec<Value> = messages
-        .iter()
-        .filter_map(|message| {
-            let role = message.get("role")?.as_str()?;
-            if role == "system" {
-                return None;
-            }
-            let content = message
-                .get("content")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            Some(json!({ "role": if role == "assistant" { "assistant" } else { "user" }, "content": content }))
-        })
-        .collect();
-
-    let mut body = json!({
-        "model": provider.model,
-        "system": system,
-        "messages": converted,
-        "max_tokens": 4096,
-        "stream": true,
-    });
-    if !tools.is_empty() {
-        body["tools"] = json!(tools
-            .iter()
-            .filter_map(|definition| {
-                let function = definition.get("function")?;
-                Some(json!({
-                    "name": function.get("name")?,
-                    "description": function.get("description"),
-                    "input_schema": function.get("parameters"),
-                }))
-            })
-            .collect::<Vec<_>>());
-    }
-    let _ = request;
-
-    let response = client
-        .post(format!("{}/messages", provider.base_url))
-        .header("content-type", "application/json")
-        .header("x-api-key", provider.api_key.clone())
-        .header("anthropic-version", "2023-06-01")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| format!("{} 연결 실패: {error}", provider.name))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "{} 호출 실패 (HTTP {status}): {}",
-            provider.name,
-            text.chars().take(600).collect::<String>()
-        ));
-    }
-
-    let mut completion = Completion::default();
-    let mut calls: Vec<ToolCall> = Vec::new();
-    let mut buffer = String::new();
-    let mut stream = response.bytes_stream();
-
-    while let Some(chunk) = stream.next().await {
-        if state.is_cancelled(session_id) {
-            return Err("실행이 중단되었습니다.".into());
-        }
-        let chunk = chunk.map_err(|error| format!("스트림 오류: {error}"))?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-        buffer = buffer.replace("\r\n", "\n");
-        while let Some(separator) = buffer.find("\n\n") {
-            let block: String = buffer.drain(..separator + 2).collect();
-            let payload = block
-                .lines()
-                .filter(|line| line.starts_with("data:"))
-                .map(|line| line[5..].trim_start())
-                .collect::<Vec<_>>()
-                .join("\n");
-            if payload.is_empty() {
-                continue;
-            }
-            let Ok(piece) = serde_json::from_str::<Value>(&payload) else {
-                continue;
-            };
-            let kind = piece.get("type").and_then(|value| value.as_str()).unwrap_or("");
-            match kind {
-                "message_start" => {
-                    if let Some(input) = piece
-                        .get("message")
-                        .and_then(|message| message.get("usage"))
-                        .and_then(|usage| usage.get("input_tokens"))
-                        .and_then(|value| value.as_u64())
-                    {
-                        completion.usage += input;
-                    }
-                }
-                "message_delta" => {
-                    if let Some(output) = piece
-                        .get("usage")
-                        .and_then(|usage| usage.get("output_tokens"))
-                        .and_then(|value| value.as_u64())
-                    {
-                        completion.usage += output;
-                    }
-                }
-                "content_block_delta" => {
-                    let delta = &piece["delta"];
-                    match delta.get("type").and_then(|value| value.as_str()) {
-                        Some("text_delta") => {
-                            if let Some(text) = delta.get("text").and_then(|value| value.as_str()) {
-                                if !text.is_empty() {
-                                    completion.content.push_str(text);
-                                    let _ = tx.send(json!({ "type": "text", "text": text }));
-                                }
-                            }
-                        }
-                        Some("thinking_delta") => {
-                            if let Some(text) = delta.get("thinking").and_then(|value| value.as_str())
-                            {
-                                if !text.is_empty() {
-                                    completion.reasoning.push_str(text);
-                                    let _ = tx.send(json!({ "type": "reasoning", "text": text }));
-                                }
-                            }
-                        }
-                        Some("input_json_delta") => {
-                            if let Some(partial) =
-                                delta.get("partial_json").and_then(|value| value.as_str())
-                            {
-                                if let Some(call) = calls.last_mut() {
-                                    call.arguments.push_str(partial);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                "content_block_start" => {
-                    if let Some(block) = piece.get("content_block") {
-                        if block.get("type").and_then(|value| value.as_str()) == Some("tool_use") {
-                            calls.push(ToolCall {
-                                id: block
-                                    .get("id")
-                                    .and_then(|value| value.as_str())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                name: block
-                                    .get("name")
-                                    .and_then(|value| value.as_str())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                arguments: String::new(),
-                            });
-                        }
-                    }
-                }
-                "error" => {
-                    return Err(format!("모델 오류: {}", piece.get("error").cloned().unwrap_or_default()));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    completion.tool_calls = calls
-        .into_iter()
-        .filter(|call| !call.name.is_empty())
-        .map(|mut call| {
-            if call.id.is_empty() {
-                call.id = uuid::Uuid::new_v4().to_string();
-            }
-            call
-        })
-        .collect();
     Ok(completion)
 }
 

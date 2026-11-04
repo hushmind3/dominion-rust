@@ -102,6 +102,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             model: optional(step, "model"),
             tools_enabled: true,
             thinking: None,
+        auto_learning: false,
             reasoning_effort: None,
             reasoning_language: None,
             system_override: Some(format!(

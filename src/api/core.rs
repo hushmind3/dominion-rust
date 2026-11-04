@@ -149,9 +149,14 @@ pub async fn save_provider(
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+    if body.get("kind").and_then(|value| value.as_str()) == Some("anthropic") {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Anthropic 네이티브 형식은 지원하지 않습니다. OpenAI 호환 엔드포인트를 사용하세요.",
+        );
+    }
     let kind = match body.get("kind").and_then(|value| value.as_str()) {
         Some("ollama") => "ollama",
-        Some("anthropic") => "anthropic",
         _ => "openai",
     };
 

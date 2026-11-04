@@ -131,6 +131,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                     .map(str::to_string),
                 tools_enabled: true,
                 thinking: None,
+        auto_learning: false,
                 reasoning_effort: None,
             reasoning_language: None,
                 system_override: Some(format!(

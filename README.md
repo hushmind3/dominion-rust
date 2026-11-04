@@ -22,6 +22,8 @@ src/
     chat.rs          스트리밍 채팅 + 도구 호출 루프 + 승인 요청
     tools.rs         Rust 네이티브 도구 (파일/셸/HTTP/검색/메모리/스킬)
     jobs.rs          내구성 있는 작업 큐 + 자동화 스케줄러
+    learning.rs      장기기억·스킬 초안 추출 (재학습)
+    llm.rs           계획/검토/학습용 비스트리밍 호출
     workflows.rs     순차 워크플로 실행 ({{input}} / {{previous}})
     rooms.rs         멀티 에이전트 라운드테이블 실행
     goals.rs         자율 목표 루프 (도구 사용 · DONE 판정)
@@ -129,7 +131,24 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 5. **evidence gate** — 행동형 목표인데 성공한 도구 호출이 없거나, 목표에 적힌
    파일이 실제로 없으면 `completed` 로 만들지 않고 `needs_review` 로 남깁니다.
 
-### 보안
+#### 장기기억과 재학습
+
+턴이 끝나면 `autoLearning`(기본 켜짐)에 따라 `learn` 작업이 큐에 들어갑니다.
+
+1. 최근 30개 메시지와 실제 도구 실행 결과를 읽음
+2. 모델에게 **JSON만** 요구: `{memories:[{text,type,importance,scope}], skill:{...}|null}`
+3. 중복을 정규화해 제거하고 최대 8개를 `memory` 레코드로 저장
+4. 재사용 가능한 절차가 있으면 `skill`을 **draft(비활성)** 로 저장
+5. 다음 턴부터 관련 기억·활성 스킬이 시스템 프롬프트에 자동 주입됨
+
+기억은 `type`(fact/preference/decision/procedure/lesson)과 `importance`로
+점수화해 검색하고, 도구별 성공/실패 통계(`tool_stat`)도 함께 넣어
+실패가 잦은 도구를 피하도록 안내합니다.
+
+모델 제공자는 **OpenAI 호환 엔드포인트만** 사용합니다. Anthropic 네이티브
+형식은 엔진에서 제거했습니다.
+
+## 보안
 
 - 쓰기 요청은 `Origin` 이 `http://127.0.0.1:<port>` / `http://localhost:<port>`
   일 때만 허용합니다. 외부 웹페이지의 로컬 API 호출은 403 입니다.
@@ -179,6 +198,23 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 모델 도구 목록에 합칩니다. stdio 서버는 자식 프로세스로, HTTP 서버는
 JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적으로 승인
 대기이며, `policy.autoApproveMcp` 로 자동 승인할 수 있습니다.
+
+### 장기기억과 재학습
+
+턴이 끝나면 `autoLearning`(기본 켜짐)에 따라 `learn` 작업이 큐에 들어갑니다.
+
+1. 최근 30개 메시지와 실제 도구 실행 결과를 읽음
+2. 모델에게 **JSON만** 요구: `{memories:[{text,type,importance,scope}], skill:{...}|null}`
+3. 중복을 정규화해 제거하고 최대 8개를 `memory` 레코드로 저장
+4. 재사용 가능한 절차가 있으면 `skill`을 **draft(비활성)** 로 저장
+5. 다음 턴부터 관련 기억·활성 스킬이 시스템 프롬프트에 자동 주입됨
+
+기억은 `type`(fact/preference/decision/procedure/lesson)과 `importance`로
+점수화해 검색하고, 도구별 성공/실패 통계(`tool_stat`)도 함께 넣어
+실패가 잦은 도구를 피하도록 안내합니다.
+
+모델 제공자는 **OpenAI 호환 엔드포인트만** 사용합니다. Anthropic 네이티브
+형식은 엔진에서 제거했습니다.
 
 ## 보안
 
