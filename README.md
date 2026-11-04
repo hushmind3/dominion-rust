@@ -118,6 +118,25 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 모델이 영어로 사고하는 경우(예: DeepSeek) 추론 텍스트를 한국어로 번역해
 저장합니다. GLM-5.3 / Kimi-K3.1-Pro는 처음부터 한국어로 사고합니다.
 
+### 자율 목표 하네스
+
+`/goal` 은 단순 반복이 아니라 다음 단계를 돕니다.
+
+1. **plan** — 목표를 3~5단계 계획으로 분해
+2. **execute** — 실제 Rust 도구로 단계 수행
+3. **review** — 별도 모델 호출이 도구 증거만 보고 `{complete, gaps}` 판정
+4. **repair** — 미완료면 지적된 gaps 를 넣어 다시 실행
+5. **evidence gate** — 행동형 목표인데 성공한 도구 호출이 없거나, 목표에 적힌
+   파일이 실제로 없으면 `completed` 로 만들지 않고 `needs_review` 로 남깁니다.
+
+### 보안
+
+- 쓰기 요청은 `Origin` 이 `http://127.0.0.1:<port>` / `http://localhost:<port>`
+  일 때만 허용합니다. 외부 웹페이지의 로컬 API 호출은 403 입니다.
+- `DOMINION_ADMIN_TOKEN` 을 설정하면 모든 쓰기 요청에
+  `X-Dominion-Token` 헤더가 필요합니다.
+- CORS 는 permissive 가 아니라 위 두 origin 만 허용합니다.
+
 ### 작업 큐
 
 `POST /api/workflows/:id/run` 과 `POST /api/rooms/:id/run` 은 job 레코드를
@@ -132,6 +151,14 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
   수행합니다. 모델이 `DONE` 을 선언하면 완료, 아니면 `needs_review` 로
   남깁니다.
 - **자동화**: 30초마다 `nextAt` 이 지난 automation을 큐에 넣습니다.
+- **복구**: 부팅 시 `running` job 은 `queued` 로 되돌리고, 3회 이상 실패한
+  job 은 `needs_review`, `running` execution 은 `interrupted` 로 회수합니다.
+
+### 실행 제한
+
+한 턴은 최대 8라운드, 도구 40회, 10분입니다. 실제 스트림 `usage` 를 누적해
+`execution.tokens` 에 기록합니다. 같은 세션에 동시에 두 턴이 들어오면
+`Session is already running` 으로 거부합니다.
 
 ### 실행 기록과 취소
 
@@ -177,6 +204,9 @@ Node 구현의 다음 기능은 Rust로 옮기지 않았습니다. 해당 경로
 ```bash
 cargo test --release
 ```
+
+- `tests/e2e.rs` 는 실제 바이너리 + 가짜 OpenAI 호환 서버를 띄워
+  SSE 채팅, SQLite 영속화, 토큰 집계, Origin 차단, 동시 세션 거부를 검증합니다.
 
 - 볼트 암호화/변조 거부
 - 레코드 CRUD 및 클라이언트 필드(`id`, `createdAt`, `updatedAt`)

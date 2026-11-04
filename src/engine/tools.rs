@@ -302,10 +302,20 @@ async fn write_text(path: &Path, content: &str) -> Result<Value, String> {
 
 async fn shell(command: &str, cwd: &Path) -> Result<Value, String> {
     use tokio::process::Command;
-    let mut child = Command::new("zsh");
+    #[cfg(windows)]
+    let mut child = {
+        let mut child = Command::new("cmd");
+        child.args(["/C", command]);
+        child
+    };
+    #[cfg(not(windows))]
+    let mut child = {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let mut child = Command::new(shell);
+        child.args(["-lc", command]);
+        child
+    };
     child
-        .arg("-lc")
-        .arg(command)
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);

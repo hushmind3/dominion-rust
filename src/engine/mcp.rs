@@ -106,7 +106,7 @@ async fn list_server(state: &AppState, server: &Value) -> Result<Vec<McpTool>, S
         .unwrap_or("stdio");
 
     let result = if transport == "http" {
-        let mut session = HttpSession::open(server, state)?;
+        let mut session = HttpSession::open(server, state).await?;
         session.request("tools/list", json!({})).await?
     } else {
         let mut session = StdioSession::open(server, &state.config.workspace).await?;
@@ -217,7 +217,7 @@ pub async fn call(state: &AppState, qualified: &str, args: &Value) -> Result<Val
     let params = json!({ "name": tool_name, "arguments": args });
 
     if transport == "http" {
-        let mut session = HttpSession::open(&server, state)?;
+        let mut session = HttpSession::open(&server, state).await?;
         session.request("tools/call", params).await
     } else {
         let mut session = StdioSession::open(&server, &state.config.workspace).await?;
@@ -359,7 +359,10 @@ struct HttpSession {
 }
 
 impl HttpSession {
-    fn open(record: &Value, state: &AppState) -> Result<Self, String> {
+    /// Full MCP handshake: initialize, capture Mcp-Session-Id, then
+    /// notifications/initialized. Stateless one-shot requests fail against
+    /// spec-compliant Streamable HTTP servers.
+    async fn open(record: &Value, state: &AppState) -> Result<Self, String> {
         let url = record
             .get("url")
             .and_then(|value| value.as_str())
@@ -375,7 +378,7 @@ impl HttpSession {
             .and_then(|value| value.as_str())
             .unwrap_or_default();
         let token = state.read_secret(&format!("mcp:{id}"));
-        Ok(Self {
+        let mut session = Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(60))
                 .build()
@@ -384,7 +387,32 @@ impl HttpSession {
             session: None,
             token,
             next_id: 1,
-        })
+        };
+
+        session
+            .request(
+                "initialize",
+                json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": { "name": "dominion-rust", "version": env!("CARGO_PKG_VERSION") }
+                }),
+            )
+            .await?;
+        session
+            .notify("notifications/initialized", json!({}))
+            .await;
+        Ok(session)
+    }
+
+    async fn notify(&mut self, method: &str, params: Value) {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        });
+        // A notification may legitimately return 202 with an empty body.
+        let _ = self.post(&payload).await;
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
@@ -396,23 +424,7 @@ impl HttpSession {
             "method": method,
             "params": params,
         });
-        let mut value = self.post(&payload).await?;
-
-        if method == "initialize" {
-            let _ = self
-                .post(&json!({
-                    "jsonrpc": "2.0",
-                    "method": "notifications/initialized",
-                    "params": {}
-                }))
-                .await;
-            return Ok(value);
-        }
-
-        if value.get("result").is_none() && value.get("error").is_none() {
-            // Some servers answer with an SSE stream that ends before our id.
-            value = self.post(&payload).await?;
-        }
+        let value = self.post(&payload).await?;
         if let Some(error) = value.get("error") {
             return Err(format!("MCP 오류: {error}"));
         }

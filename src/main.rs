@@ -222,16 +222,35 @@ fn reexec_repo_binary() {
 /// Opens the UI in Chrome when available, otherwise the default browser.
 fn open_url(port: u16) {
     let url = format!("http://127.0.0.1:{port}");
-    let chrome = std::process::Command::new("open")
-        .args(["-a", "Google Chrome", &url])
-        .status();
-    if chrome.map(|status| !status.success()).unwrap_or(true) {
-        let _ = std::process::Command::new("open").arg(&url).status();
+    #[cfg(target_os = "macos")]
+    {
+        let chrome = std::process::Command::new("open")
+            .args(["-a", "Google Chrome", &url])
+            .status();
+        if chrome.map(|status| !status.success()).unwrap_or(true) {
+            let _ = std::process::Command::new("open").arg(&url).status();
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .status();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&url).status();
     }
 }
 
 /// Builds a macOS app bundle whose executable *is* this Rust binary, so
 /// double-clicking starts the server without a shell or AppleScript wrapper.
+#[cfg(not(target_os = "macos"))]
+fn install_app(_target: &Path) -> Result<PathBuf, String> {
+    Err("--install-app 는 macOS 전용입니다.".into())
+}
+
+#[cfg(target_os = "macos")]
 fn install_app(target: &Path) -> Result<PathBuf, String> {
     let home = std::env::current_dir().map_err(|error| error.to_string())?;
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
