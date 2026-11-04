@@ -29,6 +29,8 @@ async fn main() {
         let label = format!("gui/{}/com.hushmind.dominion.rust", user_id());
         let started = std::process::Command::new("launchctl")
             .args(["kickstart", "-k", &label])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status()
             .map(|status| status.success())
             .unwrap_or(false);
