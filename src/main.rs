@@ -219,8 +219,20 @@ fn reexec_repo_binary() {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        let _ = std::process::Command::new(&repo).arg("--open").exec();
+        let _ = repo_launch_command(&home).exec();
     }
+}
+
+/// Finder does not supply the repository working directory. After exec the
+/// current executable is outside the app bundle, so bundle_home can no longer
+/// recover it; pass that resolved path through explicitly.
+fn repo_launch_command(home: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new(home.join("target/release/dominion-rust"));
+    command
+        .arg("--open")
+        .env("DOMINION_HOME", home)
+        .current_dir(home);
+    command
 }
 
 /// Opens the UI in Chrome when available, otherwise the default browser.
@@ -294,4 +306,54 @@ fn install_app(target: &Path) -> Result<PathBuf, String> {
     );
     std::fs::write(target.join("Contents/Info.plist"), plist).map_err(|error| error.to_string())?;
     Ok(target.to_path_buf())
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    #[test]
+    fn finder_reexec_keeps_repo_home_and_working_directory_with_spaces() {
+        let home = PathBuf::from("/tmp/DOMINION project with spaces/러스트");
+        let command = repo_launch_command(&home);
+        assert_eq!(
+            command.get_program(),
+            home.join("target/release/dominion-rust")
+        );
+        assert_eq!(command.get_current_dir(), Some(home.as_path()));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![std::ffi::OsStr::new("--open")]
+        );
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| key == "DOMINION_HOME" && value == Some(home.as_os_str())));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reinstall_replaces_old_bundled_executable_and_home() {
+        let root =
+            std::env::temp_dir().join(format!("dominion app reinstall {}", uuid::Uuid::new_v4()));
+        let target = root.join("DOMINION.app");
+        let macos = target.join("Contents/MacOS");
+        let resources = target.join("Contents/Resources");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(macos.join("DOMINION"), b"old app executable").unwrap();
+        std::fs::write(resources.join("home"), b"/old/repository").unwrap();
+        install_app(&target).unwrap();
+        assert_eq!(
+            std::fs::read(macos.join("DOMINION")).unwrap(),
+            std::fs::read(std::env::current_exe().unwrap()).unwrap()
+        );
+        assert_eq!(
+            std::fs::read_to_string(resources.join("home")).unwrap(),
+            std::env::current_dir().unwrap().to_string_lossy()
+        );
+        assert!(std::fs::read_to_string(target.join("Contents/Info.plist"))
+            .unwrap()
+            .contains("<string>DOMINION</string>"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

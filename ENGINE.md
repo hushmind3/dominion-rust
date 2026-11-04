@@ -138,7 +138,7 @@ DM·음성·파일 첨부·슬래시 명령·Gateway 실시간 이벤트는 이�
 
 2026-11-04 검증 결과:
 
-- `cargo test --release`: 단위 테스트 76개 + E2E 7개 통과
+- `cargo test --release`: 단위 테스트 78개 + E2E 7개 통과
 - `tsc --noEmit`: 통과
 - `npm run build`: 통과
 - `git diff --check`: 통과
