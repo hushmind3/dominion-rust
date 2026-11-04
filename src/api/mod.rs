@@ -5,6 +5,8 @@ pub mod core;
 pub mod dev;
 pub mod models;
 pub mod oauth;
+pub mod personas;
+pub mod rooms;
 pub mod video;
 
 use crate::state::AppState;
@@ -46,7 +48,23 @@ pub fn router(state: AppState) -> Router {
         .route("/api/providers/:id/models", get(core::provider_models))
         // agents
         .route("/api/agents", get(core::list_agents).post(core::save_agent))
+        .route("/api/agents/bulk-model", post(core::bulk_agent_model))
+        .route("/api/personas/import/preview", get(personas::preview))
+        .route("/api/personas/import", post(personas::import))
+        .route("/api/agents/:id/avatar", get(personas::avatar))
         .route("/api/agents/:id", axum::routing::delete(core::delete_agent))
+        .route("/api/rooms", get(rooms::list).post(rooms::save))
+        .route(
+            "/api/rooms/:id",
+            get(rooms::one).post(rooms::update).delete(rooms::remove),
+        )
+        .route(
+            "/api/rooms/:id/messages",
+            get(rooms::messages).post(rooms::send_message),
+        )
+        .route("/api/rooms/:id/state", get(rooms::state))
+        .route("/api/rooms/:id/run", post(rooms::run))
+        .route("/api/rooms/:id/stop", post(rooms::stop))
         // sessions
         .route(
             "/api/sessions",

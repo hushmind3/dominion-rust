@@ -1,18 +1,19 @@
 import { ContextMenu } from './components/ContextMenu'
-import {useCallback,useEffect,useState} from 'react'
+import {lazy,Suspense,useCallback,useEffect,useState} from 'react'
 import {get} from './api'
 import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
-import {CapabilitiesPage} from './pages/Capabilities'
-import {MemoryPage} from './pages/Memory'
-import {WorkflowsPage} from './pages/Workflows'
-import {ChatPage} from './pages/Chat'
-import {VideoPage} from './pages/Video'
-import {ModelHub} from './pages/Models'
-import {AgentsPage,RoomsPage} from './pages/Agents'
-import {ExtensionsPage} from './pages/Extensions'
-import {ConnectionsPage} from './pages/Connections'
-import {OperationsPage} from './pages/Operations'
-import {DeveloperPage} from './pages/Developer'
+const CapabilitiesPage=lazy(()=>import('./pages/Capabilities').then(module=>({default:module.CapabilitiesPage})))
+const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
+const WorkflowsPage=lazy(()=>import('./pages/Workflows').then(module=>({default:module.WorkflowsPage})))
+const ChatPage=lazy(()=>import('./pages/Chat').then(module=>({default:module.ChatPage})))
+const VideoPage=lazy(()=>import('./pages/Video').then(module=>({default:module.VideoPage})))
+const ModelHub=lazy(()=>import('./pages/Models').then(module=>({default:module.ModelHub})))
+const AgentsPage=lazy(()=>import('./pages/Agents').then(module=>({default:module.AgentsPage})))
+const RoomsPage=lazy(()=>import('./pages/Rooms').then(module=>({default:module.RoomsPage})))
+const ExtensionsPage=lazy(()=>import('./pages/Extensions').then(module=>({default:module.ExtensionsPage})))
+const ConnectionsPage=lazy(()=>import('./pages/Connections').then(module=>({default:module.ConnectionsPage})))
+const OperationsPage=lazy(()=>import('./pages/Operations').then(module=>({default:module.OperationsPage})))
+const DeveloperPage=lazy(()=>import('./pages/Developer').then(module=>({default:module.DeveloperPage})))
 
 function locationState(){
  const raw=window.location.hash.replace(/^#\/?/,'')
@@ -69,6 +70,7 @@ export default function App(){
   stream.onmessage=event=>{
    try{
     const item=JSON.parse(event.data)
+    if(item.type==='room_event'){window.dispatchEvent(new CustomEvent('dominion-room-event',{detail:item}));return}
     if(['record','message','job_event','audit','approval','channel_status','goal_event','execution_event'].includes(item.type)){
      window.dispatchEvent(new Event('dominion-refresh'))
      if(item.type==='approval')void approvals()
@@ -89,6 +91,7 @@ export default function App(){
   <main className={'min-h-screen min-w-0 transition-[margin] duration-200 '+(collapsed?'ml-0':'ml-[216px] max-[519px]:ml-0')}>
    <WorkspaceHeader page={page} online={online} collapsed={collapsed} onMenu={toggleNav} onSearch={()=>setPalette(true)}/>
    <div className={'min-w-0 page-'+page}>
+    <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
     {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
     {page==='memory'&&<MemoryPage/>}
     {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
@@ -101,6 +104,7 @@ export default function App(){
     {page==='connections'&&<ConnectionsPage/>}
     {page==='developer'&&<DeveloperPage/>}
     {(page==='automations'||page==='activity'||page==='settings')&&<OperationsPage section={page}/>}
+    </Suspense>
    </div>
   </main>
   {palette&&<CommandPalette onNavigate={navigate} onClose={()=>setPalette(false)}/>}

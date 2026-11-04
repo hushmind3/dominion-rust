@@ -256,6 +256,63 @@ fn disabled_tools_cannot_be_enabled_by_the_model() {
 }
 
 #[test]
+fn persistent_room_http_flow_keeps_owner_once_and_shares_peer_context() {
+    let (port, requests) = scripted_provider(|request| {
+        let system = request["messages"][0]["content"].as_str().unwrap();
+        let reply = if system.contains("Active agent: Alice (id: a)") {
+            "Alice의 실제 의견"
+        } else {
+            "Bob이 Alice의 의견을 확인했습니다"
+        };
+        vec![json!({"choices":[{"delta":{"content":reply},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    for (id, name) in [("a", "Alice"), ("b", "Bob")] {
+        app.post(
+            "/api/agents",
+            &json!({"id":id,"name":name,"systemPrompt":"독립 참가자","enabled":true}),
+        );
+    }
+    let room=app.post("/api/rooms",&json!({"name":"공용 대화","agentIds":["a","b"],"routingMode":"discussion","rounds":1,"maxTurns":2,"toolsEnabled":false,"autoLearning":false}));
+    let id = room["id"].as_str().unwrap();
+    let input = json!({"input":"우리 함께 의견을 나눠보자","clientMessageId":"owner-request-001"});
+    let sent = app.post(&format!("/api/rooms/{id}/messages"), &input);
+    let retry = app.post(&format!("/api/rooms/{id}/messages"), &input);
+    assert_eq!(sent["jobId"], retry["jobId"]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let state = app.get(&format!("/api/rooms/{id}/state"));
+        let status = state["jobs"][0]["status"].as_str().unwrap();
+        if status == "completed" {
+            break;
+        }
+        assert!(matches!(status, "queued" | "running"), "{state}");
+        assert!(Instant::now() < deadline, "{state}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let messages = app.get(&format!("/api/rooms/{id}/messages"));
+    let rows = messages.as_array().unwrap();
+    assert_eq!(rows.iter().filter(|row| row["role"] == "user").count(), 1);
+    assert_eq!(rows[0]["metadata"]["authorKind"], "owner");
+    let agents = rows
+        .iter()
+        .filter(|row| row["role"] == "assistant")
+        .map(|row| row["agent_id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(agents, vec!["a", "b"]);
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert!(captured[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| message["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Alice의 실제 의견")));
+}
+
+#[test]
 fn reused_model_call_ids_do_not_overwrite_prior_tool_evidence() {
     let (port, _) = scripted_provider(|request| {
         let count = request["messages"]

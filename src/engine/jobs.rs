@@ -138,6 +138,14 @@ pub fn recover(state: &AppState) {
                 json!("재시작 전 작업 결과를 확정할 수 없습니다. 실행 기록을 확인하세요.");
         }
         state.store.put("job", &updated);
+        if matches!(job["kind"].as_str(), Some("room" | "meeting")) {
+            if let Some(id) = job.pointer("/input/roomId").and_then(Value::as_str) {
+                let status = updated["status"].as_str().unwrap_or("needs_review");
+                if let Some(saved)=state.store.patch_if("room",id,"id",&json!(id),&json!({
+                    "status":status,"activeAgentId":null,"pauseReason":if status=="needs_review" {"재시작 전 발언이나 도구 결과를 확인해야 합니다."} else {""}
+                })) { state.bus.record("room",&saved); }
+            }
+        }
         if uncertain || attempts >= 3 {
             if let Some(id) = job.pointer("/input/goalId").and_then(Value::as_str) {
                 if let Some(mut goal) = state.store.get("goal", id) {
@@ -207,11 +215,29 @@ pub fn start(state: AppState) {
 }
 
 fn next_queued(state: &AppState) -> Option<Value> {
-    let mut queued = state
-        .store
-        .all("job")
-        .into_iter()
+    let jobs = state.store.all("job");
+    let mut queued = jobs
+        .iter()
+        .cloned()
         .filter(|job| job.get("status").and_then(|value| value.as_str()) == Some("queued"))
+        .filter(|job| {
+            if !matches!(job["kind"].as_str(), Some("room" | "meeting")) {
+                return true;
+            }
+            let Some(room_id) = job.pointer("/input/roomId").and_then(Value::as_str) else {
+                return true;
+            };
+            !state
+                .active
+                .lock()
+                .unwrap()
+                .contains(&format!("room-run:{room_id}"))
+                && !jobs.iter().any(|other| {
+                    other["status"] == "running"
+                        && matches!(other["kind"].as_str(), Some("room" | "meeting"))
+                        && other.pointer("/input/roomId").and_then(Value::as_str) == Some(room_id)
+                })
+        })
         .filter(|job| {
             job.get("availableAt")
                 .and_then(Value::as_str)
@@ -508,7 +534,7 @@ mod tests {
             .block_on(run_job(state.clone(), job));
         let stored = state.store.get("job", &id).unwrap();
         assert_eq!(stored["status"], "failed");
-        assert!(stored["error"].as_str().unwrap().contains("회의실"));
+        assert!(stored["error"].as_str().unwrap().contains("대화방"));
     }
 
     #[test]

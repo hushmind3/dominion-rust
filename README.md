@@ -8,6 +8,19 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 그룹 대화와 내 에이전트
+
+`그룹 대화 · 회의` 화면에서 주인이 대화에 직접 참여하고, 에이전트들이 같은 기록을 읽으며
+서로 의견·검토·잡담을 이어갑니다. 예전처럼 에이전트마다 가짜 사용자 메시지를 넣지 않습니다.
+전체 토론·순번 발언·멘션 응답을 고르고, 사용자 개입이나 중지로 대화 흐름을 바꿀 수 있습니다.
+
+에이전트 화면의 `기존 페르소나 가져오기`는 사용자의 로컬 9개 프로필에서 SOUL·아이콘만
+읽어 DOMINION 프로필로 만듭니다. 원문·이미지는 `runtime/`에 보관하며 기존 모델 설정과
+사용자가 수정한 프로필을 보존합니다. 다른 프로젝트의 실행 엔진·토큰·스킬을 가져오지 않습니다.
+
+도구를 허용한 대화방에서는 실제 Rust 파일·셸·HTTP 도구를 사용합니다. 작업 큐·진행·승인·
+실행 증거는 Rust와 SQLite에 남으므로 브라우저를 닫아도 실행은 계속됩니다.
+
 ## 구조
 
 ```
@@ -25,6 +38,7 @@ src/
     learning.rs      원문 증거 검증·학습 스냅샷·체크포인트
     memory.rs        에이전트/채널 격리·한국어 검색·정정 이력
     discord.rs       자체 Discord REST 수신·라우팅·전송 기록
+    personas.rs      사용자 소유 페르소나·아이콘 데이터 이식
     llm.rs           계획/검토/학습용 비스트리밍 호출
     workflows.rs     순차 워크플로 실행 ({{input}} / {{previous}})
     rooms.rs         멀티 에이전트 라운드테이블 실행
@@ -95,6 +109,22 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 | 로컬 모델 | `GET /api/model-library/{catalog,details,installed,jobs,runtime}`, `POST /api/model-library/{download,import}`, `POST /api/model-library/runtime/{load,unload}` |
 | 계정 연동 | `GET /api/oauth/providers`, `POST /api/oauth/providers/:id`, `GET /api/oauth/:id/start`, `GET /api/oauth/:id/callback`, `DELETE /api/oauth/:id` |
 | 기타 | `GET /api/audit`, `POST /api/translate` |
+
+그룹 대화는 `GET/POST /api/rooms/:id/messages`, `GET /api/rooms/:id/state`,
+`POST /api/rooms/:id/stop`을 사용합니다. 메시지와 작업은 함께 저장되며 `clientMessageId`로
+재전송 중복을 막습니다. `POST /api/rooms/:id/run`도 같은 사용자 메시지 경로를 사용합니다.
+
+프론트 개발 명령도 Rust를 사용합니다.
+
+```bash
+cd web
+npm run dev:server   # Rust 백엔드 (cargo run)
+npm run dev          # 별도 터미널에서 Vite 개발 서버
+npm run check        # TypeScript + Rust 테스트 + Vite 빌드
+npm start            # release Rust 엔진과 화면 실행
+```
+
+`npm start`, `dev:server`, `gate:engine`은 Node 서버나 옛 JavaScript 엔진을 실행하지 않습니다.
 
 ## 엔진 동작
 

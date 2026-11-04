@@ -31,6 +31,8 @@ impl MemoryScope {
                 },
             ])
             .to_string()
+        } else if let Some(room_id) = session["roomId"].as_str() {
+            json!(["room", room_id]).to_string()
         } else {
             "local".into()
         };
@@ -76,10 +78,25 @@ pub fn visible(record: &Value, scope: &MemoryScope) -> bool {
     }
     let origin = record["source"].as_str().unwrap_or("user");
     if matches!(origin, "learn" | "agent") {
-        return record["sessionId"].as_str() == Some(scope.session_id.as_str());
+        if record["sessionId"].as_str() != Some(scope.session_id.as_str()) {
+            return false;
+        }
+        // Legacy records cannot establish which room participant or external
+        // conversation produced them. They never gain shared-room visibility.
+        if scope.partition_key != "local" {
+            return false;
+        }
+        return record["agentId"].as_str() == scope.agent_id.as_deref();
     }
-    if scope.partition_key != "local" && record["shareWithChannels"].as_bool() != Some(true) {
-        return false;
+    if scope.partition_key != "local" {
+        let is_room = serde_json::from_str::<Value>(&scope.partition_key)
+            .ok()
+            .is_some_and(|key| key[0] == "room");
+        if is_room && record["shareWithRooms"].as_bool() != Some(true)
+            || !is_room && record["shareWithChannels"].as_bool() != Some(true)
+        {
+            return false;
+        }
     }
     match record["scope"].as_str().unwrap_or("shared") {
         "shared" | "global" => true,
@@ -319,6 +336,11 @@ pub fn save_grounded(
     // This routine is also called by memory_store, so source verification is
     // enforced here rather than relying solely on the learner's prompt.
     let messages = store.messages(&scope.session_id);
+    let is_room = store
+        .get("session", &scope.session_id)
+        .is_some_and(|session| {
+            session["roomId"].is_string() && !session["channelContext"]["transport"].is_string()
+        });
     let evidence: Vec<_> = source_message_ids
         .iter()
         .filter_map(|id| {
@@ -330,6 +352,9 @@ pub fn save_grounded(
     if evidence.len() != source_message_ids.len()
         || evidence.iter().any(|message| {
             !matches!(message["role"].as_str(), Some("user" | "tool"))
+                || is_room
+                    && message["role"] == "user"
+                    && message["metadata"]["authorKind"] != "owner"
                 || message["agent_id"]
                     .as_str()
                     .is_some_and(|agent| Some(agent) != scope.agent_id.as_deref())
@@ -567,7 +592,54 @@ mod tests {
     fn old_automatic_memories_do_not_gain_global_access() {
         let db = store();
         let record = json!({"source":"learn","sessionId":"original","scope":"shared"});
-        assert!(visible(&record, &scope(&db, "original", "a")));
+        assert!(visible(
+            &record,
+            &MemoryScope::for_session(&db, "original", None)
+        ));
+        assert!(!visible(&record, &scope(&db, "original", "a")));
         assert!(!visible(&record, &scope(&db, "another", "a")));
+    }
+
+    #[test]
+    fn room_memories_are_private_to_room_and_agent_and_require_actual_owner_source() {
+        let db = store();
+        db.put("session", &json!({"id":"room-s1","roomId":"room-one"}));
+        db.put("session", &json!({"id":"room-s2","roomId":"room-two"}));
+        let actor = scope(&db, "room-s1", "a");
+        db.put(
+            "memory",
+            &json!({"id":"local","text":"장기기억 Rust","scope":"shared"}),
+        );
+        assert!(retrieve(&db, &actor, "장기기억", 10).is_empty());
+        db.write_message(&json!({"id":"synthetic","session_id":"room-s1","role":"user","content":"회의 의제: 모두 배포에 성공했다"}));
+        assert!(save_grounded(
+            &db,
+            &actor,
+            "배포 성공",
+            "fact",
+            0.8,
+            None,
+            "learn",
+            &["synthetic".into()],
+            "모두 배포에 성공했다"
+        )
+        .is_err());
+        db.write_message(&json!({"id":"human","session_id":"room-s1","role":"user","content":"장기기억 엔진은 Rust로 만든다","metadata":{"authorKind":"owner","roomId":"room-one"}}));
+        let saved = save_grounded(
+            &db,
+            &actor,
+            "Rust 선호",
+            "decision",
+            0.8,
+            None,
+            "learn",
+            &["human".into()],
+            "장기기억 엔진은 Rust로 만든다",
+        )
+        .unwrap();
+        assert_eq!(retrieve(&db, &actor, "장기기억", 10).len(), 1);
+        assert!(!visible(&saved, &scope(&db, "room-s1", "b")));
+        assert!(!visible(&saved, &scope(&db, "room-s2", "a")));
+        assert!(!visible(&saved, &scope(&db, "local-s", "a")));
     }
 }

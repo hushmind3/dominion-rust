@@ -37,6 +37,7 @@ impl Store {
                  agent_id TEXT,
                  tool_calls TEXT,
                  tool_call_id TEXT,
+                 metadata TEXT NOT NULL DEFAULT '{}',
                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
              CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
@@ -58,6 +59,7 @@ impl Store {
             ("agent_id", "TEXT"),
             ("tool_calls", "TEXT"),
             ("tool_call_id", "TEXT"),
+            ("metadata", "TEXT NOT NULL DEFAULT '{}'"),
         ] {
             let _ = conn.execute(
                 &format!("ALTER TABLE messages ADD COLUMN {column} {decl}"),
@@ -182,6 +184,36 @@ impl Store {
         Some(record)
     }
 
+    pub fn patch_records(&self, kind: &str, ids: &[String], patch: &Value) -> Option<Vec<Value>> {
+        let patch = patch.as_object()?;
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn.transaction().ok()?;
+        let mut records = Vec::new();
+        for id in ids {
+            let mut record = transaction
+                .query_row(
+                    "SELECT data,id,created_at,updated_at FROM records WHERE kind=?1 AND id=?2",
+                    params![kind, id],
+                    record_from_row,
+                )
+                .ok()?;
+            for (key, value) in patch {
+                if key != "id" {
+                    record[key] = value.clone();
+                }
+            }
+            transaction
+                .execute(
+                    "UPDATE records SET data=?3,updated_at=datetime('now') WHERE kind=?1 AND id=?2",
+                    params![kind, id, record.to_string()],
+                )
+                .ok()?;
+            records.push(record);
+        }
+        transaction.commit().ok()?;
+        Some(records)
+    }
+
     pub fn remove(&self, kind: &str, id: &str) -> bool {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -193,76 +225,102 @@ impl Store {
     }
 
     pub fn write_message(&self, message: &Value) -> Option<Value> {
-        let id = message
-            .get("id")
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let session_id = message.get("session_id")?.as_str()?.to_string();
-        let role = message.get("role")?.as_str()?.to_string();
-        let content = message
-            .get("content")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let reasoning = message
-            .get("reasoning")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let agent_id = message
-            .get("agent_id")
-            .and_then(|value| value.as_str())
-            .map(str::to_string);
-        let tool_calls = message
-            .get("tool_calls")
-            .filter(|value| !value.is_null())
-            .map(|value| value.to_string());
-        let tool_call_id = message
-            .get("tool_call_id")
-            .and_then(|value| value.as_str())
-            .map(str::to_string);
-        {
-            let conn = self.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO messages(id, session_id, role, content, reasoning, agent_id, tool_calls, tool_call_id)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![id, session_id, role, content, reasoning, agent_id, tool_calls, tool_call_id],
+        let conn = self.conn.lock().unwrap();
+        let id = insert_message(&conn, message)?;
+        query_message(&conn, &id)
+    }
+
+    pub fn message(&self, id: &str) -> Option<Value> {
+        query_message(&self.conn.lock().unwrap(), id)
+    }
+
+    /// A human room message and its dispatch job are one durable operation.
+    /// Insert-only IDs make retries observable and never overwrite prior work.
+    pub fn write_message_with_record(
+        &self,
+        message: &Value,
+        kind: &str,
+        record: &Value,
+    ) -> Option<(Value, Value)> {
+        let record_id = record.get("id")?.as_str().filter(|id| !id.is_empty())?;
+        record.as_object()?;
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn.transaction().ok()?;
+        let message_id = insert_message(&transaction, message)?;
+        transaction
+            .execute(
+                "INSERT INTO records(kind,id,data) VALUES(?1,?2,?3)",
+                params![kind, record_id, record.to_string()],
             )
             .ok()?;
-        }
-        self.messages(&session_id)
-            .into_iter()
-            .find(|item| item.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+        let saved_message = query_message(&transaction, &message_id)?;
+        let saved_record = transaction
+            .query_row(
+                "SELECT data,id,created_at,updated_at FROM records WHERE kind=?1 AND id=?2",
+                params![kind, record_id],
+                record_from_row,
+            )
+            .ok()?;
+        transaction.commit().ok()?;
+        Some((saved_message, saved_record))
     }
 
     pub fn messages(&self, session_id: &str) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn.prepare(
-            "SELECT id, session_id, role, content, reasoning, agent_id, tool_calls, tool_call_id, created_at
-             FROM messages WHERE session_id=?1 ORDER BY created_at ASC, rowid ASC",
+            "SELECT id,session_id,role,content,reasoning,agent_id,tool_calls,tool_call_id,created_at,metadata FROM messages WHERE session_id=?1 ORDER BY created_at ASC,rowid ASC",
         ) {
             Ok(stmt) => stmt,
             Err(_) => return Vec::new(),
         };
-        let rows = match stmt.query_map([session_id], |row| {
-            let tool_calls: Option<String> = row.get(6)?;
-            Ok(json!({
-                "id": row.get::<_, String>(0)?,
-                "session_id": row.get::<_, String>(1)?,
-                "role": row.get::<_, String>(2)?,
-                "content": row.get::<_, String>(3)?,
-                "reasoning": row.get::<_, String>(4)?,
-                "agent_id": row.get::<_, Option<String>>(5)?,
-                "tool_calls": tool_calls.and_then(|text| serde_json::from_str::<Value>(&text).ok()),
-                "tool_call_id": row.get::<_, Option<String>>(7)?,
-                "created_at": row.get::<_, String>(8)?,
-            }))
-        }) {
+        let rows = match stmt.query_map([session_id], message_from_row) {
             Ok(rows) => rows,
             Err(_) => return Vec::new(),
         };
         rows.filter_map(|row| row.ok()).collect()
+    }
+
+    /// Increment a durable cancellation epoch under the same SQLite lock.
+    pub fn cancel_session_epoch(&self, session_id: &str) -> Option<u64> {
+        let conn = self.conn.lock().unwrap();
+        let prior = conn
+            .query_row(
+                "SELECT data FROM records WHERE kind='session_cancel' AND id=?1",
+                [session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()?;
+        let prior = prior
+            .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+            .unwrap_or(Value::Null);
+        let generation = prior["generation"].as_u64().unwrap_or(0).checked_add(1)?;
+        let data = json!({"id":session_id,"generation":generation,"cancelled":true,"cancelledAt":chrono::Utc::now().to_rfc3339()});
+        conn.execute("INSERT INTO records(kind,id,data) VALUES('session_cancel',?1,?2) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,updated_at=datetime('now')",params![session_id,data.to_string()]).ok()?;
+        Some(generation)
+    }
+
+    pub fn resume_session_epoch(&self, session_id: &str, expected: u64) -> bool {
+        let conn = self.conn.lock().unwrap();
+        let prior = match conn
+            .query_row(
+                "SELECT data FROM records WHERE kind='session_cancel' AND id=?1",
+                [session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+        {
+            Ok(prior) => prior,
+            Err(_) => return false,
+        };
+        let mut data = prior
+            .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+            .unwrap_or_else(|| json!({"id":session_id,"generation":0}));
+        if data["generation"].as_u64().unwrap_or(0) != expected {
+            return false;
+        }
+        data["cancelled"] = json!(false);
+        conn.execute("INSERT INTO records(kind,id,data) VALUES('session_cancel',?1,?2) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,updated_at=datetime('now')",params![session_id,data.to_string()]).is_ok()
     }
 
     pub fn clear_messages(&self, session_id: &str) {
@@ -328,6 +386,42 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute("DELETE FROM secrets WHERE name=?1", [name]);
     }
+}
+
+fn insert_message(conn: &Connection, message: &Value) -> Option<String> {
+    let id = message
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let session_id = message.get("session_id")?.as_str()?;
+    let role = message.get("role")?.as_str()?;
+    let calls = message
+        .get("tool_calls")
+        .filter(|value| !value.is_null())
+        .map(Value::to_string);
+    let metadata = message
+        .get("metadata")
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    conn.execute("INSERT INTO messages(id,session_id,role,content,reasoning,agent_id,tool_calls,tool_call_id,metadata) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![
+        id,session_id,role,message["content"].as_str().unwrap_or(""),message["reasoning"].as_str().unwrap_or(""),message["agent_id"].as_str(),calls,message["tool_call_id"].as_str(),metadata.to_string()
+    ]).ok()?;
+    Some(id)
+}
+
+fn query_message(conn: &Connection, id: &str) -> Option<Value> {
+    conn.query_row("SELECT id,session_id,role,content,reasoning,agent_id,tool_calls,tool_call_id,created_at,metadata FROM messages WHERE id=?1",[id],message_from_row).ok()
+}
+
+fn message_from_row(row: &Row<'_>) -> rusqlite::Result<Value> {
+    let calls: Option<String> = row.get(6)?;
+    let metadata: String = row.get(9)?;
+    Ok(
+        json!({"id":row.get::<_,String>(0)?,"session_id":row.get::<_,String>(1)?,"role":row.get::<_,String>(2)?,"content":row.get::<_,String>(3)?,"reasoning":row.get::<_,String>(4)?,"agent_id":row.get::<_,Option<String>>(5)?,"tool_calls":calls.and_then(|value|serde_json::from_str::<Value>(&value).ok()),"tool_call_id":row.get::<_,Option<String>>(7)?,"created_at":row.get::<_,String>(8)?,"metadata":serde_json::from_str::<Value>(&metadata).unwrap_or_else(|_|json!({}))}),
+    )
 }
 
 fn record_from_row(row: &Row<'_>) -> rusqlite::Result<Value> {
@@ -439,6 +533,38 @@ mod tests {
             1
         );
         assert_eq!(store.get("job", "one").unwrap()["status"], "running");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn owner_dispatch_is_atomic_and_metadata_is_preserved() {
+        let (store, dir) = temp_store();
+        let message = json!({"id":"m1","session_id":"room:r","role":"user","content":"내 지시","metadata":{"authorKind":"owner","roomId":"r"}});
+        let job = json!({"id":"j1","kind":"room","status":"queued"});
+        let (saved, _) = store
+            .write_message_with_record(&message, "job", &job)
+            .unwrap();
+        assert_eq!(saved["metadata"]["authorKind"], "owner");
+        assert_eq!(store.message("m1").unwrap()["content"], "내 지시");
+        let mut conflicting = message.clone();
+        conflicting["id"] = json!("m2");
+        assert!(store
+            .write_message_with_record(&conflicting, "job", &job)
+            .is_none());
+        assert!(
+            store.message("m2").is_none(),
+            "queue failure must roll back owner insertion"
+        );
+        assert_eq!(store.messages("room:r").len(), 1);
+        store.put("agent", &json!({"id":"a","model":"old"}));
+        assert!(store
+            .patch_records(
+                "agent",
+                &["a".into(), "missing".into()],
+                &json!({"model":"new"})
+            )
+            .is_none());
+        assert_eq!(store.get("agent", "a").unwrap()["model"], "old");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

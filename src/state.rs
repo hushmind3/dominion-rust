@@ -48,10 +48,12 @@ impl AppState {
             .lock()
             .unwrap()
             .insert(session_id.to_string());
-        self.store.put(
-            "session_cancel",
-            &serde_json::json!({"id":session_id,"cancelledAt":chrono::Utc::now().to_rfc3339()}),
-        );
+        if self.store.cancel_session_epoch(session_id).is_none() {
+            self.store.audit(
+                "session.cancel_persistence_failed",
+                serde_json::json!({"sessionId":session_id}),
+            );
+        }
         // Cancellation survives a restart and cannot be cleared for old queued
         // work merely because the user starts a fresh foreground turn.
         for job in self.store.all("job") {
@@ -87,13 +89,30 @@ impl AppState {
     }
 
     pub fn clear_cancel(&self, session_id: &str) {
+        self.resume_session_if_generation(session_id, self.cancellation_generation(session_id));
+    }
+
+    pub fn cancellation_generation(&self, session_id: &str) -> u64 {
+        self.store
+            .get("session_cancel", session_id)
+            .and_then(|record| record["generation"].as_u64())
+            .unwrap_or(0)
+    }
+
+    pub fn resume_session_if_generation(&self, session_id: &str, generation: u64) -> bool {
+        if !self.store.resume_session_epoch(session_id, generation) {
+            return false;
+        }
         self.cancelled.lock().unwrap().remove(session_id);
-        self.store.remove("session_cancel", session_id);
+        true
     }
 
     pub fn is_cancelled(&self, session_id: &str) -> bool {
         self.cancelled.lock().unwrap().contains(session_id)
-            || self.store.get("session_cancel", session_id).is_some()
+            || self
+                .store
+                .get("session_cancel", session_id)
+                .is_some_and(|record| record["cancelled"].as_bool().unwrap_or(true))
     }
 
     /// Returns false when the session already has a running turn.
@@ -191,6 +210,22 @@ mod tests {
             restarted.store.get("job", "running").unwrap()["status"],
             "cancelled"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resuming_a_new_epoch_cannot_revive_an_old_worker() {
+        let (state, dir) = temp_state();
+        let initial = state.cancellation_generation("room:r");
+        assert!(state.resume_session_if_generation("room:r", initial));
+        state.cancel_session("room:r");
+        let stopped = state.cancellation_generation("room:r");
+        assert!(stopped > initial);
+        assert!(!state.resume_session_if_generation("room:r", initial));
+        assert!(state.is_cancelled("room:r"));
+        assert!(state.resume_session_if_generation("room:r", stopped));
+        assert!(!state.is_cancelled("room:r"));
+        assert_ne!(state.cancellation_generation("room:r"), initial);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -16,6 +16,8 @@ import {
   CirclePlus,
   Clock3,
   Edit3,
+  FolderInput,
+  LoaderCircle,
   MessageSquare,
   Play,
   Plus,
@@ -52,6 +54,7 @@ export function AgentsPage() {
   const [edit, setEdit] = useState<Partial<Agent> | null>(null),
     [models, setModels] = useState<string[]>([]),
     [error, setError] = useState("");
+  const [showPersonaImport,setShowPersonaImport]=useState(false);
   const [bulk, setBulk] = useState(false),
     [selected, setSelected] = useState<string[]>([]),
     [bulkProvider, setBulkProvider] = useState(""),
@@ -115,6 +118,7 @@ export function AgentsPage() {
         description="에이전트를 필요한 만큼 만들고, 모델과 역할을 자유롭게 배치하세요."
         actions={
           <>
+            <Action variant="secondary" onClick={()=>setShowPersonaImport(true)}><FolderInput size={16}/> 기존 페르소나 가져오기</Action>
             <Action
               variant="secondary"
               onClick={() => {
@@ -244,8 +248,8 @@ export function AgentsPage() {
                 className="grid size-12 shrink-0 place-items-center overflow-hidden rounded-xl bg-[#C96442] text-white"
                 style={{ background: a.color || accents[i % accents.length] }}
               >
-                {a.avatar ? (
-                  <img src={a.avatar} alt="" className="size-12 object-cover" />
+                {(a.avatar || a.avatarUrl) ? (
+                  <img src={String(a.avatar || a.avatarUrl)} alt="" className="size-12 object-cover" />
                 ) : (
                   <Bot size={26} />
                 )}
@@ -291,6 +295,7 @@ export function AgentsPage() {
               </div>
             </div>
             <h3>{a.name}</h3>
+            {a.role&&<span className="text-[11px] font-semibold text-[#9B8064]">{String(a.role)}</span>}
             <p>{a.description || "사용자가 설정하는 범용 에이전트"}</p>
             <div className="my-2 h-px bg-[#F3EEE5]" />
             <div className="mt-auto flex flex-col gap-1 border-t border-[#EFE9DF] pt-3 text-xs text-[#7C7469]">
@@ -305,6 +310,7 @@ export function AgentsPage() {
         ))}
       </div>
       {error && <Notice message={error} />}
+      {showPersonaImport&&<PersonaImportDialog agents={agents.value} onClose={()=>setShowPersonaImport(false)} onImported={async(count)=>{await agents.reload();refresh();setBulkNotice(count+'개 페르소나와 아이콘을 가져왔습니다.')}}/>}
       {edit && (
         <DialogBackdrop onDismiss={() => setEdit(null)}>
           <DialogPanel size="wide">
@@ -396,11 +402,11 @@ export function AgentsPage() {
                   placeholder="별칭1, 별칭2"
                 />
               </FormField>
-              <FormField label="프로필 이미지" hint="PNG/JPEG/WebP · 카드에 표시됩니다">
+              <FormField label="프로필 이미지" hint="PNG/JPEG/WebP · 1MB 이하 · 저장하면 적용됩니다">
                 <div className="flex items-center gap-3">
                   <div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-xl border border-[#E7E0D5] bg-[#FAF7F1]">
-                    {edit.avatar ? (
-                      <img src={edit.avatar} alt="" className="size-14 object-cover" />
+                    {(edit.avatar || edit.avatarUrl) ? (
+                      <img src={String(edit.avatar || edit.avatarUrl)} alt="" className="size-14 object-cover" />
                     ) : (
                       <Bot size={22} className="text-[#C96442]" />
                     )}
@@ -410,20 +416,16 @@ export function AgentsPage() {
                     <input
                       type="file"
                       className="hidden"
-                      accept="image/*"
+                      accept="image/png,image/jpeg,image/webp"
                       onChange={(e) => {
                         const file = e.target.files?.[0];
                         if (!file) return;
+                        if(!['image/png','image/jpeg','image/webp'].includes(file.type)){setError('PNG, JPEG, WebP 이미지를 선택하세요.');return;}
+                        if(file.size>1024*1024){setError('프로필 이미지는 1MB 이하로 선택하세요.');return;}
                         const reader = new FileReader();
                         reader.onload = () => {
                           const image = String(reader.result || "");
-                          if (!edit.id) {
-                            setEdit({ ...edit, avatar: image });
-                            return;
-                          }
-                          void post("/api/agents/" + edit.id + "/avatar", { image })
-                            .then((r: any) => setEdit({ ...edit, avatar: r.avatar }))
-                            .catch((err: any) => setError(err.message));
+                          setEdit({ ...edit, avatar: image });
                         };
                         reader.readAsDataURL(file);
                       }}
@@ -465,263 +467,17 @@ export function AgentsPage() {
     </div>
   );
 }
-export function RoomsPage({
-  openSession,
-}: {
-  openSession: (id: string) => void;
-}) {
-  const rooms = useRemote<Room[]>("/api/rooms", []),
-    agents = useRemote<Agent[]>("/api/agents", []),
-    jobs = useRemote<any[]>("/api/jobs", []);
-  const [edit, setEdit] = useState<Partial<Room> | null>(null),
-    [goal, setGoal] = useState<Record<string, string>>({}),
-    [error, setError] = useState(""),
-    [pending, setPending] = useState("");
-  const save = async () => {
-    if (!edit) return;
-    try {
-      await post("/api/rooms", edit);
-      setEdit(null);
-      rooms.reload();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
-  const run = async (r: Room) => {
-    if (!goal[r.id]?.trim()) return;
-    setPending(r.id);
-    setError("");
-    try {
-      await post("/api/rooms/" + r.id + "/run", { goal: goal[r.id] });
-      jobs.reload();
-      setGoal((x) => ({ ...x, [r.id]: "" }));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setPending("");
-    }
-  };
-  return (
-    <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
-      <Headline
-        eyebrow="MULTI-AGENT COLLABORATION"
-        title="생각이 모이면, 실행이 됩니다."
-        description="에이전트 수와 순서를 직접 선택하는 독립적인 회의실. 토론 기록은 세션에 저장됩니다."
-        actions={
-          <Action
-            onClick={() =>
-              setEdit({
-                name: "새 회의실",
-                agentIds: [],
-                rounds: 1,
-                maxTurns: 12,
-                description: "",
-              })
-            }
-          >
-            <Plus size={17} /> 회의실 만들기
-          </Action>
-        }
-      />
-      <div className="mb-6 flex flex-wrap items-center gap-4 rounded-xl border border-[#EED9CC] bg-[#F7E8E1] p-4">
-        <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-[#F1DCCF] text-[#A94E30]">
-          <UsersRound size={26} />
-        </span>
-        <div>
-          <strong>AI Roundtable</strong>
-          <p>
-            각 에이전트가 자신의 모델·지침으로 이전 발언을 참고해 순서대로
-            논의합니다. 인원 제한을 9명으로 고정하지 않습니다.
-          </p>
-        </div>
-        <span className="inline-flex rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#A94E30]">
-          DYNAMIC TEAMS
-        </span>
-      </div>
-      {error && <Notice message={error} />}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {rooms.value.map((r) => {
-          const matching = jobs.value.filter(
-            (j) => j.kind === "meeting" && j.input?.roomId === r.id,
-          )[0];
-          return (
-            <Panel key={r.id} className="flex min-w-0 flex-col gap-4 p-5">
-              <div className="flex min-w-0 items-center gap-3">
-                <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]">
-                  <UsersRound size={22} />
-                </div>
-                <div>
-                  <h3>{r.name}</h3>
-                  <p>{r.description || "공동 연구 · 문제 해결 · 토론"}</p>
-                </div>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => setEdit({ ...r })}
-                >
-                  <Settings2 size={18} />
-                </Button>
-              </div>
-              <div className="flex items-center -space-x-2">
-                {r.agentIds.map((aid, i) => {
-                  const a = agents.value.find((x) => x.id === aid);
-                  return (
-                    <span
-                      key={aid}
-                      title={a?.name || aid}
-                      style={{
-                        background: a?.color || accents[i % accents.length],
-                      }}
-                    >
-                      {(a?.name || "?").slice(0, 1)}
-                    </span>
-                  );
-                })}
-                <small>
-                  {r.agentIds.length} participants · {r.rounds} round
-                  {r.rounds > 1 ? "s" : ""}
-                </small>
-              </div>
-              <div className="flex items-center gap-2">
-                <TextInput
-                  placeholder="회의 의제 입력..."
-                  value={goal[r.id] || ""}
-                  onChange={(e) =>
-                    setGoal((x) => ({ ...x, [r.id]: e.target.value }))
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") run(r);
-                  }}
-                />
-                <Button
-                  title="회의 시작"
-                  onClick={() => run(r)}
-                  disabled={!goal[r.id]?.trim() || pending === r.id}
-                >
-                  <Play size={18} fill="currentColor" />
-                </Button>
-              </div>
-              <div className="mt-auto flex flex-wrap items-center justify-between gap-3 border-t border-[#EFE9DF] pt-3">
-                {matching && (
-                  <StatusPill status={matching.status}>
-                    {matching.status}
-                  </StatusPill>
-                )}
-                {r.sessionId && (
-                  <Button onClick={() => openSession(r.sessionId!)}>
-                    대화 기록 열기 <ArrowRight size={15} />
-                  </Button>
-                )}
-              </div>
-            </Panel>
-          );
-        })}
-        {!rooms.value.length && (
-          <Panel>
-            <Empty
-              icon={UsersRound}
-              title="회의실이 없습니다"
-              description="2명 이상도, 1명도, 필요한 만큼 자유롭게 구성하세요."
-            />
-          </Panel>
-        )}
-      </div>
-      {edit && (
-        <DialogBackdrop onDismiss={() => setEdit(null)}>
-          <DialogPanel size="wide">
-            <div className="flex items-center justify-between border-b border-[#EFE9DF] p-5">
-              <div>
-                <small>ROOM BUILDER</small>
-                <h2>회의실 구성</h2>
-              </div>
-              <Button size="icon" variant="ghost" onClick={() => setEdit(null)}>
-                <X size={19} />
-              </Button>
-            </div>
-            <div className="grid gap-4 p-5">
-              <FormField label="회의실 이름">
-                <TextInput
-                  value={edit.name || ""}
-                  onChange={(e) => setEdit({ ...edit, name: e.target.value })}
-                />
-              </FormField>
-              <FormField label="설명">
-                <TextInput
-                  value={edit.description || ""}
-                  onChange={(e) =>
-                    setEdit({ ...edit, description: e.target.value })
-                  }
-                />
-              </FormField>
-              <FormField label="토론 라운드">
-                <SelectInput
-                  value={edit.rounds || 1}
-                  onChange={(e) =>
-                    setEdit({ ...edit, rounds: Number(e.target.value) })
-                  }
-                >
-                  {[1, 2, 3, 4].map((i) => (
-                    <option value={i} key={i}>
-                      {i}회
-                    </option>
-                  ))}
-                </SelectInput>
-              </FormField>
-              <FormField label="최대 총 발언 수">
-                <TextInput
-                  type="number"
-                  min={1}
-                  max={60}
-                  value={edit.maxTurns || 12}
-                  onChange={(e) =>
-                    setEdit({ ...edit, maxTurns: Number(e.target.value) })
-                  }
-                />
-              </FormField>
-              <div className="mb-3 text-sm font-bold text-[#3A342D]">
-                참여할 에이전트 <strong>{edit.agentIds?.length || 0}명</strong>
-              </div>
-              <div className="grid max-h-64 grid-cols-1 gap-2 overflow-auto sm:grid-cols-2">
-                {agents.value.map((a) => (
-                  <label
-                    key={a.id}
-                    className="flex cursor-pointer items-center gap-3 rounded-xl border border-[#E7E0D5] bg-white p-3 text-sm hover:border-blue-300"
-                  >
-                    <TextInput
-                      type="checkbox"
-                      checked={edit.agentIds?.includes(a.id) || false}
-                      onChange={(e) =>
-                        setEdit({
-                          ...edit,
-                          agentIds: e.target.checked
-                            ? [...(edit.agentIds || []), a.id]
-                            : (edit.agentIds || []).filter((x) => x !== a.id),
-                        })
-                      }
-                    />
-                    <span style={{ background: a.color || "#5979e8" }}>
-                      {a.name.slice(0, 1)}
-                    </span>
-                    <strong>{a.name}</strong>
-                    <small>{a.model || "모델 미설정"}</small>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5">
-              <Action variant="secondary" onClick={() => setEdit(null)}>
-                취소
-              </Action>
-              <Action
-                onClick={save}
-                disabled={!edit.name || !edit.agentIds?.length}
-              >
-                <Check size={16} /> 저장
-              </Action>
-            </div>
-          </DialogPanel>
-        </DialogBackdrop>
-      )}
-    </div>
-  );
+
+
+type PersonaProfile={sourceProfile:string;id:string;name:string;description:string;role:string;hasAvatar:boolean;personaPreview:string;exists:boolean;available:boolean;error?:string}
+function PersonaImportDialog({agents,onClose,onImported}:{agents:Agent[];onClose:()=>void;onImported:(count:number)=>Promise<void>}){
+ const [profiles,setProfiles]=useState<PersonaProfile[]>([]),[selected,setSelected]=useState<string[]>([]),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(''),[refreshIdentity,setRefreshIdentity]=useState(false)
+ useEffect(()=>{let mounted=true;get<{profiles:PersonaProfile[]}>('/api/personas/import/preview').then(result=>{if(!mounted)return;setProfiles(result.profiles);setSelected(result.profiles.filter(profile=>profile.available&&!profile.exists).map(profile=>profile.sourceProfile))}).catch(e=>{if(mounted)setError(e.message)}).finally(()=>{if(mounted)setLoading(false)});return()=>{mounted=false}},[])
+ const available=profiles.filter(profile=>profile.available&&(!profile.exists||refreshIdentity))
+ const apply=async()=>{
+  if(busy||!selected.length)return;setBusy(true);setError('')
+  try{const result=await post<{imported:number;skipped:number;errors:{sourceProfile:string;error:string}[]}>('/api/personas/import',{apply:true,profileIds:selected,...(refreshIdentity?{refreshIdentity:true}:{})});await onImported(result.imported);if(result.errors.length)setError(result.errors.map(item=>item.sourceProfile+': '+item.error).join(' · '));else onClose()}
+  catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
+ return <DialogBackdrop onDismiss={()=>{if(!busy)onClose()}}><DialogPanel size="wide" aria-label="기존 페르소나 가져오기"><div className="flex items-center justify-between border-b border-[#EFE9DF] p-5"><div><small className="text-[10px] tracking-widest text-[#A2937F]">MY LOCAL PERSONAS</small><h2 className="mt-1 font-bold">내 페르소나와 아이콘 가져오기</h2></div><Button size="icon" variant="ghost" aria-label="닫기" disabled={busy} onClick={onClose}><X size={18}/></Button></div><div className="grid gap-4 p-5"><p className="text-[12px] text-[#8F7D65]">로컬에 보관한 내 인격 지침과 아이콘을 확인하고, DOMINION 에이전트로 가져옵니다. 모델 설정은 에이전트 화면에서 선택할 수 있습니다.</p>{loading?<div className="flex items-center justify-center gap-2 py-10 text-[#A2937F]"><LoaderCircle size={17} className="animate-spin"/> 페르소나를 확인하는 중</div>:<><div className="flex items-center justify-between text-[11px] text-[#9A866A]"><span>발견 {profiles.length}명 · 선택 {selected.length}명</span><button className="underline underline-offset-2" disabled={busy||!available.length} onClick={()=>setSelected(selected.length===available.length?[]:available.map(profile=>profile.sourceProfile))}>{selected.length===available.length?'선택 해제':'가능한 참가자 모두 선택'}</button></div><div className="grid max-h-[48vh] gap-3 overflow-auto sm:grid-cols-2">{profiles.map((profile,index)=>{const agent=agents.find(item=>item.id===profile.id);const enabled=profile.available&&(!profile.exists||refreshIdentity);const checked=selected.includes(profile.sourceProfile);return <div className={'rounded-xl border p-3 '+(checked?'border-[#D1B894] bg-[#FBF4E8]':'border-[#E7E0D5] bg-[#FFFCF7]')} key={profile.sourceProfile}><label className="flex cursor-pointer items-center gap-3"><input type="checkbox" className="accent-[#AA8B63]" checked={checked} disabled={busy||!enabled} onChange={()=>setSelected(previous=>checked?previous.filter(id=>id!==profile.sourceProfile):[...previous,profile.sourceProfile])}/><span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl text-[13px] font-semibold text-white" style={{background:agent?.color||accents[index%accents.length]}}>{(agent?.avatar||agent?.avatarUrl)?<img src={String(agent.avatar||agent.avatarUrl)} alt="" className="size-10 object-cover"/>:profile.name.slice(0,1)}</span><span className="min-w-0 flex-1"><strong className="block text-[12px] text-[#776249]">{profile.name}</strong><small className="block text-[10px] text-[#AC987A]">{profile.role||profile.description}</small></span>{profile.exists&&<span className="rounded bg-[#EDE8DE] px-1.5 py-0.5 text-[9px] text-[#9D8D74]">가져옴</span>}</label><div className="mt-3 flex gap-2 text-[9px] text-[#B2A087]"><span>{profile.hasAvatar?'아이콘 포함':'기본 아이콘'}</span><span>·</span><span>내 페르소나</span></div>{profile.personaPreview&&<details className="mt-2 text-[10px] text-[#9F896B]"><summary className="cursor-pointer">인격 지침 미리보기</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-[#F4EDE1] p-3 font-sans text-[10px] leading-6 text-[#A18C6E]">{profile.personaPreview}</pre></details>}{profile.error&&<p className="mt-2 text-[10px] text-rose-600">{profile.error}</p>}</div>})}</div>{!profiles.length&&<p className="py-7 text-center text-[12px] text-[#A2937F]">가져올 수 있는 로컬 페르소나가 없습니다.</p>}<label className="flex items-start gap-2 text-[11px] text-[#9A866A]"><input type="checkbox" className="mt-1 accent-[#AA8B63]" checked={refreshIdentity} disabled={busy} onChange={e=>{setRefreshIdentity(e.target.checked);if(!e.target.checked)setSelected(previous=>previous.filter(id=>!profiles.find(profile=>profile.sourceProfile===id)?.exists))}}/><span>기존 페르소나·아이콘도 원본에서 다시 읽기<small className="mt-1 block text-[10px] text-[#B3A187]">기존 에이전트의 모델과 제공자 설정은 유지됩니다.</small></span></label></>}<Notice message={error}/></div><div className="flex items-center justify-end gap-2 border-t border-[#EFE9DF] p-5"><Button variant="ghost" disabled={busy} onClick={onClose}>닫기</Button><Button variant="primary" disabled={loading||busy||!selected.length} onClick={()=>void apply()}>{busy?<LoaderCircle size={15} className="animate-spin"/>:<FolderInput size={15}/>} 선택한 {selected.length}명 가져오기</Button></div></DialogPanel></DialogBackdrop>
 }

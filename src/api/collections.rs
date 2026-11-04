@@ -16,7 +16,6 @@ pub const COLLECTIONS: &[&str] = &[
     "mcp",
     "automations",
     "workflows",
-    "rooms",
     "jobs",
     "executions",
     "knowledge",

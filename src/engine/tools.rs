@@ -286,6 +286,114 @@ async fn write_text(path: &Path, content: &str) -> Result<Value, String> {
     }))
 }
 
+/// A tool command gets a private Unix process group. Killing only the shell
+/// leaves its children running after Stop; the guard covers cancellation,
+/// timeout and I/O errors and is disarmed only after a completed command.
+#[cfg(unix)]
+struct ToolProcessGroup {
+    id: Option<i32>,
+}
+#[cfg(unix)]
+impl ToolProcessGroup {
+    fn new(pid: Option<u32>) -> Self {
+        Self {
+            id: pid
+                .and_then(|pid| i32::try_from(pid).ok())
+                .filter(|pid| *pid > 1),
+        }
+    }
+    fn disarm(&mut self) {
+        self.id = None;
+    }
+}
+#[cfg(unix)]
+impl Drop for ToolProcessGroup {
+    fn drop(&mut self) {
+        if let Some(id) = self.id {
+            extern "C" {
+                fn kill(pid: i32, signal: i32) -> i32;
+            }
+            // This is the exact child PID created with process_group(0).
+            // A negative PID targets that private group, never our own group;
+            // zero and special global process IDs are excluded by new().
+            // SIGKILL is 9 on the supported macOS/Linux Unix hosts.
+            unsafe {
+                kill(-id, 9);
+            }
+        }
+    }
+}
+
+async fn read_command_output(
+    mut stream: impl tokio::io::AsyncRead + Unpin,
+) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    // Keep enough UTF-8 bytes for 20,001 characters so output_payload can
+    // preserve its existing 20,000-character truncation indicator. Continue
+    // draining after this cap so a chatty child cannot fill a pipe or memory.
+    const MAX_RETAINED_BYTES: usize = 4 * 20_001;
+    let mut kept = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = stream.read(&mut buffer).await?;
+        if count == 0 {
+            return Ok(kept);
+        }
+        let retain = count.min(MAX_RETAINED_BYTES.saturating_sub(kept.len()));
+        kept.extend_from_slice(&buffer[..retain]);
+    }
+}
+
+async fn run_command(
+    command: &mut tokio::process::Command,
+    limit: Duration,
+) -> Result<std::process::Output, String> {
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    let mut group = ToolProcessGroup::new(child.id());
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Command stdout is not available")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Command stderr is not available")?;
+    let outcome = tokio::time::timeout(limit, async {
+        let (status, stdout, stderr) = tokio::try_join!(
+            child.wait(),
+            read_command_output(stdout),
+            read_command_output(stderr)
+        )?;
+        Ok::<_, std::io::Error>(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
+    })
+    .await;
+    match outcome {
+        Ok(Ok(output)) => {
+            #[cfg(unix)]
+            group.disarm();
+            Ok(output)
+        }
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err(if limit.subsec_nanos() == 0 {
+            format!("Command timed out after {}s", limit.as_secs())
+        } else {
+            format!("Command timed out after {}ms", limit.as_millis())
+        }),
+    }
+}
+
 async fn shell(command: &str, cwd: &Path) -> Result<Value, String> {
     use tokio::process::Command;
     #[cfg(windows)]
@@ -301,14 +409,8 @@ async fn shell(command: &str, cwd: &Path) -> Result<Value, String> {
         child.args(["-lc", command]);
         child
     };
-    child
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(120), child.output())
-        .await
-        .map_err(|_| "Command timed out after 120s".to_string())?
-        .map_err(|error| error.to_string())?;
+    child.current_dir(cwd);
+    let output = run_command(&mut child, Duration::from_secs(120)).await?;
     Ok(output_payload(&output))
 }
 
@@ -320,18 +422,9 @@ async fn executable(command: &str, args: &[String], cwd: &Path) -> Result<Value,
     {
         return Err("Invalid executable".into());
     }
-    let output = tokio::time::timeout(
-        Duration::from_secs(120),
-        Command::new(command)
-            .args(args)
-            .current_dir(cwd)
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| "Command timed out after 120s".to_string())?
-    .map_err(|error| error.to_string())?;
+    let mut child = Command::new(command);
+    child.args(args).current_dir(cwd);
+    let output = run_command(&mut child, Duration::from_secs(120)).await?;
     Ok(output_payload(&output))
 }
 
@@ -515,5 +608,91 @@ mod tests {
         }
         assert!(requires_approval("shell_exec"));
         assert!(!requires_approval("workspace_read"));
+    }
+    #[cfg(unix)]
+    async fn wait_for_marker(path: &Path) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while !path.exists() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "test command did not start"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    #[cfg(unix)]
+    fn delayed_child_command(dir: &Path) -> tokio::process::Command {
+        // The parent waits while an ordinary child will mutate the temp
+        // workspace later. No daemon, user process or external service is used.
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "(sleep 0.6; printf leaked > escaped.txt) & printf ready > ready.txt; wait",
+            ])
+            .current_dir(dir);
+        command
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_tool_command_stops_background_descendants() {
+        let dir =
+            std::env::temp_dir().join(format!("dominion-process-cancel-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = dir.clone();
+        let task = tokio::spawn(async move {
+            let mut command = delayed_child_command(&cwd);
+            run_command(&mut command, Duration::from_secs(10)).await
+        });
+        wait_for_marker(&dir.join("ready.txt")).await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(
+            !dir.join("escaped.txt").exists(),
+            "child continued changing files after Stop"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_tool_command_stops_background_descendants() {
+        let dir =
+            std::env::temp_dir().join(format!("dominion-process-timeout-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut command = delayed_child_command(&dir);
+        let result = run_command(&mut command, Duration::from_millis(150)).await;
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(dir.join("ready.txt").exists());
+        tokio::time::sleep(Duration::from_millis(650)).await;
+        assert!(
+            !dir.join("escaped.txt").exists(),
+            "child continued changing files after timeout"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tool_command_preserves_output_exit_status_and_bounded_capture() {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args(["-c", "printf normal; printf warning >&2; exit 7"]);
+        let output = run_command(&mut command, Duration::from_secs(3))
+            .await
+            .unwrap();
+        let payload = output_payload(&output);
+        assert_eq!(payload["exitCode"], 7);
+        assert_eq!(payload["stdout"], "normal");
+        assert_eq!(payload["stderr"], "warning");
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args(["-c", "head -c 250000 /dev/zero"]);
+        let output = run_command(&mut command, Duration::from_secs(3))
+            .await
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stdout.len() <= 4 * 20_001);
+        assert!(output_payload(&output)["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("truncated"));
     }
 }
