@@ -1,0 +1,49 @@
+{
+  "name": "dominion",
+  "version": "0.2.9",
+  "private": true,
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "description": "DOMINION local AI workspace desktop app",
+  "author": "hushmind3",
+  "engines": {
+    "node": ">=24.12.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"node --watch server/index.mjs\" \"vite --host 127.0.0.1\"",
+    "dev:desktop": "node scripts/dev.mjs",
+    "dev:server": "node --watch server/index.mjs",
+    "build": "vite build",
+    "start": "node server/index.mjs",
+    "dist:dir": "npm run build && electron-builder --dir --publish never",
+    "dist:win": "npm run build && electron-builder --win --x64 --publish never",
+    "dist:mac": "npm run build && electron-builder --mac --x64 --arm64 --publish never",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "check": "tsc --noEmit && npm test && npm run gate:engine && npm run build",
+    "test:ui": "node scripts/ui-smoke.mjs",
+    "gate:engine": "node scripts/engine-gate.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@noble/curves": "^2.4.0",
+    "@tailwindcss/vite": "^4.1.0",
+    "diff": "^9.0.0",
+    "isomorphic-git": "^1.44.10",
+    "lucide-react": "^0.468.0",
+    "npm": "^11.21.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwindcss": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "concurrently": "^9.2.0",
+    "electron-builder": "^26.18.0",
+    "playwright": "^1.58.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0"
+  }
+}
