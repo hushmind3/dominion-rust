@@ -25,6 +25,7 @@ src/
     workflows.rs     순차 워크플로 실행 ({{input}} / {{previous}})
     rooms.rs         멀티 에이전트 라운드테이블 실행
     goals.rs         자율 목표 루프 (도구 사용 · DONE 판정)
+    dev.rs           소스 개발 스튜디오 (git · npm · vite 미리보기)
     mcp.rs           MCP stdio/HTTP 클라이언트 + 도구 네임스페이스
   api/
     core.rs          핵심 API
@@ -70,6 +71,7 @@ React 클라이언트가 이미 사용하는 계약을 그대로 구현했습니
 | 컬렉션 | `agents`, `memories`, `skills`, `mcp`, `automations`, `workflows`, `rooms`, `channels`, `jobs`, `executions`, `goals` |
 | 작업 | `GET /api/jobs`, `POST /api/workflows/:id/run`, `POST /api/rooms/:id/run`, `POST /api/goals` |
 | 실행 기록 | `GET /api/executions`, `GET /api/executions/:id/operations`, `POST /api/executions/:id/cancel`, `POST /api/sessions/:id/cancel` |
+| 개발 스튜디오 | `GET /api/dev/status`, `POST /api/dev/connect`, `GET /api/dev/diff`, `POST /api/dev/{setup,test,build,package,commit}`, `POST /api/dev/preview/{start,stop}` |
 | MCP | `GET /api/mcp`, `GET /api/mcp/discover`, `GET /api/tools` (`mcp__서버__도구`) |
 | 기타 | `GET /api/audit`, `POST /api/translate` |
 
@@ -133,7 +135,7 @@ Node 구현의 다음 기능은 Rust로 옮기지 않았습니다. 해당 경로
 - MCP 마켓플레이스 카탈로그 검색 (서버 등록·도구 호출은 지원)
 - OAuth 연동 (Google/GitHub/YouTube)
 - 메신저 채널 어댑터 (Slack/Discord/Telegram)
-- 개발 스튜디오 (git 빌드/패키징)
+- 설치 파일 자동 적용 (데스크톱 셸의 설치 기능 필요)
 
 ## 검증
 
@@ -151,3 +153,4 @@ cargo test --release
 - MCP 이름 네임스페이스 및 정책 기반 승인
 - 실행 기록/취소 상태 전이
 - 자율 목표 실패 경로
+- 개발 스튜디오 설정 저장 및 패키지 경로 해석

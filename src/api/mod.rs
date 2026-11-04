@@ -1,4 +1,5 @@
 pub mod collections;
+pub mod dev;
 pub mod compat;
 pub mod core;
 
@@ -87,8 +88,14 @@ pub fn router(state: AppState) -> Router {
             "/api/model-library/:action",
             post(compat::not_ported).get(compat::empty_object),
         )
-        .route("/api/dev/status", get(compat::dev_status))
-        .route("/api/dev/:action", post(compat::not_ported).get(compat::empty_object))
+        .route("/api/dev/status", get(dev::status))
+        .route("/api/dev/config", get(dev::get_config).post(dev::save_config))
+        .route("/api/dev/connect", post(dev::connect))
+        .route("/api/dev/diff", get(dev::diff))
+        .route("/api/dev/jobs/:id", get(dev::get_job))
+        .route("/api/dev/preview/:action", post(dev::preview))
+        .route("/api/dev/update", post(dev::update))
+        .route("/api/dev/:kind", post(dev::start_job))
         .route("/api/oauth/providers", get(compat::oauth_providers))
         .route("/api/oauth/providers/:id", post(compat::not_ported))
         .route("/api/oauth/:id/start", get(compat::not_ported))

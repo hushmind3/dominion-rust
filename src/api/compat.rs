@@ -47,12 +47,6 @@ pub async fn youtube_status() -> Json<Value> {
     Json(json!({ "connected": false, "channel": null }))
 }
 
-pub async fn dev_status() -> Json<Value> {
-    Json(json!({
-        "connected": false,
-        "message": "개발 스튜디오는 Rust 백엔드에서 아직 제공되지 않습니다.",
-    }))
-}
 
 pub async fn not_ported() -> Response {
     (
