@@ -131,6 +131,33 @@ pub fn import_local(state: &AppState, file_path: &str) -> Result<Value, String> 
         .unwrap_or_else(|| json!({ "id": name })))
 }
 
+fn total_memory() -> u64 {
+    // Cheapest portable-enough source; unknown stays 0 rather than guessing.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("sysctl").args(["-n", "hw.memsize"]).output() {
+            if let Ok(text) = String::from_utf8(output.stdout) {
+                if let Ok(value) = text.trim().parse::<u64>() {
+                    return value;
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(text) = std::fs::read_to_string("/proc/meminfo") {
+            for line in text.lines() {
+                if let Some(rest) = line.strip_prefix("MemTotal:") {
+                    if let Some(kb) = rest.split_whitespace().next().and_then(|v| v.parse::<u64>().ok()) {
+                        return kb * 1024;
+                    }
+                }
+            }
+        }
+    }
+    0
+}
+
 pub fn runtime_snapshot() -> Value {
     let mut guard = runtime().lock().unwrap();
     if let Some(child) = guard.child.as_mut() {
@@ -153,8 +180,15 @@ pub fn runtime_snapshot() -> Value {
         "error": guard.error,
         "logs": logs.into_iter().rev().collect::<Vec<_>>(),
         "capabilities": {
-            "gguf": { "available": true, "backend": "llama.cpp" },
+            "gguf": { "available": true, "backend": "llama.cpp", "installable": false },
             "mlx": { "available": false },
+            "memory": {
+                "total": total_memory(),
+                "free": 0,
+                "platform": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+            },
+            "gpu": null,
         }
     })
 }
