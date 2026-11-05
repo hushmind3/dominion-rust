@@ -268,9 +268,23 @@ pub fn propose_candidates(state: &AppState) -> Vec<Value> {
     }
     let optimizer = active_optimizer(state);
     let optimizer_revision = optimizer["revision"].as_str().unwrap_or("optimizer-v1").to_string();
-    let variant_limit = 3;
+    let search_algorithm = crate::engine::algorithms::choose_for_agent(
+        state,
+        "selfimprove.search",
+        None,
+        None,
+    );
+    let counterexample_first = search_algorithm
+        .as_ref()
+        .and_then(|algorithm| algorithm["implementation"].as_str())
+        == Some("counterexample-first");
+    let variant_limit = if counterexample_first { 4 } else { 3 };
+    let mut cluster_list = clusters.iter().collect::<Vec<_>>();
+    if counterexample_first {
+        cluster_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    }
     let mut created = Vec::new();
-    for (class, evidence) in clusters.iter() {
+    for (class, evidence) in cluster_list {
         let class = *class;
         if evidence.len() < PROPOSER_MIN_EVIDENCE {
             continue;

@@ -1106,9 +1106,18 @@ async fn run_turn_body(
             let call_key = format!("{}:{}", call.name, arguments);
             let current_fingerprint =
                 environment_fingerprint(state, &call.name, &arguments);
-            let repeat_allowed = failed_calls
-                .get(&call_key)
-                .is_some_and(|(_, fingerprint)| fingerprint != &current_fingerprint);
+            let recovery_mode = crate::engine::algorithms::variant_for_agent(
+                state,
+                "recovery.strategy",
+                request.agent_id.as_deref(),
+            );
+            let repeat_allowed = match recovery_mode.as_str() {
+                "allow-all" => true,
+                "block-identical" => false,
+                _ => failed_calls
+                    .get(&call_key)
+                    .is_some_and(|(_, fingerprint)| fingerprint != &current_fingerprint),
+            };
             if repeat_allowed {
                 failed_calls.remove(&call_key);
             }
@@ -1121,6 +1130,7 @@ async fn run_turn_body(
                     | "github_api" | "delegate_task"
             );
             if mutating {
+            if recovery_mode != "allow-all" {
             if let Some((previous_error, _)) = failed_calls.get(&call_key) {
                 // Section 11-1: an unchanged repeat of a failed mutating call
                 // is not re-executed. The model must choose a changed action.
@@ -1144,6 +1154,7 @@ async fn run_turn_body(
                     "content":"직전 실패와 동일한 호출이 차단되었습니다. 다른 도구/인자로 실행하거나, 원인을 확인하는 probe를 선택하거나, 실제로 막혔다면 그 이유를 최종 답변에 쓰세요."
                 }));
                 continue;
+            }
             }
             }
             let repeat = {
@@ -2166,6 +2177,59 @@ fn execute_nodes<'a>(
                     checkpoint["resolvedInputs"] = resolved.clone();
                     if persist {
                         save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
+                    }
+                    let parallel_mode = crate::engine::algorithms::variant_for_agent(
+                        ctx.state,
+                        "execution.parallelism",
+                        ctx.request.agent_id.as_deref(),
+                    );
+                    if parallel_mode == "sequential" {
+                        let mut paused = false;
+                        for child in &children {
+                            let frame = execute_nodes(
+                                ctx,
+                                vec![child.clone()],
+                                resolved,
+                                checkpoint,
+                                budget,
+                                op_seq,
+                                depth + 1,
+                                false,
+                                true,
+                            )
+                            .await?;
+                            resolved = frame.resolved;
+                            checkpoint = frame.checkpoint;
+                            budget = frame.budget;
+                            op_seq = frame.op_seq;
+                            messages.extend(frame.messages);
+                            if frame.paused {
+                                paused = true;
+                                break;
+                            }
+                        }
+                        checkpoint["pendingOperationIds"] = json!([]);
+                        checkpoint["parallelMode"] = json!("sequential");
+                        checkpoint["resolvedInputs"] = resolved.clone();
+                        if paused {
+                            checkpoint["status"] = json!("paused");
+                            if persist {
+                                save_program_checkpoint(
+                                    ctx.state, ctx.execution_id, &checkpoint,
+                                );
+                            }
+                            return Ok(ProgramFrame {
+                                resolved, checkpoint, budget, op_seq, messages,
+                                paused: true, failure: None,
+                            });
+                        }
+                        mark_program_completed(&mut checkpoint, node_id);
+                        if persist {
+                            save_program_checkpoint(
+                                ctx.state, ctx.execution_id, &checkpoint,
+                            );
+                        }
+                        continue;
                     }
                     let base = budget.branch();
                     let mut futures = Vec::new();

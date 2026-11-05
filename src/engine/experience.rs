@@ -282,6 +282,16 @@ fn record_with_scope(
 
 /// Retrieves similar cases and bumps their usage counters.
 pub fn retrieve(state: &AppState, scope: &MemoryScope, query: &str, limit: usize) -> Vec<Value> {
+    let retrieval = crate::engine::algorithms::choose_for_agent(
+        state,
+        "memory.retrieval",
+        scope.agent_id.as_deref(),
+        None,
+    );
+    let failure_boost = retrieval
+        .as_ref()
+        .and_then(|algorithm| algorithm["parameters"]["failureBoost"].as_f64())
+        .unwrap_or(2.0);
     let query_tokens = tokens(query);
     if query_tokens.is_empty() {
         return Vec::new();
@@ -305,7 +315,11 @@ pub fn retrieve(state: &AppState, scope: &MemoryScope, query: &str, limit: usize
         if overlap == 0 {
             continue;
         }
-        let boost = if record["outcome"] == "failure" { 2.0 } else { 1.0 };
+        let boost = if record["outcome"] == "failure" {
+            failure_boost
+        } else {
+            1.0
+        };
         let occurrences = record["occurrences"].as_u64().unwrap_or(1) as f64;
         scored.push((overlap as f64 * 3.0 + boost + occurrences * 0.1, record));
     }
@@ -611,7 +625,15 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
                     .len()
             })
             .unwrap_or(0);
-        if distinct_agents >= 2 {
+        let min_agents = crate::engine::algorithms::choose_for_agent(
+            state,
+            "multiagent.sharing",
+            scope.agent_id.as_deref(),
+            None,
+        )
+        .and_then(|algorithm| algorithm["parameters"]["minAgents"].as_u64())
+        .unwrap_or(2) as usize;
+        if distinct_agents >= min_agents.max(1) {
             rule["scope"] = json!("shared");
             rule["agentId"] = Value::Null;
             if rule["sharedAt"].is_null() {
@@ -805,6 +827,18 @@ pub fn record_rule_counterexamples(
     if !observed_failure(result) {
         return;
     }
+    let agent_id = state
+        .store
+        .get("execution", execution_id)
+        .and_then(|execution| execution["agentId"].as_str().map(str::to_string));
+    let mode = crate::engine::algorithms::variant_for_agent(
+        state,
+        "learning.counterexample",
+        agent_id.as_deref(),
+    );
+    if mode == "disable" {
+        return;
+    }
     for hint in considered {
         let Some(id) = hint["id"].as_str() else { continue };
         let Some(mut rule) = state.store.get("experience_rule", id) else { continue };
@@ -851,9 +885,10 @@ pub fn record_rule_counterexamples(
                 }
             }
         }
-        if !narrowed {
-            // No observable environment difference is available. Keep the
-            // method as an unresolved hypothesis instead of applying it.
+        if !narrowed || mode == "hold" {
+            // No observable environment difference is available, or the
+            // selected algorithm holds instead of narrowing. Keep the method
+            // as an unresolved hypothesis rather than applying it.
             rule["status"] = json!("needs_split");
         }
         rule["revision"] = json!(memory::stable_id(&[
@@ -1025,6 +1060,39 @@ mod tests {
         assert_eq!(matching_rules(&state, &c_scope, "workspace_read",
             &json!({"path":"second.txt"}), "no such file or directory", 3).len(), 1);
         let _ = a_scope;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sharing_threshold_algorithm_controls_cross_agent_promotion() {
+        let (state, dir) = state();
+        crate::engine::algorithms::seed(&state);
+        let three = state
+            .store
+            .all("algorithm")
+            .into_iter()
+            .find(|algorithm| algorithm["implementation"] == "three-agents")
+            .unwrap();
+        crate::engine::algorithms::activate(&state, three["id"].as_str().unwrap()).unwrap();
+        let attempt = |agent: &str, id: &str| json!({
+            "id": id, "sessionId": "s", "agentId": agent, "taskOutcome": "succeeded",
+            "adaptations":[{
+                "observation":{"kind":"tool_failure","tool":"workspace_read",
+                    "arguments":{"path":"first.txt"},"actual":"file not found"},
+                "selected":{"tool":"workspace_write",
+                    "inputs":{"path":"first.txt","content":"created"}},
+                "result":{"success":true}
+            }]
+        });
+        for (agent, id) in [("agent-a","r1"), ("agent-b","r2")] {
+            learn_verified_adaptations(&state, &attempt(agent, id));
+        }
+        let third = MemoryScope::for_session(&state.store, "s", Some("agent-c"));
+        assert!(matching_rules(&state, &third, "workspace_read",
+            &json!({"path":"second.txt"}), "no such file or directory", 3).is_empty());
+        learn_verified_adaptations(&state, &attempt("agent-c", "r3"));
+        assert_eq!(matching_rules(&state, &third, "workspace_read",
+            &json!({"path":"second.txt"}), "no such file or directory", 3).len(), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 

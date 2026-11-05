@@ -3329,6 +3329,53 @@ fn per_bot_growth_changes_only_that_bots_next_prompt() {
     );
 }
 
+#[test]
+fn allow_all_recovery_algorithm_retries_the_same_failed_call() {
+    let _serial = serial();
+    let calls = Arc::new(Mutex::new(0u32));
+    let counter = calls.clone();
+    let (port, _) = scripted_provider(move |request| {
+        if request["stream"].as_bool() != Some(true) {
+            return vec![json!({"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]})];
+        }
+        let mut count = counter.lock().unwrap();
+        *count += 1;
+        match *count {
+            1 | 2 => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":format!("fail-{count}"),"type":"function","function":{"name":"shell_exec","arguments":"{\"command\":\"exit 7\"}"}}]},"finish_reason":"tool_calls"}]})],
+            _ => vec![json!({"choices":[{"delta":{"content":"재시도 후 완료."},"finish_reason":"stop"}]})],
+        }
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let algorithm = app.post(
+        "/api/algorithms",
+        &json!({
+            "kind":"recovery.strategy",
+            "name":"allow-all",
+            "implementation":"allow-all",
+            "parameters":{}
+        }),
+    );
+    app.post(
+        &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
+        &json!({}),
+    );
+    let _ = app.chat(&json!({"input":"같은 실패를 재시도해","autoLearning":false}));
+    let executions = app.get("/api/executions");
+    let execution = &executions.as_array().unwrap()[0];
+    let operations = {
+        let execution_id = execution["id"].as_str().unwrap();
+        app.get(&format!("/api/executions/{execution_id}/operations"))
+    };
+    let shells = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|operation| operation["tool"] == "shell_exec")
+        .count();
+    assert_eq!(shells, 2, "allow-all did not retry: {operations}");
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")
