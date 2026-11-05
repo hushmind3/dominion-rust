@@ -393,10 +393,24 @@ pub fn active(state: &AppState, kind: &str) -> Option<Value> {
         })
 }
 
+/// The executable kernel chosen for a kind. `variant` is display metadata and
+/// must never diverge from the kernel the harness actually runs.
 pub fn variant(state: &AppState, kind: &str) -> String {
     active(state, kind)
-        .and_then(|item| item["variant"].as_str().map(str::to_string))
-        .unwrap_or_else(|| "balanced".into())
+        .and_then(|item| {
+            item["implementation"]
+                .as_str()
+                .or_else(|| item["variant"].as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| match kind {
+            "strategy.selection" => "estimated-softmax".into(),
+            "program.repair" => "completed-preserving".into(),
+            "tool.selection" => "read-before-write".into(),
+            "verification.predicate" => "three-valued".into(),
+            "learning.applicability" => "conservative".into(),
+            _ => "balanced".into(),
+        })
 }
 
 pub fn register(state: &AppState, body: &Value) -> Result<Value, String> {
@@ -734,6 +748,27 @@ mod tests {
             })
         )
         .is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn execution_reads_implementation_not_display_variant() {
+        let (state, dir) = state();
+        seed(&state);
+        let record = register(
+            &state,
+            &json!({
+                "kind":"tool.selection",
+                "name":"display-only-name",
+                "variant":"display-only-name",
+                "implementation":"block-write-without-read",
+                "parameters":{}
+            }),
+        )
+        .unwrap();
+        activate(&state, record["id"].as_str().unwrap()).unwrap();
+        assert_eq!(variant(&state, "tool.selection"), "block-write-without-read");
+        assert_ne!(variant(&state, "tool.selection"), "display-only-name");
         let _ = std::fs::remove_dir_all(dir);
     }
 
