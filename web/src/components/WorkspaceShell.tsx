@@ -7,7 +7,7 @@ type NavItem={id:PageId;label:string;icon:typeof House}
 export const navigation:{title:string;items:NavItem[];collapsible?:boolean}[]=[
  {title:'작업 공간',items:[{id:'chat',label:'채팅',icon:MessageSquare},{id:'rooms',label:'그룹 대화 · 회의',icon:UsersRound},{id:'models',label:'모델 관리',icon:Cpu},{id:'agents',label:'에이전트',icon:Bot},{id:'video',label:'영상 제작',icon:Clapperboard}]},
  {title:'확장',items:[{id:'connections',label:'연결 · 채널',icon:RadioTower},{id:'extensions',label:'도구 · MCP · 스킬',icon:Blocks},{id:'algorithms',label:'알고리즘',icon:BrainCircuit},{id:'memory',label:'메모리',icon:BookOpenText}]},
- {title:'운영',items:[{id:'automations',label:'자동화',icon:Workflow},{id:'activity',label:'실행 기록',icon:Activity},{id:'settings',label:'설정',icon:Settings2}]},
+ {title:'운영',items:[{id:'intelligence',label:'지능 대시보드',icon:BrainCircuit},{id:'automations',label:'자동화',icon:Workflow},{id:'activity',label:'실행 기록',icon:Activity},{id:'settings',label:'설정',icon:Settings2}]},
  {title:'고급',collapsible:true,items:[{id:'workflows',label:'반복 작업',icon:Workflow},{id:'developer',label:'소스 개발 스튜디오',icon:Code2}]}
 ]
 const items=navigation.flatMap(g=>g.items)
