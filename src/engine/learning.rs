@@ -247,36 +247,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     }
     let end = (start + BATCH_MESSAGES).min(snapshot_end);
     let batch = &all[start..end];
-    let through = batch
-        .last()
-        .and_then(|message| message["id"].as_str())
+    let (transcript, selected_through) =
+        select_page(batch, scope.agent_id.as_deref(), 1_000);
+    // Advance only through the last message actually sent to the model. If
+    // the budget cut the batch short, the remainder job starts there.
+    let through = selected_through
+        .or_else(|| all[end - 1]["id"].as_str().map(str::to_string))
         .ok_or("학습 메시지 ID가 없습니다.")?;
-    // Local models commonly run with a 4k context. Keep the newest evidence
-    // that fits instead of sending a 40k-character transcript.
-    let mut transcript = Vec::new();
-    let mut used_chars = 0usize;
-    for message in batch.iter().rev().filter(|message| {
-        // Room sessions contain multiple agents; learn each agent's own turns.
-        message["agent_id"].as_str().is_none()
-            || message["agent_id"].as_str() == scope.agent_id.as_deref()
-    }) {
-        let content = message["content"]
-            .as_str()
-            .unwrap_or("")
-            .chars()
-            .take(200)
-            .collect::<String>();
-        let size = content.chars().count() + 96;
-        if used_chars + size > 1_000 && !transcript.is_empty() {
-            break;
-        }
-        used_chars += size;
-        transcript.push(json!({
-            "id":message["id"],"role":message["role"],"toolCallId":message["tool_call_id"],"origin":message["metadata"]["origin"],
-            "content":content,
-        }));
-    }
-    transcript.reverse();
     let session = state
         .store
         .get("session", session_id)
@@ -302,7 +279,20 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "너는 증거 기반 학습기다. 아래 messages에서 사용자가 명시한 선호·사실·결정을 추출한다. assistant 발언은 근거로 쓰지 않는다. 각 기억은 반드시 해당 user 메시지의 id와, 그 메시지 내용에서 띄어쓰기까지 그대로 복사한 evidenceQuote를 포함한다. 인용이 정확하지 않으면 저장하지 않는다. JSON 하나만 출력한다. 예시 형식: {\"memories\":[{\"text\":\"사용자는 앞으로 답변을 한국어로만 받길 원한다\",\"type\":\"preference\",\"importance\":0.8,\"key\":\"answer-language\",\"sourceMessageIds\":[\"u1\"],\"evidenceQuote\":\"앞으로 답변은 항상 한국어로만 해\"}],\"skill\":null,\"strategies\":[],\"toolPolicies\":[],\"harnessProposal\":null}. 위 예시는 형식 설명이다. 실제 messages의 id와 원문을 사용하라. 추출할 것이 없으면 memories를 빈 배열로 둔다.",
         &json!({"messages":transcript,"existingFactKeys":existing_keys}).to_string()).await?;
     let parsed = parse_learning(&raw)?;
-    let mut result = apply_learning(state, &scope, batch, &parsed)?;
+    let included_ids = transcript
+        .iter()
+        .filter_map(|message| message["id"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let included_batch = batch
+        .iter()
+        .filter(|message| {
+            message["id"]
+                .as_str()
+                .is_some_and(|id| included_ids.contains(id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut result = apply_learning(state, &scope, &included_batch, &parsed)?;
     result["learningProvider"] = json!(learning_provider);
     result["learningModel"] = json!(learning_model);
     let consolidation = crate::engine::experience::consolidate(state);
@@ -326,14 +316,55 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         state.bus.emit(saved);
     }
     context.patch(json!({"result":result}));
-    if end < snapshot_end {
-        // Process remaining pages rather than dropping a backlog over 30 rows.
+    let included_end = all
+        .iter()
+        .position(|message| message["id"].as_str() == Some(through.as_str()))
+        .map(|index| index + 1)
+        .unwrap_or(end);
+    if included_end < snapshot_end {
+        // Process the rest from the last message actually sent, never from the
+        // end of the snapshot.
         let mut remainder = input.clone();
-        remainder["throughMessageId"] = all[snapshot_end - 1]["id"].clone();
+        remainder["throughMessageId"] = json!(through);
         remainder["agentId"] = json!(scope.agent_id);
         jobs::enqueue(state, "learn", remainder).ok_or("추가 학습 작업 저장에 실패했습니다.")?;
     }
     Ok(result)
+}
+
+fn select_page(
+    batch: &[Value],
+    agent_id: Option<&str>,
+    budget: usize,
+) -> (Vec<Value>, Option<String>) {
+    let mut transcript = Vec::new();
+    let mut used_chars = 0usize;
+    let mut through = None;
+    for message in batch {
+        // Room sessions contain multiple agents; learn each agent's own turns.
+        if message["agent_id"].as_str().is_some()
+            && message["agent_id"].as_str() != agent_id
+        {
+            continue;
+        }
+        let content = message["content"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(200)
+            .collect::<String>();
+        let size = content.chars().count() + 96;
+        if used_chars + size > budget && !transcript.is_empty() {
+            break;
+        }
+        used_chars += size;
+        transcript.push(json!({
+            "id":message["id"],"role":message["role"],"toolCallId":message["tool_call_id"],"origin":message["metadata"]["origin"],
+            "content":content,
+        }));
+        through = message["id"].as_str().map(str::to_string);
+    }
+    (transcript, through)
 }
 
 fn apply_learning(
@@ -952,5 +983,26 @@ mod tests {
         assert_eq!(mock.requests.lock().unwrap().len(), 3);
         server.abort();
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn page_stops_at_last_message_actually_sent() {
+        let messages = (0..10)
+            .map(|index| {
+                json!({
+                    "id": format!("m{index}"),
+                    "role": "user",
+                    "content": "x".repeat(300),
+                })
+            })
+            .collect::<Vec<_>>();
+        let (page, through) = select_page(&messages, None, 1_000);
+        assert!(page.len() < messages.len());
+        assert_eq!(page.first().unwrap()["id"], "m0");
+        assert_eq!(
+            through.as_deref(),
+            page.last().unwrap()["id"].as_str()
+        );
+        assert_ne!(through.as_deref(), Some("m9"));
     }
 }

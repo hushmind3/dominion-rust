@@ -31,7 +31,11 @@ pub fn propose(
         return None;
     }
 
-    let record_scope = if kind == "harness" || requested_scope != "agent" {
+    let record_scope = if kind == "harness" {
+        "shared"
+    } else if requested_scope == "global" {
+        "global"
+    } else if requested_scope != "agent" {
         "shared"
     } else {
         "agent"
@@ -40,8 +44,16 @@ pub fn propose(
         return None;
     }
     let key = memory::stable_id(&[
-        &scope.partition_key,
-        scope.agent_id.as_deref().unwrap_or("default"),
+        if record_scope == "global" {
+            "global"
+        } else {
+            scope.partition_key.as_str()
+        },
+        if record_scope == "agent" {
+            scope.agent_id.as_deref().unwrap_or("default")
+        } else {
+            record_scope
+        },
         kind,
         &normalize(text),
     ]);
@@ -225,6 +237,9 @@ fn similarity(left: &str, right: &str) -> f64 {
 }
 
 fn visible(record: &Value, scope: &MemoryScope) -> bool {
+    if record["scope"].as_str() == Some("global") {
+        return true;
+    }
     if record["partitionKey"].as_str() != Some(scope.partition_key.as_str()) {
         return false;
     }
@@ -268,17 +283,36 @@ fn baseline_success(state: &AppState, scope: &MemoryScope) -> f64 {
     }
 }
 
+fn active(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
+    state
+        .store
+        .all("improvement")
+        .into_iter()
+        .filter(|improvement| {
+            matches!(
+                improvement["status"].as_str(),
+                Some("adopted" | "validated")
+            ) && matches!(
+                improvement["kind"].as_str(),
+                Some("strategy" | "tool_policy")
+            ) && visible(improvement, scope)
+        })
+        .take(6)
+        .collect()
+}
+
+/// IDs of the improvements that will be injected into this turn's prompt.
+pub fn injected_ids(state: &AppState, scope: &MemoryScope) -> Vec<String> {
+    active(state, scope)
+        .into_iter()
+        .filter_map(|improvement| improvement["id"].as_str().map(str::to_string))
+        .collect()
+}
+
 /// Adopted strategies/tool policies for the current agent and shared partition.
 pub fn context_block(state: &AppState, scope: &MemoryScope) -> Option<String> {
     let mut lines = Vec::new();
-    for improvement in state.store.all("improvement") {
-        if !matches!(
-            improvement["status"].as_str(),
-            Some("adopted" | "validated")
-        ) || !visible(&improvement, scope)
-        {
-            continue;
-        }
+    for improvement in active(state, scope) {
         let text = improvement["text"].as_str().unwrap_or("").trim();
         if text.is_empty() {
             continue;
@@ -289,9 +323,6 @@ pub fn context_block(state: &AppState, scope: &MemoryScope) -> Option<String> {
             _ => continue,
         };
         lines.push(format!("- [{label}] {text}"));
-        if lines.len() >= 6 {
-            break;
-        }
     }
     (!lines.is_empty()).then(|| {
         format!(
@@ -311,8 +342,22 @@ pub fn record_execution(state: &AppState, execution: &Value) {
     let run_id = execution["id"].as_str().unwrap_or("");
     let completed = execution["status"].as_str() == Some("completed");
 
+    let applied = execution["appliedImprovementIds"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|value| value.as_str())
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let tool_calls = execution["toolCalls"].as_u64().unwrap_or(0);
     for mut improvement in state.store.all("improvement") {
-        if improvement["status"].as_str() != Some("adopted") || !visible(&improvement, &scope) {
+        let id = improvement["id"].as_str().unwrap_or("");
+        if improvement["status"].as_str() != Some("adopted")
+            || !visible(&improvement, &scope)
+            || !applied.contains(id)
+        {
             continue;
         }
         let mut uses = improvement["uses"].as_u64().unwrap_or(0);
@@ -344,6 +389,10 @@ pub fn record_execution(state: &AppState, execution: &Value) {
                 .filter(|operation| operation["status"] == "failed")
                 .count() as u64;
         } else {
+            // A strategy is only tested by a turn that actually did work.
+            if tool_calls == 0 {
+                continue;
+            }
             uses += 1;
             if completed {
                 successes += 1;
@@ -477,7 +526,7 @@ mod tests {
         .unwrap();
         assert_eq!(adopted["status"], "adopted");
         for index in 0..5 {
-            let execution = json!({"id":format!("e{index}"),"sessionId":"s","agentId":"a","status":"failed"});
+            let execution = json!({"id":format!("e{index}"),"sessionId":"s","agentId":"a","status":"failed","toolCalls":1,"appliedImprovementIds":[adopted["id"]]});
             state.store.put("execution", &execution);
             record_execution(&state, &execution);
         }
@@ -544,7 +593,7 @@ mod tests {
         )
         .unwrap();
         for index in 0..5 {
-            let execution = json!({"id":format!("ok{index}"),"sessionId":"s","agentId":"a","status":"completed"});
+            let execution = json!({"id":format!("ok{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"appliedImprovementIds":[record["id"]]});
             state.store.put("execution", &execution);
             record_execution(&state, &execution);
         }
@@ -575,7 +624,7 @@ mod tests {
         )
         .unwrap();
         for index in 0..5 {
-            let execution = json!({"id":format!("v{index}"),"sessionId":"s","agentId":"a","status":"completed"});
+            let execution = json!({"id":format!("v{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"appliedImprovementIds":[first["id"]]});
             state.store.put("execution", &execution);
             record_execution(&state, &execution);
         }
@@ -592,6 +641,69 @@ mod tests {
         .unwrap();
         assert_eq!(duplicate["id"], first["id"]);
         assert_eq!(duplicate["status"], "validated");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn completed_without_tool_work_does_not_validate_a_strategy() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let record = propose(
+            &state,
+            &scope,
+            "strategy",
+            "도구 없이 완료 선언하지 않는다",
+            "도구 실행이 없으면 전략 검증으로 집계하지 않는다",
+            &["m1".into()],
+            None,
+            "shared",
+        )
+        .unwrap();
+        for index in 0..5 {
+            let execution = json!({
+                "id":format!("bare{index}"),"sessionId":"s","agentId":"a",
+                "status":"completed","toolCalls":0,
+                "appliedImprovementIds":[record["id"]]
+            });
+            state.store.put("execution", &execution);
+            record_execution(&state, &execution);
+        }
+        let stored = state
+            .store
+            .get("improvement", record["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(stored["status"], "adopted");
+        assert_eq!(stored["uses"], 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn global_strategies_cross_partitions() {
+        let (state, dir) = state();
+        state.store.put(
+            "session",
+            &json!({
+                "id":"d","agentId":"b",
+                "channelContext":{"transport":"discord","connectionId":"bot","guildId":"g","channelId":"c"}
+            }),
+        );
+        let local = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let discord = MemoryScope::for_session(&state.store, "d", Some("b"));
+        let record = propose(
+            &state,
+            &local,
+            "strategy",
+            "전역 파일 절차를 재사용한다",
+            "채널과 무관하게 적용할 절차",
+            &["m1".into()],
+            None,
+            "global",
+        )
+        .unwrap();
+        assert_eq!(record["scope"], "global");
+        assert!(context_block(&state, &discord)
+            .unwrap_or_default()
+            .contains("전역 파일 절차"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

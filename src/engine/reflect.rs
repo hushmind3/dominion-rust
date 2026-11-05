@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 pub fn looks_like_correction(text: &str) -> bool {
     let lower = text.to_lowercase();
-    [
+    let direct = [
         "그게 아니라",
         "그게아니라",
         "잘못",
@@ -23,15 +23,36 @@ pub fn looks_like_correction(text: &str) -> bool {
         "고쳐",
         "고치",
         "실패했",
+        "하지 마",
+        "하지마",
+        "그러지 마",
+        "그러지마",
+        "그만해",
         "not what",
         "that's wrong",
         "thats wrong",
         "wrong",
         "fix it",
         "do it again",
+        "don't do",
+        "dont do",
+        "do not do",
+        "stop doing",
     ]
     .iter()
-    .any(|signal| lower.contains(signal))
+    .any(|signal| lower.contains(signal));
+    if direct {
+        return true;
+    }
+    // "앞으로 이런 식으로 하지 마", "이제 그렇게 하지 말고 ..."처럼
+    // 부정 명령 + 지속 의도가 결합된 교정도 잡는다.
+    let negative = ["하지 말", "하지말", "안 돼", "안돼", "말고", "대신"];
+    let intent = ["앞으로", "이제", "다음부터", "from now", "always", "never"];
+    negative.iter().any(|signal| lower.contains(signal))
+        && (intent.iter().any(|signal| lower.contains(signal))
+            || lower.contains("이런 식")
+            || lower.contains("그런 식")
+            || lower.contains("그렇게"))
 }
 
 /// Returns the user message that should be reflected on, but only when the
@@ -215,7 +236,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         previous_request
     };
     let reflection_text = if lesson.is_empty() { root_cause.clone() } else { lesson.clone() };
-    let experience_record = experience::record_shared(
+    let experience_record = experience::record_global(
         state,
         &scope,
         &request,
@@ -234,7 +255,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         let rationale = strategy.get("rationale").and_then(|value| value.as_str()).unwrap_or("");
         if !text.trim().is_empty() && !evidence.is_empty() {
             if let Some(record) = improve::propose(
-                state, &scope, "strategy", text, rationale, &evidence, None, "shared",
+                state, &scope, "strategy", text, rationale, &evidence, None, "global",
             ) {
                 strategy_saved = record["status"] == "adopted";
                 if strategy_saved {
@@ -251,11 +272,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if !text.trim().is_empty() {
             let id = format!(
                 "reflection-{}",
-                memory::stable_id(&[
-                    &scope.partition_key,
-                    scope.agent_id.as_deref().unwrap_or("default"),
-                    &memory::normalize(text),
-                ])
+                memory::stable_id(&["global", "global", &memory::normalize(text)])
             );
             if state.store.get("memory", &id).is_none() {
                 let saved = state.store.put(
@@ -265,7 +282,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                         "text": text.chars().take(1600).collect::<String>(),
                         "type": "lesson",
                         "importance": 0.85,
-                        "scope": "shared",
+                        "scope": "global",
                         "agentId": scope.agent_id,
                         "partitionKey": scope.partition_key,
                         "source": "reflect",
@@ -431,6 +448,8 @@ mod tests {
         assert!(looks_like_correction("아니 그게 아니라 파일을 만들어야지"));
         assert!(looks_like_correction("이거 잘못됐어 다시 해"));
         assert!(looks_like_correction("that's not what I asked, fix it"));
+        assert!(looks_like_correction("앞으로 이런 식으로 하지 마"));
+        assert!(looks_like_correction("이제 그렇게 하지 말고 다르게 해"));
         assert!(!looks_like_correction("이 파일 설명해줘"));
         assert!(!looks_like_correction("러스트가 왜 좋은지 알려줘"));
     }

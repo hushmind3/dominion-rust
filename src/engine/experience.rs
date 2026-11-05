@@ -32,6 +32,9 @@ fn signature(request: &str) -> String {
 }
 
 fn visible(record: &Value, scope: &MemoryScope) -> bool {
+    if record["scope"].as_str() == Some("global") {
+        return true;
+    }
     if record["partitionKey"].as_str() != Some(scope.partition_key.as_str()) {
         return false;
     }
@@ -51,7 +54,7 @@ pub fn record(
     gaps: &[String],
 ) -> Option<Value> {
     record_with_scope(
-        state, scope, request, outcome, lesson, avoid, evidence_ids, tools, gaps, false,
+        state, scope, request, outcome, lesson, avoid, evidence_ids, tools, gaps, "agent",
     )
 }
 
@@ -68,7 +71,24 @@ pub fn record_shared(
     gaps: &[String],
 ) -> Option<Value> {
     record_with_scope(
-        state, scope, request, outcome, lesson, avoid, evidence_ids, tools, gaps, true,
+        state, scope, request, outcome, lesson, avoid, evidence_ids, tools, gaps, "shared",
+    )
+}
+
+/// Global cases are visible in every partition (chat, room, channel).
+pub fn record_global(
+    state: &AppState,
+    scope: &MemoryScope,
+    request: &str,
+    outcome: &str,
+    lesson: &str,
+    avoid: &str,
+    evidence_ids: &[String],
+    tools: &[String],
+    gaps: &[String],
+) -> Option<Value> {
+    record_with_scope(
+        state, scope, request, outcome, lesson, avoid, evidence_ids, tools, gaps, "global",
     )
 }
 
@@ -83,8 +103,13 @@ fn record_with_scope(
     evidence_ids: &[String],
     tools: &[String],
     gaps: &[String],
-    shared: bool,
+    scope_kind: &str,
 ) -> Option<Value> {
+    let effective_scope = if scope_kind == "agent" && scope.agent_id.is_none() {
+        "shared"
+    } else {
+        scope_kind
+    };
     let request = request.trim().chars().take(2000).collect::<String>();
     let lesson = lesson.trim().chars().take(2000).collect::<String>();
     if request.is_empty() || lesson.is_empty() || !matches!(outcome, "success" | "failure") {
@@ -94,11 +119,15 @@ fn record_with_scope(
     let id = format!(
         "experience-{}",
         memory::stable_id(&[
-            &scope.partition_key,
-            if shared {
-                "shared"
+            if effective_scope == "global" {
+                "global"
             } else {
+                scope.partition_key.as_str()
+            },
+            if effective_scope == "agent" {
                 scope.agent_id.as_deref().unwrap_or("default")
+            } else {
+                effective_scope
             },
             &sig,
             outcome,
@@ -124,12 +153,12 @@ fn record_with_scope(
         "experience",
         &json!({
             "id": id,
-            "scope": if shared || scope.agent_id.is_none() { "shared" } else { "agent" },
+            "scope": effective_scope,
             "agentId": scope.agent_id,
             "partitionKey": scope.partition_key,
             "sessionId": scope.session_id,
             "signature": sig,
-            "request": request,
+            "request": if effective_scope == "global" { sig.clone() } else { request },
             "outcome": outcome,
             "lesson": lesson,
             "avoid": avoid.chars().take(1000).collect::<String>(),
@@ -229,10 +258,9 @@ pub fn consolidate(state: &AppState) -> Value {
         let key = format!(
             "{}:{}:{}:{}",
             record["partitionKey"].as_str().unwrap_or(""),
-            if record["scope"].as_str() == Some("shared") {
-                "shared"
-            } else {
-                record["agentId"].as_str().unwrap_or("default")
+            match record["scope"].as_str() {
+                Some(scope) if scope == "shared" || scope == "global" => scope,
+                _ => record["agentId"].as_str().unwrap_or("default"),
             },
             record["signature"].as_str().unwrap_or(""),
             record["outcome"].as_str().unwrap_or("")
@@ -367,6 +395,26 @@ mod tests {
         consolidate(&state);
         assert_eq!(state.store.get("experience", base["id"].as_str().unwrap()).unwrap()["status"], "active");
         assert_eq!(state.store.get("experience", "e2").unwrap()["status"], "archived");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn global_cases_cross_partitions_and_agents() {
+        let (state, dir) = state();
+        state.store.put(
+            "session",
+            &json!({
+                "id":"d","agentId":"b",
+                "channelContext":{"transport":"discord","connectionId":"bot","guildId":"g","channelId":"c"}
+            }),
+        );
+        let local = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let discord = MemoryScope::for_session(&state.store, "d", Some("b"));
+        record_global(
+            &state, &local, "파일 작성", "failure", "전역 교훈을 재사용한다", "", &[], &[], &[],
+        )
+        .unwrap();
+        assert!(!retrieve(&state, &discord, "파일 작성", 5).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

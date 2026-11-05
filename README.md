@@ -311,8 +311,33 @@ GET /api/experience
 - `preference`/`procedure` 타입이고 importance가 0.7 이상인 기억은 질문과 단어가
   겹치지 않아도 매 턴 주입됩니다. "앞으로 답변 끝에 X를 붙여" 같은 상시 규칙이
   다음 세션에서도 적용됩니다.
+- 교정에서 나온 기억·경험·전략은 `global` 스코프로 저장되어 일반 채팅, 회의실,
+  외부 채널 사이에도 전파됩니다. 전역 경험은 원문 대신 작업 서명을 저장합니다.
+- 전략은 실제로 프롬프트에 주입된 실행이고 도구 수행이 있었을 때만 검증
+  카운터에 포함됩니다. 도구 없이 `completed`만 기록해서는 `validated`가 되지
+  않습니다.
 - 대화창에는 학습 상세를 띄우지 않고 "학습 기록이 갱신되었습니다" 한 줄만 표시합니다.
   상세 내용은 기억 화면에서 확인합니다.
+
+### 작업 성능 벤치마크
+
+`scripts/task-benchmark.sh`는 같은 모델과 에이전트로 학습 전/후 작업 성능을
+측정합니다. 단순히 대화가 성공했는지가 아니라, 교정으로 배운 절차가 새 세션과
+다른 에이전트에서도 지켜지는지를 파일 내용으로 검사합니다.
+
+```bash
+BENCH_PROVIDER="Ollama Qwen3 4B" BENCH_ROUNDS=3 scripts/task-benchmark.sh
+```
+
+- Baseline: 규칙 없이 `bench/rule.txt` 생성
+- 교정 학습: 작업 전 `bench/audit.txt`에 `before:rule.txt`를 쓰도록 교정
+- Post: 새 세션에서 같은 작업을 3회 반복
+- Cross-agent: 학습을 공유받은 다른 에이전트가 같은 규칙을 따르는지 확인
+- 환경변수: `DOMINION_BASE`, `BENCH_PROVIDER`, `BENCH_ROUNDS`
+- `bench/`는 gitignore 대상이며, 벤치마크는 작업공간에만 파일을 만듭니다.
+
+결과는 `baseline`, `post N/N`, `cross` pass로 출력됩니다. 반성 job이 끝난 뒤
+측정해야 하므로 스크립트는 최대 300초를 기다립니다.
 
 ### 약한 모델(4B) 지원
 

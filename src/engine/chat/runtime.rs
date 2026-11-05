@@ -106,6 +106,13 @@ async fn run_turn_with_policy(
         .put("session", &session)
         .ok_or("세션 설정을 저장할 수 없습니다.")?;
 
+    let improvement_scope = crate::engine::memory::MemoryScope::for_session(
+        &state.store,
+        &session_id,
+        request.agent_id.as_deref(),
+    );
+    let applied_improvement_ids =
+        crate::engine::improve::injected_ids(state, &improvement_scope);
     let execution = state
         .store
         .put(
@@ -123,6 +130,7 @@ async fn run_turn_with_policy(
                 "modelCalls": 0,
                 "toolCalls": 0,
                 "tokens": 0,
+                "appliedImprovementIds": applied_improvement_ids,
             }),
         )
         .ok_or("실행 기록을 저장할 수 없습니다.")?;

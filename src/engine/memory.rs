@@ -67,6 +67,10 @@ pub fn visible(record: &Value, scope: &MemoryScope) -> bool {
             _ => return false,
         }
     }
+    // A global lesson is intentionally shared across chat, rooms and channels.
+    if record["scope"].as_str() == Some("global") {
+        return true;
+    }
     if let Some(partition) = record["partitionKey"].as_str() {
         if partition != scope.partition_key {
             return false;
@@ -576,6 +580,34 @@ mod tests {
         assert!(context_block(&db, &other, "2+2")
             .unwrap_or_default()
             .contains("DOMINION"));
+    }
+
+    #[test]
+    fn global_memories_cross_partitions() {
+        let db = store();
+        db.put("session", &json!({"id":"s","agentId":"a"}));
+        db.put(
+            "session",
+            &json!({
+                "id":"d","agentId":"b",
+                "channelContext":{"transport":"discord","connectionId":"bot","guildId":"g","channelId":"c"}
+            }),
+        );
+        let local = scope(&db, "s", "a");
+        let discord = scope(&db, "d", "b");
+        db.put(
+            "memory",
+            &json!({
+                "id":"global","text":"모든 채널에서 같은 규칙을 쓴다",
+                "partitionKey":local.partition_key,"scope":"global","agentId":"a",
+                "type":"preference","importance":0.8
+            }),
+        );
+        let record = db.get("memory", "global").unwrap();
+        assert!(visible(&record, &discord));
+        assert!(context_block(&db, &discord, "2+2")
+            .unwrap_or_default()
+            .contains("같은 규칙"));
     }
 
     #[test]
