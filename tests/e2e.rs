@@ -914,6 +914,188 @@ fn backup_snapshot_restores_the_engine_after_a_total_db_loss() {
     );
 }
 
+#[test]
+fn the_isolated_runner_claims_and_completes_a_queued_experiment() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"완료했습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    let provider_id = app.get("/api/providers")[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent = app.post(
+        "/api/agents",
+        &json!({"name":"scheduler agent","providerId":provider_id,"model":"mock"}),
+    );
+    let agent_id = agent["id"].as_str().unwrap();
+    let verification = json!({
+        "type":"procedure",
+        "appliesTo":{"paths":["bench/harness_report.txt"]},
+        "nodes":[
+            {"id":"audit","tool":"workspace_write","arguments":{"path":"bench/harness_audit.txt","content":"audit-harness"}},
+            {"id":"report","tool":"workspace_write","arguments":{"path":"bench/harness_report.txt","content":"REPORT-OK"}}
+        ],
+        "edges":[{"from":"audit","to":"report"}],
+        "after":[{"kind":"file_contains","path":"bench/harness_audit.txt","text":"audit-harness"}]
+    });
+    let strategy = app.post(
+        "/api/benchmark/strategies",
+        &json!({
+            "agentId":agent_id,
+            "assistanceMode":"harness_assisted",
+            "text":"harness 절차로 audit 후 report를 실행한다",
+            "rationale":"scheduler integration test",
+            "verification":verification,
+        }),
+    );
+    let strategy_id = strategy["id"].as_str().unwrap().to_string();
+    let request = app.post(
+        "/api/benchmark/experiment-requests",
+        &json!({"strategyId":strategy_id, "fixture":"audit_report"}),
+    );
+    assert_eq!(request["status"], "queued", "{request}");
+
+    let bench_root = std::env::temp_dir().join(format!(
+        "dominion-scheduler-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let output = Command::new(env!("CARGO_BIN_EXE_dominion-benchmark"))
+        .env("DOMINION_BIN", env!("CARGO_BIN_EXE_dominion-rust"))
+        .env("BENCH_CLAIM_URL", &app.base)
+        .env(
+            "BENCH_PROVIDER_BASE",
+            format!("http://127.0.0.1:{port}/v1"),
+        )
+        .env("BENCH_MODEL", "mock")
+        .env("BENCH_MODE", "smoke")
+        .env("BENCH_PAIRS", "10")
+        .env("BENCH_FIXTURE", "audit_report")
+        .env("BENCH_ROOT", &bench_root)
+        .output()
+        .expect("run benchmark scheduler");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "runner failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("request completed: completed"),
+        "runner did not complete the request\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let requests = app.get("/api/experiment-requests");
+    let request = &requests.as_array().unwrap()[0];
+    assert_eq!(request["status"], "completed", "{request}");
+    assert!(
+        request["experimentId"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()),
+        "{request}"
+    );
+    assert_eq!(request["independentUnits"], 10, "{request}");
+    let improvements = app.get("/api/improvements");
+    let improvement = improvements
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == strategy_id.as_str())
+        .expect("strategy");
+    assert_eq!(
+        improvement["evidenceGrade"], "E2",
+        "experiment did not promote: {improvement}"
+    );
+    assert_eq!(improvement["validatedBy"], "isolated_experiment");
+    assert_eq!(improvement["rollout"], "canary");
+    let _ = std::fs::remove_dir_all(bench_root);
+}
+
+#[test]
+fn experiment_claim_is_token_scoped_and_can_be_released() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    let agent = app.post(
+        "/api/agents",
+        &json!({"name":"claim agent","model":"mock"}),
+    );
+    let verification = json!({
+        "type":"procedure",
+        "appliesTo":{"paths":["bench/harness_report.txt"]},
+        "nodes":[
+            {"id":"audit","tool":"workspace_write","arguments":{"path":"bench/harness_audit.txt","content":"audit-harness"}},
+            {"id":"report","tool":"workspace_write","arguments":{"path":"bench/harness_report.txt","content":"REPORT-OK"}}
+        ],
+        "edges":[{"from":"audit","to":"report"}],
+        "after":[{"kind":"file_contains","path":"bench/harness_audit.txt","text":"audit-harness"}]
+    });
+    let strategy = app.post(
+        "/api/benchmark/strategies",
+        &json!({
+            "agentId":agent["id"],
+            "assistanceMode":"harness_assisted",
+            "text":"claim lifecycle",
+            "rationale":"claim lifecycle test",
+            "verification":verification,
+        }),
+    );
+    let request = app.post(
+        "/api/benchmark/experiment-requests",
+        &json!({"strategyId":strategy["id"], "fixture":"audit_report"}),
+    );
+    let request_id = request["id"].as_str().unwrap().to_string();
+
+    let claimed = app.post(
+        "/api/experiment-requests/claim",
+        &json!({"runnerId":"test-runner","ttlSeconds":60}),
+    );
+    assert_eq!(claimed["request"]["id"], request_id.as_str());
+    assert_eq!(claimed["request"]["status"], "claimed");
+    let token = claimed["request"]["claimToken"].as_str().unwrap();
+    assert!(!token.is_empty());
+
+    // Wrong token cannot complete or release.
+    let wrong = app
+        .client
+        .post(format!(
+            "{}/api/experiment-requests/{request_id}/complete",
+            app.base
+        ))
+        .json(&json!({"claimToken":"wrong","verdict":"inconclusive"}))
+        .send()
+        .unwrap();
+    assert_eq!(wrong.status(), reqwest::StatusCode::CONFLICT);
+    let wrong_release = app
+        .client
+        .post(format!(
+            "{}/api/experiment-requests/{request_id}/release",
+            app.base
+        ))
+        .json(&json!({"claimToken":"wrong"}))
+        .send()
+        .unwrap();
+    assert_eq!(wrong_release.status(), reqwest::StatusCode::CONFLICT);
+
+    let released = app.post(
+        &format!("/api/experiment-requests/{request_id}/release"),
+        &json!({"claimToken":token,"reason":"runner stopped"}),
+    );
+    assert_eq!(released["request"]["status"], "queued");
+    let reclaimed = app.post(
+        "/api/experiment-requests/claim",
+        &json!({"runnerId":"second-runner","ttlSeconds":60}),
+    );
+    assert_eq!(reclaimed["request"]["status"], "claimed");
+    assert_ne!(
+        reclaimed["request"]["claimToken"].as_str().unwrap_or(""),
+        token
+    );
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

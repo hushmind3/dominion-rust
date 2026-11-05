@@ -86,6 +86,9 @@ struct BenchConfig {
     recalculate: bool,
     fixture: Fixture,
     holdout: bool,
+    /// When set, claim one queued experiment request from this production engine.
+    claim_url: Option<String>,
+    provider_base: String,
 }
 
 fn env_string(name: &str, fallback: &str) -> String {
@@ -111,10 +114,20 @@ fn config() -> Result<BenchConfig, String> {
         .parse::<u64>()
         .map_err(|_| "BENCH_SEED must be an unsigned integer".to_string())?;
     let recalculate = std::env::var("BENCH_RECALCULATE").as_deref() == Ok("1");
-    let root = match std::env::var("BENCH_ROOT").ok().filter(|value| !value.is_empty()) {
-        Some(path) => PathBuf::from(path),
-        None => std::env::temp_dir().join(format!("dominion-s7-{}", uuid::Uuid::new_v4())),
-    };
+    let explicit_root = std::env::var("BENCH_ROOT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let root = explicit_root
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("dominion-s7-{}", uuid::Uuid::new_v4())));
+    // An explicitly named, non-existent root is a new experiment; an existing
+    // root is resumed. Without BENCH_ROOT every run is fresh.
+    let fresh = !recalculate
+        && explicit_root
+            .as_ref()
+            .map(|path| !path.exists())
+            .unwrap_or(true);
     let fixture = fixture(&env_string("BENCH_FIXTURE", "audit_report"))?;
     Ok(BenchConfig {
         mode,
@@ -122,10 +135,15 @@ fn config() -> Result<BenchConfig, String> {
         pairs,
         seed,
         root,
-        fresh: !recalculate && std::env::var("BENCH_ROOT").is_err(),
+        fresh,
         recalculate,
         fixture,
         holdout: std::env::var("BENCH_HOLDOUT").as_deref() == Ok("1"),
+        claim_url: std::env::var("BENCH_CLAIM_URL")
+            .ok()
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty()),
+        provider_base: env_string("BENCH_PROVIDER_BASE", "http://127.0.0.1:11434/v1"),
     })
 }
 
@@ -729,10 +747,32 @@ async fn wait_ready(
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    let cfg = config()?;
+    let mut cfg = config()?;
     if cfg.recalculate {
         return recalculate(&cfg);
     }
+    let client = reqwest::Client::new();
+    let claim = if let Some(url) = &cfg.claim_url {
+        let response = post(
+            &client,
+            &format!("{url}/api/experiment-requests/claim"),
+            json!({
+                "runnerId": format!("benchmark-{}", uuid::Uuid::new_v4()),
+                "ttlSeconds": 1800,
+            }),
+        )
+        .await?;
+        if response["request"]["id"].is_null() {
+            println!("no queued experiment requests");
+            return Ok(());
+        }
+        if let Some(fixture_id) = response["request"]["fixture"].as_str() {
+            cfg.fixture = fixture(fixture_id)?;
+        }
+        Some(response)
+    } else {
+        None
+    };
     let experiment_id = if cfg.fresh {
         uuid::Uuid::new_v4().to_string()
     } else {
@@ -765,7 +805,6 @@ async fn main() -> Result<(), String> {
         .spawn()
         .map_err(|error| error.to_string())?;
     let child = child;
-    let client = reqwest::Client::new();
     let identity = wait_ready(&client, &base, &instance, &root, &child).await?;
     let _guard = ChildGuard(child);
 
@@ -796,7 +835,7 @@ async fn main() -> Result<(), String> {
         &format!("{base}/api/providers"),
         json!({
             "name":"s7-ollama",
-            "baseUrl":"http://127.0.0.1:11434/v1",
+            "baseUrl":cfg.provider_base,
             "model":cfg.model,
             "kind":"ollama",
             "local":true,
@@ -823,7 +862,15 @@ async fn main() -> Result<(), String> {
             agent["id"].as_str().unwrap_or("").to_string(),
         );
     }
-    let verification = seed_verification(&cfg.fixture);
+    let verification = claim
+        .as_ref()
+        .map(|claim| claim["strategy"]["verification"].clone())
+        .unwrap_or_else(|| seed_verification(&cfg.fixture));
+    let strategy_text = claim
+        .as_ref()
+        .and_then(|claim| claim["strategy"]["text"].as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| "harness 절차로 audit 후 report를 실행한다".to_string());
     let mut treatment_strategy_id: Option<String> = None;
     for arm in ["baseline", "treatment"] {
         let seeded = post(
@@ -832,7 +879,7 @@ async fn main() -> Result<(), String> {
             json!({
                 "agentId":agents[arm],
                 "assistanceMode":arm_assistance_mode(arm),
-                "text":"harness 절차로 audit 후 report를 실행한다",
+                "text":strategy_text,
                 "rationale":"S7 paired experiment procedure",
                 "verification":verification,
             }),
@@ -1137,10 +1184,34 @@ async fn main() -> Result<(), String> {
 
     let summary = write_outputs(&root, &manifest, &trials)?;
 
-    // Closed loop: only a real experiment with enough independent units may
-    // promote or roll back the treatment strategy. Smoke runs are recorded in
-    // the summary but never change production policy.
-    if cfg.mode == "real" {
+    // A claimed production request must be completed even when the result is
+    // inconclusive: the request lifecycle is durable, promotion is separate.
+    if let (Some(url), Some(claim)) = (&cfg.claim_url, &claim) {
+        let request_id = claim["request"]["id"].as_str().unwrap_or("");
+        let token = claim["request"]["claimToken"].as_str().unwrap_or("");
+        let effect = &summary["effect"];
+        let completed = post(
+            &client,
+            &format!("{url}/api/experiment-requests/{request_id}/complete"),
+            json!({
+                "claimToken": token,
+                "experimentId": summary["experimentId"],
+                "verdict": effect["verdict"],
+                "delta": effect["delta"],
+                "independentUnits": effect["independentUnits"],
+                "oracleVersion": manifest["oracleVersion"],
+            }),
+        )
+        .await;
+        match completed {
+            Ok(value) => println!(
+                "request completed: {} promotion={}",
+                value["request"]["status"].as_str().unwrap_or(""),
+                value["promotion"]["evidenceGrade"].as_str().unwrap_or("none")
+            ),
+            Err(error) => println!("request completion failed: {error}"),
+        }
+    } else if cfg.mode == "real" {
         if let Some(strategy_id) = treatment_strategy_id.as_deref() {
             let effect = &summary["effect"];
             match post(

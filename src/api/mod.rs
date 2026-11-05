@@ -15,6 +15,7 @@ pub mod sessions;
 pub mod agents;
 pub mod providers;
 pub mod benchmark;
+pub mod experiments;
 pub mod chat;
 pub mod jobs;
 pub mod system;
@@ -65,6 +66,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/model-usage", get(system::model_usage))
         .route("/api/run-wakes", get(system::run_wakes))
         .route("/api/experiment-requests", get(system::experiment_requests))
+        .route("/api/experiment-requests/claim", post(experiments::claim))
+        .route("/api/experiment-requests/:id/complete", post(experiments::complete))
+        .route("/api/experiment-requests/:id/release", post(experiments::release))
+        .route(
+            "/api/benchmark/experiment-requests",
+            post(experiments::enqueue),
+        )
         .route("/api/policies", get(system::policies))
         .route("/api/system/backup", post(system::create_backup))
         .route("/api/chat", post(chat::chat))
