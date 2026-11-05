@@ -84,6 +84,10 @@ async fn run_once(state: &AppState, runner: &str) {
             "BENCH_MODEL",
             env_string("DOMINION_EXPERIMENT_MODEL", "qwen3:4b"),
         )
+        .env(
+            "BENCH_TRIAL_TIMEOUT_SECS",
+            env_string("DOMINION_EXPERIMENT_TRIAL_TIMEOUT_SECS", "300"),
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Ok(base) = std::env::var("DOMINION_EXPERIMENT_PROVIDER_BASE") {

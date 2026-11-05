@@ -378,3 +378,65 @@ runner policy mode의 baseline을 sandbox `{"outline": false}` 정책으로 고�
 - planning이 성공률에 실제로 기여하는 더 어려운 fixture(다단계 의존/부분 실패).
 - timeout이 없는 10+ units 확보를 위한 trial budget 조정.
 - baseline도 실패하는 task여야 planning 효과가 측정된다.
+
+## 12. v2.0 설계 채택 + ITT 교정 (2026-11-06)
+
+마스터 설계서 v2.0(HEAD `9eff603` 기준)을 최상위 기준으로 채택했다. v2.0의
+C04(ITT/클러스터/CI) 지적에 따라 benchmark의 pair effect를 교정했다.
+
+### 12.1 C04 교정 내용
+
+- 완료된 trial만 세던 방식을 **planned pair 단위 ITT**로 변경.
+- timeout/누락 arm은 그 arm의 **실패**로 계산하고, `timeoutTrials`,
+  `missingArms`, `plannedUnits`를 summary에 노출.
+- aggregate에 `ittSuccessRate = success / plannedUnits` 추가.
+- CI halfwidth는 n(ITT pair 수) 기준으로 계산.
+- 테스트:
+  - `timeouts_count_as_itt_failures`
+  - `missing_arm_counts_as_failure_instead_of_being_dropped`
+
+### 12.2 기존 raw trials 재계산 결과 (새 모델 실행 없음)
+
+동일 raw trials를 ITT로 재계산했다.
+
+**update_config** (`dominion-s7-b2ee57a7...`)
+
+- planned/usable units **12/12**, timeout 1
+- delta 1.0, CI **[0.216, 1.0]**, verdict **preliminary_support**
+- 이전 9/11 units 표기는 timeout을 제외한 값이었다.
+
+**explicit no-plan planning_pair** (`dominion-s7-601e83c9...`)
+
+- planned/usable units **10/10**, timeout 2
+- delta **-0.2**, semantic 0.880, independent 0.906, verdict inconclusive
+- timeout 2건이 실패로 포함되어 계획 정책이 **성공률을 악화**시킨 것으로 계산됨.
+
+**planning_evaluation** (`dominion-s7-37e53d84...`)
+
+- units 10, delta 0.0, semantic 0.823/0.872, inconclusive.
+
+**planning_pair 이전 실행** (`dominion-s7-6443a795...`)
+
+- units 10, delta -0.1 (baseline도 내장 heuristic으로 계획한 실행).
+
+### 12.3 planning_multi fixture와 중단된 실행
+
+- `planning_multi`: in1..in5를 읽어 out1..out5로 복사, 5개 oracle.
+- `BENCH_TRIAL_TIMEOUT_SECS` / `DOMINION_EXPERIMENT_TRIAL_TIMEOUT_SECS`로
+  trial timeout을 조정 가능하게 했다.
+- 1-pair probe: baseline 실패, treatment도 8-round 제한으로 실패
+  (`모델 반복 제한(8회)`), 5-file은 planning으로도 완료되지 않았다.
+- 10-pair 실행은 중단되어 **16/20 trials**만 남았고 결과로 사용하지 않는다.
+  R6의 incomplete reporting 대상이다.
+
+### 12.4 v2.0 기준 남은 P0/P1
+
+- C01 lease fencing (Operation/checkpoint CAS)
+- C02 wake가 최초 grant/정책을 보존하고 철회 재검증
+- C03 claim/fence와 promotion intent 원자 commit
+- C09 슬롯별 primary metric (현재 recovery도 plan-quality 사용)
+- C10 두 plan evaluator는 모두 heuristic — artifact oracle/blind rubric 아님
+- C13 scheduler child output bounded/timeout/cancel, wake enqueue 원자성
+- 그 외 R2~R9 항목
+
+전체: `262 unit + 46 E2E + 16 benchmark` 통과.

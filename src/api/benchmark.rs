@@ -182,7 +182,7 @@ pub async fn policy_search(
                     crate::engine::policy::enqueue_policy_request(
                         &state,
                         policy_id,
-                        "planning_evaluation",
+                        body["fixture"].as_str().unwrap_or("planning_evaluation"),
                         Some(&search_id),
                     )
                 {

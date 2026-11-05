@@ -1,6 +1,6 @@
 # DOMINION — 범용 자율 AI 하네스 통합 마스터 설계서
 
-**버전:** 1.0 · **작성일:** 2026-11-05 (Asia/Seoul) · **구현 인계 대상:** DeepSeek / Rust 개발자
+**버전:** 2.0 · **갱신일:** 2026-11-06 (Asia/Seoul) · **구현 인계 대상:** DeepSeek / Rust 개발자
 
 **상태:** 현행 소스 분석과 목표 설계. 이 문서의 신규 구조는 구현 완료를 의미하지 않는다. 이번 작업은 애플리케이션 코드를 수정하지 않았다.
 
@@ -13,19 +13,18 @@
 | 저장소 | `hushmind3/dominion-rust` |
 | 분석 작업 디렉터리 | `/Users/gim-yeonsu/dominion-rust` |
 | 브랜치 | `codex/native-memory-harness` |
-| HEAD | `2a4aae03e01d60b6cdf39e463ad0c8bf03b896f2` |
-| 기준 소스 | 위 HEAD **및 분석 시점의 미커밋·미추적 소스** |
-| tracked diff SHA-256 | `293af91f58f45f6778a33ad563fdbaa070c6e9edeed3c1d41c5208180df7cdfa` |
-| 소스 인벤토리 | `src`, `web/src`, `src-tauri/src`, `tests`, `scripts`의 소스·스타일·스크립트 133개, 32,619줄 |
-| 이번 실행 검증 | `cargo test --release`: 단위 테스트 184개 + E2E 26개 통과. 벤치마크 바이너리 단위 테스트는 0개 |
-| 프론트엔드 검증 | `web`에서 `npm run typecheck` 통과 |
-| 이번에 수행하지 않은 검증 | 실제 모델 능력/성장 실험, 실제 계정의 메시지 발송·업로드·OAuth 동의, Tauri 전체 빌드·설치, 다중 기기·OS 실기 검증 |
+| HEAD | `9eff603251d3f40892c7e34f9c5f4f5598bf5405` |
+| 기준 소스 | 위 HEAD와 분석 시점의 미커밋 소스; 원격 브랜치와 HEAD 일치 확인 |
+| tracked source diff SHA-256 | `7c7c07128097780d0bb0924dbe9528674a4be9e4c5c8a6f509a6035dc34c2f8d` |
+| 소스 인벤토리 | `src`, `web/src`, `src-tauri/src`, `tests`, `scripts`: 148개, 44,060줄 |
+| 이번 확인 | 파일 인벤토리, 핵심 호출 경로·함수 본문·저장 및 평가 계약 정적 분석, 기존 실험 보고서 대조 |
+| 이번 실행하지 않은 검증 | cargo/npm 테스트, 실제 모델 성능 재측정, 계정 발송·업로드, 운영 DB·비밀키 열람, 설치·다중 OS 실기 검증 |
 
-미커밋 변경은 `src/api/mod.rs`, `src/engine/chat/{mod,runtime}.rs`, `src/engine/{discord,goals,jobs,procedure,rooms,workflows}.rs`, `tests/e2e.rs`; 미추적 구현은 `src/api/benchmark.rs`, `src/bin/dominion-benchmark.rs`다. 구현자는 이 변경을 지우거나 HEAD만으로 되돌리지 말고 소유자 변경으로 보존해야 한다. 기존 `benchmark/BASELINE-2026-11-05.json`은 다른 HEAD(`a779986…`)의 기준선 기록이며 현행 성능 측정값이 아니다.
+분석 시작 시 미커밋 파일은 `src/api/benchmark.rs`, `src/bin/dominion-benchmark.rs`, `src/engine/scheduler.rs`; 미추적 경로는 `tmp/`였다. 이는 사용자 작업으로 보존한다. 이 문서의 runner/scheduler 분석에는 해당 작업 트리 내용이 포함된다. `tmp/` 전체와 운영 데이터를 조사했다는 뜻은 아니다. 과거 설계의 테스트 통과 수치를 이번 검증 결과로 재사용하지 않는다.
 
-분석 방법은 전체 파일 인벤토리, 공개 함수와 API 등록 관계, 핵심 실행·저장·권한·복구 경로의 본문 조사, 관련 테스트 본문과 실제 실행 결과의 교차 확인이다. 모든 파일을 동일 깊이로 형식 검증했다는 뜻은 아니다. 비밀키·운영 DB를 열어 개인 데이터나 실계정을 조사하지 않았다. 핵심 근거는 파일명과 함수명으로 제시하며, 줄 번호는 이 스냅샷에서만 유효하다.
+분석은 전체 영역의 파일·진입점 인벤토리와 핵심 실행 경로 본문을 중심으로 했다. 모든 파일·분기를 동일 깊이로 검증한 것은 아니다. **연결 확인은 정적 호출 관계, 실제 결과는 출처가 명시된 기존 실험 기록, 나머지는 목표 설계**로 구분한다. 최신 문서와 소스가 다르면 소스를 구현 사실의 기준으로 삼고 실험은 해당 실행 revision에만 귀속한다. 이 문서의 코드·SQL·API 예시는 목표 계약이며 현재 배포된 구현이라는 뜻이 아니다.
 
-**판정 기호:** `확인`은 호출 경로와 해당 실행 증거를 확인한 범위, `부분`은 경로는 있으나 보장 범위가 제한된 경우, `미연결`은 타입·테이블 등의 존재에 비해 실제 소비 경로가 없는 경우, `중복`은 같은 책임이 여러 경로에 있는 경우, `결함`은 소스에서 계약 위반을 도출할 수 있는 경우, `부재`는 조사 범위에서 구현 경로를 찾지 못한 경우다. 정적 분석으로 확인한 결함과 실제 재현한 테스트는 구분한다.
+**판정:** `연결`은 실제 호출 경로 확인, `부분`은 보장 범위 제한, `미연결`은 생산 실행의 소비 경로 미확인, `중복`은 책임 분산, `결함`은 정적 계약 위반, `부재`는 조사 범위에서 구현을 찾지 못함이다. 연결만으로 실계정·실모델 성공을 단정하지 않는다.
 
 ## 목차
 
@@ -90,110 +89,101 @@ DOMINION은 **모델의 추론을 실제 환경의 행동으로 연결하고, �
 
 ## 3. 기존 저장소 전체 분석 결과
 
-### 3.1 실제 호출 경로
+### 3.1 현재 실행 경로
 
 ```text
-main → bootstrap::run/serve
-  → Store::open → migrations::run
-  → jobs::recover + improve::recover_finalizations
-  → jobs::start + discord::start + telegram::start → api::router
+bootstrap::serve
+  → SQLite/migrations → jobs/wake/finalization 복구
+  → experiments 예약 + policy 후보 제안
+  → jobs/maintenance/scheduler + Discord/Telegram + Axum
 
-POST /api/chat → api/chat::chat → chat/transport::run
-  → run_turn → run_turn_with_policy → run_turn_body
-  → provider::select_provider / stream 호출
-  → dispatch_tool_call → approval → tools::execute 또는 mcp::call
-  → finalize_execution → Store::finalize_once
-  → learning::enqueue / reflect::enqueue
+HTTP 채팅 / Room / Goal / delegated Job / 외부 채널
+  → 각 ingress의 session/task 구성
+  → chat::run_turn 계열 → runtime::run_turn_with_policy
+      → session lock + LeaseGuard + cancellation generation
+      → Task/Attempt + context/strategy snapshot
+      → planning/recovery policy + model/tool loop
+      → dispatch_tool_call (모델 호출과 assisted procedure 공통)
+      → finish_attempt / finalize_execution / Store::finalize_once
+      → observation / experiments 예약 / policy 후보 제안
 
-POST /api/goals → jobs::enqueue → jobs::run_job → goals::run
-  → GoalControl::complete (계획·검토) + run_quiet_outcome (실행)
-  → chat::run_turn_background → 동일 run_turn_with_policy
+chat/provider + llm helper + compact
+  → gateway의 route/resolve/admission/send/usage
 
-Room 메시지 → 원문과 Job 원자 저장 → rooms::run/run_locked
-  → run_room_quiet → chat::run_room_turn → 동일 턴 런타임
-Workflow → jobs → workflows::run → run_quiet → 동일 턴 런타임
-Discord → poll → durable job → discord::run → run_quiet 또는 bridge::ingest
-Telegram → poll → bridge::ingest → Room 경로
-delegate_task → tools::delegate → 자식 Session + prompt Job → jobs::start_now
+improve / policy 후보 → experiment queue
+  → opt-in scheduler → dominion-benchmark child process
+  → experiments API 결과 → 평가/승격 판단
 ```
 
-이미 공유되는 턴 엔진을 유지하는 것이 핵심이다. 목표·회의·워크플로 각각에 새 도구 실행 루프를 만드는 방식은 채택하지 않는다. 일반 SSE 채팅은 `tx.closed()`에서 중단되지만 background collector가 수신을 유지하는 작업은 UI 종료와 분리되어 있다. 따라서 “모든 채팅이 브라우저 종료 후 지속된다”는 주장은 현재 코드와 다르다.
+모든 ingress가 동일한 root 권한·예산·수명 계약으로 완전히 통합된 것은 아니다. 특히 helper 호출의 비용 귀속, 부가 서비스의 외부 효과, detached child, wake 시 권한 복원이 남아 있다. **일반 대화가 공통 실행의 중심이며 `/goal`은 선택 가능한 장기 작업 인터페이스다.**
 
-### 3.2 기능별 판정
+### 3.2 영역별 구현과 경계
 
-| 영역 | 현행 경로와 증거 | 판정 / 남은 경계 |
+| 영역 / 근거 | 현재 확인한 경로 | 판정과 남은 범위 |
 | --- | --- | --- |
-| Rust 서버 | `bootstrap::serve`, Axum router, SQLite WAL, loopback bind | 확인. 다중 디바이스용 인증·읽기 권한·전송 보안은 부재 |
-| 채팅 | `chat/runtime.rs::run_turn_body`, native/compat tool loop, 26개 E2E 중 관련 실행 검증 | 확인/부분. 8 round·40 tool·10분·250k token 상수, foreground 연결 종속 |
-| Goal | `goals::run`, `GoalControl::complete`, plan/execute/review/repair/replan | 확인/부분. 파일 증거 검사·취소 검증 있음. 일반 Task 실행과 계획/검토 경로가 분리됨 |
-| 모델 제공자 | `chat/provider.rs`, `llm.rs`, `models::{load,load_lmstudio}` | 확인/부분/중복. OpenAI 호환 HTTP와 GGUF·LM Studio 연결. 일반 capability 협상·측정 기반 라우팅은 부재 |
-| 멀티모달 | `attachments::{upload,validate_ids,content}` → history → image_url parts | 확인/부분. 텍스트·이미지 첨부 계약 테스트 있음. 모델별 vision 적격성·audio/video 표준 처리는 부재 |
-| 내장 도구 | `tools::{definitions,requires_approval,execute}`, 파일·셸·HTTP·메모리·위임·GitHub | 확인. 정적 match 등록, 자원별 권한과 모든 실행경로의 공통 gateway는 부분 |
-| MCP | `mcp::{tools,definitions,call}`, stdio/HTTP 세션 | 부분. 도구 실행 경로 존재. 2024-11-05 선언, 매 호출 연결, 이름 slug 라우팅, 현대 규격 전체 준수는 미확인 |
-| 승인/취소 | `chat/approval`, `api/approvals`, `AppState` epoch, shell process group | 확인/부분. 취소·자식 프로세스 종료 테스트 있음. 재시작 후 승인 재개와 root 권한 상속은 부재 |
-| 기억 | `memory::{retrieve,save_grounded,visible}`, `learning::apply_learning` | 확인/부분. 인용·소유권·정정·한국어 검색 검증. 임베딩 검색 부재, reflect global 경로는 별도 경계 |
-| 경험 | `experience::{record,record_global,retrieve,consolidate}` → context | 확인/부분. 서명 유사도·중복·보관. 일반화의 정확성·전이 효과는 입증되지 않음 |
-| 반성/학습 | `learning::run`, `reflect::run` → improve/memory/skill | 확인/부분. 후보를 생성하지만 전역 공유·가설 승격·통제 평가가 혼재 |
-| Improvement | `improve::{propose,active_values,execution_updates}` → runtime snapshot/finalization | 부분/결함. 실제 주입과 준수 검사는 연결됨. 운영 관찰 5회로 validated/E2 승격; 인과적 개선 검증 아님 |
-| adaptation 타입 | `adaptation/types.rs` → runtime의 TaskContract/Decision/Observation 저장 | 부분. 일부 타입은 연결됐지만 내용이 legacy placeholder. FailureClass 등은 타입만 있고 분류 경로 미연결 |
-| adaptation 테이블 | `db::open`의 adaptation schema/finalizations/updates | 부분/미연결. finalize 표시는 기록하지만 본체는 JSON marker, updates 기반 projection 소비 경로 없음 |
-| Procedure/DAG | `procedure::{normalize,ready_intent,evaluate}` → `run_harness_nodes` → 공통 dispatch | 확인/부분/결함. E2E DAG 실행 통과. evaluator는 before/after만 판단하며 DAG nodes/edges 자체의 이행 증명은 없음 |
-| Room | `rooms::{plan_speakers,run_locked,route_peers}`, API 원문 원자 저장 | 확인. 9명 fixture 테스트는 용량 상한의 근거가 아님. 범용 병렬 작업 graph와 결과 합성은 부분 |
-| 위임 | `tools::delegate/task_payload`, `jobs::start_now` | 확인/결함. 실제 자식 실행 E2E 있음. 부모 권한·scope·취소·예산 상속과 결과 접근 검사가 불충분 |
-| Job/자동화 | `jobs::{enqueue_once,next_queued,recover,schedule_automations}` | 확인/부분. CAS 선점·체크포인트 있음. worker lease·전역 자원 admission·공정성 부재 |
-| SQLite | `Store`의 JSON records/messages/audit/secrets, 일부 원자 transaction | 확인/부분. 광범위 `all()` scan, sync Mutex, JSON 계약 불일치·오류 Option 소실 |
-| 채널/브리지 | `discord::start/run`, `telegram::start`, `bridge::{ingest,flush}` | 모의 HTTP 실행 확인. 기타 manifest는 드라이버 완료를 뜻하지 않음. 실계정 검증은 별도 |
-| 계정 | `oauth::{start,callback,fresh_access_token}`, vault, `tools::github_api` | 부분. 암호화·state 검사 등 테스트 있음. 실제 동의·refresh·scope는 계정별 검증 필요 |
-| 스킬 | `skills::{catalog,import,import_repo}`, context 활성 스킬 주입 | 확인/부분. 절차 초안과 활성 지시 존재. 불변 skill revision·공급망/호환성 계약은 부재 |
-| 개발 스튜디오 | `dev::{start_job,run_job,execute,start_preview}` | 부분/중복. 자체 spawn/job/process 경로; 공통 실행 권한·복구 관리로 통합 필요 |
-| 영상 | `video::{enqueue,run,native,comfy,enqueue_upload,upload}`, API/video | 부분. native playable container 테스트 통과. 외부 Comfy·실제 YouTube 업로드는 미검증; 일부 API는 empty/501 |
-| React/API | `web/src/api.ts`, pages, ExecutionMonitor → REST/SSE | 확인/부분. 실행은 Rust 소유. replay 가능한 event cursor·일관된 Task UI 모델은 부재 |
-| 데스크톱/운영 | `src-tauri/src/engine.rs`, `platform/*`, launch/build scripts | 부분. 프로세스/parent EOF 단위 테스트 존재. 서비스 모드와 desktop-owned lifetime 분리 필요 |
-| 벤치마크 | 미추적 `dominion-benchmark.rs`, identity·seed endpoint, 기존 shell runner | 부분. isolated root와 교대 실행 코드 있음. 일반 실험 manifest·불변 trial·통계·holdout·정책 배포 루프는 부재 |
-| 테스트/CI | 소스 내 tests + `tests/e2e.rs` + package check | 현행 로컬 테스트 확인. 조사 경로에서 저장소 CI workflow는 발견하지 못함. 운영 능력의 전면 보증은 아님 |
+| 서버·bootstrap | `bootstrap.rs::serve`, migrations, recover, maintenance 시작 | 연결. loopback 로컬 중심; 서버 다중 사용자·기기 권한은 목표 |
+| 일반 채팅 | `chat/runtime.rs::run_turn_with_policy`, `run_turn_body` | 연결. streaming/native·compat tools, acceptance, assisted 실행. 기본 8 rounds/40 tools/600초/250k token 등은 동적 예산으로 발전 필요 |
+| UI 연결 해제 | runtime이 SSE disconnect를 실행 취소 조건에서 제거 | 이미 개선됨. UI 닫힘과 명시 취소를 다시 결합하지 말 것 |
+| Goal·장기 작업 | `goals.rs`, `jobs.rs`, `workflows.rs` | 연결/부분. plan/review/repair/replan 및 작업 경로 유지; 모든 요청에 Goal 절차 강제 금지 |
+| 실행 복구 | `run_state.rs`, `lease.rs`, `wake.rs` | 연결/결함. heartbeat·중단 복구 있으나 fencing·권한 보존·일반 durable waits 미완성 |
+| 모델 | `gateway.rs`, `models.rs`, `chat/provider.rs`, `llm.rs`, `compact.rs` | 연결. 공통 gateway와 local GGUF/llama/LM Studio 경로 있음. 모델명 숫자 기반 능력 추정·root 비용 누락은 교체 대상 |
+| 도구·승인 | `tools.rs`, `chat/runtime.rs::dispatch_tool_call` | 연결/부분. 노출과 실행 허용 분리, 공통 model/assisted dispatch. registry·모든 서비스 부수효과 통합은 미완성 |
+| MCP | `mcp.rs` stdio/HTTP initialize | 연결/부분. 코드의 protocol 2024-11-05 및 이름 기반 identity를 버전 협상·안정 ID로 보강 |
+| 기억·학습 | `memory.rs`, `learning.rs`, `reflect.rs`, `experience.rs` | 연결/부분. content revision·추출·lexical 검색·경험 주입 존재. reflection의 global 저장과 source 권위 경계, 의미 검색 확장 필요 |
+| 전략·평가 | `improve.rs`, adaptation 타입, runtime selection snapshot | 연결. deterministic bundle 확률 1·semantic hash·delta merge 개선됨. 혼합 평가를 일괄 deterministic으로 기록하는 문제 잔존 |
+| 절차/DAG | `procedure.rs` validation/ready/evaluate, runtime assisted | 연결. node/edge 및 instance receipt 평가 존재. DAG 부재로 실행 불가한 구조는 아님 |
+| 정책 자율개선 | `policy.rs::propose_candidates`, `policy_patch.rs`, runtime 소비 | 연결/부분. planning/recovery 두 슬롯 및 제한된 파라미터 후보. 범용 새 알고리즘 생성·메타 최적화와 동일하지 않음 |
+| 실험 | `api/experiments.rs`, `scheduler.rs`, benchmark 바이너리 | 연결/결함. 실제 로컬 모델 paired 기록 존재. opt-in 자동 runner, 통계·승격 원자성·증거 검증 보강 필요 |
+| 협업·페르소나 | `agents.rs`, `rooms.rs`, `tools.rs` delegate, jobs | 연결/부분. 역할·그룹 대화·위임·권한 boolean 상속 존재. root 예산·채널 scope·linked cancellation 부족. 9명은 preset이지 엔진 상한 아님 |
+| 외부 채널 | `discord.rs`, `telegram.rs`, bridge/inbox/outbox 경로 | 연결/부분. 실제 계정·방 생성·메시지 전달은 이번에 확인하지 않음. channel binding과 공유 정책 명시 필요 |
+| 개발·영상 서비스 | dev/video 및 API, 별도 프로세스·외부 요청 | 연결/중복. 공통 Operation으로 귀속 필요; 실제 렌더·YouTube 업로드 성공은 미확인 |
+| 계정·보관 | OAuth/vault, `vault_rotation.rs`, `backup_keys.rs`, `remote_backup.rs`, `maintenance.rs` | 연결/부분. 암호화·회전·백업 경로를 재사용. HTTP backup을 완성된 S3·다중 기기 운영으로 과장하지 않음 |
+| SQLite·이벤트 | `db.rs` create_attempt/finalize_once/delta merge/leases, `events.rs` durable log+replay | 연결/결함. 기존 원자화 개선 보존. 상태와 이벤트의 통합 transaction, DB 순서 할당·fence 남음 |
+| 프론트·데스크톱 | React/Vite/Tailwind, `web/src/api.ts`, `src-tauri`, Rust sidecar | 연결/부분. Node는 프론트 개발 도구. 현재 package scripts 정리됨; 이전 Electron 잔재 지적 반복 금지. API any·수동 event 계약 보강 |
+| 테스트·운영 | tests, benchmark, CI/release workflow | 자산 존재. Linux release tests/build 경로 있음. 이번 재실행 없음; fixture·모델 성과·실계정 운영은 별개 |
+| 범용 browser/computer | shell·MCP로 일부 작업 가능 | 독립 native Browser/Computer adapter의 안정 계약은 조사 범위에서 부재. shell이 있다는 이유로 완성 판정 금지 |
 
-### 3.3 오래된 문서와 다른 현재 사실
+**미연결/미구현의 구분:** planning/recovery 정책 소비, gateway, lease, wake는 연결되어 있다. 아직 없는 것은 전 슬롯 공통 PolicyRegistry·일반 알고리즘 생성기·독립 meta-evaluation·계층 예산과 durable dependency coordinator다. 모델이 만든 개선 제안 문장만으로 이 기능이 연결됐다고 보지 않는다.
 
-README/ENGINE 일부에는 Telegram·MLX·영상이 미이식, Rust 실험 runner가 없다고 적혀 있으나 현재 소스에는 각각 호출 경로가 존재한다. 반대로 `adaptation` 타입과 실험 바이너리가 있다는 이유만으로 contextual bandit·통제 실험·메타개선까지 완료된 것은 아니다. 구 문서의 0/3 실모델 기록은 당시 조건의 역사 자료이며 이번 HEAD의 재측정 결과로 사용하지 않는다.
+### 3.3 기존 실제 실험이 말해 주는 범위
 
-### 3.4 전체 표면의 소유 관계
+출처: `docs/H7-SMOKE-RESULT-2026-11-05.md`의 누적 기록. 아래는 **기존 보고서 대조이며 이번 재측정이나 raw artifact 전체 재검증이 아니다.**
 
-`api/{chat,goals,jobs,rooms,sessions,executions,approvals}`는 실행 입구, `api/{providers,models,gateways,oauth,channels,extensions,agents,personas}`는 연결·설정, `api/{memory,experience,improvements,collections}`는 지식·정책 관리, `api/{dev,video,attachments,translation}`는 전문 기능, `api/{system,settings,compat,response}`는 공통 표면이다. `shim.rs`는 provider 호환 프록시이며 별도의 추론 엔진이 아니다.
+| 기록 | 관찰 | 해석 |
+| --- | --- | --- |
+| 초기 4B seeded 절차 smoke | baseline 0/3, assisted 3/3 | 작은 fixture에서 실행 보조 효과. 범용 학습/전이 입증 아님 |
+| update_config 12 pairs | baseline 0/12, treatment 12/12, 보고된 usable 11·preliminary_support | 해당 fixture 결과. 반복 횟수를 독립 task family 수로 보지 않음 |
+| 11월 6일 no-plan baseline 비교 | baseline 10/10, treatment 8/10+timeout 2회; p50 약 128.3초/168.8초 | 전체 할당 기준 성공률 차이 **−20%p**. 표본이 작아 일반 회귀를 확정하지 않지만 개선 증거도 아님 |
+| 같은 no-plan 실험의 현재 runner 판정 | 완료된 pair 8개만 사용하여 delta 0·inconclusive; 후보 미활성 | 미승격은 유지해야 함. timeout을 버리면 운영 실패가 비교에서 숨겨지므로 통계 계약 수정 필요 |
 
-React의 Chat/Rooms/Workflows/Operations/Memory/Models/Connections/Extensions/Agents/Capabilities/Developer/Video는 이 API의 view다. `web/src/components`의 shell·composer·monitor·account/settings와 i18n·CSS는 표현 책임이다. UI에서 도구 실행·정책 승격·학습 성공 판정을 만들지 않는다. `src-tauri`는 호스트와 연결 수명을 담당하고 engine policy를 중복 구현하지 않는다.
+계획 품질 heuristic이 높아져도 성공률이나 지연이 악화될 수 있다. 이 결과 때문에 계획을 더 강제하거나 유리한 fixture만 찾는 방향으로 설계를 바꾸지 않는다. `none` 정책, 단순 reactive 실행, 비용 절감도 동등한 후보다.
+
+### 3.4 저장소 전반의 책임 배치
+
+`src/api`는 ingress/DTO, `src/engine`은 현재 실행 및 기능 서비스, `src/db.rs`는 영속성, `src/events.rs`는 알림, `src/bin`은 실험 도구, `web/src`는 화면, `src-tauri`는 desktop lifecycle이다. 현재 runtime은 약 2,500줄로 여러 책임을 품는다. 분해 기준은 줄 수가 아니라 호출·권한·transaction 소유권이다. 기존 façade를 유지하면서 책임을 추출하고 두 엔진을 동시에 돌리지 않는다.
 
 ## 4. 현행 아키텍처의 문제점과 기술 부채
 
-### 4.1 우선 해결할 계약 문제
+아래는 최신 작업 트리의 정적 근거다. 이번에 장애를 재현하거나 테스트를 실행했다는 뜻은 아니다. 이전 설계 D01~D18은 그대로 계승하지 않으며 이미 고쳐진 항목은 §3의 현재 사실로 대체한다.
 
-다음은 이번 분석의 **정적 코드 근거**다. 기존 테스트 통과로 반증되지 않으며, 아래 재현 조건을 구현 단계의 회귀 테스트로 추가해야 한다.
-
-| ID | 근거 / 재현 조건 | 영향 / 설계 대응 |
+| ID / 우선순위 | 근거와 문제 | 목표 수정 / 반드시 필요한 회귀 조건 |
 | --- | --- | --- |
-| D01 | `runtime::run_turn_with_policy`에서 TaskContract.family=chat, source=owner, mandatory/permissions 비어 있음. 내부 prompt/goal 실행도 이 경로 사용 | 파생 지시와 주인 지시 구분 손실. ingress에서 원문 계약을 만들고 자식은 derived authority로 참조 |
-| D02 | 같은 함수의 Decision은 첫 improvement 선택으로 기록하면서 최대 6개를 함께 주입. candidates의 1/N과 decision probability=1이 실제 다중 선택을 표현하지 않음 | IPS/DR·bandit 자료로 사용 불가. legacy 기록은 진단용으로만 보존; 실제 bundle 선택확률 저장 |
-| D03 | `selection_snapshot`의 hash가 executionId만 해시, 저장 실패를 `let _`로 무시 | 실행 재현에 필요한 정책·컨텍스트가 누락돼도 실행됨. 전체 canonical snapshot과 필수 transaction 도입 |
-| D04 | `improve::execution_updates`가 uses≥5 및 과거 baseline 비교로 validated/E2 설정 | 작업 난도·모델·다른 전략의 교란. observed와 experimentally_validated 분리 |
-| D05 | `procedure::evaluate`가 nodes/edges를 검사하지 않음. before/after 없이 유효 nodes만 있는 절차와 빈 operations를 주면 triggered=true/followed=true 경로 | DAG 실행 완료와 독립 검증 불일치. node receipt·edge happens-before·binding digest 검증 |
-| D06 | `ready_intent`와 `run_harness_nodes`가 procedureNodeId만으로 완료/결과 map 생성 | 한 Run의 서로 다른 전략에 node id가 같으면 완료/결과가 섞일 수 있음. `(instance, revision, node)` 식별자 |
-| D07 | `reflect::run`이 global 경험·전략·lesson을 만들고 memory/improve/experience visible이 global을 즉시 허용 | 채널 격리와 사실/가설 구분 약화. 공유 grant와 hypothesis 저장 경로 일원화 |
-| D08 | `tools::delegate`의 자식 session에 부모 channel scope·권한 grant 없음, toolsEnabled=true. `task_payload`에 부모/소유자 검증 없음 | 위임으로 권한·정보 경계를 잃을 수 있음. attenuated grant와 task ACL 필수 |
-| D09 | `jobs::start_now`는 worker 수를 우회하는 spawn; 부모 취소 시 자식은 계속됨 | 재귀 위임 자원 폭증·수명 불명확. 전역 admission과 명시적 child lifetime 도입 |
-| D10 | `chat/provider`, `llm::try_complete`, `compact::run`에 별도 모델 호출; llm local만 별도 Mutex | 비용·usage·동시성·fallback 정책 불일치. 공통 ModelGateway로 수렴 |
-| D11 | `llm::model_rank`는 모델명 숫자, fallback은 최대 다른 2개 provider, local은 일괄 think=false | 능력·데이터 전송 허용과 무관한 추정. capability+benchmark+data policy로 적격성 판단 |
-| D12 | 승인 record put 실패해도 oneshot과 이벤트 생성; 승인 API는 메모리 waiter에 의존 | crash 후 승인 이어받기 불가. operation-bound 승인 저장, CAS resolve, durable waiting |
-| D13 | `events::Bus`는 512 broadcast, `system::events`가 Lagged 무시; chat 채널은 unbounded | UI 누락·느린 소비자 메모리 증가. durable event sequence와 bounded delta buffering |
-| D14 | `finalize_execution`에서 improvement 전체 값을 transaction 밖에서 계산 후 `finalize_once`로 upsert | 서로 다른 Run이 같은 revision 카운터를 갱신할 때 lost update 가능. 원자 observation append와 projector dedupe |
-| D15 | finalize hash에 종료시각·mutable counters가 포함되고 adaptation evaluation_revision에 payload hash 저장 | 동일 평가의 재시도와 새 평가 revision 혼동. stable semantic hash와 evaluator version 분리 |
-| D16 | global Compliance 집계가 한 followed를 먼저 선택하므로 다른 violated가 함께 있어도 followed 가능 | bundle 준수 왜곡. 항목별 결과 보존, summary의 violated/unknown 우선순위 명세 |
-| D17 | benchmark runner는 기본 3쌍·고정 파일/정답 절차·autoLearning=false. 코드에 fixture 승인 resolver가 없음 | 수동 승인 없으면 write가 timeout할 수 있고, 성공해도 실행 보조 비교일 뿐 학습/전이 증명 아님 |
-| D18 | API guard는 주로 write Origin/optional token, GET 읽기 인증 없음. MCP slug는 이름 기반 first match | 원격 서비스에 그대로 노출 불가; 같은 표시 이름 서버 충돌 가능. principal ACL과 stable server ID |
+| C01 / P0 | `lease.rs` 갱신 실패가 heartbeat만 종료. worker dispatch/commit에 fencing 없음 | lease epoch를 Operation·checkpoint commit에서 CAS; 탈락 worker는 취소. lease 탈취 후 이전 worker의 write 0 |
+| C02 / P0 | `wake.rs` 재개 input에 toolsEnabled/toolsExecutionEnabled=true, side-effect 판정이 일부 tool 이름 목록 | 최초 grant/policy/resource scope 보존·현재 철회 재검증; registry effect class 사용. 실행 금지 Task가 재개로 권한 얻지 않음 |
+| C03 / P0 | `api/experiments.rs` 결과 적용과 최종 claimToken CAS 분리, 제출 delta/units/verdict에 의존 | frozen manifest+raw trials에서 서버 재계산; claim/fence·promotion intent를 원자 commit. stale runner의 승격 0 |
+| C04 / P0 | benchmark `pair_effect` 완료 pair만 사용, 반복 pair를 independentUnits로 표기, CI halfwidth를 먼저 min(1) 처리 | ITT·cluster 단위·사전 통계 계획; CI 최종 endpoint만 support와 교차. timeout 회귀가 보고됨 |
+| C05 / P1 | `events.rs` AtomicU64 할당→DB append→broadcast; append 오류 및 concurrent 순서 불일치 가능 | DB commit 안 sequence·state·outbox; 실패 시 성공 방송 금지. 재시작/동시 완료에도 cursor 누락 없음 |
+| C06 / P1 | `run_state.rs::apply` get→put, 불법 전이 시 이전 값 반환; completed를 succeeded로 매핑 | expectedVersion/fence CAS와 typed transition error. lifecycle 종료와 TaskOutcome 성공/미검증 분리 |
+| C07 / P1 | finalizer가 regime=ProductionObserved, label=DeterministicOracle 일괄 기록; 일부 오류 fallback은 terminal 단독 저장 | 환경·check별 평가 provenance, finalize 실패를 retry 가능한 상태로 보존. 저장 실패가 성공/학습으로 흡수되지 않음 |
+| C08 / P1 | gateway helper usage root=None, delegate/background/procedure의 계층 예산 불완전 | root reservation ledger, provider/helper/child 비용 합산, 취소 연결·명시 detach. 동시 호출로 상한 초과 불가 |
+| C09 / P1 | policy apply가 모든 슬롯에 plan-quality 개선을 요구, 전역 active 교체가 여러 put | slot별 primary metric·비열등성/비용 gate; scope별 deployment CAS. 계획 없는 효율 정책·recovery 정책도 공정 평가 |
+| C10 / P1 | plan_quality 두 판정 모두 문장/단계/단어 heuristic | 두 개를 독립 정답 판정기로 취급하지 않음. artifact oracle·blind semantic rubric과 분리 |
+| C11 / P1 | reflection의 global memory/experience 기록, 일반 root source 고정, 위임/channel scope 부족 | 원문 principal·source message·partition·grant를 Task부터 보존. 추론과 사실 분리, 검색 전 ACL |
+| C12 / P1 | gateway 모델명 숫자 rank, local URL substring, 고정 baseURL semaphore | 명시 capability/실측 profile, URL 파싱과 data-egress policy, 실제 resource ID·interactive quota |
+| C13 / P1 | scheduler child output 대기·메모리 축적, wake enqueue와 marker 별도 저장, jobs::start_now 우회 | bounded output·총 timeout·process cancellation; job/wake unique key transaction; 단일 scheduler 입장 경로 |
+| C14 / P2 | 광범위 JSON/any, runtime·서비스 책임 분산, 저장 Option 오류 축약 | 핵심 Rust 타입/Result·생성 TS 계약, domain/store port, 관측 가능한 오류. source 호환 façade 유지 |
 
-### 4.2 구조 문제
-
-현재 구조는 유효한 Rust 실행 기반 위에 목표·절차·학습·채널 기능이 성장한 상태다. 전면 폐기할 이유는 없다. 문제는 `runtime.rs`가 계획·검증·절차·학습 통계까지 함께 소유하고, 반대로 일부 전문 기능은 그 공통 경로 밖에서 process/network 부수효과를 만든다는 점이다.
-
-공통 상태가 JSON으로 흩어져 있어 `status=completed`의 의미가 레코드마다 달라진다. 모든 모듈에 필드를 덧붙이는 방식 대신 typed domain과 저장 repository를 중심으로 경계를 정리한다. 설정 JSON·외부 provider payload까지 무리하게 강타입으로 바꾸지는 않는다.
+P0는 데이터·실험 신뢰 경계의 우선순위이며 모든 기능을 정지하라는 뜻이 아니다. 현재 작동하는 채팅·절차·기억·룸·MCP를 보존하면서 수정한다. 고정 8-round 같은 기본값도 무조건 제거하기보다 작업별 예산 상속과 연장/중단 사유를 갖게 한다. 속도 개선은 첫 응답, 모델 대기, 도구, context, 후처리 시간을 분리 측정한 뒤 판단한다.
 
 ## 5. 목표 시스템 전체 아키텍처
 
@@ -309,7 +299,7 @@ Capability 조회는 등록 정보 → 공식 API 메타데이터 → 부수효�
 
 모든 모델 호출은 root ledger에 예약하고 실제 usage로 정산한다. planning/review/compaction/reflection/fallback도 예외가 아니다. usage 미제공이면 `estimated=true`와 토큰 추정기를 사용하며 0으로 기록하지 않는다. 가격표 revision·통화·실측/추정 여부를 저장하고 가격을 모르면 금전 지표는 Unknown으로 둔다. 토큰·시간 예산은 계속 적용된다.
 
-공통 gateway의 자원 semaphore는 runtime instance별로 둔다. 기존 local LLM 전역 lock은 같은 서버를 사용하는 streaming·non-streaming 호출 모두에 적용되는 자원 admission으로 이동한다. 네트워크 호출 중 DB lock이나 worker 소유권을 붙잡지 않는다.
+공통 gateway의 자원 semaphore는 runtime instance별로 둔다. 현재 baseURL 단위 semaphore를 실제 모델 서버/GPU resource identity에 연결하고 streaming·non-streaming 호출의 공통 admission을 유지한다. 네트워크 호출 중 DB lock이나 worker 소유권을 붙잡지 않는다.
 
 ## 7. 범용 에이전틱 실행엔진 설계
 
@@ -509,7 +499,7 @@ Draft → ValidatedSchema → SandboxTesting → Eligible → Canary → Active
 Active → Superseded 또는 RolledBack
 ```
 
-배포 상태와 근거 등급은 다른 필드다. `Observed`, `DeterministicVerified`, `ControlledExperiment`, `HeldOutTransfer`를 분리하고 labels/provenance를 함께 보존한다. “5번 사용됨”은 표본 수일 뿐 ControlledExperiment가 아니다. 기존 adopted/validated/E2는 legacy_observed로 이관하고 원래 표시를 raw legacy 필드에 보존한다.
+배포 상태와 근거 등급은 다른 필드다. `Observed`, `DeterministicVerified`, `ControlledExperiment`, `HeldOutTransfer`를 분리하고 labels/provenance를 함께 보존한다. “5번 사용됨”은 표본 수일 뿐 ControlledExperiment가 아니다. 기존 레코드는 schema/provenance별로 이관한다. 단순 사용 횟수 기반 adopted/validated만 legacy_observed로 분류하고, 실제 paired 실험이 연결된 E2는 manifest·oracle·trial 근거를 보존한 채 해당 범위의 controlled evidence로 재평가한다. 문자열 등급만 보고 모두 강등하거나 모두 실험 증거로 승격하지 않는다.
 
 후보는 target slot, parent revision, exact patch, motivation, failure/evidence refs, applicability, expected effect, risk bounds, allowed capability delta, compatibility, proposer model, generation cost, generation dataset watermark를 갖는다. 권한을 늘리는 patch는 일반 자동 개선 후보에서 거절한다.
 
@@ -560,6 +550,28 @@ optimizer가 evaluator·holdout·권한 gate를 직접 바꿀 수 없다. 평가
 새 Run 시작 시 활성 bundle을 pin한다. 진행 중 Run은 기존 version을 유지한다. 위험한 결함으로 revision을 폐기하면 해당 revision의 새 dispatch를 차단하고 checkpoint에서 안전한 정책으로 재계획하거나 NeedsReview로 전이한다. 권한 철회는 정책 pin보다 우선한다.
 
 Canary는 사전에 허용된 low-risk task family·비율·기간/표본 상한으로 제한한다. production에서 baseline과 treatment의 외부 변경을 두 번 실행하지 않는다. shadow는 제안/읽기 전용 평가 또는 샌드박스에서만 한다. rollback은 registry active pointer를 이전 revision으로 CAS 변경하고, 이미 일어난 외부 변경의 복원은 별도 compensation Task로 취급한다.
+
+### 10.8 실행 가능한 알고리즘 개선 계약
+
+`AlgorithmRevision`은 `{id, slot, implementationId, implementationDigest, schemaVersion, parameterSchema, parameters, applicability, inputContract, outputContract, parentRevision, evidenceRefs}`다. 실행 가능한 구현 ID는 엔진의 허용 registry에서만 해석한다. 후보 JSON의 문자열을 shell/Rust로 실행하지 않는다. 새 Rust 구현은 별도 source patch/build artifact 경로를 거치며 배포 전에는 활성 구현 목록에 들어가지 않는다.
+
+`OptimizerRevision`은 `{generatorRevision, mutationOperators, clusteringRevision, selectorRevision, allocationRule, maxCandidates, totalBudget, stopRule, trainingWatermark}`를 pin한다. 생성기·선택기·실험기·배포기는 서로 다른 책임이고 같은 optimizer가 자신의 평가 정답이나 승인 조건을 바꾸지 못한다.
+
+내부 탐색의 구체적인 한 회차는 다음과 같다.
+
+1. finalized observation을 event receipt로 한 번만 소비한다. 환경 오류/모델 오류/도구 오류/권한 거절/목적 불일치를 분리하고 template·model·scope별로 묶는다.
+2. generator가 실패 근거를 읽어 **원인 가설, 개입 슬롯, 예상 개선/부작용, applicability, 반증 조건**을 제안한다. 단순 retry 횟수 증가나 계획 강요만으로 후보 집합을 제한하지 않는다.
+3. typed validator가 권한 확대·무한 반복·알 수 없는 implementation·호환되지 않는 schema를 거절한다. incumbent와 `none`을 대조군에 남긴다.
+4. 격리 smoke로 실행 불가 후보를 제거한다. 남은 후보는 사전 정한 예산 안에서 training/validation으로 탐색하고 final policy를 freeze한다. successive halving을 쓰면 exploratory score로만 취급한다.
+5. frozen 후보를 untouched holdout에서 비교한다. 후보 수·중간 관찰·중단 규칙을 manifest에 고정한다. holdout 재사용 시 새 독립 검증 또는 사전 오류율 지출 정책이 필요하다.
+6. deployment 서비스가 evidence digest·claim fence·compatibility·비열등성/효과·비용을 확인하고 원자적으로 canary를 등록한다. 사용자별/작업별 scope가 다른 후보를 전역 적용하지 않는다.
+7. 운영 결과는 새 observation이며 원래 실험 trial에 소급해서 섞지 않는다. 회귀는 rollback 후 별도 가설을 만든다.
+
+예산 배정은 처음에는 균등 또는 실패 빈도×복구 가치의 명시적 점수를 쓴다. Bayesian optimization은 저차원 연속 파라미터·충분한 평가 예산이 있을 때, evolutionary search는 prompt/절차의 구조적 변이가 필요할 때 후보 생성 방식으로 비교한다. offline RL은 state/action/reward 및 행동 support가 확보된 뒤의 선택지이며 현행 로그에 바로 적용하지 않는다.
+
+메타 목적은 `G(O)=E_family[held-out quality(policy found by O)−quality(incumbent)]`와 총 탐색 비용·지연·critical 회귀를 함께 비교하는 것이다. 같은 탐색 예산에서 optimizer별 독립 seed와 family 묶음을 반복한다. raw improvement가 양수라도 비용·비열등성 gate를 위반하면 불채택이다. 메타 표본 단위는 내부 trial 수가 아니라 **독립 search run / held-out family**다. 탐색기가 평가기를 고쳐 자신의 점수를 올리는 변경은 금지한다.
+
+불확실하면 `Inconclusive`로 남기고 예산이 끝나면 incumbent를 유지한다. “항상 성장한다”는 약속 대신 **개선 후보를 자율적으로 만들고, 실제 이득이 확인될 때만 채택하며, 손해를 되돌리는 능력**을 구현한다.
 
 ## 11. 멀티에이전트·멀티모델 협업 설계
 
@@ -648,7 +660,7 @@ HTTP 계정 인증은 audience/resource에 묶인 token으로 처리하고 token
 
 PluginManifest는 package ID/version, compatible engine ABI/protocol, tools/capabilities, requested permissions, secret references, install digest, enabled scopes를 갖는다. 초기 플러그인은 manifest+MCP/별도 process adapter 조합을 권장한다. 안정된 Rust ABI가 없는 임의 dylib hot load는 기본 확장 방식으로 채택하지 않는다. WASM은 나중에 제한된 host API가 필요할 때 비교한다.
 
-SkillRevision은 지침·artifact template·선택적 procedure·provenance를 담는 데이터 패키지다. 활성화는 실행 권한 부여가 아니며 외부 텍스트가 secret이나 system policy를 변경하지 못한다. native browser/computer-control 구현은 현재 부재로 분류한다. 향후 ToolAdapter로 추가하고 observation(화면/DOM), action target, before/after evidence, cancellability를 같은 operation 계약에 맞춘다.
+SkillRevision은 지침·artifact template·선택적 procedure·provenance를 담는 데이터 패키지다. 활성화는 실행 권한 부여가 아니며 외부 텍스트가 secret이나 system policy를 변경하지 못한다. 안정된 native browser/computer-control adapter는 이번 조사 범위에서 찾지 못했다. 향후 ToolAdapter로 추가하고 observation(화면/DOM), action target, before/after evidence, cancellability를 같은 operation 계약에 맞춘다.
 
 채널은 `InboundEnvelope → Task submission`, `Response artifact → Outbox delivery`만 담당한다. `connectionId + remoteEventId` unique로 중복 수신을 막는다. outbox는 binding revision과 cancel epoch를 확인하며 불확실한 전송은 자동 중복 발송하지 않는다. Discord/Telegram의 현재 브리지 원장·offset·echo 방지는 이 adapter의 기반이다. 나머지 manifest는 availability=false로 유지하고 실제 adapter·검증이 있어야 활성화한다.
 
@@ -734,7 +746,7 @@ src/
   bootstrap.rs      composition root; registry/adapters wiring
 ```
 
-### 14.2 핵심 타입와 trait
+### 14.2 핵심 타입과 trait
 
 다음 Rust는 **구현 계약을 보여주는 인터페이스 초안**이다. 참조하는 domain 타입과 구현체를 생략했으므로 복사만으로 컴파일되는 새 엔진 코드가 아니다. 구현 단계에서 DTO/schema와 함께 컴파일·conformance test를 작성한다. dyn dispatch가 필요한 async trait은 boxed future를 사용한다.
 
@@ -857,7 +869,7 @@ principal, run outcome, actual cost, evidence grade는 클라이언트 입력으
 
 설정·legacy UI records는 유지하고 실행의 핵심 key와 상태부터 typed table로 옮긴다. `Store`를 당장 전체 ORM으로 교체할 필요는 없다. 한 writer actor 또는 bounded blocking executor에 rusqlite 쓰기를 모아 async runtime thread의 긴 blocking을 줄인다. 네트워크/LLM 대기 중 transaction을 유지하지 않는다.
 
-다음은 최소 스키마의 키·index 계약이다. payload는 schemaVersion을 가진 canonical JSON이다. 실제 migration에서는 enum CHECK, FK, retention/backup과 기존 레코드 변환을 포함해야 한다.
+다음은 목표 스키마의 키·index 계약이다. 기존 records/event_log/lease와 중복된 권위 테이블을 한 번에 만들지 않는다. 같은 불변조건을 현재 테이블의 unique index·transaction·typed access로 만족하면 우선 재사용하며, 스키마 이동 시 한쪽만 write authority로 둔다. payload는 schemaVersion을 가진 canonical JSON이다. 실제 migration에서는 enum CHECK, FK, retention/backup과 기존 레코드 변환을 포함해야 한다.
 
 ```sql
 CREATE TABLE tasks (
@@ -933,7 +945,7 @@ ID key가 같고 body가 다르면 409, 유효하지 않은 계약 422, 권한 �
 
 이벤트 envelope는 `{schemaVersion,eventId,globalSeq,runSeq,taskId,runId,causationId,occurredAt,type,payload}`다. 상태/권한/결과 이벤트는 DB commit 후 발행한다. token delta는 임시 스트림으로 허용하되 최종 message/artifact가 권위 자료다. bounded queue가 넘치면 delta를 합치거나 버리고 `resync_required`를 보내며 durable event는 cursor로 복구한다.
 
-기존 `/api/chat`, `/api/jobs`, `/api/goals`, Room API는 facade로 유지한다. `chat::run_turn` compatibility adapter가 새 coordinator를 호출하도록 단계적으로 이동한다. 일반 채팅의 연결 해제 취소는 `lifecycle=foreground`로 보존할 수 있고 background로 생성된 Task는 연결 해제와 무관하다. API version 전환 전후의 SSE `done/error/assistant_saved` 계약을 regression test로 고정한다.
+기존 `/api/chat`, `/api/jobs`, `/api/goals`, Room API는 facade로 유지한다. `chat::run_turn` compatibility adapter가 새 coordinator를 호출하도록 단계적으로 이동한다. 현행처럼 화면/SSE 연결 해제를 Task 취소로 취급하지 않는다. 명시적인 ephemeral 실행만 별도 계약으로 취소할 수 있으며 durable Task는 연결과 무관하다. API version 전환 전후의 SSE `done/error/assistant_saved` 계약을 regression test로 고정한다.
 
 ### 14.6 마이그레이션과 배포
 
@@ -992,94 +1004,66 @@ schema migration은 번호·checksum·시작/완료·복구 상태를 기록한�
 
 ## 16. 기존 구현 재사용·통합·교체 방안
 
-### 16.1 파일·함수별 구현 연결점
+| 현행 파일 / 연결점 | 유지할 자산 | 변경·목표 소유자 |
+| --- | --- | --- |
+| `bootstrap.rs::serve`, `main.rs`, launcher/platform | 실행·복구·sidecar 진입 | coordinator/supervisor lifecycle 조립; 플랫폼 설치는 engine 밖 |
+| `chat/runtime.rs::run_turn_with_policy`, `run_turn_body` | 현행 사용자 턴·도구 loop·acceptance·stream 계약 | RunCoordinator로 책임 추출. 별도 새 loop 복제 금지 |
+| `chat/runtime.rs::dispatch_tool_call` | model/assisted 공통 경계 | ActionGateway의 authority/budget/journal/receipt/reconcile |
+| `chat/runtime.rs::record_selection_snapshot`, `finalize_execution` | bundle identity·context manifest·finalize 연결 | DecisionRecorder/Finalizer. check provenance·원자 commit 보강 |
+| `gateway.rs`, `chat/provider.rs`, `llm.rs`, `compact.rs`, `models.rs` | 공통 모델 transport·local lifecycle | capability registry와 root usage/reservation 추가; provider별 native 기능 보존 |
+| `chat/context.rs`, `memory.rs`, `experience.rs` | context packing·lexical·revision | ContextAssembler/MemoryRepository, source grants·optional hybrid |
+| `learning.rs`, `reflect.rs` | 추출·반성 trigger | MemoryCandidate/FailureHypothesis 생성; 검증 전 global 사실화 제거 |
+| `improve.rs` schedule/apply, `policy.rs`, `policy_patch.rs` | 실험 예약·후보·planning/recovery 소비 | typed 슬롯·불변 revision·실험 근거·scope deployment 원자화 |
+| `plan_quality.rs` | 저비용 구조 진단 | 보조 metric으로 유지; 모든 정책의 필수 성능 gate에서는 분리 |
+| `procedure.rs` | validated DAG·ready·receipt·edge 평가 | 선택적 ProcedurePolicy/PlanAdapter; ActionGateway만 실행 권한 소유 |
+| `goals.rs`, `workflows.rs` | 장기 목표·review/repair/replan·checkpoint | Task frontend/PlanAdapter. 일반 대화와 같은 실행·복구 기반 |
+| `jobs.rs`, `run_state.rs`, `lease.rs`, `wake.rs`, `scheduler.rs` | queue·lease·wake·실험 시작 | Scheduler/Supervisor·fencing·durable waits·linked cancellation |
+| `tools.rs` delegate, agents/rooms | 에이전트·페르소나·그룹 흐름 | AgentSupervisor와 parent envelope/grant/budget; preset 제한 없음 |
+| `tools.rs`, `mcp.rs`, extensions 관련 API | 실제 builtins/MCP/설치 기록 | stable ToolRegistry, contract adapter, discovery·effect classification |
+| `discord.rs`, `telegram.rs`, bridge/inbox/outbox | 외부 채널과 room 연결 | ChannelAdapter+명시 channel-room binding, 메시지 멱등키·scope |
+| dev/video 및 OAuth/vault 서비스 | 기존 서비스와 credential 연결 | 작업은 Run/Operation, 비밀은 CredentialBroker, 영상 upload 별도 effect |
+| `db.rs::create_attempt`, `finalize_once`, delta merge | 기존 transaction·멱등성과 기록 | typed repository, lease CAS, atomic deployment/state/event/outbox |
+| `events.rs` + `web/src/api.ts` | durable log/replay·stream UI | DB cursor·schema 생성·오류/재연결 처리; 운영 상태의 source는 Rust |
+| `api/experiments.rs`, `api/benchmark.rs`, benchmark binary | 격리 실행·identity·실제 trials | frozen manifest·raw trial 검증·ITT/cluster 통계·claim CAS |
+| maintenance/backup/rotation | 백업·복원·키 회전 경로 | 변경 전후 integrity·restore drill, daemon supervision |
+| web + src-tauri + CI | React/Vite/Tailwind·Rust sidecar·build/release | 기능 parity와 typed client. Node 실행엔진/Electron 재도입 없음 |
 
-| 현재 파일 / 함수 | 재사용할 자산 | 통합·수정할 책임 | 목표 위치 |
-| --- | --- | --- | --- |
-| `chat/runtime.rs::run_turn_with_policy/run_turn_body` | 실제 모델/도구 반복과 저장·취소 경험 | ingress 계약·coordinator lifecycle·판단 policy 분리 | runtime/coordinator + application facade |
-| `chat/runtime.rs::dispatch_tool_call` | 공통 모델/절차 dispatch, operation evidence | prepared/approval/reconcile/resource grant 구조로 추출 | tools/gateway |
-| `chat/runtime.rs::run_harness_nodes` | ready node 실행과 동일 dispatch 사용 | instance-qualified node, 모든 budget·permission 상속 | policies/procedure + runtime |
-| `chat/runtime.rs::finalize_execution` | 종료 evidence와 finalize_once 진입 | immutable Evaluation, typed outcome, outbox, projector로 분해 | runtime/finalizer |
-| `chat/{mod,transport}.rs` | TurnRequest·현재 SSE 계약 | v2 contract adapter와 lifecycle mode | legacy facade |
-| `chat/provider.rs::{select_provider,apply_reasoning_options}` | 호환 스트림·추론 옵션 mapping | capability profile, 공통 route/config revision | adapters/providers + models |
-| `llm.rs::{complete,complete_with_fallback}` | 계획·학습용 모델 호출 사용처 | ModelGateway로 일원화; 숫자 model_rank 제거 | models/gateway |
-| `chat/context.rs::system_prompt_with_snapshot/history` | 화자 격리·tool pair 보존·snapshot 주입 | token-aware pack과 provenance, mandatory 조건 보호 | context/composer |
-| `compact.rs::run` | 원문 보존·throughMessageId 요약 | 별도 HTTP 제거, summary evidence/faithfulness | context/compaction |
-| `chat/approval.rs::request_approval` / `api/approvals::resolve_approval` | 승인 UI/API 흐름 | durable approval CAS와 operation hash binding | authority service |
-| `chat/budget.rs::BudgetLedger` | proposals/tools/rounds 분리 | root/child reservation, model usage·실제 금전/시간 | domain/budget + storage |
-| `goals.rs::run` / `goal_control.rs` | plan/review/repair, 취소 epoch, evidence 보존 | Goal을 장기 Task profile로; 별도 lifecycle 최소화 | application/goal facade + runtime |
-| `verification.rs::{prepare_acceptance_checks,acceptance_gaps}` | 보수적 파일·도구 검사 | typed CheckSpec, provider/semantic/remote oracle 확장 | verification service |
-| `procedure.rs::{normalize,ready_intent,evaluate}` | DAG validation, before/after 검사 | registry schema compile, node/edge oracle, typed bindings | policies/procedure |
-| `jobs.rs::{enqueue_once,next_queued,recover,start_now}` | durable queue·CAS·보수적 recovery | indexed query·lease·resource queue·wake; start_now bypass 교체 | jobs/scheduler |
-| `tools.rs::{definitions,execute}` | native fs/process/http 구현·process group 정리 | adapter 등록, resource ACL, typed errors/receipts | adapters/tools |
-| `tools.rs::{delegate,task_payload}` | 자식 session/job·실제 result | 상속·ACL·Linked lifetime·parent wait 해제 | agents/supervisor |
-| `mcp.rs::{tools,call,StdioSession,HttpSession}` | MCP 연결·tool decode | stable ID·version adapter·pool·notification/cancel·OAuth | adapters/tools/mcp |
-| `memory.rs::{visible,retrieve,save_grounded}` | grounded 원문·정정·lexical 검색 | 공통 ACL, hybrid retrieval, grants·hypothesis 분리 | memory service |
-| `learning.rs::{enqueue_for_agent_through,run,apply_learning}` | immutable watermark·중복 방지·정확 인용 | typed candidate output, model gateway, async outbox 소비 | memory extraction/adaptation |
-| `reflect.rs::{correction_to_reflect,run}` | 교정 감지·실패 trace 분석 | global write 제거, source actor와 hypothesis 보존 | adaptation/candidates |
-| `experience.rs::{record_with_scope,retrieve,consolidate}` | episode 검색·중복·보관 | 평가 refs, 환경 호환성·공유 grant·semantic index | memory/episodes |
-| `improve.rs::{propose,active_values,execution_updates}` | revision hash·UI·현행 정책 자산 | immutable registry/selector/projection/promotion 분리 | adaptation + policies |
-| `adaptation/types.rs` | outcome/provenance/revision 개념 | legacy placeholder 제거, v2 typed scope/grant/contract | domain + adaptation types |
-| `db.rs::{open,patch_if,write_message_with_record,finalize_once}` | WAL·원자 생성/CAS·finalization | typed repositories·event/outbox·stable dedupe·오류 전달 | storage/sqlite |
-| `migrations.rs::run` | 순차·멱등 이관 기반 | numbered migration/checksum/backfill/quarantine | storage/migrations |
-| `rooms.rs::{run_locked,route_peers}` / `api/rooms` | 실제 owner 원문·roster/cursor·공정성 | Room을 협업 view로, child tasks/agent envelopes 연결 | agents + room facade |
-| `workflows.rs::{run,render}` | 순차 step·cursor·안전한 치환 | Workflow를 PlanRevision compiler로 변환 | policies/plans |
-| `discord/telegram/bridge::{ingest,flush}` | inbox/outbox·echo/offset·binding snapshot | ChannelAdapter 및 ActionGateway 전송 경로 | adapters/channels |
-| `oauth.rs` / `vault.rs` | state·refresh·암호화·secret 보호 | scoped CredentialHandle, account grants, 사용 감사 | credentials adapter |
-| `models.rs::{load,load_lmstudio,start_download}` | GGUF/LM Studio 프로세스·라이브러리 | runtime resource admission·장기 job/checkpoint | local runtime adapter |
-| `skills.rs` / `personas.rs` | import/export·프로필 자산 보존 | package revision·scope·installation manifest | packages/agent catalog |
-| `dev.rs` / `video.rs` | 실제 process/render/upload 작업 | 별도 spawn·비용·권한 경로를 service-origin으로 합류 | adapters/services |
-| `attachments.rs` | 세션 바인딩·형식 확인·원본 보존 | artifact store와 capability-aware multimodal input | artifacts/context |
-| `events.rs` / `api/system::events` | 기존 UI refresh bus | durable seq+bounded notification+replay | event projection |
-| `web/src/api.ts` / Chat/Rooms/ExecutionMonitor/Memory | 사용자 UI와 실제 실행 모니터 | Task state·Unknown·approval wait·policy evidence 표시 | React view만 유지 |
-| `bootstrap.rs` / `src-tauri/src/engine.rs` | process ownership·identity handshake | composition root·graceful drain·service/desktop lifetime | host integration |
-| `src/bin/dominion-benchmark.rs` | 임시 엔진·workspace·교대 arm 실행 | manifest 기반 task suite·grant resolver·immutable result | experiment runner |
-
-### 16.2 삭제하지 않고 단일화하는 원칙
-
-기존 기능은 source→adapter 이동 후 facade를 통해 유지한다. 새 coordinator의 model/tool 루프를 기존 runtime 옆에서 독립적으로 계속 운영하지 않는다. 한 단계의 migration이 끝나면 실행 소유 경로를 하나로 고정하고 regression으로 보존한다. 사용자가 진행 중인 미커밋 작업을 덮어쓰거나 새 이름의 엔진을 복제해 해결하지 않는다.
-
-UI compatibility projection은 표시용이며 source of truth가 아니다. legacy improvement와 새 PolicyRevision을 양방향으로 자유 수정하지 않는다. legacy editing API는 새 revision 생성 command로 바꿔 traceability를 유지한다.
+재사용은 작동하는 **현재 Rust 코드**를 통합한다는 뜻이다. 과거 Node 엔진·타 프로젝트 엔진을 가져오지 않는다. 옛 기능 동등성은 사용자 행동·계약 목록으로 비교한다. 각 추출마다 기존 façade가 새 소유자 하나를 호출하도록 바꾸고, 오래된 경로는 side-effect 없는 projection으로만 남긴다. 신·구 두 loop를 shadow라는 이름으로 실제 동시 실행하지 않는다.
 
 ## 17. 새로운 단계별 개발 로드맵
 
-이 순서는 S0~S12를 복사하지 않았다. **공통 계약 → 행동 경계 → 공통 모델/실행 → 협업/기억 → 평가 → 개선**의 실제 의존성을 따른다. 각 단계는 독립 PR 또는 작은 PR 묶음으로 검토 가능하게 만든다. 일정은 팀 속도·실모델 환경에 좌우되므로 근거 없는 날짜 약속을 하지 않는다.
+이전 S0~S12와 H0~H10 기록은 이력이다. 아래 R 단계는 **현재 9eff603 이후 남은 작업**을 의존 관계로 재구성한 것이다. 이미 존재하는 gateway·lease·wake·policy·backup을 처음부터 다시 만들지 않는다.
 
 ```text
-H0 → H1 → H2 → H3 → H4
-                    H4 → H5 (agents/extensions)
-                    H4 → H6 (memory/provenance)
-             H1,H2,H3,H4 → H7 (evaluation/experiments)
-                    H5,H6,H7 → H8 (closed-loop improvement)
-                    H7,H8 → H9 (meta-improvement)
-                    H4,H5,H6,H8 → H10 (operations/release)
+R0 기준 고정 → R1 신뢰·원자성 → R2 공통 실행 소유
+                              ├→ R3 모델·context·root 예산
+                              ├→ R4 도구·협업·채널
+                              └→ R5 기억·관측
+R0 + R1 → R6 실험 판정 정합성
+R2~R6 → R7 전 슬롯 정책 자율개선 → R8 알고리즘·메타개선
+각 단계 운영 계측 / R9 전체 복구·배포 인수
 ```
 
-| 단계 | 목적 / 분류 | 수정·추가 파일 | 핵심 구현 | 선행 조건 | 테스트 / 완료 판정 |
-| --- | --- | --- | --- | --- | --- |
-| H0 기준선 고정 | 기존 기능 보존·분석 재현 | docs, benchmark manifests, tests/e2e, scripts | 현재 dirty snapshot 보존; API/feature matrix; D01~18 재현 fixture 명세 | 없음 | 현행 184+26 결과 재확인, source hash·부작용 없는 mock 기준선, 미검증 기능 명시 |
-| H1 domain·저장 계약 | 새 핵심 기반 + 결함 수정 | domain/*, db.rs, migrations.rs, adaptation/types, runtime finalization | Task/Run/Effect/Evaluation/Grant/typed errors; stable ids/hash; atomically create/finalize/outbox | H0 | storage fault injection, duplicate/conflict finalization, concurrent observation lost update 방지, legacy DB 이관 보존 |
-| H2 공통 행동 경계 | 정상 도구 통합 + 권한/복구 결함 수정 | tools gateway, chat dispatch/approval/budget, api approvals, state.rs, procedure.rs | 모든 model/procedure intent gateway화; durable approval·root budget·node namespace·receipt oracle | H1 | tools 금지 시 assisted도 금지, 재시작 승인, unknown external result 무재실행, 두 절차 same node id 격리 |
-| H3 ModelGateway | 모델 재사용·중복 통합·능력 확장 | chat/provider, llm, compact, models, context, provider API | 하나의 routing/usage/admission; capability profile; native/compat; role model; context token budget | H1,H2 | streaming/non-streaming 동일 예산·취소, missing usage 추정, vision unsupported, privacy fallback 차단, strong-model 옵션 보존 |
-| H4 RunCoordinator | 공통 범용 실행·장기 재개 | chat runtime, goals/goal_control, workflows, jobs, engine/mod, application/* | reactive/outline/graph 계획 정책, state reducer, lease/wake, persistent lifecycle, goal facade | H2,H3 | DAG 없는 새 task, UI disconnect background 지속, kill/restart 안전 재개, stalled replan, budget extension, legacy SSE parity |
-| H5 협업·연결 | 기존 Room/채널 재사용 + 새 감독 구조 | agents/*, rooms, tools delegate, mcp, bridge/channels, dev/video | child grant/budget/ACL, no worker deadlock, registry tools, versioned MCP, service action paths | H4 | 1 worker에서 부모 대기/자식 진행, 깊은 위임 quota, cancel Linked child, unknown publish, 새 adapter에 core loop 수정 0 |
-| H6 기억·경험 | 기존 grounding 재사용 + 의미 검색·공유 결함 수정 | memory/experience/learning/reflect/context/skills | MemoryRevision·Hypothesis·SharingGrant, lexical+optional embedding, conflicts/expiry, provenance | H4,H1 | cross-channel leak 0, unsupported global quarantine, 한국어 paraphrase+exact ID retrieval, index 재생, false generalization 사례 |
-| H7 평가·실험 | 아직 없는 일반 검증 기반 | verification, adaptation/experiments, benchmark binary/API, tests fixtures | frozen manifests, sandbox identity, scoped fixture approvals, paired trials, immutable results, blind oracle, holdout | H1~H4 | 환경/권한 mismatch 즉시 거절, crash trial Incomplete, 순서 균형, rerun 동일 ID 중복 방지, 효과 없음→Inconclusive |
-| H8 실제 자율개선 | 기존 improve를 폐쇄 루프로 교체 | improve facade, adaptation registry/candidates/promotion, policies selector, UI Memory/Operations | evidence→candidate→experiment→canary→active/rollback; exact propensity·none arm; bundle pin | H5,H6,H7 | 새 revision 자동 제안·비교·채택 trace, 무효 후보 거절, 악화 rollback, held-out transfer; 입증 안 되면 효과 미확인 보고 |
-| H9 메타개선 | 이후 고급 개선 | adaptation/meta, optimizer registry, release evaluation | proposer/search/allocation optimizer 비교; compiled algorithm patch artifact; independent outer gate | H7,H8 안정 | 같은 총예산 nested evaluation, meta-test leakage 없음, evaluator 변경 분리, optimizer 회귀 rollback |
-| H10 운영 안정화 | 성능·제품화 | storage indexes, events/API/UI, bootstrap/platform/Tauri, CI, docs | bounded streams, load/crash matrix, backup/migration, multidevice ACL, service mode, cross-platform packaging | H4,H5,H6,H8; H9는 별도 확장 가능 | 장기 soak·queue fairness·resource bound·restore drill, 실계정 명시 검증, 지원 OS별 설치/취소/recovery |
+| 단계 / 목적 | 수정 중심 | 핵심 전달물 | 선행 / 완료 판정 |
+| --- | --- | --- | --- |
+| R0 보존·기준 확정 | docs/benchmark manifests/contract fixtures | dirty diff 보존, 기능/API/권한 matrix, source/binary hash, 미실행 상태 명시 | 선행 없음. 기존 명령 실행 결과를 새로 기록; 과거 통과 수치 재사용 금지 |
+| R1 정확한 권한·저장 | lease/wake/run_state/db/events/api/experiments | C01~03·05~07·13 수정, grant pin/fence, atomic state/outbox/promotion intent | R0. lease loss·restart·stale claim·disk 오류에 외부 중복/권한 확대/거짓 성공 0 |
+| R2 공통 실행엔진 | runtime/goals/jobs/workflows/API | Task/Run/Operation 타입, 단일 coordinator, reactive default, durable wait/resume | R1. 일반 대화·룸·Goal·예약 작업이 동일 실행 경계 사용; 기존 도구/repair/replan 기능 보존 |
+| R3 모델·자원 | gateway/providers/llm/compact/context | capabilities·native options, role routes, root reservation·usage, context snapshot, latency 분해 | R2. helper·child·fallback 포함 예산, 모델 교체·no-plan·강한 모델 ablation; URL 문자열 능력 추정 의존 제거 |
+| R4 도구·협업 | tools/mcp/agents/rooms/channels/dev/video | ToolRegistry/ActionGateway, AgentEnvelope·grant/budget/cancel, 채널 room binding, Browser/Computer port | R2/R3 계약. 새 adapter 추가 시 runtime loop 변경 없음; 두 채널 메시지 중복/권한 누출 없음 |
+| R5 기억·경험 | memory/learning/reflect/experience/store/UI | source/claim/episode 구분, sharing grant, conflict/expiry·hybrid adapter, 기억·정책 이벤트 | R2. 개인/공유 격리·정정·망각·재검색 검증; 저장만으로 learned success 표시 안 함 |
+| R6 평가·벤치마크 | benchmark/experiments/plan_quality/improve | ITT/cluster·manifest·raw trials·slot metric, missing/timeout/regressed 상태, 통계 라이브러리 검증 | R0/R1. no-plan 사례 timeout 손실이 전체 보고됨; heuristic 상승만으로 승격 불가 |
+| R7 자율 정책 개선 | policy/policy_patch/improve/registry/scheduler | 전 슬롯 candidate→실험→canary→적용→rollback, scope CAS·pin·자원 quota | R2~R6. 사용자 재지시 없이 한 폐쇄 루프, 실패 후보는 미승격; 여러 held-out family 효과/비용 기록 |
+| R8 알고리즘·메타개선 | AlgorithmRegistry/CandidateGenerator/ExperimentRunner/release | 새 implementation patch 격리 build, optimizer revision, 독립 nested evaluation | R7. 정책 선택과 새 구현 개선 구분, 고정 총예산·outer holdout 비교; 효과 없으면 incumbent 유지 |
+| R9 운영 인수 | bootstrap/maintenance/backup/desktop/web/CI | restore drill·장기 soak·daemon·device auth·generated API·Mac/Windows release | 각 단계 결과. UI 종료 후 장기 실행·재접속·철회·복원, 플랫폼별 실제 결과와 NotRun 명시 |
 
-### 17.1 단계별 구체적인 전달물
+### 17.1 구현 중 기능 유지 기준
 
-- H0~H2: domain schema, migration report, 권한·상태 전이 표, 재현된 결함 fixture, 모든 tool origin의 같은 gateway trace.
-- H3~H4: provider adapter conformance suite, capability manifest, Task 재개 crash matrix, 기존 API compatibility report.
-- H5~H6: delegation authority graph, 자원 사용 trace, channel/agent 기억 격리 suite, retrieval 평가셋.
-- H7~H8: frozen experiment manifest, 모든 trial raw evidence와 결과, CI/불확실성, promotion/rollback 기록. 성공한 몇 개 screenshot으로 대체하지 않는다.
-- H9~H10: optimizer cost-inclusive 보고서, release artifact/digest, restore/runbook, 장기 성능·플랫폼 검증표.
+기존 채팅 옵션, 파일·이미지 입력, 모델·추론 설정, 그룹 대화, 에이전트 기억, 목표 review/repair/replan, MCP, 외부 채널을 별도 feature matrix로 고정한다. 모든 요청에 계획·reviewer·여러 모델 호출을 강제하지 않는다. 단순 답변은 짧은 경로, 복잡한 작업은 검증·복구가 가능한 경로를 같은 엔진에서 선택한다. 성능 우선순위는 first-token/응답완료/도구완료/후처리 각각의 실측에 따른다.
 
-### 17.2 DeepSeek에게 그대로 전달할 구현 지시
+### 17.2 그대로 전달할 구현 지시
 
-> 이 마스터 문서를 최상위 기준으로 삼아 H0부터 의존 순서대로 구현하라. 먼저 현재 HEAD와 미커밋 변경을 확인하고 이 문서의 분석 스냅샷과 차이를 기록하라. 기존 기능·사용자 변경을 보존하고 한 Run이 하나의 실행엔진만 소유하도록 현재 Rust 런타임에서 책임을 추출하라. 단계마다 수정 파일, 바뀐 계약, 실행 경로, 테스트 결과, 남은 결함을 보고하라. 알고리즘 존재·전략 주입·테스트 통과를 실제 자기개선 성능으로 표현하지 마라. 모델 크기·DAG·고정 agent 수를 전체 구조의 전제로 만들지 마라. 새 정책은 불변 revision과 격리 비교 실험을 거쳐 반영하라. 범용 실행 기반이 안정되기 전에 bandit이나 메타개선을 최상위 엔진으로 구현하지 마라.
+> 이 문서를 기준으로 최신 HEAD와 dirty 작업을 먼저 대조하라. R0→R1→R2에서 현재 Rust 실행엔진을 강화하고, 일반 대화·그룹·도구·장기 작업을 같은 실행 계약으로 통합하라. `/goal`, DAG, bandit, 특정 모델 크기를 하네스 전체로 취급하지 마라. 이미 추가된 gateway·policy·복구·backup을 재작성하지 말고 필요한 계약을 보강하라. 단계별로 수정 파일·호출 경로·회귀 결과·실모델 결과·미검증을 구분해 남겨라. 정책 데이터 변경은 검증 후 자동 반영하고, 새 알고리즘 코드는 격리 build/test/release 경로를 거쳐라. 테스트 통과나 계획 점수 상승을 범용 자기개선 입증으로 표현하지 마라.
 
 ## 18. 성능·성공률·자율개선 검증 방법
 
@@ -1091,7 +1075,7 @@ H0 → H1 → H2 → H3 → H4
 | controlled real-model task suite | 특정 모델/환경/작업 분포에서 정책의 효과·비용 | 모든 모델·모든 작업에 대한 일반 성능 보장 |
 | production canary/soak | 실제 분포·운영 조건에서 회귀·자원·복구 동작 | 관찰만으로 엄밀한 인과 효과 확정 |
 
-이번 설계 작업에서 실행한 것은 현행 계약 테스트 210개와 TypeScript 검사다. 새 목표 아키텍처의 테스트가 구현되어 통과했다는 뜻이 아니다.
+이번 설계 갱신에서는 제품 테스트와 실제 모델 실험을 실행하지 않았다. 정적 분석과 기존 실험 기록을 구분했으며 아래 fixture는 구현 단계의 요구 사항이다.
 
 ### 18.2 필수 contract fixture
 
@@ -1136,7 +1120,7 @@ H0 → H1 → H2 → H3 → H4
 | E6 메타개선 | 같은 generation+evaluation budget | optimizer O_v vs O_v+1 | 탐색 효율과 outer holdout 개선 |
 | E7 새 compiled algorithm | 동일 계약·adapter·dataset | 기존 구현 vs 후보 빌드 | 실제 알고리즘 revision의 효과 및 회귀 |
 
-현행 Rust benchmark runner는 E1의 초기 scaffold다. procedure에 정답 파일 내용이 들어 있고 학습을 끄므로 E3/E6의 성과로 보고할 수 없다. 실험 fixture의 승인 자동 처리는 exact tool/args/resource hash에 한정하며 production `autoApproveAll`을 켜지 않는다.
+현행 runner에는 seeded procedure뿐 아니라 planning/config 정책 비교 경로가 있다. 따라서 전부 단순 scaffold로 취급하지 않는다. 다만 seeded 정답·동일 fixture 반복·완료 pair만의 결과는 E3 전이/E6 메타개선 근거가 아니다. 각 실험의 실제 데이터 생성·학습 on/off·후보 생성 경로를 manifest로 구분한다. 실험 fixture의 승인 자동 처리는 exact tool/args/resource hash에 한정하며 production `autoApproveAll`을 켜지 않는다.
 
 ### 18.5 Experiment manifest와 결과물
 
@@ -1163,7 +1147,7 @@ runner는 child PID/engine nonce, canonical data/workspace, benchmark mode, bina
 
 ### 18.6 성능·운영 예산
 
-아래 값은 **초기 SLO 제안이며 실측 사실이 아니다**. H0 hardware baseline에 맞춰 확정한다.
+아래 값은 **초기 SLO 제안이며 실측 사실이 아니다**. R0 hardware baseline에 맞춰 확정한다.
 
 - 모델을 호출하지 않는 Task 제출·상태 조회 p95 100ms 이내를 목표로 한다.
 - 로컬 permission/registry/checkpoint overhead는 외부 tool latency와 분리해 계측한다. p95 50ms를 초기 조사 기준으로 둔다.
@@ -1174,6 +1158,16 @@ runner는 child PID/engine nonce, canonical data/workspace, benchmark mode, bina
 - soak는 장기 Task·반복 restart·느린 consumer·대규모 memory/operation index에서 queue depth, DB lock time, RSS, GPU occupancy, dropped delta, pending outbox age를 측정한다.
 
 개선의 순이득에는 후보 생성·실험·embedding·추가 검토 비용도 포함한다. 운영 Task에서 5% 빨라졌지만 탐색 비용 회수에 과도한 기간이 필요하면 이를 별도로 표시한다.
+
+### 18.7 timeout·독립 표본·승격 판정의 정확성
+
+Primary operational success는 할당된 모든 trial의 deadline 내 목적 달성 여부다. treatment가 느려 timeout이면 해당 지표에서 실패다. 사용자 철회·외부 인프라 장애 등은 별도 이유로 기록하고, 사전 제외 규칙·전체 ITT·민감도 분석을 함께 낸다. 실행이 완료됐지만 의미 판정이 Unknown이면 Unknown rate를 별도로 공개하고 자동 성공으로 세지 않는다.
+
+paired success의 `d_i∈[-1,1]`에 독립성을 가정한 Hoeffding 예시는 `h=sqrt(2*ln(2/α)/n)`, `CI=[max(-1, mean(d)-h), min(1, mean(d)+h)]`다. **h 자체를 먼저 1로 자르면 안 된다.** 실제 같은 template 반복은 cluster 분석을 우선하고, 독립 cluster가 너무 적으면 폭넓은 구간과 Inconclusive를 낸다. 선택 후 평가·반복 중간 관찰에는 이 단순 고정 표본식을 그대로 적용하지 않는다.
+
+결과는 Improved / NoninferiorWithSavings / Inconclusive / Regressed / InvalidExperiment로 구분한다. timeout 두 개를 버린 usable 8과 실제 할당 10을 별도 필드로 유지한다. planning heuristic은 diagnostic이며 recovery/retrieval/비용 절감 정책의 공통 필수 gate가 아니다.
+
+승격 요청은 `manifestDigest, trialArtifactDigest, analysisRevision, candidateRevision, expectedActiveRevision, claimToken, leaseEpoch`를 요구한다. 서버는 immutable trial에 근거해 재계산하거나 신뢰 등록된 runner의 artifact를 검증한다. 결과 요약을 보낸 클라이언트가 단독으로 units/delta/verdict를 정할 수 없다. 정책 활성 pointer·claim 소비·deployment event는 같은 transaction 또는 멱등 promotion-intent 처리로 일치해야 한다.
 
 ## 19. 기술적 위험·한계·대안
 
@@ -1197,46 +1191,41 @@ runner는 child PID/engine nonce, canonical data/workspace, benchmark mode, bina
 | 장기 작업 정책 노후 | Run pin이 오래된 tool/provider와 불일치 | checkpoint boundary revalidation·새 Run migration |
 | 설계 복잡성 | domain과 facade 중복·migration 장기화 | phase별 단일 ownership, 첫 구현은 최소 slot/interface만 |
 
-예산, 정보, 모델 능력이 제한된 현실에서 모든 작업을 자동 완료할 수는 없다. 이 설계가 보장하려는 것은 일관된 실행과 측정 가능한 개선 경로다. 실제 성공률과 메타개선 효과는 H7~H9 실험으로 결정된다.
+예산, 정보, 모델 능력이 제한된 현실에서 모든 작업을 자동 완료할 수는 없다. 이 설계가 보장하려는 것은 일관된 실행과 측정 가능한 개선 경로다. 실제 성공률과 메타개선 효과는 R6~R8 실험으로 결정된다.
 
 ### 19.2 공개 시스템과 연구의 참고 범위
 
-다음은 2026-11-05 열람한 공식 문서/원문에서 확인한 설계 참고다. 채택 여부와 한계 평가는 **DOMINION을 위한 설계 판단**이며 해당 제품의 전반적 성능 순위가 아니다. 타 엔진을 가져와 감싸는 구현은 제안하지 않는다.
+다음 공식 문서와 원문은 이번 갱신에서 확인한 참고다. 적용·한계 판단은 **DOMINION을 위한 독립 설계 제안**이며 외부 엔진·소스코드를 가져오지 않는다.
 
-| 참고 | 확인한 공개 구조 | DOMINION에 적용하는 판단 |
+| 참고 | 공개 구조에서 참고한 점 | 자체 설계에 반영할 범위 |
 | --- | --- | --- |
-| [LangGraph Persistence](https://docs.langchain.com/oss/python/langgraph/persistence) 및 [공식 Functional API 소스 문서](https://github.com/langchain-ai/docs/blob/main/src/oss/langgraph/functional-api.mdx) | checkpoint와 장기 store 구분, replay 가능한 task 경계·부수효과 관리 | Run checkpoint와 Memory를 분리. Rust coordinator는 자체 구현하고 모든 계획을 고정 graph로 강제하지 않음 |
-| [AutoGen core concepts](https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/core-concepts/agent-and-multi-agent-application.html) | 메시지·독립 상태·행동으로 협업하는 agent | AgentEnvelope/Supervisor 경계를 참고. DOMINION의 root budget·권한·artifact 검증은 별도 계약 |
-| [CrewAI Flows](https://docs.crewai.com/v1.15.35/en/concepts/flows) | 상태와 이벤트 흐름을 이용한 workflow 구성 | workflow를 재사용 plan으로 제공. 새 작업은 reactive planning도 허용 |
-| [OpenCode Server](https://opencode.ai/docs/server/) | headless HTTP server와 OpenAPI를 통한 client 연결 | React·desktop·CLI를 같은 엔진에 연결. 특정 제품 API를 DOMINION 코어로 대체하지 않음 |
-| [Hermes Persistent Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) | 제한된 curated memory와 session 시작 snapshot, profile 격리 | 기억 snapshot과 scope 필요성 참고. 저장된 문장이 실험적 개선 증거라는 해석은 하지 않음 |
-| [OpenClaw Memory](https://docs.openclaw.ai/concepts/memory) | lexical/vector hybrid와 기억 도구·원문 접근 구분 | 정확 ID 검색과 의미 검색을 결합. 개인·채널 grant와 episode 평가를 자체 설계 |
-| [MCP 명세](https://modelcontextprotocol.io/specification/2025-11-25) / [Authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) | tools/resources/prompts와 capability, transport별 인증 계약 | protocol adapter와 하네스 권한을 분리. tool annotation을 실행 허가로 사용하지 않음 |
-| [ReAct](https://arxiv.org/abs/2210.03629) | 추론과 행동을 교차하여 외부 관찰로 계획 갱신 | 범용 기본 loop의 근거. 특정 chain-of-thought 노출은 요구하지 않음 |
-| [Reflexion](https://arxiv.org/abs/2303.11366) | 언어 피드백을 episode 기억으로 사용 | failure candidate 생성 참고; 검증·배포 gate는 추가 필요 |
-| [GEPA](https://arxiv.org/abs/2507.19457) | trace 반성과 prompt 후보 진화·Pareto 탐색 | prompt/policy candidate search 비교 대상; 논문 효과를 현행 성능으로 옮기지 않음 |
-| [Doubly Robust Policy Evaluation](https://arxiv.org/abs/1103.4601) | partial feedback 로그에서 reward/propensity 모델을 결합한 정책 평가 | 정확한 logging과 overlap이 있을 때 보조 OPE. legacy fake propensity에는 적용 안 함 |
+| [LangGraph Persistence](https://docs.langchain.com/oss/python/langgraph/persistence) | checkpoint/thread 및 영속 상태 | Run checkpoint와 Memory 분리; 모든 작업을 graph로 강제하지 않음 |
+| [Hermes Persistent Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) | bounded curated memory와 사용자 정보 | 출처·scope·context snapshot; 저장 자체를 성능 개선으로 보지 않음 |
+| [OpenClaw Agent Loop](https://docs.openclaw.ai/concepts/agent-loop) | 세션별 context/model/tool/stream/persistence loop | 채널별 복제 엔진 대신 동일 실행 경로와 세션 직렬화 |
+| [MCP lifecycle 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) | initialize·버전·capability 합의 | 서버와 protocol 협상, 하네스 권한은 별도. 특정 버전을 영구 최신으로 가정하지 않음 |
+| [ReAct](https://arxiv.org/abs/2210.03629) | reasoning/action/observation 교차 | 환경 결과에 따른 재판단. 비공개 chain-of-thought 노출 강제 없음 |
+| [GEPA](https://arxiv.org/abs/2507.19457) | trace 반성·prompt 후보 진화 | 후보 생성기 비교 대상으로 사용; 논문 효과를 DOMINION 성과로 주장하지 않음 |
 
-Codex/Claude Code의 공개하지 않은 내부 구현은 추정해 설계 근거로 쓰지 않았다. 모든 참고 제품을 조사하는 것보다 현행 코드의 계약 문제와 필요한 공개 기법을 검증하는 데 범위를 두었다. 이 문서의 RunCoordinator, grant 상속, 정책 revision·meta gate 조합은 DOMINION에 대한 독립 제안이다.
+§10의 Reflexion·Doubly Robust 논문 링크는 기법의 추가 원문 참조다. 전체 제품의 비공개 구현이나 조사하지 않은 시스템은 추정해서 설계 사실로 쓰지 않는다. RunCoordinator·grant 상속·정책/알고리즘 registry·meta gate의 결합은 이 저장소를 위한 제안이다.
 
 ## 20. 최종 아키텍처 검토와 구현 인수 조건
 
 ### 20.1 요청한 12개 기술 질문의 대응
 
-| 질문 | 목표 구조 | 현재 상태 | 남은 작업 / 합격 증거 |
+| 질문 | 목표 대응 | 현재 상태 | 남은 작업 / 증거 |
 | --- | --- | --- | --- |
-| 1. 로컬 4B부터 상위 cloud까지? | 공통 ModelGateway+capability profile | 호환 provider와 로컬 연결 부분 구현 | H3 adapter matrix, 모델별 실험; 미보유 모델은 NotRun |
-| 2. 강한 모델 능력을 제한하지 않는가? | optional assistance, dynamic budgets/context, native extensions | 상수·local 추론 억제·수동 routing | H3/H4 strong-model ablation·native capability 보존 |
-| 3. 처음 접하는 작업? | Reactive/Outline planning·tool discovery·replan | tool loop·goal 계획 있음 | H4/H7 unseen family suite, 실패 근거·복구 trace |
-| 4. 저장 DAG 없어도 실행? | default reactive + 선택적 graph | 일반 채팅 이미 가능 | H4 no-procedure fixture와 실제 신규 task |
-| 5. 모델 오판 수정? | evidence→verification→recovery proposal | acceptance gate/repair 부분 구현 | H2/H4 F05/F07·semantic mismatch 실험 |
-| 6. 반복 지시 없이 장기 지속? | durable waits/lease/checkpoints/service mode | background Job 있음, crash는 보수적 needs_review | H4/H10 timer·restart·UI disconnect 장기 시험 |
-| 7. 도구·외부 시스템 확장? | registry+Tool/ChannelAdapter+gateway | builtin match/MCP·일부 channel | H5 새 도구·채널 추가 시 core loop 수정 없음 |
-| 8. 여러 모델·agent 협업? | Supervisor+AgentEnvelope+role routing | room/role models/delegate 경로 있음 | H5 parent grant·예산·취소·합성 검증 |
-| 9. 기억과 개선 구분? | memory/episode/hypothesis/evaluation/deployment 분리 | 저장·주입·observed 승격 혼재 | H6/H8 UI·data grade·효과 없는 후보 미승격 |
-| 10. 내부 정책·알고리즘 개선? | versioned policy slots+candidate/release path | strategy text/절차, harness proposal만 존재 | H8 config 정책 폐쇄 루프, H9 compiled algorithm/meta 후보 |
-| 11. 실제 비교 실험? | isolated runner+frozen manifest+holdout+CI | narrow paired runner scaffold | H7~H9 모든 trial/effect/비용·누락 보고 |
-| 12. 기존 코드 활용? | facade 유지·책임 추출·단일 실행 소유 | 재사용 가능한 Rust 경로 다수 | H1~H5 legacy parity·이관 원본 보존·회귀 통과 |
+| 1. 4B부터 상위 cloud? | capability ModelGateway | 공통 gateway·local/cloud 연결 | R3 모델별 지원/실측 matrix, 없는 모델 NotRun |
+| 2. 능력 제한 방지? | optional assistance·native options·동적 budget | 고정 한도·heuristic routing 잔존 | R3 no-plan/strong-model ablation·native 기능 보존 |
+| 3. 새 작업 수행? | reactive planning·discovery·recovery | 일반 tool loop·goal 계획 있음 | R2/R4 unseen task와 실패 복구 trace |
+| 4. DAG 없이 실행? | reactive default | 이미 일반 채팅 가능 | R2 저장 절차 없는 multi-step 회귀 |
+| 5. 오판 수정? | tool evidence→evaluation→repair | acceptance/repair/절차 평가 있음 | R1/R2 false-success·stale effect 방지 |
+| 6. 장기 자율 수행? | durable waits·fenced lease·scheduler | jobs/lease/wake 연결, 권한/fence 결함 | R1/R2 재시작·timer·UI 종료·승인 재개 |
+| 7. 확장? | registry+adapters+ActionGateway | builtins/MCP/서비스 있음 | R4 core loop 변경 없는 새 tool/channel |
+| 8. 협업? | Supervisor·root scope/budget | rooms/delegate/role model 있음 | R3/R4 linked cancel·다중 모델·합성 검증 |
+| 9. 기억 vs 개선? | Memory/Episode/Hypothesis/Evaluation 분리 | 기록·추출·실험 경로 존재, provenance 혼재 | R5/R6 기억 저장과 성능 증거 분리 |
+| 10. 내부 알고리즘 개선? | revision registry·generator·release·meta | planning/recovery 파라미터 후보/소비 연결 | R7 전 슬롯, R8 새 implementation·optimizer 비교 |
+| 11. 실제 비교? | frozen manifest·ITT·holdout | 실제 paired 기록 있으나 censoring/metric 결함 | R6 통계/승격 수정 후 R7/R8 전이 비교 |
+| 12. 기존 코드 활용? | façade 유지·단일 소유로 추출 | Rust 자산 다수와 신 기능 존재 | R0~R4 기능 parity·원본 보존·중복 엔진 없음 |
 
 ### 20.2 마스터 설계의 완료 조건
 
@@ -1244,7 +1233,7 @@ Codex/Claude Code의 공개하지 않은 내부 구현은 추정해 설계 근�
 
 ### 20.3 구현 인수 게이트
 
-1. **실행 기반:** 모든 ingress와 모든 tool origin이 같은 권한·budget·operation lifecycle을 사용하고 H0 핵심 동작 회귀가 없다.
+1. **실행 기반:** 모든 ingress와 모든 tool origin이 같은 권한·budget·operation lifecycle을 사용하고 R0 핵심 동작 회귀가 없다.
 2. **내구성:** pending 승인·child wait·external uncertainty·restart crash matrix에서 허위 성공과 중복 외부 효과가 없다.
 3. **범용성:** 저장 절차가 없는 여러 새 task family를 수행하고 필요한 계획/모델/도구를 동적으로 고른다. 실패도 typed 근거로 남긴다.
 4. **모델 독립성:** 특정 파라미터 수·provider 이름 문자열이 core 실행 정책의 필수 전제가 아니다. 고유 capability와 명시 fallback을 시험한다.
@@ -1272,31 +1261,16 @@ Codex/Claude Code의 공개하지 않은 내부 구현은 추정해 설계 근�
 
 ---
 
-## 부록 A. 구현자가 확인할 대표 소스 근거
+## 부록 A. 소스 근거와 재확인 방법
 
-경로는 저장소 상대 경로이며 파일·함수 기준으로 탐색한다. 아래 행 번호는 분석 스냅샷 기준이다.
+§3·§4·§16의 파일/함수는 이 작업 트리 기준이다. 구현 시작 시 `git rev-parse HEAD`, `git status --short`, `rg`로 다시 찾는다. 줄 번호는 후속 수정에 쉽게 틀리므로 고정하지 않는다.
 
-| 근거 | 위치 |
-| --- | --- |
-| 공통 턴 계약·상수 | `src/engine/chat/mod.rs:20` |
-| legacy TaskContract·Decision·snapshot | `src/engine/chat/runtime.rs:152` |
-| foreground 연결 해제 중단 | `src/engine/chat/runtime.rs:248` |
-| 일반 채팅 acceptance/repair | `src/engine/chat/runtime.rs:644` |
-| assisted nodes 공통 dispatch | `src/engine/chat/runtime.rs:1012` |
-| tool 승인·operation 저장·실행 | `src/engine/chat/runtime.rs:1109` |
-| finalization·observation | `src/engine/chat/runtime.rs:1492` |
-| DAG ready와 before/after evaluator | `src/engine/procedure.rs:684`, `:740` |
-| delegated task 생성·권한 | `src/engine/tools.rs:218` |
-| worker 우회 즉시 실행 | `src/engine/jobs.rs:309` |
-| observed 5회 승격 | `src/engine/improve.rs:526` |
-| global reflection 생성 | `src/engine/reflect.rs:248` |
-| transactional finalization | `src/db.rs:321` |
-| in-memory event bus | `src/events.rs:13` |
-| benchmark identity/seed 경로 | `src/api/system.rs:23`, `src/api/benchmark.rs:8` |
-| isolated paired runner | `src/bin/dominion-benchmark.rs:126` |
+핵심 근거: `runtime::{run_turn_with_policy,run_turn_body,dispatch_tool_call,record_selection_snapshot,finalize_execution}`, `Store::{create_attempt,finalize_once}`, `lease::LeaseGuard`, `run_state::apply`, `wake::recover`, `gateway`, `policy::{propose_candidates,apply_experiment_result}`, `policy_patch`, `plan_quality`, `api/experiments`, benchmark의 `pair_effect`. 외부 채널·영상·계정은 경로/소유권 정적 검토이며 실제 계정 동작 검증과 구분한다.
 
-## 부록 B. 문서 검증 범위
+분석 스냅샷은 문서 머리의 source diff hash로 식별한다. 기존 `tmp/` raw 실험 artifact 전체를 검증하지 않았으므로 H7 기록의 수치는 해당 문서 출처를 명시했다. 소스가 바뀌면 C01~C14의 재현 fixture로 해결 여부를 확인하고 과거 결함을 무조건 현재 사실로 복사하지 않는다.
 
-현재 실행된 검증은 제품 소스 변경 없이 수행했다. Rust 단위/E2E 통과는 모의 provider·HTTP fixture와 로컬 파일/프로세스 동작을 포함한다. 실제 cloud/local 모델 호출로 새 개선 효과를 재측정하지 않았으며 실제 사용자 계정의 전송·게시·업로드는 수행하지 않았다.
+## 부록 B. 문서 검증 범위와 인계 조건
 
-설계상 시간·비용 수치와 알고리즘 초기값은 제안으로 표시했다. 문서 속 Rust/SQL/JSON은 목표 계약의 명세이며 이미 배포된 API나 완성 구현이 아니다. 신규 구현은 각 H 단계의 인수 테스트와 실제 모델 실험으로 다시 검증해야 한다.
+이 작업의 변경 대상은 이 마스터 Markdown 한 파일이다. 제품 코드 수정·실행·배포·커밋·푸시는 수행하지 않았다. 코드 테스트나 실모델 성능 향상을 새로 확인했다고 주장하지 않는다. 문서의 20개 필수 장·코드 fence·이전 HEAD/테스트 주장 잔존·소스 변경 여부를 확인한다.
+
+설계 인계물은 **현재 코드 사실 / 정적 결함 / 목표 계약 / 구현 순서 / 검증 기준**을 한 파일에 담는다. 문서 예시와 제안 SLO는 구현 완료 상태가 아니다. 구현자는 R 단계별 증거를 남기고 기능 보존·권한·성능·실제 개선을 각각 평가해야 한다.

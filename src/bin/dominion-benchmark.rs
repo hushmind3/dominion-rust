@@ -43,6 +43,8 @@ struct Fixture {
     audit_expected: &'static str,
     report_expected: &'static str,
     seeds: &'static [(&'static str, &'static str)],
+    /// When non-empty, every listed file must match for oracle success.
+    checks: &'static [(&'static str, &'static str)],
 }
 
 fn fixture(id: &str) -> Result<Fixture, String> {
@@ -55,6 +57,29 @@ fn fixture(id: &str) -> Result<Fixture, String> {
             audit_expected: AUDIT_EXPECTED,
             report_expected: REPORT_EXPECTED,
             seeds: &[],
+            checks: &[],
+        }),
+        "planning_multi" => Ok(Fixture {
+            id: "planning_multi",
+            task: "bench/in1.txt부터 bench/in5.txt까지 각 파일의 내용을 읽고, 같은 내용을 bench/out1.txt부터 bench/out5.txt에 각각 복사해 저장해. 다섯 파일 모두 정확해야 한다.",
+            audit_path: "bench/out1.txt",
+            report_path: "bench/out5.txt",
+            audit_expected: "TOKEN-ONE",
+            report_expected: "TOKEN-FIVE",
+            seeds: &[
+                ("bench/in1.txt", "TOKEN-ONE"),
+                ("bench/in2.txt", "TOKEN-TWO"),
+                ("bench/in3.txt", "TOKEN-THREE"),
+                ("bench/in4.txt", "TOKEN-FOUR"),
+                ("bench/in5.txt", "TOKEN-FIVE"),
+            ],
+            checks: &[
+                ("bench/out1.txt", "TOKEN-ONE"),
+                ("bench/out2.txt", "TOKEN-TWO"),
+                ("bench/out3.txt", "TOKEN-THREE"),
+                ("bench/out4.txt", "TOKEN-FOUR"),
+                ("bench/out5.txt", "TOKEN-FIVE"),
+            ],
         }),
         "planning_pair" => Ok(Fixture {
             id: "planning_pair",
@@ -64,6 +89,7 @@ fn fixture(id: &str) -> Result<Fixture, String> {
             audit_expected: AUDIT_EXPECTED,
             report_expected: REPORT_EXPECTED,
             seeds: &[],
+            checks: &[],
         }),
         "planning_evaluation" => Ok(Fixture {
             id: "planning_evaluation",
@@ -73,6 +99,7 @@ fn fixture(id: &str) -> Result<Fixture, String> {
             audit_expected: AUDIT_EXPECTED,
             report_expected: REPORT_EXPECTED,
             seeds: &[],
+            checks: &[],
         }),
         "update_config" => Ok(Fixture {
             id: "update_config",
@@ -82,6 +109,7 @@ fn fixture(id: &str) -> Result<Fixture, String> {
             audit_expected: "mode=final",
             report_expected: "mode=draft",
             seeds: &[("bench/config_input.cfg", "mode=draft")],
+            checks: &[],
         }),
         other => Err(format!(
             "BENCH_FIXTURE must be audit_report or update_config (got {other})"
@@ -111,6 +139,7 @@ struct BenchConfig {
     /// When set, claim one queued experiment request from this production engine.
     claim_url: Option<String>,
     provider_base: String,
+    trial_timeout_secs: u64,
 }
 
 fn env_string(name: &str, fallback: &str) -> String {
@@ -166,6 +195,10 @@ fn config() -> Result<BenchConfig, String> {
             .map(|value| value.trim().trim_end_matches('/').to_string())
             .filter(|value| !value.is_empty()),
         provider_base: env_string("BENCH_PROVIDER_BASE", "http://127.0.0.1:11434/v1"),
+        trial_timeout_secs: env_string("BENCH_TRIAL_TIMEOUT_SECS", "300")
+            .parse::<u64>()
+            .unwrap_or(300)
+            .clamp(30, 900),
     })
 }
 
@@ -436,6 +469,7 @@ fn aggregate(trials: &[Value], arm: &str, pairs: usize) -> Value {
         "unknown": unknown,
         "invalid": invalid,
         "strictSuccessRate": if rows.is_empty() { Value::Null } else { json!(success as f64 / rows.len() as f64) },
+        "ittSuccessRate": if pairs == 0 { Value::Null } else { json!(success as f64 / pairs as f64) },
         "compliance": compliant,
         "triggerCoverage": if applicable == 0 { Value::Null } else { json!(compliant as f64 / applicable as f64) },
         "tokens": tokens,
@@ -450,18 +484,30 @@ fn round4(value: f64) -> f64 {
     (value * 10_000.0).round() / 10_000.0
 }
 
-fn pair_effect(trials: &[Value], seed: u64) -> Value {
-    let pairs = trials
-        .iter()
-        .filter_map(|trial| trial["pair"].as_u64())
-        .map(|pair| pair as usize)
-        .max()
-        .map(|max| max + 1)
-        .unwrap_or(0);
+fn pair_effect(trials: &[Value], planned_pairs: usize, seed: u64) -> Value {
+    // ITT: every planned pair counts once. A missing arm or a timeout is a
+    // failure for that arm, not a silently dropped observation.
+    let pairs = if planned_pairs > 0 {
+        planned_pairs
+    } else {
+        trials
+            .iter()
+            .filter_map(|trial| trial["pair"].as_u64())
+            .map(|pair| pair as usize)
+            .max()
+            .map(|max| max + 1)
+            .unwrap_or(0)
+    };
     let mut deltas = Vec::new();
     let mut semantic_deltas = Vec::new();
     let mut independent_semantic_deltas = Vec::new();
-    let mut units = 0usize;
+    let mut missing_arms = 0usize;
+    let mut timeout_trials = 0usize;
+    let success = |trial: Option<&Value>| {
+        trial.is_some_and(|trial| {
+            trial["status"].as_str() == Some("completed") && strict_success(trial)
+        })
+    };
     for pair in 0..pairs {
         let baseline = trials
             .iter()
@@ -469,21 +515,36 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
         let treatment = trials
             .iter()
             .find(|trial| trial["pair"].as_u64() == Some(pair as u64) && trial["arm"] == "treatment");
-        let (Some(baseline), Some(treatment)) = (baseline, treatment) else {
-            continue;
-        };
-        if baseline["status"] != "completed" || treatment["status"] != "completed" {
+        if baseline.is_none() && treatment.is_none() {
             continue;
         }
-        units += 1;
-        let b = if strict_success(baseline) { 1.0 } else { 0.0 };
-        let t = if strict_success(treatment) { 1.0 } else { 0.0 };
+        if baseline.is_none() {
+            missing_arms += 1;
+        }
+        if treatment.is_none() {
+            missing_arms += 1;
+        }
+        for trial in [baseline, treatment].into_iter().flatten() {
+            if trial["errorClass"].as_str() == Some("timeout") {
+                timeout_trials += 1;
+            }
+        }
+        let b = if success(baseline) { 1.0 } else { 0.0 };
+        let t = if success(treatment) { 1.0 } else { 0.0 };
         deltas.push(t - b);
-        let bq = baseline["planQuality"].as_f64().unwrap_or(0.0);
-        let tq = treatment["planQuality"].as_f64().unwrap_or(0.0);
+        let bq = baseline
+            .and_then(|trial| trial["planQuality"].as_f64())
+            .unwrap_or(0.0);
+        let tq = treatment
+            .and_then(|trial| trial["planQuality"].as_f64())
+            .unwrap_or(0.0);
         semantic_deltas.push(tq - bq);
-        let bi = baseline["planQualityIndependent"].as_f64().unwrap_or(0.0);
-        let ti = treatment["planQualityIndependent"].as_f64().unwrap_or(0.0);
+        let bi = baseline
+            .and_then(|trial| trial["planQualityIndependent"].as_f64())
+            .unwrap_or(0.0);
+        let ti = treatment
+            .and_then(|trial| trial["planQualityIndependent"].as_f64())
+            .unwrap_or(0.0);
         independent_semantic_deltas.push(ti - bi);
     }
     let n = deltas.len();
@@ -496,7 +557,7 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
     let halfwidth = if n == 0 {
         1.0
     } else {
-        (2.0 * (2.0f64 / alpha).ln() / n as f64).sqrt().min(1.0)
+        (2.0 * (2.0f64 / alpha).ln() / n as f64).sqrt()
     };
     let lower = (mean - halfwidth).max(-1.0);
     let upper = (mean + halfwidth).min(1.0);
@@ -514,19 +575,20 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
     let semantic_halfwidth = if semantic_deltas.is_empty() {
         1.0
     } else {
-        (2.0 * (2.0f64 / alpha).ln() / semantic_deltas.len() as f64)
-            .sqrt()
-            .min(1.0)
+        (2.0 * (2.0f64 / alpha).ln() / semantic_deltas.len() as f64).sqrt()
     };
-    let verdict = if units == 0 {
+    let verdict = if n == 0 {
         "not_evaluated"
-    } else if units < 10 || lower <= 0.0 {
+    } else if n < 10 || lower <= 0.0 {
         "inconclusive"
     } else {
         "preliminary_support"
     };
     json!({
-        "independentUnits": units,
+        "plannedUnits": pairs,
+        "independentUnits": n,
+        "missingArms": missing_arms,
+        "timeoutTrials": timeout_trials,
         "seed": seed,
         "delta": mean,
         "halfwidth": halfwidth,
@@ -540,7 +602,7 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
             round4((semantic_mean + semantic_halfwidth).min(1.0))
         ],
         "semanticUnits": semantic_deltas.len(),
-        "note": "Small N is inconclusive; this is not E4 evidence.",
+        "note": "ITT per planned pair; timeouts and missing arms count as failures.",
     })
 }
 
@@ -626,6 +688,7 @@ async fn chat(
     agent: &str,
     provider: &str,
     input: &str,
+    timeout_secs: u64,
 ) -> (String, u128) {
     let started = Instant::now();
     let response = client
@@ -638,7 +701,7 @@ async fn chat(
             "toolsEnabled": true,
             "autoLearning": false,
         }))
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_secs(timeout_secs))
         .send()
         .await;
     let response = match response {
@@ -749,7 +812,11 @@ fn write_outputs(root: &Path, manifest: &Value, trials: &[Value]) -> Result<Valu
             "baseline": aggregate(trials, "baseline", manifest["pairs"].as_u64().unwrap_or(0) as usize),
             "treatment": aggregate(trials, "treatment", manifest["pairs"].as_u64().unwrap_or(0) as usize),
         },
-        "effect": pair_effect(trials, manifest["randomizationSeed"].as_u64().unwrap_or(0)),
+        "effect": pair_effect(
+            trials,
+            manifest["pairs"].as_u64().unwrap_or(0) as usize,
+            manifest["randomizationSeed"].as_u64().unwrap_or(0),
+        ),
         "trialCount": trials.len(),
     });
     write_json(&root.join("summary.json"), &summary)?;
@@ -1183,21 +1250,40 @@ async fn main() -> Result<(), String> {
                 &agents[arm],
                 &provider_id,
                 cfg.fixture.task,
+                cfg.trial_timeout_secs,
             )
             .await;
-            let error_class = classify_error(&stream, elapsed, 300_000);
+            let error_class =
+                classify_error(&stream, elapsed, (cfg.trial_timeout_secs as u128) * 1000);
             let audit = file_artifact(&root, cfg.fixture.audit_path);
             let report = file_artifact(&root, cfg.fixture.report_path);
-            let audit_ok = std::fs::read_to_string(
-                root.join("workspace").join(cfg.fixture.audit_path),
-            )
-            .map(|text| text.trim() == cfg.fixture.audit_expected)
-            .unwrap_or(false);
-            let report_ok = std::fs::read_to_string(
-                root.join("workspace").join(cfg.fixture.report_path),
-            )
-            .map(|text| text.trim() == cfg.fixture.report_expected)
-            .unwrap_or(false);
+            let (audit_ok, report_ok) = if cfg.fixture.checks.is_empty() {
+                (
+                    std::fs::read_to_string(
+                        root.join("workspace").join(cfg.fixture.audit_path),
+                    )
+                    .map(|text| text.trim() == cfg.fixture.audit_expected)
+                    .unwrap_or(false),
+                    std::fs::read_to_string(
+                        root.join("workspace").join(cfg.fixture.report_path),
+                    )
+                    .map(|text| text.trim() == cfg.fixture.report_expected)
+                    .unwrap_or(false),
+                )
+            } else {
+                let mut all = true;
+                for (path, expected) in cfg.fixture.checks {
+                    let matches = std::fs::read_to_string(root.join("workspace").join(path))
+                        .map(|text| text.trim() == *expected)
+                        .unwrap_or(false);
+                    all &= matches;
+                }
+                let last = cfg.fixture.checks.last().unwrap();
+                let last_ok = std::fs::read_to_string(root.join("workspace").join(last.0))
+                    .map(|text| text.trim() == last.1)
+                    .unwrap_or(false);
+                (all, last_ok)
+            };
             let executions = get(&client, &format!("{base}/api/executions"))
                 .await
                 .unwrap_or(json!([]));
@@ -1414,6 +1500,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn timeouts_count_as_itt_failures() {
+        let trials = vec![
+            json!({"pair":0,"arm":"baseline","status":"completed","auditOk":true,"reportOk":true,"taskOutcome":"succeeded","compliance":true,"errorClass":"","planQuality":0.0}),
+            json!({"pair":0,"arm":"treatment","status":"error","auditOk":false,"reportOk":false,"taskOutcome":"unknown","compliance":false,"errorClass":"timeout","planQuality":0.4}),
+            json!({"pair":1,"arm":"baseline","status":"completed","auditOk":true,"reportOk":true,"taskOutcome":"succeeded","compliance":true,"errorClass":"","planQuality":0.0}),
+            json!({"pair":1,"arm":"treatment","status":"completed","auditOk":true,"reportOk":true,"taskOutcome":"succeeded","compliance":true,"errorClass":"","planQuality":0.6}),
+        ];
+        let effect = pair_effect(&trials, 2, 7);
+        assert_eq!(effect["plannedUnits"], 2);
+        assert_eq!(effect["independentUnits"], 2);
+        assert_eq!(effect["timeoutTrials"], 1);
+        assert_eq!(effect["delta"], -0.5);
+        assert_eq!(effect["verdict"], "inconclusive");
+        assert_eq!(effect["semanticDelta"], 0.5);
+    }
+
+    #[test]
+    fn missing_arm_counts_as_failure_instead_of_being_dropped() {
+        let trials = vec![
+            json!({"pair":0,"arm":"baseline","status":"completed","auditOk":false,"reportOk":false,"taskOutcome":"failed","compliance":false,"errorClass":"","planQuality":0.0}),
+        ];
+        let effect = pair_effect(&trials, 1, 1);
+        assert_eq!(effect["independentUnits"], 1);
+        assert_eq!(effect["missingArms"], 1);
+        assert_eq!(effect["delta"], 0.0);
+    }
+
+    #[test]
     fn policy_effect_reports_semantic_plan_delta() {
         let base = |pair: u64, arm: &str, plan: f64, success: bool| {
             json!({
@@ -1430,7 +1544,7 @@ mod tests {
             base(1, "baseline", 0.2, false),
             base(1, "treatment", 0.9, true),
         ];
-        let effect = pair_effect(&trials, 1);
+        let effect = pair_effect(&trials, 2, 1);
         assert_eq!(effect["independentUnits"], 2);
         assert_eq!(effect["semanticUnits"], 2);
         assert!((effect["semanticDelta"].as_f64().unwrap() - 0.7).abs() < 0.0001);
@@ -1525,7 +1639,7 @@ mod tests {
 
     #[test]
     fn empty_effect_is_not_evaluated() {
-        let effect = pair_effect(&[], 94371);
+        let effect = pair_effect(&[], 0, 94371);
         assert_eq!(effect["verdict"], "not_evaluated");
         assert_eq!(effect["independentUnits"], 0);
     }
