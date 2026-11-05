@@ -1409,17 +1409,43 @@ async fn attempt_model_adaptation(
     if provider_id.is_empty() || model.is_empty() {
         return None;
     }
-    let (system, prompt) = crate::engine::adaptation_loop::adaptation_prompt(
+    let (system, mut prompt) = crate::engine::adaptation_loop::adaptation_prompt(
         tool,
         arguments,
         error,
         environment_version,
     );
+    // Design 2.4 §6: reuse a verified precedent only when its observable
+    // failure predicate matches. The old inputs are an example, not an action
+    // to replay. The model must instantiate new inputs for this task.
+    let scope = crate::engine::memory::MemoryScope::for_session(
+        &state.store, session_id, request.agent_id.as_deref(),
+    );
+    let applicable_rules = crate::engine::experience::matching_rules(
+        state, &scope, tool, arguments, error, 3,
+    );
+    if !applicable_rules.is_empty() {
+        let examples = applicable_rules.iter().map(|rule| json!({
+            "id": rule["id"],
+            "revision": rule["revision"],
+            "evidenceGrade": rule["evidenceGrade"],
+            "applicability": rule["applicability"],
+            "intervention": rule["intervention"],
+            "supportingCases": rule["supportingCases"].as_array().map(Vec::len).unwrap_or(0),
+        })).collect::<Vec<_>>();
+        prompt.push_str(
+            "\nConditional precedents from VERIFIED past runs (observed, not experimentally promoted).              The failure condition matched, but do not copy old input values without adapting              them to the current task. Propose and validate new arguments: ",
+        );
+        prompt.push_str(&json!(examples).to_string());
+    }
     let raw = llm::complete(state, &provider_id, &model, &system, &prompt)
         .await
         .ok()?;
     metrics.lock().unwrap().model_calls += 1;
-    let adaptation = crate::engine::adaptation_loop::parse_adaptation(&raw)?;
+    let mut adaptation = crate::engine::adaptation_loop::parse_adaptation(&raw)?;
+    adaptation["consultedExperienceRules"] = json!(applicable_rules.iter().map(|rule| json!({
+        "id": rule["id"], "revision": rule["revision"],
+    })).collect::<Vec<_>>());
     let selected = crate::engine::adaptation_loop::choose_intervention(
         &adaptation,
         tool,
@@ -1463,6 +1489,9 @@ async fn attempt_model_adaptation(
     .ok()?;
     let hypothesis_results =
         crate::engine::adaptation_loop::evaluate_hypotheses(&adaptation, &result);
+    crate::engine::experience::record_rule_counterexamples(
+        state, &applicable_rules, &selected, &result, execution_id,
+    );
     let record = crate::engine::adaptation_loop::record_adaptation(
         state,
         execution_id,
@@ -2790,6 +2819,9 @@ pub(super) fn finalize_execution(
     // A success experience requires Succeeded and a first-time finalization.
     if applied && task_outcome == TaskOutcome::Succeeded {
         let _ = record_success_experience(state, &record, execution_id, task_outcome);
+        // Conditional intervention candidates are grounded in this verified
+        // outcome and remain separate from experiment-gated active policies.
+        let _ = crate::engine::experience::learn_verified_adaptations(state, &record);
     }
 
 }
