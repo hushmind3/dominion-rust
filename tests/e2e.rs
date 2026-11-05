@@ -91,7 +91,14 @@ impl TestApp {
         Self::new_with_env(provider_port, tool_mode, &[])
     }
     fn new_with_env(provider_port: u16, tool_mode: &str, extra: &[(&str, &str)]) -> Self {
-        let root = temp_root();
+        Self::from_root(provider_port, tool_mode, temp_root(), extra)
+    }
+    fn from_root(
+        provider_port: u16,
+        tool_mode: &str,
+        root: PathBuf,
+        extra: &[(&str, &str)],
+    ) -> Self {
         let port = free_port();
         let mut command = Command::new(env!("CARGO_BIN_EXE_dominion-rust"));
         command
@@ -112,7 +119,10 @@ impl TestApp {
             client: reqwest::blocking::Client::new(),
         };
         wait_health(port, 20);
-        app.post("/api/providers",&json!({"name":"mock","baseUrl":format!("http://127.0.0.1:{provider_port}/v1"),"model":"mock","enabled":true,"toolMode":tool_mode}));
+        let providers = app.get("/api/providers");
+        if providers.as_array().is_none_or(|items| items.is_empty()) {
+            app.post("/api/providers",&json!({"name":"mock","baseUrl":format!("http://127.0.0.1:{provider_port}/v1"),"model":"mock","enabled":true,"toolMode":tool_mode}));
+        }
         app
     }
     fn post(&self, path: &str, body: &Value) -> Value {
@@ -144,6 +154,35 @@ impl TestApp {
             .unwrap()
             .text()
             .unwrap()
+    }
+
+    fn chat_async(&self, body: &Value) -> std::thread::JoinHandle<String> {
+        let client = self.client.clone();
+        let url = format!("{}/api/chat", self.base);
+        let body = body.clone();
+        std::thread::spawn(move || {
+            client
+                .post(url)
+                .json(&body)
+                .send()
+                .map(|response| response.text().unwrap_or_default())
+                .unwrap_or_default()
+        })
+    }
+
+    fn wait_pending_approval(&self, seconds: u64) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        while Instant::now() < deadline {
+            if let Some(record) = self
+                .get("/api/approvals")
+                .as_array()
+                .and_then(|items| items.first())
+            {
+                return record.clone();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("approval was not requested");
     }
 }
 
@@ -336,6 +375,79 @@ fn persistent_room_http_flow_keeps_owner_once_and_shares_peer_context() {
             .as_str()
             .unwrap_or("")
             .contains("Alice의 실제 의견")));
+    drop(captured);
+    // One owner message is one root task; each speaker is an attempt, not a
+    // new independent task.
+    let session_id = room["sessionId"].as_str().unwrap();
+    let executions = app.get("/api/executions");
+    let room_runs = executions
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|execution| execution["sessionId"] == session_id)
+        .collect::<Vec<_>>();
+    assert_eq!(room_runs.len(), 2, "{executions}");
+    let task_id = room_runs[0]["taskId"].as_str().unwrap();
+    assert!(room_runs
+        .iter()
+        .all(|execution| execution["taskId"] == task_id));
+    let task = app.get(&format!("/api/tasks/{task_id}"));
+    assert_eq!(task["id"], task_id);
+    assert_eq!(task["contract"]["family"], "room");
+    assert_eq!(task["contract"]["source"], "owner");
+    assert_eq!(task["sourceMessageId"], rows[0]["id"]);
+    assert_eq!(task["attempts"].as_array().unwrap().len(), 2);
+    let speakers = task["attempts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|attempt| attempt["agentId"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(speakers, vec!["a", "b"]);
+    assert_eq!(task["attempts"][0]["verificationOwner"], "self");
+}
+
+#[test]
+fn derived_turns_cannot_forge_or_reuse_a_stale_root_task() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"확인했습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let session = app.post("/api/sessions", &json!({"title":"task scope"}));
+    let session_id = session["id"].as_str().unwrap();
+
+    let forged = app.chat(&json!({
+        "sessionId": session_id,
+        "input": "다른 작업에 붙어보자",
+        "taskId": "forged-root",
+        "autoLearning": false
+    }));
+    assert!(forged.contains("error"), "{forged}");
+
+    let first = app.chat(&json!({
+        "sessionId": session_id,
+        "input": "첫 번째 작업",
+        "autoLearning": false
+    }));
+    assert!(first.contains("확인했습니다."), "{first}");
+    let executions = app.get("/api/executions");
+    let execution = executions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|execution| execution["sessionId"] == session_id)
+        .expect("execution");
+    let task_id = execution["taskId"].as_str().unwrap();
+
+    let stale = app.chat(&json!({
+        "sessionId": session_id,
+        "input": "낡은 계약으로 실행",
+        "taskId": task_id,
+        "taskRevision": "stale-revision",
+        "autoLearning": false
+    }));
+    assert!(stale.contains("revision"), "{stale}");
 }
 
 #[test]
@@ -378,6 +490,77 @@ static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {
     TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[test]
+fn approval_is_operation_bound_and_survives_restart() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let finished = request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["role"] == "tool");
+        if finished {
+            vec![
+                json!({"choices":[{"delta":{"content":"저장했습니다."},"finish_reason":"stop"}]}),
+            ]
+        } else {
+            vec![
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"durable-write","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"durable.txt\",\"content\":\"DURABLE-OK\"}"}}]},"finish_reason":"tool_calls"}]}),
+            ]
+        }
+    });
+    let app = TestApp::new(port, "native");
+    let root = app._root.clone();
+    let handle = app.chat_async(&json!({
+        "input":"durable.txt 파일을 만들어줘",
+        "toolsEnabled":true,
+        "autoLearning":false
+    }));
+    let pending = app.wait_pending_approval(20);
+    assert_eq!(pending["status"], "pending");
+    assert!(pending["runId"].as_str().is_some_and(|value| !value.is_empty()));
+    assert!(pending["operationId"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+    assert_eq!(
+        pending["argsDigest"].as_str().map(str::len),
+        Some(32),
+        "approval must bind the exact tool arguments"
+    );
+    assert!(
+        !root.join("durable.txt").exists(),
+        "tool ran before approval"
+    );
+    let session_id = pending["sessionId"].as_str().unwrap().to_string();
+    drop(app);
+    let _ = handle.join();
+
+    // Restart on the same data root: the pending approval is still there and
+    // can be decided without a live waiter.
+    let app = TestApp::from_root(port, "native", root.clone(), &[]);
+    let pending = app.wait_pending_approval(10);
+    let id = pending["id"].as_str().unwrap().to_string();
+    let resolved = app.post("/api/approvals", &json!({"id":id,"allow":true}));
+    assert_eq!(resolved["resolved"], true, "{resolved}");
+    assert_eq!(resolved["resumed"], false, "{resolved}");
+    assert!(!root.join("durable.txt").exists());
+
+    // A retry in the same session with identical arguments consumes the
+    // orphaned approval exactly once.
+    let stream = app.chat(&json!({
+        "sessionId":session_id,
+        "input":"durable.txt 파일을 만들어줘",
+        "toolsEnabled":true,
+        "autoLearning":false
+    }));
+    assert_eq!(
+        std::fs::read_to_string(root.join("durable.txt")).unwrap_or_default(),
+        "DURABLE-OK",
+        "{stream}"
+    );
+    assert!(app.get("/api/approvals").as_array().unwrap().is_empty());
 }
 
 fn free_port() -> u16 {
@@ -1605,6 +1788,72 @@ fn harness_assisted_executes_dag_nodes_through_the_common_dispatch() {
 
     let _ = std::fs::remove_file(app._root.join("harness_report.txt"));
     let _ = std::fs::remove_file(app._root.join("harness_audit.txt"));
+    let disabled = app.post("/api/sessions", &json!({"title":"harness disabled"}));
+    let disabled_id = disabled["id"].as_str().unwrap();
+    let disabled_stream = app.chat(&json!({
+        "sessionId": disabled_id,
+        "input": "harness_report.txt 파일을 만들고 내용을 REPORT-OK로 저장해.",
+        "toolsEnabled": false,
+        "autoLearning": false
+    }));
+    assert!(!disabled_stream.contains("error"), "{disabled_stream}");
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("harness_audit.txt")).unwrap(),
+        "audit-harness"
+    );
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("harness_report.txt")).unwrap(),
+        "REPORT-OK"
+    );
+    let executions = app.get("/api/executions");
+    let disabled_execution = executions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|execution| execution["sessionId"] == disabled_id)
+        .expect("disabled execution");
+    assert_eq!(disabled_execution["taskOutcome"], "succeeded");
+    let disabled_operations = app.get(&format!(
+        "/api/executions/{}/operations",
+        disabled_execution["id"].as_str().unwrap()
+    ));
+    assert!(disabled_operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|operation| operation["origin"] == "procedure"));
+
+    let _ = std::fs::remove_file(app._root.join("harness_report.txt"));
+    let _ = std::fs::remove_file(app._root.join("harness_audit.txt"));
+    let blocked = app.post("/api/sessions", &json!({"title":"harness execution blocked"}));
+    let blocked_id = blocked["id"].as_str().unwrap();
+    let blocked_stream = app.chat(&json!({
+        "sessionId": blocked_id,
+        "input": "harness_report.txt 파일을 만들고 내용을 REPORT-OK로 저장해.",
+        "toolsEnabled": true,
+        "toolsExecutionEnabled": false,
+        "autoLearning": false
+    }));
+    assert!(blocked_stream.contains("error"), "{blocked_stream}");
+    assert!(!app._root.join("harness_report.txt").exists());
+    assert!(!app._root.join("harness_audit.txt").exists());
+    let executions = app.get("/api/executions");
+    let blocked_execution = executions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|execution| execution["sessionId"] == blocked_id)
+        .expect("blocked execution");
+    let blocked_operations = app.get(&format!(
+        "/api/executions/{}/operations",
+        blocked_execution["id"].as_str().unwrap()
+    ));
+    assert!(!blocked_operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|operation| operation["origin"] == "procedure"));
+
     let post = app.post("/api/sessions", &json!({"title":"harness post"}));
     let post_id = post["id"].as_str().unwrap();
     let stream = app.chat(&json!({

@@ -453,12 +453,16 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
             .and_then(|value| value.as_str())
             .map(str::to_string),
         attachment_ids: Vec::new(),
-        tools_enabled: input["toolsEnabled"].as_bool().unwrap_or(true),
+        tools_enabled: input["toolsEnabled"].as_bool().unwrap_or(true),tools_execution_enabled: input["toolsExecutionEnabled"].as_bool().unwrap_or(true),
         thinking: input["thinking"].as_bool(),
         auto_learning: false,
         reasoning_effort: input["reasoningEffort"].as_str().map(str::to_string),
         reasoning_language: None,
         system_override: None,
+        task_id: None,
+        parent_task_id: None,
+        task_revision: None,
+        verification_owner: None,
     };
 
     let message = run_quiet(&context.state, &request).await?;

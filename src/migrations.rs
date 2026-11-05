@@ -126,6 +126,10 @@ fn interrupted_approvals(state: &AppState) -> Result<(), String> {
             continue;
         }
         approval["status"] = json!("interrupted");
+        // The live waiter died with the process. The decision can still be
+        // recorded here and consumed once by an identical retry, but the
+        // original operation is never restarted implicitly.
+        approval["orphaned"] = json!(true);
         approval["reason"] = json!("백엔드가 재시작되어 실행이 중단되었습니다.");
         state
             .store

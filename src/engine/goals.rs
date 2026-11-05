@@ -128,6 +128,31 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         baseline_checks(state, checks)
     });
     goal["acceptanceChecks"] = criteria.clone();
+    let task_id = goal["taskId"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("goal-{goal_id}"));
+    goal["taskId"] = json!(task_id);
+    let root = crate::engine::episode::start_root(
+        state,
+        crate::engine::episode::RootSpec {
+            task_id: &task_id,
+            intent: &text,
+            family: "goal",
+            source: "owner",
+            source_message_id: goal["sourceMessageId"].as_str(),
+            scope: json!({"partition": "local", "sessionId": session_id}),
+            mandatory: criteria
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+        },
+    );
+    let task_revision = root
+        .as_ref()
+        .and_then(crate::engine::episode::contract_revision)
+        .map(str::to_string);
     state
         .store
         .put("goal", &goal)
@@ -185,7 +210,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             session_id:Some(session_id.clone()),
             input:format!("목표: {text}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n다음 단계를 실제 도구로 수행하고 검증하세요. 말로만 완료했다고 하지 마세요.",gaps.join("\n"),tail(&transcript,6000)),
             agent_id:agent_id.clone(),provider_id:Some(provider_id.clone()).filter(|s| !s.is_empty()),model:Some(model.clone()).filter(|s| !s.is_empty()),
-            attachment_ids: Vec::new(),tools_enabled:true,thinking:None,auto_learning:false,reasoning_effort:None,reasoning_language:None,
+            attachment_ids: Vec::new(),tools_enabled:true,tools_execution_enabled:true,thinking:None,auto_learning:false,reasoning_effort:None,reasoning_language:None,
+            task_id:Some(task_id.clone()),parent_task_id:Some(task_id.clone()),task_revision:task_revision.clone(),verification_owner:Some("parent".into()),
             system_override:Some("You are executing a durable autonomous goal. Use real tools and verify actual results. Never claim a result that a tool did not produce. Acceptance checks are enforced by the Rust harness.".into()),
         };
         let (outcome, stats) = run_quiet_outcome(state, &request).await;
@@ -384,6 +410,15 @@ fn finish(
         .store
         .get("goal", id)
         .unwrap_or_else(|| json!({}));
+    if let Some(task_id) = goal["taskId"].as_str().filter(|id| !id.is_empty()) {
+        let final_status = goal["status"].as_str().unwrap_or(status);
+        crate::engine::episode::set_root_outcome(
+            &context.state,
+            task_id,
+            crate::engine::episode::goal_outcome(final_status),
+            &gaps,
+        );
+    }
     context.state.store.audit(
         "goal.finished",
         json!({"goalId":id,"status":status,"iterations":goal.get("iterations")}),
@@ -645,6 +680,23 @@ mod tests {
             state.store.get("goal", "g").unwrap()["acceptanceChecks"][0]["type"],
             "file_changed"
         );
+        let goal = state.store.get("goal", "g").unwrap();
+        let task_id = goal["taskId"].as_str().unwrap();
+        let episode = state.store.get("task_episode", task_id).unwrap();
+        assert_eq!(episode["contract"]["family"], "goal");
+        assert_eq!(episode["contract"]["source"], "owner");
+        assert_eq!(episode["contract"]["intent"], "write report.txt");
+        assert_eq!(episode["attempts"].as_array().unwrap().len(), 1);
+        assert_eq!(episode["attempts"][0]["verificationOwner"], "parent");
+        assert_eq!(episode["rootOutcome"], "succeeded");
+        assert_eq!(episode["rootFinal"], true);
+        let execution = state.store.all("execution")[0].clone();
+        assert_eq!(execution["taskId"], task_id);
+        assert_eq!(execution["parentTaskId"], task_id);
+        // The parent goal owns final verification; the child attempt must not
+        // claim an independent verified-success sample.
+        assert_eq!(execution["taskOutcome"], "answered_unverified");
+        assert_eq!(state.store.count("success_experience_marker"), 0);
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

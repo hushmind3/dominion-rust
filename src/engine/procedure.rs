@@ -655,6 +655,30 @@ fn resolve_binding(
     }
 }
 
+pub fn operation_succeeded(operation: &Value) -> bool {
+    if operation["status"].as_str() != Some("completed") {
+        return false;
+    }
+    let result = &operation["result"];
+    if !result["error"].is_null() {
+        return false;
+    }
+    if result["success"].as_bool() == Some(false) {
+        return false;
+    }
+    if let Some(code) = result["exitCode"].as_i64() {
+        if code != 0 {
+            return false;
+        }
+    }
+    if let Some(code) = result["status"].as_u64() {
+        if code >= 400 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Selects the next ready DAG node and resolves only literal, owner/input,
 /// or previously verified node-result bindings.
 pub fn ready_intent(
@@ -671,9 +695,20 @@ pub fn ready_intent(
     if nodes.is_empty() {
         return None;
     }
+    let Some(strategy_id) = strategy["id"].as_str() else {
+        return None;
+    };
+    let Some(revision) = strategy["revision"].as_str() else {
+        return None;
+    };
     let completed = operations
         .iter()
-        .filter(|operation| operation["origin"].as_str() == Some("procedure"))
+        .filter(|operation| {
+            operation["origin"].as_str() == Some("procedure")
+                && operation["procedureStrategyId"].as_str() == Some(strategy_id)
+                && operation["procedureRevision"].as_str() == Some(revision)
+                && operation_succeeded(operation)
+        })
         .filter_map(|operation| operation["procedureNodeId"].as_str())
         .collect::<std::collections::HashSet<_>>();
     for node in nodes {
@@ -798,6 +833,54 @@ pub fn evaluate(strategy: &Value, operations: &[Value], workspace: &Path) -> Val
                 "kind": "after",
                 "message": format!("후속 조건을 충족하지 못했습니다: {}", condition),
             }));
+        }
+    }
+
+    let nodes = verification["nodes"].as_array().cloned().unwrap_or_default();
+    if !nodes.is_empty() {
+        triggered = true;
+        let strategy_id = strategy["id"].as_str().unwrap_or("");
+        let revision = strategy["revision"].as_str().unwrap_or("");
+        let mut completed_nodes = std::collections::HashMap::new();
+        for (index, operation) in operations.iter().enumerate() {
+            if operation["origin"].as_str() != Some("procedure")
+                || operation["procedureStrategyId"].as_str() != Some(strategy_id)
+                || operation["procedureRevision"].as_str() != Some(revision)
+                || !operation_succeeded(operation)
+            {
+                continue;
+            }
+            if let Some(node) = operation["procedureNodeId"].as_str() {
+                completed_nodes.insert(node.to_string(), index);
+            }
+        }
+        for node in &nodes {
+            let id = node["id"].as_str().unwrap_or("");
+            let ok = completed_nodes.contains_key(id);
+            checks.push(json!({ "kind":"dag_node", "node":id, "ok":ok }));
+            if !ok {
+                violations.push(json!({
+                    "kind":"dag_node",
+                    "message": format!("완료 영수증이 없는 DAG node입니다: {id}")
+                }));
+            }
+        }
+        for edge in verification["edges"].as_array().into_iter().flatten() {
+            let from = edge["from"].as_str().unwrap_or("");
+            let to = edge["to"].as_str().unwrap_or("");
+            let ok = match (completed_nodes.get(from), completed_nodes.get(to)) {
+                (Some(from), Some(to)) => from < to,
+                _ => false,
+            };
+            checks.push(json!({
+                "kind":"dag_edge", "from":from, "to":to, "ok":ok
+            }));
+            if !ok {
+                violations.push(json!({
+                    "kind":"dag_edge",
+                    "message": format!("DAG edge가 순서대로 완료되지 않았습니다: {from}->{to}")
+                }));
+            }
         }
     }
 
@@ -971,6 +1054,7 @@ mod tests {
     fn ready_nodes_bind_only_verified_values() {
         let strategy = json!({
             "id":"harness",
+            "revision":"r1",
             "verification": normalize(&json!({
                 "type":"procedure",
                 "appliesTo":{"paths":["out.txt"]},
@@ -992,11 +1076,76 @@ mod tests {
             json!({"path":"audit.txt","written":true}),
         );
         let (id, _, arguments) =
-            ready_intent(&strategy, &[json!({"origin":"procedure","procedureNodeId":"prep"})], "out.txt", &results)
+            ready_intent(
+                &strategy,
+                &[json!({
+                    "origin":"procedure","procedureNodeId":"prep","status":"completed",
+                    "procedureStrategyId":"harness","procedureRevision":"r1"
+                })],
+                "out.txt",
+                &results,
+            )
                 .expect("second node");
         assert_eq!(id, "write");
         assert_eq!(arguments["path"], "audit.txt");
         assert_eq!(arguments["content"], "bound");
+    }
+
+    #[test]
+    fn completed_operation_with_error_is_not_success() {
+        let strategy = json!({
+            "id":"harness",
+            "revision":"r1",
+            "verification": normalize(&json!({
+                "type":"procedure",
+                "nodes":[
+                    {"id":"prep","tool":"workspace_write","arguments":{"path":"audit.txt","content":"ok"}},
+                    {"id":"write","tool":"workspace_write","arguments":{"path":"out.txt","content":"ok"}}
+                ],
+                "edges":[{"from":"prep","to":"write"}]
+            }))
+        });
+        let (id, _, _) = ready_intent(
+            &strategy,
+            &[json!({
+                "origin":"procedure","procedureNodeId":"prep","status":"completed",
+                "procedureStrategyId":"harness","procedureRevision":"r1",
+                "result":{"error":"Denied by the user"}
+            })],
+            "out.txt",
+            &std::collections::HashMap::new(),
+        )
+        .expect("errored prerequisite must be retried");
+        assert_eq!(id, "prep");
+    }
+
+    #[test]
+    fn failed_prerequisite_is_not_completed() {
+        let strategy = json!({
+            "id":"harness",
+            "revision":"r1",
+            "verification": normalize(&json!({
+                "type":"procedure",
+                "nodes":[
+                    {"id":"prep","tool":"workspace_write","arguments":{"path":"audit.txt","content":"ok"}},
+                    {"id":"write","tool":"workspace_write","arguments":{"path":"out.txt","content":"ok"}}
+                ],
+                "edges":[{"from":"prep","to":"write"}]
+            }))
+        });
+        let mut results = std::collections::HashMap::new();
+        results.insert("prep".into(), json!({"path":"audit.txt"}));
+        let (id, _, _) = ready_intent(
+            &strategy,
+            &[json!({
+                "origin":"procedure","procedureNodeId":"prep","status":"failed",
+                "result":{"error":"denied"}
+            })],
+            "out.txt",
+            &results,
+        )
+        .expect("failed prerequisite must be retried");
+        assert_eq!(id, "prep");
     }
 
     #[test]

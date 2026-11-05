@@ -40,11 +40,25 @@ pub struct TurnRequest {
     pub provider_id: Option<String>,
     pub model: Option<String>,
     pub tools_enabled: bool,
+    /// Explicit overall tool execution permission. `tools_enabled` only
+    /// controls whether the model may call tools directly.
+    pub tools_execution_enabled: bool,
     pub thinking: Option<bool>,
     pub reasoning_effort: Option<String>,
     pub reasoning_language: Option<String>,
     pub auto_learning: bool,
     pub system_override: Option<String>,
+    /// Root task episode this turn attempts. Derived prompts (goal iterations,
+    /// room speakers) must attach to an existing root instead of creating a
+    /// new owner instruction.
+    pub task_id: Option<String>,
+    pub parent_task_id: Option<String>,
+    /// Frozen contract revision the caller believes it is executing.
+    pub task_revision: Option<String>,
+    /// `parent` means the parent lifecycle owns final verification (a goal
+    /// reviewer). The child still runs deterministic checks and records
+    /// evidence, but does not call a second semantic reviewer.
+    pub verification_owner: Option<String>,
 }
 
 impl TurnRequest {
@@ -77,6 +91,10 @@ impl TurnRequest {
                 .get("toolsEnabled")
                 .and_then(|item| item.as_bool())
                 .unwrap_or(true),
+            tools_execution_enabled: value
+                .get("toolsExecutionEnabled")
+                .and_then(|item| item.as_bool())
+                .unwrap_or(true),
             thinking: value.get("thinking").and_then(|item| item.as_bool()),
             reasoning_effort: match string("reasoningEffort") {
                 Some(effort)
@@ -100,6 +118,10 @@ impl TurnRequest {
                 .and_then(|item| item.as_bool())
                 .unwrap_or(true),
             system_override: string("systemOverride"),
+            task_id: string("taskId"),
+            parent_task_id: string("parentTaskId"),
+            task_revision: string("taskRevision"),
+            verification_owner: string("verificationOwner"),
         })
     }
 }

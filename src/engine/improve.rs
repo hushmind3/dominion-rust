@@ -461,9 +461,12 @@ pub fn execution_updates(
         {
             continue;
         }
-        let mut uses = improvement["uses"].as_u64().unwrap_or(0);
-        let mut successes = improvement["successes"].as_u64().unwrap_or(0);
-        let mut failures = improvement["failures"].as_u64().unwrap_or(0);
+        let original_uses = improvement["uses"].as_u64().unwrap_or(0);
+        let original_successes = improvement["successes"].as_u64().unwrap_or(0);
+        let original_failures = improvement["failures"].as_u64().unwrap_or(0);
+        let mut uses = original_uses;
+        let mut successes = original_successes;
+        let mut failures = original_failures;
         if improvement["kind"].as_str() == Some("tool_policy") {
             let Some(tool) = improvement["tool"].as_str() else {
                 continue;
@@ -516,6 +519,14 @@ pub fn execution_updates(
         improvement["uses"] = json!(uses);
         improvement["successes"] = json!(successes);
         improvement["failures"] = json!(failures);
+        // The counters above are absolute values computed from a stale read.
+        // `finalize_once` applies these deltas atomically so two attempts that
+        // finish concurrently cannot overwrite each other's observation.
+        improvement["__counterDelta"] = json!({
+            "uses": uses as i64 - original_uses as i64,
+            "successes": successes as i64 - original_successes as i64,
+            "failures": failures as i64 - original_failures as i64,
+        });
         improvement["lastObservedAt"] = json!(chrono::Utc::now().to_rfc3339());
         let mut applied_ids = improvement["appliedExecutionIds"]
             .as_array()
@@ -554,7 +565,10 @@ pub fn execution_updates(
 pub fn record_execution(state: &AppState, execution: &Value) {
     match execution_updates(state, execution) {
         Ok(updates) => {
-            for saved in updates {
+            for mut saved in updates {
+                if let Some(object) = saved.as_object_mut() {
+                    object.remove("__counterDelta");
+                }
                 let rolled_back = saved["rolledBackAt"].is_string();
                 let id = saved["id"].clone();
                 if let Some(stored) = state.store.put("improvement", &saved) {

@@ -6,6 +6,7 @@ pub mod settings;
 pub mod goals;
 pub mod improvements;
 pub mod executions;
+pub mod tasks;
 pub mod experience;
 pub mod memory;
 pub mod extensions;
@@ -13,6 +14,7 @@ pub mod approvals;
 pub mod sessions;
 pub mod agents;
 pub mod providers;
+pub mod benchmark;
 pub mod chat;
 pub mod jobs;
 pub mod system;
@@ -44,6 +46,7 @@ pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         // core
         .route("/api/health", get(system::health))
+        .route("/api/benchmark/strategies", post(benchmark::seed_strategy))
         .route("/api/benchmark/identity", get(system::benchmark_identity))
         .route("/api/status", get(system::status))
         .route(
@@ -57,6 +60,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/jobs",get(jobs::list).post(jobs::create))
         .route("/api/jobs/:id",get(jobs::one))
         .route("/api/jobs/:id/cancel",post(jobs::cancel))
+        .route("/api/tasks", get(tasks::list))
+        .route("/api/tasks/:id", get(tasks::one))
         .route("/api/tools", get(extensions::list_tools))
         .route("/api/policy", get(approvals::get_policy).post(approvals::save_policy))
         .route("/api/audit", get(system::audit_log))

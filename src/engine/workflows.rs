@@ -133,7 +133,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             provider_id: optional(step, "providerId"),
             model: optional(step, "model"),
             attachment_ids: Vec::new(),
-            tools_enabled: true,
+            tools_enabled: true,tools_execution_enabled: true,
             thinking: None,
             auto_learning: false,
             reasoning_effort: None,
@@ -147,6 +147,10 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                     .and_then(|value| value.as_str())
                     .unwrap_or("Workflow")
             )),
+            task_id: None,
+            parent_task_id: None,
+            task_revision: None,
+            verification_owner: None,
         };
 
         let message = match run_quiet(state, &request).await {

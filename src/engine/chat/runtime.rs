@@ -116,11 +116,36 @@ async fn run_turn_with_policy(
         crate::engine::improve::injected_ids(state, &improvement_scope);
     let strategy_candidates =
         crate::engine::improve::active_values(state, &improvement_scope);
+    let execution_id = uuid::Uuid::new_v4().to_string();
+    // Derived prompts (goal iterations, room speakers) attach to the root the
+    // parent lifecycle created. Only an owner-facing chat turn creates a root.
+    let task_id = request.task_id.clone().unwrap_or_else(|| execution_id.clone());
+    let parent_task_id = request.parent_task_id.clone();
+    let verification_owner = request
+        .verification_owner
+        .clone()
+        .unwrap_or_else(|| "self".into());
+    if request.task_id.is_some() {
+        let Some(episode) = state.store.get("task_episode", &task_id) else {
+            return Err("연결할 상위 작업(task)을 찾을 수 없습니다.".into());
+        };
+        if episode["contract"]["scope"]["sessionId"].as_str() != Some(session_id.as_str()) {
+            return Err("상위 작업이 이 세션에 속하지 않습니다.".into());
+        }
+        if let Some(expected) = request.task_revision.as_deref() {
+            if episode["contract"]["revision"].as_str() != Some(expected) {
+                return Err("상위 작업의 계약 revision이 변경되었습니다.".into());
+            }
+        }
+    }
     let execution = state
         .store
         .put(
             "execution",
             &json!({
+                "id": execution_id,
+                "taskId": task_id,
+                "parentTaskId": parent_task_id,
                 "sessionId": session_id,
                 "agentId": request.agent_id,
                 "providerId": request.provider_id,
@@ -139,35 +164,54 @@ async fn run_turn_with_policy(
             }),
         )
         .ok_or("실행 기록을 저장할 수 없습니다.")?;
-    let execution_id = execution
-        .get("id")
-        .and_then(|value| value.as_str())
-        .filter(|id| !id.is_empty())
-        .ok_or("실행 ID가 없습니다.")?
-        .to_string();
     state.bus.record("execution", &execution);
 
+    if state.store.get("task_episode", &task_id).is_none() {
+        crate::engine::episode::start_root(
+            state,
+            crate::engine::episode::RootSpec {
+                task_id: &task_id,
+                intent: &request.input,
+                family: "chat",
+                source: "owner",
+                source_message_id: None,
+                scope: json!({"partition": "local", "sessionId": session_id}),
+                mandatory: Vec::new(),
+            },
+        );
+    }
+    let _ = crate::engine::episode::link_attempt(
+        state,
+        &task_id,
+        &execution_id,
+        request.agent_id.as_deref(),
+        &verification_owner,
+    );
     {
         use crate::engine::adaptation::types::{
             CandidateScore, Decision, SelectionSnapshot, StrategyRevision,
             TaskContract, revision_hash,
         };
-        let contract = TaskContract {
-            task_id: execution_id.clone(),
-            revision: revision_hash(&json!({
-                "sessionId": session_id,
-                "input": request.input,
-                "agentId": request.agent_id,
-            })),
-            source: "owner".into(),
-            scope: json!({"sessionId": session_id}),
-            intent: request.input.clone(),
-            family: "chat".into(),
-            mandatory: Vec::new(),
-            bindings: json!({}),
-            permissions: json!({}),
-            budget: json!({"maxRounds": MAX_ROUNDS, "maxTools": MAX_TOOL_CALLS}),
-        };
+        let contract = state
+            .store
+            .get("task_episode", &task_id)
+            .and_then(|episode| serde_json::from_value::<TaskContract>(episode["contract"].clone()).ok())
+            .unwrap_or_else(|| TaskContract {
+                task_id: task_id.clone(),
+                revision: revision_hash(&json!({
+                    "taskId": task_id,
+                    "sessionId": session_id,
+                    "input": request.input,
+                })),
+                source: "owner".into(),
+                scope: json!({"sessionId": session_id}),
+                intent: request.input.clone(),
+                family: "chat".into(),
+                mandatory: Vec::new(),
+                bindings: json!({}),
+                permissions: json!({}),
+                budget: json!({"maxRounds": MAX_ROUNDS, "maxTools": MAX_TOOL_CALLS}),
+            });
         let strategies = strategy_candidates
             .iter()
             .filter_map(|strategy| {
@@ -191,15 +235,19 @@ async fn run_turn_with_policy(
                 Some(revision)
             })
             .collect::<Vec<_>>();
+        // The legacy selector is deterministic: it always plays the first
+        // applied improvement. Record that honestly as a one-hot propensity
+        // instead of a uniform 1/N distribution that no policy ever sampled.
         let candidates = applied_improvement_ids
             .iter()
-            .map(|id| CandidateScore {
+            .enumerate()
+            .map(|(index, id)| CandidateScore {
                 arm_id: id.clone(),
                 mean: 0.5,
                 uncertainty: 0.5,
                 cost: 0.0,
                 risk: 0.0,
-                probability: 1.0 / applied_improvement_ids.len().max(1) as f64,
+                probability: if index == 0 { 1.0 } else { 0.0 },
             })
             .collect::<Vec<_>>();
         let selected = applied_improvement_ids
@@ -208,7 +256,7 @@ async fn run_turn_with_policy(
             .unwrap_or_else(|| "none".into());
         let decision = Decision {
             id: execution_id.clone(),
-            task_id: execution_id.clone(),
+            task_id: task_id.clone(),
             slot: "strategy".into(),
             context: json!({"sessionId": session_id}),
             candidates,
@@ -217,36 +265,59 @@ async fn run_turn_with_policy(
             policy_revision: "legacy".into(),
             rng_seed: 0,
         };
+        let context_items: Vec<Value> = Vec::new();
+        let memory_watermark = String::new();
         let snapshot = SelectionSnapshot {
             contract: contract.clone(),
-            strategies,
+            strategies: strategies.clone(),
             decisions: vec![decision.clone()],
-            context_items: Vec::new(),
-            memory_watermark: "".into(),
-            snapshot_hash: revision_hash(&json!({"executionId": execution_id})),
+            context_items: context_items.clone(),
+            memory_watermark: memory_watermark.clone(),
+            snapshot_hash: revision_hash(&json!({
+                "contract": contract,
+                "strategies": strategies,
+                "decisions": [decision.clone()],
+                "contextItems": context_items,
+                "memoryWatermark": memory_watermark,
+                "verificationOwner": verification_owner,
+            })),
         };
-        if contract.validate().is_ok()
-            && decision.validate().is_ok()
-            && snapshot.validate().is_ok()
+        // A turn without a persisted selection snapshot cannot be replayed or
+        // audited. Treat storage/validation failure as a failed attempt rather
+        // than silently running with an unrecorded policy decision.
+        if contract.validate().is_err()
+            || decision.validate().is_err()
+            || snapshot.validate().is_err()
         {
-            let _ = state.store.put(
-                "task_episode",
-                &json!({"id": execution_id, "contract": contract, "attemptId": execution_id}),
+            return abort_before_run(
+                state,
+                &execution_id,
+                "실행 선택 스냅샷이 계약을 충족하지 못했습니다.",
             );
-            let _ = state.store.put(
-                "strategy_decision",
-                &serde_json::to_value(&decision).unwrap_or_else(|_| json!({})),
-            );
-            let _ = state.store.put(
-                "selection_snapshot",
-                &serde_json::to_value(&snapshot).unwrap_or_else(|_| json!({})),
+        }
+        let decision_saved = state.store.put(
+            "strategy_decision",
+            &serde_json::to_value(&decision).unwrap_or_else(|_| json!({})),
+        );
+        if decision_saved.is_none() {
+            return abort_before_run(state, &execution_id, "정책 결정을 저장할 수 없습니다.");
+        }
+        let snapshot_saved = state.store.put(
+            "selection_snapshot",
+            &serde_json::to_value(&snapshot).unwrap_or_else(|_| json!({})),
+        );
+        if snapshot_saved.is_none() {
+            return abort_before_run(
+                state,
+                &execution_id,
+                "실행 선택 스냅샷을 저장할 수 없습니다.",
             );
         }
     }
 
     let metrics = std::sync::Mutex::new(Metrics::default());
     let result = tokio::select! {
-        result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, record_input, generation, source_message_id)) =>
+        result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
             result.unwrap_or_else(|_| Err("실행 시간 제한(10분)을 초과했습니다.".into())),
         _ = wait_cancelled(state, &session_id, generation) => Err("실행이 중단되었습니다.".into()),
         _ = tx.closed() => Err("응답 연결이 종료되어 실행이 중단되었습니다.".into()),
@@ -303,6 +374,7 @@ async fn run_turn_body(
     session_id: &str,
     metrics: &std::sync::Mutex<Metrics>,
     execution_id: &str,
+    task_id: &str,
     record_input: bool,
     generation: u64,
     source_message_id: Option<&str>,
@@ -329,14 +401,12 @@ async fn run_turn_body(
             }))
             .ok_or("사용자 메시지를 저장할 수 없습니다.")?;
         state.bus.message(&user_message);
-        if let Some(mut episode) = state.store.get("task_episode", execution_id) {
-            episode["sourceMessageId"] = user_message["id"].clone();
-            episode["ownerText"] = json!(request.input);
-            if let Some(contract) = episode["contract"].as_object_mut() {
-                contract["source"] = json!("owner");
-            }
-            state.store.put("task_episode", &episode);
-        }
+        crate::engine::episode::attach_source(
+            state,
+            task_id,
+            user_message["id"].as_str().unwrap_or(""),
+            &request.input,
+        );
         retitle_if_placeholder(state, &session, &request.input);
     }
     let reply_to = if let Some(id) = source_message_id {
@@ -370,14 +440,21 @@ async fn run_turn_body(
             .and_then(|message| message["content"].as_str().map(str::to_string)),
         None => Some(request.input.clone()),
     };
-    let acceptance = acceptance_source
-        .as_deref()
-        .and_then(|text| prepare_owner_action(state, text));
+    let acceptance = if request.verification_owner.as_deref() == Some("parent") {
+        // The parent goal owns the final semantic review. The child still
+        // records operations, deterministic evidence and cancellation; it must
+        // not spend a second reviewer call on a synthesized derived prompt.
+        None
+    } else {
+        acceptance_source
+            .as_deref()
+            .and_then(|text| prepare_owner_action(state, text))
+    };
     let mut acceptance_retries = 0usize;
     let mut procedure_repairs = 0usize;
     let mut op_seq = 0u64;
 
-    let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
+    let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"taskId":task_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
 
     let provider = select_provider(state, request, &session)?;
     let system = super::context::system_prompt_with_snapshot(
@@ -404,15 +481,15 @@ async fn run_turn_body(
         }
     }
 
-    let mut tool_definitions = if request.tools_enabled {
+    let mut tool_definitions = if request.tools_enabled && request.tools_execution_enabled {
         tools::definitions()
     } else {
         Vec::new()
     };
-    if request.tools_enabled {
+    if request.tools_enabled && request.tools_execution_enabled {
         tool_definitions.extend(mcp::definitions(state).await);
     }
-    if request.tools_enabled && provider.tool_mode == "compat" {
+    if request.tools_enabled && request.tools_execution_enabled && provider.tool_mode == "compat" {
         // Weak/local models without native function calling get a text
         // protocol instead of silently losing tool access.
         let manual = tool_manual(&tool_definitions, &request.input).await;
@@ -444,7 +521,11 @@ async fn run_turn_body(
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED);
 
-    let harness_messages = run_harness_nodes(
+    // `toolsEnabled` controls whether the model may call tools. It is not an
+    // execution permission for the Rust harness; harness nodes use the same
+    // approval, cancellation and budget policy as model tool calls.
+    let harness_messages = if request.tools_execution_enabled {
+        run_harness_nodes(
         state,
         tx,
         &session,
@@ -455,9 +536,12 @@ async fn run_turn_body(
         metrics,
         &mut budget,
         &mut op_seq,
-        generation,
-    )
-    .await?;
+            generation,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
     messages.extend(harness_messages);
 
     for round in 0..MAX_ROUNDS {
@@ -511,7 +595,9 @@ async fn run_turn_body(
         }
         let mut completion = completion_result?;
 
-        if !request.tools_enabled && !completion.tool_calls.is_empty() {
+        if (!request.tools_enabled || !request.tools_execution_enabled)
+            && !completion.tool_calls.is_empty()
+        {
             return Err("도구가 비활성인 대화에서 모델이 도구 실행을 요청했습니다.".into());
         }
 
@@ -898,6 +984,8 @@ async fn run_turn_body(
                 provider.tool_mode == "compat",
                 "model",
                 None,
+                None,
+                None,
             )
             .await?;
             messages.push(json!({
@@ -1035,7 +1123,11 @@ async fn run_harness_nodes(
                 .filter(|operation| operation["runId"].as_str() == Some(execution_id))
                 .collect::<Vec<_>>();
             for operation in &operations {
-                if operation["origin"].as_str() == Some("procedure") {
+                if operation["origin"].as_str() == Some("procedure")
+                    && operation["procedureStrategyId"].as_str() == strategy["id"].as_str()
+                    && operation["procedureRevision"].as_str() == strategy["revision"].as_str()
+                    && crate::engine::procedure::operation_succeeded(operation)
+                {
                     if let Some(node) = operation["procedureNodeId"].as_str() {
                         results.insert(node.to_string(), operation["result"].clone());
                     }
@@ -1076,6 +1168,8 @@ async fn run_harness_nodes(
                 true,
                 "procedure",
                 Some(&node),
+                strategy["id"].as_str(),
+                strategy["revision"].as_str(),
             )
             .await?;
             results.insert(node.clone(), result);
@@ -1111,6 +1205,8 @@ async fn dispatch_tool_call(
     compat: bool,
     origin: &str,
     procedure_node: Option<&str>,
+    procedure_strategy: Option<&str>,
+    procedure_revision: Option<&str>,
 ) -> Result<(Value, bool, String), String> {
     let started_at = chrono::Utc::now().to_rfc3339();
     let tool_started = std::time::Instant::now();
@@ -1121,13 +1217,22 @@ async fn dispatch_tool_call(
     } else {
         tools::requires_approval(&call.name)
     };
+    let operation_id = format!("{execution_id}:{round}:{call_index}:{}", call.id);
     let allowed = if needs_approval {
-        request_approval(state, tx, session_id, &call.name, &arguments).await
+        request_approval(
+            state,
+            tx,
+            session_id,
+            &call.name,
+            &arguments,
+            execution_id,
+            &operation_id,
+        )
+        .await
     } else {
         true
     };
 
-    let operation_id = format!("{execution_id}:{round}:{call_index}:{}", call.id);
     state
         .store
         .put(
@@ -1136,6 +1241,8 @@ async fn dispatch_tool_call(
                 "id": operation_id, "runId": execution_id, "sessionId": session_id,
                 "callId": call.id, "tool": call.name, "arguments": arguments,
                 "opSeq": op_seq, "origin": origin, "procedureNodeId": procedure_node,
+                "procedureStrategyId": procedure_strategy,
+                "procedureRevision": procedure_revision,
                 "status": "running", "startedAt": started_at,
             }),
         )
@@ -1219,6 +1326,8 @@ async fn dispatch_tool_call(
                 "opSeq": op_seq,
                 "origin": origin,
                 "procedureNodeId": procedure_node,
+                "procedureStrategyId": procedure_strategy,
+                "procedureRevision": procedure_revision,
                 "status": if ok { "completed" } else { "failed" },
                 "startedAt": started_at,
                 "finishedAt": chrono::Utc::now().to_rfc3339(),
@@ -1366,6 +1475,94 @@ pub(super) fn tool_succeeded(value: &Value) -> bool {
             .is_none_or(|code| code < 400)
 }
 
+/// Overall compliance for an attempt. A single violated standing strategy must
+/// not be masked by another followed strategy in the same bundle.
+/// Evaluator version is separate from the payload hash, so re-running the same
+/// terminal attempt with a new evaluator is a new evaluation revision rather
+/// than a conflicting payload.
+const FINALIZATION_EVALUATOR_VERSION: &str = "finalize-semantic-v1";
+
+/// Immutable semantic content of a terminal attempt. Counters, timings and
+/// `finishedAt` are excluded: a retried finalization of the same attempt must
+/// produce the same hash even though those mutable fields differ.
+fn finalization_semantic_payload(record: &Value, operations: &[Value]) -> Value {
+    let mut normalized = operations
+        .iter()
+        .map(|operation| {
+            json!({
+                "id": operation["id"],
+                "runId": operation["runId"],
+                "tool": operation["tool"],
+                "arguments": operation["arguments"],
+                "origin": operation["origin"],
+                "procedureNodeId": operation["procedureNodeId"],
+                "procedureStrategyId": operation["procedureStrategyId"],
+                "procedureRevision": operation["procedureRevision"],
+                "status": operation["status"],
+                "result": operation["result"],
+                "outcomeUnknown": operation["outcomeUnknown"],
+            })
+        })
+        .collect::<Vec<_>>();
+    normalized.sort_by(|left, right| {
+        left["id"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(right["id"].as_str().unwrap_or(""))
+    });
+    json!({
+        "schemaVersion": 1,
+        "evaluatorVersion": FINALIZATION_EVALUATOR_VERSION,
+        "executionId": record["id"],
+        "sessionId": record["sessionId"],
+        "agentId": record["agentId"],
+        "request": record["request"],
+        "status": record["status"],
+        "taskOutcome": record["taskOutcome"],
+        "acceptancePassed": record["acceptancePassed"],
+        "acceptanceText": record["acceptanceText"],
+        "appliedImprovementIds": record["appliedImprovementIds"],
+        "strategyCompliance": record["strategyCompliance"],
+        "finalMessageId": record["finalMessageId"],
+        "operations": normalized,
+    })
+}
+
+fn finalization_payload_hash(record: &Value, operations: &[Value]) -> String {
+    crate::engine::memory::stable_id(&[
+        &finalization_semantic_payload(record, operations).to_string(),
+    ])
+}
+
+fn compliance_summary(
+    entries: &[Value],
+) -> crate::engine::adaptation::types::Compliance {
+    use crate::engine::adaptation::types::Compliance;
+    if entries.iter().any(|entry| {
+        matches!(entry["result"]["status"].as_str(), Some("unknown" | "invalid"))
+    }) {
+        return Compliance::Unknown;
+    }
+    if entries.iter().any(|entry| {
+        entry["applicable"] == true
+            && entry["result"]["triggered"] == true
+            && entry["result"]["followed"] != true
+    }) {
+        return Compliance::Violated;
+    }
+    if entries.iter().any(|entry| {
+        entry["applicable"] == true
+            && entry["result"]["triggered"] == true
+            && entry["result"]["followed"] == true
+    }) {
+        return Compliance::Followed;
+    }
+    if entries.iter().any(|entry| entry["applicable"] == true) {
+        return Compliance::NotTriggered;
+    }
+    Compliance::NotApplicable
+}
+
 fn standing_violation(execution: &Value) -> bool {
     execution["strategyCompliance"]
         .as_array()
@@ -1409,9 +1606,13 @@ fn record_success_experience(
     }
     let acceptance_text = record["acceptanceText"].as_str()?;
     let final_message_id = record["finalMessageId"].as_str()?;
-    let marker_id = format!("success-experience:{execution_id}");
+    // One verified success sample per root task. Nine room speakers reusing
+    // the same owner message are not nine independent successes.
+    let task_id = record["taskId"].as_str().unwrap_or(execution_id);
+    let marker_id = crate::engine::episode::success_marker_id(task_id);
     let marker = json!({
         "id": marker_id,
+        "taskId": task_id,
         "executionId": execution_id,
         "createdAt": chrono::Utc::now().to_rfc3339(),
     });
@@ -1460,6 +1661,22 @@ fn record_success_experience(
 
 /// The single terminal judgment for every turn path. `finalize_execution`
 /// remains as the implementation used by existing tests.
+/// Finalizes an attempt that could not start because a required pre-execution
+/// record (selection snapshot) was invalid or could not be persisted.
+fn abort_before_run(
+    state: &AppState,
+    execution_id: &str,
+    message: &str,
+) -> Result<Option<Value>, String> {
+    finish_attempt(
+        state,
+        execution_id,
+        &Err(message.to_string()),
+        &std::sync::Mutex::new(Metrics::default()),
+    );
+    Err(message.to_string())
+}
+
 pub(super) fn finish_attempt(
     state: &AppState,
     execution_id: &str,
@@ -1564,12 +1781,7 @@ pub(super) fn finalize_execution(
             return;
         }
     };
-    let operations_json = serde_json::to_string(&operations).unwrap_or_default();
-    let payload_hash = crate::engine::memory::stable_id(&[
-        &record.to_string(),
-        &operations_json,
-        &serde_json::to_string(&updates).unwrap_or_default(),
-    ]);
+    let payload_hash = finalization_payload_hash(&record, &operations);
     let marker_id = format!("execution:{execution_id}");
     let marker = json!({
         "id": marker_id,
@@ -1581,35 +1793,14 @@ pub(super) fn finalize_execution(
     });
 
     use crate::engine::adaptation::types::{
-        Compliance, EvidenceKind, EvidenceRef, LabelProvenance, Observation,
+        EvidenceKind, EvidenceRef, LabelProvenance, Observation,
         ObservationRegime,
     };
     let compliance_entries = record["strategyCompliance"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let compliance = if compliance_entries.iter().any(|entry| {
-        matches!(entry["result"]["status"].as_str(), Some("unknown" | "invalid"))
-    }) {
-        Compliance::Unknown
-    } else if compliance_entries.iter().any(|entry| {
-        entry["applicable"] == true
-            && entry["result"]["triggered"] == true
-            && entry["result"]["followed"] == true
-    }) {
-        Compliance::Followed
-    } else if compliance_entries.iter().any(|entry| {
-        entry["applicable"] == true && entry["result"]["triggered"] == true
-    }) {
-        Compliance::Violated
-    } else if compliance_entries
-        .iter()
-        .any(|entry| entry["applicable"] == true)
-    {
-        Compliance::NotTriggered
-    } else {
-        Compliance::NotApplicable
-    };
+    let compliance = compliance_summary(&compliance_entries);
     let evidence = operations
         .iter()
         .filter_map(|operation| {
@@ -1689,6 +1880,17 @@ pub(super) fn finalize_execution(
                 state.bus.record("execution", &saved);
             }
         }
+    }
+
+    // Link the attempt outcome to the root task. A room with many speakers,
+    // or a goal with many iterations, still has one root outcome.
+    if let Some(task_id) = record["taskId"].as_str() {
+        crate::engine::episode::complete_attempt(
+            state,
+            task_id,
+            execution_id,
+            task_outcome,
+        );
     }
 
     // A success experience requires Succeeded and a first-time finalization.
@@ -1791,6 +1993,80 @@ mod outcome_tests {
             "acceptanceText": acceptance_text,
             "strategyCompliance": []
         })
+    }
+
+    #[test]
+    fn finalization_hash_ignores_mutable_counters_and_timings() {
+        let base = json!({
+            "id":"e1","sessionId":"s","agentId":"a","request":"do it",
+            "status":"completed","taskOutcome":"succeeded",
+            "acceptancePassed":true,"acceptanceText":"check",
+            "appliedImprovementIds":["i1"],
+            "strategyCompliance":[],"finalMessageId":"m1",
+            "tokens":10,"toolCalls":1,"iterations":2,
+            "finishedAt":"2026-11-05T10:00:00Z","firstTokenMs":120
+        });
+        let operations = vec![json!({
+            "id":"o1","runId":"e1","tool":"workspace_write",
+            "arguments":{"path":"a.txt"},"origin":"model",
+            "status":"completed","result":{"ok":true},
+            "startedAt":"2026-11-05T09:59:00Z"
+        })];
+        let first = finalization_payload_hash(&base, &operations);
+        let mut retried = base.clone();
+        retried["tokens"] = json!(999);
+        retried["iterations"] = json!(7);
+        retried["finishedAt"] = json!("2026-11-05T10:05:00Z");
+        retried["firstTokenMs"] = json!(900);
+        let mut reordered = operations.clone();
+        reordered.insert(
+            0,
+            json!({"id":"o0","runId":"e1","tool":"workspace_read","status":"completed"}),
+        );
+        let mut reversed = reordered.clone();
+        reversed.reverse();
+        assert_eq!(first, finalization_payload_hash(&retried, &operations));
+        assert_eq!(
+            finalization_payload_hash(&base, &reordered),
+            finalization_payload_hash(&base, &reversed)
+        );
+        retried["taskOutcome"] = json!("failed");
+        assert_ne!(first, finalization_payload_hash(&retried, &operations));
+    }
+
+    #[test]
+    fn compliance_summary_prefers_violation_over_followed() {
+        use crate::engine::adaptation::types::Compliance;
+        let mixed = vec![
+            json!({
+                "strategyId":"a","applicable":true,
+                "result":{"triggered":true,"followed":true}
+            }),
+            json!({
+                "strategyId":"b","applicable":true,
+                "result":{"triggered":true,"followed":false}
+            }),
+        ];
+        assert_eq!(compliance_summary(&mixed), Compliance::Violated);
+        assert_eq!(
+            compliance_summary(&mixed[..1]),
+            Compliance::Followed
+        );
+        assert_eq!(
+            compliance_summary(&[json!({
+                "strategyId":"c","applicable":true,
+                "result":{"triggered":true,"status":"unknown"}
+            })]),
+            Compliance::Unknown
+        );
+        assert_eq!(
+            compliance_summary(&[json!({
+                "strategyId":"d","applicable":true,
+                "result":{"triggered":false}
+            })]),
+            Compliance::NotTriggered
+        );
+        assert_eq!(compliance_summary(&[]), Compliance::NotApplicable);
     }
 
     #[test]

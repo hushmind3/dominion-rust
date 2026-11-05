@@ -28,6 +28,62 @@ fn upsert_tx(
     Ok(())
 }
 
+/// Merges a computed improvement update into the record currently stored in
+/// the finalization transaction. Observation counters are applied as deltas so
+/// two attempts finishing concurrently cannot lose an increment.
+fn merge_improvement_update(current: &Value, update: &Value) -> Value {
+    let mut merged = current.clone();
+    for counter in ["uses", "successes", "failures"] {
+        let delta = update["__counterDelta"][counter].as_i64().unwrap_or(0);
+        let base = current[counter].as_i64().unwrap_or(0);
+        merged[counter] = json!(base.saturating_add(delta).max(0));
+    }
+    let mut applied = current["appliedExecutionIds"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for id in update["appliedExecutionIds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if !applied.contains(id) {
+            applied.push(id.clone());
+        }
+    }
+    if applied.len() > 200 {
+        applied = applied.split_off(applied.len() - 200);
+    }
+    merged["appliedExecutionIds"] = json!(applied);
+    if update.get("lastCompliance").is_some() {
+        merged["lastCompliance"] = update["lastCompliance"].clone();
+    }
+    if update.get("lastObservedAt").is_some() {
+        merged["lastObservedAt"] = update["lastObservedAt"].clone();
+    }
+    let rank = |status: &str| match status {
+        "rolled_back" => 2,
+        "validated" => 1,
+        _ => 0,
+    };
+    let update_status = update["status"].as_str().unwrap_or("");
+    let current_status = current["status"].as_str().unwrap_or("");
+    if rank(update_status) > rank(current_status) {
+        for field in [
+            "status",
+            "evidenceGrade",
+            "validatedAt",
+            "rolledBackAt",
+            "reason",
+        ] {
+            if update.get(field).is_some() {
+                merged[field] = update[field].clone();
+            }
+        }
+    }
+    merged
+}
+
 /// Durable store. Records are schemaless JSON documents grouped by `kind`,
 /// which is exactly the contract the React client already speaks.
 #[derive(Clone)]
@@ -354,7 +410,31 @@ impl Store {
         }
         upsert_tx(&tx, "execution", execution)?;
         for improvement in improvements {
-            upsert_tx(&tx, "improvement", improvement)?;
+            let id = improvement["id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or("improvement id is missing")?;
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT data FROM records WHERE kind='improvement' AND id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?;
+            let mut record = match existing {
+                Some(text) => {
+                    let current: Value = serde_json::from_str(&text)
+                        .map_err(|error| format!("broken improvement record: {error}"))?;
+                    merge_improvement_update(&current, improvement)
+                }
+                None => improvement.clone(),
+            };
+            record["id"] = json!(id);
+            if let Some(object) = record.as_object_mut() {
+                object.remove("__counterDelta");
+            }
+            upsert_tx(&tx, "improvement", &record)?;
         }
         for observation in observations {
             upsert_tx(&tx, "strategy_observation", observation)?;
@@ -366,7 +446,7 @@ impl Store {
         tx.execute(
             "INSERT OR IGNORE INTO adaptation_finalizations(attempt_id, evaluation_revision, payload_hash, applied_at)
              VALUES(?1, ?2, ?3, datetime('now'))",
-            params![execution_id, payload_hash, payload_hash],
+            params![execution_id, "evaluator:finalize-semantic-v1", payload_hash],
         )
         .map_err(|error| error.to_string())?;
         tx.commit().map_err(|error| error.to_string())?;
@@ -693,6 +773,42 @@ mod tests {
         );
         assert_eq!(store.get("job", "one").unwrap()["status"], "running");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_finalizations_merge_improvement_counters() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.put(
+            "improvement",
+            &json!({
+                "id":"imp-1","status":"adopted",
+                "uses":5,"successes":5,"failures":0,"appliedExecutionIds":[]
+            }),
+        );
+        for (execution_id, status) in [("exec-a", "validated"), ("exec-b", "adopted")] {
+            let execution = json!({"id":execution_id});
+            let marker = json!({
+                "id": format!("execution:{execution_id}"),
+                "payloadHash": format!("hash-{execution_id}"),
+            });
+            let improvement = json!({
+                "id":"imp-1","uses":6,"successes":6,"failures":0,"status":status,
+                "appliedExecutionIds":[execution_id],
+                "__counterDelta":{"uses":1,"successes":1,"failures":0},
+            });
+            assert_eq!(
+                store
+                    .finalize_once(&execution, &marker, &[improvement], &[])
+                    .unwrap(),
+                FinalizeOutcome::Applied
+            );
+        }
+        let merged = store.get("improvement", "imp-1").unwrap();
+        assert_eq!(merged["uses"], 7, "one observation was lost: {merged}");
+        assert_eq!(merged["successes"], 7);
+        assert_eq!(merged["appliedExecutionIds"].as_array().unwrap().len(), 2);
+        assert_eq!(merged["status"], "validated");
+        assert!(merged.get("__counterDelta").is_none());
     }
 
     #[test]

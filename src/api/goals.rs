@@ -51,6 +51,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     let Some(record) = state.store.put(
         "goal",
         &json!({
+            "taskId": uuid::Uuid::new_v4().to_string(),
             "goal": text,
             "successCriteria": criteria,
             "executor": executor,
