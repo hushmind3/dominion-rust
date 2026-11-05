@@ -1902,6 +1902,95 @@ fn the_recovery_slot_changes_retry_behavior_only_after_a_valid_experiment() {
     assert_eq!(active["slot"], "recovery");
 }
 
+#[test]
+fn secret_key_rotation_preserves_provider_secrets_and_restores() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"secret 회전 응답"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let provider = app.post(
+        "/api/providers",
+        &json!({
+            "name":"key rotation provider",
+            "baseUrl":format!("http://127.0.0.1:{port}/v1"),
+            "model":"mock",
+            "apiKey":"sk-rotation-test",
+            "enabled":true
+        }),
+    );
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+    assert_eq!(provider["hasKey"], true, "{provider}");
+    let stream = app.chat(&json!({"input":"키 회전 전 작업","autoLearning":false}));
+    assert!(!stream.contains("\"type\":\"error\""), "{stream}");
+    let backup = app.post("/api/system/backup", &json!({}));
+    let backup_path = backup["path"].as_str().unwrap().to_string();
+
+    let early = app
+        .client
+        .post(format!("{}/api/system/secret-key/rotate", app.base))
+        .json(&json!({"keepOld":false}))
+        .send()
+        .unwrap();
+    assert_eq!(early.status(), reqwest::StatusCode::CONFLICT);
+
+    let key_path = app._root.join("runtime/secret.key");
+    let before = std::fs::read(&key_path).unwrap();
+    app.post("/api/system/maintenance", &json!({"enabled":true}));
+    let response = app
+        .client
+        .post(format!("{}/api/system/secret-key/rotate", app.base))
+        .json(&json!({"keepOld":false}))
+        .send()
+        .unwrap();
+    let status = response.status();
+    let text = response.text().unwrap();
+    assert!(status.is_success(), "secret rotation failed {status}: {text}");
+    let rotated: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(rotated["ok"], true, "{rotated}");
+    assert!(
+        rotated["secretsReencrypted"].as_u64().unwrap_or(0) >= 1,
+        "{rotated}"
+    );
+    assert_eq!(rotated["previousKeys"], 0, "{rotated}");
+    assert_eq!(rotated["oldKeyRetained"], false, "{rotated}");
+    let after = std::fs::read(&key_path).unwrap();
+    assert_ne!(before, after, "secret.key was not replaced");
+    let status = app.get("/api/system/secret-key");
+    assert_eq!(status["previousKeys"], 0, "{status}");
+    assert!(status["oldKeyFiles"].as_array().unwrap().is_empty(), "{status}");
+
+    // Provider secrets and encrypted backups still work after rotation.
+    let providers = app.get("/api/providers");
+    let provider = providers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == provider_id.as_str())
+        .unwrap();
+    assert_eq!(provider["hasKey"], true, "{provider}");
+    let restored = app.post(
+        "/api/system/restore",
+        &json!({"path":backup_path,"confirm":true}),
+    );
+    assert_eq!(restored["ok"], true, "{restored}");
+    assert_eq!(restored["executions"], 1, "{restored}");
+    let stream = app.chat(&json!({"input":"키 회전 후 작업","autoLearning":false}));
+    assert!(!stream.contains("\"type\":\"error\""), "{stream}");
+
+    // Explicit old-key retention keeps one fallback file.
+    let kept = app.post(
+        "/api/system/secret-key/rotate",
+        &json!({"keepOld":true}),
+    );
+    assert_eq!(kept["previousKeys"], 1, "{kept}");
+    assert_eq!(kept["oldKeyRetained"], true, "{kept}");
+    let status = app.get("/api/system/secret-key");
+    assert_eq!(status["previousKeys"], 1, "{status}");
+    assert_eq!(status["oldKeyFiles"].as_array().unwrap().len(), 1, "{status}");
+    app.post("/api/system/maintenance", &json!({"enabled":false}));
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

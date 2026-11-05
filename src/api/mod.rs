@@ -97,6 +97,11 @@ pub fn router(state: AppState) -> Router {
             "/api/system/backup-keys/rotate",
             post(system::rotate_backup_keys),
         )
+        .route("/api/system/secret-key", get(system::secret_key))
+        .route(
+            "/api/system/secret-key/rotate",
+            post(system::rotate_secret_key),
+        )
         .route("/api/system/backups", get(system::list_backups))
         .route("/api/system/maintenance", post(system::maintenance))
         .route("/api/system/restore", post(system::restore_backup))

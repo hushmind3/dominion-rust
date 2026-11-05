@@ -933,6 +933,18 @@ impl Store {
         .flatten()
     }
 
+    pub fn all_secrets(&self) -> Vec<(String, String)> {
+        let conn = self.conn.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare("SELECT name, value FROM secrets ORDER BY name") else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        });
+        rows.map(|rows| rows.filter_map(|row| row.ok()).collect())
+            .unwrap_or_default()
+    }
+
     pub fn has_secret(&self, name: &str) -> bool {
         self.get_secret(name).is_some()
     }

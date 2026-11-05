@@ -277,9 +277,11 @@ mod tests {
         let ring = KeyRing::load_or_create(&dir).unwrap();
         let resealed = std::fs::read(&backup).unwrap();
         let plain = ring.decrypt(&resealed).expect("new key decrypts");
-        assert!(plain.starts_with(b"SQLite format 3"));
+        assert!(plain.starts_with(b"DOMVAULT1"));
+        let database = &plain[41..];
+        assert!(database.starts_with(b"SQLite format 3"));
         let restored_path = dir.join("rotated.sqlite");
-        std::fs::write(&restored_path, &plain).unwrap();
+        std::fs::write(&restored_path, database).unwrap();
         assert_eq!(
             Store::open(&restored_path).unwrap().get("provider", "p1").unwrap()["name"],
             "rotation"

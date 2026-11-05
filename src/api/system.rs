@@ -313,6 +313,40 @@ pub async fn rotate_backup_keys(
     }
 }
 
+pub async fn secret_key(State(state): State<AppState>) -> Json<Value> {
+    Json(crate::engine::vault_rotation::status(&state))
+}
+
+pub async fn rotate_secret_key(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !state.maintenance_mode() {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            Json(json!({"error":"secret key 회전은 유지보수 모드에서만 가능합니다."})),
+        )
+            .into_response();
+    }
+    let keep_old = body["keepOld"].as_bool().unwrap_or(false);
+    match crate::engine::vault_rotation::rotate(&state, keep_old) {
+        Ok(report) => Json(json!({
+            "ok": true,
+            "secretsReencrypted": report.secrets_reencrypted,
+            "legacyBackupsMigrated": report.legacy_backups_migrated,
+            "previousKeys": report.previous_keys,
+            "oldKeyRetained": report.old_key_file.is_some(),
+        }))
+        .into_response(),
+        Err(error) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error, "oldKeyRetained": true})),
+        )
+            .into_response(),
+    }
+}
+
 pub async fn maintenance(
     State(state): State<AppState>,
     Json(body): Json<Value>,
@@ -388,13 +422,45 @@ pub async fn restore_backup(
                 .into_response()
         }
     };
-    let Some(bytes) = crate::engine::backup_keys::decrypt_backup(&state, &sealed) else {
+    let Some(decoded) = crate::engine::backup_keys::decrypt_backup(&state, &sealed) else {
         return (
             axum::http::StatusCode::BAD_REQUEST,
             Json(json!({"error":"이 키로 백업을 복호화할 수 없습니다."})),
         )
             .into_response();
     };
+    let (bytes, embedded_key) = if decoded.len() > 41 && decoded.starts_with(b"DOMVAULT1") {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&decoded[9..41]);
+        (decoded[41..].to_vec(), Some(key))
+    } else {
+        (decoded, None)
+    };
+    let target_key = embedded_key.unwrap_or_else(|| state.vault.primary_key());
+    // Verify every sealed secret in the snapshot is decryptable with the key
+    // we would install. Abort before touching the live database/key otherwise.
+    if let Err(error) = crate::engine::vault_rotation::verify_snapshot_secrets(
+        &target_key,
+        &bytes,
+        &state.config.data_dir,
+    ) {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!("복구 대상의 secret key를 확인할 수 없습니다: {error}. 현재 상태를 유지합니다.")
+            })),
+        )
+            .into_response();
+    }
+    if let Some(key) = embedded_key {
+        if let Err(error) = state.vault.restore_primary(key) {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("secret key 복원 실패: {error}")})),
+            )
+                .into_response();
+        }
+    }
     if let Err(error) = state.store.replace_database(&bytes) {
         return (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,

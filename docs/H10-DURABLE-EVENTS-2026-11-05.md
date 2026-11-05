@@ -211,3 +211,63 @@ rotation은 **maintenance mode에서만** API로 허용된다.
 - provider secret vault(`secret.key`) 회전은 별도 절차다.
 - 원격 offsite 전송(S3/SSH), 보존 기간/immutability.
 - 장시간 soak, 다중기기 ACL.
+
+## 8. Secret-key (vault) rotation (2026-11-05)
+
+### Vault key model
+
+- `Vault`는 `primary` 키와 transition용 `previous` 키 목록을 가진다.
+- 시작 시 `secret.key` + `secret.key.old-*` 파일을 읽어 previous fallback을 구성한다.
+- `seal`은 primary만 사용하고, `open_secret/open_bytes`는 primary → previous 순으로 시도한다.
+- 회전 중 이전 키를 유지하므로 DB 일부가 이전 ciphertext여도 읽기가 깨지지 않는다.
+
+### 회전 절차
+
+`vault_rotation::rotate(state, keepOld)` (maintenance mode 필요)
+
+1. 모든 provider secret을 현재 키로 복호화 (하나라도 실패 → **변경 없이 중단**)
+2. legacy `.enc` 백업을 backup keyring(`DOMBAK2`)으로 재암호화
+3. 현재 `secret.key`를 `secret.key.old-<timestamp>`로 복사
+4. 새 32-byte 키 생성, `install_primary`(이전 키는 previous로 유지)
+5. 새 `secret.key`를 temp → rename으로 원자 교체
+6. 모든 secret을 새 키로 재암호화 후 primary로 검증
+7. `keepOld=true`면 old key 파일 유지, false면 previous 제거 + old 파일 삭제
+8. audit `vault.key_rotated`
+
+실패 시 old key 파일과 previous가 남아 복구 가능하며, active key 파일은 이전 상태로 유지된다.
+
+### 백업 컨테이너와 복구
+
+- 백업 평문은 `DOMVAULT1` + 32-byte vault key + SQLite bytes를 backup key로 암호화한다.
+- restore는 컨테이너의 vault key를 꺼내 **그 키로 secret 검증**을 먼저 수행한다.
+- 검증 실패(키 없음/불일치) 시 **409**로 중단하고 live DB/key를 건드리지 않는다.
+- 검증 성공 시 vault key를 복원(`secret.key` 교체)한 뒤 DB를 교체하므로,
+  회전 전 백업을 회전 후 복구해도 provider secret이 함께 복원된다.
+- legacy(컨테이너 없는) 백업은 현재 primary로 검증하며, 불가능하면 fail-safe 중단.
+
+### API
+
+- `GET /api/system/secret-key` → `{previousKeys, oldKeyFiles}`
+- `POST /api/system/secret-key/rotate {keepOld}` (maintenance 필요)
+
+### 검증
+
+- `rotation_reencrypts_secrets_and_migrates_legacy_backups`
+  - secret 재암호화, old ciphertext는 새 vault에서 복호화 불가
+  - legacy `.enc`가 `DOMBAK2`로 마이그레이션됨
+- `keeping_the_old_key_allows_explicit_recovery`
+- `an_undecryptable_secret_aborts_before_the_key_changes`
+- `snapshot_verification_rejects_an_unavailable_old_key`
+- E2E `secret_key_rotation_preserves_provider_secrets_and_restores`
+  - maintenance 없이 rotate → 409
+  - provider secret 유지(`hasKey=true`), `secret.key` 바이트 교체
+  - 회전 후 백업 restore 성공, execution 보존
+  - keepOld=true → previousKeys=1, old key 파일 존재
+
+전체: `259 unit + 44 E2E + 14 benchmark` 통과.
+
+### 남은 것
+
+- 원격 키 escrow/HSM, 키 서명.
+- old key 파일 보존 기간/자동 삭제 정책.
+- 다중기기에서 vault key 배포/ACL.

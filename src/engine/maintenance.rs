@@ -66,7 +66,12 @@ pub fn backup_now(state: &AppState) -> Result<PathBuf, String> {
     state.store.backup_to(&temp)?;
     let bytes = std::fs::read(&temp).map_err(|error| error.to_string())?;
     let ring = crate::engine::backup_keys::KeyRing::load_or_create(&state.config.data_dir)?;
-    let sealed = ring.encrypt(&bytes)?;
+    // The snapshot carries the vault key that its provider secrets were sealed
+    // with, so restoring an older snapshot remains decryptable after rotation.
+    let mut container = b"DOMVAULT1".to_vec();
+    container.extend_from_slice(&state.vault.primary_key());
+    container.extend_from_slice(&bytes);
+    let sealed = ring.encrypt(&container)?;
     let path = directory.join(format!("dominion-{stamp}.sqlite.enc"));
     std::fs::write(&path, &sealed).map_err(|error| error.to_string())?;
     let _ = std::fs::remove_file(&temp);
@@ -151,9 +156,11 @@ mod tests {
         assert!(!sealed.starts_with(b"SQLite format 3"));
         let plain =
             crate::engine::backup_keys::decrypt_backup(&state, &sealed).expect("decrypt");
-        assert!(plain.starts_with(b"SQLite format 3"));
+        assert!(plain.starts_with(b"DOMVAULT1"));
+        let database = &plain[41..];
+        assert!(database.starts_with(b"SQLite format 3"));
         let restored_path = dir.join("restored.sqlite");
-        std::fs::write(&restored_path, &plain).unwrap();
+        std::fs::write(&restored_path, database).unwrap();
         let restored = Store::open(&restored_path).unwrap();
         assert_eq!(
             restored.get("provider", "p1").unwrap()["name"],
