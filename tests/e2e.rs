@@ -88,17 +88,23 @@ struct TestApp {
 
 impl TestApp {
     fn new(provider_port: u16, tool_mode: &str) -> Self {
+        Self::new_with_env(provider_port, tool_mode, &[])
+    }
+    fn new_with_env(provider_port: u16, tool_mode: &str, extra: &[(&str, &str)]) -> Self {
         let root = temp_root();
         let port = free_port();
-        let child = Command::new(env!("CARGO_BIN_EXE_dominion-rust"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dominion-rust"));
+        command
             .env("DOMINION_PORT", port.to_string())
             .env("DOMINION_DATA", root.join("runtime"))
             .env("DOMINION_WEB", root.join("web"))
             .env("DOMINION_WORKSPACE", &root)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::null());
+        for (key, value) in extra {
+            command.env(key, value);
+        }
+        let child = command.spawn().unwrap();
         let app = Self {
             _child: ChildGuard(child),
             _root: root,
@@ -1297,6 +1303,33 @@ fn correction_turn_failure_still_enqueues_reflection() {
     assert!(
         !experience.as_array().unwrap().is_empty(),
         "reflection produced no experience"
+    );
+}
+
+#[test]
+fn benchmark_identity_reports_the_isolated_roots() {
+    let _serial = serial();
+    let port = start_mock_provider();
+    let app = TestApp::new_with_env(
+        port,
+        "native",
+        &[
+            ("DOMINION_BENCHMARK", "1"),
+            ("DOMINION_ENGINE_INSTANCE", "bench-test"),
+        ],
+    );
+    let identity = app.get("/api/benchmark/identity");
+    assert_eq!(identity["benchmark"], true);
+    assert_eq!(identity["instanceId"], "bench-test");
+    let workspace = app._root.canonicalize().unwrap();
+    assert_eq!(
+        identity["workspace"].as_str().unwrap(),
+        workspace.to_string_lossy()
+    );
+    let data = app._root.join("runtime").canonicalize().unwrap();
+    assert_eq!(
+        identity["dataRoot"].as_str().unwrap(),
+        data.to_string_lossy()
     );
 }
 

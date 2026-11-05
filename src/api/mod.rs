@@ -44,6 +44,7 @@ pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         // core
         .route("/api/health", get(system::health))
+        .route("/api/benchmark/identity", get(system::benchmark_identity))
         .route("/api/status", get(system::status))
         .route(
             "/api/settings/assistant",

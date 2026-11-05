@@ -17,6 +17,26 @@ pub async fn health() -> Json<Value> {
     }))
 }
 
+/// Read-only identity for the isolated benchmark runner. It never exposes
+/// secrets and is only authoritative when the server was started with
+/// DOMINION_BENCHMARK=1.
+pub async fn benchmark_identity(State(state): State<AppState>) -> Json<Value> {
+    let canonical = |path: &std::path::Path| {
+        std::fs::canonicalize(path)
+            .unwrap_or_else(|_| path.to_path_buf())
+            .to_string_lossy()
+            .to_string()
+    };
+    Json(json!({
+        "instanceId": std::env::var("DOMINION_ENGINE_INSTANCE").ok(),
+        "benchmark": std::env::var("DOMINION_BENCHMARK").as_deref() == Ok("1"),
+        "dataRoot": canonical(&state.config.data_dir),
+        "workspace": canonical(&state.config.workspace),
+        "build": env!("CARGO_PKG_VERSION"),
+        "pid": std::process::id(),
+    }))
+}
+
 pub async fn status(State(state): State<AppState>) -> Json<Value> {
     let jobs = state.store.all("job");
     let running = jobs

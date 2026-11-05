@@ -110,7 +110,41 @@ case "$ROOT_REAL/" in
     exit 2
     ;;
 esac
-mkdir -p "$WORKSPACE"
+if [ -L "$WORKSPACE" ]; then
+  echo "Refusing a symlinked benchmark workspace: $WORKSPACE" >&2
+  exit 2
+fi
+mkdir -p "$WORKSPACE" "$BENCH_ROOT/data"
+WORKSPACE_REAL="$(cd "$WORKSPACE" && pwd -P)"
+DATA_REAL="$(cd "$BENCH_ROOT/data" && pwd -P)"
+case "$WORKSPACE_REAL/" in
+  "$HOME/dominion-rust/"*)
+    echo "Refusing to use the live workspace: $WORKSPACE_REAL" >&2
+    exit 2
+    ;;
+esac
+if ! IDENTITY=$(curl -fsS "$BASE/api/benchmark/identity" 2>/dev/null); then
+  echo "Benchmark identity endpoint is unavailable: $BASE" >&2
+  exit 2
+fi
+if ! printf '%s' "$IDENTITY" | python3 -c '
+import json, sys
+identity = json.load(sys.stdin)
+expected_data = sys.argv[1]
+expected_workspace = sys.argv[2]
+if identity.get("benchmark") is not True:
+    raise SystemExit("server is not in benchmark mode")
+if not identity.get("instanceId"):
+    raise SystemExit("server has no benchmark instance id")
+if identity.get("dataRoot") != expected_data:
+    raise SystemExit(f"dataRoot mismatch: {identity.get("dataRoot")} != {expected_data}")
+if identity.get("workspace") != expected_workspace:
+    raise SystemExit(f"workspace mismatch: {identity.get("workspace")} != {expected_workspace}")
+' "$DATA_REAL" "$WORKSPACE_REAL" >/dev/null 2>&1; then
+  echo "Benchmark identity mismatch. Refusing to mutate this server." >&2
+  printf '%s\n' "$IDENTITY" >&2
+  exit 2
+fi
 PROVIDER_ID=$(provider_id)
 if [ -z "$PROVIDER_ID" ]; then
   echo "provider not found: $PROVIDER_NAME" >&2
