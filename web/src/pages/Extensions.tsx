@@ -14,7 +14,7 @@ type CatalogSkill={id:string;name:string;description?:string;source?:string;path
 type RegistryItem={name:string;description?:string;url?:string;packageName?:string}
 type Kind='native'|'mcp'|'skill'|'catalog'
 type Entry={key:string;kind:Kind;name:string;description:string;status:string;active:boolean;tool?:Tool;mcp?:Mcp;skill?:Skill;catalog?:CatalogSkill;registry?:RegistryItem}
-const nativeCopy:Record<string,string>={workspace_list:'작업공간 파일·폴더 목록',workspace_read:'작업공간 텍스트 파일 읽기',workspace_write:'작업공간 파일 작성·수정',file_list:'컴퓨터 폴더의 파일 목록',file_read:'컴퓨터 텍스트 파일 읽기',file_write:'컴퓨터 파일 작성·수정',shell_exec:'셸 명령 실행 · 터미널',terminal_exec:'프로그램 실행 · 터미널',web_search:'인터넷·웹 검색',http_fetch:'웹페이지·URL 본문 가져오기',memory_store:'장기기억 저장',memory_search:'저장한 기억 검색',skill_propose:'스킬 절차 초안 제안',account_status:'연결한 계정 상태',harness_propose:'하네스 Rust 수정안 제출',github_api:'GitHub 저장소·이슈·PR API'}
+const nativeCopy:Record<string,string>={workspace_list:'작업공간 파일·폴더 목록',workspace_read:'작업공간 텍스트 파일 읽기',workspace_write:'작업공간 파일 작성·수정',file_list:'컴퓨터 폴더의 파일 목록',file_read:'컴퓨터 텍스트 파일 읽기',file_write:'컴퓨터 파일 작성·수정',shell_exec:'셸 명령 실행 · 터미널',terminal_exec:'프로그램 실행 · 터미널',web_search:'인터넷·웹 검색',http_fetch:'웹페이지·URL 본문 가져오기',memory_store:'장기기억 저장',memory_search:'저장한 기억 검색',skill_propose:'스킬 절차 초안 제안',account_status:'연결한 계정 상태',github_api:'GitHub 저장소·이슈·PR API'}
 const filters=[{id:'all',label:'전체'},{id:'native',label:'Rust 내장 도구'},{id:'mcp',label:'MCP · 도구'},{id:'skill',label:'내 스킬'},{id:'catalog',label:'추가할 항목'}] as const
 
 export function ExtensionsPage(){

@@ -53,12 +53,6 @@ pub fn definitions() -> Vec<Value> {
         tool("task_status", "Check a delegated task's status", object(json!({"jobId": text("Job id")}), vec!["jobId"])),
         tool("task_result", "Read a delegated task's result, artifacts and final answer", object(json!({"jobId": text("Job id")}), vec!["jobId"])),
         tool("account_status", "List OAuth accounts connected to DOMINION", object(json!({}), vec![])),
-        tool("harness_propose", "Propose a change to DOMINION's own Rust source as a unified diff. The change is stored and validated in an isolated worktree; it is not applied to the running engine.", object(json!({
-            "reason": text("Concrete bottleneck and why this change fixes it"),
-            "patch": text("Unified diff touching src/, tests/, web/src/ or Cargo.toml"),
-            "predictedBenefit": text("Expected effect"),
-            "evidenceIds": json!({"type":"array","items":{"type":"string"},"description":"Execution/test ids supporting the change"})
-        }), vec!["reason", "patch"])),
         tool("github_api", "Call the GitHub REST API as the connected account. Write methods require approval (approval required)", object(json!({"method": json!({"type": "string", "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"]}), "path": text("GitHub API path beginning with /"), "body": json!({"type": "object"})}), vec!["method", "path"])),
     ]
 }

@@ -14,7 +14,6 @@ const ConnectionsPage=lazy(()=>import('./pages/Connections').then(module=>({defa
 const OperationsPage=lazy(()=>import('./pages/Operations').then(module=>({default:module.OperationsPage})))
 const DeveloperPage=lazy(()=>import('./pages/Developer').then(module=>({default:module.DeveloperPage})))
 const AlgorithmsPage=lazy(()=>import('./pages/Algorithms').then(module=>({default:module.AlgorithmsPage})))
-const HarnessEvolutionPage=lazy(()=>import('./pages/HarnessEvolution').then(module=>({default:module.HarnessEvolutionPage})))
 
 function locationState(){
  const raw=window.location.hash.replace(/^#\/?/,'')
@@ -108,7 +107,6 @@ export default function App(){
     {page==='connections'&&<ConnectionsPage/>}
     {page==='developer'&&<DeveloperPage/>}
     {page==='algorithms'&&<AlgorithmsPage/>}
-    {page==='evolution'&&<HarnessEvolutionPage/>}
     {(page==='automations'||page==='activity'||page==='settings')&&<OperationsPage section={page}/>}
     </Suspense>
    </div>
