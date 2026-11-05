@@ -3193,7 +3193,7 @@ fn record_selection_snapshot(
         task_id: task_id.to_string(),
         slot: "strategy".into(),
         policy_revision: "legacy-bundle-v1".into(),
-        selection: "estimated-softmax-with-exploration".into(),
+        selection: "deterministic".into(),
         arms,
         probability: 1.0,
         rng_seed: 0,
@@ -3212,38 +3212,14 @@ fn record_selection_snapshot(
             "selection": "deterministic",
             "appliedArmIds": bundle.arms.iter().map(|arm| arm.arm_id.clone()).collect::<Vec<_>>(),
         }),
-        candidates: {
-            let mut candidates = strategies
-                .iter()
-                .filter_map(|strategy| {
-                    Some(CandidateScore {
-                        arm_id: strategy["id"].as_str()?.to_string(),
-                        mean: strategy["selectionScore"].as_f64().unwrap_or(0.5),
-                        uncertainty: strategy["selectionUncertainty"]
-                            .as_f64()
-                            .unwrap_or(0.5),
-                        cost: strategy["selectionEstimate"]["expectedCost"]
-                            .as_f64()
-                            .unwrap_or(0.0),
-                        risk: strategy["selectionEstimate"]["failureRisk"]
-                            .as_f64()
-                            .unwrap_or(0.0),
-                        probability: strategy["selectionProbability"]
-                            .as_f64()
-                            .unwrap_or(0.0),
-                    })
-                })
-                .collect::<Vec<_>>();
-            candidates.push(CandidateScore {
-                arm_id: bundle_id.clone(),
-                mean: 0.5,
-                uncertainty: 0.5,
-                cost: 0.0,
-                risk: 0.0,
-                probability: 1.0,
-            });
-            candidates
-        },
+        candidates: vec![CandidateScore {
+            arm_id: bundle_id.clone(),
+            mean: 0.5,
+            uncertainty: 0.5,
+            cost: 0.0,
+            risk: 0.0,
+            probability: 1.0,
+        }],
         selected: bundle_id,
         probability: 1.0,
         policy_revision: "legacy-bundle-v1".into(),

@@ -1469,6 +1469,8 @@ async fn main() -> Result<(), String> {
                     "requiresCompliance": trial["requiresCompliance"],
                     "errorClass": trial["errorClass"],
                     "executionId": trial["executionId"],
+                    "artifacts": trial["artifacts"],
+                    "operations": trial["operations"],
                     "planQuality": trial["planQuality"],
                     "planQualityIndependent": trial["planQualityIndependent"],
                     "elapsedMs": trial["elapsedMs"],

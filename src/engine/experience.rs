@@ -128,8 +128,9 @@ pub fn method_applicability(method: &Value, observation: &Value) -> &'static str
         return if matches { "true" } else { "false" };
     }
     let mut unknown = false;
+    let resolved = json!({"observation": observation});
     for predicate in predicates {
-        match predicate_verdict(&predicate, observation) {
+        match predicate_verdict(&predicate, &resolved) {
             Ok(PredicateVerdict::True) => {}
             Ok(PredicateVerdict::False) => return "false",
             Ok(PredicateVerdict::Unknown) => unknown = true,
@@ -694,6 +695,7 @@ pub fn record_rule_counterexamples(
         rule["counterexamples"] = json!(examples);
         // Narrow, do not discard: exclude the exact observed environment and
         // keep the method available where the failure was not reproduced.
+        let mut narrowed = false;
         if let Some(execution) = state.store.get("execution", execution_id) {
             if let Some(fingerprint) = execution["lastAdaptation"]["environmentFingerprint"]
                 .as_str()
@@ -719,8 +721,14 @@ pub fn record_rule_counterexamples(
                         }
                     }));
                     rule["applicabilityPredicates"] = json!(predicates);
+                    narrowed = true;
                 }
             }
+        }
+        if !narrowed {
+            // No observable environment difference is available. Keep the
+            // method as an unresolved hypothesis instead of applying it.
+            rule["status"] = json!("needs_split");
         }
         rule["revision"] = json!(memory::stable_id(&[
             id, &rule["supportingCases"].to_string(), &rule["counterexamples"].to_string()

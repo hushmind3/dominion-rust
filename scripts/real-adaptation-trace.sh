@@ -79,7 +79,12 @@ def adaptation_view(execution):
 view=[adaptation_view(e) for e in executions]
 after_view=[adaptation_view(e) for e in after]
 model_adaptations=[a for e in view for a in e["adaptations"] if a.get("selected")]
-refuted=[h for a in model_adaptations for h in (a.get("hypothesisResults") or []) if h.get("status")=="refuted"]
+evaluated=[h for a in model_adaptations for h in (a.get("hypothesisResults") or []) if h.get("predictions")]
+phase_ok=all(
+    p.get("observationPhase") in ("before_intervention","after_intervention")
+    and p.get("verdict") in ("true","false","unknown")
+    for h in evaluated for p in (h.get("predictions") or [])
+)
 result={
     "generatedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     "model":"qwen3:4b",
@@ -90,7 +95,8 @@ result={
     "assertions": {
         "hypothesesGenerated": any(a.get("hypotheses") for a in model_adaptations),
         "interventionSelected": bool(model_adaptations),
-        "hypothesisRefuted": bool(refuted),
+        "hypothesisEvaluatedByPhase": bool(evaluated),
+        "phaseVerdictsWellFormed": phase_ok,
         "adaptationCheckpointPersisted": any(e.get("adaptationCheckpoint") for e in view),
         "adaptationCheckpointSurvivedRestart": any(e.get("adaptationCheckpoint") for e in after_view),
     },

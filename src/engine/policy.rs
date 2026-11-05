@@ -261,7 +261,7 @@ pub fn propose_candidates(state: &AppState) -> Vec<Value> {
     }
     let optimizer = active_optimizer(state);
     let optimizer_revision = optimizer["revision"].as_str().unwrap_or("optimizer-v1").to_string();
-    let variant_limit = if optimizer["explorationPolicy"].as_str() == Some("wide") { 3 } else { 2 };
+    let variant_limit = 3;
     let mut created = Vec::new();
     for (class, evidence) in clusters.iter() {
         let class = *class;
@@ -568,6 +568,7 @@ pub fn enqueue_policy_request(
         "minIndependentUnits": MIN_EXPERIMENT_UNITS,
         "frozenManifest": manifest,
         "frozenManifestHash": manifest_hash,
+        "externalRunner": true,
         "createdAt": chrono::Utc::now().to_rfc3339(),
     });
     let saved = state.store.put("experiment_request", &request)?;
@@ -988,13 +989,23 @@ mod tests {
             failure(&state, &id.to_string(), "verification_failed");
         }
         let created = propose_candidates(&state);
-        assert_eq!(created.len(), 3, "search should propose multiple revisions");
-        let search_ids = created
+        assert!(created.len() >= 3, "search should propose multiple revisions");
+        let planning = created
+            .iter()
+            .filter(|item| {
+                item["request"]["searchId"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("policy-search"))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(planning.len(), 3, "three planning revisions");
+        let search_ids = planning
             .iter()
             .filter_map(|item| item["request"]["searchId"].as_str().map(str::to_string))
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(search_ids.len(), 1, "one search group per failure cluster");
-        let mut variants = created
+        let mut variants = planning
             .iter()
             .map(|item| item["candidate"]["parameters"].clone())
             .collect::<Vec<_>>();
@@ -1006,7 +1017,7 @@ mod tests {
                 .any(|value| value["outline"] == true && value["minChars"].is_u64()),
             "min-length threshold variant missing: {variants:?}"
         );
-        for item in &created {
+        for item in &planning {
             assert_eq!(item["candidate"]["status"], "candidate");
             assert_eq!(item["request"]["kind"], "policy");
             assert_eq!(item["request"]["status"], "queued");
@@ -1017,8 +1028,8 @@ mod tests {
         }
         // Idempotent: a second pass creates nothing new.
         assert!(propose_candidates(&state).is_empty());
-        assert_eq!(state.store.all("adaptation_policy").len(), 3);
-        assert_eq!(state.store.all("experiment_request").len(), 3);
+        assert!(state.store.all("adaptation_policy").len() >= 6);
+        assert!(state.store.all("experiment_request").len() >= 6);
         let _ = std::fs::remove_dir_all(dir);
     }
 

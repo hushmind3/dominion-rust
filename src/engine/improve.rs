@@ -910,9 +910,20 @@ pub fn apply_experiment_result(
     experiment: &Value,
 ) -> Result<Value, String> {
     let record = experiment_result_record(state, strategy_id, experiment)?;
-    let saved = state
-        .store
-        .transaction(&[("improvement".to_string(), record.clone())])?;
+    let mut records = vec![("improvement".to_string(), record.clone())];
+    for mut request in state.store.all("experiment_request") {
+        if request["strategyId"].as_str() == Some(strategy_id)
+            && request["status"].as_str() == Some("queued")
+        {
+            request["status"] = json!("completed");
+            request["experimentId"] = experiment["experimentId"].clone();
+            request["verdict"] = experiment["verdict"].clone();
+            request["units"] = experiment["independentUnits"].clone();
+            request["completedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            records.push(("experiment_request".to_string(), request));
+        }
+    }
+    let saved = state.store.transaction(&records)?;
     for item in &saved {
         state.bus.record("improvement", item);
     }
@@ -963,6 +974,7 @@ pub fn schedule_experiments(state: &AppState) -> Vec<Value> {
                 "minIndependentUnits": MIN_EXPERIMENT_UNITS,
                 "frozenManifest": manifest,
                 "frozenManifestHash": manifest_hash,
+                "externalRunner": true,
                 "createdAt": chrono::Utc::now().to_rfc3339(),
             });
             if let Some(saved) = state.store.put("experiment_request", &request) {

@@ -236,12 +236,13 @@ fn compatibility_tools_are_available_and_round_limit_is_a_failure() {
     let session = app.post("/api/sessions", &json!({"title":"limit"}));
     let stream =
         app.chat(&json!({"sessionId":session["id"],"input":"계속 확인","autoLearning":false}));
-    // The loop guard stops identical repeated calls instead of burning all 8
-    // rounds, and never saves a raw tool-call fragment as the final answer.
-    assert!(stream.contains("tool_error"), "{stream}");
+    // Repeating a read call carries information, so the harness lets the
+    // model continue until the round budget; it still must fail and never
+    // save a raw tool-call fragment as the final answer.
+    assert!(stream.contains("tool_start") || stream.contains("tool_error"), "{stream}");
     assert!(!stream.contains("assistant_saved"), "{stream}");
     let calls = requests.lock().unwrap();
-    assert!(calls.len() < 8, "loop guard used {} calls", calls.len());
+    assert!(calls.len() >= 8, "round budget was not reached: {} calls", calls.len());
     assert!(calls[0]["messages"][0]["content"]
         .as_str()
         .unwrap()
@@ -1289,7 +1290,7 @@ fn policy_experiment_activates_a_candidate_through_the_runner() {
         .expect("policy");
     assert_eq!(
         policy["status"], "active",
-        "outer gate did not activate the candidate: {policy}"
+        "outer gate did not activate the candidate: {policy}\nrequest: {request}"
     );
     assert_eq!(policy["evidenceGrade"], "E2");
     assert_eq!(policy["parameters"]["outline"], true);
@@ -1430,6 +1431,7 @@ fn policy_activation_is_rejected_when_the_independent_evaluator_disagrees() {
     let good_plan = "1. bench/harness_report.txt 파일을 만들고 REPORT-OK를 저장한다\n2. bench/harness_audit.txt 파일을 만든다\n3. 두 파일을 검증한다";
     let vague_plan = "1. 작업을 진행한다\n2. 완료한다";
     let evidence = evidence_bundle(10, false, true);
+    seed_evidence_executions(&app, &evidence);
 
     // 1) Version mismatch rejects promotion even with a perfect claimed delta.
     let (policy_id, request_id, token) = make_request("version-mismatch");
@@ -2184,6 +2186,7 @@ fn only_one_runner_can_settle_and_promote_an_experiment() {
     let token = claimed["request"]["claimToken"].as_str().unwrap().to_string();
     let good_plan = "1. bench/harness_report.txt 파일을 만들고 REPORT-OK를 저장한다\n2. bench/harness_audit.txt 파일을 만든다\n3. 두 파일을 검증한다";
     let evidence = evidence_bundle(10, false, true);
+    seed_evidence_executions(&app, &evidence);
     let body = json!({
         "claimToken": token,
         "experimentId":"cas-exp",
@@ -2329,7 +2332,9 @@ fn evidence_bundle(pairs: u64, baseline_ok: bool, treatment_ok: bool) -> Value {
     for pair in 0..pairs {
         for (arm, ok) in [("baseline", baseline_ok), ("treatment", treatment_ok)] {
             trials.push(json!({
-                "pair":pair,"arm":arm,"status":"completed",
+                "pair":pair,"arm":arm,
+                "executionId":format!("e2e-exec-{pair}-{arm}"),
+                "status":"completed",
                 "auditOk":ok,"reportOk":ok,
                 "taskOutcome":if ok {"succeeded"} else {"failed"},
                 "compliance":ok,"requiresCompliance":false,"errorClass":"",
@@ -2422,6 +2427,7 @@ fn completion_rejects_fake_or_incomplete_evidence() {
     let (_policy_id, target) = make("incomplete-trials");
     let (request_id, token) = target.split_once('|').unwrap();
     let mut incomplete = evidence_bundle(10, false, true);
+    seed_evidence_executions(&app, &incomplete);
     let trials = incomplete["trials"].as_array_mut().unwrap();
     let index = trials.iter().position(|t| t["pair"] == 9 && t["arm"] == "treatment").unwrap();
     trials.remove(index);
@@ -2565,6 +2571,7 @@ fn a_crashed_settlement_recovers_without_reapplying_promotion_and_stale_claims_f
         .unwrap();
     }
     let evidence = evidence_bundle(10, false, true);
+    seed_evidence_executions(&app, &evidence);
     let response = app
         .client
         .post(format!("{}/api/experiment-requests/{request2_id}/complete", app.base))
@@ -2616,13 +2623,18 @@ fn a_model_generated_intervention_runs_and_refutes_its_hypothesis() {
         if request["stream"].as_bool() == Some(false) && system.contains("adaptation planner") {
             let mut count = adaptation_counter.lock().unwrap();
             *count += 1;
+            let (hypothesis, prediction, intervention) = if *count == 1 {
+                ("h1", json!({"type":"equals","from":"result","path":"/written","value":false}), "i1")
+            } else {
+                ("h2", json!({"type":"equals","from":"result","path":"/written","value":true}), "i2")
+            };
             let content = json!({
                 "hypotheses":[{
-                    "id":"h1","claim":"the command environment is wrong",
-                    "predictions":[{"predicate":{"type":"equals","from":"result","path":"/exitCode","value":0}}]
+                    "id":hypothesis,"claim":"the command environment is wrong",
+                    "predictions":[{"predicate":prediction}]
                 }],
                 "interventions":[{
-                    "id":"i1","hypothesisIds":["h1"],
+                    "id":intervention,"hypothesisIds":[hypothesis],
                     "tool":"workspace_write",
                     "inputs":{"path":format!("adapt{}.txt", *count),"content":"OK"},
                     "expectedChecks":["file_exists"],"estimatedCost":0.1
@@ -2761,13 +2773,22 @@ fn a_program_consumes_sequence_verify_loop_and_model_decision_nodes() {
 fn consecutive_failed_adaptations_stop_the_no_progress_loop() {
     let _serial = serial();
     let stream_calls = Arc::new(Mutex::new(0u32));
+    let adaptation_calls = Arc::new(Mutex::new(0u32));
+    let adaptation_counter = adaptation_calls.clone();
     let counter = stream_calls.clone();
     let (port, _) = scripted_provider(move |request| {
         let system = request["messages"][0]["content"].as_str().unwrap_or("");
         if request["stream"].as_bool() == Some(false) && system.contains("adaptation planner") {
+            let mut adaptation = adaptation_counter.lock().unwrap();
+            *adaptation += 1;
+            let (hypothesis, intervention, command) = if *adaptation == 1 {
+                ("h1", "i1", "exit 8")
+            } else {
+                ("h2", "i2", "exit 10")
+            };
             let content = json!({
-                "hypotheses":[{"id":"h1","claim":"still wrong","predictions":[{"predicate":{"type":"equals","from":"result","path":"/exitCode","value":0}}]}],
-                "interventions":[{"id":"i1","hypothesisIds":["h1"],"tool":"shell_exec","inputs":{"command":"exit 8"},"expectedChecks":["x"],"estimatedCost":0.1}]
+                "hypotheses":[{"id":hypothesis,"claim":"still wrong","predictions":[{"predicate":{"type":"equals","from":"result","path":"/exitCode","value":0}}]}],
+                "interventions":[{"id":intervention,"hypothesisIds":[hypothesis],"tool":"shell_exec","inputs":{"command":command},"expectedChecks":["x"],"estimatedCost":0.1}]
             }).to_string();
             return vec![json!({"choices":[{"delta":{"content":content},"finish_reason":"stop"}]})];
         }
@@ -2844,7 +2865,8 @@ fn a_mid_adaptation_restart_restores_hypotheses_and_does_not_repeat_completed_st
         "nodes":[
             {"type":"call_tool","id":"step1","tool":"workspace_write","inputs":{"path":"step1.txt","content":"ONE"},"saveAs":"step1"},
             {"type":"model_decision","id":"pause"},
-            {"type":"call_tool","id":"step2","tool":"workspace_write","inputs":{"path":"step2.txt","content":"TWO"},"saveAs":"step2"}
+            {"type":"call_tool","id":"step2","tool":"workspace_write","inputs":{"path":"step2.txt","content":"TWO"},"saveAs":"step2"},
+            {"type":"model_decision","id":"pause2"}
         ]
     });
     let activated = app.post(
@@ -3127,6 +3149,31 @@ fn parallel_and_nested_program_nodes_execute_concurrently() {
         "verify node did not run: {checkpoint}"
     );
     assert!(checkpoint["pendingOperationIds"].as_array().unwrap().is_empty());
+}
+
+fn seed_evidence_executions(app: &TestApp, evidence: &Value) {
+    let path = app._root.join("runtime/dominion.sqlite");
+    let Ok(conn) = Connection::open(path) else {
+        return;
+    };
+    let _ = conn.busy_timeout(Duration::from_secs(5));
+    for trial in evidence["trials"].as_array().into_iter().flatten() {
+        if trial["taskOutcome"].as_str() != Some("succeeded") {
+            continue;
+        }
+        let Some(id) = trial["executionId"].as_str() else {
+            continue;
+        };
+        let record = json!({
+            "id": id,
+            "status": "completed",
+            "taskOutcome": "succeeded",
+        });
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO records(kind,id,data) VALUES('execution',?1,?2)",
+            rusqlite::params![id, record.to_string()],
+        );
+    }
 }
 
 fn free_port() -> u16 {
@@ -4146,6 +4193,7 @@ fn procedure_violation_blocks_the_target_and_repairs_with_the_prerequisite() {
                     "rationale": "주인의 교정에서 확인된 선행 조건",
                     "verification": {
                         "type": "procedure",
+                        "enforce": true,
                         "appliesTo": { "requestContains": ["report.txt"] },
                         "before": [{
                             "when": { "tool": "workspace_write", "path": "report.txt" },

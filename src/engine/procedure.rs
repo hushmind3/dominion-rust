@@ -322,6 +322,7 @@ pub fn normalize(value: &Value) -> Value {
         "nodes": nodes,
         "edges": edges,
         "bindings": value["bindings"].clone(),
+        "enforce": value["enforce"].clone(),
     })
 }
 

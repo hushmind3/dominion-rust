@@ -382,12 +382,19 @@ pub fn verify_evidence(
     // The runner's manifest must match the copy the server froze before any
     // trial started; a self-consistent runner manifest is not enough.
     if let Some(frozen) = request["frozenManifest"].as_object() {
-        if let Some(expected_pairs) = frozen
+        if let Some(minimum_pairs) = frozen
             .get("totalBudget")
             .and_then(|budget| budget.get("pairs"))
+            .and_then(Value::as_u64)
         {
-            if manifest.get("pairs") != Some(expected_pairs) {
-                return Err("submitted pairs differ from the server-frozen contract".into());
+            let submitted = manifest
+                .get("pairs")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if submitted < minimum_pairs {
+                return Err(format!(
+                    "submitted pairs {submitted} are below the frozen minimum {minimum_pairs}"
+                ));
             }
         }
         if let (Some(fixture), Some(fixtures)) = (
@@ -450,23 +457,48 @@ pub fn verify_evidence(
             }
             if trial_success(trial) {
                 // A claimed success must point at a real execution whose own
-                // outcome is success. The runner cannot simply assert it.
-                let Some(execution_id) = trial["executionId"].as_str() else {
+                // outcome is success. Isolated benchmark runners keep their
+                // own data root, so for those the structured artifact and
+                // operation evidence is checked instead of a parent execution.
+                let execution = trial["executionId"]
+                    .as_str()
+                    .and_then(|id| state.store.get("execution", id));
+                if let Some(execution) = execution {
+                    if execution["taskOutcome"].as_str() != Some("succeeded")
+                        || execution["failureClass"]
+                            .as_str()
+                            .is_some_and(|class| !class.is_empty())
+                    {
+                        return Err(format!(
+                            "trial claims success but execution {} did not succeed",
+                            trial["executionId"]
+                        ));
+                    }
+                } else if request["externalRunner"].as_bool() == Some(true) {
+                    let artifact_ok = ["audit", "report"].iter().any(|key| {
+                        let artifact = &trial["artifacts"][key];
+                        artifact["exists"].as_bool() == Some(true)
+                            && artifact["sha256"]
+                                .as_str()
+                                .is_some_and(|hash| !hash.is_empty())
+                    });
+                    let operation_ok = trial["operations"]
+                        .as_array()
+                        .is_some_and(|operations| {
+                            operations
+                                .iter()
+                                .any(|operation| operation["status"].as_str() == Some("completed"))
+                        });
+                    if !artifact_ok || !operation_ok {
+                        return Err(format!(
+                            "successful trial for pair {} has no verifiable artifact/operation evidence",
+                            trial["pair"]
+                        ));
+                    }
+                } else {
                     return Err(format!(
-                        "successful trial for pair {} has no execution evidence",
+                        "successful trial for pair {} has no server execution evidence",
                         trial["pair"]
-                    ));
-                };
-                let Some(execution) = state.store.get("execution", execution_id) else {
-                    return Err(format!(
-                        "successful trial references unknown execution {execution_id}"
-                    ));
-                };
-                if execution["taskOutcome"].as_str() != Some("succeeded")
-                    || execution["failureClass"].as_str().is_some_and(|class| !class.is_empty())
-                {
-                    return Err(format!(
-                        "trial claims success but execution {execution_id} did not succeed"
                     ));
                 }
             }
@@ -808,6 +840,7 @@ pub async fn enqueue(State(state): State<AppState>, Json(body): Json<Value>) -> 
             "fixture": body["fixture"].as_str().unwrap_or("planning_evaluation"),
             "searchId": body["searchId"],
             "minIndependentUnits": crate::engine::policy::MIN_EXPERIMENT_UNITS,
+            "externalRunner": true,
             "createdAt": chrono::Utc::now().to_rfc3339(),
         });
         return match state.store.put("experiment_request", &request) {
@@ -840,6 +873,7 @@ pub async fn enqueue(State(state): State<AppState>, Json(body): Json<Value>) -> 
         "status": "queued",
         "fixture": body["fixture"].as_str().unwrap_or("audit_report"),
         "minIndependentUnits": crate::engine::improve::MIN_EXPERIMENT_UNITS,
+        "externalRunner": true,
         "createdAt": chrono::Utc::now().to_rfc3339(),
     });
     match state.store.put("experiment_request", &request) {

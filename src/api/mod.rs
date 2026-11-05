@@ -235,7 +235,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/youtube/status", get(compat::youtube_status))
         .route("/api/youtube/uploads", get(compat::empty_list))
         .route("/api/youtube/uploads/:id", get(video::job))
-        .route("/api/youtube/:action", post(compat::not_ported))
+        .route("/api/youtube/:action", post(compat::youtube_action))
         .route("/api/video/status", get(video::status))
         .route(
             "/api/video/config",
@@ -256,7 +256,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/video/open-models", post(video::not_available))
         .route("/api/video/workflows", get(video::empty_list))
         .route("/api/video/:action", post(video::not_available))
-        .route("/api/system/pick-folder", post(compat::not_ported))
+        .route("/api/system/pick-folder", post(compat::pick_folder))
         .route("/api/channels/catalog", get(channels::catalog_handler))
         .route("/api/channels", get(channels::list).post(channels::save))
         .route(
@@ -273,7 +273,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/improvements/:id/:action", post(improvements::decide))
         .route("/api/executions/:id", get(executions::one))
         .route("/api/executions/:id/cancel", post(executions::cancel))
-        .route("/api/webhooks/:id", post(compat::not_ported));
+        .route("/api/webhooks/:id", post(compat::webhook));
 
     for kind in collections::COLLECTIONS {
         router = router
