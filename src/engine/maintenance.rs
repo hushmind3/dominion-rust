@@ -58,7 +58,7 @@ fn offsite_directory() -> Option<PathBuf> {
 
 /// Creates an encrypted snapshot. The plaintext SQLite file exists only as a
 /// short-lived temp during VACUUM INTO and is removed before returning.
-pub fn backup_now(state: &AppState) -> Result<PathBuf, String> {
+pub fn create_snapshot(state: &AppState) -> Result<PathBuf, String> {
     let directory = state.config.data_dir.join("backups");
     std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
@@ -93,6 +93,23 @@ pub fn backup_now(state: &AppState) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Scheduled path: create locally, then best-effort remote transfer. A remote
+/// failure never deletes the local snapshot.
+pub async fn backup_now(state: &AppState) -> Result<PathBuf, String> {
+    let path = create_snapshot(state)?;
+    let _ = crate::engine::remote_backup::upload_if_configured(state, &path).await;
+    Ok(path)
+}
+
+/// API path: report the remote transfer outcome to the caller.
+pub async fn backup_now_with_remote(
+    state: &AppState,
+) -> Result<(PathBuf, Option<crate::engine::remote_backup::RemoteReport>), String> {
+    let path = create_snapshot(state)?;
+    let report = crate::engine::remote_backup::upload_if_configured(state, &path).await;
+    Ok((path, report))
+}
+
 /// Starts the background backup loop. `DOMINION_BACKUP_INTERVAL_SECS=0`
 /// disables it; the default is hourly with five retained snapshots.
 pub fn start(state: AppState) {
@@ -108,7 +125,7 @@ pub fn start(state: AppState) {
             if state.maintenance_mode() {
                 continue;
             }
-            match backup_now(&state) {
+            match backup_now(&state).await {
                 Ok(path) => state.store.audit(
                     "backup.created",
                     serde_json::json!({"path": path.to_string_lossy()}),
@@ -150,7 +167,7 @@ mod tests {
             "provider",
             &serde_json::json!({"id":"p1","name":"encrypted backup","baseUrl":"http://x/v1"}),
         );
-        let path = backup_now(&state).unwrap();
+        let path = create_snapshot(&state).unwrap();
         assert_eq!(path.extension().and_then(|value| value.to_str()), Some("enc"));
         let sealed = std::fs::read(&path).unwrap();
         assert!(!sealed.starts_with(b"SQLite format 3"));

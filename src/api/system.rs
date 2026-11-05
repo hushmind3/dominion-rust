@@ -169,14 +169,23 @@ pub async fn scheduler_runs(State(state): State<AppState>) -> Json<Value> {
 /// Creates a consistent snapshot inside the data directory for a restore drill.
 pub async fn create_backup(State(state): State<AppState>) -> axum::response::Response {
     use axum::response::IntoResponse;
-    match crate::engine::maintenance::backup_now(&state) {
-        Ok(path) => {
+    match crate::engine::maintenance::backup_now_with_remote(&state).await {
+        Ok((path, remote)) => {
             let bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
             Json(json!({
                 "ok": true,
                 "path": path.to_string_lossy(),
                 "bytes": bytes,
                 "encrypted": true,
+                "remote": remote.map(|report| json!({
+                    "attempted": true,
+                    "uploaded": report.uploaded,
+                    "verified": report.verified,
+                    "url": report.url,
+                    "sha256": report.sha256,
+                    "attempts": report.attempts,
+                    "error": report.error,
+                })),
             }))
             .into_response()
         }

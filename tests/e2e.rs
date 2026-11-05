@@ -1991,6 +1991,163 @@ fn secret_key_rotation_preserves_provider_secrets_and_restores() {
     app.post("/api/system/maintenance", &json!({"enabled":false}));
 }
 
+/// Minimal HTTP sink for remote backup PUTs. Success mode echoes the
+/// x-dominion-sha256 header; failure mode returns 500.
+fn remote_backup_sink(fail: bool) -> (u16, Arc<Mutex<Vec<(String, String)>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let observed = received.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let observed = observed.clone();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let end = loop {
+                    let read = stream.read(&mut chunk).unwrap_or(0);
+                    if read == 0 {
+                        return;
+                    }
+                    bytes.extend_from_slice(&chunk[..read]);
+                    if let Some(at) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        break at + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&bytes[..end]).to_string();
+                let path = headers
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("")
+                    .to_string();
+                let hash = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_lowercase()
+                            .strip_prefix("x-dominion-sha256:")
+                            .map(|value| value.trim().to_string())
+                    })
+                    .unwrap_or_default();
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                while bytes.len() < end + length {
+                    let read = stream.read(&mut chunk).unwrap_or(0);
+                    if read == 0 {
+                        return;
+                    }
+                    bytes.extend_from_slice(&chunk[..read]);
+                }
+                if fail {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    return;
+                }
+                observed.lock().unwrap().push((path, hash.clone()));
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nx-dominion-sha256: {hash}\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    (port, received)
+}
+
+#[test]
+fn scheduled_backup_uploads_to_a_remote_target() {
+    let _serial = serial();
+    let (provider_port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"원격 백업"},"finish_reason":"stop"}]})]
+    });
+    let (remote_port, received) = remote_backup_sink(false);
+    let remote_url = format!("http://127.0.0.1:{remote_port}/backups");
+    let extra = [
+        ("DOMINION_BACKUP_INTERVAL_SECS", "1"),
+        ("DOMINION_BACKUP_KEEP", "2"),
+        ("DOMINION_BACKUP_REMOTE_URL", remote_url.as_str()),
+        ("DOMINION_BACKUP_REMOTE_RETRIES", "1"),
+    ];
+    let app = TestApp::new_with_env(provider_port, "native", &extra);
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let _ = app.chat(&json!({"input":"원격 백업 작업","autoLearning":false}));
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut uploaded = false;
+    while Instant::now() < deadline {
+        if received.lock().unwrap().iter().any(|(path, hash)| {
+            path.ends_with(".sqlite.enc") && !hash.is_empty()
+        }) {
+            uploaded = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(uploaded, "backup was not uploaded to the remote sink");
+    let audit = app.get("/api/audit");
+    assert!(
+        audit.as_array().unwrap().iter().any(|event| {
+            event["event"] == "backup.remote_uploaded"
+        }),
+        "remote upload audit missing: {audit}"
+    );
+}
+
+#[test]
+fn a_failed_remote_upload_keeps_the_local_snapshot() {
+    let _serial = serial();
+    let (provider_port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"원격 실패"},"finish_reason":"stop"}]})]
+    });
+    let (remote_port, _) = remote_backup_sink(true);
+    let remote_url = format!("http://127.0.0.1:{remote_port}/backups");
+    let extra = [
+        ("DOMINION_BACKUP_INTERVAL_SECS", "1"),
+        ("DOMINION_BACKUP_KEEP", "2"),
+        ("DOMINION_BACKUP_REMOTE_URL", remote_url.as_str()),
+        ("DOMINION_BACKUP_REMOTE_RETRIES", "0"),
+        ("DOMINION_BACKUP_REMOTE_TIMEOUT_SECS", "2"),
+    ];
+    let app = TestApp::new_with_env(provider_port, "native", &extra);
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let _ = app.chat(&json!({"input":"원격 실패 작업","autoLearning":false}));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut failed = false;
+    while Instant::now() < deadline {
+        let audit = app.get("/api/audit");
+        if audit
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["event"] == "backup.remote_failed")
+        {
+            failed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(failed, "remote failure audit missing");
+    let backups = app._root.join("runtime/backups");
+    let snapshots = std::fs::read_dir(&backups)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry.path().extension().and_then(|value| value.to_str()) == Some("enc")
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    assert!(snapshots > 0, "local snapshot was removed after remote failure");
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

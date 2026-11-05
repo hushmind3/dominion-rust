@@ -265,7 +265,7 @@ mod tests {
             "provider",
             &json!({"id":"p1","name":"rotation","baseUrl":"http://x/v1"}),
         );
-        let backup = crate::engine::maintenance::backup_now(&state).unwrap();
+        let backup = crate::engine::maintenance::create_snapshot(&state).unwrap();
         let sealed = std::fs::read(&backup).unwrap();
         assert!(KeyRing::is_versioned(&sealed));
         assert_eq!(KeyRing::load_or_create(&dir).unwrap().active_version(), 1);
@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn keep_old_retains_the_previous_key_version() {
         let (state, dir) = state();
-        let _ = crate::engine::maintenance::backup_now(&state).unwrap();
+        let _ = crate::engine::maintenance::create_snapshot(&state).unwrap();
         let report = rotate(&state, true).unwrap();
         assert_eq!(report.retained_versions, vec![1, 2]);
         assert!(key_file(&dir.join("backup-keys"), 1).exists());
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn a_missing_key_version_cannot_decrypt() {
         let (state, dir) = state();
-        let _ = crate::engine::maintenance::backup_now(&state).unwrap();
+        let _ = crate::engine::maintenance::create_snapshot(&state).unwrap();
         let report = rotate(&state, false).unwrap();
         // Forge an envelope claiming the removed version.
         let mut forged = MAGIC.to_vec();

@@ -271,3 +271,55 @@ rotation은 **maintenance mode에서만** API로 허용된다.
 - 원격 키 escrow/HSM, 키 서명.
 - old key 파일 보존 기간/자동 삭제 정책.
 - 다중기기에서 vault key 배포/ACL.
+
+## 9. Remote offsite transfer (2026-11-05)
+
+### 설정
+
+| env | 의미 | 기본 |
+|---|---|---|
+| `DOMINION_BACKUP_REMOTE_URL` | HTTP/S3-compatible PUT base URL | off |
+| `DOMINION_BACKUP_REMOTE_TOKEN` | Bearer token | 없음 |
+| `DOMINION_BACKUP_REMOTE_RETRIES` | 재시도 횟수 | 2 (최대 5) |
+| `DOMINION_BACKUP_REMOTE_TIMEOUT_SECS` | 요청 timeout | 30 (1..300) |
+
+업로드 대상 URL은 `base/<backup filename>`이다. PUT body는 암호화된
+`.sqlite.enc` 파일 그대로이며 `x-dominion-sha256` 헤더를 함께 보낸다.
+
+### 검증
+
+- PUT 2xx 후 다음 중 하나로 checksum을 검증한다.
+  - 응답 `x-dominion-sha256` 헤더가 로컬 SHA-256과 일치
+  - GET으로 재다운로드한 body의 SHA-256이 일치
+- 검증 실패/HTTP 오류/네트워크 오류는 재시도한다.
+- 최종 성공: audit `backup.remote_uploaded {path,url,sha256,attempts}`
+- 최종 실패: audit `backup.remote_failed {path,url,attempts,error}`
+- **원격 실패는 로컬 백업을 삭제하지 않는다.**
+
+### 연결
+
+- `maintenance::backup_now`(scheduler)는 로컬 snapshot 생성 후 remote 업로드를
+  best-effort로 수행한다. 실패해도 Ok(local path)를 반환한다.
+- `POST /api/system/backup`은 `backup_now_with_remote`로 결과를 응답에 포함한다.
+  `{remote:{attempted,uploaded,verified,url,sha256,attempts,error}}`
+
+### 검증 결과
+
+- unit:
+  - `upload_verifies_the_remote_checksum`
+  - `upload_retries_then_succeeds` (첫 500 후 성공, attempts=2)
+  - `a_checksum_mismatch_is_a_failure_and_keeps_the_local_file`
+- E2E:
+  - `scheduled_backup_uploads_to_a_remote_target`
+    (1초 주기 backup → remote sink가 `.sqlite.enc`와 SHA-256 헤더 수신,
+    `backup.remote_uploaded` audit)
+  - `a_failed_remote_upload_keeps_the_local_snapshot`
+    (500 응답 → `backup.remote_failed` audit, 로컬 `.enc` 유지)
+
+전체: `262 unit + 46 E2E + 14 benchmark` 통과.
+
+### 남은 것
+
+- 실제 S3 multipart/presigned URL 흐름과 원격 보존 정책(immutability).
+- 오프사이트 전송 재시도 backoff/알림.
+- 장시간 soak, 다중기기 ACL.
