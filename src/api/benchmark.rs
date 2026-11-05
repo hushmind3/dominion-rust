@@ -47,3 +47,24 @@ pub async fn seed_strategy(State(state): State<AppState>, Json(body): Json<Value
     let record = improve::set_assistance_mode(&state, id, mode).unwrap_or(record);
     Json(record).into_response()
 }
+
+/// Benchmark-only promotion endpoint. Runs or reports an isolated experiment;
+/// small, inconclusive samples are recorded but never promote.
+pub async fn record_experiment(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    if std::env::var("DOMINION_BENCHMARK").as_deref() != Ok("1") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let strategy_id = body["strategyId"].as_str().unwrap_or("");
+    if strategy_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "strategyId is required").into_response();
+    }
+    match improve::apply_experiment_result(&state, strategy_id, &body) {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => {
+            (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
+        }
+    }
+}

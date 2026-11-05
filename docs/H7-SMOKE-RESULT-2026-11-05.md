@@ -72,3 +72,19 @@ H3 공통 gateway/admission/usage 변경 후 같은 fixture를 다시 실행했�
 - treatment가 더 느렸다(34.3s vs 22.9s). 로컬 모델 admission 직렬화와 실행 단계 수
   차이 때문일 수 있으나, 표본이 작아 원인을 단정하지 않는다.
 - 성공률 차이 0/3 vs 3/3은 이전 측정과 일치하지만 여전히 성능 개선 주장이 아니다.
+
+## 5. real 10-pair 측정 및 승격 (2026-11-05)
+
+H8 폐쇄 루프 연결 후 `BENCH_MODE=real BENCH_PAIRS=10`으로 실행했다.
+
+| arm | runs | strict success | compliance | p50 | tokens |
+|---|---|---|---|---|---|
+| baseline | 10 | 0/10 | 0 | 19,063ms | 28,846 |
+| treatment | 10 | 10/10 | 10 | 25,998ms | 37,854 |
+
+- experimentId: `4c75a29d-e695-430e-a203-a691e9141280`
+- effect: delta 1.0, CI [0.141, 1.0], units 10, verdict `preliminary_support`
+- runner가 실험 결과를 엔진에 제출해 treatment 전략이 실제로
+  `validated / E2 / isolated_experiment`로 승격되었다.
+- 상세: `docs/H8-CLOSED-LOOP-2026-11-05.md`.
+- 여전히 단일 fixture이며 일반 성능 주장이 아니다.

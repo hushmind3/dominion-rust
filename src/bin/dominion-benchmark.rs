@@ -753,6 +753,7 @@ async fn main() -> Result<(), String> {
         );
     }
     let verification = seed_verification();
+    let mut treatment_strategy_id: Option<String> = None;
     for arm in ["baseline", "treatment"] {
         let seeded = post(
             &client,
@@ -768,6 +769,9 @@ async fn main() -> Result<(), String> {
         .await?;
         if seeded["assistanceMode"].as_str() != Some(arm_assistance_mode(arm)) {
             return Err(format!("could not seed {arm} strategy: {seeded}"));
+        }
+        if arm == "treatment" {
+            treatment_strategy_id = seeded["id"].as_str().map(str::to_string);
         }
     }
 
@@ -1054,6 +1058,36 @@ async fn main() -> Result<(), String> {
     }
 
     let summary = write_outputs(&root, &manifest, &trials)?;
+
+    // Closed loop: only a real experiment with enough independent units may
+    // promote or roll back the treatment strategy. Smoke runs are recorded in
+    // the summary but never change production policy.
+    if cfg.mode == "real" {
+        if let Some(strategy_id) = treatment_strategy_id.as_deref() {
+            let effect = &summary["effect"];
+            match post(
+                &client,
+                &format!("{base}/api/benchmark/experiments"),
+                json!({
+                    "strategyId": strategy_id,
+                    "experimentId": summary["experimentId"],
+                    "verdict": effect["verdict"],
+                    "delta": effect["delta"],
+                    "independentUnits": effect["independentUnits"],
+                    "oracleVersion": manifest["oracleVersion"],
+                }),
+            )
+            .await
+            {
+                Ok(record) => println!(
+                    "promotion: status={} evidence={}",
+                    record["status"].as_str().unwrap_or(""),
+                    record["evidenceGrade"].as_str().unwrap_or("")
+                ),
+                Err(error) => println!("promotion skipped: {error}"),
+            }
+        }
+    }
     println!("{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
     Ok(())
 }

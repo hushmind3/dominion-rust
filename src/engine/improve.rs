@@ -551,8 +551,15 @@ pub fn execution_updates(
                     rate, baseline
                 ));
             } else {
+                // Production observation is evidence (E1), not an isolated
+                // experiment (E2). Keep the strategy active but require an
+                // explicit paired experiment before claiming validation.
                 improvement["status"] = json!("validated");
-                improvement["evidenceGrade"] = json!("E2");
+                improvement["evidenceGrade"] = json!("E1_observed");
+                improvement["validatedBy"] = json!("production_observation");
+                improvement["requiresExperiment"] = json!(
+                    improvement["experimentRevision"].is_null()
+                );
                 improvement["validatedAt"] = json!(chrono::Utc::now().to_rfc3339());
             }
         }
@@ -665,6 +672,91 @@ pub fn recover_finalizations(state: &AppState) {
     }
 }
 
+/// Minimum independent paired trials before an experiment can change a
+/// strategy's evidence grade. Observation counters never reach this gate.
+pub const MIN_EXPERIMENT_UNITS: u64 = 8;
+
+/// Applies an isolated paired experiment result to a strategy. This is the
+/// only path that can stamp E2 / `validatedBy=isolated_experiment` or roll back
+/// on measured regression; production observation can only produce E1.
+pub fn apply_experiment_result(
+    state: &AppState,
+    strategy_id: &str,
+    experiment: &Value,
+) -> Result<Value, String> {
+    let Some(mut record) = state.store.get("improvement", strategy_id) else {
+        return Err("전략을 찾을 수 없습니다.".into());
+    };
+    if record["kind"].as_str() != Some("strategy") {
+        return Err("실험 대상은 strategy 여야 합니다.".into());
+    }
+    if !matches!(record["status"].as_str(), Some("adopted" | "validated")) {
+        return Err("활성 상태의 전략만 실험 결과를 적용할 수 있습니다.".into());
+    }
+    let units = experiment["independentUnits"].as_u64().unwrap_or(0);
+    if units == 0 {
+        return Err("독립 실험 표본이 없습니다.".into());
+    }
+    let verdict = experiment["verdict"].as_str().unwrap_or("inconclusive");
+    let delta = experiment["delta"].as_f64().unwrap_or(0.0);
+    let experiment_id = experiment["experimentId"].as_str().unwrap_or("");
+    let revision = crate::engine::memory::stable_id(&[
+        experiment_id,
+        experiment["oracleVersion"].as_str().unwrap_or(""),
+        &units.to_string(),
+        &format!("{delta:.6}"),
+    ]);
+    record["lastExperiment"] = json!({
+        "experimentId": experiment_id,
+        "verdict": verdict,
+        "delta": delta,
+        "independentUnits": units,
+        "oracleVersion": experiment["oracleVersion"],
+        "evaluatedAt": chrono::Utc::now().to_rfc3339(),
+    });
+
+    if units >= MIN_EXPERIMENT_UNITS && verdict == "regressed" {
+        record["status"] = json!("rolled_back");
+        record["evidenceGrade"] = json!("E2");
+        record["rolledBackAt"] = json!(chrono::Utc::now().to_rfc3339());
+        record["reason"] = json!(format!(
+            "격리 실험에서 성공률 변화 {delta:+.2} 로 악화되어 롤백했습니다."
+        ));
+        record["experimentRevision"] = json!(revision);
+    } else if units >= MIN_EXPERIMENT_UNITS
+        && matches!(verdict, "improved" | "preliminary_support")
+        && delta > 0.0
+    {
+        record["status"] = json!("validated");
+        record["evidenceGrade"] = json!("E2");
+        record["validatedBy"] = json!("isolated_experiment");
+        record["requiresExperiment"] = json!(false);
+        record["experimentRevision"] = json!(revision);
+        record["validatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    } else {
+        // Inconclusive or underpowered experiments are recorded but never
+        // promote a policy.
+        record["requiresExperiment"] = json!(true);
+    }
+    let saved = state
+        .store
+        .put("improvement", &record)
+        .ok_or("실험 결과를 저장할 수 없습니다.")?;
+    state.bus.record("improvement", &saved);
+    state.store.audit(
+        "improvement.experiment_result",
+        json!({
+            "id": strategy_id,
+            "experimentId": experiment_id,
+            "verdict": verdict,
+            "units": units,
+            "status": saved["status"],
+            "evidenceGrade": saved["evidenceGrade"],
+        }),
+    );
+    Ok(saved)
+}
+
 pub fn list(state: &AppState) -> Vec<Value> {
     state.store.all("improvement")
 }
@@ -704,6 +796,94 @@ mod tests {
             .store
             .put("session", &json!({"id":"s","agentId":"a"}));
         (state, dir)
+    }
+
+    #[test]
+    fn only_real_experiments_promote_or_roll_back_a_strategy() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let base = json!({
+            "id":"strategy-x","kind":"strategy","scope":"agent","agentId":"a",
+            "partitionKey":scope.partition_key,"status":"adopted","scoreVersion":2,
+            "evidenceGrade":"E1_observed","text":"run audit before report",
+            "uses":5,"successes":5,"failures":0,"appliedExecutionIds":[]
+        });
+        state.store.put("improvement", &base);
+
+        // Underpowered or inconclusive samples never promote.
+        let small = json!({"experimentId":"exp-1","verdict":"improved","delta":0.4,"independentUnits":3,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, "strategy-x", &small).unwrap();
+        assert_eq!(record["status"], "adopted");
+        assert_eq!(record["evidenceGrade"], "E1_observed");
+        assert_eq!(record["requiresExperiment"], true);
+        assert_eq!(record["lastExperiment"]["experimentId"], "exp-1");
+
+        let improved = json!({"experimentId":"exp-2","verdict":"improved","delta":0.3,"independentUnits":8,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, "strategy-x", &improved).unwrap();
+        assert_eq!(record["status"], "validated");
+        assert_eq!(record["evidenceGrade"], "E2");
+        assert_eq!(record["validatedBy"], "isolated_experiment");
+        assert_eq!(record["requiresExperiment"], false);
+        assert!(record["experimentRevision"].as_str().is_some_and(|value| !value.is_empty()));
+
+        let regressed = json!({"experimentId":"exp-3","verdict":"regressed","delta":-0.2,"independentUnits":8,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, "strategy-x", &regressed).unwrap();
+        assert_eq!(record["status"], "rolled_back");
+        assert_eq!(record["evidenceGrade"], "E2");
+        assert!(record["rolledBackAt"].is_string());
+
+        // The runner's conservative bound names a supported effect
+        // `preliminary_support`; it is still an experiment promotion.
+        state.store.put(
+            "improvement",
+            &json!({
+                "id":"strategy-y","kind":"strategy","scope":"agent","agentId":"a",
+                "partitionKey":scope.partition_key,"status":"adopted","scoreVersion":2,
+                "evidenceGrade":"E1_observed","text":"verify output","uses":5,"successes":5,
+                "failures":0,"appliedExecutionIds":[]
+            }),
+        );
+        let supported = json!({"experimentId":"exp-4","verdict":"preliminary_support","delta":0.9,"independentUnits":10,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, "strategy-y", &supported).unwrap();
+        assert_eq!(record["status"], "validated");
+        assert_eq!(record["evidenceGrade"], "E2");
+        assert_eq!(record["validatedBy"], "isolated_experiment");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn production_observation_is_e1_not_experimental_e2() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        state.store.put(
+            "improvement",
+            &json!({
+                "id":"imp-observed","kind":"strategy","scope":"agent","agentId":"a",
+                "partitionKey":scope.partition_key,"status":"adopted",
+                "scoreVersion":2,"evidenceGrade":"E0","text":"check outputs",
+                "baselineSuccess":0.5,"uses":4,"successes":4,"failures":0,
+                "appliedExecutionIds":[]
+            }),
+        );
+        let execution = json!({
+            "id":"exec-observed","sessionId":"s","agentId":"a",
+            "taskOutcome":"succeeded","appliedImprovementIds":["imp-observed"],
+            "strategyCompliance":[{
+                "strategyId":"imp-observed","applicable":true,
+                "result":{"verified":true,"triggered":true,"followed":true}
+            }]
+        });
+        let updates = execution_updates(&state, &execution).unwrap();
+        let updated = updates
+            .iter()
+            .find(|item| item["id"] == "imp-observed")
+            .expect("observation update");
+        assert_eq!(updated["uses"], 5);
+        assert_eq!(updated["status"], "validated");
+        assert_eq!(updated["evidenceGrade"], "E1_observed");
+        assert_eq!(updated["validatedBy"], "production_observation");
+        assert_eq!(updated["requiresExperiment"], true);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -47,6 +47,7 @@ pub fn router(state: AppState) -> Router {
         // core
         .route("/api/health", get(system::health))
         .route("/api/benchmark/strategies", post(benchmark::seed_strategy))
+        .route("/api/benchmark/experiments", post(benchmark::record_experiment))
         .route("/api/benchmark/identity", get(system::benchmark_identity))
         .route("/api/status", get(system::status))
         .route(
