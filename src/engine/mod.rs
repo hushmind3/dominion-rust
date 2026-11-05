@@ -11,6 +11,7 @@ pub mod adaptation;
 pub mod episode;
 pub mod experience;
 pub mod procedure;
+pub mod program;
 pub mod verification;
 pub mod reflect;
 pub mod goals;

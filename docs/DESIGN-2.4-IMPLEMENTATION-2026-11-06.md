@@ -65,3 +65,67 @@ E2E `a_failed_call_is_not_repeated_and_the_model_adapts`:
    결정하는 실제 실행.
 3. Experience에서 조건 predicate를 추출해 새 task에서 적용/배제/Unknown을
    판정하고 snapshot에 revision 기록.
+
+## 4. Typed Program IR + checkpoint (11절 #3, 1단계)
+
+### 타입/검증
+
+`engine/program.rs`
+
+- Nodes: `observe`, `call_tool`, `branch`, `loop` (typed/validated).
+- Predicate: `exists`, `equals`, `compare`, `not`, `all`, `any`.
+- inputs: literal 또는 `{from: observationId, path: JSON-pointer}`.
+- `validate`는 revision/nodes/필수 필드/중첩 노드를 검사한다.
+
+### Checkpoint
+
+execution.programCheckpoint:
+
+```
+{schemaVersion, programRevision, status, frameStack, nextIndex,
+ resolvedInputs, completedOperationIds, pendingOperationIds}
+```
+
+- 각 node 시작/도구 호출 전후/완료 시 저장.
+- 재개 시 같은 revision이면 `nextIndex`부터 시작하고,
+  `completedOperationIds`에 있는 node는 **재실행하지 않는다**.
+- `pendingOperationIds`는 도구 호출 중임을 기록한다.
+
+### 실행 + Branch
+
+새 `execution` 정책 슬롯의 `parameters.program`을 runtime이 읽어,
+model loop 전에 공통 `dispatch_tool_call` gateway로 실행한다.
+
+E2E `a_typed_execution_program_takes_the_failure_branch`:
+
+1. `shell_exec exit 7` 실패
+2. `equals(try.exitCode,0)` predicate가 false
+3. else branch의 `workspace_write fallback.txt=FALLBACK` 실행
+4. 결과:
+   - `fallback.txt` 존재, `primary.txt` 없음
+   - execution.programCheckpoint.status=completed
+   - completedOperationIds에 try/check/fallback
+   - pending 비어 있음
+
+### 재개 검증
+
+unit test `program_resumes_from_a_durable_checkpoint_without_repeating_completed_tools`:
+
+- `try`가 완료된 checkpoint(`nextIndex=1`, resolvedInputs.try.exitCode=7)를 저장
+- 새 실행에서 program을 재개
+- `try`는 재실행되지 않고(operation 1개만 존재), fallback branch가 실행됨
+- checkpoint가 completed로 갱신됨
+
+이것은 **runtime 함수 수준의 restart/resume 검증**이다. 프로세스 kill 후
+자동으로 program을 이어받는 scheduler 통합은 아직 아니다.
+
+### 한계
+
+- `loop`는 typed/validated이지만 실행 시 명시적 unsupported 오류.
+- branch 내부 branch/loop는 아직 미지원(명시적 오류).
+- 프로그램 합성(모델이 Program을 생성/수정)은 아직 없다.
+- execution 슬롯은 아직 benchmark force activate로 테스트하며, 실험 gate를
+  통한 실사용 경로는 다음 단계다.
+- `observe`는 last observation 복사 수준이다.
+
+전체: `267 unit + 49 E2E + 16 benchmark` 통과.

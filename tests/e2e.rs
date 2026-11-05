@@ -2217,6 +2217,100 @@ fn only_one_runner_can_settle_and_promote_an_experiment() {
     assert_eq!(requests.as_array().unwrap()[0]["status"], "completed");
 }
 
+#[test]
+fn a_failed_call_is_not_repeated_and_the_model_adapts() {
+    let _serial = serial();
+    let calls = Arc::new(Mutex::new(0u32));
+    let counter = calls.clone();
+    let (port, _) = scripted_provider(move |_| {
+        let mut count = counter.lock().unwrap();
+        *count += 1;
+        match *count {
+            1 => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"fail-1","type":"function","function":{"name":"shell_exec","arguments":"{\"command\":\"exit 7\"}"}}]},"finish_reason":"tool_calls"}]})],
+            2 => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"fail-2","type":"function","function":{"name":"shell_exec","arguments":"{\"command\":\"exit 7\"}"}}]},"finish_reason":"tool_calls"}]})],
+            3 => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"adapt-1","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"adapted.txt\",\"content\":\"OK\"}"}}]},"finish_reason":"tool_calls"}]})],
+            _ => vec![json!({"choices":[{"delta":{"content":"다른 방법으로 완료했습니다."},"finish_reason":"stop"}]})],
+        }
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let _stream = app.chat(&json!({"input":"adapted.txt 파일을 만들어줘","autoLearning":false}));
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("adapted.txt")).unwrap_or_default(),
+        "OK"
+    );
+    let executions = app.get("/api/executions");
+    let execution = &executions.as_array().unwrap()[0];
+    let adaptations = execution["adaptations"].as_array().cloned().unwrap_or_default();
+    assert!(
+        adaptations.iter().any(|item| item["observation"]["tool"] == "shell_exec"),
+        "adaptation was not recorded: {execution}"
+    );
+    let operations = {
+        let execution_id = execution["id"].as_str().unwrap();
+        app.get(&format!("/api/executions/{execution_id}/operations"))
+    };
+    let shell_calls = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|operation| operation["tool"] == "shell_exec")
+        .count();
+    assert_eq!(shell_calls, 1, "failed call was re-executed: {operations}");
+    let writes = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|operation| operation["tool"] == "workspace_write")
+        .count();
+    assert_eq!(writes, 1, "adapted action did not run: {operations}");
+}
+
+#[test]
+fn a_typed_execution_program_takes_the_failure_branch() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"프로그램 결과로 완료했습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let program = json!({
+        "revision":"e2e-program-1",
+        "nodes":[
+            {"type":"call_tool","id":"try","tool":"shell_exec","inputs":{"command":"exit 7"},"saveAs":"try"},
+            {"type":"branch","id":"check",
+             "predicate":{"type":"equals","from":"try","path":"/exitCode","value":0},
+             "then":[{"type":"call_tool","id":"primary","tool":"workspace_write","inputs":{"path":"primary.txt","content":"PRIMARY"}}],
+             "else":[{"type":"call_tool","id":"fallback","tool":"workspace_write","inputs":{"path":"fallback.txt","content":"FALLBACK"}}]}
+        ]
+    });
+    let activated = app.post(
+        "/api/benchmark/policies/state",
+        &json!({"slot":"execution","name":"e2e-program","parameters":{"program":program}}),
+    );
+    assert_eq!(activated["active"]["status"], "active", "{activated}");
+
+    let stream = app.chat(&json!({"input":"fallback.txt 파일을 만들어줘","autoLearning":false}));
+    assert!(!stream.contains("\"type\":\"error\""), "{stream}");
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("fallback.txt")).unwrap_or_default(),
+        "FALLBACK"
+    );
+    assert!(!app._root.join("primary.txt").exists());
+    let executions = app.get("/api/executions");
+    let execution = &executions.as_array().unwrap()[0];
+    let checkpoint = &execution["programCheckpoint"];
+    assert_eq!(checkpoint["status"], "completed", "{execution}");
+    assert_eq!(checkpoint["programRevision"], "e2e-program-1");
+    let completed = checkpoint["completedOperationIds"].as_array().unwrap();
+    assert!(completed.iter().any(|item| item == "try"));
+    assert!(completed.iter().any(|item| item == "fallback"));
+    assert!(
+        checkpoint["pendingOperationIds"].as_array().unwrap().is_empty(),
+        "{checkpoint}"
+    );
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

@@ -349,6 +349,7 @@ async fn run_turn_body(
     let mut acceptance_retries = 0usize;
     let mut procedure_repairs = 0usize;
     let recovery_policy = crate::engine::policy::active(state, "recovery");
+    let program_policy = crate::engine::policy::active(state, "execution");
     let (max_acceptance_retries, max_procedure_repairs) = recovery_policy
         .as_ref()
         .map(|policy| {
@@ -420,6 +421,14 @@ async fn run_turn_body(
             "id": policy["id"],
             "revision": policy["revision"],
             "parameters": policy["parameters"],
+        }));
+    }
+    if let Some(policy) = &program_policy {
+        context_items.push(json!({
+            "kind": "execution_policy",
+            "id": policy["id"],
+            "revision": policy["revision"],
+            "programRevision": policy["parameters"]["program"]["revision"],
         }));
     }
     let plan_requested = match planning_policy.as_ref().and_then(|policy| {
@@ -585,6 +594,32 @@ async fn run_turn_body(
         std::collections::HashMap::new();
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED);
+
+    // Durable program policies run through the same tool gateway before the
+    // reactive model loop. A failure branch can therefore choose a different
+    // action without a second execution engine.
+    if request.tools_execution_enabled {
+        if let Some(policy) = &program_policy {
+            if let Some(program) = policy["parameters"]["program"].as_object() {
+                let program = crate::engine::program::validate(&json!(program))?;
+                let program_messages = run_program(
+                    state,
+                    tx,
+                    &session,
+                    request,
+                    session_id,
+                    execution_id,
+                    &program,
+                    metrics,
+                    &mut budget,
+                    &mut op_seq,
+                    generation,
+                )
+                .await?;
+                messages.extend(program_messages);
+            }
+        }
+    }
 
     // `toolsEnabled` controls whether the model may call tools. It is not an
     // execution permission for the Rust harness; harness nodes use the same
@@ -1297,6 +1332,211 @@ async fn run_harness_nodes(
         }
     }
     Ok(synthetic)
+}
+
+fn save_program_checkpoint(state: &AppState, execution_id: &str, checkpoint: &Value) {
+    if let Some(mut execution) = state.store.get("execution", execution_id) {
+        execution["programCheckpoint"] = checkpoint.clone();
+        if let Some(saved) = state.store.put("execution", &execution) {
+            state.bus.record("execution", &saved);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_program_tool(
+    state: &AppState,
+    tx: &UnboundedSender<Value>,
+    session: &Value,
+    request: &TurnRequest,
+    session_id: &str,
+    execution_id: &str,
+    node: &Value,
+    resolved: &mut Value,
+    checkpoint: &mut Value,
+    metrics: &std::sync::Mutex<Metrics>,
+    budget: &mut super::budget::BudgetLedger,
+    op_seq: &mut u64,
+    round: usize,
+) -> Result<Value, String> {
+    let node_id = node["id"].as_str().unwrap_or("");
+    if node_id.is_empty() {
+        return Err("program call_tool node needs an id".into());
+    }
+    let tool = node["tool"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or("program call_tool needs a tool")?;
+    let arguments = crate::engine::program::resolve_inputs(&node["inputs"], resolved)?;
+    if !budget.charge_tool() {
+        return Err(format!(
+            "program tool budget exhausted at node {node_id}"
+        ));
+    }
+    *op_seq += 1;
+    let call = ToolCall {
+        id: format!("program-{node_id}-{}", uuid::Uuid::new_v4()),
+        name: tool.to_string(),
+        arguments: arguments.to_string(),
+    };
+    checkpoint["pendingOperationIds"] = json!([node_id]);
+    save_program_checkpoint(state, execution_id, checkpoint);
+    let (result, _ok, _content) = dispatch_tool_call(
+        state,
+        tx,
+        session,
+        request,
+        session_id,
+        execution_id,
+        &call,
+        arguments,
+        metrics,
+        *op_seq,
+        round,
+        0,
+        false,
+        "program",
+        None,
+        None,
+        None,
+    )
+    .await?;
+    checkpoint["pendingOperationIds"] = json!([]);
+    let mut completed = checkpoint["completedOperationIds"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if !completed.iter().any(|value| value.as_str() == Some(node_id)) {
+        completed.push(json!(node_id));
+    }
+    checkpoint["completedOperationIds"] = json!(completed);
+    let key = node["saveAs"].as_str().filter(|value| !value.is_empty()).unwrap_or(node_id);
+    resolved[key] = result.clone();
+    save_program_checkpoint(state, execution_id, checkpoint);
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_program(
+    state: &AppState,
+    tx: &UnboundedSender<Value>,
+    session: &Value,
+    request: &TurnRequest,
+    session_id: &str,
+    execution_id: &str,
+    program: &Value,
+    metrics: &std::sync::Mutex<Metrics>,
+    budget: &mut super::budget::BudgetLedger,
+    op_seq: &mut u64,
+    generation: u64,
+) -> Result<Vec<Value>, String> {
+    let existing = state
+        .store
+        .get("execution", execution_id)
+        .and_then(|execution| execution.get("programCheckpoint").cloned());
+    let mut checkpoint = existing
+        .filter(|checkpoint| {
+            checkpoint["programRevision"].as_str() == program["revision"].as_str()
+                && checkpoint["status"].as_str() != Some("completed")
+        })
+        .unwrap_or_else(|| crate::engine::program::new_checkpoint(program));
+    let mut resolved = checkpoint["resolvedInputs"].clone();
+    let nodes = program["nodes"].as_array().cloned().unwrap_or_default();
+    let start = checkpoint["nextIndex"].as_u64().unwrap_or(0) as usize;
+    checkpoint["status"] = json!("running");
+    let mut messages = Vec::new();
+    for (index, node) in nodes.iter().enumerate().skip(start) {
+        if state.is_cancelled(session_id)
+            || state.cancellation_generation(session_id) != generation
+        {
+            return Err("실행이 중단되었습니다.".into());
+        }
+        checkpoint["nextIndex"] = json!(index);
+        checkpoint["frameStack"] = json!([{
+            "nodeId": node["id"],
+            "index": index,
+        }]);
+        save_program_checkpoint(state, execution_id, &checkpoint);
+        match node["type"].as_str().unwrap_or("") {
+            "observe" => {
+                let id = node["id"].as_str().unwrap_or("");
+                let last = resolved
+                    .get("last")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                resolved[id] = last;
+                save_program_checkpoint(state, execution_id, &checkpoint);
+            }
+            "call_tool" => {
+                let node_id = node["id"].as_str().unwrap_or("");
+                if crate::engine::program::checkpoint_skip_completed(&checkpoint, node_id) {
+                    continue;
+                }
+                let result = execute_program_tool(
+                    state, tx, session, request, session_id, execution_id, node,
+                    &mut resolved, &mut checkpoint, metrics, budget, op_seq, index,
+                )
+                .await?;
+                resolved["last"] = result;
+            }
+            "branch" => {
+                let chosen = if crate::engine::program::predicate_holds(
+                    &node["predicate"],
+                    &resolved,
+                )? {
+                    node["then"].as_array().cloned().unwrap_or_default()
+                } else {
+                    node["else"].as_array().cloned().unwrap_or_default()
+                };
+                for child in chosen {
+                    if child["type"].as_str() != Some("call_tool") {
+                        return Err(
+                            "nested branch/loop nodes are not implemented in the minimal interpreter"
+                                .into(),
+                        );
+                    }
+                    if crate::engine::program::checkpoint_skip_completed(
+                        &checkpoint,
+                        child["id"].as_str().unwrap_or(""),
+                    ) {
+                        continue;
+                    }
+                    let result = execute_program_tool(
+                        state, tx, session, request, session_id, execution_id, &child,
+                        &mut resolved, &mut checkpoint, metrics, budget, op_seq, index,
+                    )
+                    .await?;
+                    resolved["last"] = result;
+                }
+                let mut completed = checkpoint["completedOperationIds"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let branch_id = node["id"].as_str().unwrap_or("");
+                if !completed.iter().any(|value| value.as_str() == Some(branch_id)) {
+                    completed.push(json!(branch_id));
+                }
+                checkpoint["completedOperationIds"] = json!(completed);
+            }
+            "loop" => {
+                return Err(
+                    "program loop execution is not implemented yet (typed only)".into(),
+                )
+            }
+            other => return Err(format!("unsupported program node type: {other}")),
+        }
+    }
+    checkpoint["nextIndex"] = json!(nodes.len());
+    checkpoint["status"] = json!("completed");
+    save_program_checkpoint(state, execution_id, &checkpoint);
+    messages.push(json!({
+        "role": "system",
+        "content": format!(
+            "A durable execution program (revision {}) completed through the tool gateway. Use its real observations; do not repeat successful actions.",
+            program["revision"].as_str().unwrap_or("")
+        )
+    }));
+    Ok(messages)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2369,6 +2609,98 @@ mod outcome_tests {
         );
         retried["taskOutcome"] = json!("failed");
         assert_ne!(first, finalization_payload_hash(&retried, &operations));
+    }
+
+    #[tokio::test]
+    async fn program_resumes_from_a_durable_checkpoint_without_repeating_completed_tools() {
+        let (state, dir) = state();
+        state.store.put("policy", &json!({"id":"default","autoApproveAll":true}));
+        let execution_id = "exec-resume";
+        state.store.put(
+            "execution",
+            &json!({
+                "id": execution_id,
+                "status": "running",
+                "taskId": execution_id,
+                "sessionId": "s1",
+                "request": "fallback.txt 파일을 만들어줘",
+                "programCheckpoint": {
+                    "schemaVersion":1,
+                    "programRevision":"p-resume",
+                    "status":"running",
+                    "frameStack":[],
+                    "nextIndex":1,
+                    "resolvedInputs":{"try":{"exitCode":7}},
+                    "completedOperationIds":["try"],
+                    "pendingOperationIds":[]
+                }
+            }),
+        );
+        let session = json!({"id":"s1","roomId":null});
+        let request = TurnRequest {
+            session_id: Some("s1".into()),
+            input: "fallback.txt 파일을 만들어줘".into(),
+            attachment_ids: Vec::new(),
+            agent_id: None,
+            provider_id: None,
+            model: None,
+            tools_enabled: true,
+            tools_execution_enabled: true,
+            thinking: None,
+            reasoning_effort: None,
+            reasoning_language: None,
+            auto_learning: false,
+            system_override: None,
+            task_id: None,
+            parent_task_id: None,
+            task_revision: None,
+            verification_owner: None,
+        };
+        let program = json!({
+            "revision":"p-resume",
+            "nodes":[
+                {"type":"call_tool","id":"try","tool":"shell_exec","inputs":{"command":"exit 7"},"saveAs":"try"},
+                {"type":"branch","id":"check",
+                 "predicate":{"type":"equals","from":"try","path":"/exitCode","value":0},
+                 "then":[{"type":"call_tool","id":"primary","tool":"workspace_write","inputs":{"path":"primary.txt","content":"PRIMARY"}}],
+                 "else":[{"type":"call_tool","id":"fallback","tool":"workspace_write","inputs":{"path":"fallback.txt","content":"FALLBACK"}}]}
+            ]
+        });
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let metrics = std::sync::Mutex::new(Metrics::default());
+        let mut budget = super::super::budget::BudgetLedger::new(
+            MAX_ROUNDS,
+            MAX_TOOL_CALLS,
+            MAX_ELAPSED,
+        );
+        let mut op_seq = 0u64;
+        let generation = state.cancellation_generation("s1");
+        run_program(
+            &state, &tx, &session, &request, "s1", execution_id, &program,
+            &metrics, &mut budget, &mut op_seq, generation,
+        )
+        .await
+        .expect("resume program");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("fallback.txt")).unwrap_or_default(),
+            "FALLBACK"
+        );
+        let operations = state
+            .store
+            .all("execution_operation")
+            .into_iter()
+            .filter(|operation| operation["runId"] == execution_id)
+            .collect::<Vec<_>>();
+        assert_eq!(operations.len(), 1, "completed try node was re-executed: {operations:?}");
+        assert_eq!(operations[0]["tool"], "workspace_write");
+        let execution = state.store.get("execution", execution_id).unwrap();
+        assert_eq!(execution["programCheckpoint"]["status"], "completed");
+        assert!(execution["programCheckpoint"]["completedOperationIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "try"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

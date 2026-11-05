@@ -8,7 +8,7 @@
 use crate::state::AppState;
 use serde_json::{json, Value};
 
-pub const SLOTS: &[&str] = &["planning", "recovery"];
+pub const SLOTS: &[&str] = &["planning", "recovery", "execution"];
 pub const MIN_EXPERIMENT_UNITS: u64 = 8;
 
 /// Minimum distinct recorded failures before a candidate is proposed.
