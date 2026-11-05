@@ -16,6 +16,7 @@ pub mod program;
 pub mod verification;
 pub mod reflect;
 pub mod goals;
+pub mod harness_evolution;
 pub mod gateway;
 pub mod improve;
 pub mod recovery;
