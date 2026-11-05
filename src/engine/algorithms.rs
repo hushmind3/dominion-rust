@@ -19,13 +19,13 @@ pub const KINDS: &[&str] = &[
 /// not here is rejected: an algorithm record must point at real behavior.
 pub fn executable_kernels(kind: &str) -> &'static [&'static str] {
     match kind {
-        "adaptation.selection" => &["balanced", "discrimination-first", "progress-first", "probe-first"],
+        "adaptation.selection" => &["balanced", "discrimination-first", "progress-first", "probe-first", "expression"],
         "learning.applicability" => &["conservative", "probe-unknown"],
-        "strategy.selection" => &["estimated-softmax", "exploit-only"],
-        "program.repair" => &["completed-preserving"],
+        "strategy.selection" => &["estimated-softmax", "exploit-only", "expression"],
+        "program.repair" => &["completed-preserving", "append-only"],
         "context.selection" => &["failure-first"],
         "verification.predicate" => &["three-valued", "strict"],
-        "tool.selection" => &["read-before-write", "none"],
+        "tool.selection" => &["read-before-write", "block-write-without-read", "none"],
         _ => &[],
     }
 }
@@ -49,6 +49,118 @@ pub fn kind_label(kind: &str) -> &str {
     }
 }
 
+/// Safe arithmetic expression over named candidate features. This lets a new
+/// selection rule be added as an executable algorithm record without a Rust
+/// rebuild, while the harness still owns the candidate features.
+pub fn eval_expression(
+    expression: &str,
+    variables: &std::collections::BTreeMap<String, f64>,
+) -> Result<f64, String> {
+    struct Parser<'a> {
+        chars: Vec<char>,
+        index: usize,
+        variables: &'a std::collections::BTreeMap<String, f64>,
+    }
+    impl<'a> Parser<'a> {
+        fn skip(&mut self) {
+            while self.chars.get(self.index).is_some_and(|ch| ch.is_whitespace()) {
+                self.index += 1;
+            }
+        }
+        fn peek(&mut self) -> Option<char> {
+            self.skip();
+            self.chars.get(self.index).copied()
+        }
+        fn next(&mut self) -> Option<char> {
+            self.skip();
+            let value = self.chars.get(self.index).copied();
+            if value.is_some() {
+                self.index += 1;
+            }
+            value
+        }
+        fn expr(&mut self) -> Result<f64, String> {
+            let mut value = self.term()?;
+            while let Some(op @ ('+' | '-')) = self.peek() {
+                self.next();
+                let rhs = self.term()?;
+                value = if op == '+' { value + rhs } else { value - rhs };
+            }
+            Ok(value)
+        }
+        fn term(&mut self) -> Result<f64, String> {
+            let mut value = self.factor()?;
+            while let Some(op @ ('*' | '/')) = self.peek() {
+                self.next();
+                let rhs = self.factor()?;
+                if op == '*' {
+                    value *= rhs;
+                } else {
+                    if rhs.abs() < f64::EPSILON {
+                        return Err("division by zero".into());
+                    }
+                    value /= rhs;
+                }
+            }
+            Ok(value)
+        }
+        fn factor(&mut self) -> Result<f64, String> {
+            match self.next() {
+                Some('+') => self.factor(),
+                Some('-') => Ok(-self.factor()?),
+                Some('(') => {
+                    let value = self.expr()?;
+                    if self.next() != Some(')') {
+                        return Err("missing closing parenthesis".into());
+                    }
+                    Ok(value)
+                }
+                Some(ch) if ch.is_ascii_digit() || ch == '.' => {
+                    let mut text = ch.to_string();
+                    while let Some(next) = self.peek() {
+                        if next.is_ascii_digit() || next == '.' {
+                            text.push(next);
+                            self.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    text.parse::<f64>().map_err(|_| "invalid number".into())
+                }
+                Some(ch) if ch.is_alphabetic() || ch == '_' => {
+                    let mut name = ch.to_string();
+                    while let Some(next) = self.peek() {
+                        if next.is_alphanumeric() || next == '_' {
+                            name.push(next);
+                            self.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    self.variables
+                        .get(&name)
+                        .copied()
+                        .ok_or_else(|| format!("unknown variable {name}"))
+                }
+                other => Err(format!("unexpected token {other:?}")),
+            }
+        }
+    }
+    if expression.trim().is_empty() {
+        return Err("expression is empty".into());
+    }
+    let mut parser = Parser {
+        chars: expression.chars().collect(),
+        index: 0,
+        variables,
+    };
+    let value = parser.expr()?;
+    if parser.peek().is_some() {
+        return Err("trailing tokens in expression".into());
+    }
+    Ok(value)
+}
+
 fn builtin(
     kind: &str,
     name: &str,
@@ -66,6 +178,7 @@ fn builtin(
         "affects": kind,
         "name": name,
         "variant": variant,
+        "implementation": variant,
         "description": description,
         "parameters": parameters,
         "source": "builtin",
@@ -141,6 +254,13 @@ pub fn builtins() -> Vec<Value> {
             json!({"maxRevisions": 2, "preserveCompleted": true}),
         ),
         builtin(
+            "program.repair",
+            "append-only",
+            "append-only",
+            "기존 pending node를 교체하지 않고 새 node만 추가한다.",
+            json!({"maxRevisions": 2, "preserveCompleted": true, "mode": "append"}),
+        ),
+        builtin(
             "context.selection",
             "failure-first",
             "failure-first",
@@ -194,6 +314,22 @@ pub fn seed(state: &AppState) -> Vec<Value> {
             if let Some(record) = state.store.put("algorithm", &algorithm) {
                 state.bus.record("algorithm", &record);
                 saved.push(record);
+            }
+        } else if let Some(mut existing) = state.store.get("algorithm", &id) {
+            // Upgrade records created before executable-kernel metadata.
+            let mut changed = false;
+            if existing["implementation"].is_null() {
+                existing["implementation"] = existing["variant"].clone();
+                changed = true;
+            }
+            if existing["affects"].is_null() {
+                existing["affects"] = existing["kind"].clone();
+                changed = true;
+            }
+            if changed {
+                if let Some(record) = state.store.put("algorithm", &existing) {
+                    state.bus.record("algorithm", &record);
+                }
             }
         }
     }
@@ -281,6 +417,20 @@ pub fn register(state: &AppState, body: &Value) -> Result<Value, String> {
             "algorithm kind {kind} has no executable kernel {implementation}; available: {:?}",
             executable_kernels(kind)
         ));
+    }
+    if implementation == "expression" {
+        let expression = body["parameters"]["expression"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("expression kernel requires parameters.expression")?;
+        let mut sample = std::collections::BTreeMap::new();
+        for name in [
+            "discrimination", "progress", "cost", "uncertainty", "historical",
+            "unresolved", "precondition", "benefit", "similarity", "risk",
+        ] {
+            sample.insert(name.to_string(), 1.0);
+        }
+        eval_expression(expression, &sample)?;
     }
     let variant = body["variant"].as_str().unwrap_or(implementation);
     let parameters = body["parameters"]
@@ -550,6 +700,40 @@ mod tests {
         assert!(created
             .iter()
             .any(|algorithm| algorithm["implementation"] == "probe-first"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn expression_kernel_adds_new_selection_logic_without_rebuild() {
+        let (state, dir) = state();
+        let mut variables = std::collections::BTreeMap::new();
+        variables.insert("discrimination".to_string(), 2.0);
+        variables.insert("cost".to_string(), 0.5);
+        assert_eq!(
+            eval_expression("discrimination * 2 - cost", &variables).unwrap(),
+            3.5
+        );
+        let record = register(
+            &state,
+            &json!({
+                "kind":"adaptation.selection",
+                "name":"custom-formula",
+                "implementation":"expression",
+                "parameters":{"expression":"discrimination * 2 - cost"}
+            }),
+        )
+        .unwrap();
+        assert_eq!(record["implementation"], "expression");
+        assert!(register(
+            &state,
+            &json!({
+                "kind":"adaptation.selection",
+                "name":"broken-formula",
+                "implementation":"expression",
+                "parameters":{"expression":"discrimination +"}
+            })
+        )
+        .is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 

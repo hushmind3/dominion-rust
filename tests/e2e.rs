@@ -3176,6 +3176,77 @@ fn seed_evidence_executions(app: &TestApp, evidence: &Value) {
     }
 }
 
+#[test]
+fn block_write_without_read_algorithm_blocks_and_then_allows_the_write() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().cloned().unwrap_or_default();
+        let last_tool = messages
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        if last_tool.contains("toolSelectionBlocked") {
+            return vec![json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"list-1","type":"function","function":{"name":"workspace_list","arguments":"{\"path\":\"\"}"}}
+            ]},"finish_reason":"tool_calls"}]})];
+        }
+        if last_tool.contains("entries") {
+            return vec![json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"write-1","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"guarded.txt\",\"content\":\"OK\"}"}}
+            ]},"finish_reason":"tool_calls"}]})];
+        }
+        if messages.iter().any(|message| message["role"] == "tool") {
+            return vec![json!({"choices":[{"delta":{"content":"완료했습니다."},"finish_reason":"stop"}]})];
+        }
+        vec![json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"id":"early-write","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"guarded.txt\",\"content\":\"EARLY\"}"}}
+        ]},"finish_reason":"tool_calls"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let algorithm = app.post(
+        "/api/algorithms",
+        &json!({
+            "kind":"tool.selection",
+            "name":"block-write-without-read",
+            "implementation":"block-write-without-read",
+            "parameters":{}
+        }),
+    );
+    let activated = app.post(
+        &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
+        &json!({}),
+    );
+    assert_eq!(activated["status"], "active", "{activated}");
+    let stream = app.chat(&json!({"input":"guarded.txt 파일을 만들어줘","autoLearning":false}));
+    assert!(
+        stream.contains("toolSelectionBlocked") || stream.contains("차단"),
+        "{stream}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("guarded.txt")).unwrap_or_default(),
+        "OK"
+    );
+    let executions = app.get("/api/executions");
+    let execution = &executions.as_array().unwrap()[0];
+    let operations = {
+        let execution_id = execution["id"].as_str().unwrap();
+        app.get(&format!("/api/executions/{execution_id}/operations"))
+    };
+    let writes = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|operation| {
+            operation["tool"] == "workspace_write"
+                && operation["status"] == "completed"
+        })
+        .count();
+    assert_eq!(writes, 1, "{operations}");
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

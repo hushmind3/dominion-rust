@@ -364,10 +364,25 @@ pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
             let risk = estimate["failureRisk"].as_f64().unwrap_or(0.5);
             let cost = estimate["expectedCost"].as_f64().unwrap_or(0.1);
             let uncertainty = estimate["uncertainty"].as_f64().unwrap_or(0.5);
-            let score = benefit + 0.3 * similarity
-                - risk * penalty("riskPenalty", 0.5)
-                - cost * penalty("costWeight", 0.2)
-                - uncertainty * penalty("uncertaintyPenalty", 0.3);
+            let mut variables = std::collections::BTreeMap::new();
+            variables.insert("benefit".into(), benefit);
+            variables.insert("similarity".into(), similarity);
+            variables.insert("risk".into(), risk);
+            variables.insert("cost".into(), cost);
+            variables.insert("uncertainty".into(), uncertainty);
+            let expression = algorithm
+                .as_ref()
+                .filter(|item| item["implementation"].as_str() == Some("expression"))
+                .and_then(|item| item["parameters"]["expression"].as_str());
+            let score = if let Some(expression) = expression {
+                crate::engine::algorithms::eval_expression(expression, &variables)
+                    .unwrap_or(f64::NEG_INFINITY)
+            } else {
+                benefit + 0.3 * similarity
+                    - risk * penalty("riskPenalty", 0.5)
+                    - cost * penalty("costWeight", 0.2)
+                    - uncertainty * penalty("uncertaintyPenalty", 0.3)
+            };
             estimate["score"] = json!(score);
             estimate["algorithmRevision"] = algorithm
                 .as_ref()

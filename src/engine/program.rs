@@ -336,6 +336,7 @@ pub fn apply_revision_proposal(
     proposal: &Value,
     available_tools: &[String],
     max_nodes: usize,
+    repair_mode: &str,
 ) -> Result<Value, String> {
     let base = proposal["baseRevision"]
         .as_str()
@@ -356,10 +357,14 @@ pub fn apply_revision_proposal(
         .flatten()
         .filter_map(|value| value.as_str().map(str::to_string))
         .collect::<std::collections::BTreeSet<_>>();
-    let replacements = proposal["replacePendingNodes"]
+    let mut replacements = proposal["replacePendingNodes"]
         .as_array()
         .cloned()
         .unwrap_or_default();
+    if repair_mode == "append" {
+        // Append-only repair never rewrites pending nodes; it only adds work.
+        replacements.clear();
+    }
     let additions = proposal["addNodes"].as_array().cloned().unwrap_or_default();
     if replacements.is_empty() && additions.is_empty() {
         return Err("proposal changes no nodes".into());

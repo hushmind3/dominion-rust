@@ -258,6 +258,9 @@ pub fn choose_intervention_with_policy(
     let progress_weight = weight("progressWeight", 1.0);
     let cost_weight = weight("costWeight", 1.0);
     let uncertainty_weight = weight("uncertaintyWeight", 0.5);
+    let expression = (algorithm["implementation"].as_str() == Some("expression"))
+        .then(|| algorithm["parameters"]["expression"].as_str())
+        .flatten();
     let failed_key = intervention_key(failed_tool, failed_arguments);
     let hypotheses = adaptation["hypotheses"]
         .as_array()
@@ -337,18 +340,40 @@ pub fn choose_intervention_with_policy(
             let historical_effect = item["historicalEffect"].as_f64();
             let uncertainty = item["uncertainty"].as_f64().unwrap_or(0.5);
             let cost = item["estimatedCost"].as_f64().unwrap_or(0.5).max(0.0);
-            let mut score = if cause_unclear {
+            let mut variables = std::collections::BTreeMap::new();
+            variables.insert("discrimination".into(), discrimination);
+            variables.insert("progress".into(), expected_progress);
+            variables.insert("cost".into(), cost);
+            variables.insert("uncertainty".into(), uncertainty);
+            variables.insert("historical".into(), historical_effect.unwrap_or(0.0));
+            variables.insert("unresolved".into(), unresolved_requirements);
+            variables.insert(
+                "precondition".into(),
+                if precondition_status == "true" {
+                    1.0
+                } else if precondition_status == "unknown" {
+                    0.5
+                } else {
+                    0.0
+                },
+            );
+            let score = if let Some(expression) = expression {
+                crate::engine::algorithms::eval_expression(expression, &variables).ok()?
+            } else if cause_unclear {
                 discrimination * 2.0 * discrimination_weight
                     + expected_progress * 0.5 * progress_weight
+                    + historical_effect.unwrap_or(0.0)
+                    - cost * cost_weight
+                    - uncertainty * uncertainty_weight
+                    - if precondition_status == "unknown" { 0.5 } else { 0.0 }
             } else {
                 expected_progress * 2.0 * progress_weight
                     + discrimination * 0.5 * discrimination_weight
+                    + historical_effect.unwrap_or(0.0)
+                    - cost * cost_weight
+                    - uncertainty * uncertainty_weight
+                    - if precondition_status == "unknown" { 0.5 } else { 0.0 }
             };
-            score += historical_effect.unwrap_or(0.0);
-            score -= cost * cost_weight + uncertainty * uncertainty_weight;
-            if precondition_status == "unknown" {
-                score -= 0.5;
-            }
             let evaluation = json!({
                 "unresolvedRequirements": unresolved_requirements,
                 "expectedProgress": expected_progress,
@@ -360,6 +385,7 @@ pub fn choose_intervention_with_policy(
                 "preconditions": preconditions,
                 "causeUnclear": cause_unclear,
                 "algorithmRevision": algorithm["revision"],
+                "algorithmKernel": algorithm["implementation"],
                 "score": score,
             });
             let mut item = item.clone();

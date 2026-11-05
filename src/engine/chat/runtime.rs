@@ -1069,23 +1069,36 @@ async fn run_turn_body(
                     )
                 }));
             }
-            if crate::engine::algorithms::variant(state, "tool.selection")
-                == "read-before-write"
-                && matches!(
-                    call.name.as_str(),
-                    "workspace_write" | "file_write" | "shell_exec" | "terminal_exec"
+            let mutating_call = matches!(
+                call.name.as_str(),
+                "workspace_write" | "file_write" | "shell_exec" | "terminal_exec"
+            );
+            let has_prior_read = completed_operations.iter().any(|operation| {
+                matches!(
+                    operation["tool"].as_str(),
+                    Some("workspace_list" | "workspace_read" | "file_list" | "file_read")
                 )
-                && !completed_operations.iter().any(|operation| {
-                    matches!(
-                        operation["tool"].as_str(),
-                        Some("workspace_list" | "workspace_read" | "file_list" | "file_read")
-                    )
-                })
-            {
-                messages.push(json!({
-                    "role":"system",
-                    "content":"도구 선택 알고리즘(read-before-write): 쓰기 전에 workspace_list/workspace_read로 대상 상태를 먼저 확인하는 것이 권장됩니다. 이 힌트는 실행을 막지 않습니다."
-                }));
+            });
+            if mutating_call && !has_prior_read {
+                let tool_selection =
+                    crate::engine::algorithms::variant(state, "tool.selection");
+                if tool_selection == "block-write-without-read" {
+                    let error = "도구 선택 알고리즘(block-write-without-read)이 읽기/목록 확인 없는 쓰기를 차단했습니다. workspace_list 또는 workspace_read를 먼저 실행하세요.";
+                    record_soft_tool_error(
+                        state, tx, session_id, request, execution_id, &call.name, &call.id,
+                        error, metrics,
+                    );
+                    messages.push(json!({
+                        "role":"tool","tool_call_id":call.id,
+                        "content": json!({"error":error,"toolSelectionBlocked":true}).to_string()
+                    }));
+                    continue;
+                } else if tool_selection == "read-before-write" {
+                    messages.push(json!({
+                        "role":"system",
+                        "content":"도구 선택 알고리즘(read-before-write): 쓰기 전에 workspace_list/workspace_read로 대상 상태를 먼저 확인하는 것이 권장됩니다. 이 힌트는 실행을 막지 않습니다."
+                    }));
+                }
             }
             let call_key = format!("{}:{}", call.name, arguments);
             let current_fingerprint =
@@ -2438,8 +2451,11 @@ async fn propose_program_revision(
     ctx.metrics.lock().unwrap().model_calls += 1;
     let proposal = crate::engine::program::parse_json_object(&raw)
         .ok_or("program revision response is not a JSON object")?;
+    let repair_mode = crate::engine::algorithms::active(ctx.state, "program.repair")
+        .and_then(|algorithm| algorithm["parameters"]["mode"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "replace".into());
     let revised = crate::engine::program::apply_revision_proposal(
-        program, checkpoint, &proposal, &available, 64,
+        program, checkpoint, &proposal, &available, 64, &repair_mode,
     )?;
     Ok(Some(revised))
 }
