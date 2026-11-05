@@ -71,6 +71,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/run-wakes", get(system::run_wakes))
         .route("/api/experiment-requests", get(system::experiment_requests))
         .route("/api/experiment-requests/claim", post(experiments::claim))
+        .route(
+            "/api/experiment-requests/release-runner",
+            post(experiments::release_runner),
+        )
         .route("/api/experiment-requests/:id/complete", post(experiments::complete))
         .route("/api/experiment-requests/:id/release", post(experiments::release))
         .route(
@@ -78,6 +82,7 @@ pub fn router(state: AppState) -> Router {
             post(experiments::enqueue),
         )
         .route("/api/policies", get(system::policies))
+        .route("/api/scheduler-runs", get(system::scheduler_runs))
         .route("/api/system/backup", post(system::create_backup))
         .route("/api/chat", post(chat::chat))
         .route("/api/jobs",get(jobs::list).post(jobs::create))

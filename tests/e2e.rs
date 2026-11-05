@@ -1094,6 +1094,14 @@ fn experiment_claim_is_token_scoped_and_can_be_released() {
         reclaimed["request"]["claimToken"].as_str().unwrap_or(""),
         token
     );
+    // A crashed scheduler runner can release every claim it owns in one call.
+    let released = app.post(
+        "/api/experiment-requests/release-runner",
+        &json!({"runnerId":"second-runner"}),
+    );
+    assert_eq!(released["released"], 1, "{released}");
+    let requests = app.get("/api/experiment-requests");
+    assert_eq!(requests.as_array().unwrap()[0]["status"], "queued");
 }
 
 #[test]
@@ -1243,6 +1251,94 @@ fn policy_experiment_activates_a_candidate_through_the_runner() {
     assert_eq!(policy["parameters"]["outline"], true);
     assert_eq!(policy["lastExperiment"]["independentUnits"], 10);
     let _ = std::fs::remove_dir_all(bench_root);
+}
+
+#[test]
+fn the_production_scheduler_runs_a_queued_experiment_without_manual_invocation() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"스케줄러 응답"},"finish_reason":"stop"}]})]
+    });
+    let provider_base = format!("http://127.0.0.1:{port}/v1");
+    let extra = [
+        ("DOMINION_BENCHMARK", "1"),
+        ("DOMINION_EXPERIMENT_SCHEDULER", "1"),
+        (
+            "DOMINION_EXPERIMENT_RUNNER",
+            env!("CARGO_BIN_EXE_dominion-benchmark"),
+        ),
+        ("DOMINION_EXPERIMENT_INTERVAL_SECS", "1"),
+        ("DOMINION_EXPERIMENT_PAIRS", "1"),
+        ("DOMINION_EXPERIMENT_MODEL", "mock"),
+        (
+            "DOMINION_EXPERIMENT_PROVIDER_BASE",
+            provider_base.as_str(),
+        ),
+    ];
+    let app = TestApp::new_with_env(port, "native", &extra);
+    let agent = app.post(
+        "/api/agents",
+        &json!({"name":"scheduler daemon agent","model":"mock"}),
+    );
+    let verification = json!({
+        "type":"procedure",
+        "appliesTo":{"paths":["bench/harness_report.txt"]},
+        "nodes":[
+            {"id":"audit","tool":"workspace_write","arguments":{"path":"bench/harness_audit.txt","content":"audit-harness"}},
+            {"id":"report","tool":"workspace_write","arguments":{"path":"bench/harness_report.txt","content":"REPORT-OK"}}
+        ],
+        "edges":[{"from":"audit","to":"report"}],
+        "after":[{"kind":"file_contains","path":"bench/harness_audit.txt","text":"audit-harness"}]
+    });
+    let strategy = app.post(
+        "/api/benchmark/strategies",
+        &json!({
+            "agentId":agent["id"],
+            "assistanceMode":"harness_assisted",
+            "text":"scheduler daemon procedure",
+            "rationale":"production scheduler test",
+            "verification":verification,
+        }),
+    );
+    let request = app.post(
+        "/api/benchmark/experiment-requests",
+        &json!({"strategyId":strategy["id"], "fixture":"audit_report"}),
+    );
+    assert_eq!(request["status"], "queued");
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut completed = Value::Null;
+    while Instant::now() < deadline {
+        if let Some(record) = app
+            .get("/api/experiment-requests")
+            .as_array()
+            .and_then(|items| items.first())
+            .cloned()
+        {
+            if record["status"] == "completed" || record["status"] == "failed" {
+                completed = record;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(
+        completed["status"], "completed",
+        "scheduler did not complete the request: {completed}"
+    );
+    let runs = app.get("/api/scheduler-runs");
+    let run = runs
+        .as_array()
+        .and_then(|items| items.first())
+        .cloned()
+        .expect("scheduler run record");
+    assert_eq!(run["status"], "success", "{run}");
+    assert!(
+        run["stdoutTail"]
+            .as_str()
+            .is_some_and(|text| text.contains("request completed")),
+        "runner output missing from scheduler record: {run}"
+    );
 }
 
 fn free_port() -> u16 {

@@ -767,7 +767,10 @@ async fn main() -> Result<(), String> {
             &client,
             &format!("{url}/api/experiment-requests/claim"),
             json!({
-                "runnerId": format!("benchmark-{}", uuid::Uuid::new_v4()),
+                "runnerId": std::env::var("BENCH_RUNNER_ID")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| format!("benchmark-{}", uuid::Uuid::new_v4())),
                 "ttlSeconds": 1800,
             }),
         )

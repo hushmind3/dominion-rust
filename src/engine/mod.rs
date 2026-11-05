@@ -28,6 +28,7 @@ pub mod personas;
 pub mod policy;
 pub mod rooms;
 pub mod run_state;
+pub mod scheduler;
 pub mod skills;
 pub mod telegram;
 pub mod tools;

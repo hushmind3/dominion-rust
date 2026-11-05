@@ -180,6 +180,51 @@ pub async fn claim(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     (StatusCode::NO_CONTENT, Json(json!({"status":"no_queued_request"}))).into_response()
 }
 
+/// Requeues every request claimed by a runner that exited or crashed.
+pub fn release_runner_claims(state: &AppState, runner_id: &str) -> usize {
+    let mut released = 0;
+    for request in state.store.all("experiment_request") {
+        if request["status"].as_str() != Some("claimed")
+            || request["claimedBy"].as_str() != Some(runner_id)
+        {
+            continue;
+        }
+        let Some(id) = request["id"].as_str() else {
+            continue;
+        };
+        if state
+            .store
+            .patch_if(
+                "experiment_request",
+                id,
+                "status",
+                &json!("claimed"),
+                &json!({
+                    "status": "queued",
+                    "claimToken": Value::Null,
+                    "reason": "runner exited without completing",
+                }),
+            )
+            .is_some()
+        {
+            released += 1;
+        }
+    }
+    released
+}
+
+pub async fn release_runner(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    let runner_id = body["runnerId"].as_str().unwrap_or("");
+    if runner_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "runnerId is required").into_response();
+    }
+    let released = release_runner_claims(&state, runner_id);
+    Json(json!({"released": released})).into_response()
+}
+
 pub async fn complete(
     State(state): State<AppState>,
     axum::extract::Path(request_id): axum::extract::Path<String>,

@@ -65,6 +65,7 @@ async fn serve(mut config: Config, open_browser: bool, parent_bound: bool) -> Re
     engine::policy::propose_candidates(&state);
     engine::jobs::start(state.clone());
     engine::maintenance::start(state.clone());
+    engine::scheduler::start(state.clone());
     engine::discord::start(state.clone());
     engine::telegram::start(state.clone());
     let app = api::router(state);
