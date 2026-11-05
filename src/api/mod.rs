@@ -48,6 +48,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/health", get(system::health))
         .route("/api/benchmark/strategies", post(benchmark::seed_strategy))
         .route("/api/benchmark/experiments", post(benchmark::record_experiment))
+        .route("/api/benchmark/policies", post(benchmark::register_policy))
+        .route(
+            "/api/benchmark/policies/experiment",
+            post(benchmark::policy_experiment),
+        )
         .route("/api/benchmark/identity", get(system::benchmark_identity))
         .route("/api/status", get(system::status))
         .route(
@@ -60,6 +65,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/model-usage", get(system::model_usage))
         .route("/api/run-wakes", get(system::run_wakes))
         .route("/api/experiment-requests", get(system::experiment_requests))
+        .route("/api/policies", get(system::policies))
         .route("/api/chat", post(chat::chat))
         .route("/api/jobs",get(jobs::list).post(jobs::create))
         .route("/api/jobs/:id",get(jobs::one))

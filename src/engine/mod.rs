@@ -24,6 +24,7 @@ pub mod memory;
 pub mod models;
 pub mod oauth;
 pub mod personas;
+pub mod policy;
 pub mod rooms;
 pub mod run_state;
 pub mod skills;

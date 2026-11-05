@@ -143,6 +143,10 @@ pub async fn experiment_requests(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.store.all("experiment_request")))
 }
 
+pub async fn policies(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(crate::engine::policy::list(&state)))
+}
+
 // ----------------------------------------------------------------- translate
 
 pub async fn model_route(State(state): State<AppState>) -> Json<Value> {

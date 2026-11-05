@@ -74,6 +74,15 @@ pub fn recover(state: &AppState) -> Vec<Value> {
             ("needs_review", "원래 요청 또는 세션을 복구할 수 없습니다.", Value::Null)
         } else if state.store.get("session", session_id).is_none() {
             ("needs_review", "원래 세션을 찾을 수 없습니다.", Value::Null)
+        } else if !state
+            .store
+            .messages(session_id)
+            .iter()
+            .any(|message| message["role"].as_str() == Some("user"))
+        {
+            // A crash before the owner message was persisted cannot be replayed
+            // without inventing a prompt.
+            ("needs_review", "원래 사용자 메시지가 저장되지 않았습니다.", Value::Null)
         } else {
             let input = json!({
                 "prompt": request,
@@ -145,6 +154,12 @@ mod tests {
             "session",
             &json!({"id":"session-1","agentId":null,"providerId":"p","model":"m"}),
         );
+        state
+            .store
+            .write_message(&json!({
+                "session_id":"session-1","role":"user","content":"파일을 확인해"
+            }))
+            .expect("owner message");
         (state, dir)
     }
 

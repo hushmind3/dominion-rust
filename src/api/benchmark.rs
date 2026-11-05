@@ -68,3 +68,41 @@ pub async fn record_experiment(
         }
     }
 }
+
+/// Benchmark-only policy candidate registration (H9).
+pub async fn register_policy(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    if std::env::var("DOMINION_BENCHMARK").as_deref() != Ok("1") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    match crate::engine::policy::register(
+        &state,
+        body["slot"].as_str().unwrap_or(""),
+        body["name"].as_str().unwrap_or(""),
+        &body["parameters"],
+        body["rationale"].as_str().unwrap_or(""),
+    ) {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response(),
+    }
+}
+
+/// Benchmark-only policy activation/rollback from a paired experiment (H9).
+pub async fn policy_experiment(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    if std::env::var("DOMINION_BENCHMARK").as_deref() != Ok("1") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let policy_id = body["policyId"].as_str().unwrap_or("");
+    if policy_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "policyId is required").into_response();
+    }
+    match crate::engine::policy::apply_experiment_result(&state, policy_id, &body) {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response(),
+    }
+}

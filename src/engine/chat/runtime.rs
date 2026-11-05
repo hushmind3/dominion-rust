@@ -395,13 +395,30 @@ async fn run_turn_body(
     messages.extend(history_messages);
     metrics.lock().unwrap().context_elapsed_ms = turn_started.elapsed().as_millis() as u64;
 
-    // Action requests get an explicit plan before tools. Conversational turns
-    // do not pay for this extra model call.
+    // Action requests get an explicit plan before tools. A versioned policy in
+    // the planning slot can override the built-in heuristic; no active policy
+    // means the existing behaviour is unchanged.
+    let planning_policy = crate::engine::policy::active(state, "planning");
+    if let Some(policy) = &planning_policy {
+        context_items.push(json!({
+            "kind": "planning_policy",
+            "id": policy["id"],
+            "revision": policy["revision"],
+            "parameters": policy["parameters"],
+        }));
+    }
+    let plan_requested = match planning_policy
+        .as_ref()
+        .and_then(|policy| policy["parameters"]["outline"].as_bool())
+    {
+        Some(outline) => outline,
+        None => needs_plan(&request.input, &acceptance),
+    };
     let mut plan_digest: Option<String> = None;
     if acceptance.is_some()
         && request.tools_enabled
         && source_message_id.is_none()
-        && needs_plan(&request.input, &acceptance)
+        && plan_requested
     {
         if let Some(plan) = action_plan(state, request, acceptance.as_ref().map(|(text, _)| text.as_str()).unwrap_or("")).await {
             plan_digest = Some(crate::engine::memory::stable_id(&[&plan]));
