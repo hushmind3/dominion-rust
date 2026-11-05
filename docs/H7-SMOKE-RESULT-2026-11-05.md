@@ -334,3 +334,47 @@ summary는 raw trials에서 재계산하고 completion은 엔진 재시작 후 c
 - 명시적 no-plan baseline으로 **실제 4B policy 승격**을 다시 시험해야 한다.
 - policy trial은 baseline보다 여전히 느리다(≈160s/trial).
 - update_config는 11 units로 preliminary_support지만 holdout은 없다.
+
+## 11. Explicit no-plan baseline policy run (2026-11-06)
+
+이전 실행에서 baseline이 내장 heuristic으로 계획해 대조가 깨졌으므로,
+runner policy mode의 baseline을 sandbox `{"outline": false}` 정책으로 고정한 뒤
+다시 실제 4B 실험을 production scheduler로 실행했다.
+
+- production root: `TMPDIR/dom-polbase.k76NId`
+- searchId: `policy-search-7f540cbb-1e78-422a-a337-852b6acdb288`
+- policyId: `policy-21a3e404ebf3e5ef75ea9830fe5ef644`
+- requestId: `experiment-request-policy-4d7353966d25133e46ad917fdf588c69`
+- experimentId: `19f690c8-0794-4878-9ceb-13c53bc648d0`
+- raw evidence: `TMPDIR/dominion-s7-601e83c9-7ca3-4b3b-a550-1ec8681d86d7`
+  - `trials.jsonl` **20줄**
+- 이번에는 production 엔진을 유지한 채 completion까지 진행했다
+  (`scheduler status=success`, `exitCode=0`, 수동 완료 없음).
+
+| arm | runs | success | planQuality | independent | p50 |
+|---|---|---|---|---|---|
+| baseline (outline=false) | 10 | **10/10** | 0.0 | 0.0 | 128,299ms |
+| treatment (outline=true) | 10 | **8/10** | 0.8800 | 0.9057 | 168,807ms |
+
+- treatment 2건은 300초 timeout
+- usable paired units **8**
+- effect: delta 0.0, semanticDelta 0.8875, independentSemanticDelta 0.9105,
+  verdict **inconclusive**
+- request: `completed`, `promotionStatus=candidate`, `promotionEvidence=E0`,
+  `promotionError=null`
+- policy: **candidate 유지**, search `selectedPolicyId=null`
+
+### 해석
+
+- 계획 정책은 semantic 점수를 크게 올렸다(0 → 0.88/0.91).
+- 그러나 baseline도 계획 없이 두 파일 task를 10/10 성공했다. 즉 이 fixture에서
+  planning은 **성공률을 높이지 못했고**, 오히려 trial 시간이 늘고 2건이
+  timeout 되어 units가 8로 줄었다.
+- 성공 delta가 0이고 units < 10이라 verdict가 inconclusive → 승격 없음.
+- 따라서 **실제 4B policy 승격은 아직 달성되지 않았다.** 이는 gate의 정상 거부다.
+
+### 다음에 필요한 것
+
+- planning이 성공률에 실제로 기여하는 더 어려운 fixture(다단계 의존/부분 실패).
+- timeout이 없는 10+ units 확보를 위한 trial budget 조정.
+- baseline도 실패하는 task여야 planning 효과가 측정된다.
