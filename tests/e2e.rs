@@ -1104,3 +1104,98 @@ fn compat_mode_executes_a_bare_json_tool_call_from_a_weak_model() {
     );
     assert_eq!(app.get("/api/executions")[0]["status"], "completed");
 }
+
+#[test]
+fn delegate_task_runs_a_real_child_agent_and_returns_its_result() {
+    use std::sync::{Arc, Mutex};
+    let child_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let slot = child_slot.clone();
+    let (port, _) = scripted_provider(move |request| {
+        let messages = request["messages"].as_array().unwrap();
+        let system = messages
+            .first()
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        let saw_tool = messages.iter().any(|message| message["role"] == "tool");
+        if system.contains("CHILD-AGENT") {
+            return vec![json!({"choices":[{"delta":{"content":"child result 42"},"finish_reason":"stop"}]})];
+        }
+        if saw_tool {
+            return vec![json!({"choices":[{"delta":{"content":"자식 결과를 받아 완료했습니다."},"finish_reason":"stop"}]})];
+        }
+        let child = slot.lock().unwrap().clone().unwrap_or_default();
+        let arguments = json!({
+            "agentId": child,
+            "prompt": "compute the answer",
+            "wait": true,
+            "timeoutSeconds": 30
+        })
+        .to_string();
+        vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"delegate-1","type":"function","function":{"name":"delegate_task","arguments":arguments}}]},"finish_reason":"tool_calls"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let provider = app.get("/api/providers")[0]["id"].as_str().unwrap().to_string();
+    let parent = app.post(
+        "/api/agents",
+        &json!({"name":"Parent","systemPrompt":"PARENT-AGENT","providerId":provider,"model":"mock"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let child = app.post(
+        "/api/agents",
+        &json!({"name":"Child","systemPrompt":"CHILD-AGENT","providerId":provider,"model":"mock"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    *child_slot.lock().unwrap() = Some(child.clone());
+
+    let session = app.post(
+        "/api/sessions",
+        &json!({"title":"delegation","agentId":parent}),
+    );
+    let stream = app.chat(&json!({
+        "sessionId": session["id"],
+        "agentId": parent,
+        "input": "자식 에이전트에게 계산을 위임해",
+        "autoLearning": false
+    }));
+    assert!(stream.contains("assistant_saved"), "{stream}");
+    assert!(!stream.contains("실행 증거가 부족"), "{stream}");
+    let messages = app.get(&format!(
+        "/api/sessions/{}/messages",
+        session["id"].as_str().unwrap()
+    ));
+    let tool_text = messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .map(|message| message["content"].as_str().unwrap_or(""))
+        .collect::<String>();
+    assert!(tool_text.contains("child result 42"), "{tool_text}");
+    let child_sessions = app.get("/api/sessions");
+    let child_session = child_sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["title"].as_str().unwrap_or("").starts_with("Delegate ·"))
+        .expect("child session");
+    let child_messages = app.get(&format!(
+        "/api/sessions/{}/messages",
+        child_session["id"].as_str().unwrap()
+    ));
+    assert!(child_messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| message["role"] == "assistant"
+            && message["content"] == "child result 42"));
+    assert!(app
+        .get("/api/jobs")
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|job| job["kind"] == "prompt" && job["status"] == "completed"));
+}

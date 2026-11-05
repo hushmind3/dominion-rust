@@ -304,6 +304,29 @@ fn next_queued(state: &AppState) -> Option<Value> {
     })
 }
 
+/// Runs a delegated job immediately instead of waiting for a worker slot, so a
+/// parent waiting on a child can never deadlock the worker pool.
+pub fn start_now(state: AppState, job_id: String) {
+    tokio::spawn(async move {
+        let Some(job) = state.store.get("job", &job_id) else {
+            return;
+        };
+        if job["status"] != "queued" {
+            return;
+        }
+        let Some(running) = state.store.patch_if(
+            "job",
+            &job_id,
+            "status",
+            &json!("queued"),
+            &json!({"status":"running","startedAt":chrono::Utc::now().to_rfc3339(),"attempts":job["attempts"].as_u64().unwrap_or(0)+1}),
+        ) else {
+            return;
+        };
+        run_job(state, running).await;
+    });
+}
+
 async fn run_job(state: AppState, job: Value) {
     let job_id = job
         .get("id")

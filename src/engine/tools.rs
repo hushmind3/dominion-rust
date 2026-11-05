@@ -39,6 +39,14 @@ pub fn definitions() -> Vec<Value> {
         tool("memory_store", "Save a grounded memory for this agent. Quote the user's exact words; invented facts are rejected. Shared memories are managed by the user.", object(json!({"text": text("Fact to remember, maximum 1600 characters"), "evidenceQuote": text("Exact quote from the current user message supporting the fact"), "sourceMessageId": text("Optional earlier source message ID"), "type": json!({"type":"string","enum":["fact","preference","decision","procedure","lesson"]}), "key": text("Optional stable fact key; a new value replaces the previous value for this key"), "scope": json!({"type":"string","enum":["agent"]})}), vec!["text", "evidenceQuote"])),
         tool("memory_search", "Find saved knowledge relevant to a topic", object(json!({"query": text("Search query")}), vec!["query"])),
         tool("skill_propose", "Draft a reusable skill for user review", object(json!({"name": text("Skill name"), "instructions": text("Reusable instructions")}), vec!["name", "instructions"])),
+        tool("delegate_task", "Delegate a self-contained task to another agent and optionally wait for its result", object(json!({
+            "agentId": text("Target agent id"),
+            "prompt": text("Task instructions"),
+            "wait": json!({"type":"boolean","description":"Wait for completion (default true)"}),
+            "timeoutSeconds": json!({"type":"number","description":"5-300 seconds"})
+        }), vec!["agentId", "prompt"])),
+        tool("task_status", "Check a delegated task's status", object(json!({"jobId": text("Job id")}), vec!["jobId"])),
+        tool("task_result", "Read a delegated task's result, artifacts and final answer", object(json!({"jobId": text("Job id")}), vec!["jobId"])),
         tool("account_status", "List OAuth accounts connected to DOMINION", object(json!({}), vec![])),
         tool("github_api", "Call the GitHub REST API as the connected account. Write methods require approval (approval required)", object(json!({"method": json!({"type": "string", "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"]}), "path": text("GitHub API path beginning with /"), "body": json!({"type": "object"})}), vec!["method", "path"])),
     ]
@@ -159,6 +167,9 @@ pub async fn execute(ctx: &ToolContext<'_>, name: &str, args: &Value) -> Result<
             );
             Ok(json!({ "proposed": true, "skill": record }))
         }
+        "delegate_task" => delegate(ctx, args).await,
+        "task_status" => task_payload(ctx, args, false),
+        "task_result" => task_payload(ctx, args, true),
         "account_status" => Ok(json!({
             "providers": crate::engine::oauth::status(ctx.state),
         })),
@@ -197,6 +208,141 @@ async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String
         "status": status,
         "body": parsed.to_string().chars().take(20_000).collect::<String>(),
     }))
+}
+
+async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> {
+    let agent_id = required_arg(args, "agentId")?;
+    let prompt = required_arg(args, "prompt")?;
+    let agent = ctx
+        .state
+        .store
+        .get("agent", &agent_id)
+        .ok_or_else(|| format!("위임 대상 에이전트를 찾을 수 없습니다: {agent_id}"))?;
+    let wait = args["wait"].as_bool().unwrap_or(true);
+    let timeout = args["timeoutSeconds"]
+        .as_u64()
+        .unwrap_or(90)
+        .clamp(5, 300);
+
+    let session = ctx
+        .state
+        .store
+        .put(
+            "session",
+            &json!({
+                "title": format!("Delegate · {}", prompt.chars().take(36).collect::<String>()),
+                "agentId": agent_id,
+                "providerId": agent["providerId"],
+                "model": agent["model"],
+                "parentSessionId": ctx.session_id,
+                "delegated": true,
+            }),
+        )
+        .ok_or("위임 세션을 만들 수 없습니다.")?;
+    let session_id = session["id"].as_str().unwrap_or("").to_string();
+    let job = crate::engine::jobs::enqueue(
+        ctx.state,
+        "prompt",
+        json!({
+            "prompt": prompt,
+            "agentId": agent_id,
+            "providerId": agent["providerId"],
+            "model": agent["model"],
+            "sessionId": session_id,
+            "toolsEnabled": true,
+            "parentSessionId": ctx.session_id,
+            "parentAgentId": ctx.agent_id,
+            "delegation": true,
+        }),
+    )
+    .ok_or("위임 작업을 만들 수 없습니다.")?;
+    let job_id = job["id"].as_str().unwrap_or("").to_string();
+    crate::engine::jobs::start_now(ctx.state.clone(), job_id.clone());
+
+    if !wait {
+        return Ok(json!({
+            "jobId": job_id, "status": "queued", "sessionId": session_id,
+            "hint": "task_status 또는 task_result로 확인하세요."
+        }));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+    loop {
+        if ctx.state.is_cancelled(ctx.session_id) {
+            return Err("실행이 중단되었습니다. 위임 작업은 백그라운드에서 계속됩니다.".into());
+        }
+        let Some(current) = ctx.state.store.get("job", &job_id) else {
+            return Err("위임 작업 기록이 사라졌습니다.".into());
+        };
+        let status = current["status"].as_str().unwrap_or("");
+        if matches!(status, "completed" | "failed" | "cancelled" | "needs_review") {
+            return task_payload(ctx, &json!({"jobId": job_id}), true);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(json!({
+                "jobId": job_id, "status": status, "sessionId": session_id,
+                "hint": "아직 실행 중입니다. task_result로 나중에 확인하세요."
+            }));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+fn task_payload(ctx: &ToolContext<'_>, args: &Value, with_result: bool) -> Result<Value, String> {
+    let job_id = required_arg(args, "jobId")?;
+    let job = ctx
+        .state
+        .store
+        .get("job", &job_id)
+        .ok_or_else(|| format!("작업을 찾을 수 없습니다: {job_id}"))?;
+    let status = job["status"].as_str().unwrap_or("unknown");
+    let mut payload = json!({
+        "jobId": job_id,
+        "kind": job["kind"],
+        "status": status,
+        "stepIndex": job["stepIndex"],
+        "stepTotal": job["stepTotal"],
+        "error": job["error"],
+        "result": job["result"],
+    });
+    if !with_result || !matches!(status, "completed" | "failed" | "needs_review") {
+        return Ok(payload);
+    }
+    let Some(session_id) = job
+        .pointer("/result/sessionId")
+        .and_then(Value::as_str)
+        .or_else(|| job["sessionId"].as_str())
+    else {
+        return Ok(payload);
+    };
+    let messages = ctx.state.store.messages(session_id);
+    let answer = messages
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "assistant")
+        .and_then(|message| message["content"].as_str())
+        .unwrap_or("")
+        .chars()
+        .take(8000)
+        .collect::<String>();
+    let operations = ctx
+        .state
+        .store
+        .all("execution_operation")
+        .into_iter()
+        .filter(|operation| {
+            operation["runId"].as_str().is_some()
+                && operation["sessionId"].as_str() == Some(session_id)
+                && operation["status"] == "completed"
+        })
+        .map(|operation| {
+            json!({"tool":operation["tool"],"arguments":operation["arguments"],"result":operation["result"]})
+        })
+        .take(20)
+        .collect::<Vec<_>>();
+    payload["sessionId"] = json!(session_id);
+    payload["content"] = json!(answer);
+    payload["operations"] = json!(operations);
+    Ok(payload)
 }
 
 fn required_arg(args: &Value, key: &str) -> Result<String, String> {
