@@ -469,6 +469,40 @@ pub fn propose_candidates(state: &AppState) -> Vec<Value> {
             "createdAt": chrono::Utc::now().to_rfc3339(),
         });
         state.store.put("optimization_candidate", &context_candidate);
+        for (component, mechanism) in [
+            (
+                "tool_selection",
+                "prefer read/list probes over retrying the failed write",
+            ),
+            (
+                "memory_retrieval",
+                "retrieve counterexamples only when their environment differs",
+            ),
+            (
+                "verification",
+                "verify the produced artifact before claiming completion",
+            ),
+        ] {
+            let record = json!({
+                "id": format!(
+                    "optimization-{}",
+                    crate::engine::memory::stable_id(&[class, component, &evidence_ids.join(",")])
+                ),
+                "parentRevision": "current",
+                "targetComponent": component,
+                "problemEvidence": evidence_ids,
+                "mechanism": mechanism,
+                "changedPolicy": {"failureClass": class},
+                "predictedBenefit": "fewer repeated failures on this class",
+                "applicability": {"failureClass": class},
+                "testRequirements": [format!("typed {component} policy")],
+                "estimatedCost": 0.0,
+                "status": "proposed",
+                "executable": false,
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+            });
+            state.store.put("optimization_candidate", &record);
+        }
     }
     created
 }

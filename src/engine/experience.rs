@@ -42,6 +42,20 @@ fn visible(record: &Value, scope: &MemoryScope) -> bool {
         || record["agentId"].as_str() == scope.agent_id.as_deref()
 }
 
+fn rule_visible(rule: &Value, scope: &MemoryScope) -> bool {
+    if rule["scope"].as_str() == Some("global") {
+        return true;
+    }
+    if rule["partitionKey"].as_str() != Some(scope.partition_key.as_str()) {
+        return false;
+    }
+    match rule["scope"].as_str() {
+        Some("shared") => true,
+        Some("agent") => rule["agentId"].as_str() == scope.agent_id.as_deref(),
+        _ => false,
+    }
+}
+
 /// Observable features used by LearnedMethod applicability predicates.
 pub fn method_observation(
     state: &AppState,
@@ -330,8 +344,7 @@ pub fn context_block_with_manifest(
         .all("experience_rule")
         .into_iter()
         .filter(|method| {
-            method["scope"].as_str() == Some("shared")
-                && method["partitionKey"].as_str() == Some(scope.partition_key.as_str())
+            rule_visible(method, scope)
                 && method["status"].as_str() == Some("candidate")
                 && method["supportingCases"].as_array().is_some_and(|v| !v.is_empty())
         })
@@ -515,7 +528,8 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
         }
         let mut rule = state.store.get("experience_rule", &id).unwrap_or_else(|| json!({
             "id": id,
-            "scope": "shared",
+            "scope": if scope.agent_id.is_some() { "agent" } else { "shared" },
+            "agentId": scope.agent_id,
             "partitionKey": scope.partition_key,
             "status": "candidate",
             "evidenceGrade": "E1_observed",
@@ -542,6 +556,16 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
         }));
         if !rule["applicabilityPredicates"].is_array() {
             rule["applicabilityPredicates"] = json!(predicates);
+        }
+        // Personal experience stays with its bot. Two different agents
+        // producing the same verified method promotes it to shared.
+        let previous_agent = rule["agentId"].as_str().map(str::to_string);
+        if let (Some(previous), Some(current)) = (previous_agent, scope.agent_id.clone()) {
+            if previous != current {
+                rule["scope"] = json!("shared");
+                rule["agentId"] = Value::Null;
+                rule["sharedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
         }
         let environment = before["environmentFingerprint"]
             .as_str()
@@ -613,8 +637,7 @@ pub fn matching_rules(
 ) -> Vec<Value> {
     let observation = method_observation(state, failed_tool, failed_inputs, error);
     let mut rules = state.store.all("experience_rule").into_iter().filter(|rule| {
-        if rule["scope"].as_str() != Some("shared")
-            || rule["partitionKey"].as_str() != Some(scope.partition_key.as_str())
+        if !rule_visible(rule, scope)
             || rule["status"].as_str() != Some("candidate")
             || !rule["supportingCases"].as_array().is_some_and(|v| !v.is_empty())
         {

@@ -1818,6 +1818,12 @@ async fn execute_program_tool(
     .await?;
     checkpoint["pendingOperationIds"] = json!([]);
     mark_program_completed(checkpoint, node_id);
+    if !checkpoint["observationRefs"].is_object() {
+        checkpoint["observationRefs"] = json!({});
+    }
+    checkpoint["observationRefs"][node_id] = json!(
+        crate::engine::memory::stable_id(&[&result.to_string()])
+    );
     let key = node["saveAs"].as_str().filter(|value| !value.is_empty()).unwrap_or(node_id);
     resolved[key] = result.clone();
     checkpoint["resolvedInputs"] = resolved.clone();

@@ -505,6 +505,8 @@ pub fn record_adaptation(
         "selectedIntervention": selected["id"],
         "selectedEvaluation": selected["evaluation"],
         "environmentFingerprint": adaptation["environmentFingerprint"],
+        "adaptationRevision": execution["adaptationCheckpoint"]["adaptationRevision"]
+            .as_u64().unwrap_or(0) + 1,
         "beforeObservation": adaptation["beforeObservation"],
         "hypothesisResults": hypothesis_results,
     });

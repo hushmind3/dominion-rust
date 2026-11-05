@@ -123,6 +123,8 @@ pub fn new_checkpoint(program: &Value) -> Value {
         "completedOperationIds": [],
         "pendingOperationIds": [],
         "loopProgress": {},
+        "observationRefs": {},
+        "adaptationRevision": 0,
     })
 }
 
