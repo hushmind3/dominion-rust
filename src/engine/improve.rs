@@ -352,7 +352,12 @@ pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
         })
         .map(|mut improvement| {
             let mut estimate = strategy_estimate(&improvement);
-            let algorithm = crate::engine::algorithms::active(state, "strategy.selection");
+            let algorithm = crate::engine::algorithms::choose_for_agent(
+                state,
+                "strategy.selection",
+                scope.agent_id.as_deref(),
+                None,
+            );
             let penalty = |name: &str, fallback: f64| {
                 algorithm
                     .as_ref()
@@ -404,8 +409,11 @@ pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
     let mut selected = candidates.iter().take(6).cloned().collect::<Vec<_>>();
     // Exploration: if a high-uncertainty strategy was left out, spend one
     // slot on it instead of always exploiting the current leaders.
-    let explore_enabled = crate::engine::algorithms::variant(state, "strategy.selection")
-        != "exploit-only";
+    let explore_enabled = crate::engine::algorithms::variant_for_agent(
+        state,
+        "strategy.selection",
+        scope.agent_id.as_deref(),
+    ) != "exploit-only";
     if explore_enabled {
     if let Some(explore) = candidates
         .iter()

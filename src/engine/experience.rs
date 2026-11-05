@@ -337,7 +337,12 @@ pub fn context_block_with_manifest(
     scope: &MemoryScope,
     query: &str,
 ) -> (Option<String>, Vec<Value>) {
-    let algorithm = crate::engine::algorithms::active(state, "context.selection");
+    let algorithm = crate::engine::algorithms::choose_for_agent(
+        state,
+        "context.selection",
+        scope.agent_id.as_deref(),
+        None,
+    );
     let method_limit = algorithm
         .as_ref()
         .and_then(|item| item["parameters"]["methodLimit"].as_u64())
@@ -575,6 +580,7 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
             "effectByEnvironment": {},
             "confidence": 0.4,
             "supportingCases": [],
+            "supportingAgents": [],
             "counterexamples": [],
             "createdAt": chrono::Utc::now().to_rfc3339(),
         }));
@@ -582,12 +588,33 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
             rule["applicabilityPredicates"] = json!(predicates);
         }
         // Personal experience stays with its bot. Two different agents
-        // producing the same verified method promotes it to shared.
-        let previous_agent = rule["agentId"].as_str().map(str::to_string);
-        if let (Some(previous), Some(current)) = (previous_agent, scope.agent_id.clone()) {
-            if previous != current {
-                rule["scope"] = json!("shared");
-                rule["agentId"] = Value::Null;
+        // independently supporting the same verified method promotes it to
+        // shared, so the group benefits without trusting a single bot.
+        if let Some(agent) = scope.agent_id.clone() {
+            let mut agents = rule["supportingAgents"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if !agents.iter().any(|value| value.as_str() == Some(agent.as_str())) {
+                agents.push(json!(agent));
+                agents.truncate(16);
+            }
+            rule["supportingAgents"] = json!(agents);
+        }
+        let distinct_agents = rule["supportingAgents"]
+            .as_array()
+            .map(|agents| {
+                agents
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+            })
+            .unwrap_or(0);
+        if distinct_agents >= 2 {
+            rule["scope"] = json!("shared");
+            rule["agentId"] = Value::Null;
+            if rule["sharedAt"].is_null() {
                 rule["sharedAt"] = json!(chrono::Utc::now().to_rfc3339());
             }
         }
@@ -660,8 +687,11 @@ pub fn matching_rules(
     limit: usize,
 ) -> Vec<Value> {
     let observation = method_observation(state, failed_tool, failed_inputs, error);
-    let probe_unknown =
-        crate::engine::algorithms::variant(state, "learning.applicability") == "probe-unknown";
+    let probe_unknown = crate::engine::algorithms::variant_for_agent(
+        state,
+        "learning.applicability",
+        scope.agent_id.as_deref(),
+    ) == "probe-unknown";
     let mut rules = state
         .store
         .all("experience_rule")
@@ -965,6 +995,36 @@ mod tests {
         )
         .unwrap();
         assert!(!retrieve(&state, &b, "파일 작성", 5).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn two_agents_supporting_a_method_share_it_with_the_group() {
+        let (state, dir) = state();
+        let attempt = |agent: &str, id: &str| json!({
+            "id": id, "sessionId": "s", "agentId": agent, "taskOutcome": "succeeded",
+            "adaptations":[{
+                "observation":{"kind":"tool_failure","tool":"workspace_read",
+                    "arguments":{"path":"first.txt"},"actual":"file not found"},
+                "selected":{"tool":"workspace_write",
+                    "inputs":{"path":"first.txt","content":"created"}},
+                "result":{"success":true}
+            }]
+        });
+        learn_verified_adaptations(&state, &attempt("agent-a", "run-a"));
+        let a_scope = MemoryScope::for_session(&state.store, "s", Some("agent-a"));
+        let b_scope = MemoryScope::for_session(&state.store, "s", Some("agent-b"));
+        assert!(matching_rules(&state, &b_scope, "workspace_read",
+            &json!({"path":"second.txt"}), "no such file or directory", 3).is_empty());
+        learn_verified_adaptations(&state, &attempt("agent-b", "run-b"));
+        let shared = matching_rules(&state, &b_scope, "workspace_read",
+            &json!({"path":"second.txt"}), "no such file or directory", 3);
+        assert_eq!(shared.len(), 1, "{shared:?}");
+        assert_eq!(shared[0]["scope"], "shared");
+        let c_scope = MemoryScope::for_session(&state.store, "s", Some("agent-c"));
+        assert_eq!(matching_rules(&state, &c_scope, "workspace_read",
+            &json!({"path":"second.txt"}), "no such file or directory", 3).len(), 1);
+        let _ = a_scope;
         let _ = std::fs::remove_dir_all(dir);
     }
 

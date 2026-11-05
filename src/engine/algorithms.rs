@@ -413,6 +413,280 @@ pub fn variant(state: &AppState, kind: &str) -> String {
         })
 }
 
+fn agent_of(state: &AppState, agent_id: Option<&str>) -> Option<String> {
+    agent_id
+        .map(str::to_string)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            state
+                .store
+                .all("agent")
+                .into_iter()
+                .find(|agent| agent["enabled"].as_bool() != Some(false))
+                .and_then(|agent| agent["id"].as_str().map(str::to_string))
+        })
+}
+
+fn stat_id(agent: &str, kind: &str, revision: &str) -> String {
+    format!(
+        "algorithm-stat-{}",
+        crate::engine::memory::stable_id(&[agent, kind, revision])
+    )
+}
+
+/// UCB1 over the agent's own outcomes. The model is irrelevant; what improves
+/// is which judgment kernel this bot has actually had success with.
+pub fn choose_for_agent(
+    state: &AppState,
+    kind: &str,
+    agent_id: Option<&str>,
+    execution_id: Option<&str>,
+) -> Option<Value> {
+    seed(state);
+    let agent = agent_of(state, agent_id)?;
+    let candidates = state
+        .store
+        .all("algorithm")
+        .into_iter()
+        .filter(|algorithm| {
+            algorithm["kind"].as_str() == Some(kind)
+                && algorithm["status"].as_str() != Some("disabled")
+                && algorithm["implementation"]
+                    .as_str()
+                    .is_some_and(|implementation| kernel_exists(kind, implementation))
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+    let all_stats = state.store.all("algorithm_stat");
+    let stats = all_stats
+        .iter()
+        .filter(|stat| {
+            stat["agentId"].as_str() == Some(agent.as_str())
+                && stat["kind"].as_str() == Some(kind)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let global_stats = all_stats
+        .iter()
+        .filter(|stat| {
+            stat["agentId"].as_str() == Some("global")
+                && stat["kind"].as_str() == Some(kind)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let total = stats
+        .iter()
+        .map(|stat| stat["uses"].as_u64().unwrap_or(0))
+        .sum::<u64>() as f64;
+    let active_revision = active(state, kind)
+        .and_then(|algorithm| algorithm["revision"].as_str().map(str::to_string));
+    let chosen = candidates
+        .into_iter()
+        .max_by(|a, b| {
+            let score = |algorithm: &Value| {
+                let revision = algorithm["revision"].as_str().unwrap_or("");
+                let stat = stats
+                    .iter()
+                    .find(|stat| stat["revision"].as_str() == Some(revision))
+                    .or_else(|| {
+                        global_stats
+                            .iter()
+                            .find(|stat| stat["revision"].as_str() == Some(revision))
+                    });
+                let uses = stat
+                    .and_then(|stat| stat["uses"].as_u64())
+                    .unwrap_or(0) as f64;
+                let successes = stat
+                    .and_then(|stat| stat["successes"].as_u64())
+                    .unwrap_or(0) as f64;
+                let rate = if uses > 0.0 { successes / uses } else { 0.0 };
+                let exploration = if uses > 0.0 {
+                    (2.0 * (total + 1.0).ln() / uses).sqrt()
+                } else {
+                    1.5
+                };
+                let active_bonus = if active_revision
+                    .as_deref()
+                    == algorithm["revision"].as_str()
+                {
+                    0.05
+                } else {
+                    0.0
+                };
+                rate + exploration + active_bonus
+            };
+            score(a)
+                .partial_cmp(&score(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+    if let Some(execution_id) = execution_id {
+        let usage_id = format!(
+            "algorithm-usage-{}",
+            crate::engine::memory::stable_id(&[execution_id, kind])
+        );
+        if state.store.get("algorithm_usage", &usage_id).is_none() {
+            if let Some(saved) = state.store.put(
+                "algorithm_usage",
+                &json!({
+                    "id": usage_id,
+                    "executionId": execution_id,
+                    "agentId": agent,
+                    "kind": kind,
+                    "revision": chosen["revision"],
+                    "status": "pending",
+                    "createdAt": chrono::Utc::now().to_rfc3339(),
+                }),
+            ) {
+                state.bus.record("algorithm_usage", &saved);
+            }
+        }
+    }
+    Some(chosen)
+}
+
+pub fn variant_for_agent(
+    state: &AppState,
+    kind: &str,
+    agent_id: Option<&str>,
+) -> String {
+    choose_for_agent(state, kind, agent_id, None)
+        .and_then(|algorithm| {
+            algorithm["implementation"]
+                .as_str()
+                .or_else(|| algorithm["variant"].as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| variant(state, kind))
+}
+
+/// Applies the execution outcome to every algorithm used during that run.
+pub fn finalize_execution(state: &AppState, execution: &Value) {
+    let Some(execution_id) = execution["id"].as_str() else {
+        return;
+    };
+    let success = execution["taskOutcome"].as_str() == Some("succeeded");
+    for mut usage in state.store.all("algorithm_usage") {
+        if usage["executionId"].as_str() != Some(execution_id)
+            || usage["status"].as_str() != Some("pending")
+        {
+            continue;
+        }
+        let (Some(agent), Some(kind), Some(revision)) = (
+            usage["agentId"].as_str(),
+            usage["kind"].as_str(),
+            usage["revision"].as_str(),
+        ) else {
+            continue;
+        };
+        let id = stat_id(agent, kind, revision);
+        let mut stat = state.store.get("algorithm_stat", &id).unwrap_or_else(|| {
+            json!({
+                "id": id,
+                "agentId": agent,
+                "kind": kind,
+                "revision": revision,
+                "uses": 0,
+                "successes": 0,
+                "failures": 0,
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+            })
+        });
+        stat["uses"] = json!(stat["uses"].as_u64().unwrap_or(0) + 1);
+        if success {
+            stat["successes"] = json!(stat["successes"].as_u64().unwrap_or(0) + 1);
+        } else {
+            stat["failures"] = json!(stat["failures"].as_u64().unwrap_or(0) + 1);
+        }
+        stat["successRate"] = json!(
+            stat["successes"].as_u64().unwrap_or(0) as f64
+                / stat["uses"].as_u64().unwrap_or(1).max(1) as f64
+        );
+        stat["lastUsedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        if let Some(saved) = state.store.put("algorithm_stat", &stat) {
+            state.bus.record("algorithm_stat", &saved);
+        }
+        // Collective statistics: a new bot starts from what the group has
+        // already learned instead of a blank slate.
+        let global_id = stat_id("global", kind, revision);
+        let mut global = state.store.get("algorithm_stat", &global_id).unwrap_or_else(|| {
+            json!({
+                "id": global_id,
+                "agentId": "global",
+                "kind": kind,
+                "revision": revision,
+                "uses": 0,
+                "successes": 0,
+                "failures": 0,
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+            })
+        });
+        global["uses"] = json!(global["uses"].as_u64().unwrap_or(0) + 1);
+        if success {
+            global["successes"] = json!(global["successes"].as_u64().unwrap_or(0) + 1);
+        } else {
+            global["failures"] = json!(global["failures"].as_u64().unwrap_or(0) + 1);
+        }
+        global["successRate"] = json!(
+            global["successes"].as_u64().unwrap_or(0) as f64
+                / global["uses"].as_u64().unwrap_or(1).max(1) as f64
+        );
+        global["lastUsedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        if let Some(saved) = state.store.put("algorithm_stat", &global) {
+            state.bus.record("algorithm_stat", &saved);
+        }
+        usage["status"] = json!("completed");
+        usage["success"] = json!(success);
+        state.store.put("algorithm_usage", &usage);
+    }
+}
+
+/// A compact per-agent view of which judgment kernels have worked.
+pub fn agent_context_block(state: &AppState, agent_id: &str) -> Option<(String, Vec<Value>)> {
+    let stats = state
+        .store
+        .all("algorithm_stat")
+        .into_iter()
+        .filter(|stat| {
+            stat["agentId"].as_str() == Some(agent_id)
+                || stat["agentId"].as_str() == Some("global")
+        })
+        .collect::<Vec<_>>();
+    if stats.is_empty() {
+        return None;
+    }
+    let mut best = std::collections::BTreeMap::new();
+    for stat in &stats {
+        let kind = stat["kind"].as_str().unwrap_or("");
+        let rate = stat["successRate"].as_f64().unwrap_or(0.0);
+        let uses = stat["uses"].as_u64().unwrap_or(0);
+        let entry = best.entry(kind.to_string()).or_insert((0.0, 0_u64, String::new()));
+        if (rate, uses) > (entry.0, entry.1) {
+            *entry = (rate, uses, stat["revision"].as_str().unwrap_or("").to_string());
+        }
+    }
+    if best.is_empty() {
+        return None;
+    }
+    let mut block = String::from("Algorithm performance for this bot:");
+    let mut items = Vec::new();
+    for (kind, (rate, uses, revision)) in best {
+        block.push_str(&format!(
+            "\n- {kind}: {:.0}% success over {uses} uses",
+            rate * 100.0
+        ));
+        items.push(json!({
+            "kind": "algorithm_stat",
+            "algorithmKind": kind,
+            "revision": revision,
+            "uses": uses,
+            "successRate": rate,
+        }));
+    }
+    Some((block, items))
+}
+
 pub fn register(state: &AppState, body: &Value) -> Result<Value, String> {
     let kind = body["kind"]
         .as_str()
@@ -769,6 +1043,38 @@ mod tests {
         activate(&state, record["id"].as_str().unwrap()).unwrap();
         assert_eq!(variant(&state, "tool.selection"), "block-write-without-read");
         assert_ne!(variant(&state, "tool.selection"), "display-only-name");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_algorithm_outcomes_become_local_and_global_statistics() {
+        let (state, dir) = state();
+        seed(&state);
+        let chosen = choose_for_agent(
+            &state, "adaptation.selection", Some("agent-a"), Some("exec-1"),
+        )
+        .expect("algorithm");
+        assert!(state.store.all("algorithm_usage").iter().any(|usage| {
+            usage["executionId"] == "exec-1"
+                && usage["agentId"] == "agent-a"
+                && usage["revision"] == chosen["revision"]
+        }));
+        finalize_execution(
+            &state,
+            &json!({"id":"exec-1","agentId":"agent-a","taskOutcome":"succeeded"}),
+        );
+        let stats = state.store.all("algorithm_stat");
+        let local = stats.iter().find(|stat| {
+            stat["agentId"] == "agent-a"
+                && stat["revision"] == chosen["revision"]
+        }).expect("local stat");
+        assert_eq!(local["uses"], 1);
+        assert_eq!(local["successes"], 1);
+        let global = stats.iter().find(|stat| {
+            stat["agentId"] == "global"
+                && stat["revision"] == chosen["revision"]
+        }).expect("global stat");
+        assert_eq!(global["uses"], 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 

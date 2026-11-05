@@ -1080,8 +1080,11 @@ async fn run_turn_body(
                 )
             });
             if mutating_call && !has_prior_read {
-                let tool_selection =
-                    crate::engine::algorithms::variant(state, "tool.selection");
+                let tool_selection = crate::engine::algorithms::variant_for_agent(
+                    state,
+                    "tool.selection",
+                    request.agent_id.as_deref(),
+                );
                 if tool_selection == "block-write-without-read" {
                     let error = "도구 선택 알고리즘(block-write-without-read)이 읽기/목록 확인 없는 쓰기를 차단했습니다. workspace_list 또는 workspace_read를 먼저 실행하세요.";
                     record_soft_tool_error(
@@ -1659,7 +1662,13 @@ async fn attempt_model_adaptation(
         "after": Value::Null,
     });
     let adaptation_algorithm =
-        crate::engine::algorithms::active(state, "adaptation.selection").unwrap_or(Value::Null);
+        crate::engine::algorithms::choose_for_agent(
+            state,
+            "adaptation.selection",
+            request.agent_id.as_deref(),
+            Some(execution_id),
+        )
+        .unwrap_or(Value::Null);
     let selected = crate::engine::adaptation_loop::choose_intervention_with_policy(
         &adaptation,
         tool,
@@ -1967,8 +1976,11 @@ fn execute_nodes<'a>(
         if depth > 16 {
             return Err("program nesting is too deep".into());
         }
-        let verification_strict =
-            crate::engine::algorithms::variant(ctx.state, "verification.predicate") == "strict";
+        let verification_strict = crate::engine::algorithms::variant_for_agent(
+            ctx.state,
+            "verification.predicate",
+            ctx.request.agent_id.as_deref(),
+        ) == "strict";
         let mut messages = Vec::new();
         for (index, node) in nodes.iter().enumerate() {
             if ctx.state.is_cancelled(ctx.session_id)
@@ -2451,9 +2463,14 @@ async fn propose_program_revision(
     ctx.metrics.lock().unwrap().model_calls += 1;
     let proposal = crate::engine::program::parse_json_object(&raw)
         .ok_or("program revision response is not a JSON object")?;
-    let repair_mode = crate::engine::algorithms::active(ctx.state, "program.repair")
-        .and_then(|algorithm| algorithm["parameters"]["mode"].as_str().map(str::to_string))
-        .unwrap_or_else(|| "replace".into());
+    let repair_mode = crate::engine::algorithms::choose_for_agent(
+        ctx.state,
+        "program.repair",
+        ctx.request.agent_id.as_deref(),
+        Some(ctx.execution_id),
+    )
+    .and_then(|algorithm| algorithm["parameters"]["mode"].as_str().map(str::to_string))
+    .unwrap_or_else(|| "replace".into());
     let revised = crate::engine::program::apply_revision_proposal(
         program, checkpoint, &proposal, &available, 64, &repair_mode,
     )?;
@@ -3605,6 +3622,7 @@ pub(super) fn finalize_execution(
         growth_record["agentId"] = json!(agent_id);
         let _ = crate::engine::agent_growth::record(state, &growth_record);
     }
+    crate::engine::algorithms::finalize_execution(state, &record);
 
     // A success experience requires Succeeded and a first-time finalization.
     if applied && task_outcome == TaskOutcome::Succeeded {

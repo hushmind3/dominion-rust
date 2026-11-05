@@ -92,3 +92,38 @@ pub async fn delete_agent(State(state): State<AppState>, Path(id): Path<String>)
 pub async fn growth(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     Json(crate::engine::agent_growth::growth(&state, &id))
 }
+
+pub async fn synergy(State(state): State<AppState>) -> Json<Value> {
+    let agents = state.store.all("agent");
+    let shared_methods = state
+        .store
+        .all("experience_rule")
+        .into_iter()
+        .filter(|rule| {
+            rule["scope"].as_str() == Some("shared")
+                && rule["supportingAgents"]
+                    .as_array()
+                    .map(|items| items.len() >= 2)
+                    .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    let mut algorithm_stats = state.store.all("algorithm_stat");
+    algorithm_stats.sort_by(|a, b| {
+        b["uses"]
+            .as_u64()
+            .unwrap_or(0)
+            .cmp(&a["uses"].as_u64().unwrap_or(0))
+    });
+    Json(json!({
+        "agents": agents.iter().map(|agent| json!({
+            "id": agent["id"],
+            "name": agent["name"],
+            "growth": crate::engine::agent_growth::growth(
+                &state,
+                agent["id"].as_str().unwrap_or(""),
+            ),
+        })).collect::<Vec<_>>(),
+        "sharedMethods": shared_methods,
+        "algorithmStats": algorithm_stats.into_iter().take(40).collect::<Vec<_>>(),
+    }))
+}
