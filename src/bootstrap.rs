@@ -6,6 +6,16 @@ use crate::{
 use std::future::IntoFuture;
 
 pub async fn run(args: Vec<String>) -> Result<(), String> {
+    if args.iter().any(|arg| arg == "--shim") {
+        let port = args
+            .iter()
+            .position(|arg| arg == "--port")
+            .and_then(|index| args.get(index + 1))
+            .and_then(|value| value.parse::<u16>().ok())
+            .or_else(|| std::env::var("SHIM_PORT").ok().and_then(|value| value.parse().ok()))
+            .unwrap_or(4399);
+        return crate::shim::run(port).await;
+    }
     if platform::handle_control(&args)? {
         return Ok(());
     }

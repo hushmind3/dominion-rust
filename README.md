@@ -56,6 +56,19 @@ src/
 web/                 React 프론트엔드 (Vite)
 ```
 
+## 런타임 구성
+
+```
+React (Vite build) → Rust Axum :4317 → Rust engine → SQLite / tools
+                                            ↘ Rust gateway :4399 → 모델 API
+                                            ↘ llama.cpp :4319 (로컬 GGUF)
+```
+
+- `4317`: DOMINION Rust 엔진·API
+- `4399`: **Rust** OpenCode Go 게이트웨이 (`dominion-rust --shim`)
+- `4319`: Rust가 관리하는 llama.cpp (로컬 모델을 쓸 때만)
+- Node는 `vite build`용 개발 도구로만 사용합니다.
+
 ## 실행
 
 **평소:** `/Applications/DOMINION.app` 더블클릭 → 이미 도는 Rust 서버에 Chrome만 연결.
@@ -173,7 +186,20 @@ OpenClaw/Hermes의 코드나 엔진을 가져오지 않습니다. 실행·기억
 여기서 재학습은 **기억·재사용 절차 개선**입니다. 모델 가중치를 훈련하는 기능은 아닙니다.
 상세한 계약·검증 조건·Discord 연결 방법은 [ENGINE.md](ENGINE.md)를 참고하세요.
 
-### 실행 제한·취소
+### 런타임 구성
+
+```
+React (Vite build) → Rust Axum :4317 → Rust engine → SQLite / tools
+                                            ↘ Rust gateway :4399 → 모델 API
+                                            ↘ llama.cpp :4319 (로컬 GGUF)
+```
+
+- `4317`: DOMINION Rust 엔진·API
+- `4399`: **Rust** OpenCode Go 게이트웨이 (`dominion-rust --shim`)
+- `4319`: Rust가 관리하는 llama.cpp (로컬 모델을 쓸 때만)
+- Node는 `vite build`용 개발 도구로만 사용합니다.
+
+## 실행 제한·취소
 
 한 턴은 최대 8라운드·40회 도구 호출·10분입니다. 제한에 도달하면 실패로 기록합니다.
 셸의 0이 아닌 종료 코드와 MCP `isError`도 실패로 기록하고, 도구 인수·결과를 보존합니다.
