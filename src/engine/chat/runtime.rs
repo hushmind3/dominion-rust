@@ -73,6 +73,10 @@ async fn run_turn_with_policy(
         return Err("Session is already running".into());
     }
     let _session_guard = state.session_guard(&session_id);
+    // Durable ownership: a crashed process leaves a lease that startup
+    // recovery releases, while a live owner (even across restarts) is refused.
+    let _lease = crate::engine::lease::LeaseGuard::acquire(state, &session_id)
+        .ok_or("다른 엔진 프로세스가 이 세션을 실행 중입니다.")?;
     if reset_cancel {
         state.clear_cancel(&session_id);
     }

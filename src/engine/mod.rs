@@ -17,6 +17,7 @@ pub mod improve;
 pub mod recovery;
 pub mod jobs;
 pub mod learning;
+pub mod lease;
 pub mod llm;
 pub mod mcp;
 pub mod memory;

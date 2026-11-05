@@ -18,11 +18,18 @@ pub struct AppState {
     pub cancelled: Arc<Mutex<HashSet<String>>>,
     /// Sessions currently executing. Prevents two turns racing on one history.
     pub active: Arc<Mutex<HashSet<String>>>,
+    /// Identity of this engine process, used to own durable run leases.
+    pub instance_id: String,
 }
 
 impl AppState {
     pub fn new(config: Config, store: Store, vault: Vault) -> Self {
         let bus = Bus::new(store.clone());
+        let instance_id = std::env::var("DOMINION_ENGINE_INSTANCE")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         Self {
             config,
             store,
@@ -31,6 +38,7 @@ impl AppState {
             approvals: Arc::new(Mutex::new(HashMap::new())),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             active: Arc::new(Mutex::new(HashSet::new())),
+            instance_id,
         }
     }
 

@@ -617,6 +617,98 @@ impl Store {
     /// Durable, ordered event log backing `/api/events`. Bounded by trimming
     /// old rows in the background of normal writes so a slow or disconnected
     /// client cannot lose ordering entirely or grow the database forever.
+    /// Cross-restart run lease. The owner instance must keep renewing it; a
+    /// crashed process leaves a lease that startup recovery releases.
+    pub fn acquire_lease(&self, id: &str, owner: &str, ttl_ms: i64) -> Option<Value> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().ok()?;
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT data FROM records WHERE kind='run_lease' AND id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()?;
+        if let Some(text) = existing {
+            let value: Value = serde_json::from_str(&text).ok()?;
+            let active = value["status"].as_str() == Some("active");
+            let same_owner = value["owner"].as_str() == Some(owner);
+            let expires = value["expiresAtMs"].as_i64().unwrap_or(0);
+            if active && !same_owner && expires > now {
+                return None;
+            }
+        }
+        let lease = json!({
+            "id": id,
+            "owner": owner,
+            "status": "active",
+            "acquiredAtMs": now,
+            "heartbeatAtMs": now,
+            "expiresAtMs": now.saturating_add(ttl_ms),
+        });
+        upsert_tx(&tx, "run_lease", &lease).ok()?;
+        tx.commit().ok()?;
+        Some(lease)
+    }
+
+    pub fn renew_lease(&self, id: &str, owner: &str, ttl_ms: i64) -> Option<Value> {
+        let now = chrono::Utc::now().timestamp_millis();
+        self.patch_if(
+            "run_lease",
+            id,
+            "owner",
+            &json!(owner),
+            &json!({
+                "status": "active",
+                "heartbeatAtMs": now,
+                "expiresAtMs": now.saturating_add(ttl_ms),
+            }),
+        )
+    }
+
+    pub fn release_lease(&self, id: &str, owner: &str) -> bool {
+        let patched = self
+            .patch_if(
+                "run_lease",
+                id,
+                "owner",
+                &json!(owner),
+                &json!({"status": "released"}),
+            )
+            .is_some();
+        if patched {
+            self.remove("run_lease", id);
+        }
+        patched
+    }
+
+    /// Startup recovery. This process owns the database (duplicate launches are
+    /// rejected before migrations), so any other owner or expired lease is dead.
+    pub fn release_stale_leases(&self, current_owner: &str) -> usize {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut released = 0;
+        for lease in self.all("run_lease") {
+            let Some(id) = lease["id"].as_str() else {
+                continue;
+            };
+            let owner = lease["owner"].as_str().unwrap_or("");
+            let expires = lease["expiresAtMs"].as_i64().unwrap_or(0);
+            if owner != current_owner || expires <= now {
+                if self.remove("run_lease", id) {
+                    released += 1;
+                }
+            }
+        }
+        released
+    }
+
+    pub fn active_lease(&self, id: &str) -> Option<Value> {
+        self.get("run_lease", id)
+            .filter(|lease| lease["status"].as_str() == Some("active"))
+    }
+
     pub fn append_event(&self, seq: u64, value: &Value) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
@@ -867,6 +959,29 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("dominion.sqlite")).unwrap();
         (store, dir)
+    }
+
+    #[test]
+    fn run_leases_are_exclusive_and_recover_after_crash() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        assert!(store.acquire_lease("session:s", "owner-a", 60_000).is_some());
+        assert!(
+            store.acquire_lease("session:s", "owner-b", 60_000).is_none(),
+            "a live lease must refuse a second owner"
+        );
+        assert!(store
+            .acquire_lease("session:s", "owner-a", 60_000)
+            .is_some());
+        assert!(store.renew_lease("session:s", "owner-b", 60_000).is_none());
+        assert!(store.renew_lease("session:s", "owner-a", 60_000).is_some());
+
+        // A crashed owner stops renewing; a new process releases foreign and
+        // expired leases before it resumes work.
+        assert!(store.acquire_lease("session:t", "dead", -1).is_some());
+        let released = store.release_stale_leases("new-instance");
+        assert!(released >= 2, "released {released}");
+        assert!(store.active_lease("session:s").is_none());
+        assert!(store.acquire_lease("session:s", "owner-c", 60_000).is_some());
     }
 
     #[test]

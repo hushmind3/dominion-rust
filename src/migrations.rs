@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 
 pub fn run(state: &AppState) -> Result<(), String> {
     provider_secrets(state)?;
+    stale_leases(state)?;
     collection_names(state)?;
     legacy_improvements(state)?;
     interrupted_executions(state)?;
@@ -40,6 +41,19 @@ fn interrupted_executions(state: &AppState) -> Result<(), String> {
             .store
             .put("execution_operation", &operation)
             .ok_or("Cannot recover an interrupted operation")?;
+    }
+    Ok(())
+}
+
+/// This process owns the database, so leases from another owner or already
+/// expired cannot represent live work. Release them before any job resumes.
+fn stale_leases(state: &AppState) -> Result<(), String> {
+    let released = state.store.release_stale_leases(&state.instance_id);
+    if released > 0 {
+        state.store.audit(
+            "run_lease.recovered",
+            json!({"released": released, "instance": state.instance_id}),
+        );
     }
     Ok(())
 }
