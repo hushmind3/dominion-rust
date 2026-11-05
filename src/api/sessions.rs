@@ -179,6 +179,29 @@ pub async fn learn(State(state):State<AppState>,Path(id):Path<String>,Json(body)
     if session["channelContext"]["authorIsBot"]==true{return error(StatusCode::FORBIDDEN,"봇 발언은 주인의 기억 근거로 학습하지 않습니다.")}
     let messages=state.store.messages(&id);
     if messages.is_empty(){return Json(json!({"status":"completed","result":{"memories":0,"skill":false,"reason":"no messages"},"message":"기억을 추출할 대화가 없습니다."})).into_response();}
+    // A room shares one session but each participant has its own memory scope.
+    // Never reuse the last speaker's session provider for the whole room.
+    if let Some(room_id)=session["roomId"].as_str(){
+        let Some(room)=state.store.get("room",room_id)else{return error(StatusCode::NOT_FOUND,"회의실을 찾을 수 없습니다.")};
+        let agents=room["agentIds"].as_array().cloned().unwrap_or_default();
+        if agents.is_empty(){return error(StatusCode::BAD_REQUEST,"학습할 참가자가 없습니다.")}
+        let explicit_provider=body["providerId"].as_str().filter(|value|!value.is_empty());
+        if let Some(provider)=explicit_provider{if state.store.get("provider",provider).is_none_or(|p|p["enabled"]==false){return error(StatusCode::BAD_REQUEST,"사용 가능한 학습 제공자를 선택하세요.")}}
+        let explicit_model=body["model"].as_str().filter(|value|!value.is_empty());
+        let mut jobs=Vec::new();
+        for agent_id in agents.iter().filter_map(Value::as_str){
+            if state.store.get("agent",agent_id).is_none(){continue}
+            let through=messages.iter().rev().find(|message|message["agent_id"].as_str()==Some(agent_id)).and_then(|message|message["id"].as_str());
+            let Some(through)=through else{continue};
+            if let Some(job)=engine::learning::enqueue_for_agent_through(&state,&id,Some(agent_id),explicit_provider.unwrap_or(""),explicit_model.unwrap_or(""),Some(through)){
+                jobs.push(json!({"agentId":agent_id,"jobId":job["id"],"status":job["status"]}));
+            }
+        }
+        if jobs.is_empty(){return Json(json!({"status":"completed","result":{"memories":0,"skill":false,"reason":"already learned or no agent messages"},"message":"참가자별로 새로 학습할 발언이 없습니다."})).into_response()}
+        let first=jobs[0]["jobId"].clone();
+        let first_job=first.as_str().and_then(|job_id|state.store.get("job",job_id));
+        return (StatusCode::ACCEPTED,Json(json!({"status":"queued","jobs":jobs,"count":jobs.len(),"jobId":first,"job":first_job}))).into_response();
+    }
     let provider=body["providerId"].as_str().or(session["providerId"].as_str()).unwrap_or("");
     if !provider.is_empty()&&state.store.get("provider",provider).is_none_or(|p|p["enabled"]==false){return error(StatusCode::BAD_REQUEST,"사용 가능한 학습 제공자를 선택하세요.")}
     let model=body["model"].as_str().or(session["model"].as_str()).unwrap_or("");

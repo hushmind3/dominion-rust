@@ -50,6 +50,19 @@ pub fn enqueue_for_agent(
     provider_id: &str,
     model: &str,
 ) -> Option<Value> {
+    enqueue_for_agent_through(state, session_id, agent_id, provider_id, model, None)
+}
+
+/// Room-wide manual learning needs an explicit watermark per participant so
+/// each agent learns its own turns up to the message it actually produced.
+pub fn enqueue_for_agent_through(
+    state: &AppState,
+    session_id: &str,
+    agent_id: Option<&str>,
+    provider_id: &str,
+    model: &str,
+    through_message_id: Option<&str>,
+) -> Option<Value> {
     let session = state.store.get("session", session_id)?;
     let agent = match agent_id {
         Some(id) => Some(state.store.get("agent", id)?),
@@ -73,12 +86,14 @@ pub fn enqueue_for_agent(
         return None;
     }
     let messages = state.store.messages(session_id);
-    let through = messages.last()?.get("id")?.as_str()?;
+    let through = through_message_id
+        .map(str::to_string)
+        .or_else(|| messages.last()?.get("id").and_then(Value::as_str).map(str::to_string))?;
     let scope = MemoryScope::for_session(&state.store, session_id, agent_id);
     if state
         .store
         .get("learning_checkpoint", &checkpoint_id(&scope))
-        .is_some_and(|checkpoint| checkpoint["throughMessageId"].as_str() == Some(through))
+        .is_some_and(|checkpoint| checkpoint["throughMessageId"].as_str() == Some(through.as_str()))
     {
         return None;
     }
@@ -145,7 +160,7 @@ pub fn enqueue_for_agent(
     }
     .unwrap_or_default();
     let input = json!({
-        "sessionId":session_id,"agentId":agent_id,"throughMessageId":through,
+        "sessionId":session_id,"agentId":agent_id,"throughMessageId":through.clone(),
         "providerId":resolved_provider,
         "model":resolved_model,
         "automatic":true,
@@ -166,7 +181,7 @@ pub fn enqueue_for_agent(
             session_id,
             &scope.partition_key,
             agent_id.unwrap_or("default"),
-            through
+            through.as_str()
         ])
     );
     jobs::enqueue_once(state, &id, "learn", input)
@@ -590,6 +605,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn per_agent_watermarks_are_isolated_and_deduplicated() {
+        let (state, dir) = state();
+        for (id, provider, model) in [("a", "pa", "ma"), ("b", "pb", "mb")] {
+            state.store.put(
+                "agent",
+                &json!({"id":id,"providerId":provider,"model":model}),
+            );
+            state
+                .store
+                .put("provider", &json!({"id":provider,"model":model}));
+        }
+        state
+            .store
+            .put("room", &json!({"id":"r","agentIds":["a","b"]}));
+        state.store.put("session", &json!({"id":"s","roomId":"r"}));
+        for (id, agent, content) in [
+            ("owner", Value::Null, "공통 요청"),
+            ("a1", json!("a"), "A 발언"),
+            ("b1", json!("b"), "B 발언"),
+        ] {
+            state.store.write_message(&json!({"id":id,"session_id":"s","role":if agent.is_null(){"user"}else{"assistant"},"agent_id":agent,"content":content}));
+        }
+        let a1 = enqueue_for_agent_through(&state, "s", Some("a"), "", "", Some("a1")).unwrap();
+        assert_eq!(a1["input"]["throughMessageId"], "a1");
+        assert_eq!(a1["input"]["providerId"], "pa");
+        assert_eq!(a1["input"]["model"], "ma");
+        let duplicate =
+            enqueue_for_agent_through(&state, "s", Some("a"), "", "", Some("a1")).unwrap();
+        assert_eq!(a1["id"], duplicate["id"]);
+        let b1 = enqueue_for_agent_through(&state, "s", Some("b"), "", "", Some("b1")).unwrap();
+        assert_eq!(b1["input"]["throughMessageId"], "b1");
+        assert_eq!(b1["input"]["providerId"], "pb");
+        assert_ne!(a1["id"], b1["id"]);
+        state.store.write_message(
+            &json!({"id":"a2","session_id":"s","role":"assistant","agent_id":"a","content":"A 추가 발언"}),
+        );
+        let a2 = enqueue_for_agent_through(&state, "s", Some("a"), "", "", Some("a2")).unwrap();
+        assert_eq!(a2["input"]["throughMessageId"], "a2");
+        assert_ne!(a1["id"], a2["id"]);
+        assert_eq!(state.store.count("job"), 3);
+        let _ = std::fs::remove_dir_all(dir);
+    }
     #[tokio::test]
     async fn actual_learning_calls_preserve_provenance_snapshot_and_checkpoint() {
         use axum::{extract::State, routing::post, Json, Router};

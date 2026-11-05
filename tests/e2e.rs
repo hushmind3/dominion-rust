@@ -867,3 +867,73 @@ fn cancelling_a_running_job_stops_it() {
     assert_eq!(job["status"], "cancelled", "{job}");
     assert_eq!(job["cancelRequested"], true);
 }
+
+#[test]
+fn room_manual_learning_enqueues_each_participant_with_its_own_watermark() {
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"참가자 발언"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let provider = app.get("/api/providers")[0]["id"].as_str().unwrap().to_string();
+    let agent_a = app.post(
+        "/api/agents",
+        &json!({"name":"A","systemPrompt":"A","providerId":provider,"model":"mock"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent_b = app.post(
+        "/api/agents",
+        &json!({"name":"B","systemPrompt":"B","providerId":provider,"model":"mock"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let room = app.post(
+        "/api/rooms",
+        &json!({"name":"learn-room","agentIds":[agent_a,agent_b],"rounds":1,"maxTurns":2,"toolsEnabled":false,"autoLearning":false}),
+    );
+    let room_id = room["id"].as_str().unwrap().to_string();
+    let submitted = app.post(
+        &format!("/api/rooms/{room_id}/messages"),
+        &json!({"input":"참가자별 학습 확인"}),
+    );
+    let job_id = submitted["jobId"].as_str().unwrap().to_string();
+    let session_id = submitted["sessionId"].as_str().unwrap().to_string();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut status = String::new();
+    while Instant::now() < deadline {
+        let job = app.get(&format!("/api/jobs/{job_id}"));
+        status = job["status"].as_str().unwrap_or("").to_string();
+        if matches!(status.as_str(), "completed" | "failed") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(status, "completed", "room job did not finish");
+    let messages = app.get(&format!("/api/sessions/{session_id}/messages"));
+    let last_for = |agent: &str| {
+        messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["agent_id"].as_str() == Some(agent))
+            .and_then(|message| message["id"].as_str().map(str::to_string))
+    };
+    let through_a = last_for(&agent_a).expect("agent A spoke");
+    let through_b = last_for(&agent_b).expect("agent B spoke");
+
+    let learn = app.post(&format!("/api/sessions/{session_id}/learn"), &json!({}));
+    assert_eq!(learn["status"], "queued", "{learn}");
+    let jobs = learn["jobs"].as_array().expect("per-agent jobs");
+    assert_eq!(jobs.len(), 2, "{learn}");
+    for job in jobs {
+        let agent = job["agentId"].as_str().unwrap();
+        let expected = if agent == agent_a { &through_a } else { &through_b };
+        let record = app.get(&format!("/api/jobs/{}", job["jobId"].as_str().unwrap()));
+        assert_eq!(record["input"]["agentId"].as_str().unwrap(), agent);
+        assert_eq!(record["input"]["throughMessageId"].as_str().unwrap(), expected);
+        assert_eq!(record["input"]["providerId"].as_str().unwrap(), provider);
+    }
+}
