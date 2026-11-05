@@ -1,7 +1,9 @@
 //! End-to-end test: runs the real binary, a fake OpenAI-compatible model, and
 //! exercises HTTP/SSE, persistence and the cross-origin write guard.
 
+use rusqlite::Connection;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -1427,6 +1429,7 @@ fn policy_activation_is_rejected_when_the_independent_evaluator_disagrees() {
     };
     let good_plan = "1. bench/harness_report.txt 파일을 만들고 REPORT-OK를 저장한다\n2. bench/harness_audit.txt 파일을 만든다\n3. 두 파일을 검증한다";
     let vague_plan = "1. 작업을 진행한다\n2. 완료한다";
+    let evidence = evidence_bundle(10, false, true);
 
     // 1) Version mismatch rejects promotion even with a perfect claimed delta.
     let (policy_id, request_id, token) = make_request("version-mismatch");
@@ -1435,8 +1438,10 @@ fn policy_activation_is_rejected_when_the_independent_evaluator_disagrees() {
         &json!({
             "claimToken": token,
             "experimentId":"meta-1",
-            "verdict":"preliminary_support",
-            "delta":1.0,"independentUnits":10,
+            "verdict":evidence["verdict"],
+            "delta":evidence["delta"],"independentUnits":evidence["independentUnits"],
+            "manifest":evidence["manifest"],"manifestHash":evidence["manifestHash"],
+            "trials":evidence["trials"],
             "semanticDelta":0.9,"independentSemanticDelta":0.9,
             "semanticEvaluator":{"id":"plan-quality-main","version":999},
             "independentEvaluator":{"id":"plan-quality-independent","version":1},
@@ -1470,8 +1475,10 @@ fn policy_activation_is_rejected_when_the_independent_evaluator_disagrees() {
         &json!({
             "claimToken": token,
             "experimentId":"meta-2",
-            "verdict":"preliminary_support",
-            "delta":1.0,"independentUnits":10,
+            "verdict":evidence["verdict"],
+            "delta":evidence["delta"],"independentUnits":evidence["independentUnits"],
+            "manifest":evidence["manifest"],"manifestHash":evidence["manifestHash"],
+            "trials":evidence["trials"],
             "semanticDelta":0.9,"independentSemanticDelta":0.9,
             "semanticEvaluator":{"id":"plan-quality-main","version":1},
             "independentEvaluator":{"id":"plan-quality-independent","version":1},
@@ -1505,8 +1512,10 @@ fn policy_activation_is_rejected_when_the_independent_evaluator_disagrees() {
         &json!({
             "claimToken": token,
             "experimentId":"meta-3",
-            "verdict":"preliminary_support",
-            "delta":1.0,"independentUnits":10,
+            "verdict":evidence["verdict"],
+            "delta":evidence["delta"],"independentUnits":evidence["independentUnits"],
+            "manifest":evidence["manifest"],"manifestHash":evidence["manifestHash"],
+            "trials":evidence["trials"],
             "semanticDelta":0.9,"independentSemanticDelta":0.9,
             "semanticEvaluator":{"id":"plan-quality-main","version":1},
             "independentEvaluator":{"id":"plan-quality-independent","version":1},
@@ -2174,11 +2183,14 @@ fn only_one_runner_can_settle_and_promote_an_experiment() {
     );
     let token = claimed["request"]["claimToken"].as_str().unwrap().to_string();
     let good_plan = "1. bench/harness_report.txt 파일을 만들고 REPORT-OK를 저장한다\n2. bench/harness_audit.txt 파일을 만든다\n3. 두 파일을 검증한다";
+    let evidence = evidence_bundle(10, false, true);
     let body = json!({
         "claimToken": token,
         "experimentId":"cas-exp",
-        "verdict":"preliminary_support",
-        "delta":1.0,"independentUnits":10,
+        "verdict":evidence["verdict"],
+        "delta":evidence["delta"],"independentUnits":evidence["independentUnits"],
+        "manifest":evidence["manifest"],"manifestHash":evidence["manifestHash"],
+        "trials":evidence["trials"],
         "semanticDelta":0.5,"independentSemanticDelta":0.5,
         "semanticEvaluator":{"id":"plan-quality-main","version":1},
         "independentEvaluator":{"id":"plan-quality-independent","version":1},
@@ -2309,6 +2321,486 @@ fn a_typed_execution_program_takes_the_failure_branch() {
         checkpoint["pendingOperationIds"].as_array().unwrap().is_empty(),
         "{checkpoint}"
     );
+}
+
+/// Builds a verifiable evidence bundle: 10 pairs, baseline fails, treatment succeeds.
+fn evidence_bundle(pairs: u64, baseline_ok: bool, treatment_ok: bool) -> Value {
+    let mut trials = Vec::new();
+    for pair in 0..pairs {
+        for (arm, ok) in [("baseline", baseline_ok), ("treatment", treatment_ok)] {
+            trials.push(json!({
+                "pair":pair,"arm":arm,"status":"completed",
+                "auditOk":ok,"reportOk":ok,
+                "taskOutcome":if ok {"succeeded"} else {"failed"},
+                "compliance":ok,"requiresCompliance":false,"errorClass":"",
+                "planQuality":0.0,"planQualityIndependent":0.0,"elapsedMs":10
+            }));
+        }
+    }
+    let delta = if treatment_ok {1.0} else {0.0} - if baseline_ok {1.0} else {0.0};
+    let n = pairs as f64;
+    let halfwidth = (2.0 * (2.0f64 / 0.05).ln() / n).sqrt();
+    let verdict = if pairs >= 10 && delta - halfwidth > 0.0 {
+        "preliminary_support"
+    } else {
+        "inconclusive"
+    };
+    let manifest = json!({
+        "pairs":pairs,"seed":94371,"oracleVersion":"s7-harness-audit-v1",
+        "fixture":"planning_evaluation","mode":"smoke","model":{"model":"mock"}
+    });
+    let hash = format!("{:x}", Sha256::digest(manifest.to_string().as_bytes()));
+    json!({
+        "trials":trials,"manifest":manifest,"manifestHash":hash,
+        "delta":delta,"independentUnits":pairs,"verdict":verdict
+    })
+}
+
+#[test]
+fn completion_rejects_fake_or_incomplete_evidence() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"unused"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    let make = |name: &str| -> (String, String) {
+        let policy = app.post(
+            "/api/benchmark/policies",
+            &json!({"slot":"planning","name":name,"parameters":{"outline":true},"rationale":"evidence"}),
+        );
+        let policy_id = policy["id"].as_str().unwrap().to_string();
+        let request = app.post(
+            "/api/benchmark/experiment-requests",
+            &json!({"policyId":policy_id,"fixture":"planning_evaluation"}),
+        );
+        let request_id = request["id"].as_str().unwrap().to_string();
+        let claimed = app.post(
+            "/api/experiment-requests/claim",
+            &json!({"runnerId":name,"ttlSeconds":60}),
+        );
+        let token = claimed["request"]["claimToken"].as_str().unwrap().to_string();
+        (policy_id, format!("{request_id}|{token}"))
+    };
+    let good_plan = "1. bench/harness_report.txt 파일을 만들고 REPORT-OK를 저장한다\n2. bench/harness_audit.txt 파일을 만든다\n3. 두 파일을 검증한다";
+
+    // 1) Claimed success numbers that do not match the raw failures.
+    let (policy_id, target) = make("fake-numbers");
+    let (request_id, token) = target.split_once('|').unwrap();
+    let fake = evidence_bundle(10, false, false);
+    let completed = app.post(
+        &format!("/api/experiment-requests/{request_id}/complete"),
+        &json!({
+            "claimToken":token,"experimentId":"fake-exp",
+            "verdict":"preliminary_support","delta":1.0,"independentUnits":10,
+            "manifest":fake["manifest"],"manifestHash":fake["manifestHash"],"trials":fake["trials"],
+            "semanticDelta":0.5,"independentSemanticDelta":0.5,
+            "semanticEvaluator":{"id":"plan-quality-main","version":1},
+            "independentEvaluator":{"id":"plan-quality-independent","version":1},
+            "task":"bench/harness_report.txt 파일을 만들고 내용을 REPORT-OK로 저장해.",
+            "plans":[{"pair":0,"arm":"baseline","plan":""},{"pair":0,"arm":"treatment","plan":good_plan}]
+        }),
+    );
+    assert_eq!(completed["request"]["status"], "completed");
+    assert!(
+        completed["request"]["promotionError"]
+            .as_str()
+            .is_some_and(|text| text.contains("evidence rejected")),
+        "{completed}"
+    );
+    let policies = app.get("/api/policies");
+    assert_eq!(
+        policies
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == policy_id.as_str())
+            .unwrap()["status"],
+        "candidate"
+    );
+
+    // 2) Missing arm for a planned pair.
+    let (_policy_id, target) = make("incomplete-trials");
+    let (request_id, token) = target.split_once('|').unwrap();
+    let mut incomplete = evidence_bundle(10, false, true);
+    let trials = incomplete["trials"].as_array_mut().unwrap();
+    let index = trials.iter().position(|t| t["pair"] == 9 && t["arm"] == "treatment").unwrap();
+    trials.remove(index);
+    let completed = app.post(
+        &format!("/api/experiment-requests/{request_id}/complete"),
+        &json!({
+            "claimToken":token,"experimentId":"incomplete-exp",
+            "verdict":incomplete["verdict"],"delta":incomplete["delta"],
+            "independentUnits":incomplete["independentUnits"],"manifest":incomplete["manifest"],
+            "manifestHash":incomplete["manifestHash"],"trials":incomplete["trials"],
+            "semanticDelta":0.5,"independentSemanticDelta":0.5,
+            "semanticEvaluator":{"id":"plan-quality-main","version":1},
+            "independentEvaluator":{"id":"plan-quality-independent","version":1},
+            "task":"bench/harness_report.txt 파일을 만들고 내용을 REPORT-OK로 저장해.",
+            "plans":[{"pair":0,"arm":"baseline","plan":""},{"pair":0,"arm":"treatment","plan":good_plan}]
+        }),
+    );
+    assert_eq!(completed["request"]["status"], "completed");
+    assert!(
+        completed["request"]["promotionError"]
+            .as_str()
+            .is_some_and(|text| text.contains("missing an arm") || text.contains("incomplete")),
+        "{completed}"
+    );
+}
+
+#[test]
+fn a_crashed_settlement_recovers_without_reapplying_promotion_and_stale_claims_fail() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"unused"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    let policy = app.post(
+        "/api/benchmark/policies",
+        &json!({"slot":"planning","name":"crash-settle","parameters":{"outline":true},"rationale":"crash"}),
+    );
+    let policy_id = policy["id"].as_str().unwrap().to_string();
+    let request = app.post(
+        "/api/benchmark/experiment-requests",
+        &json!({"policyId":policy_id,"fixture":"planning_evaluation"}),
+    );
+    let request_id = request["id"].as_str().unwrap().to_string();
+    let _claimed = app.post(
+        "/api/experiment-requests/claim",
+        &json!({"runnerId":"crash-runner","ttlSeconds":60}),
+    );
+    let root = app._root.clone();
+    {
+        let conn = Connection::open(root.join("runtime/dominion.sqlite")).unwrap();
+        conn.busy_timeout(Duration::from_secs(5)).unwrap();
+        let data: String = conn
+            .query_row(
+                "SELECT data FROM records WHERE kind='experiment_request' AND id=?1",
+                [request_id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut value: Value = serde_json::from_str(&data).unwrap();
+        value["status"] = json!("settling");
+        value["settleToken"] = json!("stale-settle");
+        value["settleExpiresAtMs"] = json!(0);
+        value["promotionIntent"] = json!({
+            "kind":"policy","targetId":policy_id,"experimentId":"recovered-exp"
+        });
+        conn.execute(
+            "UPDATE records SET data=?2 WHERE kind='experiment_request' AND id=?1",
+            rusqlite::params![request_id, value.to_string()],
+        )
+        .unwrap();
+        let policy_data: String = conn
+            .query_row(
+                "SELECT data FROM records WHERE kind='adaptation_policy' AND id=?1",
+                [policy_id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut policy_value: Value = serde_json::from_str(&policy_data).unwrap();
+        policy_value["status"] = json!("active");
+        policy_value["revision"] = json!("recovered-revision");
+        policy_value["lastExperiment"] = json!({
+            "experimentId":"recovered-exp","independentUnits":10,
+            "semanticDelta":0.3,"independentSemanticDelta":0.3,
+            "verdict":"preliminary_support"
+        });
+        conn.execute(
+            "UPDATE records SET data=?2 WHERE kind='adaptation_policy' AND id=?1",
+            rusqlite::params![policy_id, policy_value.to_string()],
+        )
+        .unwrap();
+    }
+    // Trigger settling recovery through the claim path. When no request is
+    // queued the endpoint returns 204, so raw client is used here.
+    let _ = app
+        .client
+        .post(format!("{}/api/experiment-requests/claim", app.base))
+        .json(&json!({"runnerId":"recovery-check","ttlSeconds":60}))
+        .send();
+
+    let requests = app.get("/api/experiment-requests");
+    let recovered = &requests.as_array().unwrap()[0];
+    assert_eq!(recovered["status"], "completed", "{recovered}");
+    assert!(
+        recovered["promotionError"]
+            .as_str()
+            .is_some_and(|text| text.contains("recovered after restart")),
+        "{recovered}"
+    );
+    let policies = app.get("/api/policies");
+    let policy = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == policy_id.as_str())
+        .unwrap();
+    assert_eq!(policy["revision"], "recovered-revision", "promotion was reapplied");
+
+    // Stale claim: expiry rejects completion.
+    let policy2 = app.post(
+        "/api/benchmark/policies",
+        &json!({"slot":"planning","name":"stale-claim","parameters":{"outline":true},"rationale":"stale"}),
+    );
+    let policy2_id = policy2["id"].as_str().unwrap().to_string();
+    let request2 = app.post(
+        "/api/benchmark/experiment-requests",
+        &json!({"policyId":policy2_id,"fixture":"planning_evaluation"}),
+    );
+    let request2_id = request2["id"].as_str().unwrap().to_string();
+    let claimed = app.post(
+        "/api/experiment-requests/claim",
+        &json!({"runnerId":"stale-runner","ttlSeconds":60}),
+    );
+    let token = claimed["request"]["claimToken"].as_str().unwrap().to_string();
+    {
+        let conn = Connection::open(root.join("runtime/dominion.sqlite")).unwrap();
+        conn.busy_timeout(Duration::from_secs(5)).unwrap();
+        conn.execute(
+            "UPDATE records SET data=json_set(data,'$.claimExpiresAtMs',0) WHERE kind='experiment_request' AND id=?1",
+            [request2_id.as_str()],
+        )
+        .unwrap();
+    }
+    let evidence = evidence_bundle(10, false, true);
+    let response = app
+        .client
+        .post(format!("{}/api/experiment-requests/{request2_id}/complete", app.base))
+        .json(&json!({
+            "claimToken":token,"experimentId":"stale-exp",
+            "verdict":evidence["verdict"],"delta":evidence["delta"],
+            "independentUnits":evidence["independentUnits"],"manifest":evidence["manifest"],
+            "manifestHash":evidence["manifestHash"],"trials":evidence["trials"],
+            "semanticDelta":0.5,"independentSemanticDelta":0.5,
+            "semanticEvaluator":{"id":"plan-quality-main","version":1},
+            "independentEvaluator":{"id":"plan-quality-independent","version":1},
+            "task":"task","plans":[{"pair":0,"arm":"baseline","plan":""},{"pair":0,"arm":"treatment","plan":"1. 검증"}]
+        }))
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+
+    // Restart preserves the recovered settlement and does not re-promote.
+    let root = app._root.clone();
+    drop(app);
+    let app = TestApp::from_root(port, "native", root, &[]);
+    let requests = app.get("/api/experiment-requests");
+    let recovered = requests
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == request_id.as_str())
+        .expect("recovered request");
+    assert_eq!(recovered["status"], "completed");
+    let policies = app.get("/api/policies");
+    let policy = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == policy_id.as_str())
+        .unwrap();
+    assert_eq!(policy["revision"], "recovered-revision");
+}
+
+#[test]
+fn a_model_generated_intervention_runs_and_refutes_its_hypothesis() {
+    let _serial = serial();
+    let stream_calls = Arc::new(Mutex::new(0u32));
+    let adaptations = Arc::new(Mutex::new(0u32));
+    let stream_counter = stream_calls.clone();
+    let adaptation_counter = adaptations.clone();
+    let (port, _) = scripted_provider(move |request| {
+        let system = request["messages"][0]["content"].as_str().unwrap_or("");
+        if request["stream"].as_bool() == Some(false) && system.contains("adaptation planner") {
+            let mut count = adaptation_counter.lock().unwrap();
+            *count += 1;
+            let content = json!({
+                "hypotheses":[{
+                    "id":"h1","claim":"the command environment is wrong",
+                    "predictions":[{"predicate":{"type":"equals","from":"result","path":"/exitCode","value":0}}]
+                }],
+                "interventions":[{
+                    "id":"i1","hypothesisIds":["h1"],
+                    "tool":"workspace_write",
+                    "inputs":{"path":format!("adapt{}.txt", *count),"content":"OK"},
+                    "expectedChecks":["file_exists"],"estimatedCost":0.1
+                }]
+            }).to_string();
+            return vec![json!({"choices":[{"delta":{"content":content},"finish_reason":"stop"}]})];
+        }
+        let mut count = stream_counter.lock().unwrap();
+        *count += 1;
+        match *count {
+            1 | 2 => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":format!("fail-{count}"),"type":"function","function":{"name":"shell_exec","arguments":"{\"command\":\"exit 7\"}"}}]},"finish_reason":"tool_calls"}]})],
+            _ => vec![json!({"choices":[{"delta":{"content":"적응 결과로 완료했습니다."},"finish_reason":"stop"}]})],
+        }
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let _ = app.chat(&json!({"input":"adapt1.txt와 adapt2.txt 파일을 만들어줘","autoLearning":false}));
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("adapt1.txt")).unwrap_or_default(),
+        "OK"
+    );
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("adapt2.txt")).unwrap_or_default(),
+        "OK"
+    );
+    let executions = app.get("/api/executions");
+    let execution = &executions.as_array().unwrap()[0];
+    let adaptations = execution["adaptations"].as_array().cloned().unwrap_or_default();
+    let model_adaptation = adaptations
+        .iter()
+        .find(|item| item["selected"].is_object())
+        .expect("model adaptation record");
+    assert!(
+        model_adaptation["hypotheses"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    assert!(model_adaptation["selected"]["id"].is_string());
+    let refuted = model_adaptation["hypothesisResults"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["status"] == "refuted");
+    assert!(refuted, "wrong hypothesis was not refuted: {model_adaptation}");
+    let operations = {
+        let execution_id = execution["id"].as_str().unwrap();
+        app.get(&format!("/api/executions/{execution_id}/operations"))
+    };
+    let shells = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|operation| operation["tool"] == "shell_exec")
+        .count();
+    assert_eq!(
+        shells, 2,
+        "a retry after the environment changed should be allowed: {operations}"
+    );
+    let adapted_writes = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|operation| operation["tool"] == "workspace_write" && operation["origin"] == "adaptation")
+        .count();
+    assert!(adapted_writes >= 1, "{operations}");
+}
+
+#[test]
+fn a_program_consumes_sequence_verify_loop_and_model_decision_nodes() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"프로그램 노드를 모두 소비했습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let program = json!({
+        "revision":"multi-node-program",
+        "nodes":[
+            {"type":"call_tool","id":"try","tool":"shell_exec","inputs":{"command":"exit 7"},"saveAs":"try"},
+            {"type":"branch","id":"check",
+             "predicate":{"type":"equals","from":"try","path":"/exitCode","value":0},
+             "then":[{"type":"call_tool","id":"primary","tool":"workspace_write","inputs":{"path":"primary.txt","content":"PRIMARY"}}],
+             "else":[{"type":"call_tool","id":"fallback","tool":"workspace_write","inputs":{"path":"fallback.txt","content":"FALLBACK"}}]},
+            {"type":"sequence","id":"seq","nodes":[
+                {"type":"call_tool","id":"seq1","tool":"workspace_write","inputs":{"path":"seq.txt","content":"SEQ"}}
+            ]},
+            {"type":"verify","id":"verify","checks":[
+                {"predicate":{"type":"exists","from":"seq1","path":"/path"}}
+            ]},
+            {"type":"loop","id":"loop","maxIterations":2,
+             "predicate":{"type":"not","predicate":{"type":"exists","from":"loop_done"}},
+             "body":[{"type":"call_tool","id":"loop1","tool":"workspace_write","inputs":{"path":"loop.txt","content":"LOOP"},"saveAs":"loop_done"}]},
+            {"type":"model_decision","id":"model"}
+        ]
+    });
+    let activated = app.post(
+        "/api/benchmark/policies/state",
+        &json!({"slot":"execution","name":"multi-node","parameters":{"program":program}}),
+    );
+    assert_eq!(activated["active"]["status"], "active", "{activated}");
+    let stream = app.chat(&json!({"input":"fallback.txt 파일을 만들어줘","autoLearning":false}));
+    assert!(!stream.contains("\"type\":\"error\""), "{stream}");
+    for (path, expected) in [
+        ("fallback.txt", "FALLBACK"),
+        ("seq.txt", "SEQ"),
+        ("loop.txt", "LOOP"),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(app._root.join(path)).unwrap_or_default(),
+            expected,
+            "{path} was not written"
+        );
+    }
+    assert!(!app._root.join("primary.txt").exists());
+    let executions = app.get("/api/executions");
+    let execution = &executions.as_array().unwrap()[0];
+    let checkpoint = &execution["programCheckpoint"];
+    assert_eq!(checkpoint["status"], "paused", "{checkpoint}");
+    assert_eq!(checkpoint["loopIterations"], 1, "{checkpoint}");
+    assert_eq!(checkpoint["parallelMode"], Value::Null);
+    let operations = {
+        let execution_id = execution["id"].as_str().unwrap();
+        app.get(&format!("/api/executions/{execution_id}/operations"))
+    };
+    let tools = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|operation| operation["tool"].as_str())
+        .collect::<Vec<_>>();
+    assert!(tools.contains(&"shell_exec"));
+    assert!(tools.contains(&"workspace_write"));
+}
+
+#[test]
+fn consecutive_failed_adaptations_stop_the_no_progress_loop() {
+    let _serial = serial();
+    let stream_calls = Arc::new(Mutex::new(0u32));
+    let counter = stream_calls.clone();
+    let (port, _) = scripted_provider(move |request| {
+        let system = request["messages"][0]["content"].as_str().unwrap_or("");
+        if request["stream"].as_bool() == Some(false) && system.contains("adaptation planner") {
+            let content = json!({
+                "hypotheses":[{"id":"h1","claim":"still wrong","predictions":[{"predicate":{"type":"equals","from":"result","path":"/exitCode","value":0}}]}],
+                "interventions":[{"id":"i1","hypothesisIds":["h1"],"tool":"shell_exec","inputs":{"command":"exit 8"},"expectedChecks":["x"],"estimatedCost":0.1}]
+            }).to_string();
+            return vec![json!({"choices":[{"delta":{"content":content},"finish_reason":"stop"}]})];
+        }
+        let mut count = counter.lock().unwrap();
+        *count += 1;
+        match *count {
+            1 => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"f1","type":"function","function":{"name":"shell_exec","arguments":"{\"command\":\"exit 7\"}"}}]},"finish_reason":"tool_calls"}]})],
+            2 => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"f2","type":"function","function":{"name":"shell_exec","arguments":"{\"command\":\"exit 9\"}"}}]},"finish_reason":"tool_calls"}]})],
+            _ => vec![json!({"choices":[{"delta":{"content":"진전이 없어 중단합니다."},"finish_reason":"stop"}]})],
+        }
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let stream = app.chat(&json!({"input":"계속 시도해","autoLearning":false}));
+    assert!(stream.contains("진전이 없어 중단합니다."), "{stream}");
+    let executions = app.get("/api/executions");
+    let execution = &executions.as_array().unwrap()[0];
+    let adaptations = execution["adaptations"].as_array().unwrap();
+    assert!(
+        adaptations.iter().filter(|item| item["selected"].is_object()).count() >= 2,
+        "{execution}"
+    );
+    let operations = {
+        let execution_id = execution["id"].as_str().unwrap();
+        app.get(&format!("/api/executions/{execution_id}/operations"))
+    };
+    let shells = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|operation| operation["tool"] == "shell_exec")
+        .count();
+    assert_eq!(shells, 4, "unexpected retry loop: {operations}");
 }
 
 fn free_port() -> u16 {

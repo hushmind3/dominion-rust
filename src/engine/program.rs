@@ -59,6 +59,33 @@ fn validate_node(node: &Value) -> Result<(), String> {
             if node["body"].as_array().is_none() {
                 return Err("loop.body must be an array".into());
             }
+            for child in node["body"].as_array().into_iter().flatten() {
+                validate_node(child)?;
+            }
+            Ok(())
+        }
+        "sequence" | "parallel" => {
+            if node["nodes"].as_array().is_none() {
+                return Err(format!("{}.nodes must be an array", node["type"]));
+            }
+            for child in node["nodes"].as_array().into_iter().flatten() {
+                validate_node(child)?;
+            }
+            Ok(())
+        }
+        "verify" => {
+            if node["checks"].as_array().is_none() {
+                return Err("verify.checks must be an array".into());
+            }
+            Ok(())
+        }
+        "model_decision" => Ok(()),
+        "delegate" => {
+            if node["agentId"].as_str().is_none_or(str::is_empty)
+                || node["prompt"].as_str().is_none_or(str::is_empty)
+            {
+                return Err("delegate.agentId/prompt are required".into());
+            }
             Ok(())
         }
         other => Err(format!("unsupported program node type: {other}")),
@@ -102,7 +129,12 @@ pub fn predicate_holds(predicate: &Value, resolved: &Value) -> Result<bool, Stri
     match predicate["type"].as_str().unwrap_or("") {
         "exists" => {
             let source = predicate["from"].as_str().unwrap_or("");
-            Ok(resolved.get(source).is_some_and(|value| !value.is_null()))
+            let base = resolved.get(source).unwrap_or(&Value::Null);
+            let actual = match predicate["path"].as_str() {
+                Some(path) => base.pointer(path).cloned().unwrap_or(Value::Null),
+                None => base.clone(),
+            };
+            Ok(!actual.is_null())
         }
         "equals" => {
             let source = predicate["from"].as_str().unwrap_or("");

@@ -128,4 +128,95 @@ unit test `program_resumes_from_a_durable_checkpoint_without_repeating_completed
   통한 실사용 경로는 다음 단계다.
 - `observe`는 last observation 복사 수준이다.
 
-전체: `267 unit + 49 E2E + 16 benchmark` 통과.
+전체: `269 unit + 54 E2E + 16 benchmark` 통과.
+
+## 5. R1 실험 정산 경화 (2026-11-06)
+
+### 증거 재계산
+
+`complete()`는 runner가 보낸 verdict/delta/units를 그대로 믿지 않는다.
+
+- runner가 `trials`(pair/arm/status/auditOk/reportOk/taskOutcome/compliance/
+  requiresCompliance/errorClass/…), `manifest`(pairs/seed/oracleVersion/
+  fixture/model), `manifestHash`를 제출한다.
+- 서버는 manifest hash를 검증하고, **raw trials에서 ITT 성공 delta/units/
+  verdict를 다시 계산**한다.
+- 불일치, 누락 arm, pair 누락, hash 불일치면 승격하지 않고 request를 completed로
+  남기되 `promotionError=evidence rejected`를 기록한다.
+- 통과 시 재계산 값으로 policy/strategy gate를 호출한다.
+
+### crash-safe promotion
+
+- settling 진입 시 `promotionIntent {kind,targetId,experimentId}`를 함께 저장.
+- 승격 전에 target의 `lastExperiment.experimentId`가 이미 같은 실험이면
+  재적용하지 않고 그 결과를 승격 결과로 사용한다.
+- settle 만료 회수 시 intent와 target을 대조한다.
+  - 이미 적용됨 → request를 `completed`로 복구(재적용 금지)
+  - 미적용 → `queued`로 반환
+- `evidenceVerification`과 `promotionAppliedAt`을 request에 기록한다.
+
+### 테스트
+
+- `completion_rejects_fake_or_incomplete_evidence`
+  (성공 수치 조작, treatment arm 누락 → 승격 거부)
+- `a_crashed_settlement_recovers_without_reapplying_promotion_and_stale_claims_fail`
+  (승격 후 crash, settling 만료 → 재적용 없이 completed, 재시작 후 유지;
+  만료 claim complete → 409)
+- `only_one_runner_can_settle_and_promote_an_experiment` (동시 complete 1승)
+- `consecutive_failed_adaptations_stop_the_no_progress_loop`
+  (적응 실행 2회 연속 실패 후 도구 반복 중단, wire 4회에서 정지)
+
+## 6. 모델 기반 Adaptive Execution (설계 2.4 §4)
+
+실패 시 단순 차단을 넘어, 모델이 원인 가설과 서로 다른 개입을 생성한다.
+
+- 실패 관측: expected=success, actual=error, tool, arguments, environmentVersion.
+- `adaptation_prompt`로 모델에게 JSON을 요구:
+  hypotheses(claim + predictions), interventions(tool/inputs/hypothesisIds/
+  expectedChecks/estimatedCost).
+- `choose_intervention`:
+  - 실패와 동일한 tool+inputs는 환경이 바뀌지 않으면 제외
+  - score = expectedChecks 수 + 연결된 hypothesis 수 − estimatedCost
+- 선택된 개입은 **공통 dispatch_tool_call**로 실제 실행된다(origin=adaptation).
+- 결과에 대해 각 hypothesis의 prediction을 predicate로 평가해
+  supported/refuted/unknown을 기록한다.
+- 환경 버전은 성공한 side-effect 도구마다 증가한다. 이전 실패와 같은 호출이라도
+  환경 버전이 바뀌었으면 재시도할 수 있다.
+- 연속 적응 실행이 진전 없이 2회 실패하면 반복을 중단한다.
+- execution에 hypotheses/interventions/selected/result/hypothesisResults/
+  adaptationCheckpoint(environmentVersion/failureSignature/selectedIntervention)를
+  저장한다.
+
+E2E `a_model_generated_intervention_runs_and_refutes_its_hypothesis`:
+- `shell_exec exit 7` 실패
+- 모델이 `workspace_write` 개입 2개를 생성
+- 잘못된 가설은 `refuted`, 개입은 실제 실행됨
+- 환경 변경 후 같은 shell 호출 재시도가 허용되어 2회 실행됨
+- adapt1/adapt2 파일 생성, adaptationRecords 확인
+- 환경 변경 후 동일 shell 호출 재시도가 허용되어 2회 실행됨
+
+## 7. Program 노드 확장 (설계 2.4 §7)
+
+기존 Observe/CallTool/Branch에 다음을 추가했다.
+
+- `sequence`: child 노드를 순서대로 실행
+- `parallel`: 현재 순차 fallback으로 실행하고 checkpoint에 표시
+- `verify`: predicate checks를 평가해 `lastVerify` 기록, 실패 시 모델에 알림
+- `delegate`: `delegate_task`를 공통 gateway로 실행
+- `loop`: predicate가 true인 동안 body를 최대 maxIterations까지 실행,
+  `loopIterations` 저장
+- `model_decision`: program을 paused로 저장하고 모델 loop에 제어 반환
+
+E2E `a_program_consumes_sequence_verify_loop_and_model_decision_nodes`:
+- branch에서 fallback 파일 생성
+- sequence로 seq.txt 생성, verify 통과
+- loop 1회 실행(loop.txt), model_decision에서 paused
+- checkpoint status=paused, loopIterations=1
+
+### 한계
+
+- parallel은 실제 병렬이 아니라 순차 fallback이다.
+- loop/sequence child는 call_tool/observe만 지원한다.
+- ModelDecision 이후 program 재개는 아직 자동이 아니다.
+- process kill 후 program 자동 재개는 runtime 함수 수준 checkpoint resume만 검증됐다.
+- 개선기(§9) 비교와 scope별 deployment는 아직이다.

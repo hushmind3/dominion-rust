@@ -25,7 +25,46 @@ pub async fn claim(State(state): State<AppState>, Json(body): Json<Value>) -> Re
                 .unwrap_or(i64::MAX)
                 <= now_ms;
         if stale_settling {
-            if let Some(id) = stale["id"].as_str() {
+            let Some(id) = stale["id"].as_str() else {
+                continue;
+            };
+            let intent = &stale["promotionIntent"];
+            let target = if intent["kind"].as_str() == Some("policy") {
+                intent["targetId"]
+                    .as_str()
+                    .and_then(|id| state.store.get("adaptation_policy", id))
+            } else {
+                intent["targetId"]
+                    .as_str()
+                    .and_then(|id| state.store.get("improvement", id))
+            };
+            let applied = target.as_ref().is_some_and(|target| {
+                target["lastExperiment"]["experimentId"]
+                    == intent["experimentId"]
+            });
+            if applied {
+                // The promotion write landed before the crash; finish the
+                // request from the intent instead of applying it again.
+                let target = target.unwrap_or(Value::Null);
+                let _ = state.store.patch_if(
+                    "experiment_request",
+                    id,
+                    "status",
+                    &json!("settling"),
+                    &json!({
+                        "status": "completed",
+                        "completedAt": chrono::Utc::now().to_rfc3339(),
+                        "promotionStatus": target["status"],
+                        "promotionEvidence": target["evidenceGrade"],
+                        "promotionError": "recovered after restart; promotion not reapplied",
+                        "evidenceVerification": {"verified": true, "recovered": true},
+                    }),
+                );
+                state.store.audit(
+                    "experiment.settlement_recovered",
+                    json!({"requestId": id, "experimentId": intent["experimentId"]}),
+                );
+            } else {
                 let _ = state.store.patch_if(
                     "experiment_request",
                     id,
@@ -35,7 +74,7 @@ pub async fn claim(State(state): State<AppState>, Json(body): Json<Value>) -> Re
                         "status": "queued",
                         "claimToken": Value::Null,
                         "settleToken": Value::Null,
-                        "reason": "settlement expired",
+                        "reason": "settlement expired before promotion",
                     }),
                 );
             }
@@ -305,6 +344,96 @@ fn recompute_semantic_deltas(plans: &[Value], task: &str) -> (f64, f64) {
     (mean(&main), mean(&independent))
 }
 
+fn trial_success(trial: &Value) -> bool {
+    let requires_compliance = trial["requiresCompliance"].as_bool().unwrap_or(true);
+    trial["status"].as_str() == Some("completed")
+        && trial["auditOk"].as_bool() == Some(true)
+        && trial["reportOk"].as_bool() == Some(true)
+        && trial["taskOutcome"].as_str() == Some("succeeded")
+        && (!requires_compliance || trial["compliance"].as_bool() == Some(true))
+        && trial["errorClass"].as_str().unwrap_or("").is_empty()
+}
+
+/// Recomputes ITT success numbers from submitted raw trials and rejects a
+/// completion whose claimed verdict/delta/units do not match the evidence.
+pub fn verify_evidence(body: &Value) -> Result<(f64, u64, String, u64, u64), String> {
+    use sha2::Digest;
+    use std::collections::BTreeMap;
+    let manifest = body["manifest"]
+        .as_object()
+        .ok_or("frozen manifest is missing")?;
+    let pairs = manifest
+        .get("pairs")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .ok_or("manifest.pairs is required")?;
+    let manifest_value = Value::Object(manifest.clone());
+    let expected_hash = format!(
+        "{:x}",
+        sha2::Sha256::digest(manifest_value.to_string().as_bytes())
+    );
+    if body["manifestHash"].as_str() != Some(expected_hash.as_str()) {
+        return Err("manifest hash mismatch".into());
+    }
+    let trials = body["trials"]
+        .as_array()
+        .filter(|items| !items.is_empty())
+        .ok_or("raw trials are missing")?;
+    let mut by_pair: BTreeMap<u64, (Option<&Value>, Option<&Value>)> = BTreeMap::new();
+    for trial in trials {
+        let pair = trial["pair"]
+            .as_u64()
+            .filter(|pair| *pair < pairs)
+            .ok_or("trial pair out of range")?;
+        match trial["arm"].as_str() {
+            Some("baseline") => by_pair.entry(pair).or_default().0 = Some(trial),
+            Some("treatment") => by_pair.entry(pair).or_default().1 = Some(trial),
+            _ => return Err("trial arm must be baseline or treatment".into()),
+        }
+    }
+    let mut deltas = Vec::new();
+    let mut timeouts = 0u64;
+    for pair in 0..pairs {
+        let Some((baseline, treatment)) = by_pair.get(&pair) else {
+            return Err(format!("trial pair {pair} is incomplete"));
+        };
+        let (Some(baseline), Some(treatment)) = (baseline, treatment) else {
+            return Err(format!("trial pair {pair} is missing an arm"));
+        };
+        for trial in [baseline, treatment] {
+            if trial["errorClass"].as_str() == Some("timeout") {
+                timeouts += 1;
+            }
+        }
+        let b = if trial_success(baseline) { 1.0 } else { 0.0 };
+        let t = if trial_success(treatment) { 1.0 } else { 0.0 };
+        deltas.push(t - b);
+    }
+    let n = deltas.len() as u64;
+    let mean = deltas.iter().sum::<f64>() / n as f64;
+    let alpha = 0.05;
+    let halfwidth = (2.0 * (2.0f64 / alpha).ln() / n as f64).sqrt();
+    let lower = (mean - halfwidth).max(-1.0);
+    let verdict = if n < 10 || lower <= 0.0 {
+        "inconclusive"
+    } else {
+        "preliminary_support"
+    };
+    let claimed_delta = body["delta"].as_f64().unwrap_or(f64::NAN);
+    let claimed_units = body["independentUnits"].as_u64().unwrap_or(0);
+    let claimed_verdict = body["verdict"].as_str().unwrap_or("");
+    if (claimed_delta - mean).abs() > 0.000_001
+        || claimed_units != n
+        || claimed_verdict != verdict
+    {
+        return Err(format!(
+            "claimed result does not match raw trials (delta {} vs {mean:.6}, units {claimed_units} vs {n}, verdict {claimed_verdict} vs {verdict})",
+            body["delta"]
+        ));
+    }
+    Ok((mean, n, verdict.to_string(), timeouts, pairs))
+}
+
 pub async fn complete(
     State(state): State<AppState>,
     axum::extract::Path(request_id): axum::extract::Path<String>,
@@ -346,6 +475,15 @@ pub async fn complete(
             "settleToken": settle_token,
             "settlingAt": chrono::Utc::now().to_rfc3339(),
             "settleExpiresAtMs": now_ms + 300_000,
+            "promotionIntent": {
+                "kind": request["kind"],
+                "targetId": if request["kind"].as_str() == Some("policy") {
+                    request["policyId"].clone()
+                } else {
+                    request["strategyId"].clone()
+                },
+                "experimentId": body["experimentId"],
+            },
         }),
     ) else {
         return (
@@ -356,15 +494,36 @@ pub async fn complete(
     };
     let strategy_id = request["strategyId"].as_str().unwrap_or("");
     let policy_id = request["policyId"].as_str().unwrap_or("");
-    let verdict = body["verdict"]
+    let mut verdict = body["verdict"]
         .as_str()
         .unwrap_or("inconclusive")
         .to_string();
     let mut body = body;
-    let verdict = verdict.as_str();
     let mut promotion = Value::Null;
     let mut promotion_error = Value::Null;
     let mut promotion_allowed = verdict != "not_evaluable";
+    let mut evidence_summary = Value::Null;
+    if promotion_allowed {
+        match verify_evidence(&body) {
+            Ok((delta, units, recomputed_verdict, timeouts, planned)) => {
+                body["delta"] = json!(delta);
+                body["independentUnits"] = json!(units);
+                body["verdict"] = json!(recomputed_verdict);
+                verdict = recomputed_verdict;
+                evidence_summary = json!({
+                    "verified": true,
+                    "plannedUnits": planned,
+                    "units": units,
+                    "timeouts": timeouts,
+                });
+            }
+            Err(error) => {
+                promotion_allowed = false;
+                promotion_error = json!(format!("evidence rejected: {error}"));
+                evidence_summary = json!({"verified": false, "error": error});
+            }
+        }
+    }
     if request["kind"].as_str() == Some("policy") && promotion_allowed {
         use crate::engine::plan_quality;
         let version_matches = body["semanticEvaluator"]["id"].as_str()
@@ -399,14 +558,31 @@ pub async fn complete(
         }
     }
     if promotion_allowed {
-        let applied = if request["kind"].as_str() == Some("policy") {
-            crate::engine::policy::apply_experiment_result(&state, policy_id, &body)
+        let target = if request["kind"].as_str() == Some("policy") {
+            state.store.get("adaptation_policy", policy_id)
         } else {
-            crate::engine::improve::apply_experiment_result(&state, strategy_id, &body)
+            state.store.get("improvement", strategy_id)
         };
-        match applied {
-            Ok(record) => promotion = record,
-            Err(error) => promotion_error = json!(error),
+        let already_applied = target.as_ref().is_some_and(|target| {
+            target["lastExperiment"]["experimentId"].as_str()
+                == body["experimentId"].as_str()
+        });
+        if already_applied {
+            promotion = target.unwrap_or(Value::Null);
+            state.store.audit(
+                "experiment.promotion_recovered",
+                json!({"requestId": request_id, "experimentId": body["experimentId"]}),
+            );
+        } else {
+            let applied = if request["kind"].as_str() == Some("policy") {
+                crate::engine::policy::apply_experiment_result(&state, policy_id, &body)
+            } else {
+                crate::engine::improve::apply_experiment_result(&state, strategy_id, &body)
+            };
+            match applied {
+                Ok(record) => promotion = record,
+                Err(error) => promotion_error = json!(error),
+            }
         }
     }
     let completed = state.store.patch_if(
@@ -424,6 +600,8 @@ pub async fn complete(
             "promotionStatus": promotion["status"],
             "promotionEvidence": promotion["evidenceGrade"],
             "promotionError": promotion_error,
+            "evidenceVerification": evidence_summary,
+            "promotionAppliedAt": if promotion.is_null() { Value::Null } else { json!(chrono::Utc::now().to_rfc3339()) },
         }),
     );
     match completed {

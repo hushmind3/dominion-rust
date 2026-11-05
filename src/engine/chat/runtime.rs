@@ -590,8 +590,11 @@ async fn run_turn_body(
     let mut finished = false;
     let mut force_final = false;
     let mut call_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut failed_calls: std::collections::HashMap<String, String> =
+    let mut failed_calls: std::collections::HashMap<String, (String, u64)> =
         std::collections::HashMap::new();
+    let mut environment_version = 0u64;
+    let mut adaptation_attempts = 0usize;
+    let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED);
 
@@ -1037,9 +1040,17 @@ async fn run_turn_body(
                 continue;
             }
             let call_key = format!("{}:{}", call.name, arguments);
-            if let Some(previous_error) = failed_calls.get(&call_key) {
+            let repeat_allowed = failed_calls
+                .get(&call_key)
+                .is_some_and(|(_, version)| *version != environment_version);
+            if repeat_allowed {
+                failed_calls.remove(&call_key);
+            }
+            if let Some((previous_error, _)) = failed_calls.get(&call_key) {
                 // Section 11-1: an unchanged repeat of a failed call is not
-                // re-executed. The model must choose a changed action.
+                // re-executed. The model must choose a changed action. A retry
+                // is allowed once the environment/state actually changed.
+                let previous_error = previous_error.clone();
                 let error = crate::engine::adaptation_loop::repeated_failure_message(&call.name);
                 record_soft_tool_error(
                     state, tx, session_id, request, execution_id, &call.name, &call.id,
@@ -1111,12 +1122,18 @@ async fn run_turn_body(
             .await?;
             if ok {
                 failed_calls.remove(&call_key);
+                if matches!(
+                    call.name.as_str(),
+                    "workspace_write" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task"
+                ) {
+                    environment_version += 1;
+                }
             } else {
                 let error_text = result["error"]
                     .as_str()
                     .map(str::to_string)
                     .unwrap_or_else(|| tool_content.chars().take(600).collect::<String>());
-                failed_calls.insert(call_key.clone(), error_text.clone());
+                failed_calls.insert(call_key.clone(), (error_text.clone(), environment_version));
                 crate::engine::adaptation_loop::record_tool_failure(
                     state,
                     execution_id,
@@ -1126,13 +1143,47 @@ async fn run_turn_body(
                     &arguments,
                     &error_text,
                 );
-                messages.push(json!({
-                    "role":"system",
-                    "content": format!(
-                        "실패 관측: `{}` 호출이 실패했습니다. 같은 호출을 그대로 반복하지 말고 다른 도구/인자/접근을 선택하세요.",
-                        call.name
-                    )
-                }));
+                if adaptation_attempts < 3 && !request.provider_id.as_deref().unwrap_or("").is_empty() {
+                    adaptation_attempts += 1;
+                    if let Some(adapted) = attempt_model_adaptation(
+                        state, tx, &session, request, session_id, execution_id, round,
+                        &call.id, &call.name, &arguments, &error_text, metrics,
+                        &mut budget, &mut op_seq, environment_version,
+                    ).await {
+                        let selected = &adapted["selected"];
+                        let result = &adapted["result"];
+                        messages.push(json!({
+                            "role":"system",
+                            "content": format!(
+                                "적응 실행: 선택된 개입 `{}` (tool={}) 결과={}. 가설 판정={}. 같은 실패 호출을 반복하지 마세요.",
+                                selected["id"], selected["tool"], result, adapted["hypothesisResults"]
+                            )
+                        }));
+                        if tool_succeeded(result)
+                            && matches!(
+                                selected["tool"].as_str(),
+                                Some("workspace_write" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task")
+                            )
+                        {
+                            environment_version += 1;
+                            adaptation_failures = 0;
+                        } else {
+                            adaptation_failures += 1;
+                        }
+                    } else {
+                        messages.push(json!({
+                            "role":"system",
+                            "content":"적응 후보 생성에 실패했습니다. 모델은 원인 가설과 다른 도구/인자를 직접 선택하세요."
+                        }));
+                    }
+                }
+                if adaptation_failures >= 2 {
+                    force_final = true;
+                    messages.push(json!({
+                        "role":"system",
+                        "content":"연속 적응 실행이 진전 없이 실패했습니다. 추가 반복을 중단하고 실제 관측과 막힌 원인을 최종 답변에 쓰세요."
+                    }));
+                }
             }
             messages.push(json!({
                 "role": "tool",
@@ -1334,6 +1385,104 @@ async fn run_harness_nodes(
     Ok(synthetic)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn attempt_model_adaptation(
+    state: &AppState,
+    tx: &UnboundedSender<Value>,
+    session: &Value,
+    request: &TurnRequest,
+    session_id: &str,
+    execution_id: &str,
+    round: usize,
+    _call_id: &str,
+    tool: &str,
+    arguments: &Value,
+    error: &str,
+    metrics: &std::sync::Mutex<Metrics>,
+    budget: &mut super::budget::BudgetLedger,
+    op_seq: &mut u64,
+    environment_version: u64,
+) -> Option<Value> {
+    let provider_id = request.provider_id.as_deref()?.to_string();
+    let model = request.model.as_deref()?.to_string();
+    if provider_id.is_empty() || model.is_empty() {
+        return None;
+    }
+    let (system, prompt) = crate::engine::adaptation_loop::adaptation_prompt(
+        tool,
+        arguments,
+        error,
+        environment_version,
+    );
+    let raw = llm::complete(state, &provider_id, &model, &system, &prompt)
+        .await
+        .ok()?;
+    metrics.lock().unwrap().model_calls += 1;
+    let adaptation = crate::engine::adaptation_loop::parse_adaptation(&raw)?;
+    let selected = crate::engine::adaptation_loop::choose_intervention(
+        &adaptation,
+        tool,
+        arguments,
+        false,
+    )?;
+    let selected_tool = selected["tool"].as_str()?.to_string();
+    let inputs = selected["inputs"].clone();
+    if !inputs.is_object() {
+        return None;
+    }
+    if !budget.charge_tool() {
+        return None;
+    }
+    *op_seq += 1;
+    let call = ToolCall {
+        id: format!("adapt-{}-{}", selected["id"].as_str().unwrap_or("i"), uuid::Uuid::new_v4()),
+        name: selected_tool,
+        arguments: inputs.to_string(),
+    };
+    let (result, _ok, _content) = dispatch_tool_call(
+        state,
+        tx,
+        session,
+        request,
+        session_id,
+        execution_id,
+        &call,
+        inputs,
+        metrics,
+        *op_seq,
+        round,
+        0,
+        false,
+        "adaptation",
+        None,
+        None,
+        None,
+    )
+    .await
+    .ok()?;
+    let hypothesis_results =
+        crate::engine::adaptation_loop::evaluate_hypotheses(&adaptation, &result);
+    let record = crate::engine::adaptation_loop::record_adaptation(
+        state,
+        execution_id,
+        round,
+        tool,
+        arguments,
+        error,
+        &adaptation,
+        &selected,
+        environment_version,
+        Some(&result),
+        &hypothesis_results,
+    );
+    Some(json!({
+        "record": record,
+        "selected": selected,
+        "result": result,
+        "hypothesisResults": hypothesis_results,
+    }))
+}
+
 fn save_program_checkpoint(state: &AppState, execution_id: &str, checkpoint: &Value) {
     if let Some(mut execution) = state.store.get("execution", execution_id) {
         execution["programCheckpoint"] = checkpoint.clone();
@@ -1518,10 +1667,118 @@ async fn run_program(
                 }
                 checkpoint["completedOperationIds"] = json!(completed);
             }
-            "loop" => {
-                return Err(
-                    "program loop execution is not implemented yet (typed only)".into(),
+            "sequence" | "parallel" => {
+                let children = node["nodes"].as_array().cloned().unwrap_or_default();
+                if node["type"].as_str() == Some("parallel") {
+                    checkpoint["parallelMode"] = json!("sequential-fallback");
+                }
+                for child in children {
+                    match child["type"].as_str().unwrap_or("") {
+                        "call_tool" => {
+                            if crate::engine::program::checkpoint_skip_completed(
+                                &checkpoint,
+                                child["id"].as_str().unwrap_or(""),
+                            ) {
+                                continue;
+                            }
+                            let result = execute_program_tool(
+                                state, tx, session, request, session_id, execution_id,
+                                &child, &mut resolved, &mut checkpoint, metrics, budget,
+                                op_seq, index,
+                            )
+                            .await?;
+                            resolved["last"] = result;
+                        }
+                        "observe" => {
+                            let last = resolved.get("last").cloned().unwrap_or(Value::Null);
+                            if let Some(id) = child["id"].as_str() {
+                                resolved[id] = last;
+                            }
+                        }
+                        other => {
+                            return Err(format!(
+                                "sequence/parallel child node {other} is not implemented"
+                            ))
+                        }
+                    }
+                }
+            }
+            "verify" => {
+                let checks = node["checks"].as_array().cloned().unwrap_or_default();
+                let mut results = Vec::new();
+                let mut ok = true;
+                for check in checks {
+                    let holds = crate::engine::program::predicate_holds(
+                        &check["predicate"],
+                        &resolved,
+                    )?;
+                    ok &= holds;
+                    results.push(json!({"predicate": check["predicate"], "ok": holds}));
+                }
+                resolved["lastVerify"] = json!({"ok": ok, "checks": results});
+                if !ok {
+                    messages.push(json!({
+                        "role":"system",
+                        "content": format!(
+                            "program verify failed: {}",
+                            resolved["lastVerify"]
+                        )
+                    }));
+                }
+            }
+            "delegate" => {
+                let mut child = node.clone();
+                child["tool"] = json!("delegate_task");
+                child["inputs"] = json!({
+                    "agentId": node["agentId"],
+                    "prompt": node["prompt"],
+                    "wait": node["wait"],
+                    "timeoutSeconds": node["timeoutSeconds"],
+                });
+                let result = execute_program_tool(
+                    state, tx, session, request, session_id, execution_id, &child,
+                    &mut resolved, &mut checkpoint, metrics, budget, op_seq, index,
                 )
+                .await?;
+                resolved["last"] = result;
+            }
+            "loop" => {
+                let body = node["body"].as_array().cloned().unwrap_or_default();
+                let max = node["maxIterations"].as_u64().unwrap_or(3).min(8);
+                let mut iterations = 0u64;
+                for iteration in 0..max {
+                    if !crate::engine::program::predicate_holds(
+                        &node["predicate"],
+                        &resolved,
+                    )? {
+                        break;
+                    }
+                    iterations = iteration + 1;
+                    for child in &body {
+                        if child["type"].as_str() != Some("call_tool") {
+                            return Err("loop body supports call_tool only for now".into());
+                        }
+                        let result = execute_program_tool(
+                            state, tx, session, request, session_id, execution_id,
+                            child, &mut resolved, &mut checkpoint, metrics, budget,
+                            op_seq, index,
+                        )
+                        .await?;
+                        resolved["last"] = result;
+                    }
+                    checkpoint["loopIterations"] = json!(iterations);
+                    save_program_checkpoint(state, execution_id, &checkpoint);
+                }
+                checkpoint["loopIterations"] = json!(iterations);
+            }
+            "model_decision" => {
+                checkpoint["status"] = json!("paused");
+                save_program_checkpoint(state, execution_id, &checkpoint);
+                messages.push(json!({
+                    "role":"system",
+                    "content":"program requested a model decision; control returns to the model loop with saved progress."
+                }));
+                return Ok(messages);
             }
             other => return Err(format!("unsupported program node type: {other}")),
         }

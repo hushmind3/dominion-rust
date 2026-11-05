@@ -1431,6 +1431,35 @@ async fn main() -> Result<(), String> {
                 })
             })
             .collect::<Vec<_>>();
+        let evidence_trials = trials
+            .iter()
+            .map(|trial| {
+                json!({
+                    "pair": trial["pair"],
+                    "arm": trial["arm"],
+                    "status": trial["status"],
+                    "auditOk": trial["auditOk"],
+                    "reportOk": trial["reportOk"],
+                    "taskOutcome": trial["taskOutcome"],
+                    "compliance": trial["compliance"],
+                    "requiresCompliance": trial["requiresCompliance"],
+                    "errorClass": trial["errorClass"],
+                    "planQuality": trial["planQuality"],
+                    "planQualityIndependent": trial["planQualityIndependent"],
+                    "elapsedMs": trial["elapsedMs"],
+                })
+            })
+            .collect::<Vec<_>>();
+        let frozen_manifest = json!({
+            "pairs": cfg.pairs,
+            "seed": cfg.seed,
+            "oracleVersion": manifest["oracleVersion"],
+            "fixture": cfg.fixture.id,
+            "mode": cfg.mode,
+            "model": manifest["model"],
+            "taskSplitManifestHash": manifest["taskSplitManifestHash"],
+        });
+        let manifest_hash = sha256(serde_json::to_string(&frozen_manifest).unwrap_or_default().as_bytes());
         let completed = post(
             &client,
             &format!("{url}/api/experiment-requests/{request_id}/complete"),
@@ -1453,6 +1482,9 @@ async fn main() -> Result<(), String> {
                 },
                 "task": cfg.fixture.task,
                 "plans": plans,
+                "trials": evidence_trials,
+                "manifest": frozen_manifest,
+                "manifestHash": manifest_hash,
                 "oracleVersion": manifest["oracleVersion"],
             }),
         )
