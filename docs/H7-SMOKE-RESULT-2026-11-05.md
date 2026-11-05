@@ -88,3 +88,16 @@ H8 폐쇄 루프 연결 후 `BENCH_MODE=real BENCH_PAIRS=10`으로 실행했다.
   `validated / E2 / isolated_experiment`로 승격되었다.
 - 상세: `docs/H8-CLOSED-LOOP-2026-11-05.md`.
 - 여전히 단일 fixture이며 일반 성능 주장이 아니다.
+
+## 6. 다중 fixture / holdout 지원 (코드)
+
+runner는 이제 `BENCH_FIXTURE`로 작업군을 선택한다.
+
+- `audit_report` (기본): write audit → write report, 2노드 쓰기 DAG.
+- `update_config`: read `bench/config_input.txt` → write `bench/config.txt`,
+  oracle은 `config.txt == mode=final` 이고 `config_input.txt == mode=draft` 유지.
+
+`BENCH_HOLDOUT=1`이면 manifest에 `evaluationRole=holdout`을 기록한다.
+fixture task와 oracle expected는 manifest/snapshot에 함께 저장된다.
+
+아직: holdout 전용 fixture 예약, fixture별 최소 표본 규칙, 작업군 간 전이 평가.

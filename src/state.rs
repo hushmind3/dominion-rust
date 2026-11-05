@@ -22,10 +22,11 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: Config, store: Store, vault: Vault) -> Self {
+        let bus = Bus::new(store.clone());
         Self {
             config,
             store,
-            bus: Bus::new(),
+            bus,
             vault: Arc::new(vault),
             approvals: Arc::new(Mutex::new(HashMap::new())),
             cancelled: Arc::new(Mutex::new(HashSet::new())),

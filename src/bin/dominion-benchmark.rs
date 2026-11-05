@@ -26,6 +26,44 @@ const AUDIT_PATH: &str = "bench/harness_audit.txt";
 const REPORT_PATH: &str = "bench/harness_report.txt";
 const AUDIT_EXPECTED: &str = "audit-harness";
 const REPORT_EXPECTED: &str = "REPORT-OK";
+const UPDATE_TASK: &str = "bench/config_input.txt를 읽고 bench/config.txt에 mode=final을 저장해.";
+
+#[derive(Clone, Debug)]
+struct Fixture {
+    id: &'static str,
+    task: &'static str,
+    audit_path: &'static str,
+    report_path: &'static str,
+    audit_expected: &'static str,
+    report_expected: &'static str,
+    seeds: &'static [(&'static str, &'static str)],
+}
+
+fn fixture(id: &str) -> Result<Fixture, String> {
+    match id {
+        "audit_report" => Ok(Fixture {
+            id: "audit_report",
+            task: TASK,
+            audit_path: AUDIT_PATH,
+            report_path: REPORT_PATH,
+            audit_expected: AUDIT_EXPECTED,
+            report_expected: REPORT_EXPECTED,
+            seeds: &[],
+        }),
+        "update_config" => Ok(Fixture {
+            id: "update_config",
+            task: UPDATE_TASK,
+            audit_path: "bench/config.txt",
+            report_path: "bench/config_input.txt",
+            audit_expected: "mode=final",
+            report_expected: "mode=draft",
+            seeds: &[("bench/config_input.txt", "mode=draft")],
+        }),
+        other => Err(format!(
+            "BENCH_FIXTURE must be audit_report or update_config (got {other})"
+        )),
+    }
+}
 
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
@@ -44,6 +82,8 @@ struct BenchConfig {
     root: PathBuf,
     fresh: bool,
     recalculate: bool,
+    fixture: Fixture,
+    holdout: bool,
 }
 
 fn env_string(name: &str, fallback: &str) -> String {
@@ -73,6 +113,7 @@ fn config() -> Result<BenchConfig, String> {
         Some(path) => PathBuf::from(path),
         None => std::env::temp_dir().join(format!("dominion-s7-{}", uuid::Uuid::new_v4())),
     };
+    let fixture = fixture(&env_string("BENCH_FIXTURE", "audit_report"))?;
     Ok(BenchConfig {
         mode,
         model: env_string("BENCH_MODEL", "qwen3:4b"),
@@ -81,6 +122,8 @@ fn config() -> Result<BenchConfig, String> {
         root,
         fresh: !recalculate && std::env::var("BENCH_ROOT").is_err(),
         recalculate,
+        fixture,
+        holdout: std::env::var("BENCH_HOLDOUT").as_deref() == Ok("1"),
     })
 }
 
@@ -200,18 +243,25 @@ fn ensure_root(cfg: &BenchConfig, experiment_id: &str) -> Result<PathBuf, String
     Ok(root)
 }
 
-fn reset_fixture(root: &Path) -> Result<(), String> {
+fn reset_fixture(root: &Path, fixture: &Fixture) -> Result<(), String> {
     let bench = root.join("workspace/bench");
     if bench.exists() {
         std::fs::remove_dir_all(&bench).map_err(|error| error.to_string())?;
     }
     std::fs::create_dir_all(&bench).map_err(|error| error.to_string())?;
+    for (path, content) in fixture.seeds {
+        let full = root.join("workspace").join(path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        std::fs::write(full, content).map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 
-fn fixture_digest(root: &Path) -> String {
+fn fixture_digest(root: &Path, fixture: &Fixture) -> String {
     let mut parts = Vec::new();
-    for path in [AUDIT_PATH, REPORT_PATH] {
+    for path in [fixture.audit_path, fixture.report_path] {
         let full = root.join("workspace").join(path);
         let text = std::fs::read_to_string(&full).unwrap_or_default();
         parts.push(format!("{path}\n{text}"));
@@ -619,18 +669,31 @@ fn recalculate(cfg: &BenchConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn seed_verification() -> Value {
-    json!({
-        "type":"procedure",
-        "appliesTo":{"paths":[REPORT_PATH]},
-        "bindings":{},
-        "nodes":[
-            {"id":"audit","tool":"workspace_write","arguments":{"path":AUDIT_PATH,"content":AUDIT_EXPECTED}},
-            {"id":"report","tool":"workspace_write","arguments":{"path":REPORT_PATH,"content":REPORT_EXPECTED}}
-        ],
-        "edges":[{"from":"audit","to":"report"}],
-        "after":[{"kind":"file_contains","path":AUDIT_PATH,"text":AUDIT_EXPECTED}]
-    })
+fn seed_verification(fixture: &Fixture) -> Value {
+    match fixture.id {
+        "update_config" => json!({
+            "type":"procedure",
+            "appliesTo":{"paths":[fixture.audit_path]},
+            "bindings":{},
+            "nodes":[
+                {"id":"read","tool":"workspace_read","arguments":{"path":fixture.report_path}},
+                {"id":"write","tool":"workspace_write","arguments":{"path":fixture.audit_path,"content":fixture.audit_expected}}
+            ],
+            "edges":[{"from":"read","to":"write"}],
+            "after":[{"kind":"file_contains","path":fixture.audit_path,"text":fixture.audit_expected}]
+        }),
+        _ => json!({
+            "type":"procedure",
+            "appliesTo":{"paths":[fixture.audit_path]},
+            "bindings":{},
+            "nodes":[
+                {"id":"audit","tool":"workspace_write","arguments":{"path":fixture.audit_path,"content":fixture.audit_expected}},
+                {"id":"report","tool":"workspace_write","arguments":{"path":fixture.report_path,"content":fixture.report_expected}}
+            ],
+            "edges":[{"from":"audit","to":"report"}],
+            "after":[{"kind":"file_contains","path":fixture.audit_path,"text":fixture.audit_expected}]
+        }),
+    }
 }
 
 async fn wait_ready(
@@ -752,7 +815,7 @@ async fn main() -> Result<(), String> {
             agent["id"].as_str().unwrap_or("").to_string(),
         );
     }
-    let verification = seed_verification();
+    let verification = seed_verification(&cfg.fixture);
     let mut treatment_strategy_id: Option<String> = None;
     for arm in ["baseline", "treatment"] {
         let seeded = post(
@@ -818,7 +881,9 @@ async fn main() -> Result<(), String> {
         },
         "knowledgeSnapshotHash": sha256(format!("{improvements}{memory}").as_bytes()),
         "toolCatalogHash": sha256(b"workspace_write,workspace_read,workspace_list,file_read,file_write"),
-        "taskSplitManifestHash": sha256(format!("{TASK}\n{ORACLE_VERSION}").as_bytes()),
+        "fixture": cfg.fixture.id,
+        "evaluationRole": if cfg.holdout { "holdout" } else { "development" },
+        "taskSplitManifestHash": sha256(format!("{}\n{ORACLE_VERSION}", cfg.fixture.task).as_bytes()),
         "oracleVersion": ORACLE_VERSION,
         "arms": ["baseline", "treatment"],
         "randomizationSeed": cfg.seed,
@@ -856,11 +921,12 @@ async fn main() -> Result<(), String> {
     write_json(
         &root.join("snapshots/fixture.json"),
         &json!({
-            "task": TASK,
+            "task": cfg.fixture.task,
+            "fixture": cfg.fixture.id,
             "oracleVersion": ORACLE_VERSION,
             "files": {
-                AUDIT_PATH: {"expected": AUDIT_EXPECTED},
-                REPORT_PATH: {"expected": REPORT_EXPECTED},
+                cfg.fixture.audit_path: {"expected": cfg.fixture.audit_expected},
+                cfg.fixture.report_path: {"expected": cfg.fixture.report_expected},
             },
             "procedure": verification,
         }),
@@ -893,7 +959,7 @@ async fn main() -> Result<(), String> {
                 continue;
             }
             let started_at = chrono::Utc::now().to_rfc3339();
-            if let Err(error) = reset_fixture(&root) {
+            if let Err(error) = reset_fixture(&root, &cfg.fixture) {
                 let trial = json!({
                     "schemaVersion": SCHEMA_VERSION,
                     "experimentId": experiment_id,
@@ -916,7 +982,7 @@ async fn main() -> Result<(), String> {
                 trials.push(trial);
                 continue;
             }
-            let pre_hash = fixture_digest(&root);
+            let pre_hash = fixture_digest(&root, &cfg.fixture);
             let session = post(
                 &client,
                 &format!("{base}/api/sessions"),
@@ -930,18 +996,22 @@ async fn main() -> Result<(), String> {
                 &session_id,
                 &agents[arm],
                 &provider_id,
-                TASK,
+                cfg.fixture.task,
             )
             .await;
             let error_class = classify_error(&stream, elapsed, 300_000);
-            let audit = file_artifact(&root, AUDIT_PATH);
-            let report = file_artifact(&root, REPORT_PATH);
-            let audit_ok = std::fs::read_to_string(root.join("workspace").join(AUDIT_PATH))
-                .map(|text| text.trim() == AUDIT_EXPECTED)
-                .unwrap_or(false);
-            let report_ok = std::fs::read_to_string(root.join("workspace").join(REPORT_PATH))
-                .map(|text| text.trim() == REPORT_EXPECTED)
-                .unwrap_or(false);
+            let audit = file_artifact(&root, cfg.fixture.audit_path);
+            let report = file_artifact(&root, cfg.fixture.report_path);
+            let audit_ok = std::fs::read_to_string(
+                root.join("workspace").join(cfg.fixture.audit_path),
+            )
+            .map(|text| text.trim() == cfg.fixture.audit_expected)
+            .unwrap_or(false);
+            let report_ok = std::fs::read_to_string(
+                root.join("workspace").join(cfg.fixture.report_path),
+            )
+            .map(|text| text.trim() == cfg.fixture.report_expected)
+            .unwrap_or(false);
             let executions = get(&client, &format!("{base}/api/executions"))
                 .await
                 .unwrap_or(json!([]));
@@ -1024,7 +1094,7 @@ async fn main() -> Result<(), String> {
                 "auditOk": audit_ok,
                 "reportOk": report_ok,
                 "preStateHash": pre_hash,
-                "postStateHash": fixture_digest(&root),
+                "postStateHash": fixture_digest(&root, &cfg.fixture),
                 "tokens": execution["tokens"],
                 "toolCalls": execution["toolCalls"],
                 "modelCalls": execution["modelCalls"],
@@ -1095,6 +1165,16 @@ async fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixtures_are_declared_explicitly_and_tasks_differ() {
+        let audit = fixture("audit_report").unwrap();
+        let update = fixture("update_config").unwrap();
+        assert_ne!(audit.task, update.task);
+        assert_eq!(update.report_expected, "mode=draft");
+        assert_eq!(update.seeds.len(), 1);
+        assert!(fixture("unknown").is_err());
+    }
 
     #[test]
     fn assignment_is_balanced_and_reproducible() {

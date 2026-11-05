@@ -133,6 +133,11 @@ impl Store {
                  value TEXT NOT NULL,
                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
+             CREATE TABLE IF NOT EXISTS event_log(
+                 seq INTEGER PRIMARY KEY,
+                 data TEXT NOT NULL,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
              CREATE TABLE IF NOT EXISTS adaptation_schema(
                  version INTEGER PRIMARY KEY,
                  applied_at TEXT NOT NULL
@@ -607,6 +612,62 @@ impl Store {
     pub fn clear_messages(&self, session_id: &str) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute("DELETE FROM messages WHERE session_id=?1", [session_id]);
+    }
+
+    /// Durable, ordered event log backing `/api/events`. Bounded by trimming
+    /// old rows in the background of normal writes so a slow or disconnected
+    /// client cannot lose ordering entirely or grow the database forever.
+    pub fn append_event(&self, seq: u64, value: &Value) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO event_log(seq, data) VALUES(?1, ?2)",
+            params![seq as i64, value.to_string()],
+        );
+        if seq % 256 == 0 {
+            let cutoff = seq.saturating_sub(2_000) as i64;
+            if cutoff > 0 {
+                let _ = conn.execute(
+                    "DELETE FROM event_log WHERE seq <= ?1",
+                    params![cutoff],
+                );
+            }
+        }
+    }
+
+    pub fn events_after(&self, after: u64, limit: usize) -> Vec<Value> {
+        let conn = self.conn.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT seq, data FROM event_log WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
+        ) else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map(
+            params![after as i64, limit.min(1_000) as i64],
+            |row| {
+                let seq: i64 = row.get(0)?;
+                let data: String = row.get(1)?;
+                Ok((seq, data))
+            },
+        );
+        let Ok(rows) = rows else {
+            return Vec::new();
+        };
+        rows.filter_map(|row| {
+            let (seq, data) = row.ok()?;
+            let mut value: Value = serde_json::from_str(&data).ok()?;
+            value["seq"] = json!(seq as u64);
+            Some(value)
+        })
+        .collect()
+    }
+
+    pub fn last_event_seq(&self) -> u64 {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM event_log", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|value| value.max(0) as u64)
+        .unwrap_or(0)
     }
 
     pub fn audit(&self, event: &str, detail: Value) {

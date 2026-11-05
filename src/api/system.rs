@@ -1,6 +1,12 @@
 use crate::engine;
 use crate::state::AppState;
-use axum::{extract::{State},response::{sse::{Event,KeepAlive,Sse}},Json};
+use axum::{
+    extract::{Query, State},
+    http::HeaderMap,
+    response::sse::{Event, KeepAlive, Sse},
+    Json,
+};
+use std::collections::HashMap;
 use serde_json::{json,Value};
 use std::time::Duration;
 use std::convert::Infallible;
@@ -68,13 +74,52 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
 
 pub async fn events(
     State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let mut receiver = state.bus.subscribe();
+    // Reconnect contract: `?after=<seq>` or the SSE `Last-Event-ID` header.
+    let after = params
+        .get("after")
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| {
+            headers
+                .get("last-event-id")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(0);
+    let bus = state.bus.clone();
+    let backlog = bus.replay(after, 500);
+    let mut receiver = bus.subscribe();
     let stream = async_stream::stream! {
+        let mut last = after;
+        for value in backlog {
+            let seq = value["seq"].as_u64().unwrap_or(0);
+            last = last.max(seq);
+            yield Ok(Event::default().id(seq.to_string()).data(value.to_string()));
+        }
         loop {
             match receiver.recv().await {
-                Ok(value) => yield Ok(Event::default().data(value.to_string())),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Ok(value) => {
+                    let seq = value["seq"].as_u64().unwrap_or(0);
+                    if seq <= last {
+                        continue;
+                    }
+                    last = seq;
+                    yield Ok(Event::default().id(seq.to_string()).data(value.to_string()));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // The live buffer is bounded. Replay the gap from the
+                    // durable log instead of silently dropping writes.
+                    for value in bus.replay(last, 500) {
+                        let seq = value["seq"].as_u64().unwrap_or(0);
+                        if seq <= last {
+                            continue;
+                        }
+                        last = seq;
+                        yield Ok(Event::default().id(seq.to_string()).data(value.to_string()));
+                    }
+                }
                 Err(_) => break,
             }
         }
