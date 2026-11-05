@@ -214,13 +214,24 @@ pub fn retrieve(store: &Store, scope: &MemoryScope, query: &str, limit: usize) -
             let matched = query_terms.intersection(&memory_terms).count();
             let phrase =
                 compact_query.chars().count() >= 2 && normalize(text).contains(&compact_query);
-            if matched == 0 && !phrase {
+            let importance = record["importance"].as_f64().unwrap_or(0.5).clamp(0.0, 1.0);
+            // Standing owner preferences and procedures apply to every turn,
+            // even when the query shares no words with them.
+            let always = importance >= 0.7
+                && matches!(
+                    record["type"].as_str(),
+                    Some("preference" | "procedure")
+                );
+            if matched == 0 && !phrase && !always {
                 return None;
             }
             let relevance = matched as f64
                 / (query_terms.len() as f64 * memory_terms.len().max(1) as f64).sqrt();
-            let importance = record["importance"].as_f64().unwrap_or(0.5).clamp(0.0, 1.0);
-            let score = relevance * 10.0 + if phrase { 4.0 } else { 0.0 } + importance;
+            let score = if always {
+                1.0 + importance
+            } else {
+                relevance * 10.0 + if phrase { 4.0 } else { 0.0 } + importance
+            };
             Some((score, record))
         })
         .collect::<Vec<_>>();

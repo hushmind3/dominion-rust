@@ -24,7 +24,6 @@ export default function App(){
  const [page,setPage]=useState<PageId>(()=>locationState().page)
  const [session,setSession]=useState<string|undefined>(()=>locationState().session)
  const [chatResetKey,setChatResetKey]=useState(0)
- const [learningNotice,setLearningNotice]=useState<{inserted:number;skill:boolean}|null>(null)
  const [sidebar,setSidebar]=useState(false)
  const [collapsed,setCollapsed]=useState(()=>{try{const saved=localStorage.getItem('dominion.nav.collapsed');return saved===null?window.innerWidth<1200:saved==='1'}catch{return false}})
  const [palette,setPalette]=useState(false)
@@ -50,7 +49,6 @@ export default function App(){
  },[])
  const newChat=useCallback(()=>{setSession(undefined);setChatResetKey(value=>value+1);setPage('chat');window.location.hash='#/chat';setSidebar(false);setPalette(false)},[])
  const changeSession=useCallback((id:string|undefined)=>{setSession(id);window.history.replaceState(null,'','#/chat'+(id?'?session='+encodeURIComponent(id):''))},[])
- useEffect(()=>{if(!learningNotice)return;const timer=setTimeout(()=>setLearningNotice(null),9000);return()=>clearTimeout(timer)},[learningNotice])
  useEffect(()=>{
   const sync=()=>{const current=locationState();setPage(current.page);setSession(current.session);setSidebar(false);setPalette(false)}
   window.addEventListener('hashchange',sync)
@@ -74,7 +72,7 @@ export default function App(){
   stream.onmessage=event=>{
    try{
     const item=JSON.parse(event.data)
-    if(item.type==='learning_feedback'){window.dispatchEvent(new CustomEvent('dominion-learning-feedback',{detail:item}));if(Number(item.inserted)>0||item.skill)setLearningNotice({inserted:Number(item.inserted)||0,skill:Boolean(item.skill)});return}
+    if(item.type==='learning_feedback'){window.dispatchEvent(new CustomEvent('dominion-learning-feedback',{detail:item}));return}
     if(item.type==='room_event'){window.dispatchEvent(new CustomEvent('dominion-room-event',{detail:item}));return}
     if(['record','message','job_event','audit','approval','channel_status','goal_event','execution_event'].includes(item.type)){
      window.dispatchEvent(new Event('dominion-refresh'))
@@ -111,7 +109,6 @@ export default function App(){
     </Suspense>
    </div>
   </main>
-  {learningNotice&&<div className="learning-feedback-toast" role="status"><span>{learningNotice.inserted>0?'장기기억 '+learningNotice.inserted+'개 저장':''}{learningNotice.skill?(learningNotice.inserted>0?' · ':'')+'스킬 후보 생성':''}</span><button onClick={()=>{navigate('memory');setLearningNotice(null)}}>메모리 보기</button><button aria-label="알림 닫기" onClick={()=>setLearningNotice(null)}>×</button></div>}
   {palette&&<CommandPalette onNavigate={navigate} onClose={()=>setPalette(false)}/>}
  </div>
 }

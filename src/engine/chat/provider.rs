@@ -5,6 +5,55 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedSender;
 
+const TEXT_TOOL_OPEN: &str = "<tool_call>";
+const TEXT_TOOL_CLOSE: &str = "</tool_call>";
+
+/// Streams visible text while hiding text-protocol tool calls. Small local
+/// models emit `<tool_call>...` as ordinary content; without this buffer the
+/// user sees the raw JSON before the tool actually runs.
+fn stream_visible_text(
+    tx: &UnboundedSender<Value>,
+    content: &str,
+    pending: &mut String,
+    in_tool: &mut bool,
+) {
+    pending.push_str(content);
+    loop {
+        if *in_tool {
+            if let Some(end) = pending.find(TEXT_TOOL_CLOSE) {
+                pending.drain(..end + TEXT_TOOL_CLOSE.len());
+                *in_tool = false;
+                continue;
+            }
+            break;
+        }
+        if let Some(start) = pending.find(TEXT_TOOL_OPEN) {
+            let before = pending[..start].to_string();
+            if !before.is_empty() {
+                let _ = tx.send(json!({ "type": "text", "text": before }));
+            }
+            pending.drain(..start + TEXT_TOOL_OPEN.len());
+            *in_tool = true;
+            continue;
+        }
+        // A tag may be split across deltas. Hold only a suffix that can still
+        // become `<tool_call>`.
+        let hold = (1..TEXT_TOOL_OPEN.len())
+            .rev()
+            .find(|length| {
+                pending.len() >= *length && pending.ends_with(&TEXT_TOOL_OPEN[..*length])
+            })
+            .unwrap_or(0);
+        let emit = pending.len() - hold;
+        if emit > 0 {
+            let text = pending[..emit].to_string();
+            let _ = tx.send(json!({ "type": "text", "text": text }));
+            pending.drain(..emit);
+        }
+        break;
+    }
+}
+
 pub(super) fn select_provider(
     state: &AppState,
     request: &TurnRequest,
@@ -266,6 +315,8 @@ pub(super) async fn stream_completion(
     let mut buffer = SseBuffer::default();
     let mut stream = response.bytes_stream();
     let mut terminated = false;
+    let mut text_pending = String::new();
+    let mut in_text_tool_call = false;
 
     'stream: while let Some(chunk) = stream.next().await {
         if state.is_cancelled(session_id) {
@@ -333,7 +384,7 @@ pub(super) async fn stream_completion(
             if let Some(content) = delta.get("content").and_then(|value| value.as_str()) {
                 if !content.is_empty() {
                     completion.content.push_str(content);
-                    let _ = tx.send(json!({ "type": "text", "text": content }));
+                    stream_visible_text(tx, content, &mut text_pending, &mut in_text_tool_call);
                 }
             }
 
@@ -390,6 +441,13 @@ pub(super) async fn stream_completion(
             return Err("모델 응답 크기 제한을 초과했습니다.".into());
         }
     }
+    // Flush text held for a possible tag, unless it is a dangling prefix.
+    if !in_text_tool_call
+        && !text_pending.is_empty()
+        && !TEXT_TOOL_OPEN.starts_with(&text_pending)
+    {
+        let _ = tx.send(json!({ "type": "text", "text": text_pending }));
+    }
     if !terminated {
         return Err("모델 스트림이 완료 신호 없이 종료되었습니다.".into());
     }
@@ -410,3 +468,35 @@ pub(super) async fn stream_completion(
 
 // Keep bytes until a whole SSE event arrives; network chunks may split a
 // Korean UTF-8 character or the CRLF separator at any byte.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hides_text_tool_calls_across_split_deltas() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut pending = String::new();
+        let mut in_tool = false;
+        for piece in [
+            "파일을 ",
+            "<tool",
+            "_call>{\"name\":\"workspace_write\",",
+            "\"arguments\":{}}</tool",
+            "_call>",
+            "생성했습니다.",
+        ] {
+            stream_visible_text(&tx, piece, &mut pending, &mut in_tool);
+        }
+        if !in_tool && !pending.is_empty() {
+            tx.send(json!({"type":"text","text":pending})).unwrap();
+        }
+        drop(tx);
+        let mut text = String::new();
+        while let Ok(event) = rx.try_recv() {
+            text.push_str(event["text"].as_str().unwrap_or(""));
+        }
+        assert_eq!(text, "파일을 생성했습니다.");
+        assert!(!text.contains("tool_call"));
+    }
+}
