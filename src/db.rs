@@ -678,6 +678,84 @@ impl Store {
         );
     }
 
+    /// Aggregates recorded model usage by provider/model/purpose. Streaming
+    /// calls may only know a total; `estimatedCalls` keeps that distinction.
+    pub fn usage_summary(&self) -> Value {
+        let conn = self.conn.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT detail FROM audit WHERE event='model.usage' ORDER BY rowid DESC LIMIT 5000",
+        ) else {
+            return json!({"calls":0,"promptTokens":0,"completionTokens":0,"totalTokens":0,"estimatedCalls":0,"groups":[]});
+        };
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0));
+        let Ok(rows) = rows else {
+            return json!({"calls":0,"promptTokens":0,"completionTokens":0,"totalTokens":0,"estimatedCalls":0,"groups":[]});
+        };
+        let mut groups: std::collections::HashMap<String, Value> =
+            std::collections::HashMap::new();
+        let mut calls = 0u64;
+        let mut prompt = 0u64;
+        let mut completion = 0u64;
+        let mut total = 0u64;
+        let mut estimated = 0u64;
+        for row in rows.flatten() {
+            let Ok(detail) = serde_json::from_str::<Value>(&row) else {
+                continue;
+            };
+            let provider = detail["providerId"].as_str().unwrap_or("");
+            let model = detail["model"].as_str().unwrap_or("");
+            let purpose = detail["purpose"].as_str().unwrap_or("");
+            let key = format!("{provider}\u{1f}{model}\u{1f}{purpose}");
+            let entry = groups.entry(key).or_insert_with(|| {
+                json!({
+                    "providerId": provider,
+                    "model": model,
+                    "purpose": purpose,
+                    "calls": 0,
+                    "promptTokens": 0,
+                    "completionTokens": 0,
+                    "totalTokens": 0,
+                    "estimatedCalls": 0,
+                })
+            });
+            calls += 1;
+            let prompt_tokens = detail["promptTokens"].as_u64().unwrap_or(0);
+            let completion_tokens = detail["completionTokens"].as_u64().unwrap_or(0);
+            let total_tokens = detail["totalTokens"].as_u64().unwrap_or(0);
+            prompt += prompt_tokens;
+            completion += completion_tokens;
+            total += total_tokens;
+            entry["calls"] = json!(entry["calls"].as_u64().unwrap_or(0) + 1);
+            entry["promptTokens"] =
+                json!(entry["promptTokens"].as_u64().unwrap_or(0) + prompt_tokens);
+            entry["completionTokens"] =
+                json!(entry["completionTokens"].as_u64().unwrap_or(0) + completion_tokens);
+            entry["totalTokens"] =
+                json!(entry["totalTokens"].as_u64().unwrap_or(0) + total_tokens);
+            if detail["estimated"].as_bool() == Some(true) {
+                estimated += 1;
+                entry["estimatedCalls"] =
+                    json!(entry["estimatedCalls"].as_u64().unwrap_or(0) + 1);
+            }
+        }
+        let mut groups = groups.into_values().collect::<Vec<_>>();
+        groups.sort_by(|a, b| {
+            b["totalTokens"]
+                .as_u64()
+                .unwrap_or(0)
+                .cmp(&a["totalTokens"].as_u64().unwrap_or(0))
+                .then_with(|| a["providerId"].as_str().cmp(&b["providerId"].as_str()))
+        });
+        json!({
+            "calls": calls,
+            "promptTokens": prompt,
+            "completionTokens": completion,
+            "totalTokens": total,
+            "estimatedCalls": estimated,
+            "groups": groups,
+        })
+    }
+
     pub fn recent_audit(&self, limit: usize) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn
@@ -789,6 +867,35 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("dominion.sqlite")).unwrap();
         (store, dir)
+    }
+
+    #[test]
+    fn usage_summary_aggregates_calls_and_estimates() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.audit(
+            "model.usage",
+            json!({"providerId":"p1","model":"m","purpose":"chat","totalTokens":100,"estimated":true}),
+        );
+        store.audit(
+            "model.usage",
+            json!({"providerId":"p1","model":"m","purpose":"chat","totalTokens":50,"estimated":true}),
+        );
+        store.audit(
+            "model.usage",
+            json!({"providerId":"p2","model":"n","purpose":"helper","promptTokens":10,"completionTokens":5,"totalTokens":15}),
+        );
+        store.audit("tool.call", json!({"tool":"x"}));
+        let summary = store.usage_summary();
+        assert_eq!(summary["calls"], 3);
+        assert_eq!(summary["totalTokens"], 165);
+        assert_eq!(summary["promptTokens"], 10);
+        assert_eq!(summary["completionTokens"], 5);
+        assert_eq!(summary["estimatedCalls"], 2);
+        let groups = summary["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0]["providerId"], "p1");
+        assert_eq!(groups[0]["calls"], 2);
+        assert_eq!(groups[1]["estimatedCalls"], 0);
     }
 
     #[test]

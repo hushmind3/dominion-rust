@@ -131,6 +131,10 @@ pub async fn audit_log(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.store.recent_audit(200)))
 }
 
+pub async fn model_usage(State(state): State<AppState>) -> Json<Value> {
+    Json(state.store.usage_summary())
+}
+
 // ----------------------------------------------------------------- translate
 
 pub async fn model_route(State(state): State<AppState>) -> Json<Value> {
