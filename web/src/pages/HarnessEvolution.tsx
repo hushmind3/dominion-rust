@@ -54,7 +54,7 @@ export function HarnessEvolutionPage(){
       await load();setNotice('수정안을 저장했습니다. 아직 실행 트리에 적용되지 않았습니다.')
     }catch(e){setError((e as Error).message)}finally{setBusy('')}
   }
-  const act=async(id:string,action:'validate'|'promote'|'rollback')=>{
+  const act=async(id:string,action:'validate'|'promote'|'activate'|'rollback')=>{
     setBusy(id+action);setError('');setNotice('')
     try{
       const result=await post<Proposal>('/api/harness-evolution/'+id+'/'+action,{})
@@ -64,7 +64,9 @@ export function HarnessEvolutionPage(){
           ? '격리 worktree 검증 결과: '+result.status
           : action==='promote'
             ? '전용 브랜치에 승격했습니다. main은 변경되지 않았습니다.'
-            : '승격 브랜치를 롤백했습니다.'
+            : action==='activate'
+              ? '검증된 바이너리를 현재 실행 파일에 적용했습니다. 재시작 후 새 버전이 실행됩니다.'
+              : '이전 바이너리와 승격 브랜치를 롤백했습니다.'
       )
       refresh()
     }catch(e){setError((e as Error).message)}finally{setBusy('')}
@@ -118,7 +120,7 @@ export function HarnessEvolutionPage(){
               <h3 className="text-sm font-semibold text-[#24211D]">{proposal.reason}</h3>
               {proposal.predictedBenefit!=null&&<p className="text-xs text-[#6F675D]">{String(proposal.predictedBenefit)}</p>}
             </div>
-            <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${proposal.status==='validated'?'bg-emerald-50 text-emerald-700':proposal.status==='promoted'?'bg-blue-50 text-blue-700':proposal.status==='rejected'?'bg-rose-50 text-rose-700':'bg-amber-50 text-amber-700'}`}>{proposal.status}</span>
+            <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${proposal.status==='validated'?'bg-emerald-50 text-emerald-700':proposal.status==='activated'?'bg-violet-50 text-violet-700':proposal.status==='promoted'?'bg-blue-50 text-blue-700':proposal.status==='rejected'?'bg-rose-50 text-rose-700':'bg-amber-50 text-amber-700'}`}>{proposal.status}</span>
           </div>
           <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-[#6F675D]">
             <span>base: {proposal.baseRevision?.slice(0,10)||'-'}</span>
@@ -129,7 +131,8 @@ export function HarnessEvolutionPage(){
           <div className="mt-3 flex flex-wrap gap-2">
             {proposal.status!=='promoted'&&proposal.status!=='rolled_back'&&<Button size="sm" disabled={Boolean(busy)} onClick={()=>void act(proposal.id,'validate')}>{busy===proposal.id+'validate'?<RefreshCw size={14} className="animate-spin"/>:<Play size={14}/>}격리 검증</Button>}
             {proposal.status==='validated'&&<Button size="sm" variant="primary" disabled={Boolean(busy)||!data.selfUpdateEnabled} onClick={()=>void act(proposal.id,'promote')}><Wrench size={14}/>브랜치 승격</Button>}
-            {proposal.status==='promoted'&&<Button size="sm" variant="danger" disabled={Boolean(busy)} onClick={()=>void act(proposal.id,'rollback')}><RotateCcw size={14}/>롤백</Button>}
+            {proposal.status==='promoted'&&<Button size="sm" variant="primary" disabled={Boolean(busy)||!data.selfUpdateEnabled} onClick={()=>void act(proposal.id,'activate')}><Play size={14}/>바이너리 적용</Button>}
+            {(proposal.status==='promoted'||proposal.status==='activated')&&<Button size="sm" variant="danger" disabled={Boolean(busy)} onClick={()=>void act(proposal.id,'rollback')}><RotateCcw size={14}/>롤백</Button>}
             <Button size="sm" variant="ghost" onClick={()=>setOpen(open===proposal.id?'':proposal.id)}>{open===proposal.id?'로그 닫기':'로그 보기'}</Button>
           </div>
           {open===proposal.id&&<pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-[#24211D] p-3 text-[10px] leading-relaxed text-[#E7E0D5]">{proposal.logs?.join('\n')||'아직 실행 로그가 없습니다.'}</pre>}

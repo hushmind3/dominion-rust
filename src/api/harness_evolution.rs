@@ -46,3 +46,13 @@ pub async fn rollback(
         Err(error) => (axum::http::StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response(),
     }
 }
+
+pub async fn activate(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    match crate::engine::harness_evolution::activate(&state, &id) {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => (axum::http::StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response(),
+    }
+}

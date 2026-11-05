@@ -184,6 +184,15 @@ pub async fn execute(ctx: &ToolContext<'_>, name: &str, args: &Value) -> Result<
         "account_status" => Ok(json!({
             "providers": crate::engine::oauth::status(ctx.state),
         })),
+        "harness_propose" => {
+            let body = json!({
+                "reason": args["reason"],
+                "patch": args["patch"],
+                "predictedBenefit": args["predictedBenefit"],
+                "evidenceIds": args["evidenceIds"],
+            });
+            Ok(crate::engine::harness_evolution::propose(ctx.state, &body)?)
+        }
         "github_api" => github_api(ctx, args).await,
         other => Err(format!("Unknown tool: {other}")),
     }
@@ -985,5 +994,46 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("truncated"));
+    }
+
+    #[tokio::test]
+    async fn harness_propose_tool_is_executable_and_does_not_apply_the_patch() {
+        use crate::config::Config;
+        use crate::db::Store;
+        use crate::vault::Vault;
+        let dir = std::env::temp_dir().join(format!("dominion-tool-evo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let store = Store::open(&config.db_path()).unwrap();
+        let vault = Vault::open(&config.key_path());
+        let state = crate::state::AppState::new(config, store, vault);
+        let ctx = ToolContext {
+            workspace: &dir,
+            store: &state.store,
+            state: &state,
+            session_id: "s",
+            agent_id: None,
+            tools_enabled: true,
+            tools_execution_enabled: true,
+        };
+        let value = execute(
+            &ctx,
+            "harness_propose",
+            &json!({
+                "reason":"test proposal",
+                "patch":"diff --git a/src/engine/tools.rs b/src/engine/tools.rs\n--- a/src/engine/tools.rs\n+++ b/src/engine/tools.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+                "predictedBenefit":"test"
+            }),
+        )
+        .await
+        .expect("harness_propose is handled");
+        assert_eq!(value["status"], "proposed");
+        assert_eq!(state.store.all("harness_proposal").len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

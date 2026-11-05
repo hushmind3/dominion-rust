@@ -10,6 +10,8 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
+use std::sync::OnceLock;
+use tokio::sync::Semaphore;
 
 const ALLOWED_PREFIXES: &[&str] = &["src/", "tests/", "web/src/", "Cargo.toml"];
 const MAX_PATCH_BYTES: usize = 300_000;
@@ -130,6 +132,7 @@ async fn run(
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
+        .kill_on_drop(true)
         .env("CI", "1");
     for (key, value) in extra_env {
         command.env(key, value);
@@ -245,6 +248,14 @@ pub async fn validate(state: &AppState, id: &str) -> Result<Value, String> {
     ) {
         return Err(format!("cannot validate status {}", proposal["status"]));
     }
+    // Only one build/test validation may run at a time. This keeps a heavy
+    // Rust build from competing with the running engine.
+    static BUILD_SLOT: OnceLock<Semaphore> = OnceLock::new();
+    let _permit = BUILD_SLOT
+        .get_or_init(|| Semaphore::new(1))
+        .acquire()
+        .await
+        .map_err(|_| "validation queue is unavailable".to_string())?;
     let repo = repo_root().ok_or("source repository is not available")?;
     let base = head(&repo);
     if proposal["baseRevision"].as_str() != Some(base.as_str()) {
@@ -319,14 +330,26 @@ pub async fn validate(state: &AppState, id: &str) -> Result<Value, String> {
         return Ok(proposal);
     }
 
-    let target_dir = repo.join("target").to_string_lossy().to_string();
+    let target_dir = state
+        .config
+        .data_dir
+        .join("harness-evolution")
+        .join(id)
+        .join("target")
+        .to_string_lossy()
+        .to_string();
+    let _ = std::fs::create_dir_all(&target_dir);
     let cargo = cargo_bin();
     proposal["logs"] = json!([]);
+    let build_started = std::time::Instant::now();
     let (built, build_log) = run(
         &cargo,
         &["build", "--release"],
         &worktree,
-        &[("CARGO_TARGET_DIR", target_dir.clone())],
+        &[
+            ("CARGO_TARGET_DIR", target_dir.clone()),
+            ("CARGO_BUILD_JOBS", "2".to_string()),
+        ],
         1800,
     )
     .await;
@@ -348,17 +371,67 @@ pub async fn validate(state: &AppState, id: &str) -> Result<Value, String> {
         return Ok(proposal);
     }
 
+    let build_ms = build_started.elapsed().as_millis() as u64;
+    let test_started = std::time::Instant::now();
     let (tested, test_log) = run(
         &cargo,
         &["test", "--release"],
         &worktree,
-        &[("CARGO_TARGET_DIR", target_dir)],
+        &[
+            ("CARGO_TARGET_DIR", target_dir.clone()),
+            ("CARGO_BUILD_JOBS", "2".to_string()),
+            ("RUST_TEST_THREADS", "2".to_string()),
+        ],
         2400,
     )
     .await;
     logs.push(format!("$ cargo test --release\n{test_log}"));
+    let test_ms = test_started.elapsed().as_millis() as u64;
     let (passed, failed) = test_counts(&test_log);
     proposal["candidateTests"] = json!({"passed": passed, "failed": failed});
+    let candidate_binary = PathBuf::from(&target_dir)
+        .join("release")
+        .join(if cfg!(windows) { "dominion-rust.exe" } else { "dominion-rust" });
+    let candidate_size = std::fs::metadata(&candidate_binary)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let baseline_size = std::env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let size_ratio = if baseline_size > 0 {
+        candidate_size as f64 / baseline_size as f64
+    } else {
+        1.0
+    };
+    proposal["performance"] = json!({
+        "baselineBinaryBytes": baseline_size,
+        "candidateBinaryBytes": candidate_size,
+        "binarySizeRatio": size_ratio,
+        "buildMs": build_ms,
+        "testMs": test_ms,
+        "guard": "candidate binary must not exceed 125% of baseline",
+    });
+    if size_ratio > 1.25 {
+        proposal["status"] = json!("rejected");
+        proposal["failure"] = json!("candidate binary grew beyond the 125% cost guard");
+        proposal["logs"] = json!(logs);
+        let _ = run(
+            "git",
+            &["worktree", "remove", "--force", worktree.to_string_lossy().as_ref()],
+            &repo,
+            &[],
+            120,
+        )
+        .await;
+        let saved = state
+            .store
+            .put("harness_proposal", &proposal)
+            .ok_or("proposal could not be saved")?;
+        state.bus.record("harness_proposal", &saved);
+        return Ok(saved);
+    }
     if !tested || failed > 0 {
         proposal["status"] = json!("rejected");
         proposal["failure"] = json!("candidate tests failed");
@@ -373,6 +446,9 @@ pub async fn validate(state: &AppState, id: &str) -> Result<Value, String> {
             "failedCount": failed,
             "isolatedWorktree": worktree.to_string_lossy(),
             "baselineRevision": base,
+            "candidateBinary": candidate_binary.to_string_lossy(),
+            "buildJobs": 2,
+            "testThreads": 2,
         });
     }
     let _ = run(
@@ -532,10 +608,86 @@ pub async fn promote(state: &AppState, id: &str) -> Result<Value, String> {
     Ok(saved)
 }
 
+/// Copies the verified candidate binary over the running executable after
+/// saving the previous one. The new binary takes effect on the next restart.
+pub fn activate(state: &AppState, id: &str) -> Result<Value, String> {
+    if std::env::var("DOMINION_ALLOW_SELF_UPDATE").as_deref() != Ok("1") {
+        return Err("self-update is disabled (DOMINION_ALLOW_SELF_UPDATE=1 required)".into());
+    }
+    let Some(mut proposal) = state.store.get("harness_proposal", id) else {
+        return Err("proposal not found".into());
+    };
+    if proposal["status"].as_str() != Some("promoted") {
+        return Err("only a promoted proposal can be activated".into());
+    }
+    let candidate = proposal["validation"]["candidateBinary"]
+        .as_str()
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .ok_or("candidate binary is missing; revalidate")?;
+    let current = std::env::current_exe().map_err(|error| error.to_string())?;
+    let backups = state.config.data_dir.join("harness-evolution").join("backups");
+    std::fs::create_dir_all(&backups).map_err(|error| error.to_string())?;
+    let backup = backups.join(format!("{}-{}", id, chrono::Utc::now().timestamp()));
+    std::fs::copy(&current, &backup).map_err(|error| error.to_string())?;
+    let staged = current.with_extension(format!("next-{}", uuid::Uuid::new_v4()));
+    std::fs::copy(&candidate, &staged).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(&current) {
+            let _ = std::fs::set_permissions(
+                &staged,
+                std::fs::Permissions::from_mode(metadata.permissions().mode()),
+            );
+        }
+    }
+    std::fs::rename(&staged, &current).map_err(|error| error.to_string())?;
+    proposal["status"] = json!("activated");
+    proposal["activation"] = json!({
+        "binary": candidate.to_string_lossy(),
+        "backup": backup.to_string_lossy(),
+        "activatedAt": chrono::Utc::now().to_rfc3339(),
+        "requiresRestart": true,
+    });
+    let saved = state
+        .store
+        .put("harness_proposal", &proposal)
+        .ok_or("proposal could not be saved")?;
+    state.bus.record("harness_proposal", &saved);
+    state.store.audit(
+        "harness.activated",
+        json!({"id": id, "binary": saved["activation"]["binary"], "backup": saved["activation"]["backup"]}),
+    );
+    Ok(saved)
+}
+
 pub fn rollback(state: &AppState, id: &str) -> Result<Value, String> {
     let Some(mut proposal) = state.store.get("harness_proposal", id) else {
         return Err("proposal not found".into());
     };
+    // If the candidate binary was activated, restore the saved binary.
+    if let Some(backup) = proposal["activation"]["backup"].as_str().map(PathBuf::from) {
+        if backup.exists() {
+            let current = std::env::current_exe().map_err(|error| error.to_string())?;
+            let staged = current.with_extension(format!("restore-{}", uuid::Uuid::new_v4()));
+            std::fs::copy(&backup, &staged).map_err(|error| error.to_string())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(metadata) = std::fs::metadata(&current) {
+                    let _ = std::fs::set_permissions(
+                        &staged,
+                        std::fs::Permissions::from_mode(metadata.permissions().mode()),
+                    );
+                }
+            }
+            std::fs::rename(&staged, &current).map_err(|error| error.to_string())?;
+            proposal["activation"]["restoredAt"] =
+                json!(chrono::Utc::now().to_rfc3339());
+            proposal["activation"]["requiresRestart"] = json!(true);
+        }
+    }
     let repo = repo_root().ok_or("source repository is not available")?;
     if let Some(branch) = proposal["promotion"]["branch"].as_str() {
         let _ = std::process::Command::new("git")
