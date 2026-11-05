@@ -49,14 +49,69 @@ pub async fn claim(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         if request["status"].as_str() != Some("queued") {
             continue;
         }
-        // Policy experiments need a planning-quality evaluator; keep them
-        // queued instead of failing them through the procedure runner.
-        if request["kind"].as_str() == Some("policy") {
-            continue;
-        }
         let Some(request_id) = request["id"].as_str().map(str::to_string) else {
             continue;
         };
+        let kind = request["kind"].as_str().unwrap_or("strategy");
+        if kind == "policy" {
+            let policy_id = request["policyId"].as_str().unwrap_or("");
+            let Some(policy) = state.store.get("adaptation_policy", policy_id) else {
+                let _ = state.store.patch_if(
+                    "experiment_request",
+                    &request_id,
+                    "status",
+                    &json!("queued"),
+                    &json!({"status":"failed","reason":"정책 후보를 찾을 수 없습니다.",
+                            "completedAt": chrono::Utc::now().to_rfc3339()}),
+                );
+                continue;
+            };
+            if !matches!(policy["status"].as_str(), Some("candidate" | "active")) {
+                let _ = state.store.patch_if(
+                    "experiment_request",
+                    &request_id,
+                    "status",
+                    &json!("queued"),
+                    &json!({"status":"failed","reason":"정책 후보가 활성 상태가 아닙니다.",
+                            "completedAt": chrono::Utc::now().to_rfc3339()}),
+                );
+                continue;
+            }
+            let attempts = request["attempts"].as_u64().unwrap_or(0) + 1;
+            let token = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().timestamp_millis();
+            let claimed = state.store.patch_if(
+                "experiment_request",
+                &request_id,
+                "status",
+                &json!("queued"),
+                &json!({
+                    "status": "claimed",
+                    "claimToken": token,
+                    "claimedBy": runner,
+                    "claimedAt": chrono::Utc::now().to_rfc3339(),
+                    "claimExpiresAtMs": now + (ttl_seconds as i64) * 1000,
+                    "attempts": attempts,
+                }),
+            );
+            if let Some(claimed) = claimed {
+                state.bus.record("experiment_request", &claimed);
+                return Json(json!({
+                    "request": claimed,
+                    "strategy": Value::Null,
+                    "policy": {
+                        "id": policy["id"],
+                        "slot": policy["slot"],
+                        "name": policy["name"],
+                        "revision": policy["revision"],
+                        "parameters": policy["parameters"],
+                        "status": policy["status"],
+                    }
+                }))
+                .into_response();
+            }
+            continue;
+        }
         let strategy_id = request["strategyId"].as_str().unwrap_or("");
         let strategy = state.store.get("improvement", strategy_id);
         let unavailable = strategy.as_ref().and_then(|strategy| {
@@ -145,11 +200,17 @@ pub async fn complete(
             .into_response();
     }
     let strategy_id = request["strategyId"].as_str().unwrap_or("");
+    let policy_id = request["policyId"].as_str().unwrap_or("");
     let verdict = body["verdict"].as_str().unwrap_or("inconclusive");
     let mut promotion = Value::Null;
     let mut promotion_error = Value::Null;
     if verdict != "not_evaluable" {
-        match crate::engine::improve::apply_experiment_result(&state, strategy_id, &body) {
+        let applied = if request["kind"].as_str() == Some("policy") {
+            crate::engine::policy::apply_experiment_result(&state, policy_id, &body)
+        } else {
+            crate::engine::improve::apply_experiment_result(&state, strategy_id, &body)
+        };
+        match applied {
             Ok(record) => promotion = record,
             Err(error) => promotion_error = json!(error),
         }
@@ -236,6 +297,39 @@ pub async fn release(
 pub async fn enqueue(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     if std::env::var("DOMINION_BENCHMARK").as_deref() != Ok("1") {
         return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    if let Some(policy_id) = body["policyId"].as_str().filter(|value| !value.is_empty()) {
+        let Some(policy) = state.store.get("adaptation_policy", policy_id) else {
+            return (StatusCode::BAD_REQUEST, "unknown policy").into_response();
+        };
+        let request_id = format!(
+            "experiment-request-policy-{}",
+            crate::engine::memory::stable_id(&[
+                policy_id,
+                policy["revision"].as_str().unwrap_or("")
+            ])
+        );
+        if let Some(existing) = state.store.get("experiment_request", &request_id) {
+            return Json(existing).into_response();
+        }
+        let request = json!({
+            "id": request_id,
+            "kind": "policy",
+            "policyId": policy_id,
+            "slot": policy["slot"],
+            "revision": policy["revision"],
+            "status": "queued",
+            "fixture": body["fixture"].as_str().unwrap_or("planning_evaluation"),
+            "minIndependentUnits": crate::engine::policy::MIN_EXPERIMENT_UNITS,
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+        });
+        return match state.store.put("experiment_request", &request) {
+            Some(saved) => {
+                state.bus.record("experiment_request", &saved);
+                Json(saved).into_response()
+            }
+            None => (StatusCode::INTERNAL_SERVER_ERROR, "could not persist").into_response(),
+        };
     }
     let strategy_id = body["strategyId"].as_str().unwrap_or("");
     let Some(strategy) = state.store.get("improvement", strategy_id) else {

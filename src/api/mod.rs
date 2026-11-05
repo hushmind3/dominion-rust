@@ -54,6 +54,10 @@ pub fn router(state: AppState) -> Router {
             "/api/benchmark/policies/experiment",
             post(benchmark::policy_experiment),
         )
+        .route(
+            "/api/benchmark/policies/state",
+            post(benchmark::policy_state),
+        )
         .route("/api/benchmark/identity", get(system::benchmark_identity))
         .route("/api/status", get(system::status))
         .route(

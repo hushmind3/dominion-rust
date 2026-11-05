@@ -180,6 +180,46 @@ pub fn register(
     Ok(saved)
 }
 
+/// Benchmark-sandbox only: force a policy active after an isolated engine is
+/// disposable. Production activation still goes through the experiment gate.
+pub fn force_activate(state: &AppState, policy_id: &str) -> Option<Value> {
+    let mut policy = state.store.get("adaptation_policy", policy_id)?;
+    let slot = policy["slot"].as_str().unwrap_or("").to_string();
+    for mut other in state.store.all("adaptation_policy") {
+        if other["id"].as_str() != Some(policy_id)
+            && other["slot"].as_str() == Some(slot.as_str())
+            && other["status"].as_str() == Some("active")
+        {
+            other["status"] = json!("superseded");
+            other["supersededBy"] = policy["id"].clone();
+            if let Some(saved) = state.store.put("adaptation_policy", &other) {
+                state.bus.record("adaptation_policy", &saved);
+            }
+        }
+    }
+    policy["status"] = json!("active");
+    policy["activatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    let saved = state.store.put("adaptation_policy", &policy)?;
+    state.bus.record("adaptation_policy", &saved);
+    Some(saved)
+}
+
+pub fn deactivate_slot(state: &AppState, slot: &str) -> usize {
+    let mut count = 0;
+    for mut policy in state.store.all("adaptation_policy") {
+        if policy["slot"].as_str() == Some(slot)
+            && policy["status"].as_str() == Some("active")
+        {
+            policy["status"] = json!("inactive");
+            if let Some(saved) = state.store.put("adaptation_policy", &policy) {
+                state.bus.record("adaptation_policy", &saved);
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 /// Activates or rolls back a candidate based on an isolated experiment.
 pub fn apply_experiment_result(
     state: &AppState,

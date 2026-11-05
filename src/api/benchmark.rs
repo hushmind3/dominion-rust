@@ -106,3 +106,39 @@ pub async fn policy_experiment(
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response(),
     }
 }
+
+/// Benchmark-sandbox only: activate a policy candidate (or clear the slot) in
+/// a disposable isolated engine so paired policy trials can run.
+pub async fn policy_state(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    if std::env::var("DOMINION_BENCHMARK").as_deref() != Ok("1") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let slot = body["slot"].as_str().unwrap_or("planning");
+    if body["parameters"].is_object() {
+        let name = body["name"].as_str().unwrap_or("policy-eval");
+        match crate::engine::policy::register(
+            &state,
+            slot,
+            name,
+            &body["parameters"],
+            "benchmark policy evaluation",
+        ) {
+            Ok(candidate) => match crate::engine::policy::force_activate(
+                &state,
+                candidate["id"].as_str().unwrap_or(""),
+            ) {
+                Some(active) => Json(json!({"active": active})).into_response(),
+                None => (StatusCode::INTERNAL_SERVER_ERROR, "could not activate").into_response(),
+            },
+            Err(error) => {
+                (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
+            }
+        }
+    } else {
+        let cleared = crate::engine::policy::deactivate_slot(&state, slot);
+        Json(json!({"cleared": cleared})).into_response()
+    }
+}

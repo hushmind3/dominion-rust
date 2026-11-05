@@ -91,3 +91,50 @@ adaptation_policy {
   (4 units → candidate, 8 units → active, regressed 8 → rolled_back)
 
 전체: `236 unit + 36 E2E + 8 benchmark` 통과.
+
+## 7. Policy experiment evaluator (2026-11-05)
+
+proposer가 만든 `kind=policy` 요청을 이제 isolated runner가 직접 평가한다.
+
+### Claim / complete
+
+- `claim`은 policy 요청도 claim한다. 정책이 없거나 비활성이면 요청을 failed로
+  종결하고, 유효하면 `{request, policy{id,slot,name,revision,parameters}}`를 돌려준다.
+- `complete`는 요청 kind에 따라 `policy::apply_experiment_result`를 호출한다.
+  따라서 outer gate(>=8 units + 유리한 verdict, regressed → rollback)가 그대로 적용된다.
+
+### Runner policy mode
+
+- claim된 fixture(`planning_evaluation`)로 격리 엔진을 띄운다.
+- arm별로 sandbox 정책 상태를 바꾼다.
+  - `POST /api/benchmark/policies/state {slot, parameters}` → 후보 register + force activate
+  - `POST /api/benchmark/policies/state {slot}` → slot 비활성
+- baseline은 정책 없음(기본 휴리스틱), treatment는 후보 파라미터.
+- policy trial은 procedure compliance를 요구하지 않는다
+  (`requiresCompliance=false`), oracle + taskOutcome + 오류 없음으로 판정한다.
+- AB/BA 순서를 유지하면서 trial마다 정책을 켜고 끈다.
+- 종료 후 production `complete`로 결과를 보내 정책을 활성화/롤백한다.
+
+### 검증
+
+`policy_experiment_activates_a_candidate_through_the_runner` (E2E):
+- production에 planning 후보 등록 + `kind=policy` 요청 queued
+- 실제 `dominion-benchmark`를 `BENCH_CLAIM_URL`로 실행, 10 pair
+- 결과:
+  - 요청 `completed`, `independentUnits=10`
+  - 정책 `status=active`, `evidenceGrade=E2`, `parameters.outline=true`
+  - delta 1.0, verdict `preliminary_support`
+- mock provider는 계획 프롬프트/계획 포함 여부에 따라 행동을 달리해 정책 효과를
+  결정적으로 재현한다.
+
+### 한계
+
+- runner의 `pair_effect`는 conservative bound 때문에 **실질적으로 10 pair 이상**에서만
+  `preliminary_support`가 된다. outer gate의 최소값은 8이지만, 8~9 pair는
+  `inconclusive`라 활성화되지 않는다.
+- planning 품질 자체(계획의 유용성)를 평가하는 semantic metric은 아직 없다.
+  현재 지표는 동일 task의 성공률이다.
+- policy trial은 정책 on/off를 trial마다 토글하므로 콜드 스타트 편향이 없다고
+  주장하지 않는다.
+
+전체: `236 unit + 37 E2E + 9 benchmark` 통과.

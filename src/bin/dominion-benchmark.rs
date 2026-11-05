@@ -52,6 +52,15 @@ fn fixture(id: &str) -> Result<Fixture, String> {
             report_expected: REPORT_EXPECTED,
             seeds: &[],
         }),
+        "planning_evaluation" => Ok(Fixture {
+            id: "planning_evaluation",
+            task: TASK,
+            audit_path: AUDIT_PATH,
+            report_path: REPORT_PATH,
+            audit_expected: AUDIT_EXPECTED,
+            report_expected: REPORT_EXPECTED,
+            seeds: &[],
+        }),
         "update_config" => Ok(Fixture {
             id: "update_config",
             task: UPDATE_TASK,
@@ -336,11 +345,12 @@ fn classify_error(text: &str, elapsed_ms: u128, limit_ms: u128) -> &'static str 
 }
 
 fn strict_success(trial: &Value) -> bool {
+    let requires_compliance = trial["requiresCompliance"].as_bool().unwrap_or(true);
     trial["status"] == "completed"
         && trial["auditOk"] == true
         && trial["reportOk"] == true
         && trial["taskOutcome"] == "succeeded"
-        && trial["compliance"] == true
+        && (!requires_compliance || trial["compliance"] == true)
         && trial["errorClass"] == ""
 }
 
@@ -773,6 +783,10 @@ async fn main() -> Result<(), String> {
     } else {
         None
     };
+    let policy_claim = claim
+        .as_ref()
+        .filter(|claim| claim["request"]["kind"].as_str() == Some("policy"))
+        .cloned();
     let experiment_id = if cfg.fresh {
         uuid::Uuid::new_v4().to_string()
     } else {
@@ -864,7 +878,9 @@ async fn main() -> Result<(), String> {
     }
     let verification = claim
         .as_ref()
-        .map(|claim| claim["strategy"]["verification"].clone())
+        .and_then(|claim| claim["strategy"]["verification"].as_object().map(|_| {
+            claim["strategy"]["verification"].clone()
+        }))
         .unwrap_or_else(|| seed_verification(&cfg.fixture));
     let strategy_text = claim
         .as_ref()
@@ -873,6 +889,9 @@ async fn main() -> Result<(), String> {
         .unwrap_or_else(|| "harness 절차로 audit 후 report를 실행한다".to_string());
     let mut treatment_strategy_id: Option<String> = None;
     for arm in ["baseline", "treatment"] {
+        if policy_claim.is_some() {
+            break;
+        }
         let seeded = post(
             &client,
             &format!("{base}/api/benchmark/strategies"),
@@ -1014,6 +1033,24 @@ async fn main() -> Result<(), String> {
                 continue;
             }
             let started_at = chrono::Utc::now().to_rfc3339();
+            if let Some(claim) = &policy_claim {
+                let policy = &claim["policy"];
+                let payload = if arm == "treatment" {
+                    json!({
+                        "slot": policy["slot"],
+                        "name": policy["name"],
+                        "parameters": policy["parameters"],
+                    })
+                } else {
+                    json!({"slot": policy["slot"]})
+                };
+                post(
+                    &client,
+                    &format!("{base}/api/benchmark/policies/state"),
+                    payload,
+                )
+                .await?;
+            }
             if let Err(error) = reset_fixture(&root, &cfg.fixture) {
                 let trial = json!({
                     "schemaVersion": SCHEMA_VERSION,
@@ -1032,6 +1069,7 @@ async fn main() -> Result<(), String> {
                     "compliance": false,
                     "applicable": true,
                     "taskOutcome": "unknown",
+                    "requiresCompliance": policy_claim.is_none(),
                 });
                 append_jsonl(&trials_path, &trial)?;
                 trials.push(trial);
@@ -1110,12 +1148,11 @@ async fn main() -> Result<(), String> {
                 .unwrap_or(false);
             let task_outcome = execution["taskOutcome"].as_str().unwrap_or("unknown");
             let operation_rows = operations.as_array().cloned().unwrap_or_default();
-            let recorded_error = if error_class == "engine_error"
-                && compliance
-                && task_outcome == "succeeded"
-                && audit_ok
+            let verified = audit_ok
                 && report_ok
-            {
+                && task_outcome == "succeeded"
+                && (policy_claim.is_some() || compliance);
+            let recorded_error = if error_class == "engine_error" && verified {
                 ""
             } else {
                 error_class
@@ -1148,6 +1185,7 @@ async fn main() -> Result<(), String> {
                 "applicable": applicable,
                 "auditOk": audit_ok,
                 "reportOk": report_ok,
+                "requiresCompliance": policy_claim.is_none(),
                 "preStateHash": pre_hash,
                 "postStateHash": fixture_digest(&root, &cfg.fixture),
                 "tokens": execution["tokens"],
@@ -1244,6 +1282,18 @@ async fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_trials_do_not_require_procedure_compliance() {
+        let mut trial = json!({
+            "status":"completed","auditOk":true,"reportOk":true,
+            "taskOutcome":"succeeded","compliance":false,"errorClass":"",
+            "requiresCompliance":false
+        });
+        assert!(strict_success(&trial));
+        trial["requiresCompliance"] = json!(true);
+        assert!(!strict_success(&trial));
+    }
 
     #[test]
     fn fixtures_are_declared_explicitly_and_tasks_differ() {

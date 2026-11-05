@@ -1138,6 +1138,113 @@ fn scheduled_backup_creates_a_snapshot_without_a_request() {
     assert!(snapshots > 0, "scheduler did not create a backup snapshot");
 }
 
+#[test]
+fn policy_experiment_activates_a_candidate_through_the_runner() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().unwrap();
+        let system = messages
+            .first()
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        if system.contains("You are the planner") {
+            return vec![json!({"choices":[{"delta":{"content":"1. audit 파일 생성\n2. report 파일 생성\n3. 결과 검증"},"finish_reason":"stop"}]})];
+        }
+        let has_plan = messages.iter().any(|message| {
+            message["role"] == "system"
+                && message["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("Internal execution plan")
+        });
+        if !has_plan {
+            // Without a plan the model claims completion without doing work.
+            return vec![json!({"choices":[{"delta":{"content":"완료했습니다."},"finish_reason":"stop"}]})];
+        }
+        let done = messages
+            .last()
+            .is_some_and(|message| message["role"] == "tool")
+            || messages.iter().any(|message| {
+                message["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("모든 검증 조건이 충족")
+            });
+        if done {
+            vec![json!({"choices":[{"delta":{"content":"파일을 생성했습니다."},"finish_reason":"stop"}]})]
+        } else {
+            vec![json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"policy-w1","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"bench/harness_audit.txt\",\"content\":\"audit-harness\"}"}},
+                {"index":1,"id":"policy-w2","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"bench/harness_report.txt\",\"content\":\"REPORT-OK\"}"}}
+            ]},"finish_reason":"tool_calls"}]})]
+        }
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    let policy = app.post(
+        "/api/benchmark/policies",
+        &json!({
+            "slot":"planning",
+            "name":"plan-before-acting-test",
+            "parameters":{"outline":true},
+            "rationale":"policy evaluator test",
+        }),
+    );
+    let policy_id = policy["id"].as_str().unwrap().to_string();
+    assert_eq!(policy["status"], "candidate");
+    let request = app.post(
+        "/api/benchmark/experiment-requests",
+        &json!({"policyId":policy_id, "fixture":"planning_evaluation"}),
+    );
+    assert_eq!(request["status"], "queued");
+    assert_eq!(request["kind"], "policy");
+
+    let bench_root = std::env::temp_dir().join(format!(
+        "dominion-policy-eval-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let output = Command::new(env!("CARGO_BIN_EXE_dominion-benchmark"))
+        .env("DOMINION_BIN", env!("CARGO_BIN_EXE_dominion-rust"))
+        .env("BENCH_CLAIM_URL", &app.base)
+        .env("BENCH_PROVIDER_BASE", format!("http://127.0.0.1:{port}/v1"))
+        .env("BENCH_MODEL", "mock")
+        .env("BENCH_MODE", "smoke")
+        .env("BENCH_PAIRS", "10")
+        .env("BENCH_ROOT", &bench_root)
+        .output()
+        .expect("run policy experiment");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "policy runner failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("request completed: completed"),
+        "policy request not completed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let requests = app.get("/api/experiment-requests");
+    let request = &requests.as_array().unwrap()[0];
+    assert_eq!(request["status"], "completed", "{request}");
+    assert_eq!(request["kind"], "policy");
+    assert_eq!(request["independentUnits"], 10, "{request}");
+    let policies = app.get("/api/policies");
+    let policy = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == policy_id.as_str())
+        .expect("policy");
+    assert_eq!(
+        policy["status"], "active",
+        "outer gate did not activate the candidate: {policy}"
+    );
+    assert_eq!(policy["evidenceGrade"], "E2");
+    assert_eq!(policy["parameters"]["outline"], true);
+    assert_eq!(policy["lastExperiment"]["independentUnits"], 10);
+    let _ = std::fs::remove_dir_all(bench_root);
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")
