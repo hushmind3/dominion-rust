@@ -144,3 +144,75 @@ approval 120초 대기가 발생했다.
   같은 절차를 주입받지만 DAG를 결정적으로 실행하지 않아 compliance가 0이다.
   즉 이 delta는 **"고정 절차 실행 보조"의 효과**이며 모델의 일반 능력 향상이 아니다.
 - fixture마다 task/oracle이 다르므로 두 fixture 결과를 합쳐 일반화하지 않는다.
+
+## 8. Current-HEAD real 4B measurements + full loop (2026-11-05)
+
+### 8.1 측정 중 발견한 회귀
+
+fixture 파라미터화 과정에서 `seed_verification`의 `appliesTo`가
+`bench/harness_report.txt`(task 대상)가 아니라 `bench/harness_audit.txt`로
+바뀌어 있었다. 그 결과 harness-assisted treatment도 procedure가 적용되지 않아
+첫 10-pair 실행에서 양 arm 모두 strict success 0이 나왔다(실행 기록의 모든
+operation이 `origin=model`).
+
+수정: `appliesTo`를 task 대상인 `report_path`로 되돌림.
+1-pair 재확인에서 treatment success=true, audit/report=true를 확인한 뒤 재측정했다.
+
+### 8.2 audit_report, 10 pair real
+
+- experimentId: `31fff435-b3af-4ca8-8ad0-cf599398f796`
+- model: `qwen3:4b`, temperature 0, thinking false
+- verdict: **preliminary_support**, CI [0.141, 1.0], units 10
+
+| arm | success | compliance | p50 | tokens |
+|---|---|---|---|---|
+| baseline | 0/10 | 0 | 22,570ms | 33,136 |
+| treatment | **10/10** | 10 | 28,705ms | 42,337 |
+
+- runner 출력: `promotion: status=validated evidence=E2`
+- treatment가 더 느리고 토큰도 더 쓴다.
+
+### 8.3 update_config, 4 pair real
+
+- experimentId: `60a652ac-9555-45f5-877a-d3e2e733f4f1`
+- verdict: **inconclusive** (units 4)
+
+| arm | success | compliance | p50 | tokens |
+|---|---|---|---|---|
+| baseline | 0/4 | 0 | 138,594ms | 29,639 |
+| treatment | **4/4** | 4 | 94,075ms | 24,330 |
+
+- 표본이 4 pair라 승격되지 않음 (`promotion: status=adopted evidence=E0`).
+- 두 fixture 모두 strict success는 procedure compliance를 포함하므로,
+  이 delta는 "고정 절차 실행 보조" 효과다.
+
+### 8.4 Full loop: production scheduler → runner → promotion (real model)
+
+격리된 production 엔진(temp data/workspace/port, `DOMINION_BENCHMARK=1`)에
+scheduler env를 주고 strategy experiment request를 queued로 생성했다.
+수동 runner 호출은 하지 않았다.
+
+- production experimentId: `c951b5a3-adbb-4979-a43f-4ef96334b464`
+- request: `completed`
+- scheduler run: `status=success`, `exitCode=0`, `releasedClaims=0`
+- runner stdout: `request completed: completed promotion=E2`
+- strategy: `status=validated`, `evidenceGrade=E2`,
+  `validatedBy=isolated_experiment`, `rollout=canary`,
+  `lastExperiment.units=10`, verdict `preliminary_support`
+- trial evidence: `${TMPDIR}/dominion-s7-eb871934-2887-4a53-9dcc-ec949faa8b56`
+  - `trials.jsonl` 20줄, 성공 10
+  - `manifest.json`, `summary.json`, `REPORT.md`, `artifacts/` 보존
+
+측정 중 runner가 띄우는 격리 엔진이 부모의 scheduler env를 상속해 **nested
+scheduler/runner**를 만드는 문제도 발견했다. runner가 격리 엔진에
+`DOMINION_EXPERIMENT_SCHEDULER=0`, `DOMINION_BACKUP_INTERVAL_SECS=0`을
+명시하도록 수정했다.
+
+### 8.5 한계
+
+- Full loop에서 실제로 승격된 것은 **strategy**이며 oracle/compliance/success
+  gate를 사용한다. semantic evaluator gate는 policy 승격 경로에만 적용된다.
+- semantic-gated policy 승격은 deterministic E2E(`policy_experiment_activates_...`)로
+  검증되어 있지만, 실제 4B 모델에서 policy 승격까지 도달한 결과는 아직 없다.
+- update_config는 4 pair뿐이라 inconclusive다.
+- 단일 머신/단일 fixture군이며 holdout 전이 평가는 아직 없다.
