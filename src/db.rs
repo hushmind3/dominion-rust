@@ -704,6 +704,7 @@ impl Store {
         released
     }
 
+    #[allow(dead_code)] // used by lease tests and operational inspection
     pub fn active_lease(&self, id: &str) -> Option<Value> {
         self.get("run_lease", id)
             .filter(|lease| lease["status"].as_str() == Some("active"))
