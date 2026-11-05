@@ -146,62 +146,297 @@ pub fn resolve_inputs(inputs: &Value, resolved: &Value) -> Result<Value, String>
     Ok(Value::Object(out))
 }
 
-pub fn predicate_holds(predicate: &Value, resolved: &Value) -> Result<bool, String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PredicateVerdict {
+    True,
+    False,
+    Unknown,
+}
+
+impl PredicateVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::True => "true",
+            Self::False => "false",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn is_true(self) -> bool {
+        matches!(self, Self::True)
+    }
+}
+
+fn predicate_observation(predicate: &Value, resolved: &Value) -> Result<Option<Value>, String> {
+    let source = predicate["from"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or("predicate.from is required")?;
+    let Some(base) = resolved.get(source) else {
+        return Ok(None);
+    };
+    if base.is_null() {
+        return Ok(None);
+    }
+    match predicate["path"].as_str() {
+        Some(path) => Ok(base.pointer(path).cloned()),
+        None => Ok(Some(base.clone())),
+    }
+}
+
+/// Three-valued predicate evaluation. Missing observation fields are Unknown,
+/// not False, so they can never refute a hypothesis.
+pub fn predicate_verdict(
+    predicate: &Value,
+    resolved: &Value,
+) -> Result<PredicateVerdict, String> {
     match predicate["type"].as_str().unwrap_or("") {
         "exists" => {
             let source = predicate["from"].as_str().unwrap_or("");
-            let base = resolved.get(source).unwrap_or(&Value::Null);
-            let actual = match predicate["path"].as_str() {
-                Some(path) => base.pointer(path).cloned().unwrap_or(Value::Null),
-                None => base.clone(),
+            let Some(base) = resolved.get(source) else {
+                // `exists` is a scope-complete check over the resolved map.
+                return Ok(PredicateVerdict::False);
             };
-            Ok(!actual.is_null())
+            if base.is_null() {
+                return Ok(PredicateVerdict::False);
+            }
+            match predicate["path"].as_str() {
+                Some(path) => Ok(if base.pointer(path).is_some() {
+                    PredicateVerdict::True
+                } else {
+                    PredicateVerdict::False
+                }),
+                None => Ok(PredicateVerdict::True),
+            }
         }
         "equals" => {
-            let source = predicate["from"].as_str().unwrap_or("");
-            let base = resolved.get(source).unwrap_or(&Value::Null);
-            let actual = match predicate["path"].as_str() {
-                Some(path) => base.pointer(path).cloned().unwrap_or(Value::Null),
-                None => base.clone(),
+            let Some(actual) = predicate_observation(predicate, resolved)? else {
+                return Ok(PredicateVerdict::Unknown);
             };
-            Ok(actual == predicate["value"])
+            Ok(if actual == predicate["value"] {
+                PredicateVerdict::True
+            } else {
+                PredicateVerdict::False
+            })
         }
         "compare" => {
-            let source = predicate["from"].as_str().unwrap_or("");
-            let base = resolved.get(source).unwrap_or(&Value::Null);
-            let actual = match predicate["path"].as_str() {
-                Some(path) => base.pointer(path).cloned().unwrap_or(Value::Null),
-                None => base.clone(),
+            let Some(actual) = predicate_observation(predicate, resolved)? else {
+                return Ok(PredicateVerdict::Unknown);
             };
-            let left = actual.as_f64().unwrap_or(f64::NAN);
-            let right = predicate["value"].as_f64().unwrap_or(f64::NAN);
-            Ok(match predicate["op"].as_str().unwrap_or("") {
+            let (Some(left), Some(right)) =
+                (actual.as_f64(), predicate["value"].as_f64())
+            else {
+                return Ok(PredicateVerdict::Unknown);
+            };
+            let verdict = match predicate["op"].as_str().unwrap_or("") {
                 "gt" => left > right,
                 "gte" => left >= right,
                 "lt" => left < right,
                 "lte" => left <= right,
-                _ => false,
+                other => return Err(format!("unsupported compare op: {other}")),
+            };
+            Ok(if verdict {
+                PredicateVerdict::True
+            } else {
+                PredicateVerdict::False
             })
         }
-        "not" => Ok(!predicate_holds(&predicate["predicate"], resolved)?),
+        "not" => Ok(match predicate_verdict(&predicate["predicate"], resolved)? {
+            PredicateVerdict::True => PredicateVerdict::False,
+            PredicateVerdict::False => PredicateVerdict::True,
+            PredicateVerdict::Unknown => PredicateVerdict::Unknown,
+        }),
         "all" => {
+            let mut unknown = false;
             for item in predicate["predicates"].as_array().into_iter().flatten() {
-                if !predicate_holds(item, resolved)? {
-                    return Ok(false);
+                match predicate_verdict(item, resolved)? {
+                    PredicateVerdict::False => return Ok(PredicateVerdict::False),
+                    PredicateVerdict::Unknown => unknown = true,
+                    PredicateVerdict::True => {}
                 }
             }
-            Ok(true)
+            Ok(if unknown {
+                PredicateVerdict::Unknown
+            } else {
+                PredicateVerdict::True
+            })
         }
         "any" => {
+            let mut unknown = false;
             for item in predicate["predicates"].as_array().into_iter().flatten() {
-                if predicate_holds(item, resolved)? {
-                    return Ok(true);
+                match predicate_verdict(item, resolved)? {
+                    PredicateVerdict::True => return Ok(PredicateVerdict::True),
+                    PredicateVerdict::Unknown => unknown = true,
+                    PredicateVerdict::False => {}
                 }
             }
-            Ok(false)
+            Ok(if unknown {
+                PredicateVerdict::Unknown
+            } else {
+                PredicateVerdict::False
+            })
         }
         other => Err(format!("unsupported predicate type: {other}")),
     }
+}
+
+/// Boolean convenience for callers that can treat Unknown as non-satisfied.
+/// Branch/Verify must use `predicate_verdict` so Unknown is not silently False.
+pub fn predicate_holds(predicate: &Value, resolved: &Value) -> Result<bool, String> {
+    Ok(predicate_verdict(predicate, resolved)?.is_true())
+}
+
+/// Extracts the first brace-balanced JSON object from model prose.
+pub fn parse_json_object(raw: &str) -> Option<Value> {
+    let bytes = raw.as_bytes();
+    for (start, _) in raw.match_indices('{') {
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escape = false;
+        for index in start..bytes.len() {
+            let byte = bytes[index];
+            if in_string {
+                if escape {
+                    escape = false;
+                } else if byte == b'\\' {
+                    escape = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => in_string = true,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Ok(value) = serde_json::from_str::<Value>(&raw[start..=index]) {
+                            if value.is_object() {
+                                return Some(value);
+                            }
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Validates and applies a model-proposed Program revision. Completed external
+/// actions are preserved; only pending nodes may be replaced plus new nodes.
+pub fn apply_revision_proposal(
+    program: &Value,
+    checkpoint: &Value,
+    proposal: &Value,
+    available_tools: &[String],
+    max_nodes: usize,
+) -> Result<Value, String> {
+    let base = proposal["baseRevision"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or("proposal.baseRevision is required")?;
+    if Some(base) != program["revision"].as_str() {
+        return Err(format!(
+            "proposal baseRevision {base} does not match current revision {}",
+            program["revision"]
+        ));
+    }
+    if proposal["reason"].as_str().is_none_or(str::is_empty) {
+        return Err("proposal.reason is required".into());
+    }
+    let completed = checkpoint["completedOperationIds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect::<std::collections::BTreeSet<_>>();
+    let replacements = proposal["replacePendingNodes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let additions = proposal["addNodes"].as_array().cloned().unwrap_or_default();
+    if replacements.is_empty() && additions.is_empty() {
+        return Err("proposal changes no nodes".into());
+    }
+    let mut replaced_ids = std::collections::BTreeSet::new();
+    for node in &replacements {
+        let id = node["id"].as_str().filter(|value| !value.is_empty())
+            .ok_or("replacement node needs an id")?;
+        if completed.contains(id) {
+            return Err(format!(
+                "cannot replace completed node {id}; completed effects are preserved"
+            ));
+        }
+        validate_node(node)?;
+        if !replaced_ids.insert(id.to_string()) {
+            return Err(format!("duplicate replacement node id {id}"));
+        }
+    }
+    let mut nodes = Vec::new();
+    for node in program["nodes"].as_array().into_iter().flatten() {
+        let id = node["id"].as_str().unwrap_or("");
+        if let Some(replacement) = replacements.iter().find(|item| item["id"].as_str() == Some(id)) {
+            nodes.push(replacement.clone());
+        } else {
+            nodes.push(node.clone());
+        }
+    }
+    for node in &additions {
+        validate_node(node)?;
+        nodes.push(node.clone());
+    }
+
+    let mut ids = std::collections::BTreeSet::new();
+    let mut known = checkpoint["resolvedInputs"]
+        .as_object()
+        .map(|map| map.keys().cloned().collect::<std::collections::BTreeSet<_>>())
+        .unwrap_or_default();
+    for node in &nodes {
+        let id = node["id"].as_str().filter(|value| !value.is_empty())
+            .ok_or("every program node needs an id")?;
+        if !ids.insert(id.to_string()) {
+            return Err(format!("duplicate program node id {id}"));
+        }
+        if node["type"].as_str() == Some("call_tool") {
+            let tool = node["tool"].as_str().unwrap_or("");
+            if !available_tools.iter().any(|item| item == tool) {
+                return Err(format!("tool {tool} is not available in this run"));
+            }
+        }
+        // Every `{from}` reference must point to a prior node or a resolved observation.
+        if let Some(inputs) = node["inputs"].as_object() {
+            for (key, input) in inputs {
+                if let Some(source) = input.get("from").and_then(Value::as_str) {
+                    if !known.contains(source) && !ids.contains(source) {
+                        return Err(format!(
+                            "input {key} references unknown observation/node {source}"
+                        ));
+                    }
+                }
+            }
+        }
+        known.insert(id.to_string());
+    }
+    if nodes.len() > max_nodes {
+        return Err(format!(
+            "revised program has {} nodes, budget is {max_nodes}",
+            nodes.len()
+        ));
+    }
+    validate(&json!({
+        "revision": format!("{}:rev", base),
+        "nodes": nodes,
+    }))?;
+    Ok(json!({
+        "revision": format!("{}:rev:{}", base, crate::engine::memory::stable_id(&[&proposal.to_string()])),
+        "nodes": nodes,
+        "appliedProposal": proposal,
+        "parentRevision": base,
+    }))
 }
 
 pub fn checkpoint_skip_completed(checkpoint: &Value, node_id: &str) -> bool {

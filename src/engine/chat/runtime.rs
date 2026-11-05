@@ -590,7 +590,7 @@ async fn run_turn_body(
     let mut finished = false;
     let mut force_final = false;
     let mut call_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut failed_calls: std::collections::HashMap<String, (String, u64)> =
+    let mut failed_calls: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
     let mut environment_version = 0u64;
     let mut adaptation_attempts = 0usize;
@@ -1041,9 +1041,11 @@ async fn run_turn_body(
                 continue;
             }
             let call_key = format!("{}:{}", call.name, arguments);
+            let current_fingerprint =
+                environment_fingerprint(state, &call.name, &arguments);
             let repeat_allowed = failed_calls
                 .get(&call_key)
-                .is_some_and(|(_, version)| *version != environment_version);
+                .is_some_and(|(_, fingerprint)| fingerprint != &current_fingerprint);
             if repeat_allowed {
                 failed_calls.remove(&call_key);
             }
@@ -1134,7 +1136,13 @@ async fn run_turn_body(
                     .as_str()
                     .map(str::to_string)
                     .unwrap_or_else(|| tool_content.chars().take(600).collect::<String>());
-                failed_calls.insert(call_key.clone(), (error_text.clone(), environment_version));
+                failed_calls.insert(
+                    call_key.clone(),
+                    (
+                        error_text.clone(),
+                        environment_fingerprint(state, &call.name, &arguments),
+                    ),
+                );
                 crate::engine::adaptation_loop::record_tool_failure(
                     state,
                     execution_id,
@@ -1392,6 +1400,65 @@ async fn run_harness_nodes(
     Ok(synthetic)
 }
 
+/// Observable state related to a failed call. This is what "the environment
+/// changed" means for retry admission; a successful call count is not proof.
+fn failure_observation(
+    state: &AppState,
+    tool: &str,
+    arguments: &Value,
+    error: &str,
+) -> Value {
+    let mut path_state = serde_json::Map::new();
+    for key in ["path", "cwd", "command"] {
+        let Some(value) = arguments.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        let path = if std::path::Path::new(value).is_absolute() {
+            std::path::PathBuf::from(value)
+        } else {
+            state.config.workspace.join(value)
+        };
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            path_state.insert(
+                key.to_string(),
+                json!({
+                    "exists": true,
+                    "isDir": metadata.is_dir(),
+                    "len": metadata.len(),
+                }),
+            );
+        } else {
+            path_state.insert(key.to_string(), json!({"exists": false}));
+        }
+    }
+    json!({
+        "kind": "tool_failure",
+        "tool": tool,
+        "arguments": arguments,
+        "error": error.chars().take(600).collect::<String>(),
+        "pathState": path_state,
+    })
+}
+
+fn environment_fingerprint(state: &AppState, tool: &str, arguments: &Value) -> String {
+    let observation = failure_observation(state, tool, arguments, "");
+    let mut entries = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(&state.config.workspace) {
+        for entry in read_dir.flatten().take(64) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let len = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            entries.push((name, len));
+        }
+    }
+    entries.sort();
+    crate::engine::memory::stable_id(&[
+        tool,
+        &arguments.to_string(),
+        &observation["pathState"].to_string(),
+        &json!(entries).to_string(),
+    ])
+}
+
 fn record_adaptation_error(state: &AppState, execution_id: &str, error: &str) {
     if let Some(mut execution) = state.store.get("execution", execution_id) {
         execution["lastAdaptationError"] = json!(error.chars().take(600).collect::<String>());
@@ -1438,11 +1505,15 @@ async fn attempt_model_adaptation(
         .filter(|value| !value.is_empty())
         .ok_or("adaptation has no model")?
         .to_string();
+    let before_observation = failure_observation(state, tool, arguments, error);
+    let environment_fingerprint = environment_fingerprint(state, tool, arguments);
     let (system, mut prompt) = crate::engine::adaptation_loop::adaptation_prompt(
         tool,
         arguments,
         error,
         environment_version,
+        &before_observation,
+        &environment_fingerprint,
     );
     // Design 2.4 §6: reuse a verified precedent only when its observable
     // failure predicate matches. The old inputs are an example, not an action
@@ -1499,11 +1570,39 @@ async fn attempt_model_adaptation(
     adaptation["consultedExperienceRules"] = json!(applicable_rules.iter().map(|rule| json!({
         "id": rule["id"], "revision": rule["revision"],
     })).collect::<Vec<_>>());
-    let selected = crate::engine::adaptation_loop::choose_intervention(
+    adaptation["beforeObservation"] = before_observation.clone();
+    adaptation["environmentFingerprint"] = json!(environment_fingerprint);
+    let refuted = state
+        .store
+        .get("execution", execution_id)
+        .map(|execution| {
+            execution["adaptations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|adaptation| {
+                    adaptation["hypothesisResults"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .filter(|result| result["status"] == "refuted")
+                .filter_map(|result| result["id"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let selection_context = json!({
+        "before": before_observation,
+        "result": before_observation,
+        "after": Value::Null,
+    });
+    let selected = crate::engine::adaptation_loop::choose_intervention_with_context(
         &adaptation,
         tool,
         arguments,
         false,
+        &selection_context,
+        &refuted,
     )
     .ok_or("no distinct intervention survived selection")?;
     let selected_tool = selected["tool"]
@@ -1544,8 +1643,11 @@ async fn attempt_model_adaptation(
         None,
     )
     .await?;
-    let hypothesis_results =
-        crate::engine::adaptation_loop::evaluate_hypotheses(&adaptation, &result);
+    let hypothesis_results = crate::engine::adaptation_loop::evaluate_hypotheses_phased(
+        &adaptation,
+        &before_observation,
+        &result,
+    );
     crate::engine::experience::record_rule_counterexamples(
         state, &applicable_rules, &selected, &result, execution_id,
     );
@@ -1586,8 +1688,10 @@ fn restore_program_state(
                 && execution["taskId"].as_str() == Some(task_id)
                 && execution["status"].as_str() == Some("interrupted")
                 && execution["programResumeApproved"].as_bool() == Some(true)
-                && execution["programCheckpoint"]["programRevision"].as_str()
+                && (execution["programCheckpoint"]["programRevision"].as_str()
                     == program["revision"].as_str()
+                    || execution["revisedProgram"]["revision"].as_str()
+                        == execution["programCheckpoint"]["programRevision"].as_str())
         })
         .max_by_key(|execution| {
             execution["startedAt"].as_str().unwrap_or("").to_string()
@@ -1613,6 +1717,9 @@ fn restore_program_state(
         }
         if let Some(last_adaptation) = source.get("lastAdaptation") {
             target["lastAdaptation"] = last_adaptation.clone();
+        }
+        if let Some(revised) = source.get("revisedProgram") {
+            target["revisedProgram"] = revised.clone();
         }
         target["resumedFromExecutionId"] = json!(source_id);
         state.store.put("execution", &target);
@@ -1742,6 +1849,7 @@ struct ProgramFrame {
     op_seq: u64,
     messages: Vec<Value>,
     paused: bool,
+    failure: Option<Value>,
 }
 
 /// Rewrites ids inside a loop body so the same node in two iterations is a
@@ -1837,16 +1945,71 @@ fn execute_nodes<'a>(
                         persist,
                     )
                     .await?;
-                    resolved["last"] = result;
+                    let failed = !tool_succeeded(&result);
+                    resolved["last"] = result.clone();
+                    if failed && node["onFailure"].as_str() == Some("revise") {
+                        let failure = json!({
+                            "nodeId": node_id,
+                            "tool": node["tool"],
+                            "result": result,
+                            "observation": failure_observation(
+                                ctx.state,
+                                node["tool"].as_str().unwrap_or(""),
+                                &node["inputs"],
+                                result["error"].as_str().unwrap_or("tool failed"),
+                            ),
+                        });
+                        checkpoint["programFailure"] = failure.clone();
+                        checkpoint["resolvedInputs"] = resolved.clone();
+                        if persist {
+                            save_program_checkpoint(
+                                ctx.state, ctx.execution_id, &checkpoint,
+                            );
+                        }
+                        return Ok(ProgramFrame {
+                            resolved, checkpoint, budget, op_seq, messages,
+                            paused: false, failure: Some(failure),
+                        });
+                    }
                 }
                 "branch" => {
-                    let chosen = if crate::engine::program::predicate_holds(
+                    use crate::engine::program::PredicateVerdict;
+                    let chosen = match crate::engine::program::predicate_verdict(
                         &node["predicate"],
                         &resolved,
                     )? {
-                        node["then"].as_array().cloned().unwrap_or_default()
-                    } else {
-                        node["else"].as_array().cloned().unwrap_or_default()
+                        PredicateVerdict::True => {
+                            node["then"].as_array().cloned().unwrap_or_default()
+                        }
+                        PredicateVerdict::False => {
+                            node["else"].as_array().cloned().unwrap_or_default()
+                        }
+                        PredicateVerdict::Unknown => {
+                            // Do not send an unknown condition to `else`.
+                            // Pause and let the model add the observation.
+                            let mut checkpoint = checkpoint;
+                            checkpoint["status"] = json!("paused");
+                            checkpoint["pausedReason"] = json!("predicate_unknown");
+                            checkpoint["pausedNodeId"] = json!(node_id);
+                            checkpoint["resolvedInputs"] = resolved.clone();
+                            if persist {
+                                save_program_checkpoint(
+                                    ctx.state, ctx.execution_id, &checkpoint,
+                                );
+                            }
+                            messages.push(json!({
+                                "role":"system",
+                                "content": format!(
+                                    "program branch `{node_id}` is Unknown for {}. Add the missing observation or choose another node; the else branch was not taken.",
+                                    node["predicate"]
+                                )
+                            }));
+                            return Ok(ProgramFrame {
+                                resolved, checkpoint, budget, op_seq, messages,
+                                paused: true,
+                                failure: None,
+                            });
+                        }
                     };
                     let frame = execute_nodes(
                         ctx, chosen, resolved, checkpoint, budget, op_seq, depth + 1,
@@ -1870,6 +2033,7 @@ fn execute_nodes<'a>(
                             op_seq,
                             messages,
                             paused: true,
+                                failure: None,
                         });
                     }
                     mark_program_completed(&mut checkpoint, node_id);
@@ -1898,6 +2062,7 @@ fn execute_nodes<'a>(
                             op_seq,
                             messages,
                             paused: true,
+                                failure: None,
                         });
                     }
                     mark_program_completed(&mut checkpoint, node_id);
@@ -1977,28 +2142,50 @@ fn execute_nodes<'a>(
                             op_seq,
                             messages,
                             paused: true,
+                                failure: None,
                         });
                     }
                     mark_program_completed(&mut checkpoint, node_id);
                 }
                 "verify" => {
+                    use crate::engine::program::PredicateVerdict;
                     let checks = node["checks"].as_array().cloned().unwrap_or_default();
                     let mut results = Vec::new();
                     let mut ok = true;
+                    let mut unknown = false;
                     for check in checks {
-                        let holds = crate::engine::program::predicate_holds(
+                        let verdict = crate::engine::program::predicate_verdict(
                             &check["predicate"],
                             &resolved,
                         )?;
-                        ok &= holds;
-                        results.push(json!({"predicate": check["predicate"], "ok": holds}));
+                        match verdict {
+                            PredicateVerdict::True => {}
+                            PredicateVerdict::False => ok = false,
+                            PredicateVerdict::Unknown => unknown = true,
+                        }
+                        results.push(json!({
+                            "predicate": check["predicate"],
+                            "verdict": verdict.as_str(),
+                        }));
                     }
-                    resolved["lastVerify"] = json!({"ok": ok, "checks": results});
+                    resolved["lastVerify"] = json!({
+                        "ok": ok && !unknown,
+                        "unknown": unknown,
+                        "checks": results,
+                    });
                     if !ok {
                         messages.push(json!({
                             "role":"system",
                             "content": format!(
                                 "program verify failed: {}",
+                                resolved["lastVerify"]
+                            )
+                        }));
+                    } else if unknown {
+                        messages.push(json!({
+                            "role":"system",
+                            "content": format!(
+                                "program verify is Unknown (not failed): {}. Add the missing observation before concluding.",
                                 resolved["lastVerify"]
                             )
                         }));
@@ -2090,6 +2277,7 @@ fn execute_nodes<'a>(
                                 op_seq,
                                 messages,
                                 paused: true,
+                                failure: None,
                             });
                         }
                     }
@@ -2115,6 +2303,7 @@ fn execute_nodes<'a>(
                         op_seq,
                         messages,
                         paused: true,
+                                failure: None,
                     });
                 }
                 other => return Err(format!("unsupported program node type: {other}")),
@@ -2131,8 +2320,59 @@ fn execute_nodes<'a>(
             op_seq,
             messages,
             paused: false,
+                                failure: None,
         })
     })
+}
+
+fn save_revised_program(state: &AppState, execution_id: &str, program: &Value) {
+    if let Some(mut execution) = state.store.get("execution", execution_id) {
+        execution["revisedProgram"] = program.clone();
+        if let Some(saved) = state.store.put("execution", &execution) {
+            state.bus.record("execution", &saved);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn propose_program_revision(
+    ctx: &ProgramCtx<'_>,
+    program: &Value,
+    checkpoint: &Value,
+    failure: &Value,
+    budget: &mut super::budget::BudgetLedger,
+) -> Result<Option<Value>, String> {
+    let provider_id = ctx
+        .request
+        .provider_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("program revision has no provider")?;
+    let model = ctx
+        .request
+        .model
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("program revision has no model")?;
+    if !budget.charge_round() {
+        return Ok(None);
+    }
+    let available = crate::engine::tools::definitions()
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    let system = "You are the DOMINION program repair planner. A typed execution program failed. Propose a revision that only changes PENDING nodes. Output JSON only: {\"baseRevision\":\"...\",\"reason\":\"...\",\"evidenceIds\":[],\"replacePendingNodes\":[],\"addNodes\":[],\"dependencyChanges\":[],\"expectedObservations\":[]}. Nodes use the existing types (observe, call_tool, branch, sequence, parallel, loop, verify, delegate, model_decision). Completed node ids must not be replaced. call_tool nodes need id, tool, inputs, saveAs.";
+    let prompt = format!(
+        "Current program: {program}\nCheckpoint: {checkpoint}\nFailure observation: {failure}\nAvailable tools: {available:?}\nReturn only the JSON proposal."
+    );
+    let raw = llm::complete(ctx.state, provider_id, model, &system, &prompt).await?;
+    ctx.metrics.lock().unwrap().model_calls += 1;
+    let proposal = crate::engine::program::parse_json_object(&raw)
+        .ok_or("program revision response is not a JSON object")?;
+    let revised = crate::engine::program::apply_revision_proposal(
+        program, checkpoint, &proposal, &available, 64,
+    )?;
+    Ok(Some(revised))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2159,11 +2399,31 @@ async fn run_program(
                 && checkpoint["status"].as_str() != Some("completed")
         })
         .unwrap_or_else(|| crate::engine::program::new_checkpoint(program));
-    let resolved = checkpoint["resolvedInputs"].clone();
-    let nodes = program["nodes"].as_array().cloned().unwrap_or_default();
-    let node_count = nodes.len();
+    let mut current_program = program.clone();
+    if checkpoint["programRevision"].as_str() != program["revision"].as_str() {
+        match state
+            .store
+            .get("execution", execution_id)
+            .and_then(|execution| execution.get("revisedProgram").cloned())
+            .filter(|revised| {
+                revised["revision"].as_str()
+                    == checkpoint["programRevision"].as_str()
+            }) {
+            Some(revised) => current_program = revised,
+            None => {
+                checkpoint = crate::engine::program::new_checkpoint(program);
+            }
+        }
+    }
+    let mut resolved = checkpoint["resolvedInputs"].clone();
     let start = checkpoint["nextIndex"].as_u64().unwrap_or(0) as usize;
-    let remaining = nodes.into_iter().skip(start).collect::<Vec<_>>();
+    let mut remaining = current_program["nodes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .skip(start)
+        .collect::<Vec<_>>();
     checkpoint["status"] = json!("running");
     let ctx = ProgramCtx {
         state,
@@ -2175,24 +2435,106 @@ async fn run_program(
         metrics,
         generation,
     };
-    let frame = execute_nodes(
-        &ctx,
-        remaining,
-        resolved,
-        checkpoint,
-        budget.clone(),
-        *op_seq,
-        0,
-        true,
-        true,
-    )
-    .await?;
-    *budget = frame.budget;
-    *op_seq = frame.op_seq;
-    let mut checkpoint = frame.checkpoint;
-    let mut messages = frame.messages;
-    checkpoint["resolvedInputs"] = frame.resolved;
-    if frame.paused {
+    let mut budget_local = budget.clone();
+    let mut op_seq_local = *op_seq;
+    let mut messages = Vec::new();
+    let mut revisions = 0usize;
+    loop {
+        let frame = execute_nodes(
+            &ctx,
+            remaining,
+            resolved,
+            checkpoint,
+            budget_local,
+            op_seq_local,
+            0,
+            true,
+            true,
+        )
+        .await?;
+        budget_local = frame.budget;
+        op_seq_local = frame.op_seq;
+        resolved = frame.resolved;
+        checkpoint = frame.checkpoint;
+        messages.extend(frame.messages);
+        let Some(failure) = frame.failure else {
+            break;
+        };
+        if revisions >= 2 {
+            messages.push(json!({
+                "role":"system",
+                "content":"program revision limit reached; stop and report the observed failure."
+            }));
+            break;
+        }
+        revisions += 1;
+        match propose_program_revision(
+            &ctx,
+            &current_program,
+            &checkpoint,
+            &failure,
+            &mut budget_local,
+        )
+        .await
+        {
+            Ok(Some(revised)) => {
+                let mut history = checkpoint["revisionHistory"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                history.push(json!({
+                    "from": current_program["revision"],
+                    "to": revised["revision"],
+                    "reason": revised["appliedProposal"]["reason"],
+                    "evidenceIds": revised["appliedProposal"]["evidenceIds"],
+                }));
+                checkpoint["revisionHistory"] = json!(history);
+                checkpoint["programRevision"] = revised["revision"].clone();
+                checkpoint["programFailure"] = Value::Null;
+                checkpoint["nextIndex"] = json!(0);
+                checkpoint["status"] = json!("running");
+                save_revised_program(state, execution_id, &revised);
+                save_program_checkpoint(state, execution_id, &checkpoint);
+                messages.push(json!({
+                    "role":"system",
+                    "content": format!(
+                        "program revised: {} -> {} (reason: {}). Completed effects are preserved; only pending nodes continue.",
+                        current_program["revision"], revised["revision"],
+                        revised["appliedProposal"]["reason"]
+                    )
+                }));
+                current_program = revised;
+                remaining = current_program["nodes"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                continue;
+            }
+            Ok(None) => break,
+            Err(error) => {
+                record_adaptation_error(
+                    state,
+                    execution_id,
+                    &format!("program revision rejected: {error}"),
+                );
+                messages.push(json!({
+                    "role":"system",
+                    "content": format!(
+                        "program revision was rejected: {error}. The original failure observation is preserved."
+                    )
+                }));
+                break;
+            }
+        }
+    }
+    *budget = budget_local;
+    *op_seq = op_seq_local;
+    let node_count = current_program["nodes"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    checkpoint["resolvedInputs"] = resolved;
+    if checkpoint["status"].as_str() == Some("paused") {
         save_program_checkpoint(state, execution_id, &checkpoint);
         return Ok(messages);
     }

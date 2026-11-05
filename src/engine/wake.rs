@@ -45,7 +45,7 @@ fn resumable_program(state: &AppState, execution: &Value) -> Option<Value> {
         policy["slot"].as_str() == Some("execution")
             && policy["status"].as_str() == Some("active")
             && policy["parameters"]["program"]["revision"].as_str() == Some(revision)
-    });
+    }) || execution["revisedProgram"]["revision"].as_str() == Some(revision);
     active.then(|| checkpoint.clone())
 }
 

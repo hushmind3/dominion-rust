@@ -71,11 +71,13 @@ pub fn adaptation_prompt(
     arguments: &Value,
     error: &str,
     environment_version: u64,
+    before_observation: &Value,
+    environment_fingerprint: &str,
 ) -> (String, String) {
-    let system = "You are the DOMINION adaptation planner. Given one failed action, propose distinct causal hypotheses and DIFFERENT interventions. Output JSON only: {\"hypotheses\":[{\"id\":\"h1\",\"claim\":\"...\",\"predictions\":[{\"predicate\":{\"type\":\"equals\",\"from\":\"result\",\"path\":\"/exitCode\",\"value\":0}}]}],\"interventions\":[{\"id\":\"i1\",\"hypothesisIds\":[\"h1\"],\"tool\":\"workspace_write\",\"inputs\":{...},\"expectedChecks\":[\"file_exists\"],\"estimatedCost\":0.2}]}. A hypothesis claims why the action failed; each intervention must change the tool, arguments, or approach.";
+    let system = "You are the DOMINION adaptation planner. Given one failed action, propose DISTINCT causal hypotheses and DIFFERENT interventions. Output JSON only: {\"hypotheses\":[{\"id\":\"h1\",\"claim\":\"...\",\"evidenceIds\":[\"before\"],\"preconditions\":[],\"predictions\":[{\"observationTarget\":\"before\",\"observationPhase\":\"before_intervention\",\"predicate\":{\"type\":\"equals\",\"from\":\"before\",\"path\":\"/pathState/path/exists\",\"value\":false},\"expectedValue\":false}]}],\"interventions\":[{\"id\":\"i1\",\"hypothesisIds\":[\"h1\"],\"preconditions\":[],\"tool\":\"workspace_write\",\"inputs\":{...},\"expectedChecks\":[\"file_exists\"],\"expectedProgress\":0.7,\"uncertainty\":0.2,\"estimatedCost\":0.2}]}. Predictions about why the failure happened must use observationPhase=before_intervention and target the before observation; predictions about the result of an intervention use after_intervention. Missing fields are Unknown, never false. Each intervention must change the tool, arguments, or approach.";
     let prompt = format!(
-        "Failed action: tool={tool}\nArguments: {}\nObserved error: {}\nEnvironment version: {environment_version}\nAvailable tools include workspace_read, workspace_write, workspace_list, shell_exec, terminal_exec.\nReturn JSON only.",
-        arguments, error
+        "Failed action: tool={tool}\nArguments: {}\nObserved error: {}\nEnvironment version: {environment_version}\nEnvironment fingerprint: {environment_fingerprint}\nBefore observation (authoritative): {}\nAvailable tools include workspace_read, workspace_write, workspace_list, shell_exec, terminal_exec.\nReturn JSON only.",
+        arguments, error, before_observation
     );
     (system.to_string(), prompt)
 }
@@ -147,6 +149,30 @@ pub fn validate_adaptation(adaptation: &Value) -> Result<(), String> {
                 hypothesis["id"]
             ));
         }
+        if !hypothesis["preconditions"].is_null()
+            && !hypothesis["preconditions"].is_array()
+        {
+            return Err(format!(
+                "hypothesis {} preconditions must be an array",
+                hypothesis["id"]
+            ));
+        }
+        for prediction in hypothesis["predictions"].as_array().into_iter().flatten() {
+            if let Some(phase) = prediction["observationPhase"].as_str() {
+                if !matches!(phase, "before_intervention" | "after_intervention") {
+                    return Err(format!(
+                        "hypothesis {} has invalid observationPhase {phase}",
+                        hypothesis["id"]
+                    ));
+                }
+            }
+            if !prediction["predicate"].is_object() {
+                return Err(format!(
+                    "hypothesis {} prediction needs a predicate object",
+                    hypothesis["id"]
+                ));
+            }
+        }
     }
     let interventions = adaptation["interventions"]
         .as_array()
@@ -174,6 +200,14 @@ pub fn validate_adaptation(adaptation: &Value) -> Result<(), String> {
                 intervention["id"]
             ));
         }
+        if !intervention["preconditions"].is_null()
+            && !intervention["preconditions"].is_array()
+        {
+            return Err(format!(
+                "intervention {} preconditions must be an array",
+                intervention["id"]
+            ));
+        }
     }
     Ok(())
 }
@@ -182,15 +216,33 @@ fn intervention_key(tool: &str, inputs: &Value) -> String {
     format!("{tool}:{}", inputs)
 }
 
-/// Picks the highest-scoring distinct intervention. A repeat of the exact
-/// failed call is only allowed when the environment changed.
-pub fn choose_intervention(
+/// Picks an intervention using observable preconditions, expected progress,
+/// hypothesis discrimination, historical effect, uncertainty and cost.
+pub fn choose_intervention_with_context(
     adaptation: &Value,
     failed_tool: &str,
     failed_arguments: &Value,
     environment_changed: bool,
+    resolved: &Value,
+    refuted_hypotheses: &[String],
 ) -> Option<Value> {
+    use crate::engine::program::{predicate_verdict, PredicateVerdict};
+
     let failed_key = intervention_key(failed_tool, failed_arguments);
+    let hypotheses = adaptation["hypotheses"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let live_hypotheses = hypotheses
+        .iter()
+        .filter(|hypothesis| {
+            !hypothesis["id"]
+                .as_str()
+                .is_some_and(|id| refuted_hypotheses.iter().any(|item| item == id))
+        })
+        .count();
+    let cause_unclear = live_hypotheses >= 2;
+
     adaptation["interventions"]
         .as_array()
         .into_iter()
@@ -202,37 +254,121 @@ pub fn choose_intervention(
             if key == failed_key && !environment_changed {
                 return None;
             }
-            let progress = item["expectedChecks"].as_array().map(Vec::len).unwrap_or(0) as f64;
-            let distinction = adaptation["hypotheses"]
+            let hypothesis_ids = item["hypothesisIds"].as_array().cloned().unwrap_or_default();
+            let only_refuted = !hypothesis_ids.is_empty()
+                && hypothesis_ids.iter().all(|id| {
+                    id.as_str()
+                        .is_some_and(|id| refuted_hypotheses.iter().any(|item| item == id))
+                });
+            if only_refuted {
+                return None;
+            }
+            let mut precondition_status = "true";
+            let mut preconditions = Vec::new();
+            for precondition in item["preconditions"].as_array().into_iter().flatten() {
+                let verdict = predicate_verdict(precondition, resolved).ok()?;
+                preconditions.push(json!({
+                    "predicate": precondition,
+                    "verdict": verdict.as_str(),
+                }));
+                match verdict {
+                    PredicateVerdict::False => {
+                        precondition_status = "false";
+                    }
+                    PredicateVerdict::Unknown => {
+                        if precondition_status != "false" {
+                            precondition_status = "unknown";
+                        }
+                    }
+                    PredicateVerdict::True => {}
+                }
+            }
+            if precondition_status == "false" {
+                return None;
+            }
+            let expected_checks = item["expectedChecks"]
                 .as_array()
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter(|hypothesis| {
-                            item["hypothesisIds"]
-                                .as_array()
-                                .is_some_and(|ids| ids.contains(&hypothesis["id"]))
-                        })
-                        .count()
-                })
+                .map(Vec::len)
                 .unwrap_or(0) as f64;
+            let unresolved_requirements = item["unresolvedRequirements"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0) as f64;
+            let expected_progress = item["expectedProgress"]
+                .as_f64()
+                .unwrap_or(expected_checks / 3.0 + unresolved_requirements);
+            let discrimination = hypothesis_ids
+                .iter()
+                .filter(|id| {
+                    !id.as_str()
+                        .is_some_and(|id| refuted_hypotheses.iter().any(|item| item == id))
+                })
+                .count() as f64;
+            let historical_effect = item["historicalEffect"].as_f64();
+            let uncertainty = item["uncertainty"].as_f64().unwrap_or(0.5);
             let cost = item["estimatedCost"].as_f64().unwrap_or(0.5).max(0.0);
-            let score = progress + distinction - cost;
-            Some((score, item.clone()))
+            let mut score = if cause_unclear {
+                discrimination * 2.0 + expected_progress * 0.5
+            } else {
+                expected_progress * 2.0 + discrimination * 0.5
+            };
+            score += historical_effect.unwrap_or(0.0);
+            score -= cost + uncertainty;
+            if precondition_status == "unknown" {
+                score -= 0.5;
+            }
+            let evaluation = json!({
+                "unresolvedRequirements": unresolved_requirements,
+                "expectedProgress": expected_progress,
+                "hypothesisDiscrimination": discrimination,
+                "historicalEffect": historical_effect,
+                "uncertainty": uncertainty,
+                "estimatedCost": cost,
+                "preconditionStatus": precondition_status,
+                "preconditions": preconditions,
+                "causeUnclear": cause_unclear,
+                "score": score,
+            });
+            let mut item = item.clone();
+            item["score"] = json!(score);
+            item["evaluation"] = evaluation;
+            Some((score, item))
         })
         .max_by(|a, b| {
             a.0.partial_cmp(&b.0)
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .map(|(score, mut item)| {
-            item["score"] = json!(score);
-            item
-        })
+        .map(|(_, item)| item)
 }
 
-/// Compares each hypothesis prediction with the actual result.
-pub fn evaluate_hypotheses(adaptation: &Value, result: &Value) -> Vec<Value> {
-    let resolved = json!({"result": result});
+/// Backwards-compatible wrapper for callers without an observation context.
+#[allow(dead_code)]
+pub fn choose_intervention(
+    adaptation: &Value,
+    failed_tool: &str,
+    failed_arguments: &Value,
+    environment_changed: bool,
+) -> Option<Value> {
+    choose_intervention_with_context(
+        adaptation,
+        failed_tool,
+        failed_arguments,
+        environment_changed,
+        &json!({}),
+        &[],
+    )
+}
+
+/// Compares hypotheses against the correct observation phase. A prediction
+/// about the state before an intervention is never refuted by the state after
+/// it. Missing fields remain Unknown.
+pub fn evaluate_hypotheses_phased(
+    adaptation: &Value,
+    before: &Value,
+    after: &Value,
+) -> Vec<Value> {
+    use crate::engine::program::predicate_verdict;
+
     adaptation["hypotheses"]
         .as_array()
         .into_iter()
@@ -242,28 +378,71 @@ pub fn evaluate_hypotheses(adaptation: &Value, result: &Value) -> Vec<Value> {
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
+            let mut supported = 0;
             let mut unknown = 0;
             let mut refuted = false;
+            let mut verdicts = Vec::new();
             for prediction in &predictions {
-                match crate::engine::program::predicate_holds(
-                    &prediction["predicate"],
-                    &resolved,
-                ) {
-                    Ok(true) => {}
-                    Ok(false) => refuted = true,
-                    Err(_) => unknown += 1,
+                let phase = prediction["observationPhase"]
+                    .as_str()
+                    .unwrap_or("after_intervention");
+                let target = prediction["observationTarget"]
+                    .as_str()
+                    .unwrap_or("result");
+                let observation = if phase == "before_intervention" {
+                    before
+                } else {
+                    after
+                };
+                let mut scope = json!({"before": before, "after": after, "result": observation});
+                scope[target] = observation.clone();
+                let verdict = match predicate_verdict(&prediction["predicate"], &scope) {
+                    Ok(verdict) => verdict,
+                    Err(error) => {
+                        return json!({
+                            "id": hypothesis["id"],
+                            "status": "unknown",
+                            "error": error,
+                            "predictions": [],
+                        });
+                    }
+                };
+                match verdict {
+                    crate::engine::program::PredicateVerdict::True => supported += 1,
+                    crate::engine::program::PredicateVerdict::False => refuted = true,
+                    crate::engine::program::PredicateVerdict::Unknown => unknown += 1,
                 }
+                verdicts.push(json!({
+                    "observationPhase": phase,
+                    "observationTarget": target,
+                    "verdict": verdict.as_str(),
+                }));
             }
             let status = if refuted {
                 "refuted"
-            } else if unknown > 0 || predictions.is_empty() {
+            } else if predictions.is_empty() || unknown > 0 {
                 "unknown"
-            } else {
+            } else if supported > 0 {
                 "supported"
+            } else {
+                "unknown"
             };
-            json!({"id": hypothesis["id"], "status": status})
+            json!({
+                "id": hypothesis["id"],
+                "status": status,
+                "supported": supported,
+                "unknown": unknown,
+                "predictions": verdicts,
+            })
         })
         .collect()
+}
+
+/// Legacy wrapper: uses the same value for before/after so old callers keep
+/// working, but missing fields are still Unknown instead of refuted.
+#[allow(dead_code)]
+pub fn evaluate_hypotheses(adaptation: &Value, result: &Value) -> Vec<Value> {
+    evaluate_hypotheses_phased(adaptation, result, result)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -301,6 +480,7 @@ pub fn record_adaptation(
             "expected": "success",
             "actual": error.chars().take(600).collect::<String>(),
         },
+        "beforeObservation": adaptation["beforeObservation"],
         "hypotheses": adaptation["hypotheses"],
         "interventions": adaptation["interventions"],
         "consultedExperienceRules": adaptation["consultedExperienceRules"],
@@ -323,6 +503,8 @@ pub fn record_adaptation(
         "environmentVersion": environment_version,
         "failureSignature": record["failureSignature"],
         "selectedIntervention": selected["id"],
+        "selectedEvaluation": selected["evaluation"],
+        "beforeObservation": adaptation["beforeObservation"],
         "hypothesisResults": hypothesis_results,
     });
     let saved = state.store.put("execution", &execution)?;
