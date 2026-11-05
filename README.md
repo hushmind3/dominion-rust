@@ -241,6 +241,33 @@ OpenAI 호환 네이티브 도구 호출과 텍스트 도구 프로토콜(`toolM
 JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적으로 승인
 대기이며, `policy.autoApproveMcp` 로 자동 승인할 수 있습니다.
 
+## 자기개선 루프
+
+모든 일반 대화는 다음 루프에 들어갑니다 (`autoLearning` 기본 켜짐).
+
+```
+대화/지시 → 실제 도구 실행 → 결과·실패 분석
+→ 기억/스킬 + 실행 전략 + 도구 정책 후보 생성
+→ 결정적 검증 → 채택 → 다음 턴 프롬프트에 주입
+→ 5회 관찰 → 기준 성공률보다 나쁘면 자동 롤백
+```
+
+- `improvement` 레코드: `strategy` / `tool_policy` / `harness`
+- `strategy`·`tool_policy`는 증거와 통계 검증을 통과하면 `adopted`
+- 채택 후 5회 사용에서 성공률이 기준보다 0.2 이상 낮으면 `rolled_back`
+- 공유(`shared`)와 에이전트 전용(`agent`) 스코프를 구분
+- `harness`(하네스 코드 변경)는 `proposed`로만 저장하며 주인 승인 없이는 적용하지 않음
+- API: `GET /api/improvements`, `POST /api/improvements/:id/{approve,reject}`
+
+### 약한 모델(4B) 지원
+
+- 네이티브 function calling이 없어도 `<tool_call>`, bare JSON, fenced JSON,
+  문자열 인자, function 래퍼를 파싱
+- 인자 JSON 오류는 턴 실패가 아니라 도구 오류로 되돌려 재시도
+- 중복 tool_call ID는 새 ID로 교정
+- 같은 호출 3회 반복 시 중단하고 최종 답변 유도
+- 로컬 제공자는 기본 `compat` 모드, 관련 도구 10개만 압축 안내
+
 ## 보안
 
 - API 키는 레코드 JSON에 저장하지 않습니다.

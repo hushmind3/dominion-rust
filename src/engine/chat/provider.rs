@@ -130,7 +130,7 @@ pub(super) fn select_provider(
         .filter(|value| matches!(*value, "native" | "compat" | "auto"))
         .map(str::to_string)
         .unwrap_or_else(|| {
-            if kind == "ollama" {
+            if kind == "ollama" || provider["local"].as_bool() == Some(true) {
                 "compat".into()
             } else {
                 "auto".into()

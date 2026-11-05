@@ -256,7 +256,7 @@ async fn run_turn_body(
     if request.tools_enabled && provider.tool_mode == "compat" {
         // Weak/local models without native function calling get a text
         // protocol instead of silently losing tool access.
-        let manual = tool_manual(&tool_definitions).await;
+        let manual = tool_manual(&tool_definitions, &request.input).await;
         if let Some(first) = messages.first_mut() {
             let existing = first
                 .get("content")
@@ -280,6 +280,9 @@ async fn run_turn_body(
     let started_at = std::time::Instant::now();
     metrics.lock().unwrap().context_elapsed_ms = turn_started.elapsed().as_millis() as u64;
     let mut finished = false;
+    let mut force_final = false;
+    let mut call_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut acceptance_passed = false;
 
     for round in 0..MAX_ROUNDS {
         if state.is_cancelled(session_id) || state.cancellation_generation(session_id) != generation
@@ -302,12 +305,13 @@ async fn run_turn_body(
 
         let model_started = std::time::Instant::now();
         let model_offset_ms = turn_started.elapsed().as_millis() as u64;
+        let round_tools = if force_final { Vec::new() } else { tool_definitions.clone() };
         let completion_result = stream_completion(
             state,
             &client,
             &provider,
             &messages,
-            &tool_definitions,
+            &round_tools,
             request,
             session_id,
             tx,
@@ -343,9 +347,16 @@ async fn run_turn_body(
             ));
         }
 
+        if force_final {
+            // The deterministic checks already passed. Ignore any late tool
+            // request and let the model produce the final answer.
+            completion.tool_calls.clear();
+        }
+
         if completion.tool_calls.is_empty()
             && request.tools_enabled
             && provider.tool_mode != "native"
+            && !force_final
         {
             let (parsed, cleaned) = parse_text_tool_calls(&completion.content);
             if !parsed.is_empty() {
@@ -362,7 +373,13 @@ async fn run_turn_body(
         }
 
         if completion.tool_calls.is_empty() {
-            final_content = completion.content;
+            final_content = if force_final {
+                // Never save a raw tool-call fragment as the answer.
+                let (_, cleaned) = parse_text_tool_calls(&completion.content);
+                cleaned
+            } else {
+                completion.content
+            };
 
             // Ordinary-chat evidence gate: a model cannot complete an action
             // request by claiming success without successful tool results.
@@ -382,6 +399,29 @@ async fn run_turn_body(
                         gaps.dedup();
                         next_action = review.next_action.unwrap_or_default();
                         metrics.lock().unwrap().model_calls += 1;
+                        if !next_action.trim().is_empty() {
+                            let scope = crate::engine::memory::MemoryScope::for_session(
+                                &state.store, session_id, request.agent_id.as_deref(),
+                            );
+                            let mut evidence_ids = evidence
+                                .iter()
+                                .filter_map(|operation| operation["id"].as_str().map(str::to_string))
+                                .take(8)
+                                .collect::<Vec<_>>();
+                            if evidence_ids.is_empty() {
+                                evidence_ids.push(execution_id.to_string());
+                            }
+                            let _ = crate::engine::improve::propose(
+                                state,
+                                &scope,
+                                "strategy",
+                                &next_action,
+                                &format!("리뷰어가 실패 원인을 분석해 제안: {}", gaps.join("; ")),
+                                &evidence_ids,
+                                None,
+                                "shared",
+                            );
+                        }
                         state.store.audit("acceptance.review", json!({
                             "sessionId": session_id,
                             "executionId": execution_id,
@@ -448,6 +488,13 @@ async fn run_turn_body(
             break;
         }
 
+        let mut seen_ids = std::collections::HashSet::new();
+        for call in completion.tool_calls.iter_mut() {
+            if call.id.trim().is_empty() || !seen_ids.insert(call.id.clone()) {
+                call.id = uuid::Uuid::new_v4().to_string();
+                seen_ids.insert(call.id.clone());
+            }
+        }
         let tool_calls_json = completion
             .tool_calls
             .iter()
@@ -481,14 +528,6 @@ async fn run_turn_body(
             .ok_or("도구 호출 메시지를 저장할 수 없습니다.")?;
         state.bus.message(&saved);
 
-        let mut seen_ids = std::collections::HashSet::new();
-        if completion
-            .tool_calls
-            .iter()
-            .any(|call| !seen_ids.insert(&call.id))
-        {
-            return Err("모델이 중복된 도구 호출 ID를 반환했습니다.".into());
-        }
         for (call_index, call) in completion.tool_calls.iter().enumerate() {
             if tx.is_closed() {
                 return Err("응답 연결이 종료되어 실행이 중단되었습니다.".into());
@@ -503,10 +542,48 @@ async fn run_turn_body(
             {
                 return Err("실행이 중단되었습니다.".into());
             }
-            let arguments: Value = serde_json::from_str(&call.arguments)
-                .map_err(|_| format!("{} 도구 인수가 올바른 JSON이 아닙니다.", call.name))?;
-            if !arguments.is_object() {
-                return Err("도구 인수는 객체여야 합니다.".into());
+            let arguments = match serde_json::from_str::<Value>(&call.arguments) {
+                Ok(value) if value.is_object() => value,
+                _ => {
+                    let error = format!(
+                        "{} 도구 인수가 올바른 JSON 객체가 아닙니다. 인자를 고쳐 다시 호출하세요.",
+                        call.name
+                    );
+                    record_soft_tool_error(
+                        state, tx, session_id, request, execution_id, &call.name, &call.id,
+                        &error, metrics,
+                    );
+                    messages.push(json!({
+                        "role":"tool","tool_call_id":call.id,
+                        "content": json!({"error":error}).to_string()
+                    }));
+                    continue;
+                }
+            };
+            let call_key = format!("{}:{}", call.name, arguments);
+            let repeat = {
+                let counter = call_counts.entry(call_key).or_insert(0);
+                *counter += 1;
+                *counter
+            };
+            if repeat > 2 {
+                let error = "같은 도구 호출이 반복되었습니다. 다른 도구나 접근을 쓰거나 최종 답변을 작성하세요.".to_string();
+                record_soft_tool_error(
+                    state, tx, session_id, request, execution_id, &call.name, &call.id,
+                    &error, metrics,
+                );
+                messages.push(json!({
+                    "role":"tool","tool_call_id":call.id,
+                    "content": json!({"error":error}).to_string()
+                }));
+                if repeat >= 3 {
+                    force_final = true;
+                    messages.push(json!({
+                        "role":"system",
+                        "content":"반복 호출이 감지되었습니다. 추가 도구 호출 없이 지금까지의 실제 결과로 최종 답변을 작성하세요."
+                    }));
+                }
+                continue;
             }
             let started_at = chrono::Utc::now().to_rfc3339();
             let tool_started = std::time::Instant::now();
@@ -589,7 +666,7 @@ async fn run_turn_body(
                 counters.tool_calls += 1;
                 counters.tool_elapsed_ms += tool_started.elapsed().as_millis() as u64;
             }
-            record_tool_stat(state, &call.name, ok);
+            record_tool_stat(state, session_id, request.agent_id.as_deref(), &call.name, ok);
             state.store.audit(
                 "tool.call",
                 json!({
@@ -619,7 +696,11 @@ async fn run_turn_body(
                 .ok_or("도구 수행 결과를 저장하지 못했습니다. 실행 기록을 확인하세요.")?;
             state.bus.record("execution_operation", &operation);
 
-            let tool_content = result.to_string();
+            let tool_content = if provider.tool_mode == "compat" {
+                clip(&result.to_string(), 6000)
+            } else {
+                result.to_string()
+            };
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call.id,
@@ -638,12 +719,47 @@ async fn run_turn_body(
                 .ok_or("도구 결과 메시지를 저장할 수 없습니다.")?;
             state.bus.message(&saved);
         }
+
+        // Check acceptance after the tool round, not only when the model
+        // decides to stop. A model that keeps verifying can otherwise burn the
+        // whole round budget after the work is already complete.
+        if !force_final {
+            if let Some((acceptance_text, checks)) = &acceptance {
+                let evidence = reply_to
+                    .as_deref()
+                    .map(|source| evidence_for_source(state, session_id, source, execution_id))
+                    .unwrap_or_default();
+                if !evidence.is_empty()
+                    && goals::check_acceptance(state, acceptance_text, checks, &evidence).is_empty()
+                {
+                    acceptance_passed = true;
+                    force_final = true;
+                    state.store.audit(
+                        "acceptance.passed",
+                        json!({"sessionId": session_id, "executionId": execution_id, "round": round}),
+                    );
+                    messages.push(json!({
+                        "role": "system",
+                        "content": "모든 검증 조건이 충족되었습니다. 추가 도구 호출 없이 최종 답변만 작성하세요."
+                    }));
+                    let _ = tx.send(json!({"type": "acceptance_passed"}));
+                }
+            }
+        }
     }
 
     if !finished {
-        return Err(format!(
-            "모델 반복 제한({MAX_ROUNDS}회)에 도달하여 실행을 마치지 못했습니다."
-        ));
+        if acceptance_passed {
+            // Evidence is already verified; do not turn a completed task into
+            // a failure just because the model kept talking.
+            if final_content.trim().is_empty() {
+                final_content = "요청한 작업을 실제 도구로 수행했고 검증 조건을 충족했습니다.".into();
+            }
+        } else {
+            return Err(format!(
+                "모델 반복 제한({MAX_ROUNDS}회)에 도달하여 실행을 마치지 못했습니다."
+            ));
+        }
     }
 
     // Preserve provider reasoning as received. Display language requests are
@@ -667,6 +783,36 @@ async fn run_turn_body(
         .ok_or("최종 응답을 저장할 수 없습니다.")?;
     state.bus.message(&saved);
     Ok(Some(saved))
+}
+
+fn clip(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    text.chars().take(limit).collect::<String>() + "\n… (truncated for small models)"
+}
+
+fn record_soft_tool_error(
+    state: &AppState,
+    tx: &UnboundedSender<Value>,
+    session_id: &str,
+    request: &TurnRequest,
+    execution_id: &str,
+    name: &str,
+    call_id: &str,
+    error: &str,
+    metrics: &std::sync::Mutex<Metrics>,
+) {
+    let _ = tx.send(json!({"type":"tool_error","name":name,"id":call_id,"error":error}));
+    metrics.lock().unwrap().tool_calls += 1;
+    state.store.audit("tool.soft_error", json!({"tool":name,"error":error,"executionId":execution_id}));
+    if let Some(saved) = state.store.write_message(&json!({
+        "session_id":session_id,"role":"tool","content":json!({"error":error}).to_string(),
+        "tool_call_id":call_id,"agent_id":request.agent_id,
+        "metadata":{"authorKind":"tool","executionId":execution_id},
+    })) {
+        state.bus.message(&saved);
+    }
 }
 
 struct ActionReview {
@@ -787,6 +933,7 @@ pub(super) fn finalize_execution(
             }
         }
     }
+    crate::engine::improve::record_execution(state, &record);
     if let Some(saved) = state.store.put("execution", &record) {
         state.bus.record("execution", &saved);
     }
@@ -828,10 +975,30 @@ fn ensure_session(state: &AppState, request: &TurnRequest) -> Result<Value, Stri
     session.ok_or_else(|| "세션을 만들 수 없습니다.".to_string())
 }
 
-fn record_tool_stat(state: &AppState, name: &str, ok: bool) {
-    state.store.increment_counters(
+fn record_tool_stat(state: &AppState, session_id: &str, agent_id: Option<&str>, name: &str, ok: bool) {
+    let Some(stat) = state.store.increment_counters(
         "tool_stat",
         name,
         &["attempts", if ok { "successes" } else { "failures" }],
-    );
+    ) else {
+        return;
+    };
+    let attempts = stat["attempts"].as_u64().unwrap_or(0);
+    let failures = stat["failures"].as_u64().unwrap_or(0);
+    if attempts >= 3 && failures * 2 >= attempts {
+        let scope = crate::engine::memory::MemoryScope::for_session(&state.store, session_id, agent_id);
+        let text = format!(
+            "{name} 도구의 실패가 반복됩니다. 가능하면 다른 도구를 먼저 사용하고, 사용할 때는 인자를 단순화하세요."
+        );
+        let _ = crate::engine::improve::propose(
+            state,
+            &scope,
+            "tool_policy",
+            &text,
+            "도구별 성공/실패 통계에서 반복 실패를 확인했습니다.",
+            &[format!("tool-stat:{name}")],
+            Some(name),
+            "shared",
+        );
+    }
 }

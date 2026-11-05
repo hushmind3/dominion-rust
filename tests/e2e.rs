@@ -187,9 +187,12 @@ fn compatibility_tools_are_available_and_round_limit_is_a_failure() {
     let session = app.post("/api/sessions", &json!({"title":"limit"}));
     let stream =
         app.chat(&json!({"sessionId":session["id"],"input":"계속 확인","autoLearning":false}));
-    assert!(stream.contains("모델 반복 제한"), "{stream}");
+    // The loop guard stops identical repeated calls instead of burning all 8
+    // rounds, and never saves a raw tool-call fragment as the final answer.
+    assert!(stream.contains("tool_error"), "{stream}");
+    assert!(!stream.contains("assistant_saved"), "{stream}");
     let calls = requests.lock().unwrap();
-    assert_eq!(calls.len(), 8);
+    assert!(calls.len() < 8, "loop guard used {} calls", calls.len());
     assert!(calls[0]["messages"][0]["content"]
         .as_str()
         .unwrap()
@@ -1021,6 +1024,83 @@ fn reviewer_repairs_a_claim_with_a_real_tool() {
     assert_eq!(
         std::fs::read_to_string(app._root.join("gate-review.txt")).unwrap(),
         "reviewed"
+    );
+    assert_eq!(app.get("/api/executions")[0]["status"], "completed");
+    let improvements = app.get("/api/improvements");
+    assert!(
+        improvements.as_array().unwrap().iter().any(|item| {
+            item["kind"] == "strategy"
+                && item["status"] == "adopted"
+                && item["text"].as_str().unwrap_or("").contains("workspace_write")
+        }),
+        "reviewer strategy was not adopted: {improvements}"
+    );
+}
+
+#[test]
+fn verified_work_completes_without_waiting_for_the_model_to_stop() {
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().unwrap();
+        let system = messages
+            .first()
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        let has_tools = request.get("tools").and_then(|tools| tools.as_array()).is_some();
+        if !has_tools {
+            if system.contains("planner") {
+                return vec![json!({"choices":[{"delta":{"content":"1. 파일 생성\\n2. 확인"}}]})];
+            }
+            return vec![json!({"choices":[{"delta":{"content":"완료했습니다."},"finish_reason":"stop"}]})];
+        }
+        let arguments = json!({"path":"gate-limit.txt","content":"limit-ok"}).to_string();
+        vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"write-limit","type":"function","function":{"name":"workspace_write","arguments":arguments}}]},"finish_reason":"tool_calls"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let session = app.post("/api/sessions", &json!({"title":"post-tool"}));
+    let stream = app.chat(&json!({
+        "sessionId": session["id"],
+        "input": "gate-limit.txt 파일을 만들어줘",
+        "autoLearning": false
+    }));
+    assert!(stream.contains("assistant_saved"), "{stream}");
+    assert!(!stream.contains("모델 반복 제한"), "{stream}");
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("gate-limit.txt")).unwrap(),
+        "limit-ok"
+    );
+    assert_eq!(app.get("/api/executions")[0]["status"], "completed");
+}
+
+#[test]
+fn compat_mode_executes_a_bare_json_tool_call_from_a_weak_model() {
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().unwrap();
+        let system = messages
+            .first()
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        let saw_tool = messages.iter().any(|message| message["role"] == "tool");
+        if system.contains("planner") {
+            return vec![json!({"choices":[{"delta":{"content":"1. weak.txt 생성\\n2. 확인"}}]})];
+        }
+        if saw_tool {
+            return vec![json!({"choices":[{"delta":{"content":"파일을 실제로 만들었습니다."},"finish_reason":"stop"}]})];
+        }
+        vec![json!({"choices":[{"delta":{"content":"{\"tool\":\"workspace_write\",\"args\":{\"path\":\"weak.txt\",\"content\":\"4b-ok\"}}"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "compat");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let session = app.post("/api/sessions", &json!({"title":"weak-model"}));
+    let stream = app.chat(&json!({
+        "sessionId": session["id"],
+        "input": "weak.txt 파일을 만들어줘",
+        "autoLearning": false
+    }));
+    assert!(stream.contains("assistant_saved"), "{stream}");
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("weak.txt")).unwrap(),
+        "4b-ok"
     );
     assert_eq!(app.get("/api/executions")[0]["status"], "completed");
 }

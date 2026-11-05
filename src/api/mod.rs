@@ -4,6 +4,7 @@ mod tests;
 pub mod translation;
 pub mod settings;
 pub mod goals;
+pub mod improvements;
 pub mod executions;
 pub mod memory;
 pub mod extensions;
@@ -205,6 +206,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/channels/:id/diagnose", post(channels::diagnose))
         .route("/api/executions", get(executions::list))
         .route("/api/executions/active", get(executions::active_executions))
+        .route("/api/improvements", get(improvements::list))
+        .route("/api/improvements/:id/:action", post(improvements::decide))
         .route("/api/executions/:id", get(executions::one))
         .route("/api/executions/:id/cancel", post(executions::cancel))
         .route("/api/webhooks/:id", post(compat::not_ported));

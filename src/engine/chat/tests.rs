@@ -299,3 +299,39 @@ fn concurrent_tool_evidence_statistics_do_not_lose_worker_updates() {
     assert_eq!(stat["failures"], 200);
     let _ = std::fs::remove_dir_all(&state.config.data_dir);
 }
+
+#[test]
+fn parses_bare_json_and_stringified_arguments_for_small_models() {
+    let known = ["workspace_write".to_string()]
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    let (calls, cleaned) = super::protocol::parse_text_tool_calls_known(
+        "{\"tool\":\"workspace_write\",\"args\":{\"path\":\"a.txt\",\"content\":\"x\"}}",
+        &known,
+    );
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "workspace_write");
+    assert!(calls[0].1.contains("a.txt"));
+    assert!(cleaned.is_empty());
+
+    let (calls, _) = super::protocol::parse_text_tool_calls_known(
+        "{\"name\":\"workspace_write\",\"arguments\":\"{\\\"path\\\":\\\"b.txt\\\",\\\"content\\\":\\\"y\\\"}\"}",
+        &known,
+    );
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].1.contains("b.txt"));
+}
+
+#[test]
+fn parses_function_wrapper_and_missing_closing_tag() {
+    let known = ["workspace_read".to_string()]
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    let (calls, _) = super::protocol::parse_text_tool_calls_known(
+        "<tool_call>{\"function\":{\"name\":\"workspace_read\",\"arguments\":{\"path\":\"a.txt\"}}}",
+        &known,
+    );
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "workspace_read");
+    assert!(calls[0].1.contains("a.txt"));
+}

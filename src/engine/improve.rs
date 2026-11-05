@@ -1,0 +1,469 @@
+use crate::engine::memory::{self, MemoryScope};
+use crate::state::AppState;
+use serde_json::{json, Value};
+
+const PROBATION_USES: u64 = 5;
+const ROLLBACK_MARGIN: f64 = 0.2;
+
+/// A validated improvement that can be injected into future turns and is
+/// monitored for regression. Harness code changes are proposals only.
+pub fn propose(
+    state: &AppState,
+    scope: &MemoryScope,
+    kind: &str,
+    text: &str,
+    rationale: &str,
+    evidence_ids: &[String],
+    tool: Option<&str>,
+    requested_scope: &str,
+) -> Option<Value> {
+    let text = text.trim();
+    if text.is_empty() || text.len() > 4000 {
+        return None;
+    }
+    if !matches!(kind, "strategy" | "tool_policy" | "harness") {
+        return None;
+    }
+    if evidence_ids.is_empty() && kind != "harness" {
+        return None;
+    }
+    if kind != "harness" && rationale.trim().is_empty() {
+        return None;
+    }
+
+    let record_scope = if kind == "harness" || requested_scope != "agent" {
+        "shared"
+    } else {
+        "agent"
+    };
+    let key = memory::stable_id(&[
+        &scope.partition_key,
+        scope.agent_id.as_deref().unwrap_or("default"),
+        kind,
+        &normalize(text),
+    ]);
+    let id = format!("improvement-{key}");
+    if let Some(existing) = state.store.get("improvement", &id) {
+        return Some(existing);
+    }
+
+    let mut status = "adopted";
+    let mut reason = String::new();
+    let tool_name = tool.map(str::to_string);
+    match kind {
+        "tool_policy" => {
+            let Some(name) = tool_name.clone() else {
+                return reject(state, scope, kind, text, rationale, evidence_ids, &id);
+            };
+            let Some(stat) = state.store.get("tool_stat", &name) else {
+                return reject(state, scope, kind, text, rationale, evidence_ids, &id);
+            };
+            let attempts = stat["attempts"].as_u64().unwrap_or(0);
+            let failures = stat["failures"].as_u64().unwrap_or(0);
+            if attempts < 3 || failures * 2 < attempts {
+                return reject(state, scope, kind, text, rationale, evidence_ids, &id);
+            }
+            if !text.to_lowercase().contains(&name.to_lowercase()) {
+                return reject(state, scope, kind, text, rationale, evidence_ids, &id);
+            }
+        }
+        "strategy" => {
+            if evidence_ids.len() == 0 {
+                return reject(state, scope, kind, text, rationale, evidence_ids, &id);
+            }
+        }
+        "harness" => {
+            status = "proposed";
+            reason = "하네스 코드 변경은 주인 승인이 필요합니다.".into();
+        }
+        _ => {}
+    }
+    if status == "rejected" {
+        return reject(state, scope, kind, text, rationale, evidence_ids, &id);
+    }
+
+    let baseline = if kind == "tool_policy" {
+        tool_name
+            .as_deref()
+            .and_then(|name| state.store.get("tool_stat", name))
+            .map(|stat| {
+                let attempts = stat["attempts"].as_u64().unwrap_or(0).max(1);
+                stat["successes"].as_u64().unwrap_or(0) as f64 / attempts as f64
+            })
+            .unwrap_or(0.5)
+    } else {
+        baseline_success(state, scope)
+    };
+
+    let saved = state.store.put(
+        "improvement",
+        &json!({
+            "id": id,
+            "kind": kind,
+            "scope": record_scope,
+            "agentId": scope.agent_id,
+            "partitionKey": scope.partition_key,
+            "sessionId": scope.session_id,
+            "text": text,
+            "rationale": rationale,
+            "tool": tool_name,
+            "evidenceMessageIds": evidence_ids,
+            "status": status,
+            "reason": reason,
+            "baselineSuccess": baseline,
+            "uses": 0,
+            "successes": 0,
+            "failures": 0,
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+            "adoptedAt": if status == "adopted" { json!(chrono::Utc::now().to_rfc3339()) } else { Value::Null },
+        }),
+    );
+    if let Some(saved) = &saved {
+        state.bus.record("improvement", saved);
+        state.store.audit(
+            "improvement.proposed",
+            json!({"id": saved["id"], "kind": kind, "status": status}),
+        );
+    }
+    saved
+}
+
+fn reject(
+    state: &AppState,
+    scope: &MemoryScope,
+    kind: &str,
+    text: &str,
+    rationale: &str,
+    evidence_ids: &[String],
+    id: &str,
+) -> Option<Value> {
+    let saved = state.store.put(
+        "improvement",
+        &json!({
+            "id": id,
+            "kind": kind,
+            "scope": "shared",
+            "agentId": scope.agent_id,
+            "partitionKey": scope.partition_key,
+            "sessionId": scope.session_id,
+            "text": text,
+            "rationale": rationale,
+            "evidenceMessageIds": evidence_ids,
+            "status": "rejected",
+            "reason": "검증 조건을 충족하지 못했습니다.",
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
+    if let Some(saved) = &saved {
+        state.bus.record("improvement", saved);
+    }
+    saved
+}
+
+fn normalize(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .collect()
+}
+
+fn visible(record: &Value, scope: &MemoryScope) -> bool {
+    if record["partitionKey"].as_str() != Some(scope.partition_key.as_str()) {
+        return false;
+    }
+    if record["scope"].as_str() == Some("shared") {
+        return true;
+    }
+    record["agentId"].as_str() == scope.agent_id.as_deref()
+}
+
+fn baseline_success(state: &AppState, scope: &MemoryScope) -> f64 {
+    let mut total = 0u64;
+    let mut success = 0u64;
+    for execution in state.store.all("execution").into_iter().rev().take(40) {
+        let Some(session_id) = execution["sessionId"].as_str() else {
+            continue;
+        };
+        let partition = MemoryScope::for_session(
+            &state.store,
+            session_id,
+            execution["agentId"].as_str(),
+        );
+        if partition.partition_key != scope.partition_key {
+            continue;
+        }
+        match execution["status"].as_str() {
+            Some("completed") => {
+                total += 1;
+                success += 1;
+            }
+            Some("failed") => total += 1,
+            _ => {}
+        }
+        if total >= 20 {
+            break;
+        }
+    }
+    if total == 0 {
+        0.5
+    } else {
+        success as f64 / total as f64
+    }
+}
+
+/// Adopted strategies/tool policies for the current agent and shared partition.
+pub fn context_block(state: &AppState, scope: &MemoryScope) -> Option<String> {
+    let mut lines = Vec::new();
+    for improvement in state.store.all("improvement") {
+        if improvement["status"].as_str() != Some("adopted") || !visible(&improvement, scope) {
+            continue;
+        }
+        let text = improvement["text"].as_str().unwrap_or("").trim();
+        if text.is_empty() {
+            continue;
+        }
+        let label = match improvement["kind"].as_str() {
+            Some("tool_policy") => "도구 정책",
+            Some("strategy") => "실행 전략",
+            _ => continue,
+        };
+        lines.push(format!("- [{label}] {text}"));
+        if lines.len() >= 6 {
+            break;
+        }
+    }
+    (!lines.is_empty()).then(|| {
+        format!(
+            "Improvements adopted from prior execution outcomes (follow unless evidence says otherwise):\n{}",
+            lines.join("\n")
+        )
+    })
+}
+
+/// Updates probation counters after an execution and rolls back regressions.
+pub fn record_execution(state: &AppState, execution: &Value) {
+    let Some(session_id) = execution["sessionId"].as_str() else {
+        return;
+    };
+    let agent_id = execution["agentId"].as_str();
+    let scope = MemoryScope::for_session(&state.store, session_id, agent_id);
+    let run_id = execution["id"].as_str().unwrap_or("");
+    let completed = execution["status"].as_str() == Some("completed");
+
+    for mut improvement in state.store.all("improvement") {
+        if improvement["status"].as_str() != Some("adopted") || !visible(&improvement, &scope) {
+            continue;
+        }
+        let mut uses = improvement["uses"].as_u64().unwrap_or(0);
+        let mut successes = improvement["successes"].as_u64().unwrap_or(0);
+        let mut failures = improvement["failures"].as_u64().unwrap_or(0);
+        if improvement["kind"].as_str() == Some("tool_policy") {
+            let Some(tool) = improvement["tool"].as_str() else {
+                continue;
+            };
+            let operations = state
+                .store
+                .all("execution_operation")
+                .into_iter()
+                .filter(|operation| {
+                    operation["runId"].as_str() == Some(run_id)
+                        && operation["tool"].as_str() == Some(tool)
+                })
+                .collect::<Vec<_>>();
+            if operations.is_empty() {
+                continue;
+            }
+            uses += operations.len() as u64;
+            successes += operations
+                .iter()
+                .filter(|operation| operation["status"] == "completed")
+                .count() as u64;
+            failures += operations
+                .iter()
+                .filter(|operation| operation["status"] == "failed")
+                .count() as u64;
+        } else {
+            uses += 1;
+            if completed {
+                successes += 1;
+            } else {
+                failures += 1;
+            }
+        }
+        improvement["uses"] = json!(uses);
+        improvement["successes"] = json!(successes);
+        improvement["failures"] = json!(failures);
+        improvement["lastObservedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        if uses >= PROBATION_USES {
+            let rate = successes as f64 / uses.max(1) as f64;
+            let baseline = improvement["baselineSuccess"].as_f64().unwrap_or(0.5);
+            if rate + ROLLBACK_MARGIN < baseline {
+                improvement["status"] = json!("rolled_back");
+                improvement["rolledBackAt"] = json!(chrono::Utc::now().to_rfc3339());
+                improvement["reason"] = json!(format!(
+                    "관찰 성공률 {:.2} 가 기준 {:.2} 보다 낮아 롤백했습니다.",
+                    rate, baseline
+                ));
+                state.store.audit(
+                    "improvement.rolled_back",
+                    json!({"id": improvement["id"], "rate": rate, "baseline": baseline}),
+                );
+            } else {
+                improvement["status"] = json!("validated");
+                improvement["validatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+        }
+        if let Some(saved) = state.store.put("improvement", &improvement) {
+            state.bus.record("improvement", &saved);
+        }
+    }
+}
+
+pub fn list(state: &AppState) -> Vec<Value> {
+    state.store.all("improvement")
+}
+
+pub fn set_status(state: &AppState, id: &str, status: &str) -> Option<Value> {
+    if !matches!(status, "adopted" | "rejected" | "proposed") {
+        return None;
+    }
+    let mut record = state.store.get("improvement", id)?;
+    record["status"] = json!(status);
+    record["reviewedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    let saved = state.store.put("improvement", &record)?;
+    state.bus.record("improvement", &saved);
+    Some(saved)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::db::Store;
+    use crate::vault::Vault;
+
+    fn state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("dominion-improve-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let store = Store::open(&config.db_path()).unwrap();
+        let vault = Vault::open(&config.key_path());
+        let state = AppState::new(config, store, vault);
+        state
+            .store
+            .put("session", &json!({"id":"s","agentId":"a"}));
+        (state, dir)
+    }
+
+    #[test]
+    fn tool_policy_requires_failure_statistics_and_names_the_tool() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        state.store.put(
+            "tool_stat",
+            &json!({"id":"shell_exec","attempts":4,"successes":1,"failures":3}),
+        );
+        let adopted = propose(
+            &state,
+            &scope,
+            "tool_policy",
+            "shell_exec 대신 workspace_write를 먼저 사용한다",
+            "셸 실패가 반복됨",
+            &["m1".into()],
+            Some("shell_exec"),
+            "shared",
+        )
+        .unwrap();
+        assert_eq!(adopted["status"], "adopted");
+        assert!(context_block(&state, &scope)
+            .unwrap()
+            .contains("workspace_write"));
+
+        let rejected = propose(
+            &state,
+            &scope,
+            "tool_policy",
+            "다른 도구를 써라",
+            "근거",
+            &["m2".into()],
+            Some("shell_exec"),
+            "shared",
+        )
+        .unwrap();
+        assert_eq!(rejected["status"], "rejected");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn probation_rolls_back_a_regressing_improvement() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let adopted = propose(
+            &state,
+            &scope,
+            "strategy",
+            "파일 작업은 workspace_write로 먼저 시도한다",
+            "실패 후 성공한 절차",
+            &["m1".into()],
+            None,
+            "shared",
+        )
+        .unwrap();
+        assert_eq!(adopted["status"], "adopted");
+        for index in 0..5 {
+            let execution = json!({"id":format!("e{index}"),"sessionId":"s","agentId":"a","status":"failed"});
+            state.store.put("execution", &execution);
+            record_execution(&state, &execution);
+        }
+        let stored = state
+            .store
+            .get("improvement", adopted["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(stored["status"], "rolled_back");
+        assert!(context_block(&state, &scope).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shared_and_agent_scopes_are_separate_and_harness_is_proposal_only() {
+        let (state, dir) = state();
+        state
+            .store
+            .put("session", &json!({"id":"t","agentId":"b"}));
+        let scope_a = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let scope_b = MemoryScope::for_session(&state.store, "t", Some("b"));
+        propose(
+            &state,
+            &scope_a,
+            "strategy",
+            "A만 쓰는 전략",
+            "근거",
+            &["m1".into()],
+            None,
+            "agent",
+        )
+        .unwrap();
+        assert!(context_block(&state, &scope_b).is_none());
+        let harness = propose(
+            &state,
+            &scope_a,
+            "harness",
+            "도구 루프에 재시도 예산을 추가한다",
+            "반복 실패",
+            &["m1".into()],
+            None,
+            "shared",
+        )
+        .unwrap();
+        assert_eq!(harness["status"], "proposed");
+        assert!(!context_block(&state, &scope_a)
+            .unwrap_or_default()
+            .contains("재시도 예산"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
