@@ -581,6 +581,8 @@ async fn run_turn_body(
     let mut finished = false;
     let mut force_final = false;
     let mut call_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut failed_calls: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED);
 
@@ -1000,8 +1002,30 @@ async fn run_turn_body(
                 continue;
             }
             let call_key = format!("{}:{}", call.name, arguments);
+            if let Some(previous_error) = failed_calls.get(&call_key) {
+                // Section 11-1: an unchanged repeat of a failed call is not
+                // re-executed. The model must choose a changed action.
+                let error = crate::engine::adaptation_loop::repeated_failure_message(&call.name);
+                record_soft_tool_error(
+                    state, tx, session_id, request, execution_id, &call.name, &call.id,
+                    &error, metrics,
+                );
+                messages.push(json!({
+                    "role":"tool","tool_call_id":call.id,
+                    "content": json!({
+                        "error": error,
+                        "previousError": previous_error,
+                        "repeatedFailedCall": true,
+                    }).to_string()
+                }));
+                messages.push(json!({
+                    "role":"system",
+                    "content":"직전 실패와 동일한 호출이 차단되었습니다. 다른 도구/인자로 실행하거나, 원인을 확인하는 probe를 선택하거나, 실제로 막혔다면 그 이유를 최종 답변에 쓰세요."
+                }));
+                continue;
+            }
             let repeat = {
-                let counter = call_counts.entry(call_key).or_insert(0);
+                let counter = call_counts.entry(call_key.clone()).or_insert(0);
                 *counter += 1;
                 *counter
             };
@@ -1030,7 +1054,7 @@ async fn run_turn_body(
                 ));
             }
             op_seq += 1;
-            let (_result, _ok, tool_content) = dispatch_tool_call(
+            let (result, ok, tool_content) = dispatch_tool_call(
                 state,
                 tx,
                 &session,
@@ -1038,7 +1062,7 @@ async fn run_turn_body(
                 session_id,
                 execution_id,
                 call,
-                arguments,
+                arguments.clone(),
                 metrics,
                 op_seq,
                 round,
@@ -1050,6 +1074,31 @@ async fn run_turn_body(
                 None,
             )
             .await?;
+            if ok {
+                failed_calls.remove(&call_key);
+            } else {
+                let error_text = result["error"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| tool_content.chars().take(600).collect::<String>());
+                failed_calls.insert(call_key.clone(), error_text.clone());
+                crate::engine::adaptation_loop::record_tool_failure(
+                    state,
+                    execution_id,
+                    round,
+                    &call.id,
+                    &call.name,
+                    &arguments,
+                    &error_text,
+                );
+                messages.push(json!({
+                    "role":"system",
+                    "content": format!(
+                        "실패 관측: `{}` 호출이 실패했습니다. 같은 호출을 그대로 반복하지 말고 다른 도구/인자/접근을 선택하세요.",
+                        call.name
+                    )
+                }));
+            }
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call.id,
