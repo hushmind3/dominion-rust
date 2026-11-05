@@ -70,7 +70,6 @@ async fn serve(mut config: Config, open_browser: bool, parent_bound: bool) -> Re
     engine::scheduler::start(state.clone());
     engine::discord::start(state.clone());
     engine::telegram::start(state.clone());
-    engine::harness_evolution::start_worker(state.clone());
     let app = api::router(state);
     println!(
         "DOMINION (rust engine) listening on http://127.0.0.1:{}",

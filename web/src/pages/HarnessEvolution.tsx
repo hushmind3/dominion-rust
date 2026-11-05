@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react'
-import {GitBranch,Play,Plus,RefreshCw,RotateCcw,ShieldAlert,ShieldCheck,Sparkles,Wrench} from 'lucide-react'
+import {GitBranch,Play,Plus,RefreshCw,RotateCcw,ShieldAlert,ShieldCheck,Wrench} from 'lucide-react'
 import {get,post} from '../api'
 import {Button,TextArea,TextInput} from '../components/Primitives'
 import {Notice,refresh} from '../components/UI'
@@ -20,7 +20,7 @@ type Proposal = {
   promotion?:{branch?:string;commit?:string;requiresRestart?:boolean;mainUntouched?:boolean}
   createdAt?:string
 }
-type Payload = {proposals:Proposal[];sourceRoot?:string;selfUpdateEnabled?:boolean;autoEvolveEnabled?:boolean}
+type Payload = {proposals:Proposal[];sourceRoot?:string;selfUpdateEnabled?:boolean}
 
 export function HarnessEvolutionPage(){
   const [data,setData]=useState<Payload>({proposals:[]})
@@ -54,7 +54,7 @@ export function HarnessEvolutionPage(){
       await load();setNotice('수정안을 저장했습니다. 아직 실행 트리에 적용되지 않았습니다.')
     }catch(e){setError((e as Error).message)}finally{setBusy('')}
   }
-  const act=async(id:string,action:'generate'|'validate'|'promote'|'activate'|'rollback')=>{
+  const act=async(id:string,action:'validate'|'promote'|'activate'|'rollback')=>{
     setBusy(id+action);setError('');setNotice('')
     try{
       const result=await post<Proposal>('/api/harness-evolution/'+id+'/'+action,{})
@@ -62,8 +62,6 @@ export function HarnessEvolutionPage(){
       setNotice(
         action==='validate'
           ? '격리 worktree 검증 결과: '+result.status
-          : action==='generate'
-            ? '모델이 수정 diff를 생성했습니다. 이제 격리 검증을 실행할 수 있습니다.'
           : action==='promote'
             ? '전용 브랜치에 승격했습니다. main은 변경되지 않았습니다.'
             : action==='activate'
@@ -122,7 +120,7 @@ export function HarnessEvolutionPage(){
               <h3 className="text-sm font-semibold text-[#24211D]">{proposal.reason}</h3>
               {proposal.predictedBenefit!=null&&<p className="text-xs text-[#6F675D]">{String(proposal.predictedBenefit)}</p>}
             </div>
-            <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${proposal.status==='validated'?'bg-emerald-50 text-emerald-700':proposal.status==='activated'?'bg-violet-50 text-violet-700':proposal.status==='needs_patch'?'bg-slate-100 text-slate-700':proposal.status==='promoted'?'bg-blue-50 text-blue-700':proposal.status==='rejected'?'bg-rose-50 text-rose-700':'bg-amber-50 text-amber-700'}`}>{proposal.status}</span>
+            <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${proposal.status==='validated'?'bg-emerald-50 text-emerald-700':proposal.status==='activated'?'bg-violet-50 text-violet-700':proposal.status==='promoted'?'bg-blue-50 text-blue-700':proposal.status==='rejected'?'bg-rose-50 text-rose-700':'bg-amber-50 text-amber-700'}`}>{proposal.status}</span>
           </div>
           <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-[#6F675D]">
             <span>base: {proposal.baseRevision?.slice(0,10)||'-'}</span>
@@ -131,8 +129,7 @@ export function HarnessEvolutionPage(){
           </div>
           {proposal.failure&&<p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-[11px] text-rose-700">{proposal.failure}</p>}
           <div className="mt-3 flex flex-wrap gap-2">
-            {proposal.status==='needs_patch'&&<Button size="sm" variant="primary" disabled={Boolean(busy)} onClick={()=>void act(proposal.id,'generate')}>{busy===proposal.id+'generate'?<RefreshCw size={14} className="animate-spin"/>:<Sparkles size={14}/>}패치 생성</Button>}
-            {proposal.status!=='promoted'&&proposal.status!=='activated'&&proposal.status!=='rolled_back'&&proposal.status!=='needs_patch'&&<Button size="sm" disabled={Boolean(busy)} onClick={()=>void act(proposal.id,'validate')}>{busy===proposal.id+'validate'?<RefreshCw size={14} className="animate-spin"/>:<Play size={14}/>}격리 검증</Button>}
+            {proposal.status!=='promoted'&&proposal.status!=='rolled_back'&&<Button size="sm" disabled={Boolean(busy)} onClick={()=>void act(proposal.id,'validate')}>{busy===proposal.id+'validate'?<RefreshCw size={14} className="animate-spin"/>:<Play size={14}/>}격리 검증</Button>}
             {proposal.status==='validated'&&<Button size="sm" variant="primary" disabled={Boolean(busy)||!data.selfUpdateEnabled} onClick={()=>void act(proposal.id,'promote')}><Wrench size={14}/>브랜치 승격</Button>}
             {proposal.status==='promoted'&&<Button size="sm" variant="primary" disabled={Boolean(busy)||!data.selfUpdateEnabled} onClick={()=>void act(proposal.id,'activate')}><Play size={14}/>바이너리 적용</Button>}
             {(proposal.status==='promoted'||proposal.status==='activated')&&<Button size="sm" variant="danger" disabled={Boolean(busy)} onClick={()=>void act(proposal.id,'rollback')}><RotateCcw size={14}/>롤백</Button>}
