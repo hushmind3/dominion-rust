@@ -816,7 +816,7 @@ fn in_canary_bucket(session_id: &str, strategy_id: &str) -> bool {
 /// Applies an isolated paired experiment result to a strategy. This is the
 /// only path that can stamp E2 / `validatedBy=isolated_experiment` or roll back
 /// on measured regression; production observation can only produce E1.
-pub fn apply_experiment_result(
+pub fn experiment_result_record(
     state: &AppState,
     strategy_id: &str,
     experiment: &Value,
@@ -877,38 +877,34 @@ pub fn apply_experiment_result(
         // promote a policy.
         record["requiresExperiment"] = json!(true);
     }
+    Ok(record)
+}
+pub fn apply_experiment_result(
+    state: &AppState,
+    strategy_id: &str,
+    experiment: &Value,
+) -> Result<Value, String> {
+    let record = experiment_result_record(state, strategy_id, experiment)?;
     let saved = state
         .store
-        .put("improvement", &record)
-        .ok_or("실험 결과를 저장할 수 없습니다.")?;
-    state.bus.record("improvement", &saved);
-    for mut request in state.store.all("experiment_request") {
-        if request["strategyId"].as_str() == Some(strategy_id)
-            && request["status"].as_str() == Some("queued")
-        {
-            request["status"] = json!("completed");
-            request["experimentId"] = json!(experiment_id);
-            request["verdict"] = json!(verdict);
-            request["units"] = json!(units);
-            request["completedAt"] = json!(chrono::Utc::now().to_rfc3339());
-            if let Some(saved_request) = state.store.put("experiment_request", &request) {
-                state.bus.record("experiment_request", &saved_request);
-            }
-        }
+        .transaction(&[("improvement".to_string(), record.clone())])?;
+    for item in &saved {
+        state.bus.record("improvement", item);
     }
     state.store.audit(
         "improvement.experiment_result",
         json!({
             "id": strategy_id,
-            "experimentId": experiment_id,
-            "verdict": verdict,
-            "units": units,
-            "status": saved["status"],
-            "evidenceGrade": saved["evidenceGrade"],
+            "experimentId": experiment["experimentId"],
+            "verdict": experiment["verdict"],
+            "units": experiment["independentUnits"],
+            "status": record["status"],
         }),
     );
-    Ok(saved)
+    Ok(record)
 }
+
+
 
 /// Creates durable experiment requests for strategies that only have
 /// production evidence. Idempotent: one request per strategy revision.

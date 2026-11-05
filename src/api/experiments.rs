@@ -600,6 +600,7 @@ pub async fn complete(
             }
         }
     }
+    let mut promotion_records: Vec<(String, Value)> = Vec::new();
     if promotion_allowed {
         let target = if request["kind"].as_str() == Some("policy") {
             state.store.get("adaptation_policy", policy_id)
@@ -617,36 +618,75 @@ pub async fn complete(
                 json!({"requestId": request_id, "experimentId": body["experimentId"]}),
             );
         } else {
-            let applied = if request["kind"].as_str() == Some("policy") {
-                crate::engine::policy::apply_experiment_result(&state, policy_id, &body)
+            let computed = if request["kind"].as_str() == Some("policy") {
+                crate::engine::policy::experiment_result_records(&state, policy_id, &body)
             } else {
-                crate::engine::improve::apply_experiment_result(&state, strategy_id, &body)
+                crate::engine::improve::experiment_result_record(&state, strategy_id, &body)
+                    .map(|record| vec![("improvement".to_string(), record)])
             };
-            match applied {
-                Ok(record) => promotion = record,
+            match computed {
+                Ok(records) => {
+                    promotion = records
+                        .iter()
+                        .find(|(_, record)| {
+                            record["id"].as_str()
+                                == Some(if request["kind"].as_str() == Some("policy") {
+                                    policy_id
+                                } else {
+                                    strategy_id
+                                })
+                        })
+                        .map(|(_, record)| record.clone())
+                        .unwrap_or(Value::Null);
+                    promotion_records = records;
+                }
                 Err(error) => promotion_error = json!(error),
             }
         }
     }
-    let completed = state.store.patch_if(
+    let mut completed_record = request.clone();
+    completed_record["status"] = json!("completed");
+    completed_record["completedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    completed_record["experimentId"] = body["experimentId"].clone();
+    completed_record["verdict"] = json!(verdict);
+    completed_record["delta"] = body["delta"].clone();
+    completed_record["independentUnits"] = body["independentUnits"].clone();
+    completed_record["promotionStatus"] = promotion["status"].clone();
+    completed_record["promotionEvidence"] = promotion["evidenceGrade"].clone();
+    completed_record["promotionError"] = promotion_error.clone();
+    completed_record["evidenceVerification"] = evidence_summary.clone();
+    completed_record["promotionAppliedAt"] = if promotion.is_null() {
+        Value::Null
+    } else {
+        json!(chrono::Utc::now().to_rfc3339())
+    };
+    completed_record["settleToken"] = Value::Null;
+    promotion_records.push(("experiment_request".to_string(), completed_record.clone()));
+    // Promotion, supersede and request finalization commit together. A crash
+    // cannot leave a half-applied policy or a completed request without it.
+    let completed = match state.store.transaction_if_status(
         "experiment_request",
         &request_id,
-        "settleToken",
-        &json!(settle_token.as_str()),
-        &json!({
-            "status": "completed",
-            "completedAt": chrono::Utc::now().to_rfc3339(),
-            "experimentId": body["experimentId"],
-            "verdict": verdict,
-            "delta": body["delta"],
-            "independentUnits": body["independentUnits"],
-            "promotionStatus": promotion["status"],
-            "promotionEvidence": promotion["evidenceGrade"],
-            "promotionError": promotion_error,
-            "evidenceVerification": evidence_summary,
-            "promotionAppliedAt": if promotion.is_null() { Value::Null } else { json!(chrono::Utc::now().to_rfc3339()) },
-        }),
-    );
+        "settling",
+        &promotion_records,
+    ) {
+        Ok(true) => {
+            for (kind, record) in &promotion_records {
+                if kind != "experiment_request" {
+                    state.bus.record(kind, record);
+                }
+            }
+            Some(completed_record)
+        }
+        Ok(false) => None,
+        Err(error) => {
+            state.store.audit(
+                "experiment.settlement_transaction_failed",
+                json!({"requestId": request_id, "error": error}),
+            );
+            None
+        }
+    };
     match completed {
         Some(saved) => {
             state.bus.record("experiment_request", &saved);
@@ -786,4 +826,8 @@ pub async fn enqueue(State(state): State<AppState>, Json(body): Json<Value>) -> 
         }
         None => (StatusCode::INTERNAL_SERVER_ERROR, "could not persist").into_response(),
     }
+}
+
+pub async fn optimizers(State(state): State<AppState>) -> Response {
+    Json(crate::engine::policy::optimizer_report(&state)).into_response()
 }

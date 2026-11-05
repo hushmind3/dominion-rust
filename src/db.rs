@@ -264,6 +264,52 @@ impl Store {
         self.get(kind, &id)
     }
 
+    /// Writes several records in one SQLite transaction. Any failure rolls
+    /// back all of them, which is required for experiment promotion.
+    pub fn transaction(&self, records: &[(String, Value)]) -> Result<Vec<Value>, String> {
+        let mut conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        let mut saved = Vec::new();
+        for (kind, value) in records {
+            upsert_tx(&tx, kind, value)?;
+            saved.push(value.clone());
+        }
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(saved)
+    }
+
+    /// Transaction that only commits when the current record still has the
+    /// expected status value. Returns false on a CAS miss.
+    pub fn transaction_if_status(
+        &self,
+        kind: &str,
+        id: &str,
+        expected: &str,
+        records: &[(String, Value)],
+    ) -> Result<bool, String> {
+        let mut conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT data FROM records WHERE kind=?1 AND id=?2",
+                params![kind, id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let status = current
+            .and_then(|data| serde_json::from_str::<Value>(&data).ok())
+            .and_then(|value| value["status"].as_str().map(str::to_string));
+        if status.as_deref() != Some(expected) {
+            return Ok(false);
+        }
+        for (record_kind, value) in records {
+            upsert_tx(&tx, record_kind, value)?;
+        }
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
     /// Durable idempotency key. Unlike `put`, this never overwrites a record.
     pub fn put_if_absent(&self, kind: &str, value: &Value) -> Option<Value> {
         let id = value.get("id")?.as_str().filter(|id| !id.is_empty())?;

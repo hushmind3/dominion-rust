@@ -598,33 +598,7 @@ async fn run_turn_body(
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED);
 
-    // Durable program policies run through the same tool gateway before the
-    // reactive model loop. A failure branch can therefore choose a different
-    // action without a second execution engine.
-    if request.tools_execution_enabled {
-        if let Some(policy) = &program_policy {
-            if let Some(program) = policy["parameters"]["program"].as_object() {
-                let program = crate::engine::program::validate(&json!(program))?;
-                restore_program_state(state, task_id, execution_id, &program)?;
-                let program_messages = run_program(
-                    state,
-                    tx,
-                    &session,
-                    request,
-                    session_id,
-                    execution_id,
-                    &program,
-                    metrics,
-                    &mut budget,
-                    &mut op_seq,
-                    generation,
-                )
-                .await?;
-                messages.extend(program_messages);
-            }
-        }
-    }
-
+    let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
     // execution permission for the Rust harness; harness nodes use the same
     // approval, cancellation and budget policy as model tool calls.
@@ -667,6 +641,42 @@ async fn run_turn_body(
                 "도구 호출 제한({MAX_TOOL_CALLS}회)을 초과했습니다."
             ));
         }
+        // DECIDE: an active durable program supplies the next step; otherwise
+        // the model decides. Program steps and model steps share this loop,
+        // the same tool gateway and the same checkpoint.
+        if !program_finished && request.tools_execution_enabled {
+            if let Some(policy) = &program_policy {
+                if let Some(program) = policy["parameters"]["program"].as_object() {
+                    let program = crate::engine::program::validate(&json!(program))?;
+                    restore_program_state(state, task_id, execution_id, &program)?;
+                    let program_messages = run_program(
+                        state,
+                        tx,
+                        &session,
+                        request,
+                        session_id,
+                        execution_id,
+                        &program,
+                        metrics,
+                        &mut budget,
+                        &mut op_seq,
+                        generation,
+                    )
+                    .await?;
+                    messages.extend(program_messages);
+                    let status = state
+                        .store
+                        .get("execution", execution_id)
+                        .and_then(|execution| {
+                            execution["programCheckpoint"]["status"]
+                                .as_str()
+                                .map(str::to_string)
+                        });
+                    program_finished = status.as_deref() == Some("completed");
+                }
+            }
+        }
+
         {
             let mut counters = metrics.lock().unwrap();
             counters.model_calls += 1;

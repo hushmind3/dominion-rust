@@ -76,6 +76,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/model-usage", get(system::model_usage))
         .route("/api/run-wakes", get(system::run_wakes))
         .route("/api/experiment-requests", get(system::experiment_requests))
+        .route("/api/optimizers", get(experiments::optimizers))
         .route("/api/experiment-requests/claim", post(experiments::claim))
         .route(
             "/api/experiment-requests/release-runner",
