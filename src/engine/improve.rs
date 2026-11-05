@@ -317,6 +317,10 @@ pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
                 improvement["kind"].as_str(),
                 Some("strategy" | "tool_policy")
             ) && visible(improvement, scope)
+                && (improvement["rollout"].as_str() != Some("canary")
+                    || improvement["id"]
+                        .as_str()
+                        .is_some_and(|id| in_canary_bucket(&scope.session_id, id)))
         })
         .take(6)
         .collect()
@@ -443,8 +447,10 @@ pub fn execution_updates(
             continue;
         }
         let id = improvement["id"].as_str().unwrap_or("");
-        if improvement["status"].as_str() != Some("adopted")
-            || !visible(&improvement, &scope)
+        if !matches!(
+            improvement["status"].as_str(),
+            Some("adopted" | "validated")
+        ) || !visible(&improvement, &scope)
             || !applied.contains(id)
         {
             continue;
@@ -503,6 +509,24 @@ pub fn execution_updates(
             }
             let followed = entry["result"]["followed"].as_bool() == Some(true);
             let success = task_outcome == "succeeded" && followed;
+            if improvement["rollout"].as_str() == Some("canary") {
+                if success {
+                    let turns = improvement["canaryTurns"].as_u64().unwrap_or(0) + 1;
+                    improvement["canaryTurns"] = json!(turns);
+                    if turns >= CANARY_SUCCESSES {
+                        improvement["rollout"] = json!("active");
+                        improvement["canaryCompletedAt"] =
+                            json!(chrono::Utc::now().to_rfc3339());
+                    }
+                } else if task_outcome == "failed" {
+                    improvement["status"] = json!("rolled_back");
+                    improvement["rollout"] = json!("halted");
+                    improvement["rolledBackAt"] =
+                        json!(chrono::Utc::now().to_rfc3339());
+                    improvement["reason"] =
+                        json!("canary 중 실패가 관찰되어 롤백했습니다.");
+                }
+            }
             let failure = task_outcome == "failed"
                 || (task_outcome == "succeeded" && !followed);
             if !success && !failure {
@@ -540,7 +564,7 @@ pub fn execution_updates(
             }
         }
         improvement["appliedExecutionIds"] = json!(applied_ids);
-        if uses >= PROBATION_USES {
+        if uses >= PROBATION_USES && improvement["rollout"].as_str() != Some("halted") {
             let rate = successes as f64 / uses.max(1) as f64;
             let baseline = improvement["baselineSuccess"].as_f64().unwrap_or(0.5);
             if rate + ROLLBACK_MARGIN < baseline {
@@ -675,6 +699,16 @@ pub fn recover_finalizations(state: &AppState) {
 /// Minimum independent paired trials before an experiment can change a
 /// strategy's evidence grade. Observation counters never reach this gate.
 pub const MIN_EXPERIMENT_UNITS: u64 = 8;
+/// Newly promoted policies are exposed to a deterministic 20% of sessions
+/// until they collect enough clean production observations.
+pub const CANARY_PERCENT: u64 = 20;
+pub const CANARY_SUCCESSES: u64 = 3;
+
+fn in_canary_bucket(session_id: &str, strategy_id: &str) -> bool {
+    let digest = crate::engine::memory::stable_id(&[session_id, strategy_id]);
+    let bucket = u64::from_str_radix(&digest[..8], 16).unwrap_or(0) % 100;
+    bucket < CANARY_PERCENT
+}
 
 /// Applies an isolated paired experiment result to a strategy. This is the
 /// only path that can stamp E2 / `validatedBy=isolated_experiment` or roll back
@@ -732,6 +766,8 @@ pub fn apply_experiment_result(
         record["validatedBy"] = json!("isolated_experiment");
         record["requiresExperiment"] = json!(false);
         record["experimentRevision"] = json!(revision);
+        record["rollout"] = json!("canary");
+        record["canaryTurns"] = json!(0);
         record["validatedAt"] = json!(chrono::Utc::now().to_rfc3339());
     } else {
         // Inconclusive or underpowered experiments are recorded but never
@@ -848,6 +884,98 @@ mod tests {
         assert_eq!(record["status"], "validated");
         assert_eq!(record["evidenceGrade"], "E2");
         assert_eq!(record["validatedBy"], "isolated_experiment");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn canary_exposure_is_deterministic_and_partial() {
+        let mut included = None;
+        let mut excluded = None;
+        for index in 0..200 {
+            let session = format!("session-{index}");
+            let hit = in_canary_bucket(&session, "strategy-1");
+            if hit && included.is_none() {
+                included = Some(session.clone());
+            }
+            if !hit && excluded.is_none() {
+                excluded = Some(session.clone());
+            }
+            assert_eq!(hit, in_canary_bucket(&session, "strategy-1"));
+        }
+        assert!(included.is_some() && excluded.is_some());
+        // A different strategy gets an independent bucket.
+        let hits = (0..200)
+            .filter(|index| in_canary_bucket(&format!("session-{index}"), "strategy-2"))
+            .count();
+        assert!((5..80).contains(&hits), "unexpected canary share: {hits}");
+    }
+
+    #[test]
+    fn a_promoted_strategy_starts_in_canary_and_activates_after_clean_use() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        state.store.put(
+            "improvement",
+            &json!({
+                "id":"canary-1","kind":"strategy","scope":"agent","agentId":"a",
+                "partitionKey":scope.partition_key,"status":"adopted","scoreVersion":2,
+                "evidenceGrade":"E1_observed","text":"verify every output","uses":5,
+                "successes":5,"failures":0,"appliedExecutionIds":[]
+            }),
+        );
+        let experiment = json!({"experimentId":"exp-canary","verdict":"preliminary_support","delta":0.5,"independentUnits":10,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, "canary-1", &experiment).unwrap();
+        assert_eq!(record["rollout"], "canary");
+        assert_eq!(record["canaryTurns"], 0);
+
+        for index in 0..CANARY_SUCCESSES {
+            let execution = json!({
+                "id":format!("exec-canary-{index}"),"sessionId":"s","agentId":"a",
+                "taskOutcome":"succeeded","appliedImprovementIds":["canary-1"],
+                "strategyCompliance":[{
+                    "strategyId":"canary-1","applicable":true,
+                    "result":{"verified":true,"triggered":true,"followed":true}
+                }]
+            });
+            let updates = execution_updates(&state, &execution).unwrap();
+            let updated = updates.iter().find(|item| item["id"] == "canary-1").unwrap();
+            state.store.put("improvement", updated);
+        }
+        let stored = state.store.get("improvement", "canary-1").unwrap();
+        assert_eq!(stored["status"], "validated");
+        assert_eq!(stored["rollout"], "active");
+        assert_eq!(stored["requiresExperiment"], false);
+        assert!(stored["canaryCompletedAt"].is_string());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn canary_failure_rolls_back_before_full_exposure() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        state.store.put(
+            "improvement",
+            &json!({
+                "id":"canary-2","kind":"strategy","scope":"agent","agentId":"a",
+                "partitionKey":scope.partition_key,"status":"adopted","scoreVersion":2,
+                "evidenceGrade":"E1_observed","text":"use the safe path","uses":5,
+                "successes":5,"failures":0,"appliedExecutionIds":[],
+                "rollout":"canary","canaryTurns":1
+            }),
+        );
+        let execution = json!({
+            "id":"exec-canary-fail","sessionId":"s","agentId":"a",
+            "taskOutcome":"failed","appliedImprovementIds":["canary-2"],
+            "strategyCompliance":[{
+                "strategyId":"canary-2","applicable":true,
+                "result":{"verified":true,"triggered":true,"followed":true}
+            }]
+        });
+        let updates = execution_updates(&state, &execution).unwrap();
+        let updated = updates.iter().find(|item| item["id"] == "canary-2").unwrap();
+        assert_eq!(updated["status"], "rolled_back");
+        assert_eq!(updated["rollout"], "halted");
+        assert!(updated["reason"].as_str().is_some_and(|text| text.contains("canary")));
         let _ = std::fs::remove_dir_all(dir);
     }
 

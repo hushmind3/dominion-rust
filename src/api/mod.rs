@@ -58,6 +58,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/attachments/:id/content", get(attachments::content))
         .route("/api/events", get(system::events))
         .route("/api/model-usage", get(system::model_usage))
+        .route("/api/run-wakes", get(system::run_wakes))
         .route("/api/chat", post(chat::chat))
         .route("/api/jobs",get(jobs::list).post(jobs::create))
         .route("/api/jobs/:id",get(jobs::one))

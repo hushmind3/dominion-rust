@@ -208,6 +208,8 @@ pub fn recover(state: &AppState) {
         if execution.get("status").and_then(|value| value.as_str()) == Some("running") {
             let mut updated = execution.clone();
             updated["status"] = json!("interrupted");
+            updated["phase"] = json!("interrupted");
+            updated["phaseUpdatedAt"] = json!(chrono::Utc::now().to_rfc3339());
             updated["taskOutcome"] = json!("cancelled");
             updated["reason"] = json!("백엔드가 재시작되어 실행이 중단되었습니다.");
             updated["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
@@ -218,6 +220,7 @@ pub fn recover(state: &AppState) {
         if operation["status"] == "running" {
             operation["status"] = json!("interrupted");
             operation["outcomeUnknown"] = json!(true);
+            operation["phase"] = json!("interrupted");
             operation["reason"] = json!("백엔드가 재시작되어 도구 결과를 확정할 수 없습니다.");
             operation["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
             state.store.put("execution_operation", &operation);
@@ -369,6 +372,7 @@ async fn run_job(state: AppState, job: Value) {
         "room" | "meeting" => rooms::run(&context, &job).await,
         "goal" => goals::run(&context, &job).await,
         "prompt" => run_prompt(&context, &job).await,
+        "resume" => run_resume(&context, &job).await,
         "learn" => learning::run(&context, &job).await,
         "reflect" => reflect::run(&context, &job).await,
         "discord" => crate::engine::discord::run(&context, &job).await,
@@ -488,6 +492,65 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
     let result = json!({
         "sessionId": message.as_ref().and_then(|item| item.get("session_id")),
         "messageId": message.as_ref().and_then(|item| item.get("id")),
+    });
+    context.checkpoint(json!({"promptState":{"inFlight":false,"result":result}}))?;
+    Ok(result)
+}
+
+/// Resumes a cleanly interrupted run after a crash. The owner message already
+/// exists, so this path uses the no-record-input turn instead of run_prompt.
+async fn run_resume(context: &JobContext, job: &Value) -> Result<Value, String> {
+    let input = job.get("input").cloned().unwrap_or_else(|| json!({}));
+    if let Some(result) = job.pointer("/promptState/result") {
+        return Ok(result.clone());
+    }
+    if job
+        .pointer("/promptState/inFlight")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return Ok(json!({
+            "status":"needs_review",
+            "reason":"재개 작업의 이전 시도 결과를 확인해야 합니다."
+        }));
+    }
+    let prompt = input["prompt"].as_str().unwrap_or("").to_string();
+    let session_id = input["sessionId"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or("재개 작업에 sessionId가 필요합니다.")?
+        .to_string();
+    if prompt.trim().is_empty() {
+        return Err("재개 작업의 원래 요청이 비어 있습니다.".into());
+    }
+    if context.state.store.get("session", &session_id).is_none() {
+        return Err("재개 작업의 세션을 찾을 수 없습니다.".into());
+    }
+    context.checkpoint(json!({"sessionId":session_id,"promptState":{"inFlight":true}}))?;
+    let request = TurnRequest {
+        session_id: Some(session_id.clone()),
+        input: prompt,
+        attachment_ids: Vec::new(),
+        agent_id: input["agentId"].as_str().map(str::to_string),
+        provider_id: input["providerId"].as_str().map(str::to_string),
+        model: input["model"].as_str().map(str::to_string),
+        tools_enabled: input["toolsEnabled"].as_bool().unwrap_or(true),
+        tools_execution_enabled: input["toolsExecutionEnabled"].as_bool().unwrap_or(true),
+        thinking: None,
+        auto_learning: false,
+        reasoning_effort: None,
+        reasoning_language: None,
+        system_override: None,
+        task_id: input["taskId"].as_str().map(str::to_string),
+        parent_task_id: None,
+        task_revision: input["taskRevision"].as_str().map(str::to_string),
+        verification_owner: None,
+    };
+    let message = crate::engine::run_quiet_resume(&context.state, &request).await?;
+    let result = json!({
+        "sessionId": session_id,
+        "messageId": message.as_ref().and_then(|item| item.get("id")),
+        "resumedExecutionId": input["resumedExecutionId"],
     });
     context.checkpoint(json!({"promptState":{"inFlight":false,"result":result}}))?;
     Ok(result)

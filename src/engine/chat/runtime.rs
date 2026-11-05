@@ -38,6 +38,16 @@ pub async fn run_turn_background(
     run_turn_with_policy(state, request, tx, false, true, None).await
 }
 
+/// Resume path for a rejected/woken run: the original owner message is already
+/// stored, so the turn must not append a duplicate user message.
+pub async fn run_turn_resume(
+    state: &AppState,
+    request: &TurnRequest,
+    tx: &UnboundedSender<Value>,
+) -> Result<Option<Value>, String> {
+    run_turn_with_policy(state, request, tx, false, false, None).await
+}
+
 // Shared room input is already durably stored by the owner-message API.
 
 pub async fn run_room_turn(
@@ -61,8 +71,17 @@ async fn run_turn_with_policy(
     if record_input && session["roomId"].is_string() {
         return Err("그룹 대화는 그룹 대화 화면 또는 /api/rooms/:id/messages에서 보내세요.".into());
     }
-    if !record_input && !session["roomId"].is_string() {
+    if !record_input && source_message_id.is_some() && !session["roomId"].is_string() {
         return Err("공용 대화 기록이 연결된 그룹 세션이 필요합니다.".into());
+    }
+    if !record_input && source_message_id.is_none() {
+        let existing = session["id"]
+            .as_str()
+            .map(|id| state.store.messages(id))
+            .unwrap_or_default();
+        if existing.is_empty() {
+            return Err("재개할 대화 기록이 없습니다.".into());
+        }
     }
     let session_id = session
         .get("id")
@@ -167,6 +186,7 @@ async fn run_turn_with_policy(
         "reasoningProtocol":provider.reasoning_protocol,
         "thinkingRequested":request.thinking,"reasoningEffortRequested":request.reasoning_effort,
         "status": "running",
+        "phase": "queued",
         "startedAt": chrono::Utc::now().to_rfc3339(),
         "iterations": 0,
         "modelCalls": 0,
@@ -188,6 +208,7 @@ async fn run_turn_with_policy(
         .create_attempt(&root, &execution_document, &attempt)
         .ok_or("실행 기록을 저장할 수 없습니다.")?;
     state.bus.record("execution", &execution);
+    crate::engine::run_state::apply(state, &execution_id, "start");
     let metrics = std::sync::Mutex::new(Metrics::default());
     let result = tokio::select! {
         result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
@@ -1905,6 +1926,7 @@ pub(super) fn finalize_execution(
     record["toolElapsedMs"] = json!(counters.tool_elapsed_ms);
     record["contextElapsedMs"] = json!(counters.context_elapsed_ms);
     record["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    let final_phase = |status: &str| crate::engine::run_state::phase_for_status(status);
     match result {
         Ok(_) => record["status"] = json!("completed"),
         Err(message) if message.contains("중단") => {
@@ -1916,6 +1938,9 @@ pub(super) fn finalize_execution(
             record["reason"] = json!(message);
         }
     }
+    let status = record["status"].as_str().unwrap_or("failed").to_string();
+    record["phase"] = json!(final_phase(&status));
+    record["phaseUpdatedAt"] = json!(chrono::Utc::now().to_rfc3339());
     for mut operation in state.store.all("execution_operation") {
         if operation["runId"] == execution_id && operation["status"] == "running" {
             operation["status"] = json!("interrupted");

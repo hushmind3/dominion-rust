@@ -674,6 +674,86 @@ fn closing_the_sse_client_does_not_cancel_background_work() {
     );
 }
 
+#[test]
+fn a_clean_interrupted_run_is_woken_and_resumed_after_restart() {
+    let _serial = serial();
+    let (port, requests) = scripted_provider(|_| {
+        std::thread::sleep(Duration::from_millis(1_200));
+        vec![
+            json!({"choices":[{"delta":{"content":"재개 완료."},"finish_reason":"stop"}]}),
+        ]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let root = app._root.clone();
+    let handle = app.chat_async(&json!({
+        "input":"재개 테스트 작업",
+        "autoLearning":false
+    }));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.get("/api/executions/active").as_array().unwrap().is_empty() {
+        assert!(Instant::now() < deadline, "turn did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(app);
+    let _ = handle.join();
+
+    // Restart on the same data root. The dead run has no side effects and no
+    // pending approval, so startup wake must enqueue exactly one resume job.
+    let app = TestApp::from_root(port, "native", root.clone(), &[]);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut wake = Value::Null;
+    while Instant::now() < deadline {
+        if let Some(record) = app
+            .get("/api/run-wakes")
+            .as_array()
+            .and_then(|items| items.first())
+            .cloned()
+        {
+            wake = record;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(wake["decision"], "queued", "{wake}");
+    let job_id = wake["jobId"].as_str().expect("wake job").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let mut completed = false;
+    while Instant::now() < deadline {
+        if let Some(job) = app
+            .get("/api/jobs")
+            .as_array()
+            .and_then(|items| items.iter().find(|job| job["id"] == job_id.as_str()))
+        {
+            if matches!(job["status"].as_str(), Some("completed" | "failed")) {
+                completed = job["status"] == "completed";
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(completed, "resume job did not complete");
+    let executions = app.get("/api/executions");
+    assert!(
+        executions.as_array().unwrap().len() >= 2,
+        "resume did not create a new attempt: {executions}"
+    );
+    let session_id = wake["sessionId"].as_str().unwrap();
+    let messages = app.get(&format!("/api/sessions/{session_id}/messages"));
+    let user_messages = messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "user")
+        .count();
+    assert_eq!(
+        user_messages, 1,
+        "resume must not duplicate the owner message: {messages}"
+    );
+    assert!(!requests.lock().unwrap().is_empty());
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

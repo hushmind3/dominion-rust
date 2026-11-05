@@ -21,6 +21,8 @@ fn interrupted_executions(state: &AppState) -> Result<(), String> {
             continue;
         }
         execution["status"] = json!("interrupted");
+        execution["phase"] = json!("interrupted");
+        execution["phaseUpdatedAt"] = json!(chrono::Utc::now().to_rfc3339());
         execution["taskOutcome"] = json!("cancelled");
         execution["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
         execution["reason"] = json!("백엔드가 재시작되어 실행이 중단되었습니다.");
@@ -35,6 +37,7 @@ fn interrupted_executions(state: &AppState) -> Result<(), String> {
         }
         operation["status"] = json!("interrupted");
         operation["outcomeUnknown"] = json!(true);
+        operation["phase"] = json!("interrupted");
         operation["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
         operation["reason"] = json!("백엔드가 재시작되어 실행이 중단되었습니다.");
         state

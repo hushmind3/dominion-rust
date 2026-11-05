@@ -12,7 +12,7 @@ mod tests;
 mod transport;
 
 pub use protocol::parse_text_tool_calls;
-pub use runtime::{run_room_turn, run_turn, run_turn_background};
+pub use runtime::{run_room_turn, run_turn, run_turn_background, run_turn_resume};
 use serde_json::Value;
 use std::time::Duration;
 pub use transport::run;

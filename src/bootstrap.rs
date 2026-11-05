@@ -59,6 +59,7 @@ async fn serve(mut config: Config, open_browser: bool, parent_bound: bool) -> Re
     let state = AppState::new(config.clone(), store, vault);
     migrations::run(&state)?;
     engine::jobs::recover(&state);
+    engine::wake::recover(&state);
     engine::improve::recover_finalizations(&state);
     engine::jobs::start(state.clone());
     engine::discord::start(state.clone());

@@ -25,11 +25,13 @@ pub mod models;
 pub mod oauth;
 pub mod personas;
 pub mod rooms;
+pub mod run_state;
 pub mod skills;
 pub mod telegram;
 pub mod tools;
 pub mod video;
 pub mod workflows;
+pub mod wake;
 
 use crate::state::AppState;
 use serde_json::Value;
@@ -75,6 +77,21 @@ pub async fn run_quiet_outcome(
     drop(sender);
     let stats = collector.await.unwrap_or_default();
     (result, stats)
+}
+
+/// Background resume that never records a second owner message.
+pub async fn run_quiet_resume(
+    state: &AppState,
+    request: &chat::TurnRequest,
+) -> Result<Option<Value>, String> {
+    let (sender, mut receiver) = mpsc::unbounded_channel::<Value>();
+    let drain = tokio::spawn(async move {
+        while receiver.recv().await.is_some() {}
+    });
+    let result = chat::run_turn_resume(state, request, &sender).await;
+    drop(sender);
+    let _ = drain.await;
+    result
 }
 
 /// Compatibility wrapper; harnesses that need evidence after a model/runtime
