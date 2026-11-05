@@ -382,9 +382,11 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
             "counterexamples": [],
             "createdAt": chrono::Utc::now().to_rfc3339(),
         }));
+        // One root task, not one agent/room speaker, counts as one case.
+        let case_id = execution["taskId"].as_str().unwrap_or(execution_id);
         let mut supports = rule["supportingCases"].as_array().cloned().unwrap_or_default();
-        if !supports.iter().any(|v| v.as_str() == Some(execution_id)) {
-            supports.push(json!(execution_id));
+        if !supports.iter().any(|v| v.as_str() == Some(case_id)) {
+            supports.push(json!(case_id));
             supports.truncate(24);
         }
         rule["supportingCases"] = json!(supports);
@@ -646,7 +648,10 @@ mod tests {
         // The same observed outcome is not counted as independent evidence.
         let again = learn_verified_adaptations(&state, &attempt);
         assert_eq!(again[0]["supportingCases"].as_array().unwrap().len(), 1);
-        state.store.put("session", &json!({"id":"another","agentId":"b"}));
+        state.store.put("session", &json!({
+            "id":"another","agentId":"b",
+            "channelContext":{"transport":"discord","connectionId":"bot","guildId":"g","channelId":"c"}
+        }));
         let foreign = MemoryScope::for_session(&state.store, "another", Some("b"));
         assert!(matching_rules(&state, &foreign, "workspace_read",
             &json!({"path":"second.txt"}), "file not found", 3).is_empty());
