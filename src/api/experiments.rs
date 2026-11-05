@@ -357,6 +357,7 @@ fn trial_success(trial: &Value) -> bool {
 /// Recomputes ITT success numbers from submitted raw trials and rejects a
 /// completion whose claimed verdict/delta/units do not match the evidence.
 pub fn verify_evidence(
+    state: &AppState,
     body: &Value,
     request: &Value,
 ) -> Result<(f64, u64, String, u64, u64), String> {
@@ -446,6 +447,28 @@ pub fn verify_evidence(
         for trial in [baseline, treatment] {
             if trial["errorClass"].as_str() == Some("timeout") {
                 timeouts += 1;
+            }
+            if trial_success(trial) {
+                // A claimed success must point at a real execution whose own
+                // outcome is success. The runner cannot simply assert it.
+                let Some(execution_id) = trial["executionId"].as_str() else {
+                    return Err(format!(
+                        "successful trial for pair {} has no execution evidence",
+                        trial["pair"]
+                    ));
+                };
+                let Some(execution) = state.store.get("execution", execution_id) else {
+                    return Err(format!(
+                        "successful trial references unknown execution {execution_id}"
+                    ));
+                };
+                if execution["taskOutcome"].as_str() != Some("succeeded")
+                    || execution["failureClass"].as_str().is_some_and(|class| !class.is_empty())
+                {
+                    return Err(format!(
+                        "trial claims success but execution {execution_id} did not succeed"
+                    ));
+                }
             }
         }
         let b = if trial_success(baseline) { 1.0 } else { 0.0 };
@@ -547,7 +570,7 @@ pub async fn complete(
     let mut promotion_allowed = verdict != "not_evaluable";
     let mut evidence_summary = Value::Null;
     if promotion_allowed {
-        match verify_evidence(&body, &request) {
+        match verify_evidence(&state, &body, &request) {
             Ok((delta, units, recomputed_verdict, timeouts, planned)) => {
                 body["delta"] = json!(delta);
                 body["independentUnits"] = json!(units);
