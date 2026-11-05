@@ -278,6 +278,48 @@ impl Store {
         .ok()
     }
 
+    /// Atomically creates the root episode when absent, inserts the execution
+    /// and appends the attempt link. A crash cannot leave an execution
+    /// detached from its task, and retrying the same attempt is idempotent.
+    pub fn create_attempt(
+        &self,
+        root: &Value,
+        execution: &Value,
+        attempt: &Value,
+    ) -> Option<Value> {
+        let root_id = root["id"].as_str()?.to_string();
+        let execution_id = execution["id"].as_str()?.to_string();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().ok()?;
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT data FROM records WHERE kind='task_episode' AND id=?1",
+                [&root_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()?;
+        let mut episode = match existing {
+            Some(text) => serde_json::from_str(&text).ok()?,
+            None => {
+                upsert_tx(&tx, "task_episode", root).ok()?;
+                root.clone()
+            }
+        };
+        upsert_tx(&tx, "execution", execution).ok()?;
+        let attempts = episode["attempts"].as_array_mut()?;
+        if !attempts
+            .iter()
+            .any(|item| item["executionId"].as_str() == Some(execution_id.as_str()))
+        {
+            attempts.push(attempt.clone());
+        }
+        upsert_tx(&tx, "task_episode", &episode).ok()?;
+        tx.commit().ok()?;
+        drop(conn);
+        self.get("execution", &execution_id)
+    }
+
     /// Compare-and-patch under the connection lock, used to claim queued work.
     pub fn patch_if(
         &self,
@@ -686,6 +728,66 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("dominion.sqlite")).unwrap();
         (store, dir)
+    }
+
+    #[test]
+    fn attempt_creation_is_atomic_and_idempotent() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let root = json!({
+            "id":"root-1","contract":{"revision":"r1"},
+            "attempts":[],"rootOutcome":"running"
+        });
+        let execution = json!({"id":"exec-1","taskId":"root-1"});
+        let attempt = json!({"executionId":"exec-1","status":"running"});
+        assert_eq!(
+            store.create_attempt(&root, &execution, &attempt).unwrap()["id"],
+            "exec-1"
+        );
+        let episode = store.get("task_episode", "root-1").unwrap();
+        assert_eq!(episode["attempts"].as_array().unwrap().len(), 1);
+        store.create_attempt(&root, &execution, &attempt).unwrap();
+        assert_eq!(
+            store.get("task_episode", "root-1").unwrap()["attempts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "re-linking the same attempt must be idempotent"
+        );
+        store
+            .create_attempt(
+                &root,
+                &json!({"id":"exec-2","taskId":"root-1"}),
+                &json!({"executionId":"exec-2","status":"running"}),
+            )
+            .unwrap();
+        assert_eq!(
+            store.get("task_episode", "root-1").unwrap()["attempts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn attempt_creation_rolls_back_when_the_episode_is_corrupt() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.put(
+            "task_episode",
+            &json!({"id":"root-2","attempts":"broken"}),
+        );
+        assert!(store
+            .create_attempt(
+                &json!({"id":"root-2"}),
+                &json!({"id":"exec-3","taskId":"root-2"}),
+                &json!({"executionId":"exec-3"}),
+            )
+            .is_none());
+        assert!(
+            store.get("execution", "exec-3").is_none(),
+            "a failed attempt link must not leave a detached execution"
+        );
     }
 
     #[test]

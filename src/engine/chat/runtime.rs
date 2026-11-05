@@ -138,183 +138,52 @@ async fn run_turn_with_policy(
             }
         }
     }
+    let root_spec = crate::engine::episode::RootSpec {
+        task_id: &task_id,
+        intent: &request.input,
+        family: "chat",
+        source: "owner",
+        source_message_id: None,
+        scope: json!({"partition": "local", "sessionId": session_id}),
+        mandatory: Vec::new(),
+    };
+    let task_revision = crate::engine::episode::revision_for(&root_spec)
+        .ok_or("작업 계약을 준비할 수 없습니다.")?;
+    let root = crate::engine::episode::root_value(&root_spec)
+        .ok_or("작업 계약을 준비할 수 없습니다.")?;
+    let execution_document = json!({
+        "id": execution_id,
+        "taskId": task_id,
+        "taskRevision": task_revision,
+        "parentTaskId": parent_task_id,
+        "sessionId": session_id,
+        "agentId": request.agent_id,
+        "providerId": request.provider_id,
+        "model": request.model,
+        "reasoningProtocol":provider.reasoning_protocol,
+        "thinkingRequested":request.thinking,"reasoningEffortRequested":request.reasoning_effort,
+        "status": "running",
+        "startedAt": chrono::Utc::now().to_rfc3339(),
+        "iterations": 0,
+        "modelCalls": 0,
+        "toolCalls": 0,
+        "tokens": 0,
+        "request": request.input,
+        "appliedImprovementIds": applied_improvement_ids,
+        "strategyCandidates": strategy_candidates,
+    });
+    let attempt = json!({
+        "executionId": execution_id,
+        "agentId": request.agent_id,
+        "verificationOwner": verification_owner,
+        "status": "running",
+        "startedAt": chrono::Utc::now().to_rfc3339(),
+    });
     let execution = state
         .store
-        .put(
-            "execution",
-            &json!({
-                "id": execution_id,
-                "taskId": task_id,
-                "parentTaskId": parent_task_id,
-                "sessionId": session_id,
-                "agentId": request.agent_id,
-                "providerId": request.provider_id,
-                "model": request.model,
-                "reasoningProtocol":provider.reasoning_protocol,
-                "thinkingRequested":request.thinking,"reasoningEffortRequested":request.reasoning_effort,
-                "status": "running",
-                "startedAt": chrono::Utc::now().to_rfc3339(),
-                "iterations": 0,
-                "modelCalls": 0,
-                "toolCalls": 0,
-                "tokens": 0,
-                "request": request.input,
-                "appliedImprovementIds": applied_improvement_ids,
-                "strategyCandidates": strategy_candidates,
-            }),
-        )
+        .create_attempt(&root, &execution_document, &attempt)
         .ok_or("실행 기록을 저장할 수 없습니다.")?;
     state.bus.record("execution", &execution);
-
-    if state.store.get("task_episode", &task_id).is_none() {
-        crate::engine::episode::start_root(
-            state,
-            crate::engine::episode::RootSpec {
-                task_id: &task_id,
-                intent: &request.input,
-                family: "chat",
-                source: "owner",
-                source_message_id: None,
-                scope: json!({"partition": "local", "sessionId": session_id}),
-                mandatory: Vec::new(),
-            },
-        );
-    }
-    let _ = crate::engine::episode::link_attempt(
-        state,
-        &task_id,
-        &execution_id,
-        request.agent_id.as_deref(),
-        &verification_owner,
-    );
-    {
-        use crate::engine::adaptation::types::{
-            CandidateScore, Decision, SelectionSnapshot, StrategyRevision,
-            TaskContract, revision_hash,
-        };
-        let contract = state
-            .store
-            .get("task_episode", &task_id)
-            .and_then(|episode| serde_json::from_value::<TaskContract>(episode["contract"].clone()).ok())
-            .unwrap_or_else(|| TaskContract {
-                task_id: task_id.clone(),
-                revision: revision_hash(&json!({
-                    "taskId": task_id,
-                    "sessionId": session_id,
-                    "input": request.input,
-                })),
-                source: "owner".into(),
-                scope: json!({"sessionId": session_id}),
-                intent: request.input.clone(),
-                family: "chat".into(),
-                mandatory: Vec::new(),
-                bindings: json!({}),
-                permissions: json!({}),
-                budget: json!({"maxRounds": MAX_ROUNDS, "maxTools": MAX_TOOL_CALLS}),
-            });
-        let strategies = strategy_candidates
-            .iter()
-            .filter_map(|strategy| {
-                let revision = StrategyRevision {
-                    strategy_id: strategy["id"].as_str()?.to_string(),
-                    revision: strategy["revision"].as_str()?.to_string(),
-                    parent: strategy["previousRevision"].as_str().map(str::to_string),
-                    applicability: strategy["verification"]["appliesTo"].clone(),
-                    authority: strategy["authority"]
-                        .as_str()
-                        .unwrap_or("adaptive")
-                        .to_string(),
-                    procedure: Some(strategy["verification"].clone()),
-                    advice: strategy["text"].as_str().map(str::to_string),
-                    checks: Vec::new(),
-                    provenance: Vec::new(),
-                    compatibility: json!({}),
-                    scope: json!({"sessionId": session_id}),
-                };
-                revision.validate().ok()?;
-                Some(revision)
-            })
-            .collect::<Vec<_>>();
-        // The legacy selector is deterministic: it always plays the first
-        // applied improvement. Record that honestly as a one-hot propensity
-        // instead of a uniform 1/N distribution that no policy ever sampled.
-        let candidates = applied_improvement_ids
-            .iter()
-            .enumerate()
-            .map(|(index, id)| CandidateScore {
-                arm_id: id.clone(),
-                mean: 0.5,
-                uncertainty: 0.5,
-                cost: 0.0,
-                risk: 0.0,
-                probability: if index == 0 { 1.0 } else { 0.0 },
-            })
-            .collect::<Vec<_>>();
-        let selected = applied_improvement_ids
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "none".into());
-        let decision = Decision {
-            id: execution_id.clone(),
-            task_id: task_id.clone(),
-            slot: "strategy".into(),
-            context: json!({"sessionId": session_id}),
-            candidates,
-            selected,
-            probability: 1.0,
-            policy_revision: "legacy".into(),
-            rng_seed: 0,
-        };
-        let context_items: Vec<Value> = Vec::new();
-        let memory_watermark = String::new();
-        let snapshot = SelectionSnapshot {
-            contract: contract.clone(),
-            strategies: strategies.clone(),
-            decisions: vec![decision.clone()],
-            context_items: context_items.clone(),
-            memory_watermark: memory_watermark.clone(),
-            snapshot_hash: revision_hash(&json!({
-                "contract": contract,
-                "strategies": strategies,
-                "decisions": [decision.clone()],
-                "contextItems": context_items,
-                "memoryWatermark": memory_watermark,
-                "verificationOwner": verification_owner,
-            })),
-        };
-        // A turn without a persisted selection snapshot cannot be replayed or
-        // audited. Treat storage/validation failure as a failed attempt rather
-        // than silently running with an unrecorded policy decision.
-        if contract.validate().is_err()
-            || decision.validate().is_err()
-            || snapshot.validate().is_err()
-        {
-            return abort_before_run(
-                state,
-                &execution_id,
-                "실행 선택 스냅샷이 계약을 충족하지 못했습니다.",
-            );
-        }
-        let decision_saved = state.store.put(
-            "strategy_decision",
-            &serde_json::to_value(&decision).unwrap_or_else(|_| json!({})),
-        );
-        if decision_saved.is_none() {
-            return abort_before_run(state, &execution_id, "정책 결정을 저장할 수 없습니다.");
-        }
-        let snapshot_saved = state.store.put(
-            "selection_snapshot",
-            &serde_json::to_value(&snapshot).unwrap_or_else(|_| json!({})),
-        );
-        if snapshot_saved.is_none() {
-            return abort_before_run(
-                state,
-                &execution_id,
-                "실행 선택 스냅샷을 저장할 수 없습니다.",
-            );
-        }
-    }
-
     let metrics = std::sync::Mutex::new(Metrics::default());
     let result = tokio::select! {
         result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
@@ -457,25 +326,51 @@ async fn run_turn_body(
     let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"taskId":task_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
 
     let provider = select_provider(state, request, &session)?;
-    let system = super::context::system_prompt_with_snapshot(
+    let prompt_context = super::context::system_prompt_with_manifest(
         state,
         request,
         session_id,
         &request.input,
         Some(&strategy_candidates),
     );
-    let mut messages = vec![json!({ "role": "system", "content": system })];
-    messages.extend(history(state, session_id, request.agent_id.as_deref()));
+    let mut messages = vec![json!({ "role": "system", "content": prompt_context.prompt })];
+    let history_messages = history(state, session_id, request.agent_id.as_deref());
+    let mut context_items = prompt_context.items.clone();
+    context_items.push(json!({
+        "kind": "history",
+        "count": history_messages.len(),
+        "messageIds": history_messages
+            .iter()
+            .filter_map(|message| message["id"].as_str())
+            .collect::<Vec<_>>(),
+        "digest": crate::engine::memory::stable_id(&[
+            &serde_json::to_string(
+                &history_messages
+                    .iter()
+                    .map(|message| json!({
+                        "id": message["id"],
+                        "role": message["role"],
+                        "content": message["content"],
+                        "agentId": message["agent_id"],
+                    }))
+                    .collect::<Vec<_>>()
+            )
+            .unwrap_or_default(),
+        ]),
+    }));
+    messages.extend(history_messages);
     metrics.lock().unwrap().context_elapsed_ms = turn_started.elapsed().as_millis() as u64;
 
     // Action requests get an explicit plan before tools. Conversational turns
     // do not pay for this extra model call.
+    let mut plan_digest: Option<String> = None;
     if acceptance.is_some()
         && request.tools_enabled
         && source_message_id.is_none()
         && needs_plan(&request.input, &acceptance)
     {
         if let Some(plan) = action_plan(state, request, acceptance.as_ref().map(|(text, _)| text.as_str()).unwrap_or("")).await {
+            plan_digest = Some(crate::engine::memory::stable_id(&[&plan]));
             messages.insert(1, json!({"role":"system","content":format!("Internal execution plan. Verify every step with real tools, never claims:\n{plan}")}));
             metrics.lock().unwrap().model_calls += 1;
         }
@@ -503,6 +398,92 @@ async fn run_turn_body(
         }
         tool_definitions.clear();
     }
+
+    let native_tool_names = tool_definitions
+        .iter()
+        .filter_map(|definition| {
+            definition["function"]["name"]
+                .as_str()
+                .or_else(|| definition["name"].as_str())
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    context_items.push(json!({
+        "kind": "tools",
+        "providerToolMode": provider.tool_mode,
+        "nativeDefinitions": native_tool_names,
+        "textManual": provider.tool_mode == "compat"
+            && request.tools_enabled
+            && request.tools_execution_enabled,
+        "digest": crate::engine::memory::stable_id(&[
+            &serde_json::to_string(&native_tool_names).unwrap_or_default(),
+            &provider.tool_mode,
+        ]),
+    }));
+    if let Some(digest) = plan_digest {
+        context_items.push(json!({"kind":"plan","digest":digest}));
+    }
+    let final_system = messages
+        .first()
+        .and_then(|message| message["content"].as_str())
+        .unwrap_or("")
+        .to_string();
+    context_items.push(json!({
+        "kind": "system_prompt_final",
+        "digest": crate::engine::memory::stable_id(&[&final_system]),
+        "chars": final_system.chars().count(),
+    }));
+    let harness_plan = strategy_candidates
+        .iter()
+        .filter(|strategy| {
+            strategy["assistanceMode"].as_str() == Some("harness_assisted")
+                && crate::engine::procedure::applies(strategy, &request.input, None, None)
+        })
+        .map(|strategy| {
+            json!({
+                "strategyId": strategy["id"],
+                "revision": strategy["revision"],
+                "nodes": strategy["verification"]["nodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|node| node["id"].as_str())
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    context_items.push(json!({
+        "kind": "harness_plan",
+        "strategies": harness_plan,
+        "note": "harness output is recorded as execution_operation evidence after this freeze",
+    }));
+    let model_config = json!({
+        "providerId": provider.id,
+        "providerName": provider.name,
+        "model": provider.model,
+        "toolMode": provider.tool_mode,
+        "reasoningProtocol": provider.reasoning_protocol,
+        "thinking": request.thinking,
+        "reasoningEffort": request.reasoning_effort,
+        "reasoningLanguage": request.reasoning_language,
+        "toolsEnabled": request.tools_enabled,
+        "toolsExecutionEnabled": request.tools_execution_enabled,
+        "maxRounds": MAX_ROUNDS,
+        "maxToolCalls": MAX_TOOL_CALLS,
+        "maxTokens": MAX_TOKENS,
+        "maxElapsedMs": MAX_ELAPSED.as_millis() as u64,
+    });
+    record_selection_snapshot(
+        state,
+        execution_id,
+        task_id,
+        session_id,
+        request,
+        &strategy_candidates,
+        context_items,
+        prompt_context.memory_watermark,
+        model_config,
+    )?;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
@@ -1227,6 +1208,7 @@ async fn dispatch_tool_call(
             &arguments,
             execution_id,
             &operation_id,
+            procedure_node,
         )
         .await
     } else {
@@ -1534,21 +1516,27 @@ fn finalization_payload_hash(record: &Value, operations: &[Value]) -> String {
     ])
 }
 
+/// Overall compliance for an attempt. Contract:
+/// 1. any confirmed `violated` wins — never masked by another arm's `followed`
+///    or by an `unknown` sibling;
+/// 2. then `unknown/invalid` (evidence not trustworthy);
+/// 3. then `followed`; 4. `not_triggered`; 5. otherwise `not_applicable`.
 fn compliance_summary(
     entries: &[Value],
 ) -> crate::engine::adaptation::types::Compliance {
     use crate::engine::adaptation::types::Compliance;
     if entries.iter().any(|entry| {
-        matches!(entry["result"]["status"].as_str(), Some("unknown" | "invalid"))
-    }) {
-        return Compliance::Unknown;
-    }
-    if entries.iter().any(|entry| {
         entry["applicable"] == true
             && entry["result"]["triggered"] == true
             && entry["result"]["followed"] != true
+            && !matches!(entry["result"]["status"].as_str(), Some("unknown" | "invalid"))
     }) {
         return Compliance::Violated;
+    }
+    if entries.iter().any(|entry| {
+        matches!(entry["result"]["status"].as_str(), Some("unknown" | "invalid"))
+    }) {
+        return Compliance::Unknown;
     }
     if entries.iter().any(|entry| {
         entry["applicable"] == true
@@ -1561,6 +1549,42 @@ fn compliance_summary(
         return Compliance::NotTriggered;
     }
     Compliance::NotApplicable
+}
+
+/// Lossless per-verdict counts stored next to the single summary so a violated
+/// arm stays visible even when another arm is unknown.
+fn compliance_detail(entries: &[Value]) -> Value {
+    let mut violated = Vec::new();
+    let mut unknown = Vec::new();
+    let mut followed = Vec::new();
+    let mut not_triggered = Vec::new();
+    let mut not_applicable = Vec::new();
+    for entry in entries {
+        let Some(id) = entry["strategyId"].as_str() else {
+            continue;
+        };
+        let status = entry["result"]["status"].as_str();
+        if matches!(status, Some("unknown" | "invalid")) {
+            unknown.push(json!(id));
+        } else if entry["applicable"] != true {
+            not_applicable.push(json!(id));
+        } else if entry["result"]["triggered"] != true {
+            not_triggered.push(json!(id));
+        } else if entry["result"]["followed"] == true {
+            followed.push(json!(id));
+        } else {
+            violated.push(json!(id));
+        }
+    }
+    json!({
+        "summary": compliance_summary(entries),
+        "total": entries.len(),
+        "violated": violated,
+        "unknown": unknown,
+        "followed": followed,
+        "notTriggered": not_triggered,
+        "notApplicable": not_applicable,
+    })
 }
 
 fn standing_violation(execution: &Value) -> bool {
@@ -1661,20 +1685,178 @@ fn record_success_experience(
 
 /// The single terminal judgment for every turn path. `finalize_execution`
 /// remains as the implementation used by existing tests.
-/// Finalizes an attempt that could not start because a required pre-execution
-/// record (selection snapshot) was invalid or could not be persisted.
-fn abort_before_run(
+/// Freezes the exact policy bundle, context manifest, memory watermark and
+/// model settings used by this attempt. Recorded before the first model call
+/// and before any harness node so the attempt cannot drift from its evidence.
+#[allow(clippy::too_many_arguments)]
+fn record_selection_snapshot(
     state: &AppState,
     execution_id: &str,
-    message: &str,
-) -> Result<Option<Value>, String> {
-    finish_attempt(
-        state,
-        execution_id,
-        &Err(message.to_string()),
-        &std::sync::Mutex::new(Metrics::default()),
-    );
-    Err(message.to_string())
+    task_id: &str,
+    session_id: &str,
+    request: &TurnRequest,
+    strategies: &[Value],
+    context_items: Vec<Value>,
+    memory_watermark: String,
+    model: Value,
+) -> Result<(), String> {
+    use crate::engine::adaptation::types::{
+        revision_hash, BundleArm, CandidateScore, Decision, PolicyBundle, SelectionSnapshot,
+        StrategyRevision, TaskContract,
+    };
+    let contract = state
+        .store
+        .get("task_episode", task_id)
+        .and_then(|episode| serde_json::from_value::<TaskContract>(episode["contract"].clone()).ok())
+        .ok_or("실행에 연결된 작업 계약을 찾을 수 없습니다.")?;
+    let strategy_revisions = strategies
+        .iter()
+        .filter_map(|strategy| {
+            let revision = StrategyRevision {
+                strategy_id: strategy["id"].as_str()?.to_string(),
+                revision: strategy["revision"].as_str()?.to_string(),
+                parent: strategy["previousRevision"].as_str().map(str::to_string),
+                applicability: strategy["verification"]["appliesTo"].clone(),
+                authority: strategy["authority"].as_str().unwrap_or("adaptive").to_string(),
+                procedure: Some(strategy["verification"].clone()),
+                advice: strategy["text"].as_str().map(str::to_string),
+                checks: Vec::new(),
+                provenance: Vec::new(),
+                compatibility: json!({}),
+                scope: json!({"sessionId": session_id}),
+            };
+            revision.validate().ok()?;
+            Some(revision)
+        })
+        .collect::<Vec<_>>();
+    let arms = strategies
+        .iter()
+        .filter_map(|strategy| {
+            let kind = strategy["kind"].as_str().unwrap_or("strategy");
+            let id = strategy["id"].as_str()?.to_string();
+            let policy = kind == "strategy"
+                && strategy["assistanceMode"].as_str() == Some("harness_assisted")
+                && crate::engine::procedure::applies(strategy, &request.input, None, None);
+            // Every injected arm must appear, even if a legacy record predates
+            // the revision field. A missing revision is derived, not dropped.
+            let revision = strategy["revision"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    crate::engine::memory::stable_id(&[
+                        &id,
+                        strategy["text"].as_str().unwrap_or(""),
+                    ])
+                });
+            Some(BundleArm {
+                arm_id: id,
+                kind: kind.to_string(),
+                authority: strategy["authority"]
+                    .as_str()
+                    .unwrap_or("adaptive")
+                    .to_string(),
+                revision,
+                role: if policy { "policy" } else { "advice" }.to_string(),
+                probability: 1.0,
+            })
+        })
+        .collect::<Vec<_>>();
+    let bundle_id = format!("bundle:{execution_id}");
+    let bundle = PolicyBundle {
+        id: bundle_id.clone(),
+        task_id: task_id.to_string(),
+        slot: "strategy".into(),
+        policy_revision: "legacy-bundle-v1".into(),
+        selection: "deterministic".into(),
+        arms,
+        probability: 1.0,
+        rng_seed: 0,
+        context: json!({"sessionId": session_id, "armCount": strategies.len()}),
+    };
+    // The deterministic injector always plays the whole bundle, so the played
+    // arm is the bundle itself with propensity 1. Individual arms are listed
+    // inside the bundle and are not misreported as sampled arms.
+    let decision = Decision {
+        id: execution_id.to_string(),
+        task_id: task_id.to_string(),
+        slot: "strategy".into(),
+        context: json!({
+            "sessionId": session_id,
+            "bundleId": bundle_id,
+            "selection": "deterministic",
+            "appliedArmIds": bundle.arms.iter().map(|arm| arm.arm_id.clone()).collect::<Vec<_>>(),
+        }),
+        candidates: vec![CandidateScore {
+            arm_id: bundle_id.clone(),
+            mean: 0.5,
+            uncertainty: 0.5,
+            cost: 0.0,
+            risk: 0.0,
+            probability: 1.0,
+        }],
+        selected: bundle_id,
+        probability: 1.0,
+        policy_revision: "legacy-bundle-v1".into(),
+        rng_seed: 0,
+    };
+    let completeness = json!({
+        "context": "recorded",
+        "memory": "recorded",
+        "model": "recorded",
+        "harnessOutput": "recorded as execution_operation evidence after this freeze",
+        "providerTemplate": "unavailable: the provider may apply its own chat template outside the engine",
+        "reproducible": true,
+    });
+    let snapshot_hash = revision_hash(&json!({
+        "schemaVersion": 2,
+        "contract": contract,
+        "strategies": strategy_revisions,
+        "decisions": [decision.clone()],
+        "contextItems": context_items,
+        "memoryWatermark": memory_watermark,
+        "model": model,
+        "completeness": completeness,
+        "verificationOwner": request.verification_owner,
+    }));
+    let snapshot = SelectionSnapshot {
+        contract: contract.clone(),
+        strategies: strategy_revisions,
+        decisions: vec![decision.clone()],
+        context_items,
+        memory_watermark,
+        model,
+        policy_bundle: Some(bundle),
+        completeness,
+        snapshot_hash,
+    };
+    if contract.validate().is_err() || decision.validate().is_err() || snapshot.validate().is_err() {
+        return Err("실행 선택 스냅샷이 계약을 충족하지 못했습니다.".into());
+    }
+    if !snapshot.is_reproducible() {
+        return Err("실행 선택 스냅샷의 재현 정보가 불완전합니다.".into());
+    }
+    if state
+        .store
+        .put(
+            "strategy_decision",
+            &serde_json::to_value(&decision).unwrap_or_else(|_| json!({})),
+        )
+        .is_none()
+    {
+        return Err("정책 결정을 저장할 수 없습니다.".into());
+    }
+    if state
+        .store
+        .put(
+            "selection_snapshot",
+            &serde_json::to_value(&snapshot).unwrap_or_else(|_| json!({})),
+        )
+        .is_none()
+    {
+        return Err("실행 선택 스냅샷을 저장할 수 없습니다.".into());
+    }
+    Ok(())
 }
 
 pub(super) fn finish_attempt(
@@ -1765,6 +1947,7 @@ pub(super) fn finalize_execution(
         })
         .collect::<Vec<_>>();
     record["strategyCompliance"] = json!(compliance);
+    record["complianceSummary"] = compliance_detail(&compliance);
     let task_outcome = determine_task_outcome(&record);
     record["taskOutcome"] =
         serde_json::to_value(task_outcome).unwrap_or_else(|_| json!("unknown"));
@@ -2035,6 +2218,104 @@ mod outcome_tests {
     }
 
     #[test]
+    fn snapshot_records_the_whole_applied_bundle_and_real_context() {
+        let (state, dir) = state();
+        let task_id = "task-snapshot";
+        crate::engine::episode::start_root(
+            &state,
+            crate::engine::episode::RootSpec {
+                task_id,
+                intent: "bench 작업",
+                family: "chat",
+                source: "owner",
+                source_message_id: None,
+                scope: json!({"partition":"local","sessionId":"session-1"}),
+                mandatory: Vec::new(),
+            },
+        );
+        let request = TurnRequest {
+            session_id: Some("session-1".into()),
+            input: "bench 작업".into(),
+            attachment_ids: Vec::new(),
+            agent_id: None,
+            provider_id: Some("p".into()),
+            model: Some("m".into()),
+            tools_enabled: true,
+            tools_execution_enabled: true,
+            thinking: None,
+            reasoning_effort: None,
+            reasoning_language: None,
+            auto_learning: false,
+            system_override: None,
+            task_id: None,
+            parent_task_id: None,
+            task_revision: None,
+            verification_owner: None,
+        };
+        let strategies = vec![
+            json!({
+                "id":"s1","revision":"r1","kind":"strategy","authority":"adaptive",
+                "text":"first","assistanceMode":"harness_assisted",
+                "verification":{"type":"procedure","appliesTo":{"requestContains":["bench"]}}
+            }),
+            json!({
+                "id":"s2","revision":"r2","kind":"strategy","authority":"adaptive",
+                "text":"second","assistanceMode":"model_guided",
+                "verification":{"type":"none","appliesTo":{}}
+            }),
+            // Legacy record without a revision must still be recorded as an
+            // applied arm instead of silently disappearing from the bundle.
+            json!({"id":"s3","kind":"tool_policy","authority":"adaptive","text":"legacy"}),
+        ];
+        let context_items = vec![
+            json!({"kind":"system_prompt","digest":"d1"}),
+            json!({"kind":"history","count":0}),
+        ];
+        record_selection_snapshot(
+            &state,
+            "exec-1",
+            task_id,
+            "session-1",
+            &request,
+            &strategies,
+            context_items,
+            "watermark-1".into(),
+            json!({"providerId":"p","model":"m","toolMode":"native"}),
+        )
+        .unwrap();
+
+        let snapshots = state.store.all("selection_snapshot");
+        assert_eq!(snapshots.len(), 1);
+        let snapshot = &snapshots[0];
+        let arms = snapshot["policyBundle"]["arms"].as_array().unwrap();
+        assert_eq!(arms.len(), 3, "every applied arm must be recorded");
+        assert_eq!(arms[0]["armId"], "s1");
+        assert_eq!(arms[1]["armId"], "s2");
+        assert_eq!(arms[2]["armId"], "s3");
+        assert!(!arms[2]["revision"].as_str().unwrap_or("").is_empty());
+        assert_eq!(arms[0]["role"], "policy");
+        assert_eq!(arms[1]["role"], "advice");
+        assert_eq!(snapshot["policyBundle"]["selection"], "deterministic");
+        assert_eq!(snapshot["policyBundle"]["probability"], 1.0);
+        assert_eq!(snapshot["decisions"][0]["selected"], "bundle:exec-1");
+        assert_eq!(
+            snapshot["decisions"][0]["context"]["appliedArmIds"],
+            json!(["s1", "s2", "s3"])
+        );
+        assert_eq!(snapshot["memoryWatermark"], "watermark-1");
+        assert_eq!(snapshot["contextItems"].as_array().unwrap().len(), 2);
+        assert_eq!(snapshot["completeness"]["reproducible"], true);
+        assert_eq!(snapshot["model"]["model"], "m");
+        assert!(!snapshot["snapshotHash"].as_str().unwrap_or("").is_empty());
+
+        let decisions = state.store.all("strategy_decision");
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0]["selected"], "bundle:exec-1");
+        assert_eq!(decisions[0]["candidates"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn compliance_summary_prefers_violation_over_followed() {
         use crate::engine::adaptation::types::Compliance;
         let mixed = vec![
@@ -2048,10 +2329,29 @@ mod outcome_tests {
             }),
         ];
         assert_eq!(compliance_summary(&mixed), Compliance::Violated);
+        assert_eq!(compliance_summary(&mixed[..1]), Compliance::Followed);
+
+        let violated_and_unknown = vec![
+            json!({
+                "strategyId":"a","applicable":true,
+                "result":{"verified":true,"triggered":true,"followed":false}
+            }),
+            json!({
+                "strategyId":"b","applicable":true,
+                "result":{"verified":false,"triggered":true,"status":"unknown"}
+            }),
+        ];
         assert_eq!(
-            compliance_summary(&mixed[..1]),
-            Compliance::Followed
+            compliance_summary(&violated_and_unknown),
+            Compliance::Violated,
+            "unknown must not mask a confirmed violation"
         );
+        let detail = compliance_detail(&violated_and_unknown);
+        assert_eq!(detail["summary"], "violated");
+        assert_eq!(detail["violated"], json!(["a"]));
+        assert_eq!(detail["unknown"], json!(["b"]));
+        assert_eq!(detail["total"], 2);
+
         assert_eq!(
             compliance_summary(&[json!({
                 "strategyId":"c","applicable":true,

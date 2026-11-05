@@ -227,11 +227,39 @@ pub fn retrieve(state: &AppState, scope: &MemoryScope, query: &str, limit: usize
     selected
 }
 
+#[allow(dead_code)] // compatibility wrapper; snapshots use the manifest form
 pub fn context_block(state: &AppState, scope: &MemoryScope, query: &str) -> Option<String> {
+    context_block_with_manifest(state, scope, query).0
+}
+
+/// Same retrieval as `context_block`, plus the exact cases delivered to the
+/// model so the selection snapshot can freeze their ids and revisions.
+pub fn context_block_with_manifest(
+    state: &AppState,
+    scope: &MemoryScope,
+    query: &str,
+) -> (Option<String>, Vec<Value>) {
     let cases = retrieve(state, scope, query, 5);
     if cases.is_empty() {
-        return None;
+        return (None, Vec::new());
     }
+    let manifest = cases
+        .iter()
+        .map(|case| {
+            let id = case["id"].as_str().unwrap_or("");
+            json!({
+                "kind": "experience",
+                "id": id,
+                "outcome": case["outcome"],
+                "revision": memory::stable_id(&[
+                    id,
+                    case["signature"].as_str().unwrap_or(""),
+                    case["lesson"].as_str().unwrap_or(""),
+                    case["lastUsedAt"].as_str().unwrap_or(""),
+                ]),
+            })
+        })
+        .collect::<Vec<_>>();
     let mut block = String::from("Similar past task cases (failure cases are warnings):");
     for case in cases {
         let outcome = case["outcome"].as_str().unwrap_or("");
@@ -244,7 +272,7 @@ pub fn context_block(state: &AppState, scope: &MemoryScope, query: &str) -> Opti
             block.push_str(&avoid);
         }
     }
-    Some(block)
+    (Some(block), manifest)
 }
 
 /// Merges duplicates and archives the least useful cases. Called by the

@@ -46,11 +46,18 @@ pub fn start_root(state: &AppState, spec: RootSpec<'_>) -> Option<Value> {
     if let Some(existing) = state.store.get("task_episode", spec.task_id) {
         return Some(existing);
     }
-    let contract = contract(&spec);
+    let root = root_value(&spec)?;
+    state.store.put("task_episode", &root)
+}
+
+/// The root record that would be created for this spec. Used to write the
+/// episode and its first attempt in one transaction.
+pub fn root_value(spec: &RootSpec<'_>) -> Option<Value> {
+    let contract = contract(spec);
     if contract.validate().is_err() {
         return None;
     }
-    let episode = json!({
+    Some(json!({
         "id": spec.task_id,
         "contract": contract,
         "sourceMessageId": spec.source_message_id,
@@ -58,8 +65,13 @@ pub fn start_root(state: &AppState, spec: RootSpec<'_>) -> Option<Value> {
         "attempts": [],
         "rootOutcome": "running",
         "createdAt": chrono::Utc::now().to_rfc3339(),
-    });
-    state.store.put("task_episode", &episode)
+    }))
+}
+
+pub fn revision_for(spec: &RootSpec<'_>) -> Option<String> {
+    let contract = contract(spec);
+    contract.validate().ok()?;
+    Some(contract.revision)
 }
 
 /// Attaches the persisted owner message to a root that was created before the
@@ -80,7 +92,9 @@ pub fn attach_source(
 }
 
 /// Links one runtime execution to the root task. Re-linking the same attempt
-/// is idempotent.
+/// is idempotent. Runtime creation uses `Store::create_attempt` so the episode,
+/// execution and link commit atomically; this remains for other callers.
+#[allow(dead_code)]
 pub fn link_attempt(
     state: &AppState,
     task_id: &str,

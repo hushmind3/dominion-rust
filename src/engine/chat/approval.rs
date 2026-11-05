@@ -54,23 +54,51 @@ pub(super) fn args_digest(tool: &str, args: &Value) -> String {
     crate::engine::memory::stable_id(&[tool, &canonical_json(args)])
 }
 
+/// Durable lineage that makes an orphaned approval resumable. A retry may only
+/// consume the decision when it is provably the same Task revision and the same
+/// logical operation from the run that died. Same session/tool/args is not
+/// enough: another task in the same session could intentionally repeat them.
+pub(super) struct ApprovalLineage<'a> {
+    pub session_id: &'a str,
+    pub task_id: &'a str,
+    pub task_revision: &'a str,
+    pub operation_key: &'a str,
+    pub tool: &'a str,
+    pub args_digest: &'a str,
+}
+
 /// Finds an approved decision that lost its live waiter (engine restart) and
 /// was never consumed. Denials are deliberately not reused: a retry must ask
 /// the owner again rather than inherit a stale "no".
 pub(super) fn reusable_decision<'a>(
-    records: &'a [Value],
-    session_id: &str,
-    tool: &str,
-    digest: &str,
+    approvals: &'a [Value],
+    executions: &[Value],
+    lineage: &ApprovalLineage<'_>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<&'a Value> {
-    records.iter().find(|record| {
-        record["sessionId"].as_str() == Some(session_id)
-            && record["tool"].as_str() == Some(tool)
-            && record["argsDigest"].as_str() == Some(digest)
+    if lineage.task_id.is_empty()
+        || lineage.task_revision.is_empty()
+        || lineage.operation_key.is_empty()
+    {
+        return None;
+    }
+    approvals.iter().find(|record| {
+        let original_run = record["runId"].as_str().unwrap_or("");
+        let original_is_dead = executions.iter().any(|execution| {
+            execution["id"].as_str() == Some(original_run)
+                && execution["taskId"].as_str() == Some(lineage.task_id)
+                && execution["status"].as_str() == Some("interrupted")
+        });
+        record["sessionId"].as_str() == Some(lineage.session_id)
+            && record["taskId"].as_str() == Some(lineage.task_id)
+            && record["taskRevision"].as_str() == Some(lineage.task_revision)
+            && record["operationKey"].as_str() == Some(lineage.operation_key)
+            && record["tool"].as_str() == Some(lineage.tool)
+            && record["argsDigest"].as_str() == Some(lineage.args_digest)
             && record["status"].as_str() == Some("approved")
             && record["orphaned"] == true
             && record["consumed"] != true
+            && original_is_dead
             && record["decidedAt"]
                 .as_str()
                 .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
@@ -131,6 +159,7 @@ pub(super) async fn request_approval(
     args: &Value,
     execution_id: &str,
     operation_id: &str,
+    procedure_node: Option<&str>,
 ) -> bool {
     let policy = state
         .store
@@ -150,12 +179,27 @@ pub(super) async fn request_approval(
     }
 
     let digest = args_digest(tool, args);
+    let execution = state.store.get("execution", execution_id).unwrap_or(Value::Null);
+    let task_id = execution["taskId"].as_str().unwrap_or("").to_string();
+    let task_revision = execution["taskRevision"].as_str().unwrap_or("").to_string();
+    let operation_key = match procedure_node {
+        Some(node) if !node.is_empty() => format!("procedure:{node}"),
+        _ => format!("tool:{digest}"),
+    };
+    let lineage = ApprovalLineage {
+        session_id,
+        task_id: &task_id,
+        task_revision: &task_revision,
+        operation_key: &operation_key,
+        tool,
+        args_digest: &digest,
+    };
     let existing = state.store.all("approval");
+    let executions = state.store.all("execution");
     if let Some(decision) = reusable_decision(
         &existing,
-        session_id,
-        tool,
-        &digest,
+        &executions,
+        &lineage,
         chrono::Utc::now(),
     ) {
         if let Some(id) = decision["id"].as_str() {
@@ -165,6 +209,7 @@ pub(super) async fn request_approval(
                     "id": id,
                     "tool": tool,
                     "decision": "allow",
+                    "taskId": task_id,
                 }));
                 return true;
             }
@@ -180,6 +225,9 @@ pub(super) async fn request_approval(
             "sessionId": session_id,
             "runId": execution_id,
             "operationId": operation_id,
+            "operationKey": operation_key,
+            "taskId": task_id,
+            "taskRevision": task_revision,
             "tool": tool,
             "args": args,
             "argsDigest": digest,
@@ -241,12 +289,16 @@ mod tests {
     use super::*;
     use crate::vault::Vault;
 
-    fn record(id: &str, status: &str, orphaned: bool, digest: &str, decided: &str) -> Value {
+    fn record(id: &str, status: &str, orphaned: bool, decided: &str) -> Value {
         json!({
             "id": id,
             "sessionId": "s1",
+            "taskId": "task-1",
+            "taskRevision": "rev-1",
+            "runId": "run-old",
+            "operationKey": "tool:digest-1",
             "tool": "workspace_write",
-            "argsDigest": digest,
+            "argsDigest": "digest-1",
             "status": status,
             "orphaned": orphaned,
             "decidedAt": decided,
@@ -263,31 +315,90 @@ mod tests {
         );
         assert_ne!(
             args_digest("workspace_write", &first),
-            args_digest("workspace_write", &json!({"b": 3, "a": [1, {"d": 4, "c": 3}]}))
+            args_digest(
+                "workspace_write",
+                &json!({"b": 3, "a": [1, {"d": 4, "c": 3}]})
+            )
         );
     }
 
     #[test]
-    fn only_live_orphaned_approvals_are_reusable() {
+    fn reuse_requires_task_revision_operation_and_dead_run() {
         let now = chrono::DateTime::parse_from_rfc3339("2026-11-05T10:10:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
         let stale = "2026-11-05T09:00:00Z";
         let fresh = "2026-11-05T10:05:00Z";
-        let records = vec![
-            record("denied", "denied", true, "d1", fresh),
-            record("live", "approved", false, "d2", fresh),
-            record("stale", "approved", true, "d3", stale),
-            record("ok", "approved", true, "d4", fresh),
+        let executions = vec![
+            json!({"id":"run-old","taskId":"task-1","status":"interrupted"}),
+            json!({"id":"run-live","taskId":"task-1","status":"running"}),
         ];
-        assert!(reusable_decision(&records, "s1", "workspace_write", "d1", now).is_none());
-        assert!(reusable_decision(&records, "s1", "workspace_write", "d2", now).is_none());
-        assert!(reusable_decision(&records, "s1", "workspace_write", "d3", now).is_none());
-        assert_eq!(
-            reusable_decision(&records, "s1", "workspace_write", "d4", now)
-                .map(|record| record["id"].as_str().unwrap_or("")),
-            Some("ok")
-        );
+        let lineage = ApprovalLineage {
+            session_id: "s1",
+            task_id: "task-1",
+            task_revision: "rev-1",
+            operation_key: "tool:digest-1",
+            tool: "workspace_write",
+            args_digest: "digest-1",
+        };
+        let approvals = vec![
+            record("denied", "denied", true, fresh),
+            record("live", "approved", false, fresh),
+            record("stale", "approved", true, stale),
+            record("ok", "approved", true, fresh),
+            json!({
+                "id":"other-task","sessionId":"s1","taskId":"task-2","taskRevision":"rev-1",
+                "runId":"run-old","operationKey":"tool:digest-1","tool":"workspace_write",
+                "argsDigest":"digest-1","status":"approved","orphaned":true,"decidedAt":fresh
+            }),
+            json!({
+                "id":"other-revision","sessionId":"s1","taskId":"task-1","taskRevision":"rev-2",
+                "runId":"run-old","operationKey":"tool:digest-1","tool":"workspace_write",
+                "argsDigest":"digest-1","status":"approved","orphaned":true,"decidedAt":fresh
+            }),
+            json!({
+                "id":"other-node","sessionId":"s1","taskId":"task-1","taskRevision":"rev-1",
+                "runId":"run-old","operationKey":"procedure:audit","tool":"workspace_write",
+                "argsDigest":"digest-1","status":"approved","orphaned":true,"decidedAt":fresh
+            }),
+        ];
+        let find = |items: &[Value]| {
+            reusable_decision(items, &executions, &lineage, now)
+                .and_then(|record| record["id"].as_str())
+                .map(str::to_string)
+        };
+        assert_eq!(find(&approvals), Some("ok".to_string()));
+        for bad in [
+            "denied",
+            "live",
+            "stale",
+            "other-task",
+            "other-revision",
+            "other-node",
+        ] {
+            let single = approvals
+                .iter()
+                .filter(|record| record["id"] == bad)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(single.len(), 1, "{bad} fixture missing");
+            assert!(find(&single).is_none(), "{bad} must not be reused");
+        }
+
+        // Same task/operation but the original run is still alive: never reuse.
+        let live_executions = vec![json!({"id":"run-old","taskId":"task-1","status":"running"})];
+        assert!(reusable_decision(&approvals[3..4], &live_executions, &lineage, now).is_none());
+
+        // Missing lineage (legacy record) must never fall back to session+args.
+        let legacy = ApprovalLineage {
+            session_id: "s1",
+            task_id: "",
+            task_revision: "",
+            operation_key: "",
+            tool: "workspace_write",
+            args_digest: "digest-1",
+        };
+        assert!(reusable_decision(&approvals[3..4], &executions, &legacy, now).is_none());
     }
 
     #[test]

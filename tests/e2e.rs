@@ -498,9 +498,8 @@ fn approval_is_operation_bound_and_survives_restart() {
     let (port, _) = scripted_provider(|request| {
         let finished = request["messages"]
             .as_array()
-            .unwrap()
-            .iter()
-            .any(|message| message["role"] == "tool");
+            .and_then(|messages| messages.last())
+            .is_some_and(|message| message["role"] == "tool");
         if finished {
             vec![
                 json!({"choices":[{"delta":{"content":"저장했습니다."},"finish_reason":"stop"}]}),
@@ -534,6 +533,15 @@ fn approval_is_operation_bound_and_survives_restart() {
         "tool ran before approval"
     );
     let session_id = pending["sessionId"].as_str().unwrap().to_string();
+    let task_id = pending["taskId"].as_str().unwrap().to_string();
+    let task_revision = pending["taskRevision"].as_str().unwrap().to_string();
+    assert!(!task_id.is_empty());
+    assert!(
+        pending["operationKey"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("tool:")),
+        "approval must bind the logical operation"
+    );
     drop(app);
     let _ = handle.join();
 
@@ -547,10 +555,53 @@ fn approval_is_operation_bound_and_survives_restart() {
     assert_eq!(resolved["resumed"], false, "{resolved}");
     assert!(!root.join("durable.txt").exists());
 
-    // A retry in the same session with identical arguments consumes the
-    // orphaned approval exactly once.
+    // Counterexample: the same session/tool/arguments in a *different* task
+    // must not inherit this approval.
+    let other = app.chat_async(&json!({
+        "sessionId":session_id,
+        "input":"durable.txt 파일을 만들어줘",
+        "toolsEnabled":true,
+        "autoLearning":false
+    }));
+    let other_pending = app.wait_pending_approval(10);
+    assert_ne!(
+        other_pending["id"].as_str().unwrap_or(""),
+        id,
+        "a different task reused an unrelated approval"
+    );
+    app.post(
+        "/api/approvals",
+        &json!({"id":other_pending["id"],"allow":false}),
+    );
+    // The scripted model retries after a denial; deny those retries too so the
+    // unfinished task cannot silently reuse the original approval.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && !other.is_finished() {
+        if let Some(pending) = app
+            .get("/api/approvals")
+            .as_array()
+            .and_then(|items| items.first())
+        {
+            app.post(
+                "/api/approvals",
+                &json!({"id":pending["id"],"allow":false}),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = other.join();
+    assert!(!root.join("durable.txt").exists());
+    assert!(
+        app.get("/api/approvals").as_array().unwrap().is_empty(),
+        "the unrelated task left an unresolved approval"
+    );
+
+    // A retry that explicitly resumes the original task/revision/operation
+    // consumes the orphaned approval exactly once.
     let stream = app.chat(&json!({
         "sessionId":session_id,
+        "taskId":task_id,
+        "taskRevision":task_revision,
         "input":"durable.txt 파일을 만들어줘",
         "toolsEnabled":true,
         "autoLearning":false

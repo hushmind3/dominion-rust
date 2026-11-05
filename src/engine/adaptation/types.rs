@@ -181,6 +181,69 @@ pub struct Observation {
     pub labels: LabelProvenance,
 }
 
+/// One strategy arm that was actually placed in the prompt for this attempt.
+/// `probability` is the policy's selection probability for this arm *within
+/// the recorded bundle*, not a claim that the arm was sampled by itself.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BundleArm {
+    pub arm_id: String,
+    /// `strategy` or `tool_policy`.
+    pub kind: String,
+    pub authority: String,
+    pub revision: String,
+    /// `policy` when the arm changes execution, `advice` when it is contextual.
+    pub role: String,
+    pub probability: f64,
+}
+
+/// The exact policy bundle applied to one attempt. Deterministic injection of
+/// several adopted strategies is recorded as one bundle instead of pretending
+/// that a single arm was sampled with probability 1.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PolicyBundle {
+    pub id: String,
+    pub task_id: String,
+    pub slot: String,
+    pub policy_revision: String,
+    /// `deterministic` or `probabilistic`.
+    pub selection: String,
+    pub arms: Vec<BundleArm>,
+    pub probability: f64,
+    pub rng_seed: u64,
+    #[serde(default)]
+    pub context: Value,
+}
+
+impl PolicyBundle {
+    pub fn validate(&self) -> Result<(), String> {
+        non_empty(&self.id, "bundle.id")?;
+        non_empty(&self.task_id, "bundle.taskId")?;
+        non_empty(&self.policy_revision, "bundle.policyRevision")?;
+        if !matches!(self.selection.as_str(), "deterministic" | "probabilistic") {
+            return Err("bundle.selection must be deterministic or probabilistic".into());
+        }
+        if self.arms.len() > 16 {
+            return Err("bundle arms exceed 16".into());
+        }
+        if !(0.0..=1.0).contains(&self.probability) {
+            return Err("bundle.probability must be in [0,1]".into());
+        }
+        for arm in &self.arms {
+            non_empty(&arm.arm_id, "bundle.arm.armId")?;
+            non_empty(&arm.revision, "bundle.arm.revision")?;
+            if !(0.0..=1.0).contains(&arm.probability) {
+                return Err("bundle arm probability must be in [0,1]".into());
+            }
+        }
+        if self.selection == "deterministic" && self.probability != 1.0 {
+            return Err("a deterministic bundle must have probability 1".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelectionSnapshot {
@@ -193,7 +256,33 @@ pub struct SelectionSnapshot {
     pub context_items: Vec<Value>,
     #[serde(default)]
     pub memory_watermark: String,
+    /// Provider/model/runtime settings frozen for this attempt.
+    #[serde(default)]
+    pub model: Value,
+    /// The bundle actually applied to this attempt.
+    #[serde(default)]
+    pub policy_bundle: Option<PolicyBundle>,
+    /// Per-dimension capture status plus `reproducible`. Empty strings are
+    /// never silently treated as complete evidence.
+    #[serde(default)]
+    pub completeness: Value,
     pub snapshot_hash: String,
+}
+
+impl SelectionSnapshot {
+    /// A snapshot is reproducible only when every dimension was captured at
+    /// execution time. Unimplemented dimensions must be reported, not hidden.
+    pub fn is_reproducible(&self) -> bool {
+        let captured = |key: &str| {
+            self.completeness[key]
+                .as_str()
+                .is_some_and(|status| status.starts_with("recorded"))
+        };
+        captured("context")
+            && captured("memory")
+            && captured("model")
+            && self.completeness["reproducible"].as_bool() == Some(true)
+    }
 }
 
 fn non_empty(value: &str, field: &str) -> Result<(), String> {
@@ -287,6 +376,25 @@ impl SelectionSnapshot {
         }
         for decision in &self.decisions {
             decision.validate()?;
+        }
+        if !self.model.is_object() {
+            return Err("selection snapshot model must be recorded".into());
+        }
+        if let Some(bundle) = &self.policy_bundle {
+            bundle.validate()?;
+        }
+        if !self.completeness.is_object() {
+            return Err("selection snapshot completeness must be recorded".into());
+        }
+        if self.completeness["reproducible"].as_bool() == Some(true)
+            && self.context_items.is_empty()
+        {
+            return Err("a reproducible snapshot must list its context items".into());
+        }
+        for item in &self.context_items {
+            if item["kind"].as_str().is_none_or(str::is_empty) {
+                return Err("context items need a kind".into());
+            }
         }
         Ok(())
     }

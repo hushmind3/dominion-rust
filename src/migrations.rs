@@ -7,7 +7,41 @@ pub fn run(state: &AppState) -> Result<(), String> {
     provider_secrets(state)?;
     collection_names(state)?;
     legacy_improvements(state)?;
+    interrupted_executions(state)?;
     interrupted_approvals(state)
+}
+
+/// A process that lost its listener cannot still be running work. Marking the
+/// dead attempt terminal is what lets a later retry prove it is resuming an
+/// interrupted run instead of racing a live one.
+fn interrupted_executions(state: &AppState) -> Result<(), String> {
+    for mut execution in state.store.try_all("execution")? {
+        if execution["status"].as_str() != Some("running") {
+            continue;
+        }
+        execution["status"] = json!("interrupted");
+        execution["taskOutcome"] = json!("cancelled");
+        execution["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        execution["reason"] = json!("백엔드가 재시작되어 실행이 중단되었습니다.");
+        state
+            .store
+            .put("execution", &execution)
+            .ok_or("Cannot recover an interrupted execution")?;
+    }
+    for mut operation in state.store.try_all("execution_operation")? {
+        if operation["status"].as_str() != Some("running") {
+            continue;
+        }
+        operation["status"] = json!("interrupted");
+        operation["outcomeUnknown"] = json!(true);
+        operation["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        operation["reason"] = json!("백엔드가 재시작되어 실행이 중단되었습니다.");
+        state
+            .store
+            .put("execution_operation", &operation)
+            .ok_or("Cannot recover an interrupted operation")?;
+    }
+    Ok(())
 }
 
 /// Preserve old counters for display, but keep them out of the new score.

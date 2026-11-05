@@ -54,9 +54,10 @@ async fn try_complete(
             { "role": "user", "content": prompt }
         ]
     });
-    if local {
+    if disable_thinking_for(&provider, local) {
         // Qwen3 and similar local thinking models otherwise spend the whole
-        // output budget on reasoning and return empty JSON.
+        // output budget on reasoning and return empty JSON. An explicit
+        // capability profile wins over the local/remote heuristic.
         body["think"] = json!(false);
         body["chat_template_kwargs"] = json!({"enable_thinking": false});
     }
@@ -147,6 +148,37 @@ pub fn learning_route(state: &AppState) -> Option<(String, String)> {
         })
 }
 
+/// Providers can declare a capability profile. An explicit `text=false`
+/// disqualifies a provider for text completions; missing profile means unknown,
+/// not unqualified.
+fn provider_eligible(provider: &Value) -> bool {
+    if provider["enabled"].as_bool() == Some(false) {
+        return false;
+    }
+    provider["capabilities"]["text"].as_bool() != Some(false)
+}
+
+fn capability_score(provider: &Value) -> f64 {
+    let capabilities = &provider["capabilities"];
+    // A declared profile always outranks a name heuristic (scores 1..2).
+    if let Some(quality) = capabilities["quality"].as_f64() {
+        return 1.0 + quality.clamp(0.0, 1.0);
+    }
+    if let Some(rank) = capabilities["reasoning"].as_f64() {
+        return 1.0 + rank.clamp(0.0, 1.0);
+    }
+    let rank = model_rank(provider["model"].as_str().unwrap_or(""));
+    1.0 - 1.0 / (1.0 + rank)
+}
+
+/// Capability profile first, legacy local heuristic second.
+fn disable_thinking_for(provider: &Value, local: bool) -> bool {
+    match provider["capabilities"]["thinking"].as_bool() {
+        Some(supported) => !supported,
+        None => local,
+    }
+}
+
 fn model_rank(model: &str) -> f64 {
     model
         .split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
@@ -166,7 +198,7 @@ pub async fn complete_with_fallback(
 ) -> Result<(String, String, String), String> {
     let mut candidates = Vec::new();
     for provider in state.store.all("provider") {
-        if provider["enabled"].as_bool() == Some(false) {
+        if !provider_eligible(&provider) {
             continue;
         }
         let id = provider["id"].as_str().unwrap_or("").to_string();
@@ -179,13 +211,19 @@ pub async fn complete_with_fallback(
             || base.contains("127.0.0.1")
             || base.contains("localhost");
         let learning = provider["learning"].as_bool() == Some(true);
-        let rank = model_rank(&candidate_model);
+        // Declared capability quality wins; the model-name digit heuristic is
+        // only a fallback for providers without a profile.
+        let rank = capability_score(&provider);
         candidates.push((id, candidate_model, local, rank, learning));
     }
     candidates.sort_by(|a, b| {
         b.4.cmp(&a.4)
+            .then_with(|| {
+                b.3.partial_cmp(&a.3)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| b.2.cmp(&a.2))
-            .then_with(|| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.0.cmp(&b.0))
     });
 
     let mut last_error = String::new();
@@ -203,4 +241,38 @@ pub async fn complete_with_fallback(
         }
     }
     Err(last_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capability_profile_wins_over_model_name_digits() {
+        let declared = json!({"model":"small-local","capabilities":{"quality":0.9}});
+        let legacy = json!({"model":"gpt-4o-2024"});
+        assert!(capability_score(&declared) > capability_score(&legacy));
+        let fallback = capability_score(&json!({"model":"gpt-4o-2024"}));
+        assert!(fallback > 0.0 && fallback < 1.0);
+    }
+
+    #[test]
+    fn a_provider_may_declare_no_text_support() {
+        assert!(provider_eligible(&json!({"enabled":true})));
+        assert!(!provider_eligible(&json!({"enabled":false})));
+        assert!(!provider_eligible(
+            &json!({"enabled":true,"capabilities":{"text":false}})
+        ));
+    }
+
+    #[test]
+    fn thinking_follows_the_declared_capability() {
+        let capable = json!({"capabilities":{"thinking":true}});
+        assert!(!disable_thinking_for(&capable, true));
+        let incapable = json!({"capabilities":{"thinking":false}});
+        assert!(disable_thinking_for(&incapable, false));
+        // No profile: keep the legacy local safety default only.
+        assert!(disable_thinking_for(&json!({}), true));
+        assert!(!disable_thinking_for(&json!({}), false));
+    }
 }

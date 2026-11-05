@@ -133,7 +133,7 @@ pub fn recover(state: &AppState) {
             .unwrap_or(0);
         let mut updated = job.clone();
         updated["recovered"] = json!(true);
-        let uncertain = [
+        let flagged = [
             "/inFlight",
             "/promptState/inFlight",
             "/goalState/inFlight",
@@ -148,6 +148,21 @@ pub fn recover(state: &AppState) {
             job.pointer(path)
                 .is_some_and(|value| !value.is_null() && value != &json!(false))
         });
+        // A tool may have reached an external system before the crash. Its
+        // result is unknown, so replaying the job could repeat a side effect.
+        let job_session = job["sessionId"]
+            .as_str()
+            .or_else(|| job.pointer("/input/sessionId").and_then(Value::as_str));
+        let unknown_external_result = job_session.is_some_and(|session| {
+            state.store.all("execution_operation").iter().any(|operation| {
+                operation["outcomeUnknown"] == true
+                    && operation["runId"]
+                        .as_str()
+                        .and_then(|run_id| state.store.get("execution", run_id))
+                        .is_some_and(|run| run["sessionId"].as_str() == Some(session))
+            })
+        });
+        let uncertain = flagged || unknown_external_result;
         updated["status"] = json!(if attempts >= 3 || uncertain {
             "needs_review"
         } else {
@@ -193,6 +208,7 @@ pub fn recover(state: &AppState) {
         if execution.get("status").and_then(|value| value.as_str()) == Some("running") {
             let mut updated = execution.clone();
             updated["status"] = json!("interrupted");
+            updated["taskOutcome"] = json!("cancelled");
             updated["reason"] = json!("백엔드가 재시작되어 실행이 중단되었습니다.");
             updated["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
             state.store.put("execution", &updated);
@@ -201,6 +217,8 @@ pub fn recover(state: &AppState) {
     for mut operation in state.store.all("execution_operation") {
         if operation["status"] == "running" {
             operation["status"] = json!("interrupted");
+            operation["outcomeUnknown"] = json!(true);
+            operation["reason"] = json!("백엔드가 재시작되어 도구 결과를 확정할 수 없습니다.");
             operation["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
             state.store.put("execution_operation", &operation);
         }
@@ -616,6 +634,40 @@ mod tests {
         recover(&state);
         let stored = state.store.get("job", job["id"].as_str().unwrap()).unwrap();
         assert_eq!(stored["status"], "needs_review");
+    }
+
+    #[test]
+    fn recover_does_not_replay_an_execution_with_unknown_external_effects() {
+        let state = temp_state();
+        let job = enqueue(
+            &state,
+            "workflow",
+            json!({ "workflowId": "w", "input": "", "sessionId": "session-1" }),
+        )
+        .unwrap();
+        let mut running = job.clone();
+        running["status"] = json!("running");
+        running["attempts"] = json!(1);
+        // No inFlight flag: the evidence must come from the operation record.
+        state.store.put("job", &running);
+        state.store.put(
+            "execution",
+            &json!({"id":"run-1","sessionId":"session-1","status":"interrupted"}),
+        );
+        state.store.put(
+            "execution_operation",
+            &json!({
+                "id":"run-1:0:0:call","runId":"run-1","sessionId":"session-1",
+                "tool":"shell_exec","status":"interrupted","outcomeUnknown":true
+            }),
+        );
+        recover(&state);
+        let stored = state.store.get("job", job["id"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            stored["status"], "needs_review",
+            "an unknown external result must not be replayed: {stored}"
+        );
+        assert!(stored["error"].as_str().is_some_and(|text| text.contains("확정")));
     }
 
     #[test]

@@ -13,6 +13,13 @@ pub(super) fn system_prompt(
     system_prompt_with_snapshot(state, request, session_id, query, None)
 }
 
+/// Prompt text plus the exact context records that produced it.
+pub(super) struct PromptContext {
+    pub prompt: String,
+    pub items: Vec<Value>,
+    pub memory_watermark: String,
+}
+
 /// Builds the prompt from the execution's frozen strategy snapshot instead of
 /// re-querying the improvement table mid-turn.
 pub(super) fn system_prompt_with_snapshot(
@@ -22,6 +29,16 @@ pub(super) fn system_prompt_with_snapshot(
     query: &str,
     improvements: Option<&[Value]>,
 ) -> String {
+    system_prompt_with_manifest(state, request, session_id, query, improvements).prompt
+}
+
+pub(super) fn system_prompt_with_manifest(
+    state: &AppState,
+    request: &TurnRequest,
+    session_id: &str,
+    query: &str,
+    improvements: Option<&[Value]>,
+) -> PromptContext {
     let mut prompt = String::from(
         "You are DOMINION, an agentic AI workspace running on a Rust engine. \
          Answer in Korean unless the user writes in another language. \
@@ -45,12 +62,31 @@ pub(super) fn system_prompt_with_snapshot(
             }
         }
     }
-    if let Some(context) =
-        context_block(state, session_id, request.agent_id.as_deref(), query, improvements)
+    let mut items = Vec::new();
+    if let Some((context, mut context_items, watermark)) =
+        context_block_with_manifest(state, session_id, request.agent_id.as_deref(), query, improvements)
     {
         prompt.push_str("\n\n");
         prompt.push_str(&context);
+        items.append(&mut context_items);
+        items.push(json!({
+            "kind": "context_block",
+            "digest": crate::engine::memory::stable_id(&[&context]),
+            "chars": context.chars().count(),
+            "memoryWatermark": watermark,
+        }));
     }
+    let scope = crate::engine::memory::MemoryScope::for_session(
+        &state.store,
+        session_id,
+        request.agent_id.as_deref(),
+    );
+    let watermark = crate::engine::memory::stable_id(&[
+        scope.partition_key.as_str(),
+        scope.session_id.as_str(),
+        scope.agent_id.as_deref().unwrap_or(""),
+        &serde_json::to_string(&items).unwrap_or_default(),
+    ]);
     if request.reasoning_language.as_deref() == Some("ko") {
         prompt.push_str(
             "\n\nWrite every internal reasoning / thinking step in Korean (한국어).              The final answer must also be in Korean unless the user asks otherwise.",
@@ -68,12 +104,26 @@ pub(super) fn system_prompt_with_snapshot(
             {
                 prompt.push_str("\n\nOwner's common instructions (apply to this agent as well; retain its identity and actual execution/approval boundaries):\n");
                 prompt.push_str(instructions);
+                items.push(json!({
+                    "kind": "owner_instructions",
+                    "digest": crate::engine::memory::stable_id(&[instructions]),
+                }));
             }
         }
     }
-    prompt
+    items.push(json!({
+        "kind": "system_prompt",
+        "digest": crate::engine::memory::stable_id(&[&prompt]),
+        "chars": prompt.chars().count(),
+    }));
+    PromptContext {
+        prompt,
+        items,
+        memory_watermark: watermark,
+    }
 }
 
+#[allow(dead_code)] // compatibility wrapper for old callers
 fn context_block(
     state: &AppState,
     session_id: &str,
@@ -81,8 +131,20 @@ fn context_block(
     query: &str,
     improvements: Option<&[Value]>,
 ) -> Option<String> {
+    context_block_with_manifest(state, session_id, agent_id, query, improvements)
+        .map(|(block, _, _)| block)
+}
+
+fn context_block_with_manifest(
+    state: &AppState,
+    session_id: &str,
+    agent_id: Option<&str>,
+    query: &str,
+    improvements: Option<&[Value]>,
+) -> Option<(String, Vec<Value>, String)> {
     let scope = crate::engine::memory::MemoryScope::for_session(&state.store, session_id, agent_id);
-    let memories = crate::engine::memory::context_block(&state.store, &scope, query);
+    let (memories, mut items) =
+        crate::engine::memory::context_block_with_manifest(&state.store, &scope, query);
 
     let mut skills = state
         .store
@@ -92,6 +154,7 @@ fn context_block(
         .filter(|skill| skill.get("status").and_then(Value::as_str) != Some("draft"))
         .filter(|skill| skill.get("enabled").and_then(|v| v.as_bool()) != Some(false))
         .filter_map(|skill| {
+            let id = skill.get("id").and_then(|v| v.as_str())?.to_string();
             let name = skill.get("name").and_then(|v| v.as_str())?.to_string();
             let instructions = skill
                 .get("instructions")
@@ -101,6 +164,16 @@ fn context_block(
                 .chars()
                 .take(700)
                 .collect::<String>();
+            items.push(json!({
+                "kind": "skill",
+                "id": id,
+                "name": name,
+                "revision": crate::engine::memory::stable_id(&[
+                    skill["id"].as_str().unwrap_or(""),
+                    skill["instructions"].as_str().unwrap_or(""),
+                    skill["updatedAt"].as_str().unwrap_or(""),
+                ]),
+            }));
             Some((name, instructions))
         })
         .collect::<Vec<_>>();
@@ -114,14 +187,40 @@ fn context_block(
         if attempts >= 3 && failures * 2 >= attempts {
             let name = stat.get("id").and_then(|v| v.as_str()).unwrap_or("tool");
             reliability.push(format!("{name}: {successes}/{attempts} 성공"));
+            items.push(json!({
+                "kind": "tool_stat",
+                "id": name,
+                "attempts": attempts,
+                "successes": successes,
+                "failures": failures,
+            }));
         }
     }
 
     let adopted = match improvements {
-        Some(values) => crate::engine::improve::context_block_values(values),
+        Some(values) => {
+            for value in values.iter().take(6) {
+                if !matches!(
+                    value["status"].as_str(),
+                    Some("adopted" | "validated")
+                ) {
+                    continue;
+                }
+                items.push(json!({
+                    "kind": "improvement",
+                    "id": value["id"],
+                    "revision": value["revision"],
+                    "authority": value["authority"],
+                    "assistanceMode": value["assistanceMode"],
+                }));
+            }
+            crate::engine::improve::context_block_values(values)
+        }
         None => crate::engine::improve::context_block(state, &scope),
     };
-    let experience = crate::engine::experience::context_block(state, &scope, query);
+    let (experience, mut experience_items) =
+        crate::engine::experience::context_block_with_manifest(state, &scope, query);
+    items.append(&mut experience_items);
     if memories.is_none()
         && skills.is_empty()
         && reliability.is_empty()
@@ -151,7 +250,13 @@ fn context_block(
         block.push_str("\n\n");
         block.push_str(&experience);
     }
-    Some(block)
+    let watermark = crate::engine::memory::stable_id(&[
+        scope.partition_key.as_str(),
+        scope.session_id.as_str(),
+        scope.agent_id.as_deref().unwrap_or(""),
+        &serde_json::to_string(&items).unwrap_or_default(),
+    ]);
+    Some((block, items, watermark))
 }
 
 pub(super) fn history(state: &AppState, session_id: &str, agent_id: Option<&str>) -> Vec<Value> {
