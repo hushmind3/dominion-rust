@@ -864,7 +864,7 @@ fn crash_drill_leaves_no_running_execution_after_restart() {
 }
 
 #[test]
-fn backup_snapshot_restores_the_engine_after_a_total_db_loss() {
+fn live_restore_requires_maintenance_and_preserves_backup_executions() {
     let _serial = serial();
     let (port, _) = scripted_provider(|_| {
         vec![json!({"choices":[{"delta":{"content":"복구 드릴 응답"},"finish_reason":"stop"}]})]
@@ -873,35 +873,55 @@ fn backup_snapshot_restores_the_engine_after_a_total_db_loss() {
     let stream = app.chat(&json!({"input":"복구 드릴 작업","autoLearning":false}));
     assert!(!stream.contains("\"type\":\"error\""), "{stream}");
     let executions = app.get("/api/executions");
-    let session_id = executions.as_array().unwrap()[0]
-        ["sessionId"]
+    assert_eq!(executions.as_array().unwrap().len(), 1);
+    let session_id = executions.as_array().unwrap()[0]["sessionId"]
         .as_str()
         .unwrap()
         .to_string();
 
     let backup = app.post("/api/system/backup", &json!({}));
     assert_eq!(backup["ok"], true, "{backup}");
-    let backup_path = PathBuf::from(backup["path"].as_str().unwrap());
-    assert!(backup_path.is_file());
+    assert_eq!(backup["encrypted"], true, "{backup}");
+    let backup_path = backup["path"].as_str().unwrap().to_string();
+    assert!(std::path::Path::new(&backup_path).is_file());
 
-    let root = app._root.clone();
-    drop(app);
-    let database = root.join("runtime/dominion.sqlite");
-    std::fs::copy(&backup_path, &database).expect("restore snapshot");
-    for suffix in ["-wal", "-shm"] {
-        let _ = std::fs::remove_file(root.join(format!("runtime/dominion.sqlite{suffix}")));
-    }
+    // A later turn must disappear after restoring the older snapshot.
+    let _ = app.chat(&json!({"input":"백업 이후 작업","autoLearning":false}));
+    assert_eq!(app.get("/api/executions").as_array().unwrap().len(), 2);
 
-    let app = TestApp::from_root(port, "native", root, &[]);
-    let executions = app.get("/api/executions");
-    assert!(
-        executions
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|execution| execution["status"] == "completed"),
-        "restored execution missing: {executions}"
+    // Restore is rejected outside maintenance mode.
+    let early = app
+        .client
+        .post(format!("{}/api/system/restore", app.base))
+        .json(&json!({"path":backup_path,"confirm":true}))
+        .send()
+        .unwrap();
+    assert_eq!(early.status(), reqwest::StatusCode::CONFLICT);
+
+    let enabled = app.post("/api/system/maintenance", &json!({"enabled":true}));
+    assert_eq!(enabled["maintenance"], true);
+    let blocked = app
+        .client
+        .post(format!("{}/api/sessions", app.base))
+        .json(&json!({"title":"should be blocked"}))
+        .send()
+        .unwrap();
+    assert_eq!(blocked.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    assert!(app.get("/api/executions").as_array().is_some());
+
+    let restored = app.post(
+        "/api/system/restore",
+        &json!({"path":backup_path,"confirm":true}),
     );
+    assert_eq!(restored["ok"], true, "{restored}");
+    assert_eq!(restored["executions"], 1, "{restored}");
+    let executions = app.get("/api/executions");
+    assert_eq!(
+        executions.as_array().unwrap().len(),
+        1,
+        "live restore did not roll back to the snapshot: {executions}"
+    );
+    assert_eq!(executions.as_array().unwrap()[0]["status"], "completed");
     let messages = app.get(&format!("/api/sessions/{session_id}/messages"));
     assert!(
         messages.as_array().unwrap().iter().any(|message| {
@@ -912,6 +932,11 @@ fn backup_snapshot_restores_the_engine_after_a_total_db_loss() {
         }),
         "restored transcript missing: {messages}"
     );
+
+    let disabled = app.post("/api/system/maintenance", &json!({"enabled":false}));
+    assert_eq!(disabled["maintenance"], false);
+    let session = app.post("/api/sessions", &json!({"title":"after restore"}));
+    assert!(session["id"].as_str().is_some_and(|value| !value.is_empty()));
 }
 
 #[test]
@@ -1110,12 +1135,17 @@ fn scheduled_backup_creates_a_snapshot_without_a_request() {
     let (port, _) = scripted_provider(|_| {
         vec![json!({"choices":[{"delta":{"content":"백업 테스트"},"finish_reason":"stop"}]})]
     });
+    let offsite = std::env::temp_dir().join(format!(
+        "dominion-offsite-{}",
+        uuid::Uuid::new_v4()
+    ));
     let app = TestApp::new_with_env(
         port,
         "native",
         &[
             ("DOMINION_BACKUP_INTERVAL_SECS", "1"),
             ("DOMINION_BACKUP_KEEP", "2"),
+            ("DOMINION_BACKUP_OFFSITE_DIR", offsite.to_str().unwrap()),
         ],
     );
     app.post("/api/policy", &json!({"autoApproveAll":true}));
@@ -1133,7 +1163,7 @@ fn scheduled_backup_creates_a_snapshot_without_a_request() {
                             .path()
                             .extension()
                             .and_then(|value| value.to_str())
-                            == Some("sqlite")
+                            == Some("enc")
                     })
                     .count()
             })
@@ -1143,7 +1173,19 @@ fn scheduled_backup_creates_a_snapshot_without_a_request() {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    assert!(snapshots > 0, "scheduler did not create a backup snapshot");
+    assert!(snapshots > 0, "scheduler did not create an encrypted snapshot");
+    let offsite_files = std::fs::read_dir(&offsite)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry.path().extension().and_then(|value| value.to_str()) == Some("enc")
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    assert!(offsite_files > 0, "offsite copy was not created");
+    let _ = std::fs::remove_dir_all(offsite);
 }
 
 #[test]

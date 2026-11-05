@@ -55,6 +55,26 @@ impl Vault {
         }
     }
 
+    /// Binary envelope: 12-byte nonce followed by ChaCha20-Poly1305 ciphertext.
+    pub fn seal_bytes(&self, plaintext: &[u8]) -> Option<Vec<u8>> {
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = self.cipher.encrypt(nonce, plaintext).ok()?;
+        let mut out = nonce_bytes.to_vec();
+        out.extend_from_slice(&ciphertext);
+        Some(out)
+    }
+
+    pub fn open_bytes(&self, sealed: &[u8]) -> Option<Vec<u8>> {
+        if sealed.len() < 13 {
+            return None;
+        }
+        let (nonce_bytes, ciphertext) = sealed.split_at(12);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        self.cipher.decrypt(nonce, ciphertext).ok()
+    }
+
     pub fn open_secret(&self, sealed: &str) -> Option<String> {
         let bytes = STANDARD.decode(sealed).ok()?;
         if bytes.len() < 13 {
@@ -90,6 +110,22 @@ mod tests {
         let last = tampered.len() - 1;
         tampered[last] ^= 0xff;
         assert_eq!(vault.open_secret(&STANDARD.encode(tampered)), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn binary_backups_round_trip_and_reject_tampering() {
+        let dir = std::env::temp_dir().join(format!("dominion-vault-bin-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = Vault::open(&dir.join("secret.key"));
+        let payload = b"SQLite format 3\0backup bytes";
+        let sealed = vault.seal_bytes(payload).unwrap();
+        assert_ne!(sealed.as_slice(), payload.as_slice());
+        assert_eq!(vault.open_bytes(&sealed).as_deref(), Some(payload.as_slice()));
+        let mut tampered = sealed.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xff;
+        assert!(vault.open_bytes(&tampered).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 

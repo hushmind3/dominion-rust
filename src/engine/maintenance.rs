@@ -27,11 +27,13 @@ pub fn prune_backups(directory: &Path, keep: usize) -> Vec<PathBuf> {
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter(|path| {
-            path.extension().and_then(|value| value.to_str()) == Some("sqlite")
-                && path
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|name| name.starts_with("dominion-"))
+            matches!(
+                path.extension().and_then(|value| value.to_str()),
+                Some("sqlite" | "enc")
+            ) && path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.starts_with("dominion-"))
         })
         .collect::<Vec<_>>();
     files.sort();
@@ -46,15 +48,45 @@ pub fn prune_backups(directory: &Path, keep: usize) -> Vec<PathBuf> {
         .collect()
 }
 
+fn offsite_directory() -> Option<PathBuf> {
+    std::env::var("DOMINION_BACKUP_OFFSITE_DIR")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Creates an encrypted snapshot. The plaintext SQLite file exists only as a
+/// short-lived temp during VACUUM INTO and is removed before returning.
 pub fn backup_now(state: &AppState) -> Result<PathBuf, String> {
     let directory = state.config.data_dir.join("backups");
-    let name = format!(
-        "dominion-{}.sqlite",
-        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-    );
-    let path = directory.join(name);
-    state.store.backup_to(&path)?;
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let temp = directory.join(format!(".backup-{}.tmp", uuid::Uuid::new_v4()));
+    state.store.backup_to(&temp)?;
+    let bytes = std::fs::read(&temp).map_err(|error| error.to_string())?;
+    let sealed = state
+        .vault
+        .seal_bytes(&bytes)
+        .ok_or("백업 암호화에 실패했습니다.")?;
+    let path = directory.join(format!("dominion-{stamp}.sqlite.enc"));
+    std::fs::write(&path, &sealed).map_err(|error| error.to_string())?;
+    let _ = std::fs::remove_file(&temp);
+    if let Some(offsite) = offsite_directory() {
+        std::fs::create_dir_all(&offsite).map_err(|error| error.to_string())?;
+        std::fs::copy(&path, offsite.join(path.file_name().unwrap_or_default()))
+            .map_err(|error| error.to_string())?;
+        prune_backups(&offsite, keep_count());
+    }
     prune_backups(&directory, keep_count());
+    state.store.audit(
+        "backup.encrypted",
+        serde_json::json!({
+            "path": path.to_string_lossy(),
+            "bytes": sealed.len(),
+            "offsite": offsite_directory().map(|dir| dir.to_string_lossy().to_string()),
+        }),
+    );
     Ok(path)
 }
 
@@ -87,6 +119,59 @@ pub fn start(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::db::Store;
+    use crate::vault::Vault;
+
+    fn state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("dominion-backup-state-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let store = Store::open(&config.db_path()).unwrap();
+        let vault = Vault::open(&config.key_path());
+        (AppState::new(config, store, vault), dir)
+    }
+
+    #[test]
+    fn encrypted_backup_round_trips_and_reopens_as_sqlite() {
+        let (state, dir) = state();
+        state.store.put(
+            "provider",
+            &serde_json::json!({"id":"p1","name":"encrypted backup","baseUrl":"http://x/v1"}),
+        );
+        let path = backup_now(&state).unwrap();
+        assert_eq!(path.extension().and_then(|value| value.to_str()), Some("enc"));
+        let sealed = std::fs::read(&path).unwrap();
+        assert!(!sealed.starts_with(b"SQLite format 3"));
+        let plain = state.vault.open_bytes(&sealed).expect("decrypt");
+        assert!(plain.starts_with(b"SQLite format 3"));
+        let restored_path = dir.join("restored.sqlite");
+        std::fs::write(&restored_path, &plain).unwrap();
+        let restored = Store::open(&restored_path).unwrap();
+        assert_eq!(
+            restored.get("provider", "p1").unwrap()["name"],
+            "encrypted backup"
+        );
+        // The plaintext temp used for VACUUM INTO is removed.
+        let leftovers = std::fs::read_dir(dir.join("backups"))
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    == Some("tmp")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn retention_keeps_the_newest_snapshots_only() {

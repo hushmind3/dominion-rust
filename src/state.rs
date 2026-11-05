@@ -20,6 +20,8 @@ pub struct AppState {
     pub active: Arc<Mutex<HashSet<String>>>,
     /// Identity of this engine process, used to own durable run leases.
     pub instance_id: String,
+    /// Explicit maintenance flag. While true, non-GET writes are rejected.
+    pub maintenance: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -39,7 +41,21 @@ impl AppState {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             active: Arc::new(Mutex::new(HashSet::new())),
             instance_id,
+            maintenance: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    pub fn set_maintenance(&self, enabled: bool) {
+        self.maintenance
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
+        self.store.audit(
+            "system.maintenance",
+            serde_json::json!({"enabled": enabled}),
+        );
+    }
+
+    pub fn maintenance_mode(&self) -> bool {
+        self.maintenance.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn save_secret(&self, name: &str, plaintext: &str) {

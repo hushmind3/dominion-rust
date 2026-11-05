@@ -84,6 +84,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/policies", get(system::policies))
         .route("/api/scheduler-runs", get(system::scheduler_runs))
         .route("/api/system/backup", post(system::create_backup))
+        .route("/api/system/backups", get(system::list_backups))
+        .route("/api/system/maintenance", post(system::maintenance))
+        .route("/api/system/restore", post(system::restore_backup))
         .route("/api/chat", post(chat::chat))
         .route("/api/jobs",get(jobs::list).post(jobs::create))
         .route("/api/jobs/:id",get(jobs::one))
@@ -298,6 +301,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/*rest", any(api_not_found))
         .fallback_service(static_files)
         .layer(middleware::from_fn(no_stale_ui))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            maintenance_guard,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), guard_writes))
         .layer(cors)
         .layer(axum::extract::DefaultBodyLimit::max(12 * 1024 * 1024))
@@ -323,6 +330,25 @@ async fn no_stale_ui(request: Request, next: Next) -> Response {
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     response
+}
+
+/// While maintenance mode is on, only reads and `/api/system/*` mutations are
+/// allowed. Restore cannot race with normal writes.
+async fn maintenance_guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if !state.maintenance_mode() {
+        return next.run(request).await;
+    }
+    if request.method() == Method::GET || request.uri().path().starts_with("/api/system/") {
+        return next.run(request).await;
+    }
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": "유지보수 모드입니다. 복구가 끝난 뒤 다시 시도하세요.",
+            "maintenance": true
+        })),
+    )
+        .into_response()
 }
 
 /// Rejects cross-origin writes so a random website cannot drive the local

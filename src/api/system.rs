@@ -161,19 +161,17 @@ pub async fn scheduler_runs(State(state): State<AppState>) -> Json<Value> {
 /// Creates a consistent snapshot inside the data directory for a restore drill.
 pub async fn create_backup(State(state): State<AppState>) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let directory = state.config.data_dir.join("backups");
-    let name = format!(
-        "dominion-{}.sqlite",
-        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-    );
-    let path = directory.join(name);
-    match state.store.backup_to(&path) {
-        Ok(bytes) => Json(json!({
-            "ok": true,
-            "path": path.to_string_lossy(),
-            "bytes": bytes,
-        }))
-        .into_response(),
+    match crate::engine::maintenance::backup_now(&state) {
+        Ok(path) => {
+            let bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+            Json(json!({
+                "ok": true,
+                "path": path.to_string_lossy(),
+                "bytes": bytes,
+                "encrypted": true,
+            }))
+            .into_response()
+        }
         Err(error) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"ok": false, "error": error})),
@@ -241,4 +239,141 @@ pub async fn commands(State(state): State<AppState>) -> Json<Value> {
         }
     }
     Json(json!([]))
+}
+
+pub async fn list_backups(State(state): State<AppState>) -> Json<Value> {
+    let directory = state.config.data_dir.join("backups");
+    let mut items = std::fs::read_dir(&directory)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    matches!(
+                        path.extension().and_then(|value| value.to_str()),
+                        Some("enc" | "sqlite")
+                    )
+                })
+                .filter_map(|path| {
+                    let name = path.file_name()?.to_str()?.to_string();
+                    let bytes = std::fs::metadata(&path).ok()?.len();
+                    Some(json!({
+                        "name": name,
+                        "path": path.to_string_lossy(),
+                        "bytes": bytes,
+                        "encrypted": path.extension().and_then(|value| value.to_str()) == Some("enc"),
+                    }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    items.sort_by(|a, b| b["name"].as_str().cmp(&a["name"].as_str()));
+    Json(json!(items))
+}
+
+pub async fn maintenance(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let enabled = body["enabled"].as_bool().unwrap_or(false);
+    state.set_maintenance(enabled);
+    Json(json!({"maintenance": enabled}))
+}
+
+/// Restores an encrypted backup while maintenance mode is explicit. The
+/// restored data replaces the live database under the store mutex.
+pub async fn restore_backup(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !state.maintenance_mode() {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            Json(json!({"error":"유지보수 모드에서만 복구할 수 있습니다."})),
+        )
+            .into_response();
+    }
+    if body["confirm"].as_bool() != Some(true) {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({"error":"confirm=true 가 필요합니다."})),
+        )
+            .into_response();
+    }
+    let Some(requested) = body["path"].as_str().filter(|value| !value.is_empty()) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({"error":"path 가 필요합니다."})),
+        )
+            .into_response();
+    };
+    let directory = state.config.data_dir.join("backups");
+    let candidate = {
+        let path = std::path::Path::new(requested);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            directory.join(path)
+        }
+    };
+    let canonical_directory = directory
+        .canonicalize()
+        .unwrap_or_else(|_| directory.clone());
+    let Ok(canonical) = candidate.canonicalize() else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(json!({"error":"백업 파일을 찾을 수 없습니다."})),
+        )
+            .into_response();
+    };
+    if !canonical.starts_with(&canonical_directory)
+        || canonical.extension().and_then(|value| value.to_str()) != Some("enc")
+    {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({"error":"data/backups 안의 .enc 백업만 복구할 수 있습니다."})),
+        )
+            .into_response();
+    }
+    let sealed = match std::fs::read(&canonical) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response()
+        }
+    };
+    let Some(bytes) = state.vault.open_bytes(&sealed) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({"error":"이 키로 백업을 복호화할 수 없습니다."})),
+        )
+            .into_response();
+    };
+    if let Err(error) = state.store.replace_database(&bytes) {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error})),
+        )
+            .into_response();
+    }
+    if let Err(error) = crate::migrations::run(&state) {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("복구 후 마이그레이션 실패: {error}")})),
+        )
+            .into_response();
+    }
+    state.store.audit(
+        "system.restored",
+        json!({"path": canonical.to_string_lossy()}),
+    );
+    Json(json!({
+        "ok": true,
+        "executions": state.store.count("execution"),
+    }))
+    .into_response()
 }

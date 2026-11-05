@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +89,7 @@ fn merge_improvement_update(current: &Value, update: &Value) -> Value {
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    path: PathBuf,
 }
 
 impl Store {
@@ -180,6 +181,7 @@ impl Store {
         )?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            path: path.to_path_buf(),
         })
     }
 
@@ -708,6 +710,29 @@ impl Store {
     pub fn active_lease(&self, id: &str) -> Option<Value> {
         self.get("run_lease", id)
             .filter(|lease| lease["status"].as_str() == Some("active"))
+    }
+
+    /// Replaces the live database with a consistent snapshot. Callers must put
+    /// the engine into maintenance mode first; the connection is swapped under
+    /// the same mutex so no query observes a half-written file.
+    pub fn replace_database(&self, bytes: &[u8]) -> Result<(), String> {
+        let temp = self.path.with_extension("restore.tmp");
+        std::fs::write(&temp, bytes).map_err(|error| error.to_string())?;
+        let mut guard = self.conn.lock().map_err(|error| error.to_string())?;
+        let _ = guard.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        // Close the old handle before copying over the database file.
+        *guard = Connection::open_in_memory().map_err(|error| error.to_string())?;
+        let wal = PathBuf::from(format!("{}-wal", self.path.display()));
+        let shm = PathBuf::from(format!("{}-shm", self.path.display()));
+        let _ = std::fs::remove_file(wal);
+        let _ = std::fs::remove_file(shm);
+        std::fs::copy(&temp, &self.path).map_err(|error| error.to_string())?;
+        let _ = std::fs::remove_file(&temp);
+        *guard = Connection::open(&self.path).map_err(|error| error.to_string())?;
+        let _ = guard.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;",
+        );
+        Ok(())
     }
 
     /// Consistent online snapshot for a restore drill. `VACUUM INTO` includes

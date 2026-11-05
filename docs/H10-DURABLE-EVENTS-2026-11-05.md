@@ -96,3 +96,58 @@ E2E로 실제 엔진 프로세스를 사용해 두 시나리오를 실행했다.
 
 아직 아님: 백업 암호화/보존 기간 정책, 오프사이트 복제, 라이브 restore API,
 장시간 soak, 다중기기 ACL.
+
+## 6. Backup encryption / offsite / live restore (2026-11-05)
+
+### 암호화 envelope
+
+- `Vault::seal_bytes/open_bytes` (ChaCha20-Poly1305, 12-byte nonce + ciphertext).
+- `maintenance::backup_now`:
+  1. `VACUUM INTO` 임시 파일
+  2. 임시 파일을 vault 키로 암호화
+  3. `data/backups/dominion-<timestamp>.sqlite.enc` 저장
+  4. 평문 임시 파일 즉시 삭제
+- 키는 기존 `data/secret.key`(0600)이며, 백업과 함께 오프사이트로 복사되지 않는다.
+  키가 없으면 복구할 수 없다는 것이 명시적 전제다.
+
+### Offsite
+
+- `DOMINION_BACKUP_OFFSITE_DIR`가 있으면 암호화 파일을 그 디렉터리로 복사하고
+  `DOMINION_BACKUP_KEEP` 기준으로 정리한다.
+- audit `backup.encrypted`에 경로/크기/offsite 여부를 남긴다.
+
+### Live restore + maintenance mode
+
+- `POST /api/system/maintenance {enabled}`
+- maintenance 동안 GET과 `/api/system/*` 외의 write는 **503**.
+- `POST /api/system/restore {path, confirm:true}`
+  - maintenance가 아니면 409
+  - `data/backups` 안의 `.enc`만 허용 (canonical path 검사)
+  - vault로 복호화 후 `Store::replace_database`가 store mutex 안에서
+    WAL checkpoint → 기존 연결 close → 파일 교체 → 재오픈
+  - 복구 후 `migrations::run` 재적용
+- `GET /api/system/backups`로 스냅샷 목록 조회.
+
+### 검증
+
+- `binary_backups_round_trip_and_reject_tampering` (vault)
+- `encrypted_backup_round_trips_and_reopens_as_sqlite`
+  - `.enc` 파일이 SQLite 평문으로 시작하지 않음
+  - 복호화 결과를 Store로 열어 레코드 확인
+  - VACUUM 임시 파일이 남지 않음
+- `scheduled_backup_creates_a_snapshot_without_a_request`
+  - 1초 주기로 `.enc` 생성 + offsite 복사 확인
+- `live_restore_requires_maintenance_and_preserves_backup_executions` (E2E)
+  - backup 후 추가 실행 1건 생성 → maintenance 없이 restore는 409
+  - maintenance 중 POST /api/sessions는 503
+  - restore 후 execution 1건으로 롤백, 원본 assistant 메시지 보존
+  - maintenance 해제 후 쓰기 재개
+
+전체: `242 unit + 38 E2E + 10 benchmark` 통과.
+
+### 남은 것
+
+- 오프사이트 원격 전송(S3/SSH)과 보존 기간/immutability.
+- 키 회전/키 백업 정책.
+- 라이브 restore 중 진행 중 job/runner의 명시적 drain.
+- 장시간 soak, 다중기기 ACL.
