@@ -78,3 +78,21 @@ E2E로 실제 엔진 프로세스를 사용해 두 시나리오를 실행했다.
 
 아직 아님: 정기 백업 스케줄, 보존 기간/암호화, 라이브 restore API,
 다중 기기 ACL과 대규모 soak.
+
+## 5. 정기 백업 (2026-11-05)
+
+`engine/maintenance.rs`
+
+- `DOMINION_BACKUP_INTERVAL_SECS` (기본 3600, 0이면 비활성) 주기로
+  `Store::backup_to` 실행.
+- `DOMINION_BACKUP_KEEP` (기본 5) 개만 남기고 오래된 snapshot 삭제.
+- 성공/실패를 `backup.created`/`backup.failed` audit로 기록.
+- 시작 시 `engine::maintenance::start(state)`가 background task를 띄운다.
+
+검증:
+- `retention_keeps_the_newest_snapshots_only` (unit): 5개 중 2개 유지, 다른 파일 보존
+- `scheduled_backup_creates_a_snapshot_without_a_request` (E2E): interval=1초로
+  엔진을 띄우면 요청 없이 `data/backups/*.sqlite`가 생성됨
+
+아직 아님: 백업 암호화/보존 기간 정책, 오프사이트 복제, 라이브 restore API,
+장시간 soak, 다중기기 ACL.

@@ -1096,6 +1096,48 @@ fn experiment_claim_is_token_scoped_and_can_be_released() {
     );
 }
 
+#[test]
+fn scheduled_backup_creates_a_snapshot_without_a_request() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"백업 테스트"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(
+        port,
+        "native",
+        &[
+            ("DOMINION_BACKUP_INTERVAL_SECS", "1"),
+            ("DOMINION_BACKUP_KEEP", "2"),
+        ],
+    );
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let _ = app.chat(&json!({"input":"백업 대상 작업","autoLearning":false}));
+    let directory = app._root.join("runtime/backups");
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let mut snapshots = 0;
+    while Instant::now() < deadline {
+        snapshots = std::fs::read_dir(&directory)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .filter(|entry| {
+                        entry
+                            .path()
+                            .extension()
+                            .and_then(|value| value.to_str())
+                            == Some("sqlite")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        if snapshots > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(snapshots > 0, "scheduler did not create a backup snapshot");
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

@@ -11,6 +11,98 @@ use serde_json::{json, Value};
 pub const SLOTS: &[&str] = &["planning"];
 pub const MIN_EXPERIMENT_UNITS: u64 = 8;
 
+/// Minimum distinct recorded failures before a candidate is proposed.
+pub const PROPOSER_MIN_EVIDENCE: usize = 3;
+
+/// Derives planning-policy candidates from failure clusters. Proposals are
+/// candidates only: the outer gate in `apply_experiment_result` requires an
+/// independent >=8-unit experiment before activation.
+pub fn propose_candidates(state: &AppState) -> Vec<Value> {
+    use std::collections::BTreeMap;
+    let mut clusters: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
+    let mut executions = state.store.all("execution");
+    executions.sort_by(|a, b| {
+        b["startedAt"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(a["startedAt"].as_str().unwrap_or(""))
+    });
+    for execution in executions.iter().take(500) {
+        let Some(class) = execution["failureClass"].as_str() else {
+            continue;
+        };
+        if matches!(class, "cancelled") {
+            continue;
+        }
+        clusters.entry(class).or_default().push(json!({
+            "executionId": execution["id"],
+            "taskOutcome": execution["taskOutcome"],
+            "recoveryHint": execution["recoveryHint"],
+        }));
+    }
+    let mut created = Vec::new();
+    for (class, evidence) in clusters {
+        if evidence.len() < PROPOSER_MIN_EVIDENCE {
+            continue;
+        }
+        let (name, parameters, rationale) = match class {
+            "verification_failed" => (
+                "plan-before-acting",
+                json!({"outline": true}),
+                "검증 실패가 반복되어 행동 전 계획을 세우는 정책을 제안합니다.",
+            ),
+            "limit_exceeded" | "model_error" => (
+                "skip-extra-planning",
+                json!({"outline": false}),
+                "예산/모델 실패가 반복되어 추가 계획 호출을 생략하는 정책을 제안합니다.",
+            ),
+            _ => continue,
+        };
+        let evidence_ids = evidence
+            .iter()
+            .filter_map(|item| item["executionId"].as_str())
+            .take(8)
+            .collect::<Vec<_>>();
+        let rationale = format!(
+            "{rationale} (근거 {n}건: {ids})",
+            n = evidence.len(),
+            ids = evidence_ids.join(", ")
+        );
+        let Ok(candidate) = register(state, "planning", name, &parameters, &rationale) else {
+            continue;
+        };
+        let policy_id = candidate["id"].as_str().unwrap_or("");
+        let revision = candidate["revision"].as_str().unwrap_or("");
+        let request_id = format!(
+            "experiment-request-policy-{}",
+            crate::engine::memory::stable_id(&[policy_id, revision])
+        );
+        if state.store.get("experiment_request", &request_id).is_none() {
+            let request = json!({
+                "id": request_id,
+                "kind": "policy",
+                "policyId": policy_id,
+                "slot": "planning",
+                "revision": revision,
+                "status": "queued",
+                "fixture": "planning_evaluation",
+                "minIndependentUnits": MIN_EXPERIMENT_UNITS,
+                "evidence": evidence.iter().take(8).cloned().collect::<Vec<_>>(),
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+            });
+            if let Some(saved) = state.store.put("experiment_request", &request) {
+                state.bus.record("experiment_request", &saved);
+                state.store.audit(
+                    "policy.candidate_queued",
+                    json!({"policyId": policy_id, "requestId": saved["id"], "evidence": evidence.len()}),
+                );
+                created.push(json!({"candidate": candidate, "request": saved}));
+            }
+        }
+    }
+    created
+}
+
 pub fn list(state: &AppState) -> Vec<Value> {
     let mut items = state.store.all("adaptation_policy");
     items.sort_by(|a, b| {
@@ -183,6 +275,80 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         (AppState::new(config, store, vault), dir)
+    }
+
+    fn failure(state: &AppState, id: &str, class: &str) {
+        state.store.put(
+            "execution",
+            &json!({
+                "id":id,"status":"failed","taskOutcome":"failed",
+                "failureClass":class,"recoveryHint":"hint",
+                "sessionId":"s","startedAt":format!("2026-11-05T10:00:0{id}Z")
+            }),
+        );
+    }
+
+    #[test]
+    fn proposer_rejects_clusters_below_the_evidence_threshold() {
+        let (state, dir) = state();
+        failure(&state, "1", "verification_failed");
+        failure(&state, "2", "verification_failed");
+        assert!(propose_candidates(&state).is_empty());
+        assert!(list(&state).is_empty());
+        assert!(state.store.all("experiment_request").is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proposer_creates_one_candidate_and_policy_experiment_request() {
+        let (state, dir) = state();
+        for id in 1..=3 {
+            failure(&state, &id.to_string(), "verification_failed");
+        }
+        let created = propose_candidates(&state);
+        assert_eq!(created.len(), 1);
+        let candidate = &created[0]["candidate"];
+        assert_eq!(candidate["status"], "candidate");
+        assert_eq!(candidate["parameters"]["outline"], true);
+        assert!(candidate["rationale"]
+            .as_str()
+            .is_some_and(|text| text.contains("근거 3건")));
+        let request = &created[0]["request"];
+        assert_eq!(request["kind"], "policy");
+        assert_eq!(request["status"], "queued");
+        assert_eq!(request["minIndependentUnits"], MIN_EXPERIMENT_UNITS);
+        // Idempotent: a second pass creates nothing new.
+        assert!(propose_candidates(&state).is_empty());
+        assert_eq!(state.store.all("adaptation_policy").len(), 1);
+        assert_eq!(state.store.all("experiment_request").len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proposed_candidate_stays_inactive_until_eight_units_and_rolls_back() {
+        let (state, dir) = state();
+        for id in 1..=3 {
+            failure(&state, &id.to_string(), "limit_exceeded");
+        }
+        let created = propose_candidates(&state);
+        let policy_id = created[0]["candidate"]["id"].as_str().unwrap().to_string();
+        assert!(active(&state, "planning").is_none());
+
+        let small = json!({"experimentId":"small","verdict":"improved","delta":0.5,"independentUnits":4,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, &policy_id, &small).unwrap();
+        assert_eq!(record["status"], "candidate", "underpowered promotion");
+
+        let powered = json!({"experimentId":"powered","verdict":"preliminary_support","delta":0.4,"independentUnits":8,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, &policy_id, &powered).unwrap();
+        assert_eq!(record["status"], "active");
+        assert_eq!(active_parameters(&state, "planning")["outline"], false);
+
+        let other = register(&state, "planning", "other", &json!({"outline": true}), "other").unwrap();
+        let regressed = json!({"experimentId":"bad","verdict":"regressed","delta":-0.3,"independentUnits":8,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, other["id"].as_str().unwrap(), &regressed).unwrap();
+        assert_eq!(record["status"], "rolled_back");
+        assert_eq!(active(&state, "planning").unwrap()["id"], policy_id.as_str());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

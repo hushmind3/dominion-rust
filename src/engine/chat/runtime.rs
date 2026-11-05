@@ -2100,10 +2100,15 @@ pub(super) fn finalize_execution(
                 state.bus.record("strategy_observation", observation);
             }
             let queued = crate::engine::improve::schedule_experiments(state);
-            if !queued.is_empty() {
+            let proposed = crate::engine::policy::propose_candidates(state);
+            if !queued.is_empty() || !proposed.is_empty() {
                 state.store.audit(
                     "experiment.scheduled",
-                    json!({"executionId": execution_id, "requests": queued.len()}),
+                    json!({
+                        "executionId": execution_id,
+                        "requests": queued.len(),
+                        "policyCandidates": proposed.len()
+                    }),
                 );
             }
         }

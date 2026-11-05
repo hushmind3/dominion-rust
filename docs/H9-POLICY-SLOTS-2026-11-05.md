@@ -57,3 +57,37 @@ adaptation_policy {
 - 알고리즘 코드 패치 artifact의 컴파일·회귀 검증.
 - 메타 평가자 자체의 버전 관리와 leakage 방지.
 - 현재는 planning 슬롯 1개만 실제 소비된다.
+
+## 6. Candidate proposer (2026-11-05)
+
+`policy::propose_candidates`가 기록된 실패 cluster에서 정책 후보를 자동 생성한다.
+
+- 입력: 최근 execution 500개의 `failureClass` (cancelled 제외)
+- 최소 근거: **같은 class 3건** (`PROPOSER_MIN_EVIDENCE`)
+- 규칙:
+  - `verification_failed` ≥3 → planning `{"outline": true}` (`plan-before-acting`)
+  - `limit_exceeded`/`model_error` ≥3 → planning `{"outline": false}` (`skip-extra-planning`)
+- rationale에 근거 execution id를 최대 8개 기록.
+- 후보는 `register`로 `candidate` 상태가 되고, 동시에 durable
+  `experiment_request{kind:"policy", status:"queued", fixture:"planning_evaluation",
+  minIndependentUnits:8}`가 생성된다. revision 단위로 idempotent.
+- 호출 지점: finalize `Applied` 직후, 엔진 시작 시.
+
+### Outer gate
+
+활성화 경로는 `policy::apply_experiment_result` 하나뿐이다.
+
+- `independentUnits >= 8` + `improved|preliminary_support` + delta>0 → active
+- `regressed` → rolled_back
+- 표본 부족/불확실 → candidate 유지
+- 정책 실험 요청은 procedure runner가 평가할 수 없으므로 claim에서 건너뛰고
+  queued로 보존한다(planning 전용 evaluator는 다음 단계).
+
+### 검증
+
+- `proposer_rejects_clusters_below_the_evidence_threshold` (2건 → 후보/요청 없음)
+- `proposer_creates_one_candidate_and_policy_experiment_request` (3건 → 후보 1 + 요청 1, 재실행 idempotent)
+- `proposed_candidate_stays_inactive_until_eight_units_and_rolls_back`
+  (4 units → candidate, 8 units → active, regressed 8 → rolled_back)
+
+전체: `236 unit + 36 E2E + 8 benchmark` 통과.

@@ -49,6 +49,11 @@ pub async fn claim(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         if request["status"].as_str() != Some("queued") {
             continue;
         }
+        // Policy experiments need a planning-quality evaluator; keep them
+        // queued instead of failing them through the procedure runner.
+        if request["kind"].as_str() == Some("policy") {
+            continue;
+        }
         let Some(request_id) = request["id"].as_str().map(str::to_string) else {
             continue;
         };

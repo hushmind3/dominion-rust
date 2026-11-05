@@ -20,6 +20,7 @@ pub mod learning;
 pub mod lease;
 pub mod llm;
 pub mod mcp;
+pub mod maintenance;
 pub mod memory;
 pub mod models;
 pub mod oauth;
