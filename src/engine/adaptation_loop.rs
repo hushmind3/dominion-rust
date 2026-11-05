@@ -211,6 +211,7 @@ pub fn record_adaptation(
         },
         "hypotheses": adaptation["hypotheses"],
         "interventions": adaptation["interventions"],
+        "consultedExperienceRules": adaptation["consultedExperienceRules"],
         "selected": selected,
         "result": result,
         "hypothesisResults": hypothesis_results,
