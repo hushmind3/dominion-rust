@@ -56,12 +56,22 @@ fn scripted_provider(
                 let body: Value = serde_json::from_slice(&bytes[end..end + length]).unwrap();
                 observed.lock().unwrap().push(body.clone());
                 let events = reply(&body);
-                let mut payload = events
-                    .iter()
-                    .map(|event| format!("data: {event}\n\n"))
-                    .collect::<String>();
-                payload.push_str("data: [DONE]\n\n");
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",payload.len());
+                let stream_mode = body["stream"].as_bool().unwrap_or(false);
+                let response = if stream_mode {
+                    let mut payload = events
+                        .iter()
+                        .map(|event| format!("data: {event}\n\n"))
+                        .collect::<String>();
+                    payload.push_str("data: [DONE]\n\n");
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",payload.len())
+                } else {
+                    let content = events
+                        .iter()
+                        .filter_map(|event| event["choices"][0]["delta"]["content"].as_str())
+                        .collect::<String>();
+                    let payload = json!({"choices":[{"message":{"role":"assistant","content":content},"finish_reason":"stop"}]}).to_string();
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",payload.len())
+                };
                 let _ = stream.write_all(response.as_bytes());
             });
         }
@@ -965,4 +975,52 @@ fn token_budget_is_enforced_from_stream_usage() {
     assert!(stream.contains("토큰 예산"), "{stream}");
     assert!(!stream.contains("assistant_saved"), "{stream}");
     assert_eq!(app.get("/api/executions")[0]["status"], "failed");
+}
+
+#[test]
+fn reviewer_repairs_a_claim_with_a_real_tool() {
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().unwrap();
+        let system = messages
+            .first()
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        let has_tools = request.get("tools").and_then(|tools| tools.as_array()).is_some();
+        let saw_tool = messages.iter().any(|message| message["role"] == "tool");
+        let last_user = messages
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "user")
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+
+        if !has_tools {
+            if system.contains("strict reviewer") {
+                return vec![json!({"choices":[{"delta":{"content":"{\"complete\":false,\"gaps\":[\"gate-review.txt가 없습니다\"],\"nextAction\":\"workspace_write로 gate-review.txt를 생성\"}"}}]})];
+            }
+            return vec![json!({"choices":[{"delta":{"content":"1. gate-review.txt 생성\n2. 존재 확인"}}]})];
+        }
+        if saw_tool {
+            return vec![json!({"choices":[{"delta":{"content":"파일을 만들고 확인했습니다."},"finish_reason":"stop"}]})];
+        }
+        if last_user.contains("다음 전략") || last_user.contains("자동 검증") {
+            return vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"review-write","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"gate-review.txt\",\"content\":\"reviewed\"}"}}]},"finish_reason":"tool_calls"}]})];
+        }
+        vec![json!({"choices":[{"delta":{"content":"gate-review.txt 파일을 저장했습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let session = app.post("/api/sessions", &json!({"title":"reviewer-repair"}));
+    let stream = app.chat(&json!({
+        "sessionId": session["id"],
+        "input": "gate-review.txt 파일을 만들어줘",
+        "autoLearning": false
+    }));
+    assert!(stream.contains("assistant_saved"), "{stream}");
+    assert!(!stream.contains("실행 증거가 부족"), "{stream}");
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("gate-review.txt")).unwrap(),
+        "reviewed"
+    );
+    assert_eq!(app.get("/api/executions")[0]["status"], "completed");
 }
