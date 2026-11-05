@@ -216,6 +216,13 @@ async fn run_turn_with_policy(
     state.bus.record("execution", &execution);
     crate::engine::run_state::apply(state, &execution_id, "start");
     let metrics = std::sync::Mutex::new(Metrics::default());
+    if provider.context_tokens.is_some() {
+        if let Some(mut execution) = state.store.get("execution", &execution_id) {
+            execution["contextChecked"] = json!(true);
+            execution["contextOverflow"] = json!(false);
+            state.store.put("execution", &execution);
+        }
+    }
     let result = tokio::select! {
         result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
             result.unwrap_or_else(|_| Err("실행 시간 제한(10분)을 초과했습니다.".into())),
@@ -384,7 +391,17 @@ async fn run_turn_body(
             .context_tokens
             .map(|tokens| ((tokens as usize).saturating_mul(3)).clamp(8_000, 400_000)),
     );
+    let mut context_overflow = false;
     let mut context_items = prompt_context.items.clone();
+    let retrieved_experience_ids = context_items
+        .iter()
+        .filter(|item| item["kind"].as_str() == Some("experience"))
+        .filter_map(|item| item["id"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    if let Some(mut execution) = state.store.get("execution", &execution_id) {
+        execution["retrievedExperienceIds"] = json!(retrieved_experience_ids);
+        state.store.put("execution", &execution);
+    }
     context_items.push(json!({
         "kind": "history",
         "count": history_messages.len(),
@@ -690,6 +707,22 @@ async fn run_turn_body(
             counters.iterations = round as u32 + 1;
         }
 
+        if let Some(tokens) = provider.context_tokens {
+            let chars: usize = messages
+                .iter()
+                .filter_map(|message| message["content"].as_str())
+                .map(str::len)
+                .sum();
+            if chars > (tokens as usize).saturating_mul(4) {
+                if !context_overflow {
+                    context_overflow = true;
+                    if let Some(mut execution) = state.store.get("execution", execution_id) {
+                        execution["contextOverflow"] = json!(true);
+                        state.store.put("execution", &execution);
+                    }
+                }
+            }
+        }
         let model_started = std::time::Instant::now();
         let model_offset_ms = turn_started.elapsed().as_millis() as u64;
         let round_tools = if force_final { Vec::new() } else { tool_definitions.clone() };
@@ -3760,10 +3793,67 @@ pub(super) fn finalize_execution(
             let _ = crate::engine::experience::learn_verified_adaptations(state, &record);
         }
     }
+    mark_run_signals(state, &record);
     // Finalize after learning so algorithm usages created while learning
     // (for example multiagent.sharing) are included in this execution.
     crate::engine::algorithms::finalize_execution(state, &record);
 
+}
+
+fn mark_run_signals(state: &AppState, record: &Value) {
+    let Some(execution_id) = record["id"].as_str() else {
+        return;
+    };
+    if let Some(entries) = record["strategyCompliance"].as_array() {
+        let applicable = entries
+            .iter()
+            .filter(|entry| {
+                entry["applicable"].as_bool() == Some(true)
+                    && entry["result"]["triggered"].as_bool() == Some(true)
+                    && entry["result"]["verified"].as_bool() == Some(true)
+            })
+            .collect::<Vec<_>>();
+        if !applicable.is_empty() {
+            let followed = applicable.iter().all(|entry| {
+                entry["result"]["verified"].as_bool() == Some(true)
+                    && entry["result"]["followed"].as_bool() == Some(true)
+            });
+            crate::engine::algorithms::mark_signal(
+                state, execution_id, "strategy.selection", followed,
+            );
+        }
+    }
+    if record["contextChecked"].as_bool() == Some(true) {
+        let ok = record["contextOverflow"].as_bool() != Some(true);
+        crate::engine::algorithms::mark_signal(
+            state, execution_id, "context.selection", ok,
+        );
+    }
+    if let Some(ids) = record["retrievedExperienceIds"].as_array() {
+        if !ids.is_empty() {
+            let tools = state
+                .store
+                .all("execution_operation")
+                .into_iter()
+                .filter(|operation| operation["runId"].as_str() == Some(execution_id))
+                .filter_map(|operation| operation["tool"].as_str().map(str::to_string))
+                .collect::<std::collections::BTreeSet<_>>();
+            let used = ids.iter().any(|id| {
+                state
+                    .store
+                    .get("experience", id.as_str().unwrap_or(""))
+                    .and_then(|case| case["tools"].as_array().cloned())
+                    .is_some_and(|cases| {
+                        cases.iter().any(|tool| {
+                            tool.as_str().is_some_and(|tool| tools.contains(tool))
+                        })
+                    })
+            });
+            crate::engine::algorithms::mark_signal(
+                state, execution_id, "memory.retrieval", used,
+            );
+        }
+    }
 }
 
 fn retitle_if_placeholder(state: &AppState, session: &Value, text: &str) {
