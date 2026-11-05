@@ -188,8 +188,10 @@ async fn run_turn_with_policy(
     let result = tokio::select! {
         result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
             result.unwrap_or_else(|_| Err("실행 시간 제한(10분)을 초과했습니다.".into())),
+        // A closed SSE client must not destroy work already in flight. The turn
+        // keeps running in its spawned task; only an explicit cancel or the
+        // elapsed budget stops it. Results stay durable for later reads.
         _ = wait_cancelled(state, &session_id, generation) => Err("실행이 중단되었습니다.".into()),
-        _ = tx.closed() => Err("응답 연결이 종료되어 실행이 중단되었습니다.".into()),
     };
     finish_attempt(state, &execution_id, &result, &metrics);
     close_pending_approvals(state, &session_id);
@@ -334,7 +336,14 @@ async fn run_turn_body(
         Some(&strategy_candidates),
     );
     let mut messages = vec![json!({ "role": "system", "content": prompt_context.prompt })];
-    let history_messages = history(state, session_id, request.agent_id.as_deref());
+    let history_messages = history(
+        state,
+        session_id,
+        request.agent_id.as_deref(),
+        provider
+            .context_tokens
+            .map(|tokens| ((tokens as usize).saturating_mul(3)).clamp(8_000, 400_000)),
+    );
     let mut context_items = prompt_context.items.clone();
     context_items.push(json!({
         "kind": "history",
@@ -1236,6 +1245,8 @@ async fn dispatch_tool_call(
             state,
             session_id,
             agent_id: request.agent_id.as_deref(),
+            tools_enabled: request.tools_enabled,
+            tools_execution_enabled: request.tools_execution_enabled,
         };
         let outcome = if call.name.starts_with("mcp__") {
             mcp::call(state, &call.name, &arguments).await
@@ -1501,6 +1512,7 @@ fn finalization_semantic_payload(record: &Value, operations: &[Value]) -> Value 
         "request": record["request"],
         "status": record["status"],
         "taskOutcome": record["taskOutcome"],
+        "failureClass": record["failureClass"],
         "acceptancePassed": record["acceptancePassed"],
         "acceptanceText": record["acceptanceText"],
         "appliedImprovementIds": record["appliedImprovementIds"],
@@ -1951,6 +1963,11 @@ pub(super) fn finalize_execution(
     let task_outcome = determine_task_outcome(&record);
     record["taskOutcome"] =
         serde_json::to_value(task_outcome).unwrap_or_else(|_| json!("unknown"));
+    if !matches!(task_outcome, TaskOutcome::Succeeded) {
+        let failure = crate::engine::recovery::failure_record(&record, &operations);
+        record["failureClass"] = failure["failureClass"].clone();
+        record["recoveryHint"] = failure["recoveryHint"].clone();
+    }
     let updates = match crate::engine::improve::execution_updates(state, &record) {
         Ok(updates) => updates,
         Err(error) => {

@@ -274,6 +274,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         gaps.extend(gate_gaps);
         if let Some(error) = turn_error {
             gaps.push(format!("실행 단계 오류: {error}"));
+            if let Some(hint) =
+                crate::engine::recovery::latest_failure_hint(state, &task_id)
+            {
+                gaps.push(hint);
+            }
         }
         gaps.extend(
             stats

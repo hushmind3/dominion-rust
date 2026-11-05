@@ -614,6 +614,66 @@ fn approval_is_operation_bound_and_survives_restart() {
     assert!(app.get("/api/approvals").as_array().unwrap().is_empty());
 }
 
+#[test]
+fn closing_the_sse_client_does_not_cancel_background_work() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        std::thread::sleep(Duration::from_millis(600));
+        vec![
+            json!({"choices":[{"delta":{"content":"백그라운드에서 완료했습니다."},"finish_reason":"stop"}]}),
+        ]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let response = app
+        .client
+        .post(format!("{}/api/chat", app.base))
+        .json(&json!({"input":"백그라운드 작업","autoLearning":false}))
+        .send()
+        .unwrap();
+    // Simulate the desktop/web UI closing the SSE connection immediately.
+    drop(response);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut finished = None;
+    while Instant::now() < deadline {
+        if let Some(execution) = app
+            .get("/api/executions")
+            .as_array()
+            .and_then(|items| items.first())
+            .cloned()
+        {
+            match execution["status"].as_str() {
+                Some("completed") => {
+                    finished = Some(execution);
+                    break;
+                }
+                Some("cancelled") => {
+                    panic!("client disconnect cancelled background work: {execution}")
+                }
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let execution = finished.expect("background turn did not finish");
+    assert_eq!(
+        execution["taskOutcome"], "answered_unverified",
+        "{execution}"
+    );
+    let session_id = execution["sessionId"].as_str().unwrap();
+    let messages = app.get(&format!("/api/sessions/{session_id}/messages"));
+    assert!(
+        messages.as_array().unwrap().iter().any(|message| {
+            message["role"] == "assistant"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("백그라운드에서 완료"))
+        }),
+        "assistant reply was not persisted: {messages}"
+    );
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

@@ -18,19 +18,7 @@ pub async fn run(
     if provider_id.is_empty() || model.is_empty() {
         return Err("컨텍스트 압축에는 연결된 모델이 필요합니다.".into());
     }
-    let provider = state
-        .store
-        .get("provider", provider_id)
-        .ok_or("제공자를 찾을 수 없습니다.")?;
-    let base_url = provider
-        .get("baseUrl")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .trim_end_matches('/')
-        .to_string();
-    let api_key = state
-        .read_secret(&format!("provider:{provider_id}"))
-        .unwrap_or_default();
+    let route = crate::engine::gateway::resolve(state, provider_id, Some(model))?;
 
     let history = state.store.messages(session_id);
     let prior = state.store.get("session_compaction", session_id);
@@ -115,19 +103,26 @@ pub async fn run(
         ]
     });
 
-    let response = reqwest::Client::new()
-        .post(format!("{base_url}/chat/completions"))
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {api_key}"))
-        .json(&request)
-        .timeout(std::time::Duration::from_secs(180))
-        .send()
-        .await
-        .map_err(|error| format!("모델 연결 실패: {error}"))?;
+    let client = reqwest::Client::new();
+    let response = crate::engine::gateway::send(
+        &route,
+        &client,
+        &request,
+        std::time::Duration::from_secs(180),
+    )
+    .await?;
+    let response = response.response;
     if !response.status().is_success() {
         return Err(format!("모델 호출 실패: HTTP {}", response.status()));
     }
     let value: Value = response.json().await.map_err(|error| error.to_string())?;
+    crate::engine::gateway::record_usage(
+        state,
+        &route,
+        crate::engine::gateway::usage_from(&value),
+        "compact",
+        Some(session_id),
+    );
     let summary = value
         .get("choices")
         .and_then(|choices| choices.get(0))

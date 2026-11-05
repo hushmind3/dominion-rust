@@ -227,7 +227,7 @@ fn room_history_keeps_speakers_distinct_and_drops_orphan_tool_results() {
         message["session_id"] = json!("room");
         state.store.write_message(&message).unwrap();
     }
-    let messages = history(&state, "room", Some("b"));
+    let messages = history(&state, "room", Some("b"), None);
     assert_eq!(messages[0]["role"], "user");
     assert!(messages[0]["content"].as_str().unwrap().contains("설계자"));
     assert_eq!(messages[1]["role"], "assistant");

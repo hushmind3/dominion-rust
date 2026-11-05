@@ -158,58 +158,18 @@ pub(super) fn select_provider(
         })
         .unwrap_or_else(|| "gpt-4o-mini".into());
 
-    let api_key = state
-        .read_secret(&format!("provider:{id}"))
-        .or_else(|| {
-            provider
-                .get("apiKey")
-                .and_then(|value| value.as_str())
-                .map(str::to_string)
-        })
-        .unwrap_or_default();
-
-    let kind = provider
-        .get("kind")
-        .and_then(|value| value.as_str())
-        .unwrap_or("openai")
-        .to_string();
-    let tool_mode = provider
-        .get("toolMode")
-        .and_then(|value| value.as_str())
-        .filter(|value| matches!(*value, "native" | "compat" | "auto"))
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            if kind == "ollama" || provider["local"].as_bool() == Some(true) {
-                "compat".into()
-            } else {
-                "auto".into()
-            }
-        });
-
-    let reasoning_protocol = provider["reasoningProtocol"]
-        .as_str()
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            if model.to_ascii_lowercase().contains("deepseek") {
-                "deepseek".into()
-            } else if kind == "ollama" || id == "dominion-native" {
-                "chat_template".into()
-            } else {
-                "openai".into()
-            }
-        });
+    let route = crate::engine::gateway::route_from_provider(state, &provider, Some(&model))?;
     Ok(ProviderRef {
-        id,
-        name: provider
-            .get("name")
-            .and_then(|value| value.as_str())
-            .unwrap_or("Provider")
-            .to_string(),
-        base_url,
-        api_key,
-        model,
-        tool_mode,
-        reasoning_protocol,
+        id: route.id,
+        name: route.name,
+        base_url: route.base_url,
+        api_key: route.api_key,
+        model: route.model,
+        tool_mode: route.tool_mode,
+        reasoning_protocol: route.reasoning_protocol,
+        local: route.local,
+        context_tokens: route.context_tokens,
+        max_output_tokens: route.max_output_tokens,
     })
 }
 
@@ -284,6 +244,9 @@ pub(super) async fn stream_completion(
     if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
+    if let Some(limit) = provider.max_output_tokens {
+        body["max_tokens"] = json!(limit);
+    }
     apply_reasoning_options(
         &mut body,
         &provider.reasoning_protocol,
@@ -291,6 +254,9 @@ pub(super) async fn stream_completion(
         request.reasoning_effort.as_deref(),
     );
 
+    // The same admission slot is shared with helper (non-streaming) calls, so
+    // one local model instance is never asked to run two generations at once.
+    let _permit = crate::engine::gateway::acquire(&provider.base_url, provider.local).await;
     let response = client
         .post(format!("{}/chat/completions", provider.base_url))
         .header("Content-Type", "application/json")
@@ -463,6 +429,15 @@ pub(super) async fn stream_completion(
         })
         .collect();
 
+    crate::engine::gateway::record_usage_total(
+        state,
+        &provider.id,
+        &provider.model,
+        provider.local,
+        "chat",
+        Some(session_id),
+        completion.usage,
+    );
     Ok(completion)
 }
 

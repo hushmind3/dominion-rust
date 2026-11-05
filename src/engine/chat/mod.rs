@@ -150,6 +150,9 @@ struct ProviderRef {
     model: String,
     tool_mode: String,
     reasoning_protocol: String,
+    local: bool,
+    context_tokens: Option<u64>,
+    max_output_tokens: Option<u64>,
 }
 
 // SSE entry point used by `POST /api/chat`.

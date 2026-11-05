@@ -56,3 +56,19 @@ oracle: `s7-harness-audit-v1`
 - fixture 승인 resolver를 고정하고, 재시작/중단 trial을 `Incomplete`로 분리한다.
 - 모델 로딩 워밍업을 trial 전에 수행해 시간 비교를 분리한다.
 - 결과는 baseline/treatment의 raw trial JSON과 함께 보존한다.
+
+## 4. H3 gateway 적용 후 재측정 (2026-11-05)
+
+H3 공통 gateway/admission/usage 변경 후 같은 fixture를 다시 실행했다.
+
+| arm | assigned | strict success | compliance | p50 | tokens |
+|---|---|---|---|---|---|
+| baseline | 3 | 0/3 | 0 | 22,895ms | 9,414 |
+| treatment | 3 | 3/3 | 3 | 34,336ms | 11,811 |
+
+- experimentId: `c65f18fa-8a71-4eae-9e98-cfefca0cf0e7`
+- verdict **inconclusive**, CI [0.0, 1.0], `mode: smoke`
+- `model.usage` audit 12건이 실제로 기록되었다.
+- treatment가 더 느렸다(34.3s vs 22.9s). 로컬 모델 admission 직렬화와 실행 단계 수
+  차이 때문일 수 있으나, 표본이 작아 원인을 단정하지 않는다.
+- 성공률 차이 0/3 vs 3/3은 이전 측정과 일치하지만 여전히 성능 개선 주장이 아니다.

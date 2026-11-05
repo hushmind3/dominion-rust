@@ -259,7 +259,12 @@ fn context_block_with_manifest(
     Some((block, items, watermark))
 }
 
-pub(super) fn history(state: &AppState, session_id: &str, agent_id: Option<&str>) -> Vec<Value> {
+pub(super) fn history(
+    state: &AppState,
+    session_id: &str,
+    agent_id: Option<&str>,
+    byte_budget: Option<usize>,
+) -> Vec<Value> {
     let mut all = state.store.messages(session_id);
     let session = state
         .store
@@ -297,11 +302,12 @@ pub(super) fn history(state: &AppState, session_id: &str, agent_id: Option<&str>
         }
     }
     let limit = if is_room { 160 } else { HISTORY_LIMIT };
+    let byte_budget = byte_budget.unwrap_or(160_000);
     let mut start = all.len().saturating_sub(limit);
     let mut bytes = 0;
     for index in (start..all.len()).rev() {
         bytes += all[index]["content"].as_str().unwrap_or("").len();
-        if bytes > 160_000 && index + 1 < all.len() {
+        if bytes > byte_budget && index + 1 < all.len() {
             start = index + 1;
             break;
         }

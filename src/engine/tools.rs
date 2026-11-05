@@ -11,6 +11,11 @@ pub struct ToolContext<'a> {
     pub state: &'a crate::state::AppState,
     pub session_id: &'a str,
     pub agent_id: Option<&'a str>,
+    /// Parent turn's model tool permission. Delegation is attenuated, never
+    /// widened.
+    pub tools_enabled: bool,
+    /// Parent turn's overall execution permission.
+    pub tools_execution_enabled: bool,
 }
 
 /// OpenAI-style tool definitions handed to the model.
@@ -210,8 +215,38 @@ async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String
     }))
 }
 
+const MAX_DELEGATION_DEPTH: usize = 4;
+
+/// Number of delegated sessions between the owner-facing session and this one.
+/// A chain cannot loop forever, so a cycle is cut defensively.
+fn delegation_depth(store: &Store, session_id: &str) -> usize {
+    let mut depth = 0;
+    let mut seen = std::collections::HashSet::new();
+    let mut current = Some(session_id.to_string());
+    while let Some(id) = current {
+        if !seen.insert(id.clone()) {
+            break;
+        }
+        let Some(session) = store.get("session", &id) else {
+            break;
+        };
+        if session["delegated"].as_bool() == Some(true) {
+            depth += 1;
+        }
+        current = session["parentSessionId"].as_str().map(str::to_string);
+    }
+    depth
+}
+
 async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> {
     let agent_id = required_arg(args, "agentId")?;
+    // A delegated worker cannot delegate beyond a bounded depth. This keeps a
+    // runaway chain from consuming unbounded workers.
+    if delegation_depth(ctx.store, ctx.session_id) >= MAX_DELEGATION_DEPTH {
+        return Err(format!(
+            "위임 깊이 제한({MAX_DELEGATION_DEPTH})에 도달했습니다. 상위 작업으로 결과를 모아 처리하세요."
+        ));
+    }
     let prompt = required_arg(args, "prompt")?;
     let agent = ctx
         .state
@@ -249,7 +284,8 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
             "providerId": agent["providerId"],
             "model": agent["model"],
             "sessionId": session_id,
-            "toolsEnabled": true,
+            "toolsEnabled": ctx.tools_enabled && ctx.tools_execution_enabled,
+            "toolsExecutionEnabled": ctx.tools_execution_enabled,
             "parentSessionId": ctx.session_id,
             "parentAgentId": ctx.agent_id,
             "delegation": true,
@@ -294,6 +330,13 @@ fn task_payload(ctx: &ToolContext<'_>, args: &Value, with_result: bool) -> Resul
         .store
         .get("job", &job_id)
         .ok_or_else(|| format!("작업을 찾을 수 없습니다: {job_id}"))?;
+    // A job result is visible only to the session that created it or to the
+    // parent session that delegated it.
+    let owned = job["input"]["sessionId"].as_str() == Some(ctx.session_id)
+        || job["input"]["parentSessionId"].as_str() == Some(ctx.session_id);
+    if !owned {
+        return Err("이 작업에 접근할 권한이 없습니다.".into());
+    }
     let status = job["status"].as_str().unwrap_or("unknown");
     let mut payload = json!({
         "jobId": job_id,
@@ -731,6 +774,102 @@ mod tests {
         assert!(resolve_workspace(&dir, "sub").is_ok());
         assert!(resolve_workspace(&dir, "../etc/passwd").is_err());
         assert!(resolve_workspace(&dir, "/etc/passwd").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn delegation_depth_is_bounded_and_cycle_safe() {
+        use crate::config::Config;
+        use crate::db::Store;
+        let dir = std::env::temp_dir().join(format!("dominion-depth-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let store = Store::open(&config.db_path()).unwrap();
+        for (id, parent) in [
+            ("root", None),
+            ("d1", Some("root")),
+            ("d2", Some("d1")),
+            ("d3", Some("d2")),
+        ] {
+            store.put(
+                "session",
+                &json!({"id":id,"parentSessionId":parent,"delegated":parent.is_some()}),
+            );
+        }
+        assert_eq!(delegation_depth(&store, "root"), 0);
+        assert_eq!(delegation_depth(&store, "d1"), 1);
+        assert_eq!(delegation_depth(&store, "d3"), 3);
+        store.put(
+            "session",
+            &json!({"id":"loop","parentSessionId":"d3","delegated":true}),
+        );
+        store.put(
+            "session",
+            &json!({"id":"d3","parentSessionId":"loop","delegated":true}),
+        );
+        assert!(delegation_depth(&store, "loop") <= 4);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn task_results_are_scoped_to_the_owning_or_parent_session() {
+        use crate::config::Config;
+        use crate::db::Store;
+        use crate::vault::Vault;
+        let dir = std::env::temp_dir().join(format!("dominion-task-acl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let store = Store::open(&config.db_path()).unwrap();
+        let vault = Vault::open(&config.key_path());
+        let state = crate::state::AppState::new(config, store, vault);
+        state.store.put(
+            "job",
+            &json!({
+                "id":"j1","kind":"prompt","status":"completed",
+                "input":{"sessionId":"child","parentSessionId":"parent"},
+                "result":{"answer":"ok"}
+            }),
+        );
+        let ctx = ToolContext {
+            workspace: &dir,
+            store: &state.store,
+            state: &state,
+            session_id: "parent",
+            agent_id: None,
+            tools_enabled: true,
+            tools_execution_enabled: true,
+        };
+        assert!(task_payload(&ctx, &json!({"jobId":"j1"}), true).is_ok());
+        let child = ToolContext {
+            workspace: &dir,
+            store: &state.store,
+            state: &state,
+            session_id: "child",
+            agent_id: None,
+            tools_enabled: true,
+            tools_execution_enabled: true,
+        };
+        assert!(task_payload(&child, &json!({"jobId":"j1"}), true).is_ok());
+        let stranger = ToolContext {
+            workspace: &dir,
+            store: &state.store,
+            state: &state,
+            session_id: "stranger",
+            agent_id: None,
+            tools_enabled: true,
+            tools_execution_enabled: true,
+        };
+        assert!(task_payload(&stranger, &json!({"jobId":"j1"}), true).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 

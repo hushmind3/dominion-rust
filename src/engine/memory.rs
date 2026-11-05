@@ -141,6 +141,19 @@ pub fn stable_id(parts: &[&str]) -> String {
     format!("{first:016x}{second:016x}")
 }
 
+/// Stable content revision. Identity fields that do not change the remembered
+/// value (timestamps, counters) are excluded, so a re-save of identical content
+/// keeps the same revision.
+pub fn content_revision(record: &Value) -> String {
+    stable_id(&[
+        record["id"].as_str().unwrap_or(""),
+        record["text"].as_str().unwrap_or(""),
+        record["type"].as_str().unwrap_or(""),
+        record["scope"].as_str().unwrap_or(""),
+        record["status"].as_str().unwrap_or("active"),
+    ])
+}
+
 fn contains_hangul(text: &str) -> bool {
     text.chars().any(|ch| ('가'..='힣').contains(&ch))
 }
@@ -304,11 +317,16 @@ pub fn context_block_with_manifest(
                 "id": id,
                 "type": memory["type"],
                 "scope": memory["scope"],
-                "revision": stable_id(&[
-                    id,
-                    memory["text"].as_str().unwrap_or(""),
-                    updated,
-                ]),
+                "revision": memory["revision"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        let mut value = memory.clone();
+                        if value["updatedAt"].is_null() {
+                            value["updatedAt"] = json!(updated);
+                        }
+                        content_revision(&value)
+                    }),
             })
         })
         .collect::<Vec<_>>();
@@ -476,6 +494,7 @@ pub fn save_grounded(
             "memory",
             &json!({
                 "id": id, "text": canonical, "type": kind, "importance": importance.clamp(0.0,1.0),
+                "revision": stable_id(&[&id, &canonical, kind, "agent", "active"]),
                 "scope": "agent", "agentId": scope.agent_id, "partitionKey": scope.partition_key,
                 "sessionId": scope.session_id, "source": source, "status": "active",
                 "key": normalized_key, "sourceMessageIds": source_message_ids,
@@ -493,6 +512,8 @@ pub fn save_grounded(
             if previous["key"].as_str() == Some(&key) && previous["id"] != saved["id"] {
                 previous["status"] = json!("superseded");
                 previous["supersededBy"] = saved["id"].clone();
+                let revision = content_revision(&previous);
+                previous["revision"] = json!(revision);
                 store
                     .put("memory", &previous)
                     .ok_or("이전 기억 갱신에 실패했습니다.")?;
@@ -543,6 +564,17 @@ mod tests {
     fn scope(store: &Store, session: &str, agent: &str) -> MemoryScope {
         MemoryScope::for_session(store, session, Some(agent))
     }
+    #[test]
+    fn memory_revision_tracks_content_not_timestamps() {
+        let first = json!({"id":"m1","text":"Rust 빌드 절차","type":"procedure","scope":"agent","status":"active","updatedAt":"2026-11-05T10:00:00Z"});
+        let later = json!({"id":"m1","text":"Rust 빌드 절차","type":"procedure","scope":"agent","status":"active","updatedAt":"2026-11-06T10:00:00Z"});
+        assert_eq!(content_revision(&first), content_revision(&later));
+        let corrected = json!({"id":"m1","text":"Rust 릴리스 절차","type":"procedure","scope":"agent","status":"active"});
+        assert_ne!(content_revision(&first), content_revision(&corrected));
+        let superseded = json!({"id":"m1","text":"Rust 빌드 절차","type":"procedure","scope":"agent","status":"superseded"});
+        assert_ne!(content_revision(&first), content_revision(&superseded));
+    }
+
     #[test]
     fn retrieval_isolates_agents_and_discord_channels() {
         let db = store();
