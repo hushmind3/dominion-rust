@@ -6,7 +6,7 @@ use super::{
     provider::{select_provider, stream_completion},
 };
 use super::{
-    parse_text_tool_calls, Metrics, ToolCall, TurnRequest, MAX_ELAPSED, MAX_ROUNDS, MAX_TOOL_CALLS,
+    parse_text_tool_calls, Metrics, ToolCall, TurnRequest, MAX_ELAPSED, MAX_ROUNDS, MAX_TOKENS, MAX_TOOL_CALLS,
 };
 use super::evidence::{evidence_for_source, prepare_owner_action};
 use crate::engine::goals;
@@ -328,6 +328,11 @@ async fn run_turn_body(
         // the final message keeps only the last substantive answer.
         total_tokens += completion.usage;
         metrics.lock().unwrap().tokens = total_tokens;
+        if total_tokens > MAX_TOKENS {
+            return Err(format!(
+                "토큰 예산({MAX_TOKENS})을 초과했습니다. 요청을 나눠 다시 시도하세요."
+            ));
+        }
 
         if completion.tool_calls.is_empty()
             && request.tools_enabled

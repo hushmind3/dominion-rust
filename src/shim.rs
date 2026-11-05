@@ -63,9 +63,10 @@ fn api_key() -> Result<String, String> {
             return Ok(key);
         }
     }
-    let path = std::env::var("HOME")
-        .map(|home| std::path::PathBuf::from(home).join(".openclaw/openclaw.json"))
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|error| error.to_string())?;
+    let path = std::path::PathBuf::from(home).join(".openclaw/openclaw.json");
     let text = std::fs::read_to_string(&path)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let value: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;

@@ -53,6 +53,22 @@ pub fn save_config(state: &AppState, body: &Value) -> Value {
 }
 
 /// npm scripts may live at the repo root or under `web/` (this Rust repo).
+fn npm() -> &'static str {
+    if cfg!(windows) { "npm.cmd" } else { "npm" }
+}
+
+fn npx() -> &'static str {
+    if cfg!(windows) { "npx.cmd" } else { "npx" }
+}
+
+fn vite_bin(package: &Path) -> PathBuf {
+    if cfg!(windows) {
+        package.join("node_modules/.bin/vite.cmd")
+    } else {
+        package.join("node_modules/.bin/vite")
+    }
+}
+
 fn package_dir(dir: &Path) -> PathBuf {
     if dir.join("package.json").exists() {
         dir.to_path_buf()
@@ -349,20 +365,20 @@ async fn execute(
 
     let commands: Vec<Vec<String>> = match kind {
         "setup" => vec![vec![
-            "npm".into(),
+            npm().into(),
             "install".into(),
             "--no-audit".into(),
             "--no-fund".into(),
         ]],
         "test" => vec![vec![
-            "npm".into(),
+            npm().into(),
             "run".into(),
             "test".into(),
             "--if-present".into(),
         ]],
-        "build" => vec![vec!["npm".into(), "run".into(), "build".into()]],
+        "build" => vec![vec![npm().into(), "run".into(), "build".into()]],
         "package" => vec![vec![
-            "npm".into(),
+            npm().into(),
             "run".into(),
             "package".into(),
             "--if-present".into(),
@@ -453,7 +469,7 @@ pub async fn start_preview(state: &AppState) -> Result<Value, String> {
     // Preview only the React bundle. The Rust backend stays the only server;
     // the Node toolchain is used solely as the Vite dev compiler.
     let package = package_dir(&dir);
-    let vite = package.join("node_modules/.bin/vite");
+    let vite = vite_bin(&package);
     let mut command = if vite.exists() {
         let mut command = Command::new(&vite);
         command.args([
@@ -465,7 +481,7 @@ pub async fn start_preview(state: &AppState) -> Result<Value, String> {
         ]);
         command
     } else {
-        let mut command = Command::new("npx");
+        let mut command = Command::new(npx());
         command.args([
             "vite",
             "--host",

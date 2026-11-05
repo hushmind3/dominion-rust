@@ -937,3 +937,32 @@ fn room_manual_learning_enqueues_each_participant_with_its_own_watermark() {
         assert_eq!(record["input"]["providerId"].as_str().unwrap(), provider);
     }
 }
+
+#[test]
+fn token_budget_is_enforced_from_stream_usage() {
+    let (port, _) = scripted_provider(|request| {
+        if request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["role"] == "tool")
+        {
+            return vec![json!({"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]})];
+        }
+        vec![json!({
+            "choices":[{"delta":{"content":"big"},"finish_reason":"stop"}],
+            "usage":{"total_tokens":300000}
+        })]
+    });
+    let app = TestApp::new(port, "native");
+    let session = app.post("/api/sessions", &json!({"title":"budget"}));
+    let stream = app.chat(&json!({
+        "sessionId": session["id"],
+        "input": "budget check",
+        "toolsEnabled": false,
+        "autoLearning": false
+    }));
+    assert!(stream.contains("토큰 예산"), "{stream}");
+    assert!(!stream.contains("assistant_saved"), "{stream}");
+    assert_eq!(app.get("/api/executions")[0]["status"], "failed");
+}
