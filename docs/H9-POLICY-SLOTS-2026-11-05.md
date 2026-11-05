@@ -320,3 +320,75 @@ proposer는 failure cluster마다 하나가 아니라 **여러 revision**을 제
 - 후보 공간은 고정 heuristic 2~3개다. beam search나 파라미터 연속 탐색은 아직.
 - search는 failure class 단위이며, 검색 간 전역 최적 선택은 하지 않는다.
 - selection은 이미 평가된 revision만 비교한다.
+
+## 11. Algorithm patch artifacts (2026-11-05)
+
+정책 파라미터 변경을 **버전 있는 patch artifact**로 분리했다.
+
+### Registry
+
+`policy_patch`:
+
+```
+{id, slot, targetPolicyId, baseRevision, baseParameters, body, rationale,
+ status candidate|active|superseded|rolled_back|rejected,
+ evidenceGrade, requiresExperiment,
+ lastExperiment{units,verdict,semanticDelta,independentSemanticDelta},
+ appliedPolicyRevision, rolledBackAt}
+```
+
+- 등록 조건: slot 일치, 대상 정책이 `active`, body.parameters 객체.
+- id는 `(slot,targetPolicyId,baseRevision,body)` stable hash로 idempotent.
+- `baseParameters`를 함께 저장해 rollback 시 원복할 수 있다.
+
+### Regression check (base compatibility)
+
+activation 시점에 대상 정책이
+
+- `baseRevision`과 같은 revision이고
+- 여전히 `active` 상태
+
+여야 한다. 다른 revision으로 바뀌었거나 다른 정책이 active가 되었으면
+patch를 `rejected`로 종결하고 `policy.patch_base_mismatch` audit를 남긴다.
+revision이 다른 정책에 patch를 조용히 적용하지 않는다.
+
+### Activation gate
+
+- `independentUnits >= 8`
+- verdict `improved|preliminary_support`, delta > 0
+- main semanticDelta >= 0.05 **그리고** independent semanticDelta >= 0.05
+통과 시:
+- body.parameters를 base parameters에 merge
+- 정책 revision을 새로 계산하고 `appliedPatchId`를 기록
+- 같은 slot의 다른 active patch는 `superseded`
+- patch `active`, `appliedPolicyRevision` 기록
+
+`regressed`(units>=8)이면 patch를 `rolled_back`으로 바꾸고 정책 parameters를
+`baseParameters`로 복원한 뒤 새 revision을 만든다.
+
+### API
+
+- `GET /api/policy-patches`
+- benchmark 전용:
+  - `POST /api/benchmark/policy-patches`
+  - `POST /api/benchmark/policy-patches/experiment`
+
+### 검증
+
+- `a_patch_needs_both_evaluators_and_eight_units`
+  (4 units → candidate, independent 0 → candidate, 둘 다 통과 → active + minChars 적용)
+- `a_patch_against_a_stale_base_revision_is_rejected`
+- `a_regressed_patch_restores_the_base_parameters`
+- E2E `policy_patches_activate_rollback_and_reject_stale_bases`
+  - 등록 → 4 units 거부 → 8 units + 두 evaluator → active, 정책 minChars=120
+  - regressed → rolled_back, 정책 outline=true/minChars 없음
+  - 다른 revision이 active가 된 뒤 남은 patch → **rejected**
+
+전체: `249 unit + 41 E2E + 14 benchmark` 통과.
+
+### 한계
+
+- patch body는 현재 정책 **parameters**만 바꾼다. Rust 알고리즘 코드 patch를
+  컴파일·검증하는 artifact는 아직 아니다.
+- runner가 patch 실험을 자동 생성/수행하지 않는다(현재는 benchmark API로 결과 적용).
+- patch 서명, 배포 버전 관리, 의존성 검사는 아직.

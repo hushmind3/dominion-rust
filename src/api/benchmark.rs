@@ -196,3 +196,44 @@ pub async fn policy_search(
     }
     Json(json!({"searchId": search_id, "created": created})).into_response()
 }
+
+/// Benchmark-only: register an algorithm patch against an active policy
+/// revision.
+pub async fn register_patch(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    if std::env::var("DOMINION_BENCHMARK").as_deref() != Ok("1") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    match crate::engine::policy_patch::register(
+        &state,
+        body["slot"].as_str().unwrap_or("planning"),
+        body["targetPolicyId"].as_str().unwrap_or(""),
+        &body["body"],
+        body["rationale"].as_str().unwrap_or("benchmark patch"),
+    ) {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => {
+            (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
+        }
+    }
+}
+
+/// Benchmark-only: apply an isolated experiment result to a patch.
+pub async fn patch_experiment(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    if std::env::var("DOMINION_BENCHMARK").as_deref() != Ok("1") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let patch_id = body["patchId"].as_str().unwrap_or("");
+    if patch_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "patchId is required").into_response();
+    }
+    match crate::engine::policy_patch::apply_experiment_result(&state, patch_id, &body) {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response(),
+    }
+}

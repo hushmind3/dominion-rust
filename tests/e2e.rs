@@ -1670,6 +1670,103 @@ fn policy_search_selects_the_best_revision_through_the_scheduler() {
     assert_eq!(selection["candidates"].as_array().unwrap().len(), 2);
 }
 
+#[test]
+fn policy_patches_activate_rollback_and_reject_stale_bases() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"unused"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    let activate = |name: &str, parameters: Value| -> Value {
+        app.post(
+            "/api/benchmark/policies/state",
+            &json!({"slot":"planning","name":name,"parameters":parameters}),
+        )["active"]
+            .clone()
+    };
+    let base = activate("patch-base", json!({"outline":true}));
+    let base_id = base["id"].as_str().unwrap().to_string();
+    let patch = app.post(
+        "/api/benchmark/policy-patches",
+        &json!({
+            "slot":"planning",
+            "targetPolicyId":base_id,
+            "body":{"parameters":{"minChars":120}},
+            "rationale":"threshold patch"
+        }),
+    );
+    let patch_id = patch["id"].as_str().unwrap().to_string();
+    assert_eq!(patch["status"], "candidate");
+
+    let weak = app.post(
+        "/api/benchmark/policy-patches/experiment",
+        &json!({
+            "patchId":patch_id,"verdict":"preliminary_support","delta":0.4,
+            "semanticDelta":0.4,"independentSemanticDelta":0.4,"independentUnits":4
+        }),
+    );
+    assert_eq!(weak["status"], "candidate", "{weak}");
+
+    let good = app.post(
+        "/api/benchmark/policy-patches/experiment",
+        &json!({
+            "patchId":patch_id,"verdict":"preliminary_support","delta":0.4,
+            "semanticDelta":0.4,"independentSemanticDelta":0.3,"independentUnits":8
+        }),
+    );
+    assert_eq!(good["status"], "active", "{good}");
+    let policies = app.get("/api/policies");
+    let policy = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|policy| policy["id"] == base_id.as_str())
+        .unwrap();
+    assert_eq!(policy["parameters"]["minChars"], 120, "{policy}");
+    assert_eq!(policy["appliedPatchId"], patch_id.as_str());
+
+    let rollback = app.post(
+        "/api/benchmark/policy-patches/experiment",
+        &json!({
+            "patchId":patch_id,"verdict":"regressed","delta":-0.3,
+            "semanticDelta":0.0,"independentSemanticDelta":0.0,"independentUnits":8
+        }),
+    );
+    assert_eq!(rollback["status"], "rolled_back", "{rollback}");
+    let policies = app.get("/api/policies");
+    let policy = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|policy| policy["id"] == base_id.as_str())
+        .unwrap();
+    assert!(policy["parameters"]["minChars"].is_null(), "{policy}");
+    assert_eq!(policy["parameters"]["outline"], true);
+
+    // A patch is invalidated when the target policy moves to a new revision.
+    let base2 = activate("patch-base-2", json!({"outline":true}));
+    let patch2 = app.post(
+        "/api/benchmark/policy-patches",
+        &json!({
+            "slot":"planning","targetPolicyId":base2["id"],
+            "body":{"parameters":{"minChars":60}},"rationale":"stale base"
+        }),
+    );
+    let patch2_id = patch2["id"].as_str().unwrap().to_string();
+    let _ = activate("patch-base-3", json!({"outline":true,"minChars":10}));
+    let rejected = app.post(
+        "/api/benchmark/policy-patches/experiment",
+        &json!({
+            "patchId":patch2_id,"verdict":"preliminary_support","delta":0.4,
+            "semanticDelta":0.4,"independentSemanticDelta":0.3,"independentUnits":8
+        }),
+    );
+    assert_eq!(rejected["status"], "rejected", "{rejected}");
+    assert!(rejected["reason"]
+        .as_str()
+        .is_some_and(|text| text.contains("base revision")));
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

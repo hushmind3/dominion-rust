@@ -59,6 +59,11 @@ pub fn router(state: AppState) -> Router {
             post(benchmark::policy_state),
         )
         .route("/api/benchmark/policy-search", post(benchmark::policy_search))
+        .route("/api/benchmark/policy-patches", post(benchmark::register_patch))
+        .route(
+            "/api/benchmark/policy-patches/experiment",
+            post(benchmark::patch_experiment),
+        )
         .route("/api/benchmark/identity", get(system::benchmark_identity))
         .route("/api/status", get(system::status))
         .route(
@@ -85,6 +90,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/policies", get(system::policies))
         .route("/api/scheduler-runs", get(system::scheduler_runs))
         .route("/api/policy-searches", get(system::policy_searches))
+        .route("/api/policy-patches", get(system::policy_patches))
         .route("/api/system/backup", post(system::create_backup))
         .route("/api/system/backups", get(system::list_backups))
         .route("/api/system/maintenance", post(system::maintenance))

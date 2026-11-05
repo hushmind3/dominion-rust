@@ -27,6 +27,7 @@ pub mod oauth;
 pub mod personas;
 pub mod plan_quality;
 pub mod policy;
+pub mod policy_patch;
 pub mod rooms;
 pub mod run_state;
 pub mod scheduler;

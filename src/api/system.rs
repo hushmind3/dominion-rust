@@ -151,6 +151,10 @@ pub async fn policy_searches(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.store.all("policy_search")))
 }
 
+pub async fn policy_patches(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(crate::engine::policy_patch::list(&state)))
+}
+
 pub async fn scheduler_runs(State(state): State<AppState>) -> Json<Value> {
     let mut runs = state.store.all("scheduler_run");
     runs.sort_by(|a, b| {
