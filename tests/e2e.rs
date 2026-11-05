@@ -2804,6 +2804,154 @@ fn consecutive_failed_adaptations_stop_the_no_progress_loop() {
 }
 
 #[test]
+fn a_mid_adaptation_restart_restores_hypotheses_and_does_not_repeat_completed_steps() {
+    let _serial = serial();
+    let stream_calls = Arc::new(Mutex::new(0u32));
+    let stream_counter = stream_calls.clone();
+    let (port, _) = scripted_provider(move |request| {
+        let system = request["messages"][0]["content"].as_str().unwrap_or("");
+        if request["stream"].as_bool() == Some(false) && system.contains("adaptation planner") {
+            return vec![json!({"choices":[{"delta":{"content":json!({
+                "hypotheses":[{
+                    "id":"h1",
+                    "claim":"the shell environment cannot run this command",
+                    "predictions":[{"predicate":{"type":"equals","from":"result","path":"/exitCode","value":0}}]
+                }],
+                "interventions":[{
+                    "id":"i1","hypothesisIds":["h1"],"tool":"workspace_write",
+                    "inputs":{"path":"adapt.txt","content":"ADAPT"},
+                    "expectedChecks":["file_exists"],"estimatedCost":0.1
+                }]
+            }).to_string()},"finish_reason":"stop"}]})];
+        }
+        let mut count = stream_counter.lock().unwrap();
+        *count += 1;
+        match *count {
+            1 => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"fail-1","type":"function","function":{"name":"shell_exec","arguments":"{\"command\":\"exit 7\"}"}}]},"finish_reason":"tool_calls"}]})],
+            2 => {
+                // Hold the model call open so the test can kill the process
+                // after the adaptation tool has already run.
+                std::thread::sleep(Duration::from_millis(3_000));
+                vec![json!({"choices":[{"delta":{"content":"첫 실행 모델 응답"},"finish_reason":"stop"}]})]
+            }
+            _ => vec![json!({"choices":[{"delta":{"content":"재개 실행 완료."},"finish_reason":"stop"}]})],
+        }
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let program = json!({
+        "revision":"adapt-restart-program",
+        "nodes":[
+            {"type":"call_tool","id":"step1","tool":"workspace_write","inputs":{"path":"step1.txt","content":"ONE"},"saveAs":"step1"},
+            {"type":"model_decision","id":"pause"},
+            {"type":"call_tool","id":"step2","tool":"workspace_write","inputs":{"path":"step2.txt","content":"TWO"},"saveAs":"step2"}
+        ]
+    });
+    let activated = app.post(
+        "/api/benchmark/policies/state",
+        &json!({"slot":"execution","name":"adapt-restart","parameters":{"program":program}}),
+    );
+    assert_eq!(activated["active"]["status"], "active", "{activated}");
+    let root = app._root.clone();
+    let handle = app.chat_async(&json!({
+        "input":"step1.txt와 step2.txt 파일을 만들어줘",
+        "autoLearning":false
+    }));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !root.join("adapt.txt").exists() {
+        assert!(Instant::now() < deadline, "adaptation did not run");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Wait until the adaptation record (hypotheses + selected intervention) is
+    // durable before killing the process.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let executions = app.get("/api/executions");
+        let recorded = executions.as_array().unwrap().iter().any(|execution| {
+            execution["adaptations"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| {
+                    item["selected"]["id"] == "i1"
+                        && item["hypotheses"].as_array().is_some_and(|h| !h.is_empty())
+                }))
+        });
+        if recorded {
+            break;
+        }
+        assert!(Instant::now() < deadline, "adaptation record was not persisted");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(150));
+    drop(app);
+    let _ = handle.join();
+
+    let app = TestApp::from_root(port, "native", root.clone(), &[("DOMINION_BENCHMARK", "1")]);
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let resumed = loop {
+        let executions = app.get("/api/executions");
+        if let Some(resumed) = executions.as_array().unwrap().iter().find(|execution| {
+            execution["resumedFromExecutionId"].is_string()
+                && execution["programCheckpoint"]["status"] == "completed"
+        }) {
+            break resumed.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "resumed execution did not restore: {executions}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // The saved hypothesis and chosen intervention are restored on the new
+    // execution, not just left behind on the interrupted one.
+    let adaptation = resumed["adaptations"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["selected"]["id"] == "i1"))
+        .expect("restored adaptation record");
+    assert_eq!(adaptation["hypotheses"][0]["id"], "h1", "{adaptation}");
+    assert_eq!(
+        adaptation["selected"]["tool"], "workspace_write",
+        "{adaptation}"
+    );
+    assert_eq!(
+        resumed["adaptationCheckpoint"]["selectedIntervention"],
+        "i1",
+        "{resumed}"
+    );
+    assert!(
+        resumed["adaptationCheckpoint"]["failureSignature"].is_string(),
+        "{resumed}"
+    );
+    // The completed program step is not re-executed and the adaptation stays
+    // a single side effect.
+    let executions = app.get("/api/executions");
+    let operations = executions
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|execution| {
+            let id = execution["id"].as_str().unwrap_or("");
+            app.get(&format!("/api/executions/{id}/operations"))
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    let count = |path: &str| {
+        operations
+            .iter()
+            .filter(|operation| {
+                operation["tool"] == "workspace_write"
+                    && operation["arguments"]["path"] == path
+            })
+            .count()
+    };
+    assert_eq!(count("step1.txt"), 1, "step1 was repeated: {operations:?}");
+    assert_eq!(count("adapt.txt"), 1, "adaptation was repeated: {operations:?}");
+    assert_eq!(std::fs::read_to_string(root.join("step1.txt")).unwrap_or_default(), "ONE");
+    assert_eq!(std::fs::read_to_string(root.join("adapt.txt")).unwrap_or_default(), "ADAPT");
+}
+
+#[test]
 fn a_paused_program_resumes_after_restart_without_repeating_completed_steps() {
     let _serial = serial();
     let (port, _) = scripted_provider(|_| {

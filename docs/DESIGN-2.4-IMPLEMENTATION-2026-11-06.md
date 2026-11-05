@@ -275,3 +275,28 @@ effect가 있어도 checkpoint가 깨끗하면 이어서 실행한다.
 - 경험 predicate 추출(§6), 개선기 비교(§9), 실제 모델 정책 활성화는 아직이다.
 
 전체: `269 unit + 55 E2E + 16 benchmark` 통과.
+
+## 9. 적응 상태의 재시작 복원 (2026-11-06)
+
+`restore_program_state`는 program checkpoint뿐 아니라 이전 execution의
+`adaptations`, `adaptationCheckpoint`, `lastAdaptation`도 새 execution으로
+복사한다. 따라서 재시작 후에도 어떤 가설이 세워졌고 어떤 개입이 선택됐는지
+다음 판단에서 사용할 수 있다.
+
+E2E `a_mid_adaptation_restart_restores_hypotheses_and_does_not_repeat_completed_steps`:
+
+1. program이 `step1.txt`를 쓰고 `model_decision`에서 paused
+2. 모델 루프가 `shell_exec exit 7` 실패
+3. 모델이 `h1` 가설과 `i1` 개입(`workspace_write adapt.txt`)을 생성
+4. 개입 실행 후 adaptation record가 DB에 저장됨을 확인
+5. 다음 모델 호출이 진행 중일 때 프로세스를 종료
+6. 같은 root로 재시작, startup wake가 resume job 생성
+7. 검증:
+   - 재개된 execution에 `resumedFromExecutionId`가 있음
+   - `adaptations`에 `h1`/`i1`과 예측, `adaptationCheckpoint`의
+     `failureSignature`/`selectedIntervention`이 복원됨
+   - programCheckpoint가 completed
+   - `step1.txt` write **1회**, `adapt.txt` write **1회**
+     (완료 단계/개입 재실행 없음)
+
+전체: `269 unit + 56 E2E + 16 benchmark` 통과.
