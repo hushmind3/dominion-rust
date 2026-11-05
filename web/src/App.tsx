@@ -13,6 +13,7 @@ const ExtensionsPage=lazy(()=>import('./pages/Extensions').then(module=>({defaul
 const ConnectionsPage=lazy(()=>import('./pages/Connections').then(module=>({default:module.ConnectionsPage})))
 const OperationsPage=lazy(()=>import('./pages/Operations').then(module=>({default:module.OperationsPage})))
 const DeveloperPage=lazy(()=>import('./pages/Developer').then(module=>({default:module.DeveloperPage})))
+const AlgorithmsPage=lazy(()=>import('./pages/Algorithms').then(module=>({default:module.AlgorithmsPage})))
 
 function locationState(){
  const raw=window.location.hash.replace(/^#\/?/,'')
@@ -105,6 +106,7 @@ export default function App(){
     {page==='extensions'&&<ExtensionsPage/>}
     {page==='connections'&&<ConnectionsPage/>}
     {page==='developer'&&<DeveloperPage/>}
+    {page==='algorithms'&&<AlgorithmsPage/>}
     {(page==='automations'||page==='activity'||page==='settings')&&<OperationsPage section={page}/>}
     </Suspense>
    </div>

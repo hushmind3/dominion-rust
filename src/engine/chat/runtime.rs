@@ -1627,13 +1627,16 @@ async fn attempt_model_adaptation(
         "result": before_observation,
         "after": Value::Null,
     });
-    let selected = crate::engine::adaptation_loop::choose_intervention_with_context(
+    let adaptation_algorithm =
+        crate::engine::algorithms::active(state, "adaptation.selection").unwrap_or(Value::Null);
+    let selected = crate::engine::adaptation_loop::choose_intervention_with_policy(
         &adaptation,
         tool,
         arguments,
         false,
         &selection_context,
         &refuted,
+        &adaptation_algorithm,
     )
     .ok_or("no distinct intervention survived selection")?;
     let selected_tool = selected["tool"]

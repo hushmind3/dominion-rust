@@ -226,8 +226,38 @@ pub fn choose_intervention_with_context(
     resolved: &Value,
     refuted_hypotheses: &[String],
 ) -> Option<Value> {
+    choose_intervention_with_policy(
+        adaptation,
+        failed_tool,
+        failed_arguments,
+        environment_changed,
+        resolved,
+        refuted_hypotheses,
+        &json!({}),
+    )
+}
+
+/// Same selection, with weights supplied by the algorithm space. The harness
+/// owns execution; the selected algorithm owns only this scoring choice.
+#[allow(clippy::too_many_arguments)]
+pub fn choose_intervention_with_policy(
+    adaptation: &Value,
+    failed_tool: &str,
+    failed_arguments: &Value,
+    environment_changed: bool,
+    resolved: &Value,
+    refuted_hypotheses: &[String],
+    algorithm: &Value,
+) -> Option<Value> {
     use crate::engine::program::{predicate_verdict, PredicateVerdict};
 
+    let weight = |name: &str, fallback: f64| {
+        algorithm["parameters"][name].as_f64().unwrap_or(fallback)
+    };
+    let discrimination_weight = weight("discriminationWeight", 1.0);
+    let progress_weight = weight("progressWeight", 1.0);
+    let cost_weight = weight("costWeight", 1.0);
+    let uncertainty_weight = weight("uncertaintyWeight", 0.5);
     let failed_key = intervention_key(failed_tool, failed_arguments);
     let hypotheses = adaptation["hypotheses"]
         .as_array()
@@ -308,12 +338,14 @@ pub fn choose_intervention_with_context(
             let uncertainty = item["uncertainty"].as_f64().unwrap_or(0.5);
             let cost = item["estimatedCost"].as_f64().unwrap_or(0.5).max(0.0);
             let mut score = if cause_unclear {
-                discrimination * 2.0 + expected_progress * 0.5
+                discrimination * 2.0 * discrimination_weight
+                    + expected_progress * 0.5 * progress_weight
             } else {
-                expected_progress * 2.0 + discrimination * 0.5
+                expected_progress * 2.0 * progress_weight
+                    + discrimination * 0.5 * discrimination_weight
             };
             score += historical_effect.unwrap_or(0.0);
-            score -= cost + uncertainty;
+            score -= cost * cost_weight + uncertainty * uncertainty_weight;
             if precondition_status == "unknown" {
                 score -= 0.5;
             }
@@ -327,6 +359,7 @@ pub fn choose_intervention_with_context(
                 "preconditionStatus": precondition_status,
                 "preconditions": preconditions,
                 "causeUnclear": cause_unclear,
+                "algorithmRevision": algorithm["revision"],
                 "score": score,
             });
             let mut item = item.clone();

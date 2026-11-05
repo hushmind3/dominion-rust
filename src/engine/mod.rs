@@ -1,5 +1,6 @@
 pub mod goal_control;
 pub mod adaptation_loop;
+pub mod algorithms;
 pub mod attachments;
 pub mod backup_keys;
 pub mod bridge;

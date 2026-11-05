@@ -351,7 +351,28 @@ pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
                         .is_some_and(|id| in_canary_bucket(&scope.session_id, id)))
         })
         .map(|mut improvement| {
-            let estimate = strategy_estimate(&improvement);
+            let mut estimate = strategy_estimate(&improvement);
+            let algorithm = crate::engine::algorithms::active(state, "strategy.selection");
+            let penalty = |name: &str, fallback: f64| {
+                algorithm
+                    .as_ref()
+                    .and_then(|item| item["parameters"][name].as_f64())
+                    .unwrap_or(fallback)
+            };
+            let benefit = estimate["estimatedBenefit"].as_f64().unwrap_or(0.0);
+            let similarity = estimate["environmentSimilarity"].as_f64().unwrap_or(0.5);
+            let risk = estimate["failureRisk"].as_f64().unwrap_or(0.5);
+            let cost = estimate["expectedCost"].as_f64().unwrap_or(0.1);
+            let uncertainty = estimate["uncertainty"].as_f64().unwrap_or(0.5);
+            let score = benefit + 0.3 * similarity
+                - risk * penalty("riskPenalty", 0.5)
+                - cost * penalty("costWeight", 0.2)
+                - uncertainty * penalty("uncertaintyPenalty", 0.3);
+            estimate["score"] = json!(score);
+            estimate["algorithmRevision"] = algorithm
+                .as_ref()
+                .map(|item| item["revision"].clone())
+                .unwrap_or(Value::Null);
             improvement["selectionEstimate"] = estimate.clone();
             improvement["selectionScore"] = estimate["score"].clone();
             improvement["selectionUncertainty"] = estimate["uncertainty"].clone();
@@ -368,6 +389,9 @@ pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
     let mut selected = candidates.iter().take(6).cloned().collect::<Vec<_>>();
     // Exploration: if a high-uncertainty strategy was left out, spend one
     // slot on it instead of always exploiting the current leaders.
+    let explore_enabled = crate::engine::algorithms::variant(state, "strategy.selection")
+        != "exploit-only";
+    if explore_enabled {
     if let Some(explore) = candidates
         .iter()
         .skip(selected.len())
@@ -389,6 +413,7 @@ pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
             selected.pop();
         }
         selected.push(explore.clone());
+    }
     }
     // Softmax over the recorded scores gives the real selection probability
     // for the snapshot instead of pretending every arm is played at 1.0.

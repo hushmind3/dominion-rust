@@ -1,6 +1,7 @@
 mod response;
 #[cfg(test)]
 mod tests;
+pub mod algorithms;
 pub mod translation;
 pub mod settings;
 pub mod goals;
@@ -77,6 +78,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/run-wakes", get(system::run_wakes))
         .route("/api/experiment-requests", get(system::experiment_requests))
         .route("/api/optimizers", get(experiments::optimizers))
+        .route("/api/algorithms", get(algorithms::list).post(algorithms::register))
+        .route("/api/algorithms/generate", post(algorithms::generate))
+        .route("/api/algorithms/:id/activate", post(algorithms::activate))
+        .route("/api/algorithms/:id/disable", post(algorithms::disable))
         .route("/api/experiment-requests/claim", post(experiments::claim))
         .route(
             "/api/experiment-requests/release-runner",
