@@ -2965,7 +2965,10 @@ fn a_paused_program_resumes_after_restart_without_repeating_completed_steps() {
         "nodes":[
             {"type":"call_tool","id":"step1","tool":"workspace_write","inputs":{"path":"step1.txt","content":"ONE"},"saveAs":"step1"},
             {"type":"model_decision","id":"pause"},
-            {"type":"call_tool","id":"step2","tool":"workspace_write","inputs":{"path":"step2.txt","content":"TWO"},"saveAs":"step2"}
+            {"type":"branch","id":"branch-after-restart",
+             "predicate":{"type":"exists","from":"step1","path":"/path"},
+             "then":[{"type":"call_tool","id":"step2","tool":"workspace_write","inputs":{"path":"step2.txt","content":"TWO"},"saveAs":"step2"}],
+             "else":[{"type":"call_tool","id":"wrong","tool":"workspace_write","inputs":{"path":"wrong.txt","content":"STALE"}}]}
         ]
     });
     let activated = app.post(
@@ -3020,7 +3023,15 @@ fn a_paused_program_resumes_after_restart_without_repeating_completed_steps() {
         std::fs::read_to_string(root.join("step2.txt")).unwrap_or_default(),
         "TWO"
     );
+    assert!(!root.join("wrong.txt").exists(), "restart took a branch without durable observations");
     let executions = app.get("/api/executions");
+    assert!(
+        executions.as_array().unwrap().iter().any(|execution| {
+            execution["resumedFromExecutionId"].is_string()
+                && execution["programCheckpoint"]["resolvedInputs"]["step1"]["path"].is_string()
+        }),
+        "completed program observation disappeared across process restart: {executions}"
+    );
     let step1_writes = executions
         .as_array()
         .unwrap()
