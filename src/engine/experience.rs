@@ -376,7 +376,8 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
             "intervention": {
                 "tool": selected_tool,
                 "inputShape": selected_shape,
-                "sampleInputs": adaptation["selected"]["inputs"],
+                // Store the parameter *schema*, not old file contents, API
+                // tokens, paths or other potentially private argument values.
             },
             "supportingCases": [],
             "counterexamples": [],
@@ -449,8 +450,8 @@ pub fn record_rule_counterexamples(
         let Some(id) = hint["id"].as_str() else { continue };
         let Some(mut rule) = state.store.get("experience_rule", id) else { continue };
         if rule["intervention"]["tool"] != selected["tool"]
-            || input_shape(&rule["intervention"]["sampleInputs"])
-                != input_shape(&selected["inputs"]) {
+            || rule["intervention"]["inputShape"].as_str()
+                != input_shape(&selected["inputs"]).as_deref() {
             continue;
         }
         let mut examples = rule["counterexamples"].as_array().cloned().unwrap_or_default();
