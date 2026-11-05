@@ -1744,6 +1744,30 @@ struct ProgramFrame {
     paused: bool,
 }
 
+/// Rewrites ids inside a loop body so the same node in two iterations is a
+/// different durable operation. `saveAs` keeps the original binding name.
+fn scope_program_node_ids(node: &Value, prefix: &str) -> Value {
+    let mut copy = node.clone();
+    let node_type = node["type"].as_str().unwrap_or("");
+    if node_type != "observe" {
+        if let Some(id) = node["id"].as_str().filter(|value| !value.is_empty()) {
+            copy["id"] = json!(format!("{prefix}:{id}"));
+            if matches!(node_type, "call_tool" | "delegate") && copy["saveAs"].is_null() {
+                copy["saveAs"] = json!(id);
+            }
+        }
+    }
+    for key in ["nodes", "then", "else", "body"] {
+        if let Some(children) = node[key].as_array() {
+            copy[key] = json!(children
+                .iter()
+                .map(|child| scope_program_node_ids(child, prefix))
+                .collect::<Vec<_>>());
+        }
+    }
+    copy
+}
+
 /// Executes nodes recursively so Sequence/Branch/Parallel/Loop can contain any
 /// supported node. All side effects go through the same tool gateway.
 #[allow(clippy::too_many_arguments)]
@@ -2012,10 +2036,13 @@ fn execute_nodes<'a>(
                 "loop" => {
                     let body = node["body"].as_array().cloned().unwrap_or_default();
                     let max = node["maxIterations"].as_u64().unwrap_or(3).min(16);
-                    if !checkpoint["loops"].is_object() {
-                        checkpoint["loops"] = json!({});
+                    if node_id.is_empty() {
+                        return Err("loop node needs an id for durable iteration recovery".into());
                     }
-                    let mut iterations = checkpoint["loops"][node_id]
+                    if !checkpoint["loopProgress"].is_object() {
+                        checkpoint["loopProgress"] = json!({});
+                    }
+                    let mut iterations = checkpoint["loopProgress"][node_id]
                         .as_u64()
                         .unwrap_or(0);
                     while iterations < max {
@@ -2025,16 +2052,21 @@ fn execute_nodes<'a>(
                         )? {
                             break;
                         }
+                        let prefix = format!("{node_id}:{iterations}");
+                        let scoped = body
+                            .iter()
+                            .map(|child| scope_program_node_ids(child, &prefix))
+                            .collect::<Vec<_>>();
                         let frame = execute_nodes(
                             ctx,
-                            body.clone(),
+                            scoped,
                             resolved,
                             checkpoint,
                             budget.clone(),
                             op_seq,
                             depth + 1,
                             persist,
-                            false,
+                            true,
                         )
                         .await?;
                         resolved = frame.resolved;
@@ -2044,7 +2076,7 @@ fn execute_nodes<'a>(
                         messages.extend(frame.messages);
                         iterations += 1;
                         checkpoint["loopIterations"] = json!(iterations);
-                        checkpoint["loops"][node_id] = json!(iterations);
+                        checkpoint["loopProgress"][node_id] = json!(iterations);
                         checkpoint["resolvedInputs"] = resolved.clone();
                         if persist {
                             save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
