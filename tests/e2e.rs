@@ -1299,3 +1299,154 @@ fn correction_turn_failure_still_enqueues_reflection() {
         "reflection produced no experience"
     );
 }
+
+#[test]
+fn procedure_violation_blocks_the_target_and_repairs_with_the_prerequisite() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().cloned().unwrap_or_default();
+        let system = messages
+            .first()
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        if system.contains("반성기") {
+            let reflection = json!({
+                "rootCause": "audit를 먼저 만들지 않고 report를 작성했다",
+                "expected": "audit 먼저",
+                "actual": "report만 작성",
+                "lesson": "report를 쓰기 전에 audit을 먼저 쓴다",
+                "avoid": "선행 작업을 생략하지 않는다",
+                "strategy": {
+                    "text": "report를 쓰기 전에 audit을 먼저 쓴다",
+                    "rationale": "주인의 교정에서 확인된 선행 조건",
+                    "verification": {
+                        "type": "procedure",
+                        "appliesTo": { "requestContains": ["report.txt"] },
+                        "before": [{
+                            "when": { "tool": "workspace_write", "path": "report.txt" },
+                            "require": { "tool": "workspace_write", "path": "audit.txt" }
+                        }],
+                        "after": [{
+                            "kind": "file_contains",
+                            "path": "audit.txt",
+                            "text": "audit-ok"
+                        }]
+                    }
+                },
+                "skill": null,
+                "memory": null
+            })
+            .to_string();
+            return vec![json!({"choices":[{"delta":{"content":reflection},"finish_reason":"stop"}]})];
+        }
+        if system.contains("증거 기반 학습기") {
+            let empty = json!({
+                "memories": [],
+                "skill": null,
+                "strategies": [],
+                "toolPolicies": [],
+                "harnessProposal": null
+            })
+            .to_string();
+            return vec![json!({"choices":[{"delta":{"content":empty},"finish_reason":"stop"}]})];
+        }
+        let last_user = messages
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "user")
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        if last_user.contains("아니") {
+            return vec![json!({"choices":[{"delta":{"content":"알겠습니다."},"finish_reason":"stop"}]})];
+        }
+        let last_tool = messages
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        if last_tool.contains("procedureViolation") {
+            return vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"audit-call","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"audit.txt\",\"content\":\"audit-ok\"}"}}]},"finish_reason":"tool_calls"}]})];
+        }
+        if last_tool.contains("audit.txt") && !last_tool.contains("report.txt") {
+            return vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"report-call","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"report.txt\",\"content\":\"ok\"}"}}]},"finish_reason":"tool_calls"}]})];
+        }
+        if last_tool.contains("report.txt") {
+            return vec![json!({"choices":[{"delta":{"content":"절차를 지켜 완료했습니다."},"finish_reason":"stop"}]})];
+        }
+        vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"first-report","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"report.txt\",\"content\":\"ok\"}"}}]},"finish_reason":"tool_calls"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll": true}));
+
+    let session = app.post("/api/sessions", &json!({"title":"procedure"}));
+    let session_id = session["id"].as_str().unwrap();
+    let baseline = app.chat(&json!({
+        "sessionId": session_id,
+        "input": "report.txt 파일을 만들고 내용을 ok로 저장해.",
+        "toolsEnabled": true,
+        "autoLearning": false
+    }));
+    assert!(baseline.contains("assistant_saved"), "{baseline}");
+
+    let correction = app.chat(&json!({
+        "sessionId": session_id,
+        "input": "아니, report.txt를 쓰기 전에 audit.txt를 먼저 만들어야 해. 다시 해.",
+        "toolsEnabled": false,
+        "autoLearning": true
+    }));
+    assert!(correction.contains("error"), "{correction}");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut reflected = false;
+    while Instant::now() < deadline {
+        if app
+            .get("/api/jobs")
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["kind"] == "reflect" && job["status"] == "completed")
+        {
+            reflected = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(reflected, "reflection did not complete");
+
+    let _ = std::fs::remove_file(app._root.join("report.txt"));
+    let _ = std::fs::remove_file(app._root.join("audit.txt"));
+    let after = app.post("/api/sessions", &json!({"title":"procedure after"}));
+    let after_id = after["id"].as_str().unwrap();
+    let stream = app.chat(&json!({
+        "sessionId": after_id,
+        "input": "report.txt 파일을 만들고 내용을 ok로 저장해.",
+        "toolsEnabled": true,
+        "autoLearning": false
+    }));
+    assert!(
+        stream.contains("절차 위반") || stream.contains("procedureViolation"),
+        "{stream}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("audit.txt")).unwrap_or_default(),
+        "audit-ok"
+    );
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("report.txt")).unwrap_or_default(),
+        "ok"
+    );
+    let executions = app.get("/api/executions");
+    let execution = executions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|execution| execution["sessionId"] == after_id)
+        .expect("post execution");
+    let compliance = execution["strategyCompliance"].as_array().expect("compliance");
+    assert!(compliance.iter().any(|item| {
+        item["applicable"] == true
+            && item["result"]["verified"] == true
+            && item["result"]["followed"] == true
+    }));
+}

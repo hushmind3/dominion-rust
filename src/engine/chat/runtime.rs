@@ -113,6 +113,8 @@ async fn run_turn_with_policy(
     );
     let applied_improvement_ids =
         crate::engine::improve::injected_ids(state, &improvement_scope);
+    let strategy_candidates =
+        crate::engine::improve::active_values(state, &improvement_scope);
     let execution = state
         .store
         .put(
@@ -130,7 +132,9 @@ async fn run_turn_with_policy(
                 "modelCalls": 0,
                 "toolCalls": 0,
                 "tokens": 0,
+                "request": request.input,
                 "appliedImprovementIds": applied_improvement_ids,
+                "strategyCandidates": strategy_candidates,
             }),
         )
         .ok_or("실행 기록을 저장할 수 없습니다.")?;
@@ -203,6 +207,11 @@ async fn run_turn_body(
         .store
         .get("session", session_id)
         .ok_or("Session not found")?;
+    let strategy_candidates = state
+        .store
+        .get("execution", execution_id)
+        .and_then(|execution| execution["strategyCandidates"].as_array().cloned())
+        .unwrap_or_default();
 
     if record_input {
         let attachments =
@@ -252,6 +261,7 @@ async fn run_turn_body(
         .as_deref()
         .and_then(|text| prepare_owner_action(state, text));
     let mut acceptance_retries = 0usize;
+    let mut procedure_repairs = 0usize;
 
     let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
 
@@ -398,6 +408,70 @@ async fn run_turn_body(
         }
 
         if completion.tool_calls.is_empty() {
+            if !force_final && procedure_repairs < 2 {
+                let mut operations = state
+                    .store
+                    .all("execution_operation")
+                    .into_iter()
+                    .filter(|operation| {
+                        operation["runId"].as_str() == Some(execution_id)
+                            && operation["status"].as_str() == Some("completed")
+                    })
+                    .collect::<Vec<_>>();
+                operations.sort_by(|left, right| {
+                    left["startedAt"]
+                        .as_str()
+                        .unwrap_or("")
+                        .cmp(right["startedAt"].as_str().unwrap_or(""))
+                        .then_with(|| {
+                            left["id"].as_str().cmp(&right["id"].as_str())
+                        })
+                });
+                let violations = strategy_candidates
+                    .iter()
+                    .filter(|strategy| {
+                        crate::engine::procedure::applies(
+                            strategy,
+                            &request.input,
+                            None,
+                            None,
+                        )
+                    })
+                    .filter_map(|strategy| {
+                        let result = crate::engine::procedure::evaluate(
+                            strategy,
+                            &operations,
+                            &state.config.workspace,
+                        );
+                        if result["verified"].as_bool() == Some(true)
+                            && result["followed"].as_bool() == Some(false)
+                        {
+                            Some(json!({
+                                "strategyId": strategy["id"],
+                                "text": strategy["text"],
+                                "violations": result["violations"],
+                            }))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if !violations.is_empty() {
+                    procedure_repairs += 1;
+                    let _ = tx.send(json!({
+                        "type": "procedure_retry",
+                        "violations": violations,
+                    }));
+                    messages.push(json!({
+                        "role":"system",
+                        "content": format!(
+                            "방금 실행은 학습된 절차를 위반했습니다. 도구를 다시 호출해 아래 위반을 수정한 뒤 최종 답변을 작성하세요. 위반: {}",
+                            serde_json::to_string(&violations).unwrap_or_default()
+                        )
+                    }));
+                    continue;
+                }
+            }
             final_content = if force_final {
                 // Never save a raw tool-call fragment as the answer.
                 let (_, cleaned) = parse_text_tool_calls(&completion.content);
@@ -585,6 +659,42 @@ async fn run_turn_body(
                     continue;
                 }
             };
+            let completed_operations = state
+                .store
+                .all("execution_operation")
+                .into_iter()
+                .filter(|operation| {
+                    operation["runId"].as_str() == Some(execution_id)
+                        && operation["status"].as_str() == Some("completed")
+                })
+                .collect::<Vec<_>>();
+            let procedure_violation = strategy_candidates.iter().find_map(|strategy| {
+                if !crate::engine::procedure::applies(
+                    strategy,
+                    &request.input,
+                    Some(&call.name),
+                    Some(&arguments),
+                ) {
+                    return None;
+                }
+                crate::engine::procedure::missing_requirement(
+                    strategy,
+                    &call.name,
+                    &arguments,
+                    &completed_operations,
+                )
+            });
+            if let Some(error) = procedure_violation {
+                record_soft_tool_error(
+                    state, tx, session_id, request, execution_id, &call.name, &call.id,
+                    &error, metrics,
+                );
+                messages.push(json!({
+                    "role":"tool","tool_call_id":call.id,
+                    "content": json!({"error":error,"procedureViolation":true}).to_string()
+                }));
+                continue;
+            }
             let call_key = format!("{}:{}", call.name, arguments);
             let repeat = {
                 let counter = call_counts.entry(call_key).or_insert(0);
@@ -984,6 +1094,46 @@ pub(super) fn finalize_execution(
             }
         }
     }
+    let mut operations = state
+        .store
+        .all("execution_operation")
+        .into_iter()
+        .filter(|operation| operation["runId"].as_str() == Some(execution_id))
+        .collect::<Vec<_>>();
+    operations.sort_by(|left, right| {
+        left["startedAt"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(right["startedAt"].as_str().unwrap_or(""))
+            .then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
+    });
+    let request_text = record["request"].as_str().unwrap_or("");
+    let compliance = record["strategyCandidates"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|strategy| {
+            let result = crate::engine::procedure::evaluate(
+                strategy,
+                &operations,
+                &state.config.workspace,
+            );
+            let applicable = crate::engine::procedure::applies(
+                strategy,
+                request_text,
+                None,
+                None,
+            );
+            json!({
+                "strategyId": strategy["id"],
+                "text": strategy["text"],
+                "applicable": applicable,
+                "result": result,
+            })
+        })
+        .collect::<Vec<_>>();
+    record["strategyCompliance"] = json!(compliance);
     crate::engine::improve::record_execution(state, &record);
     if let Some(saved) = state.store.put("execution", &record) {
         state.bus.record("execution", &saved);

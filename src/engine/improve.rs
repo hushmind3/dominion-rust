@@ -159,6 +159,8 @@ pub fn propose(
             "tool": tool_name,
             "evidenceMessageIds": evidence_ids,
             "supersedes": supersedes,
+            "verification": {"type": "unverified"},
+            "version": 1,
             "status": status,
             "reason": reason,
             "baselineSuccess": baseline,
@@ -283,7 +285,7 @@ fn baseline_success(state: &AppState, scope: &MemoryScope) -> f64 {
     }
 }
 
-fn active(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
+pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
     state
         .store
         .all("improvement")
@@ -303,7 +305,7 @@ fn active(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
 
 /// IDs of the improvements that will be injected into this turn's prompt.
 pub fn injected_ids(state: &AppState, scope: &MemoryScope) -> Vec<String> {
-    active(state, scope)
+    active_values(state, scope)
         .into_iter()
         .filter_map(|improvement| improvement["id"].as_str().map(str::to_string))
         .collect()
@@ -312,7 +314,7 @@ pub fn injected_ids(state: &AppState, scope: &MemoryScope) -> Vec<String> {
 /// Adopted strategies/tool policies for the current agent and shared partition.
 pub fn context_block(state: &AppState, scope: &MemoryScope) -> Option<String> {
     let mut lines = Vec::new();
-    for improvement in active(state, scope) {
+    for improvement in active_values(state, scope) {
         let text = improvement["text"].as_str().unwrap_or("").trim();
         if text.is_empty() {
             continue;
@@ -323,6 +325,16 @@ pub fn context_block(state: &AppState, scope: &MemoryScope) -> Option<String> {
             _ => continue,
         };
         lines.push(format!("- [{label}] {text}"));
+        if improvement["verification"]["type"].as_str() == Some("procedure") {
+            lines.push(format!(
+                "  required verification: {}",
+                improvement["verification"]
+                    .to_string()
+                    .chars()
+                    .take(800)
+                    .collect::<String>()
+            ));
+        }
     }
     (!lines.is_empty()).then(|| {
         format!(
@@ -351,7 +363,18 @@ pub fn record_execution(state: &AppState, execution: &Value) {
                 .collect::<std::collections::HashSet<_>>()
         })
         .unwrap_or_default();
-    let tool_calls = execution["toolCalls"].as_u64().unwrap_or(0);
+    let compliance = execution["strategyCompliance"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let id = item["strategyId"].as_str()?;
+                    Some((id.to_string(), item.clone()))
+                })
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .unwrap_or_default();
     for mut improvement in state.store.all("improvement") {
         let id = improvement["id"].as_str().unwrap_or("");
         if improvement["status"].as_str() != Some("adopted")
@@ -389,16 +412,22 @@ pub fn record_execution(state: &AppState, execution: &Value) {
                 .filter(|operation| operation["status"] == "failed")
                 .count() as u64;
         } else {
-            // A strategy is only tested by a turn that actually did work.
-            if tool_calls == 0 {
+            let Some(entry) = compliance.get(id) else {
+                // No compliance record: an unverified strategy is not a trial.
+                continue;
+            };
+            if entry["applicable"].as_bool() != Some(true)
+                || entry["result"]["verified"].as_bool() != Some(true)
+            {
                 continue;
             }
             uses += 1;
-            if completed {
+            if entry["result"]["followed"].as_bool() == Some(true) && completed {
                 successes += 1;
             } else {
                 failures += 1;
             }
+            improvement["lastCompliance"] = entry["result"].clone();
         }
         improvement["uses"] = json!(uses);
         improvement["successes"] = json!(successes);
@@ -427,6 +456,25 @@ pub fn record_execution(state: &AppState, execution: &Value) {
             state.bus.record("improvement", &saved);
         }
     }
+}
+
+/// Attaches a normalized, machine-checkable procedure to a strategy.
+pub fn attach_verification(
+    state: &AppState,
+    id: &str,
+    verification: &Value,
+) -> Option<Value> {
+    let mut record = state.store.get("improvement", id)?;
+    record["verification"] = verification.clone();
+    record["version"] = json!(record["version"].as_u64().unwrap_or(1) + 1);
+    record["verifiedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    let saved = state.store.put("improvement", &record)?;
+    state.bus.record("improvement", &saved);
+    state.store.audit(
+        "improvement.verification_attached",
+        json!({"id": saved["id"], "type": verification["type"]}),
+    );
+    Some(saved)
 }
 
 pub fn list(state: &AppState) -> Vec<Value> {
@@ -526,7 +574,9 @@ mod tests {
         .unwrap();
         assert_eq!(adopted["status"], "adopted");
         for index in 0..5 {
-            let execution = json!({"id":format!("e{index}"),"sessionId":"s","agentId":"a","status":"failed","toolCalls":1,"appliedImprovementIds":[adopted["id"]]});
+            let execution = json!({"id":format!("e{index}"),"sessionId":"s","agentId":"a","status":"failed","toolCalls":1,"appliedImprovementIds":[adopted["id"]],
+                "strategyCompliance":[{"strategyId":adopted["id"],"applicable":true,
+                    "result":{"verified":true,"followed":false}}]});
             state.store.put("execution", &execution);
             record_execution(&state, &execution);
         }
@@ -593,7 +643,9 @@ mod tests {
         )
         .unwrap();
         for index in 0..5 {
-            let execution = json!({"id":format!("ok{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"appliedImprovementIds":[record["id"]]});
+            let execution = json!({"id":format!("ok{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"appliedImprovementIds":[record["id"]],
+                "strategyCompliance":[{"strategyId":record["id"],"applicable":true,
+                    "result":{"verified":true,"followed":true}}]});
             state.store.put("execution", &execution);
             record_execution(&state, &execution);
         }
@@ -624,7 +676,9 @@ mod tests {
         )
         .unwrap();
         for index in 0..5 {
-            let execution = json!({"id":format!("v{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"appliedImprovementIds":[first["id"]]});
+            let execution = json!({"id":format!("v{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"appliedImprovementIds":[first["id"]],
+                "strategyCompliance":[{"strategyId":first["id"],"applicable":true,
+                    "result":{"verified":true,"followed":true}}]});
             state.store.put("execution", &execution);
             record_execution(&state, &execution);
         }

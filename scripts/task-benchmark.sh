@@ -9,7 +9,7 @@
 # rounds and a second agent should follow it.
 set -uo pipefail
 
-BASE="${DOMINION_BASE:-http://127.0.0.1:4317}"
+BASE="${DOMINION_BASE:-}"
 PROVIDER_NAME="${BENCH_PROVIDER:-Ollama Qwen3 4B}"
 ROUNDS="${BENCH_ROUNDS:-3}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -82,6 +82,14 @@ else:
   return 1
 }
 
+if [ -z "$BASE" ]; then
+  echo "DOMINION_BASE must point to an isolated benchmark engine." >&2
+  exit 2
+fi
+if [ "$BASE" = "http://127.0.0.1:4317" ] && [ "${ALLOW_LIVE_BENCHMARK:-0}" != "1" ]; then
+  echo "Refusing to modify the live 4317 service. Set ALLOW_LIVE_BENCHMARK=1 only if intentional." >&2
+  exit 2
+fi
 PROVIDER_ID=$(provider_id)
 if [ -z "$PROVIDER_ID" ]; then
   echo "provider not found: $PROVIDER_NAME" >&2

@@ -497,6 +497,14 @@ fn apply_learning(
                 improvements += 1;
                 strategy_items.push(strategy.text.clone());
             }
+            let verification = crate::engine::procedure::normalize(&strategy.verification);
+            if verification["type"].as_str() == Some("procedure") {
+                crate::engine::improve::attach_verification(
+                    state,
+                    record["id"].as_str().unwrap_or(""),
+                    &verification,
+                );
+            }
         }
     }
     for policy in &learning.tool_policies {
@@ -565,6 +573,7 @@ struct LearnedStrategy {
     rationale: String,
     scope: String,
     source_ids: Vec<String>,
+    verification: Value,
 }
 
 struct LearnedToolPolicy {
@@ -661,6 +670,7 @@ fn parse_learning(text: &str) -> Result<Learning, String> {
                         rationale: item["rationale"].as_str().unwrap_or("").chars().take(1000).collect(),
                         scope: if item["scope"].as_str() == Some("agent") { "agent".into() } else { "shared".into() },
                         source_ids: source_ids(item),
+                        verification: item["verification"].clone(),
                     })
                 })
                 .take(4)
