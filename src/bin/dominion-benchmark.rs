@@ -257,8 +257,32 @@ fn repo_digest() -> Value {
     })
 }
 
+/// Canonicalize existing ancestors as we walk. std::fs::canonicalize on
+/// the whole path fails for a new benchmark root, and returning the original
+/// path would let /tmp/../home or a symlink escape the disposable area.
 fn canonical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    use std::path::Component;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")).join(path)
+    };
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
+            Component::RootDir => resolved.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => { resolved.pop(); }
+            Component::Normal(name) => {
+                resolved.push(name);
+                if let Ok(real) = std::fs::canonicalize(&resolved) {
+                    resolved = real;
+                }
+            }
+        }
+    }
+    resolved
 }
 
 fn under(path: &Path, root: &Path) -> bool {
@@ -1683,6 +1707,17 @@ mod tests {
         assert!(validate_root(&root, 5000).is_ok());
         assert!(validate_root(&root, 4317).is_err());
         assert!(validate_root(Path::new("/tmp/../Users"), 5000).is_err());
+        // A nonexistent leaf is valid only if its resolved parent remains
+        // inside the scratch tree.
+        assert!(validate_root(&root.join("new-leaf"), 5000).is_ok());
+        assert!(validate_root(&root.join("../../outside-benchmark"), 5000).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let link = root.join("external-link");
+            symlink("/etc", &link).unwrap();
+            assert!(validate_root(&link.join("future-child"), 5000).is_err());
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 }
