@@ -408,7 +408,7 @@ async fn run_turn_body(
         }
 
         if completion.tool_calls.is_empty() {
-            if !force_final && procedure_repairs < 2 {
+            {
                 let mut operations = state
                     .store
                     .all("execution_operation")
@@ -449,6 +449,7 @@ async fn run_turn_body(
                             Some(json!({
                                 "strategyId": strategy["id"],
                                 "text": strategy["text"],
+                                "authority": strategy["authority"],
                                 "violations": result["violations"],
                             }))
                         } else {
@@ -457,19 +458,30 @@ async fn run_turn_body(
                     })
                     .collect::<Vec<_>>();
                 if !violations.is_empty() {
-                    procedure_repairs += 1;
-                    let _ = tx.send(json!({
-                        "type": "procedure_retry",
-                        "violations": violations,
-                    }));
-                    messages.push(json!({
-                        "role":"system",
-                        "content": format!(
-                            "방금 실행은 학습된 절차를 위반했습니다. 도구를 다시 호출해 아래 위반을 수정한 뒤 최종 답변을 작성하세요. 위반: {}",
+                    let standing = violations.iter().any(|violation| {
+                        violation["authority"].as_str() == Some("standing")
+                    });
+                    if !force_final && procedure_repairs < 2 {
+                        procedure_repairs += 1;
+                        let _ = tx.send(json!({
+                            "type": "procedure_retry",
+                            "violations": violations,
+                        }));
+                        messages.push(json!({
+                            "role":"system",
+                            "content": format!(
+                                "방금 실행은 학습된 절차를 위반했습니다. 도구를 다시 호출해 아래 위반을 수정한 뒤 최종 답변을 작성하세요. 위반: {}",
+                                serde_json::to_string(&violations).unwrap_or_default()
+                            )
+                        }));
+                        continue;
+                    }
+                    if standing {
+                        return Err(format!(
+                            "필수 절차 위반으로 완료할 수 없습니다: {}",
                             serde_json::to_string(&violations).unwrap_or_default()
-                        )
-                    }));
-                    continue;
+                        ));
+                    }
                 }
             }
             final_content = if force_final {
@@ -1128,6 +1140,7 @@ pub(super) fn finalize_execution(
             json!({
                 "strategyId": strategy["id"],
                 "text": strategy["text"],
+                "authority": strategy["authority"],
                 "applicable": applicable,
                 "result": result,
             })

@@ -61,26 +61,49 @@ pub fn normalize(value: &Value) -> Value {
     if value["type"].as_str() != Some("procedure") {
         return unverified();
     }
-    let before = value["before"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter(|item| valid_step(&item["when"]) && valid_step(&item["require"]))
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let after = value["after"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter(|item| valid_after(item))
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let mut errors = Vec::new();
+    if !value["appliesTo"].is_null() && !value["appliesTo"].is_object() {
+        errors.push("appliesTo must be an object".to_string());
+    }
+    let before = match value["before"].as_array() {
+        Some(items) => {
+            for (index, item) in items.iter().enumerate() {
+                if !valid_step(&item["when"]) {
+                    errors.push(format!("before[{index}].when is invalid"));
+                }
+                if !valid_step(&item["require"]) {
+                    errors.push(format!("before[{index}].require is invalid"));
+                }
+            }
+            items.clone()
+        }
+        None if value["before"].is_null() => Vec::new(),
+        None => {
+            errors.push("before must be an array".to_string());
+            Vec::new()
+        }
+    };
+    let after = match value["after"].as_array() {
+        Some(items) => {
+            for (index, item) in items.iter().enumerate() {
+                if !valid_after(item) {
+                    errors.push(format!("after[{index}] is invalid"));
+                }
+            }
+            items.clone()
+        }
+        None if value["after"].is_null() => Vec::new(),
+        None => {
+            errors.push("after must be an array".to_string());
+            Vec::new()
+        }
+    };
+    if !errors.is_empty() {
+        return json!({
+            "type": "invalid",
+            "reason": errors.join("; "),
+        });
+    }
     if before.is_empty() && after.is_empty() {
         return unverified();
     }
@@ -264,18 +287,24 @@ fn check_after(condition: &Value, operations: &[Value], workspace: &Path) -> boo
 /// `verified=false` means the strategy has no machine-checkable procedure.
 pub fn evaluate(strategy: &Value, operations: &[Value], workspace: &Path) -> Value {
     let verification = &strategy["verification"];
-    if verification["type"].as_str() != Some("procedure") {
+    let verification_type = verification["type"].as_str().unwrap_or("unverified");
+    if verification_type != "procedure" {
         return json!({
             "verified": false,
+            "triggered": false,
             "followed": false,
-            "violations": ["unverified"],
+            "status": verification_type,
+            "reason": verification["reason"],
+            "violations": [verification_type],
             "checks": [],
         });
     }
     let mut violations = Vec::new();
     let mut checks = Vec::new();
+    let before = verification["before"].as_array().cloned().unwrap_or_default();
+    let mut triggered = before.is_empty();
 
-    for entry in verification["before"].as_array().into_iter().flatten() {
+    for entry in &before {
         let when = &entry["when"];
         let require = &entry["require"];
         let target = operations
@@ -284,9 +313,12 @@ pub fn evaluate(strategy: &Value, operations: &[Value], workspace: &Path) -> Val
         let prerequisite = operations
             .iter()
             .position(|operation| operation_matches(operation, require));
+        if target.is_some() || prerequisite.is_some() {
+            triggered = true;
+        }
         let ok = match (prerequisite, target) {
             (Some(prerequisite), Some(target)) => prerequisite < target,
-            (Some(_), None) => true,
+            (Some(_), None) => false,
             (None, Some(_)) => false,
             (None, None) => true,
         };
@@ -295,6 +327,7 @@ pub fn evaluate(strategy: &Value, operations: &[Value], workspace: &Path) -> Val
             "require": require,
             "when": when,
             "ok": ok,
+            "triggered": target.is_some() || prerequisite.is_some(),
         }));
         if !ok {
             violations.push(json!({
@@ -321,9 +354,19 @@ pub fn evaluate(strategy: &Value, operations: &[Value], workspace: &Path) -> Val
         }
     }
 
+    let followed = triggered && violations.is_empty();
+    let status = if !triggered {
+        "not_triggered"
+    } else if followed {
+        "followed"
+    } else {
+        "violated"
+    };
     json!({
         "verified": true,
-        "followed": violations.is_empty(),
+        "triggered": triggered,
+        "followed": followed,
+        "status": status,
         "violations": violations,
         "checks": checks,
     })
@@ -409,6 +452,29 @@ mod tests {
         ];
         let result = evaluate(&strategy(), &reversed, &dir);
         assert_eq!(result["followed"], false);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn one_invalid_condition_rejects_the_whole_revision() {
+        let mut value = procedure();
+        value["before"][0]["when"] = json!({"path": "report.txt"});
+        let normalized = normalize(&value);
+        assert_eq!(normalized["type"], "invalid");
+        assert!(normalized["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("before[0].when"));
+    }
+
+    #[test]
+    fn empty_execution_is_not_triggered_not_compliant() {
+        let dir = std::env::temp_dir().join(format!("dominion-proc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = evaluate(&strategy(), &[], &dir);
+        assert_eq!(result["triggered"], false);
+        assert_eq!(result["followed"], false);
+        assert_eq!(result["status"], "not_triggered");
         let _ = std::fs::remove_dir_all(dir);
     }
 

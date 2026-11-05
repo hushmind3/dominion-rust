@@ -498,7 +498,7 @@ fn apply_learning(
                 strategy_items.push(strategy.text.clone());
             }
             let verification = crate::engine::procedure::normalize(&strategy.verification);
-            if verification["type"].as_str() == Some("procedure") {
+            if verification["type"].as_str() != Some("unverified") {
                 crate::engine::improve::attach_verification(
                     state,
                     record["id"].as_str().unwrap_or(""),

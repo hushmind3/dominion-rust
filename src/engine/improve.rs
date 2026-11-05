@@ -160,6 +160,7 @@ pub fn propose(
             "evidenceMessageIds": evidence_ids,
             "supersedes": supersedes,
             "verification": {"type": "unverified"},
+            "authority": "adaptive",
             "version": 1,
             "status": status,
             "reason": reason,
@@ -418,6 +419,7 @@ pub fn record_execution(state: &AppState, execution: &Value) {
             };
             if entry["applicable"].as_bool() != Some(true)
                 || entry["result"]["verified"].as_bool() != Some(true)
+                || entry["result"]["triggered"].as_bool() != Some(true)
             {
                 continue;
             }
@@ -456,6 +458,15 @@ pub fn record_execution(state: &AppState, execution: &Value) {
             state.bus.record("improvement", &saved);
         }
     }
+}
+
+/// Owner corrections are standing constraints; learned strategies are adaptive.
+pub fn set_authority(state: &AppState, id: &str, authority: &str) -> Option<Value> {
+    let mut record = state.store.get("improvement", id)?;
+    record["authority"] = json!(authority);
+    let saved = state.store.put("improvement", &record)?;
+    state.bus.record("improvement", &saved);
+    Some(saved)
 }
 
 /// Attaches a normalized, machine-checkable procedure to a strategy.
@@ -576,7 +587,7 @@ mod tests {
         for index in 0..5 {
             let execution = json!({"id":format!("e{index}"),"sessionId":"s","agentId":"a","status":"failed","toolCalls":1,"appliedImprovementIds":[adopted["id"]],
                 "strategyCompliance":[{"strategyId":adopted["id"],"applicable":true,
-                    "result":{"verified":true,"followed":false}}]});
+                    "result":{"verified":true,"triggered":true,"followed":false}}]});
             state.store.put("execution", &execution);
             record_execution(&state, &execution);
         }
@@ -645,7 +656,7 @@ mod tests {
         for index in 0..5 {
             let execution = json!({"id":format!("ok{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"appliedImprovementIds":[record["id"]],
                 "strategyCompliance":[{"strategyId":record["id"],"applicable":true,
-                    "result":{"verified":true,"followed":true}}]});
+                    "result":{"verified":true,"triggered":true,"followed":true}}]});
             state.store.put("execution", &execution);
             record_execution(&state, &execution);
         }
@@ -678,7 +689,7 @@ mod tests {
         for index in 0..5 {
             let execution = json!({"id":format!("v{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"appliedImprovementIds":[first["id"]],
                 "strategyCompliance":[{"strategyId":first["id"],"applicable":true,
-                    "result":{"verified":true,"followed":true}}]});
+                    "result":{"verified":true,"triggered":true,"followed":true}}]});
             state.store.put("execution", &execution);
             record_execution(&state, &execution);
         }

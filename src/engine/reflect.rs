@@ -265,13 +265,18 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 let verification = crate::engine::procedure::normalize(
                     strategy.get("verification").unwrap_or(&empty),
                 );
-                if verification["type"].as_str() == Some("procedure") {
+                if verification["type"].as_str() != Some("unverified") {
                     improve::attach_verification(
                         state,
                         record["id"].as_str().unwrap_or(""),
                         &verification,
                     );
                 }
+                improve::set_authority(
+                    state,
+                    record["id"].as_str().unwrap_or(""),
+                    "standing",
+                );
             }
         }
     }
