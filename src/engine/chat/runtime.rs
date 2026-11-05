@@ -1147,7 +1147,57 @@ pub(super) fn finalize_execution(
         })
         .collect::<Vec<_>>();
     record["strategyCompliance"] = json!(compliance);
-    crate::engine::improve::record_execution(state, &record);
+    let operations_json = serde_json::to_string(&operations).unwrap_or_default();
+    let payload_hash = crate::engine::memory::stable_id(&[
+        &record.to_string(),
+        &operations_json,
+    ]);
+    let marker_id = format!("execution:{execution_id}");
+    let marker = json!({
+        "id": marker_id,
+        "executionId": execution_id,
+        "payloadHash": payload_hash,
+        "statsApplied": false,
+        "execution": record.clone(),
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+    });
+    let inserted = state
+        .store
+        .put_if_absent("execution_finalization", &marker)
+        .is_some();
+    let existing = if inserted {
+        None
+    } else {
+        state.store.get("execution_finalization", &marker_id)
+    };
+    let should_apply = if inserted {
+        true
+    } else {
+        match &existing {
+            Some(existing)
+                if existing["payloadHash"].as_str() == Some(payload_hash.as_str()) =>
+            {
+                existing["statsApplied"].as_bool() != Some(true)
+            }
+            Some(_) => {
+                state.store.audit(
+                    "execution.finalization_conflict",
+                    json!({"executionId": execution_id}),
+                );
+                record["finalizationConflict"] = json!(true);
+                false
+            }
+            None => true,
+        }
+    };
+    if should_apply {
+        crate::engine::improve::record_execution(state, &record);
+        if let Some(mut marker) = state.store.get("execution_finalization", &marker_id) {
+            marker["statsApplied"] = json!(true);
+            marker["appliedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            state.store.put("execution_finalization", &marker);
+        }
+    }
     if let Some(saved) = state.store.put("execution", &record) {
         state.bus.record("execution", &saved);
     }

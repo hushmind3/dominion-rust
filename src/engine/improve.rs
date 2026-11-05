@@ -384,6 +384,18 @@ pub fn record_execution(state: &AppState, execution: &Value) {
         {
             continue;
         }
+        let execution_id = execution["id"].as_str().unwrap_or("");
+        if !execution_id.is_empty()
+            && improvement["appliedExecutionIds"]
+                .as_array()
+                .is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| item.as_str() == Some(execution_id))
+                })
+        {
+            continue;
+        }
         let mut uses = improvement["uses"].as_u64().unwrap_or(0);
         let mut successes = improvement["successes"].as_u64().unwrap_or(0);
         let mut failures = improvement["failures"].as_u64().unwrap_or(0);
@@ -435,6 +447,18 @@ pub fn record_execution(state: &AppState, execution: &Value) {
         improvement["successes"] = json!(successes);
         improvement["failures"] = json!(failures);
         improvement["lastObservedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        let mut applied_ids = improvement["appliedExecutionIds"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !execution_id.is_empty() {
+            applied_ids.push(json!(execution_id));
+            if applied_ids.len() > 200 {
+                applied_ids = applied_ids
+                    .split_off(applied_ids.len().saturating_sub(200));
+            }
+        }
+        improvement["appliedExecutionIds"] = json!(applied_ids);
         if uses >= PROBATION_USES {
             let rate = successes as f64 / uses.max(1) as f64;
             let baseline = improvement["baselineSuccess"].as_f64().unwrap_or(0.5);
@@ -486,6 +510,24 @@ pub fn attach_verification(
         json!({"id": saved["id"], "type": verification["type"]}),
     );
     Some(saved)
+}
+
+/// Re-applies finalization statistics after a crash. `record_execution` is
+/// idempotent per execution id, so replay is safe.
+pub fn recover_finalizations(state: &AppState) {
+    for mut marker in state.store.all("execution_finalization") {
+        if marker["statsApplied"].as_bool() != Some(false) {
+            continue;
+        }
+        if let Some(execution) = marker["execution"].as_object() {
+            record_execution(state, &Value::Object(execution.clone()));
+            marker["statsApplied"] = json!(true);
+            marker["recoveredAt"] = json!(chrono::Utc::now().to_rfc3339());
+            if let Some(saved) = state.store.put("execution_finalization", &marker) {
+                state.bus.record("execution_finalization", &saved);
+            }
+        }
+    }
 }
 
 pub fn list(state: &AppState) -> Vec<Value> {
@@ -769,6 +811,40 @@ mod tests {
         assert!(context_block(&state, &discord)
             .unwrap_or_default()
             .contains("전역 파일 절차"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_same_execution_is_counted_once() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let record = propose(
+            &state,
+            &scope,
+            "strategy",
+            "같은 실행을 두 번 집계하지 않는다",
+            "finalization 재시도에도 카운터가 한 번만 증가해야 한다",
+            &["m1".into()],
+            None,
+            "shared",
+        )
+        .unwrap();
+        let execution = json!({
+            "id":"exec-once","sessionId":"s","agentId":"a","status":"completed",
+            "toolCalls":1,"appliedImprovementIds":[record["id"]],
+            "strategyCompliance":[{
+                "strategyId":record["id"],"applicable":true,
+                "result":{"verified":true,"triggered":true,"followed":true}
+            }]
+        });
+        record_execution(&state, &execution);
+        record_execution(&state, &execution);
+        let stored = state
+            .store
+            .get("improvement", record["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(stored["uses"], 1);
+        assert_eq!(stored["successes"], 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -115,10 +115,30 @@ pub fn normalize(value: &Value) -> Value {
     })
 }
 
-fn contains(value: &Value, needle: &str) -> bool {
+fn normalize_path(value: &str) -> String {
     value
-        .as_str()
-        .is_some_and(|text| text.contains(needle))
+        .trim()
+        .trim_start_matches("./")
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn argument_matches(value: &Value, key: &str, expected: &str) -> bool {
+    let Some(actual) = value[key].as_str() else {
+        return false;
+    };
+    match key {
+        "path" | "file" | "cwd" => normalize_path(actual) == normalize_path(expected),
+        "command" => actual
+            .split_whitespace()
+            .any(|token| {
+                let token = token.trim_matches(|ch: char| ch == '"' || ch == '\'');
+                normalize_path(token) == normalize_path(expected)
+                    || token.ends_with(&format!("/{expected}"))
+            }),
+        _ => actual == expected,
+    }
 }
 
 fn operation_matches(operation: &Value, condition: &Value) -> bool {
@@ -132,10 +152,10 @@ fn operation_matches(operation: &Value, condition: &Value) -> bool {
     }
     if let Some(path) = condition["path"].as_str() {
         let arguments = &operation["arguments"];
-        let path_hit = ["path", "file", "command", "cwd"]
+        if !["path", "file", "command", "cwd"]
             .iter()
-            .any(|key| contains(&arguments[key], path));
-        if !path_hit {
+            .any(|key| argument_matches(arguments, key, path))
+        {
             return false;
         }
     }
@@ -143,11 +163,17 @@ fn operation_matches(operation: &Value, condition: &Value) -> bool {
 }
 
 fn applies_to_path(value: &str, request: &str, args: Option<&Value>) -> bool {
-    request.contains(value)
+    let request_match = if value.contains('/') {
+        normalize_path(request).contains(&normalize_path(value))
+    } else {
+        request.split_whitespace().any(|token| token == value)
+            || request.contains(value)
+    };
+    request_match
         || args.is_some_and(|args| {
             ["path", "file", "command", "cwd"]
                 .iter()
-                .any(|key| contains(&args[key], value))
+                .any(|key| argument_matches(args, key, value))
         })
 }
 
@@ -223,7 +249,7 @@ pub fn missing_requirement(
         if let Some(path) = when["path"].as_str() {
             let hit = ["path", "file", "command", "cwd"]
                 .iter()
-                .any(|key| contains(&arguments[key], path));
+                .any(|key| argument_matches(arguments, key, path));
             if !hit {
                 continue;
             }
@@ -244,11 +270,23 @@ pub fn missing_requirement(
     None
 }
 
+const MAX_PROCEDURE_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
 fn read_workspace_file(workspace: &Path, path: &str) -> Option<String> {
     if !safe_relative(path) {
         return None;
     }
-    std::fs::read_to_string(workspace.join(path)).ok()
+    let candidate = workspace.join(path);
+    let metadata = std::fs::symlink_metadata(&candidate).ok()?;
+    if metadata.file_type().is_symlink() || metadata.len() > MAX_PROCEDURE_FILE_BYTES {
+        return None;
+    }
+    let canonical_workspace = workspace.canonicalize().ok()?;
+    let canonical = candidate.canonicalize().ok()?;
+    if !canonical.starts_with(&canonical_workspace) {
+        return None;
+    }
+    std::fs::read_to_string(canonical).ok()
 }
 
 fn check_after(condition: &Value, operations: &[Value], workspace: &Path) -> bool {
@@ -453,6 +491,39 @@ mod tests {
         let result = evaluate(&strategy(), &reversed, &dir);
         assert_eq!(result["followed"], false);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn exact_paths_do_not_match_suffixes_or_commands() {
+        let condition = json!({"tool":"workspace_write","path":"report.txt"});
+        assert!(operation_matches(
+            &json!({"tool":"workspace_write","status":"completed","arguments":{"path":"report.txt","content":"ok"}}),
+            &condition
+        ));
+        assert!(!operation_matches(
+            &json!({"tool":"workspace_write","status":"completed","arguments":{"path":"report.txt.bak","content":"ok"}}),
+            &condition
+        ));
+        assert!(!operation_matches(
+            &json!({"tool":"shell_exec","status":"completed","arguments":{"command":"echo report.txt"}}),
+            &condition
+        ));
+    }
+
+    #[test]
+    fn symlink_and_oversized_files_are_rejected() {
+        let dir = std::env::temp_dir().join(format!("dominion-proc-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!("dominion-out-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, dir.join("link.txt")).unwrap();
+        assert!(read_workspace_file(&dir, "link.txt").is_none());
+        let big = "x".repeat((MAX_PROCEDURE_FILE_BYTES + 1) as usize);
+        std::fs::write(dir.join("big.txt"), big).unwrap();
+        assert!(read_workspace_file(&dir, "big.txt").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_file(outside);
     }
 
     #[test]

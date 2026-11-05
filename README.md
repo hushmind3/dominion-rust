@@ -337,7 +337,11 @@ GET /api/experience
   세지 않습니다.
 - owner 교정에서 나온 `standing` 전략의 위반은 2회 수리 후에도 남으면 완료가
   아니라 실패로 끝냅니다. 학습 후보(`adaptive`)의 미준수는 작업 성공과 분리해
-  기록합니다.
+  기록합니다. standing은 `authorKind: owner` 교정에만 부여합니다.
+- 경로 조건은 정확 일치로 비교하며, symlink·workspace 밖 경로·2MiB 초과 파일은
+  검사에서 거부합니다.
+- 실행 종료는 finalization marker와 실행별 멱등 카운터로 기록해, 재시도·crash
+  후에도 통계가 한 번만 반영됩니다.
 
 ### 작업 성능 벤치마크
 

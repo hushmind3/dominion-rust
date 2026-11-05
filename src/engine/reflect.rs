@@ -73,6 +73,14 @@ pub fn correction_to_reflect(state: &AppState, session_id: &str, input: &str) ->
     (has_prior_assistant && !correction_id.is_empty()).then(|| correction_id.to_string())
 }
 
+fn correction_authority(correction: &Value) -> &'static str {
+    if correction["metadata"]["authorKind"].as_str() == Some("owner") {
+        "standing"
+    } else {
+        "adaptive"
+    }
+}
+
 pub fn enqueue(
     state: &AppState,
     session_id: &str,
@@ -125,6 +133,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .cloned()
         .unwrap_or(Value::Null);
     let correction_text = correction["content"].as_str().unwrap_or("");
+    let authority = correction_authority(&correction);
 
     // Previous owner request = the user message before this correction.
     let correction_index = messages
@@ -275,7 +284,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 improve::set_authority(
                     state,
                     record["id"].as_str().unwrap_or(""),
-                    "standing",
+                    authority,
                 );
             }
         }
@@ -457,6 +466,19 @@ mod tests {
         }));
         assert_eq!(summary["id"], "op-1");
         assert_eq!(summary["tool"], "workspace_write");
+    }
+
+    #[test]
+    fn only_owner_corrections_grant_standing_authority() {
+        assert_eq!(
+            correction_authority(&json!({"metadata":{"authorKind":"owner"}})),
+            "standing"
+        );
+        assert_eq!(
+            correction_authority(&json!({"metadata":{"authorKind":"bot"}})),
+            "adaptive"
+        );
+        assert_eq!(correction_authority(&json!({})), "adaptive");
     }
 
     #[test]
