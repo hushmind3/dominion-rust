@@ -2818,10 +2818,12 @@ pub(super) fn finalize_execution(
 
     // A success experience requires Succeeded and a first-time finalization.
     if applied && task_outcome == TaskOutcome::Succeeded {
-        let _ = record_success_experience(state, &record, execution_id, task_outcome);
-        // Conditional intervention candidates are grounded in this verified
-        // outcome and remain separate from experiment-gated active policies.
-        let _ = crate::engine::experience::learn_verified_adaptations(state, &record);
+        // Use the same first-success-per-root marker as the original case
+        // bank: room speakers and repeat task attempts are not independent
+        // evidence for conditional intervention rules.
+        if record_success_experience(state, &record, execution_id, task_outcome).is_some() {
+            let _ = crate::engine::experience::learn_verified_adaptations(state, &record);
+        }
     }
 
 }
