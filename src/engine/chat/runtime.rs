@@ -1040,15 +1040,34 @@ async fn run_turn_body(
                 )
             });
             if let Some(error) = procedure_violation {
-                record_soft_tool_error(
-                    state, tx, session_id, request, execution_id, &call.name, &call.id,
-                    &error, metrics,
-                );
+                // A learned procedure guides the model; it does not replace its
+                // judgment unless the strategy explicitly opts into enforcement.
+                let enforced = strategy_candidates.iter().any(|strategy| {
+                    crate::engine::procedure::applies(
+                        strategy,
+                        &request.input,
+                        Some(&call.name),
+                        Some(&arguments),
+                    ) && (strategy["enforce"].as_bool() == Some(true)
+                        || strategy["verification"]["enforce"].as_bool() == Some(true))
+                });
+                if enforced {
+                    record_soft_tool_error(
+                        state, tx, session_id, request, execution_id, &call.name, &call.id,
+                        &error, metrics,
+                    );
+                    messages.push(json!({
+                        "role":"tool","tool_call_id":call.id,
+                        "content": json!({"error":error,"procedureViolation":true}).to_string()
+                    }));
+                    continue;
+                }
                 messages.push(json!({
-                    "role":"tool","tool_call_id":call.id,
-                    "content": json!({"error":error,"procedureViolation":true}).to_string()
+                    "role":"system",
+                    "content": format!(
+                        "절차 관찰: {error}. 이 전략은 강제가 아니므로 지금 실행을 계속할 수 있습니다. 필요하면 순서를 바꾸세요."
+                    )
                 }));
-                continue;
             }
             let call_key = format!("{}:{}", call.name, arguments);
             let current_fingerprint =
@@ -1059,10 +1078,19 @@ async fn run_turn_body(
             if repeat_allowed {
                 failed_calls.remove(&call_key);
             }
+            // Read-only calls are idempotent. Blocking them only removes
+            // information the model needs; mutating calls still require an
+            // actually changed environment fingerprint.
+            let mutating = matches!(
+                call.name.as_str(),
+                "workspace_write" | "file_write" | "shell_exec" | "terminal_exec"
+                    | "github_api" | "delegate_task"
+            );
+            if mutating {
             if let Some((previous_error, _)) = failed_calls.get(&call_key) {
-                // Section 11-1: an unchanged repeat of a failed call is not
-                // re-executed. The model must choose a changed action. A retry
-                // is allowed once the environment/state actually changed.
+                // Section 11-1: an unchanged repeat of a failed mutating call
+                // is not re-executed. The model must choose a changed action.
+                // A retry is allowed once the environment/state actually changed.
                 let previous_error = previous_error.clone();
                 let error = crate::engine::adaptation_loop::repeated_failure_message(&call.name);
                 record_soft_tool_error(
@@ -1083,29 +1111,22 @@ async fn run_turn_body(
                 }));
                 continue;
             }
+            }
             let repeat = {
                 let counter = call_counts.entry(call_key.clone()).or_insert(0);
                 *counter += 1;
                 *counter
             };
             if repeat > 2 {
-                let error = "같은 도구 호출이 반복되었습니다. 다른 도구나 접근을 쓰거나 최종 답변을 작성하세요.".to_string();
-                record_soft_tool_error(
-                    state, tx, session_id, request, execution_id, &call.name, &call.id,
-                    &error, metrics,
-                );
+                // Repeated calls are an observation, not a hard stop. The model
+                // sees the same real result and decides whether to change tack.
                 messages.push(json!({
-                    "role":"tool","tool_call_id":call.id,
-                    "content": json!({"error":error}).to_string()
+                    "role":"system",
+                    "content": format!(
+                        "`{}` 호출이 {}회 반복되었습니다. 같은 결과가 나온다면 다른 접근을 선택하세요.",
+                        call.name, repeat
+                    )
                 }));
-                if repeat >= 3 {
-                    force_final = true;
-                    messages.push(json!({
-                        "role":"system",
-                        "content":"반복 호출이 감지되었습니다. 추가 도구 호출 없이 지금까지의 실제 결과로 최종 답변을 작성하세요."
-                    }));
-                }
-                continue;
             }
             if !budget.charge_tool() {
                 return Err(format!(
