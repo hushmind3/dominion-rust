@@ -2,7 +2,7 @@ import {useEffect,useMemo,useState} from 'react'
 import {Activity,Blocks,BookOpenText,Bot,BrainCircuit,ChevronDown,ChevronRight,Clapperboard,Code2,Command,CommandIcon,Cpu,House,Layers3,Menu,MessageSquare,PanelLeftClose,RadioTower,Search,Settings2,UsersRound,Workflow,Plus} from 'lucide-react'
 import {Button,TextInput} from './Primitives'
 
-export type PageId='home'|'chat'|'video'|'models'|'agents'|'rooms'|'workflows'|'memory'|'capabilities'|'extensions'|'connections'|'automations'|'activity'|'settings'|'developer'|'algorithms'
+export type PageId='home'|'chat'|'video'|'models'|'agents'|'rooms'|'workflows'|'memory'|'capabilities'|'extensions'|'connections'|'automations'|'activity'|'settings'|'developer'|'algorithms'|'intelligence'
 type NavItem={id:PageId;label:string;icon:typeof House}
 export const navigation:{title:string;items:NavItem[];collapsible?:boolean}[]=[
  {title:'작업 공간',items:[{id:'chat',label:'채팅',icon:MessageSquare},{id:'rooms',label:'그룹 대화 · 회의',icon:UsersRound},{id:'models',label:'모델 관리',icon:Cpu},{id:'agents',label:'에이전트',icon:Bot},{id:'video',label:'영상 제작',icon:Clapperboard}]},

@@ -700,6 +700,7 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
 
 /// True/False/Unknown applicability: this returns only True. Unclassified
 /// errors are Unknown and never receive a suggested intervention.
+#[allow(dead_code)]
 pub fn matching_rules(
     state: &AppState,
     scope: &MemoryScope,
@@ -708,12 +709,30 @@ pub fn matching_rules(
     error: &str,
     limit: usize,
 ) -> Vec<Value> {
+    matching_rules_with_execution(
+        state, scope, failed_tool, failed_inputs, error, limit, None,
+    )
+}
+
+pub fn matching_rules_with_execution(
+    state: &AppState,
+    scope: &MemoryScope,
+    failed_tool: &str,
+    failed_inputs: &Value,
+    error: &str,
+    limit: usize,
+    execution_id: Option<&str>,
+) -> Vec<Value> {
     let observation = method_observation(state, failed_tool, failed_inputs, error);
-    let probe_unknown = crate::engine::algorithms::variant_for_agent(
+    let probe_unknown = crate::engine::algorithms::choose_for_agent(
         state,
         "learning.applicability",
         scope.agent_id.as_deref(),
-    ) == "probe-unknown";
+        execution_id,
+    )
+    .and_then(|algorithm| algorithm["implementation"].as_str().map(str::to_string))
+    .as_deref()
+        == Some("probe-unknown");
     let mut rules = state
         .store
         .all("experience_rule")

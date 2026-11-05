@@ -143,7 +143,8 @@ fn add_guidance(growth: &mut Value, id: &str, text: &str, evidence: u64) {
             .cmp(&a["evidenceCount"].as_u64().unwrap_or(0))
     });
     if guidance.len() > 8 {
-        guidance = guidance.split_off(guidance.len() - 8);
+        // Keep the highest-evidence guidance. split_off would keep the tail.
+        guidance.truncate(8);
     }
     growth["guidance"] = json!(guidance);
 }

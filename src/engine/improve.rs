@@ -333,6 +333,14 @@ pub fn strategy_estimate(improvement: &Value) -> Value {
 }
 
 pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
+    active_values_with_execution(state, scope, None)
+}
+
+pub fn active_values_with_execution(
+    state: &AppState,
+    scope: &MemoryScope,
+    execution_id: Option<&str>,
+) -> Vec<Value> {
     let mut candidates = state
         .store
         .all("improvement")
@@ -356,7 +364,7 @@ pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
                 state,
                 "strategy.selection",
                 scope.agent_id.as_deref(),
-                None,
+                execution_id,
             );
             let penalty = |name: &str, fallback: f64| {
                 algorithm
@@ -456,8 +464,17 @@ pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
 }
 
 /// IDs of the improvements that will be injected into this turn's prompt.
+#[allow(dead_code)]
 pub fn injected_ids(state: &AppState, scope: &MemoryScope) -> Vec<String> {
-    active_values(state, scope)
+    injected_ids_with_execution(state, scope, None)
+}
+
+pub fn injected_ids_with_execution(
+    state: &AppState,
+    scope: &MemoryScope,
+    execution_id: Option<&str>,
+) -> Vec<String> {
+    active_values_with_execution(state, scope, execution_id)
         .into_iter()
         .filter_map(|improvement| improvement["id"].as_str().map(str::to_string))
         .collect()

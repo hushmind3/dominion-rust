@@ -135,11 +135,17 @@ async fn run_turn_with_policy(
         &session_id,
         request.agent_id.as_deref(),
     );
-    let applied_improvement_ids =
-        crate::engine::improve::injected_ids(state, &improvement_scope);
-    let strategy_candidates =
-        crate::engine::improve::active_values(state, &improvement_scope);
     let execution_id = uuid::Uuid::new_v4().to_string();
+    let applied_improvement_ids = crate::engine::improve::injected_ids_with_execution(
+        state,
+        &improvement_scope,
+        Some(&execution_id),
+    );
+    let strategy_candidates = crate::engine::improve::active_values_with_execution(
+        state,
+        &improvement_scope,
+        Some(&execution_id),
+    );
     // Derived prompts (goal iterations, room speakers) attach to the root the
     // parent lifecycle created. Only an owner-facing chat turn creates a root.
     let task_id = request.task_id.clone().unwrap_or_else(|| execution_id.clone());
@@ -1080,11 +1086,16 @@ async fn run_turn_body(
                 )
             });
             if mutating_call && !has_prior_read {
-                let tool_selection = crate::engine::algorithms::variant_for_agent(
+                let tool_selection = crate::engine::algorithms::choose_for_agent(
                     state,
                     "tool.selection",
                     request.agent_id.as_deref(),
-                );
+                    Some(execution_id),
+                )
+                .and_then(|algorithm| {
+                    algorithm["implementation"].as_str().map(str::to_string)
+                })
+                .unwrap_or_else(|| "read-before-write".into());
                 if tool_selection == "block-write-without-read" {
                     let error = "도구 선택 알고리즘(block-write-without-read)이 읽기/목록 확인 없는 쓰기를 차단했습니다. workspace_list 또는 workspace_read를 먼저 실행하세요.";
                     record_soft_tool_error(
@@ -1106,11 +1117,16 @@ async fn run_turn_body(
             let call_key = format!("{}:{}", call.name, arguments);
             let current_fingerprint =
                 environment_fingerprint(state, &call.name, &arguments);
-            let recovery_mode = crate::engine::algorithms::variant_for_agent(
+            let recovery_mode = crate::engine::algorithms::choose_for_agent(
                 state,
                 "recovery.strategy",
                 request.agent_id.as_deref(),
-            );
+                Some(execution_id),
+            )
+            .and_then(|algorithm| {
+                algorithm["implementation"].as_str().map(str::to_string)
+            })
+            .unwrap_or_else(|| "fingerprint".into());
             let repeat_allowed = match recovery_mode.as_str() {
                 "allow-all" => true,
                 "block-identical" => false,
@@ -1597,8 +1613,8 @@ async fn attempt_model_adaptation(
     let scope = crate::engine::memory::MemoryScope::for_session(
         &state.store, session_id, request.agent_id.as_deref(),
     );
-    let applicable_rules = crate::engine::experience::matching_rules(
-        state, &scope, tool, arguments, error, 3,
+    let applicable_rules = crate::engine::experience::matching_rules_with_execution(
+        state, &scope, tool, arguments, error, 3, Some(execution_id),
     );
     if !applicable_rules.is_empty() {
         let examples = applicable_rules.iter().map(|rule| json!({
@@ -1987,11 +2003,15 @@ fn execute_nodes<'a>(
         if depth > 16 {
             return Err("program nesting is too deep".into());
         }
-        let verification_strict = crate::engine::algorithms::variant_for_agent(
+        let verification_strict = crate::engine::algorithms::choose_for_agent(
             ctx.state,
             "verification.predicate",
             ctx.request.agent_id.as_deref(),
-        ) == "strict";
+            Some(ctx.execution_id),
+        )
+        .and_then(|algorithm| algorithm["implementation"].as_str().map(str::to_string))
+        .as_deref()
+            == Some("strict");
         let mut messages = Vec::new();
         for (index, node) in nodes.iter().enumerate() {
             if ctx.state.is_cancelled(ctx.session_id)
@@ -2178,11 +2198,16 @@ fn execute_nodes<'a>(
                     if persist {
                         save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
                     }
-                    let parallel_mode = crate::engine::algorithms::variant_for_agent(
+                    let parallel_mode = crate::engine::algorithms::choose_for_agent(
                         ctx.state,
                         "execution.parallelism",
                         ctx.request.agent_id.as_deref(),
-                    );
+                        Some(ctx.execution_id),
+                    )
+                    .and_then(|algorithm| {
+                        algorithm["implementation"].as_str().map(str::to_string)
+                    })
+                    .unwrap_or_else(|| "concurrent".into());
                     if parallel_mode == "sequential" {
                         let mut paused = false;
                         for child in &children {
