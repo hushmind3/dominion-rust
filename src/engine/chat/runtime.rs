@@ -863,9 +863,8 @@ async fn run_turn_body(
         state.bus.message(&saved);
 
         for (call_index, call) in completion.tool_calls.iter().enumerate() {
-            if tx.is_closed() {
-                return Err("응답 연결이 종료되어 실행이 중단되었습니다.".into());
-            }
+            // A disconnected SSE client must not stop work already promised by
+            // the model; explicit cancel and budgets remain the stop signals.
             if !budget.charge_proposal() {
                 return Err(format!(
                     "도구 제안 예산({}회)을 초과했습니다.",
