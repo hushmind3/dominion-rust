@@ -275,6 +275,198 @@ pub fn context_block_with_manifest(
     (Some(block), manifest)
 }
 
+/// A deliberately narrow, observable applicability feature. Unknown errors
+/// stay unknown: they must not be generalized into a reusable rule.
+fn failure_class(error: &str) -> Option<&'static str> {
+    let lower = error.to_lowercase();
+    if lower.contains("permission denied") || lower.contains("access denied") {
+        Some("permission_denied")
+    } else if lower.contains("not found") || lower.contains("no such file")
+        || lower.contains("does not exist") {
+        Some("not_found")
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        Some("timeout")
+    } else if lower.contains("rate limit") || lower.contains("too many requests") {
+        Some("rate_limited")
+    } else if lower.contains("invalid argument") || lower.contains("invalid params")
+        || lower.contains("schema validation") {
+        Some("invalid_inputs")
+    } else {
+        None
+    }
+}
+
+/// Names, not values, allow the same intervention to be considered for a
+/// different path/document without replaying the old tool arguments.
+fn input_shape(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    let mut names = object.keys().map(String::as_str).collect::<Vec<_>>();
+    names.sort_unstable();
+    Some(names.join(","))
+}
+
+fn observed_success(value: &Value) -> bool {
+    value.is_object()
+        && !value.as_object().is_some_and(|v| v.is_empty())
+        && value["outcomeUnknown"].as_bool() != Some(true)
+        && value["isError"].as_bool() != Some(true)
+        && value["success"].as_bool() != Some(false)
+        && value["error"].is_null()
+        && value.get("exitCode").is_none_or(|v| v.as_i64() == Some(0))
+        && value.get("status").and_then(Value::as_u64).is_none_or(|v| v < 400)
+}
+
+fn observed_failure(value: &Value) -> bool {
+    value["isError"].as_bool() == Some(true)
+        || value["success"].as_bool() == Some(false)
+        || !value["error"].is_null()
+        || value.get("exitCode").is_some_and(|v| v.as_i64().is_some_and(|n| n != 0))
+        || value.get("status").and_then(Value::as_u64).is_some_and(|v| v >= 400)
+}
+
+/// Only a verified successful root attempt can contribute a supporting case.
+/// The learned artifact is an observed *candidate* and never auto-executes.
+pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Value> {
+    if execution["taskOutcome"].as_str() != Some("succeeded") {
+        return Vec::new();
+    }
+    let Some(execution_id) = execution["id"].as_str() else {
+        return Vec::new();
+    };
+    let Some(session_id) = execution["sessionId"].as_str() else {
+        return Vec::new();
+    };
+    let scope = MemoryScope::for_session(&state.store, session_id, execution["agentId"].as_str());
+    let mut saved_rules = Vec::new();
+    for adaptation in execution["adaptations"].as_array().into_iter().flatten().take(20) {
+        let Some(failed_tool) = adaptation["observation"]["tool"].as_str() else {
+            continue;
+        };
+        let Some(kind) = adaptation["observation"]["actual"]
+            .as_str().and_then(failure_class) else {
+            continue;
+        };
+        let Some(failed_shape) = input_shape(&adaptation["observation"]["arguments"]) else {
+            continue;
+        };
+        let Some(selected_tool) = adaptation["selected"]["tool"].as_str() else {
+            continue;
+        };
+        let Some(selected_shape) = input_shape(&adaptation["selected"]["inputs"]) else {
+            continue;
+        };
+        if !observed_success(&adaptation["result"]) {
+            continue;
+        }
+        let id = format!("experience-rule-{}", memory::stable_id(&[
+            &scope.partition_key, failed_tool, kind, &failed_shape,
+            selected_tool, &selected_shape,
+        ]));
+        let mut rule = state.store.get("experience_rule", &id).unwrap_or_else(|| json!({
+            "id": id,
+            "scope": "shared",
+            "partitionKey": scope.partition_key,
+            "status": "candidate",
+            "evidenceGrade": "E1_observed",
+            "applicability": {
+                "failedTool": failed_tool,
+                "failureClass": kind,
+                "failedInputShape": failed_shape,
+            },
+            "intervention": {
+                "tool": selected_tool,
+                "inputShape": selected_shape,
+                "sampleInputs": adaptation["selected"]["inputs"],
+            },
+            "supportingCases": [],
+            "counterexamples": [],
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+        }));
+        let mut supports = rule["supportingCases"].as_array().cloned().unwrap_or_default();
+        if !supports.iter().any(|v| v.as_str() == Some(execution_id)) {
+            supports.push(json!(execution_id));
+            supports.truncate(24);
+        }
+        rule["supportingCases"] = json!(supports);
+        rule["revision"] = json!(memory::stable_id(&[
+            &id, &rule["supportingCases"].to_string(), &rule["counterexamples"].to_string(),
+        ]));
+        rule["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        if let Some(saved) = state.store.put("experience_rule", &rule) {
+            state.bus.record("experience_rule", &saved);
+            saved_rules.push(saved);
+        }
+    }
+    saved_rules
+}
+
+/// True/False/Unknown applicability: this returns only True. Unclassified
+/// errors are Unknown and never receive a suggested intervention.
+pub fn matching_rules(
+    state: &AppState,
+    scope: &MemoryScope,
+    failed_tool: &str,
+    failed_inputs: &Value,
+    error: &str,
+    limit: usize,
+) -> Vec<Value> {
+    let Some(kind) = failure_class(error) else { return Vec::new() };
+    let Some(shape) = input_shape(failed_inputs) else { return Vec::new() };
+    let mut rules = state.store.all("experience_rule").into_iter().filter(|rule| {
+        rule["scope"].as_str() == Some("shared")
+            && rule["partitionKey"].as_str() == Some(scope.partition_key.as_str())
+            && rule["status"].as_str() == Some("candidate")
+            && rule["applicability"]["failedTool"].as_str() == Some(failed_tool)
+            && rule["applicability"]["failureClass"].as_str() == Some(kind)
+            && rule["applicability"]["failedInputShape"].as_str() == Some(shape.as_str())
+            && rule["counterexamples"].as_array().is_some_and(Vec::is_empty)
+            && rule["supportingCases"].as_array().is_some_and(|v| !v.is_empty())
+    }).collect::<Vec<_>>();
+    rules.sort_by(|a,b| {
+        b["supportingCases"].as_array().map(Vec::len).unwrap_or(0)
+            .cmp(&a["supportingCases"].as_array().map(Vec::len).unwrap_or(0))
+            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+    });
+    rules.truncate(limit.min(5));
+    rules
+}
+
+/// An independently observed failure of the same intervention shape is a
+/// counterexample. Merely consulting a rule is not itself failure evidence.
+pub fn record_rule_counterexamples(
+    state: &AppState,
+    considered: &[Value],
+    selected: &Value,
+    result: &Value,
+    execution_id: &str,
+) {
+    if !observed_failure(result) {
+        return;
+    }
+    for hint in considered {
+        let Some(id) = hint["id"].as_str() else { continue };
+        let Some(mut rule) = state.store.get("experience_rule", id) else { continue };
+        if rule["intervention"]["tool"] != selected["tool"]
+            || input_shape(&rule["intervention"]["sampleInputs"])
+                != input_shape(&selected["inputs"]) {
+            continue;
+        }
+        let mut examples = rule["counterexamples"].as_array().cloned().unwrap_or_default();
+        if !examples.iter().any(|v| v.as_str() == Some(execution_id)) {
+            examples.push(json!(execution_id));
+            examples.truncate(24);
+        }
+        rule["counterexamples"] = json!(examples);
+        rule["revision"] = json!(memory::stable_id(&[
+            id, &rule["supportingCases"].to_string(), &rule["counterexamples"].to_string()
+        ]));
+        rule["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        if let Some(saved) = state.store.put("experience_rule", &rule) {
+            state.bus.record("experience_rule", &saved);
+        }
+    }
+}
+
 /// Merges duplicates and archives the least useful cases. Called by the
 /// learning worker so the bank does not grow without bound.
 pub fn consolidate(state: &AppState) -> Value {
@@ -424,6 +616,68 @@ mod tests {
         consolidate(&state);
         assert_eq!(state.store.get("experience", base["id"].as_str().unwrap()).unwrap()["status"], "active");
         assert_eq!(state.store.get("experience", "e2").unwrap()["status"], "archived");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verified_intervention_is_conditionally_reused_and_counterexamples_exclude_it() {
+        let (state, dir) = state();
+        let attempt = json!({
+            "id":"verified-run","sessionId":"s","agentId":"a","taskOutcome":"succeeded",
+            "adaptations":[{
+                "observation":{"kind":"tool_failure","tool":"workspace_read",
+                    "arguments":{"path":"first.txt"},"actual":"file not found"},
+                "selected":{"tool":"workspace_write",
+                    "inputs":{"path":"first.txt","content":"created"}},
+                "result":{"success":true}
+            }]
+        });
+        let created = learn_verified_adaptations(&state, &attempt);
+        assert_eq!(created.len(), 1);
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let matched = matching_rules(&state, &scope, "workspace_read",
+            &json!({"path":"second.txt"}), "no such file or directory", 3);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0]["id"], created[0]["id"]);
+        assert!(matching_rules(&state, &scope, "workspace_read",
+            &json!({"path":"second.txt"}), "permission denied", 3).is_empty());
+        assert!(matching_rules(&state, &scope, "workspace_read",
+            &json!({"different":"second.txt"}), "file not found", 3).is_empty());
+        // The same observed outcome is not counted as independent evidence.
+        let again = learn_verified_adaptations(&state, &attempt);
+        assert_eq!(again[0]["supportingCases"].as_array().unwrap().len(), 1);
+        state.store.put("session", &json!({"id":"another","agentId":"b"}));
+        let foreign = MemoryScope::for_session(&state.store, "another", Some("b"));
+        assert!(matching_rules(&state, &foreign, "workspace_read",
+            &json!({"path":"second.txt"}), "file not found", 3).is_empty());
+        record_rule_counterexamples(&state, &matched,
+            &json!({"tool":"workspace_write",
+                "inputs":{"path":"other.txt","content":"failed"}}),
+            &json!({"error":"permission denied"}), "other-run");
+        assert!(matching_rules(&state, &scope, "workspace_read",
+            &json!({"path":"second.txt"}), "file not found", 3).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unverified_or_unknown_failures_never_become_reusable_rules() {
+        let (state, dir) = state();
+        let attempt = json!({
+            "id":"incomplete","sessionId":"s","agentId":"a","taskOutcome":"answered_unverified",
+            "adaptations":[{
+                "observation":{"tool":"workspace_read","arguments":{"path":"a"},"actual":"file not found"},
+                "selected":{"tool":"workspace_write","inputs":{"path":"a","content":"x"}},
+                "result":{"success":true}
+            }]
+        });
+        assert!(learn_verified_adaptations(&state, &attempt).is_empty());
+        let mut passed = attempt.clone();
+        passed["taskOutcome"] = json!("succeeded");
+        passed["adaptations"][0]["observation"]["actual"] = json!("unexpected failure");
+        assert!(learn_verified_adaptations(&state, &passed).is_empty());
+        passed["adaptations"][0]["observation"]["actual"] = json!("file not found");
+        passed["adaptations"][0]["result"] = json!({"outcomeUnknown":true});
+        assert!(learn_verified_adaptations(&state, &passed).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
