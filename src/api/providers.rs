@@ -145,7 +145,8 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
         .and_then(|value| value.as_str())
         .unwrap_or("openai");
     let url = if kind == "ollama" {
-        format!("{base}/api/tags")
+        let native = base.trim_end_matches("/v1").trim_end_matches('/');
+        format!("{native}/api/tags")
     } else {
         format!(
             "{base}/models{}",
