@@ -138,3 +138,68 @@ proposer가 만든 `kind=policy` 요청을 이제 isolated runner가 직접 평�
   주장하지 않는다.
 
 전체: `236 unit + 37 E2E + 9 benchmark` 통과.
+
+## 8. Semantic planning metric (2026-11-05)
+
+파일 성공률만으로 계획 정책을 평가하지 않는다. `engine/plan_quality.rs`가
+계획 텍스트를 구조와 과제 관련성으로 채점한다.
+
+### 점수
+
+- structure (0.55 가중)
+  - 번호/불릿 단계 수: 2~6 최고, 1/7~8 감점, 0이면 0
+  - 검증 키워드(검증/확인/verify/check/test/assert) 포함 시 +0.2
+  - 20자 미만/2,000자 초과 감점
+- relevance (0.45 가중)
+  - 요청과 계획의 토큰 겹침 비율
+  - 요청의 구체 경로/파일명이 계획에 있으면 가중
+- `total = 0.55*structure + 0.45*relevance` (0..1, 4자리 반올림)
+- `metric = plan_quality_v1`, 결정적이며 모델 비의존.
+
+### 실행 기록
+
+계획이 실제로 사용되면 execution에 다음을 저장한다.
+
+- `plan` (최대 4,000자)
+- `planQuality {metric,total,structure,relevance,steps,hasVerification,chars}`
+- `planPolicyId`, `planPolicyRevision` (정책이 계획을 유도한 경우)
+
+### Runner 지표
+
+- 각 trial에 `planQuality`, `planSteps` 기록
+- arm aggregate에 `planQuality` 평균 추가
+- pair effect에 `semanticMetric`, `semanticDelta`, `semanticCi`,
+  `semanticUnits` 추가
+- policy request completion에 semanticDelta를 포함
+
+### Outer gate
+
+planning 슬롯 활성화 조건:
+
+1. `independentUnits >= 8`
+2. `verdict`가 `improved|preliminary_support`, delta > 0
+3. **`semanticDelta >= 0.05`** (`MIN_SEMANTIC_DELTA`)
+
+semantic 조건을 못 넘으면 candidate를 유지하고
+`semanticVerified=false`, `policy.semantic_gate_rejected` audit를 남긴다.
+
+### 검증
+
+- `plan_quality` 단위 테스트 3개 (구조/관련성/결정성)
+- `policy_effect_reports_semantic_plan_delta`
+- `planning_activation_requires_both_units_and_semantic_improvement`
+  (units 8 + semantic 0 → candidate, units 4 + semantic 0.4 → candidate,
+  units 8 + semantic 0.2 → active)
+- E2E `policy_experiment_activates_a_candidate_through_the_runner`:
+  runner가 계획 포함 여부에 따라 다르게 동작하는 mock으로 10 pair 실행,
+  request completed, `semanticVerified=true`, semanticDelta >= 0.05,
+  정책 active E2.
+
+### 한계
+
+- 휴리스틱 점수이며 계획의 실제 실행 가능성/정확성을 의미하지 않는다.
+- 한국어 토큰화는 공백/구두점 기반이라 조사가 붙은 토큰은 일치하지 않을 수 있다.
+- semantic CI는 아직 게이트에 사용하지 않고 delta만 사용한다.
+- 메타 평가자(평가자 자체의 품질) 분리는 아직이다.
+
+전체: `240 unit + 38 E2E + 10 benchmark` 통과.

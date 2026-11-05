@@ -1156,7 +1156,7 @@ fn policy_experiment_activates_a_candidate_through_the_runner() {
             .and_then(|message| message["content"].as_str())
             .unwrap_or("");
         if system.contains("You are the planner") {
-            return vec![json!({"choices":[{"delta":{"content":"1. audit 파일 생성\n2. report 파일 생성\n3. 결과 검증"},"finish_reason":"stop"}]})];
+            return vec![json!({"choices":[{"delta":{"content":"1. bench/harness_report.txt 파일을 만들고 내용을 REPORT-OK로 저장한다\n2. bench/harness_audit.txt 파일을 만든다\n3. 두 파일 내용을 검증한다"},"finish_reason":"stop"}]})];
         }
         let has_plan = messages.iter().any(|message| {
             message["role"] == "system"
@@ -1250,6 +1250,14 @@ fn policy_experiment_activates_a_candidate_through_the_runner() {
     assert_eq!(policy["evidenceGrade"], "E2");
     assert_eq!(policy["parameters"]["outline"], true);
     assert_eq!(policy["lastExperiment"]["independentUnits"], 10);
+    assert_eq!(policy["semanticVerified"], true);
+    assert!(
+        policy["lastExperiment"]["semanticDelta"]
+            .as_f64()
+            .unwrap_or(0.0)
+            >= 0.05,
+        "semantic gate metric missing: {policy}"
+    );
     let _ = std::fs::remove_dir_all(bench_root);
 }
 

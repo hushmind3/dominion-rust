@@ -395,6 +395,14 @@ fn aggregate(trials: &[Value], arm: &str, pairs: usize) -> Value {
         .iter()
         .filter(|trial| trial["applicable"] == true)
         .count();
+    let plan_quality = if rows.is_empty() {
+        0.0
+    } else {
+        rows.iter()
+            .map(|trial| trial["planQuality"].as_f64().unwrap_or(0.0))
+            .sum::<f64>()
+            / rows.len() as f64
+    };
     json!({
         "assigned": pairs,
         "runs": rows.len(),
@@ -406,9 +414,14 @@ fn aggregate(trials: &[Value], arm: &str, pairs: usize) -> Value {
         "compliance": compliant,
         "triggerCoverage": if applicable == 0 { Value::Null } else { json!(compliant as f64 / applicable as f64) },
         "tokens": tokens,
+        "planQuality": round4(plan_quality),
         "p50Ms": percentile(&mut latencies.clone(), 0.50),
         "p95Ms": percentile(&mut latencies, 0.95),
     })
+}
+
+fn round4(value: f64) -> f64 {
+    (value * 10_000.0).round() / 10_000.0
 }
 
 fn pair_effect(trials: &[Value], seed: u64) -> Value {
@@ -420,6 +433,7 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
         .map(|max| max + 1)
         .unwrap_or(0);
     let mut deltas = Vec::new();
+    let mut semantic_deltas = Vec::new();
     let mut units = 0usize;
     for pair in 0..pairs {
         let baseline = trials
@@ -438,6 +452,9 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
         let b = if strict_success(baseline) { 1.0 } else { 0.0 };
         let t = if strict_success(treatment) { 1.0 } else { 0.0 };
         deltas.push(t - b);
+        let bq = baseline["planQuality"].as_f64().unwrap_or(0.0);
+        let tq = treatment["planQuality"].as_f64().unwrap_or(0.0);
+        semantic_deltas.push(tq - bq);
     }
     let n = deltas.len();
     let mean = if n == 0 {
@@ -453,6 +470,18 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
     };
     let lower = (mean - halfwidth).max(-1.0);
     let upper = (mean + halfwidth).min(1.0);
+    let semantic_mean = if semantic_deltas.is_empty() {
+        0.0
+    } else {
+        semantic_deltas.iter().sum::<f64>() / semantic_deltas.len() as f64
+    };
+    let semantic_halfwidth = if semantic_deltas.is_empty() {
+        1.0
+    } else {
+        (2.0 * (2.0f64 / alpha).ln() / semantic_deltas.len() as f64)
+            .sqrt()
+            .min(1.0)
+    };
     let verdict = if units == 0 {
         "not_evaluated"
     } else if units < 10 || lower <= 0.0 {
@@ -467,6 +496,13 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
         "halfwidth": halfwidth,
         "ci": [lower, upper],
         "verdict": verdict,
+        "semanticMetric": "plan_quality_v1",
+        "semanticDelta": round4(semantic_mean),
+        "semanticCi": [
+            round4((semantic_mean - semantic_halfwidth).max(-1.0)),
+            round4((semantic_mean + semantic_halfwidth).min(1.0))
+        ],
+        "semanticUnits": semantic_deltas.len(),
         "note": "Small N is inconclusive; this is not E4 evidence.",
     })
 }
@@ -1073,6 +1109,8 @@ async fn main() -> Result<(), String> {
                     "applicable": true,
                     "taskOutcome": "unknown",
                     "requiresCompliance": policy_claim.is_none(),
+                    "planQuality": 0.0,
+                    "planSteps": 0,
                 });
                 append_jsonl(&trials_path, &trial)?;
                 trials.push(trial);
@@ -1189,6 +1227,12 @@ async fn main() -> Result<(), String> {
                 "auditOk": audit_ok,
                 "reportOk": report_ok,
                 "requiresCompliance": policy_claim.is_none(),
+                "planQuality": execution["planQuality"]["total"]
+                    .as_f64()
+                    .unwrap_or(0.0),
+                "planSteps": execution["planQuality"]["steps"]
+                    .as_u64()
+                    .unwrap_or(0),
                 "preStateHash": pre_hash,
                 "postStateHash": fixture_digest(&root, &cfg.fixture),
                 "tokens": execution["tokens"],
@@ -1240,6 +1284,8 @@ async fn main() -> Result<(), String> {
                 "verdict": effect["verdict"],
                 "delta": effect["delta"],
                 "independentUnits": effect["independentUnits"],
+                "semanticDelta": effect["semanticDelta"],
+                "semanticMetric": effect["semanticMetric"],
                 "oracleVersion": manifest["oracleVersion"],
             }),
         )
@@ -1285,6 +1331,32 @@ async fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_effect_reports_semantic_plan_delta() {
+        let base = |pair: u64, arm: &str, plan: f64, success: bool| {
+            json!({
+                "pair":pair,"arm":arm,"status":"completed",
+                "auditOk":success,"reportOk":success,
+                "taskOutcome":if success {"succeeded"} else {"failed"},
+                "compliance":false,"requiresCompliance":false,"errorClass":"",
+                "elapsedMs":10,"planQuality":plan
+            })
+        };
+        let trials = vec![
+            base(0, "baseline", 0.1, false),
+            base(0, "treatment", 0.8, true),
+            base(1, "baseline", 0.2, false),
+            base(1, "treatment", 0.9, true),
+        ];
+        let effect = pair_effect(&trials, 1);
+        assert_eq!(effect["independentUnits"], 2);
+        assert_eq!(effect["semanticUnits"], 2);
+        assert!((effect["semanticDelta"].as_f64().unwrap() - 0.7).abs() < 0.0001);
+        assert_eq!(effect["semanticMetric"], "plan_quality_v1");
+        let aggregate = aggregate(&trials, "treatment", 2);
+        assert!((aggregate["planQuality"].as_f64().unwrap() - 0.85).abs() < 0.0001);
+    }
 
     #[test]
     fn policy_trials_do_not_require_procedure_compliance() {

@@ -235,6 +235,10 @@ pub fn apply_experiment_result(
     }
     let verdict = experiment["verdict"].as_str().unwrap_or("inconclusive");
     let delta = experiment["delta"].as_f64().unwrap_or(0.0);
+    let semantic_delta = experiment["semanticDelta"].as_f64();
+    let semantic_metric = experiment["semanticMetric"]
+        .as_str()
+        .unwrap_or(crate::engine::plan_quality::METRIC_VERSION);
     let experiment_id = experiment["experimentId"].as_str().unwrap_or("");
     let revision = crate::engine::memory::stable_id(&[
         experiment_id,
@@ -247,6 +251,8 @@ pub fn apply_experiment_result(
         "verdict": verdict,
         "delta": delta,
         "independentUnits": units,
+        "semanticDelta": semantic_delta,
+        "semanticMetric": semantic_metric,
         "oracleVersion": experiment["oracleVersion"],
         "evaluatedAt": chrono::Utc::now().to_rfc3339(),
     });
@@ -260,6 +266,33 @@ pub fn apply_experiment_result(
         && delta > 0.0
     {
         let slot = policy["slot"].as_str().unwrap_or("").to_string();
+        // Planning policies must also improve the semantic plan metric. A
+        // file-success win with no better plan is not enough for activation.
+        let semantic_ok = if slot == "planning" {
+            semantic_delta
+                .is_some_and(|value| value >= crate::engine::plan_quality::MIN_SEMANTIC_DELTA)
+        } else {
+            true
+        };
+        if !semantic_ok {
+            policy["requiresExperiment"] = json!(true);
+            policy["semanticVerified"] = json!(false);
+            policy["reason"] = json!(format!(
+                "의미 계획 개선폭이 기준({})보다 낮아 활성화하지 않았습니다.",
+                crate::engine::plan_quality::MIN_SEMANTIC_DELTA
+            ));
+            let saved = state
+                .store
+                .put("adaptation_policy", &policy)
+                .ok_or("정책 결과를 저장할 수 없습니다.")?;
+            state.bus.record("adaptation_policy", &saved);
+            state.store.audit(
+                "policy.semantic_gate_rejected",
+                json!({"id": policy_id, "semanticDelta": semantic_delta, "units": units}),
+            );
+            return Ok(saved);
+        }
+        policy["semanticVerified"] = json!(true);
         for mut other in state.store.all("adaptation_policy") {
             if other["id"].as_str() != Some(policy_id)
                 && other["slot"].as_str() == Some(slot.as_str())
@@ -374,17 +407,17 @@ mod tests {
         let policy_id = created[0]["candidate"]["id"].as_str().unwrap().to_string();
         assert!(active(&state, "planning").is_none());
 
-        let small = json!({"experimentId":"small","verdict":"improved","delta":0.5,"independentUnits":4,"oracleVersion":"v1"});
+        let small = json!({"experimentId":"small","verdict":"improved","delta":0.5,"independentUnits":4,"semanticDelta":0.25,"oracleVersion":"v1"});
         let record = apply_experiment_result(&state, &policy_id, &small).unwrap();
         assert_eq!(record["status"], "candidate", "underpowered promotion");
 
-        let powered = json!({"experimentId":"powered","verdict":"preliminary_support","delta":0.4,"independentUnits":8,"oracleVersion":"v1"});
+        let powered = json!({"experimentId":"powered","verdict":"preliminary_support","delta":0.4,"independentUnits":8,"semanticDelta":0.25,"oracleVersion":"v1"});
         let record = apply_experiment_result(&state, &policy_id, &powered).unwrap();
         assert_eq!(record["status"], "active");
         assert_eq!(active_parameters(&state, "planning")["outline"], false);
 
         let other = register(&state, "planning", "other", &json!({"outline": true}), "other").unwrap();
-        let regressed = json!({"experimentId":"bad","verdict":"regressed","delta":-0.3,"independentUnits":8,"oracleVersion":"v1"});
+        let regressed = json!({"experimentId":"bad","verdict":"regressed","delta":-0.3,"independentUnits":8,"semanticDelta":0.25,"oracleVersion":"v1"});
         let record = apply_experiment_result(&state, other["id"].as_str().unwrap(), &regressed).unwrap();
         assert_eq!(record["status"], "rolled_back");
         assert_eq!(active(&state, "planning").unwrap()["id"], policy_id.as_str());
@@ -405,11 +438,11 @@ mod tests {
         assert_eq!(candidate["status"], "candidate");
         assert!(active(&state, "planning").is_none());
 
-        let small = json!({"experimentId":"e1","verdict":"improved","delta":0.5,"independentUnits":2,"oracleVersion":"v1"});
+        let small = json!({"experimentId":"e1","verdict":"improved","delta":0.5,"independentUnits":2,"semanticDelta":0.25,"oracleVersion":"v1"});
         let record = apply_experiment_result(&state, candidate["id"].as_str().unwrap(), &small).unwrap();
         assert_eq!(record["status"], "candidate");
 
-        let powered = json!({"experimentId":"e2","verdict":"preliminary_support","delta":0.2,"independentUnits":10,"oracleVersion":"v1"});
+        let powered = json!({"experimentId":"e2","verdict":"preliminary_support","delta":0.2,"independentUnits":10,"semanticDelta":0.25,"oracleVersion":"v1"});
         let record = apply_experiment_result(&state, candidate["id"].as_str().unwrap(), &powered).unwrap();
         assert_eq!(record["status"], "active");
         assert_eq!(record["evidenceGrade"], "E2");
@@ -421,10 +454,10 @@ mod tests {
     fn activation_supersedes_the_previous_revision_and_regression_rolls_back() {
         let (state, dir) = state();
         let first = register(&state, "planning", "a", &json!({"outline": true}), "a").unwrap();
-        let powered = json!({"experimentId":"e1","verdict":"improved","delta":0.3,"independentUnits":9,"oracleVersion":"v1"});
+        let powered = json!({"experimentId":"e1","verdict":"improved","delta":0.3,"independentUnits":9,"semanticDelta":0.25,"oracleVersion":"v1"});
         apply_experiment_result(&state, first["id"].as_str().unwrap(), &powered).unwrap();
         let second = register(&state, "planning", "b", &json!({"outline": false}), "b").unwrap();
-        let powered2 = json!({"experimentId":"e2","verdict":"preliminary_support","delta":0.4,"independentUnits":9,"oracleVersion":"v1"});
+        let powered2 = json!({"experimentId":"e2","verdict":"preliminary_support","delta":0.4,"independentUnits":9,"semanticDelta":0.25,"oracleVersion":"v1"});
         apply_experiment_result(&state, second["id"].as_str().unwrap(), &powered2).unwrap();
 
         let first = state.store.get("adaptation_policy", first["id"].as_str().unwrap()).unwrap();
@@ -432,10 +465,47 @@ mod tests {
         assert_eq!(active(&state, "planning").unwrap()["id"], second["id"]);
         assert_eq!(active_parameters(&state, "planning")["outline"], false);
 
-        let regressed = json!({"experimentId":"e3","verdict":"regressed","delta":-0.3,"independentUnits":9,"oracleVersion":"v1"});
+        let regressed = json!({"experimentId":"e3","verdict":"regressed","delta":-0.3,"independentUnits":9,"semanticDelta":0.25,"oracleVersion":"v1"});
         let record = apply_experiment_result(&state, second["id"].as_str().unwrap(), &regressed).unwrap();
         assert_eq!(record["status"], "rolled_back");
         assert!(active(&state, "planning").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn planning_activation_requires_both_units_and_semantic_improvement() {
+        let (state, dir) = state();
+        let candidate = register(
+            &state,
+            "planning",
+            "semantic-gate",
+            &json!({"outline": true}),
+            "semantic gate",
+        )
+        .unwrap();
+        let id = candidate["id"].as_str().unwrap();
+
+        // Enough units, file success, but no semantic plan improvement.
+        let no_semantic = json!({"experimentId":"no-semantic","verdict":"preliminary_support","delta":0.5,"semanticDelta":0.0,"independentUnits":8,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, id, &no_semantic).unwrap();
+        assert_eq!(record["status"], "candidate", "{record}");
+        assert_eq!(record["semanticVerified"], false);
+
+        // Semantic improvement alone without enough units is not enough.
+        let few_units = json!({"experimentId":"few","verdict":"preliminary_support","delta":0.5,"semanticDelta":0.4,"independentUnits":4,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, id, &few_units).unwrap();
+        assert_eq!(record["status"], "candidate", "{record}");
+
+        // Both gates pass.
+        let both = json!({"experimentId":"both","verdict":"preliminary_support","delta":0.5,"semanticDelta":0.2,"independentUnits":8,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, id, &both).unwrap();
+        assert_eq!(record["status"], "active");
+        assert_eq!(record["semanticVerified"], true);
+        assert_eq!(record["lastExperiment"]["semanticDelta"], 0.2);
+        assert_eq!(
+            record["lastExperiment"]["semanticMetric"],
+            crate::engine::plan_quality::METRIC_VERSION
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

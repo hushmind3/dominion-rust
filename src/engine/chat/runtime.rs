@@ -422,6 +422,18 @@ async fn run_turn_body(
     {
         if let Some(plan) = action_plan(state, request, acceptance.as_ref().map(|(text, _)| text.as_str()).unwrap_or("")).await {
             plan_digest = Some(crate::engine::memory::stable_id(&[&plan]));
+            // Persist the plan and its semantic score so policy experiments can
+            // compare planning quality instead of only file success.
+            if let Some(mut execution) = state.store.get("execution", execution_id) {
+                execution["plan"] = json!(plan.chars().take(4_000).collect::<String>());
+                execution["planQuality"] =
+                    crate::engine::plan_quality::score(&plan, &request.input);
+                if let Some(policy) = &planning_policy {
+                    execution["planPolicyId"] = policy["id"].clone();
+                    execution["planPolicyRevision"] = policy["revision"].clone();
+                }
+                state.store.put("execution", &execution);
+            }
             messages.insert(1, json!({"role":"system","content":format!("Internal execution plan. Verify every step with real tools, never claims:\n{plan}")}));
             metrics.lock().unwrap().model_calls += 1;
         }
