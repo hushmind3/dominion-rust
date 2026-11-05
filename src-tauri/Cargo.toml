@@ -1,0 +1,17 @@
+[package]
+name = "dominion-desktop"
+version = "0.2.9"
+edition = "2021"
+description = "DOMINION native desktop host for its independent Rust engine"
+authors = ["hushmind3"]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = ["dynamic-acl", "devtools"] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+uuid = { version = "1", features = ["v4"] }

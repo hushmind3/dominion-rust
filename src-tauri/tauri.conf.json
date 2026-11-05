@@ -1,0 +1,70 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DOMINION",
+  "version": "0.2.9",
+  "identifier": "com.hushmind.dominion.desktop",
+  "build": {
+    "frontendDist": "bootstrap"
+  },
+  "app": {
+    "windows": [],
+    "withGlobalTauri": false,
+    "security": {
+      "capabilities": [],
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Productivity",
+    "shortDescription": "Independent Rust AI workspace",
+    "longDescription": "DOMINION's own Rust engine in a native desktop window. React/Vite builds the interface; Node is never needed at runtime.",
+    "externalBin": [
+      "binaries/dominion-engine"
+    ],
+    "resources": {
+      "resources/web/": "web/",
+      "resources/assets/": "assets/"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.3",
+      "dmg": {
+        "appPosition": {
+          "x": 180,
+          "y": 200
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 200
+        }
+      }
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "displayLanguageSelector": true,
+        "languages": [
+          "English",
+          "Korean"
+        ],
+        "installMode": "currentUser"
+      },
+      "wix": {
+        "language": [
+          "en-US",
+          "ko-KR"
+        ]
+      }
+    }
+  }
+}

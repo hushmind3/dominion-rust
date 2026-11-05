@@ -61,7 +61,11 @@ pub fn installed(state: &AppState) -> Vec<Value> {
         })
         .filter_map(|path| {
             let metadata = std::fs::metadata(&path).ok()?;
-            let relative = path.strip_prefix(&dir).unwrap_or(&path).to_string_lossy().to_string();
+            let relative = path
+                .strip_prefix(&dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
             let file = path
                 .file_name()
                 .map(|value| value.to_string_lossy().to_string())
@@ -135,7 +139,10 @@ fn total_memory() -> u64 {
     // Cheapest portable-enough source; unknown stays 0 rather than guessing.
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = std::process::Command::new("sysctl").args(["-n", "hw.memsize"]).output() {
+        if let Ok(output) = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+        {
             if let Ok(text) = String::from_utf8(output.stdout) {
                 if let Ok(value) = text.trim().parse::<u64>() {
                     return value;
@@ -148,7 +155,11 @@ fn total_memory() -> u64 {
         if let Ok(text) = std::fs::read_to_string("/proc/meminfo") {
             for line in text.lines() {
                 if let Some(rest) = line.strip_prefix("MemTotal:") {
-                    if let Some(kb) = rest.split_whitespace().next().and_then(|v| v.parse::<u64>().ok()) {
+                    if let Some(kb) = rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse::<u64>().ok())
+                    {
                         return kb * 1024;
                     }
                 }
@@ -170,7 +181,13 @@ pub fn runtime_snapshot() -> Value {
             _ => {}
         }
     }
-    let logs = guard.logs.iter().rev().take(20).cloned().collect::<Vec<_>>();
+    let logs = guard
+        .logs
+        .iter()
+        .rev()
+        .take(20)
+        .cloned()
+        .collect::<Vec<_>>();
     json!({
         "status": guard.status,
         "id": guard.id,
@@ -311,7 +328,10 @@ pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, Str
             let logs = runtime().lock().unwrap().logs.clone();
             let mut guard = runtime().lock().unwrap();
             guard.status = "error".into();
-            guard.error = format!("llama-server 가 시작 중 종료되었습니다: {}", logs.last().cloned().unwrap_or_default());
+            guard.error = format!(
+                "llama-server 가 시작 중 종료되었습니다: {}",
+                logs.last().cloned().unwrap_or_default()
+            );
             return Err(guard.error.clone());
         }
     }
@@ -423,12 +443,11 @@ pub async fn details(repo: &str) -> Result<Value, String> {
             if !file.to_ascii_lowercase().ends_with(".gguf") {
                 continue;
             }
-            let bytes = sibling.get("size").and_then(|value| value.as_u64()).unwrap_or(0);
-            let quantization = file
-                .rsplit('.')
-                .nth(1)
-                .unwrap_or("")
-                .to_uppercase();
+            let bytes = sibling
+                .get("size")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let quantization = file.rsplit('.').nth(1).unwrap_or("").to_uppercase();
             options.push(json!({
                 "id": file,
                 "format": "gguf",
@@ -442,7 +461,9 @@ pub async fn details(repo: &str) -> Result<Value, String> {
         }
     }
     options.sort_by(|a, b| {
-        a.get("bytes").and_then(|value| value.as_u64()).unwrap_or(0)
+        a.get("bytes")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
             .cmp(&b.get("bytes").and_then(|value| value.as_u64()).unwrap_or(0))
     });
     let author = repo.split('/').next().unwrap_or("");
@@ -492,7 +513,11 @@ pub fn start_download(state: AppState, repo: String, option: String) -> Result<V
     let Some(job) = job else {
         return Err("다운로드 작업을 만들 수 없습니다.".into());
     };
-    let job_id = job.get("id").and_then(|value| value.as_str()).unwrap_or("").to_string();
+    let job_id = job
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
     tokio::spawn(async move {
         download_worker(state, job_id, repo, option).await;
     });
@@ -531,11 +556,17 @@ async fn download_worker(state: AppState, job_id: String, repo: String, option: 
     let response = match response {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
-            patch(&state, json!({ "status": "failed", "error": format!("다운로드 HTTP {}", response.status()) }));
+            patch(
+                &state,
+                json!({ "status": "failed", "error": format!("다운로드 HTTP {}", response.status()) }),
+            );
             return;
         }
         Err(error) => {
-            patch(&state, json!({ "status": "failed", "error": error.to_string() }));
+            patch(
+                &state,
+                json!({ "status": "failed", "error": error.to_string() }),
+            );
             return;
         }
     };
@@ -545,7 +576,10 @@ async fn download_worker(state: AppState, job_id: String, repo: String, option: 
     let mut file_handle = match tokio::fs::File::create(&partial).await {
         Ok(file) => file,
         Err(error) => {
-            patch(&state, json!({ "status": "failed", "error": error.to_string() }));
+            patch(
+                &state,
+                json!({ "status": "failed", "error": error.to_string() }),
+            );
             return;
         }
     };
@@ -564,12 +598,18 @@ async fn download_worker(state: AppState, job_id: String, repo: String, option: 
             return;
         }
         let Ok(chunk) = chunk else {
-            patch(&state, json!({ "status": "failed", "error": "스트림 오류" }));
+            patch(
+                &state,
+                json!({ "status": "failed", "error": "스트림 오류" }),
+            );
             let _ = tokio::fs::remove_file(&partial).await;
             return;
         };
         if let Err(error) = file_handle.write_all(&chunk).await {
-            patch(&state, json!({ "status": "failed", "error": error.to_string() }));
+            patch(
+                &state,
+                json!({ "status": "failed", "error": error.to_string() }),
+            );
             return;
         }
         downloaded += chunk.len() as u64;
@@ -579,7 +619,10 @@ async fn download_worker(state: AppState, job_id: String, repo: String, option: 
     }
     let _ = file_handle.flush().await;
     if let Err(error) = tokio::fs::rename(&partial, &target).await {
-        patch(&state, json!({ "status": "failed", "error": error.to_string() }));
+        patch(
+            &state,
+            json!({ "status": "failed", "error": error.to_string() }),
+        );
         return;
     }
     patch(
@@ -591,9 +634,10 @@ async fn download_worker(state: AppState, job_id: String, repo: String, option: 
             "finishedAt": chrono::Utc::now().to_rfc3339(),
         }),
     );
-    state
-        .store
-        .audit("model.downloaded", json!({ "repo": repo, "file": file, "bytes": downloaded }));
+    state.store.audit(
+        "model.downloaded",
+        json!({ "repo": repo, "file": file, "bytes": downloaded }),
+    );
 }
 
 pub fn cancel_job(state: &AppState, id: &str) -> bool {

@@ -344,7 +344,7 @@ async fn read_command_output(
     }
 }
 
-async fn run_command(
+pub(crate) async fn run_command(
     command: &mut tokio::process::Command,
     limit: Duration,
 ) -> Result<std::process::Output, String> {

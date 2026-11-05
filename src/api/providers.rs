@@ -1,0 +1,203 @@
+use crate::state::AppState;
+use axum::{extract::{Path,State},http::StatusCode,response::{IntoResponse,Response},Json};
+use serde_json::{json,Value};
+use std::time::Duration;
+use super::response::error;
+
+pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
+    let items = state
+        .store
+        .all("provider")
+        .into_iter()
+        .map(|provider| public_provider(&state, provider))
+        .collect::<Vec<_>>();
+    Json(json!(items))
+}
+
+fn public_provider(state: &AppState, mut provider: Value) -> Value {
+    let id = provider
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if let Value::Object(ref mut map) = provider {
+        map.remove("apiKey");
+        map.insert(
+            "hasKey".into(),
+            json!(state.store.has_secret(&format!("provider:{id}"))),
+        );
+    }
+    provider
+}
+
+pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    let name = body
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let base_url = body
+        .get("baseUrl")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    if name.is_empty() || base_url.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "제공자 이름과 baseUrl 이 필요합니다.",
+        );
+    }
+    let parsed = match reqwest::Url::parse(&base_url) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => url,
+        _ => return error(StatusCode::BAD_REQUEST, "HTTP(S) 주소만 허용됩니다."),
+    };
+
+    let id = body
+        .get("id")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    if body.get("kind").and_then(|value| value.as_str()) == Some("anthropic") {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Anthropic 네이티브 형식은 지원하지 않습니다. OpenAI 호환 엔드포인트를 사용하세요.",
+        );
+    }
+    let kind = match body.get("kind").and_then(|value| value.as_str()) {
+        Some("ollama") => "ollama",
+        _ => "openai",
+    };
+
+    let mut record = body.clone();
+    record["id"] = json!(id);
+    record["name"] = json!(name);
+    record["baseUrl"] = json!(parsed.to_string().trim_end_matches('/'));
+    record["kind"] = json!(kind);
+    record["enabled"] = json!(body
+        .get("enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true));
+    record["toolMode"] = json!(
+        match body.get("toolMode").and_then(|value| value.as_str()) {
+            Some("native") => "native",
+            Some("compat") => "compat",
+            Some("auto") => "auto",
+            _ =>
+                if kind == "ollama" {
+                    "compat"
+                } else {
+                    "auto"
+                },
+        }
+    );
+    if let Value::Object(ref mut map) = record {
+        map.remove("apiKey");
+        map.remove("hasKey");
+    }
+
+    if let Some(api_key) = body.get("apiKey").and_then(|value| value.as_str()) {
+        if api_key.starts_with("••") {
+            // Masked placeholder sent back by the UI: keep the stored secret.
+        } else if api_key.is_empty() {
+            state.store.remove_secret(&format!("provider:{id}"));
+        } else {
+            state.save_secret(&format!("provider:{id}"), api_key);
+        }
+    }
+
+    let saved = state
+        .store
+        .put("provider", &record)
+        .unwrap_or_else(|| json!({ "id": id }));
+    state
+        .store
+        .audit("provider.saved", json!({ "providerId": saved.get("id") }));
+    state.bus.record("provider", &saved);
+    Json(public_provider(&state, saved)).into_response()
+}
+
+pub async fn delete_provider(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
+    state.store.remove("provider", &id);
+    state.store.remove_secret(&format!("provider:{id}"));
+    state
+        .bus
+        .emit(json!({ "type": "record", "kind": "provider", "removed": id }));
+    Json(json!({ "ok": true }))
+}
+
+pub async fn provider_models(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(provider) = state.store.get("provider", &id) else {
+        return error(StatusCode::NOT_FOUND, "제공자를 찾을 수 없습니다.");
+    };
+    let base = provider
+        .get("baseUrl")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .to_string();
+    let kind = provider
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or("openai");
+    let url = if kind == "ollama" {
+        format!("{base}/api/tags")
+    } else {
+        format!(
+            "{base}/models{}",
+            if provider["integration"] == "freellmapi" {
+                "?available=true"
+            } else {
+                ""
+            }
+        )
+    };
+    let key = state
+        .read_secret(&format!("provider:{id}"))
+        .unwrap_or_default();
+
+    let client = reqwest::Client::new();
+    let mut request = client.get(&url).timeout(Duration::from_secs(12));
+    if !key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {key}"));
+    }
+    match request.send().await {
+        Ok(response) if response.status().is_success() => {
+            let value: Value = response.json().await.unwrap_or_else(|_| json!({}));
+            let models: Vec<Value> = if kind == "ollama" {
+                value["models"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.get("name"))
+                            .map(|name| json!({ "id": name, "name": name }))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                value["data"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.get("id"))
+                            .map(|id| json!({ "id": id, "name": id }))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            Json(json!(models)).into_response()
+        }
+        Ok(response) => error(
+            StatusCode::BAD_GATEWAY,
+            &format!("모델 목록 HTTP {}", response.status()),
+        ),
+        Err(err) => error(StatusCode::BAD_GATEWAY, &err.to_string()),
+    }
+}
+

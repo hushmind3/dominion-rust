@@ -1,10 +1,16 @@
 import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
 import {FormEvent,useEffect,useRef,useState,type KeyboardEvent} from 'react'
-import {ArrowRight,ArrowUp,BrainCircuit,Check,ChevronDown,ChevronRight,CircleHelp,Clock3,Code2,Command,Compass,Copy,Cpu,CornerDownLeft,HardDrive,List,LoaderCircle,MessageCircle,MoreHorizontal,Plus,Power,RefreshCw,ShieldAlert,ShieldCheck,SlidersHorizontal,Sparkles,TerminalSquare,Trash2,X} from 'lucide-react'
+import {Archive,ArrowRight,ArrowUp,BrainCircuit,Check,ChevronDown,ChevronRight,CircleHelp,Clock3,Code2,Command,Compass,Copy,Cpu,CornerDownLeft,HardDrive,List,LoaderCircle,MessageCircle,MoreHorizontal,Plus,Power,RefreshCw,ShieldAlert,ShieldCheck,SlidersHorizontal,Sparkles,TerminalSquare,Trash2,X} from 'lucide-react'
 import {Agent,ChatMessage,ChatSession,Provider,get,post,streamChat} from '../api'
 import {Action,Empty,Notice,StateTag,refresh,useRemote} from '../components/UI'
 import {SlashMenu,slashCandidates,slashCommands,type SlashChoice} from '../components/SlashMenu'
+import {PageToolbar} from '../components/PageToolbar'
+import {ConversationComposer,ResponseControls,AttachmentList,type Attachment,type AttachmentBinding,type ReasoningEffort} from '../components/ConversationComposer'
 type Model={id:string;name:string}
+type LearningResult={memories?:number|unknown[];skill?:boolean;reason?:string}
+type LearningJob={id:string;status:string;error?:string;result?:LearningResult}
+const learningSummary=(result?:LearningResult)=>{if(!result)return '기억 추출 작업이 완료되었습니다. 메모리 화면에서 저장 결과를 확인하세요.';const count=Array.isArray(result.memories)?result.memories.length:typeof result.memories==='number'?result.memories:null;return '기억 추출 완료'+(count===null?'':' · 새 기억 '+count+'개')+(result.skill?' · 스킬 초안 1개 제안':'')}
+
 type InstalledModel={id:string;repo:string;label:string;format:string;bytes:number;source?:string}
 type Runtime={status:string;id?:string;name?:string;error?:string}
 type PermissionMode='request'|'workspace'|'full'
@@ -17,22 +23,50 @@ const formatBytes=(bytes:number)=>{
  const gb=Number(bytes||0)/1024/1024/1024
  return gb>=1?gb.toFixed(1)+' GB':Math.max(0,Math.round(Number(bytes||0)/1024/1024))+' MB'
 }
+const storedChatPreferences=()=>{try{return JSON.parse(localStorage.getItem('dominion.chat.preferences')||'{}')}catch{return {}}}
 export function ChatPage({sessionId,onSession,openModels}:{sessionId?:string;onSession:(x:string|undefined)=>void;openModels:()=>void}){
  const sessions=useRemote<ChatSession[]>('/api/sessions',[]);
  const agents=useRemote<Agent[]>('/api/agents',[]);
  const providers=useRemote<Provider[]>('/api/providers',[]);
+ const [preferences]=useState(storedChatPreferences)
+ const [attachments,setAttachments]=useState<Attachment[]>([]),[showArchived,setShowArchived]=useState(false)
  const [current,setCurrent]=useState<string|undefined>(sessionId);
  const [messages,setMessages]=useState<ChatMessage[]>([]);
- const [input,setInput]=useState(''),[providerId,setProviderId]=useState(''),[model,setModel]=useState(''),[agentId,setAgentId]=useState('general'),[models,setModels]=useState<Model[]>([]);
- const [modelError,setModelError]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[live,setLive]=useState(''),[thought,setThought]=useState(''),[thinking,setThinking]=useState(false),[reasoningKo,setReasoningKo]=useState(true),[showReasoning,setShowReasoning]=useState(true),[showSettings,setShowSettings]=useState(false),[toolsEnabled,setToolsEnabled]=useState(true),[thinkingEnabled,setThinkingEnabled]=useState(true),[reasoningEffort,setReasoningEffort]=useState(''),[autoLearn,setAutoLearn]=useState(true),[showHistory,setShowHistory]=useState(()=>{try{if(window.innerWidth<768)return false;return localStorage.getItem('dominion.chat.sidebar')!=='0'}catch{return true}}),[approval,setApproval]=useState<{id:string;tool:string;args:any}|null>(null),[toolStatus,setToolStatus]=useState('');
+ const [input,setInput]=useState(''),[providerId,setProviderId]=useState<string>(preferences.providerId||''),[model,setModel]=useState<string>(preferences.model||''),[agentId,setAgentId]=useState<string>(preferences.agentId||'general'),[models,setModels]=useState<Model[]>([]);
+ const [modelError,setModelError]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[live,setLive]=useState(''),[thought,setThought]=useState(''),[thinking,setThinking]=useState(false),[reasoningKo,setReasoningKo]=useState(preferences.reasoningKo!==false),[showReasoning,setShowReasoning]=useState(preferences.showReasoning!==false),[showSettings,setShowSettings]=useState(false),[toolsEnabled,setToolsEnabled]=useState(preferences.toolsEnabled!==false),[thinkingEnabled,setThinkingEnabled]=useState(preferences.thinkingEnabled!==false),[reasoningEffort,setReasoningEffort]=useState<ReasoningEffort>(preferences.reasoningEffort||''),[autoLearn,setAutoLearn]=useState(preferences.autoLearn!==false),[showHistory,setShowHistory]=useState(()=>{try{if(window.innerWidth<768)return false;return localStorage.getItem('dominion.chat.sidebar')!=='0'}catch{return true}}),[approval,setApproval]=useState<{id:string;tool:string;args:any}|null>(null),[toolStatus,setToolStatus]=useState('');
  const [permissionMode,setPermissionMode]=useState<PermissionMode>('request'),[permissionOpen,setPermissionOpen]=useState(false),[permissionBusy,setPermissionBusy]=useState(false);
  const [modelMenu,setModelMenu]=useState(false),[installed,setInstalled]=useState<InstalledModel[]>([]),[modelsLoading,setModelsLoading]=useState(false),[runtime,setRuntime]=useState<Runtime>({status:'idle'}),[modelBusy,setModelBusy]=useState(''),[unloading,setUnloading]=useState(false),[learning,setLearning]=useState(false),[menuError,setMenuError]=useState('');
+ const [learningJob,setLearningJob]=useState<{id:string;sessionId:string;generation:number}|null>(null)
  const [slashOpen,setSlashOpen]=useState(false),[slashActive,setSlashActive]=useState(0),[commandInfo,setCommandInfo]=useState('');
- const bottom=useRef<HTMLDivElement>(null),inputRef=useRef<HTMLTextAreaElement>(null);
+ const bottom=useRef<HTMLDivElement>(null),inputRef=useRef<HTMLTextAreaElement>(null),currentRef=useRef(current),viewGeneration=useRef(0);
+ currentRef.current=current
+ useEffect(()=>{try{localStorage.setItem('dominion.chat.preferences',JSON.stringify({providerId,model,agentId,reasoningEffort,thinkingEnabled,reasoningKo,showReasoning,toolsEnabled,autoLearn}))}catch{}},[providerId,model,agentId,reasoningEffort,thinkingEnabled,reasoningKo,showReasoning,toolsEnabled,autoLearn])
+ useEffect(()=>{if(agents.loading||agents.value.some(agent=>agent.id===agentId))return;const fallback=agents.value.find(agent=>agent.id==='general')||agents.value[0];if(fallback)setAgentId(fallback.id)},[agents.loading,agents.value,agentId])
+ useEffect(()=>{
+  if(!learningJob)return
+  let mounted=true,inFlight=false
+  const sameView=()=>currentRef.current===learningJob.sessionId&&viewGeneration.current===learningJob.generation
+  const update=async()=>{
+   if(inFlight)return
+   inFlight=true
+   try{
+    const job=await get<LearningJob>('/api/jobs/'+learningJob.id)
+    if(!mounted||!sameView())return
+    if(['completed','failed','cancelled','needs_review','interrupted'].includes(job.status)){
+     if(job.status==='completed')setCommandInfo(learningSummary(job.result))
+     else{setCommandInfo('');setError(job.error||'기억 추출 작업이 '+job.status+' 상태입니다. 실행 기록을 확인하세요.')}
+     setLearning(false);setLearningJob(null);refresh()
+    }else setCommandInfo(job.status==='running'?'기억 추출 작업이 실행 중입니다. 실제 저장 결과를 기다립니다.':'기억 추출 작업이 대기 중입니다.')
+   }catch(error){
+    if(mounted&&sameView()){setCommandInfo('');setError('기억 추출 작업의 상태를 확인할 수 없습니다. 실행 기록에서 확인하세요. '+(error as Error).message);setLearning(false);setLearningJob(null)}
+   }finally{inFlight=false}
+  }
+  void update();const timer=setInterval(()=>void update(),1500);return()=>{mounted=false;clearInterval(timer)}
+ },[learningJob])
  const slashItems=slashOpen?slashCandidates(input,agents.value,models):[];
- useEffect(()=>{if(providerId||providers.loading||!providers.value.some(p=>p.enabled))return;get<{providerId:string;model:string}>('/api/model-route').then(x=>{setProviderId(x.providerId);setModel(x.model)}).catch(()=>{});},[providers.loading,providers.value.length]);
- useEffect(()=>{if(sessionId!==undefined)setCurrent(sessionId)},[sessionId]);
- useEffect(()=>{if(current){get<ChatMessage[]>('/api/sessions/'+current+'/messages').then(setMessages).catch(()=>{})}else setMessages([])},[current]);
+ useEffect(()=>{if(providerId||providers.loading||!providers.value.some(p=>p.enabled))return;let valid=true;get<{providerId:string;model:string}>('/api/model-route').then(x=>{if(valid){setProviderId(x.providerId);setModel(x.model)}}).catch(()=>{});return()=>{valid=false}},[providerId,providers.loading,providers.value.length]);
+ useEffect(()=>{if(currentRef.current===sessionId)return;viewGeneration.current+=1;currentRef.current=sessionId;setCurrent(sessionId);setInput('');setAttachments([]);setMessages([]);setLive('');setThought('');setBusy(false);setLearning(false);setLearningJob(null);setApproval(null);setError('')},[sessionId]);
+ useEffect(()=>{let valid=true;const load=()=>{if(current&&!busy)void get<ChatMessage[]>('/api/sessions/'+current+'/messages').then(rows=>{if(valid&&currentRef.current===current)setMessages(rows)}).catch(()=>{})};if(!current)setMessages([]);else load();let timer:ReturnType<typeof setTimeout>;const update=()=>{clearTimeout(timer);timer=setTimeout(load,220)};window.addEventListener('dominion-refresh',update);return()=>{valid=false;clearTimeout(timer);window.removeEventListener('dominion-refresh',update)}},[current,busy]);
  useEffect(()=>{let valid=true;setModels([]);setModelError('');if(!providerId)return;get<Model[]>('/api/providers/'+providerId+'/models').then(x=>{if(!valid)return;setModels(x);if(x.length)setModel(old=>x.some(m=>m.id===old)?old:x[0].id);else setModel('')}).catch(e=>{if(valid){setModelError(e.message);setModel('')}});return()=>{valid=false}},[providerId]);
  useEffect(()=>{
   const el=document.querySelector('[data-chat-scroll]') as HTMLElement|null;
@@ -111,18 +145,23 @@ export function ChatPage({sessionId,onSession,openModels}:{sessionId?:string;onS
  }
  const learnSession=async()=>{
   if(!current){setError('학습할 대화를 먼저 선택하세요.');return}
-  if(!providerId||!model){setError('학습에 사용할 모델을 먼저 연결하세요.');return}
-  setLearning(true);setError('');setCommandInfo('');
+  if(learning)return
+  const generation=viewGeneration.current,session=current
+  setLearning(true);setError('');setCommandInfo('기억 추출 작업을 요청하고 있습니다.')
   try{
-   const result=await post<any>('/api/sessions/'+current+'/learn',{providerId,model});
-   setCommandInfo('학습 완료 · 기억 '+result.memories.length+'개 · 스킬 '+(result.skill?'1개 제안':'없음')+'\n메모리와 스킬 화면에서 확인하고 승인할 수 있습니다.');
-   refresh();
-  }catch(e){setError((e as Error).message)}finally{setLearning(false)}
+   const result=await post<{jobId?:string;status:string;job?:LearningJob;result?:LearningResult;message?:string}>('/api/sessions/'+session+'/learn',{providerId:providerId||undefined,model:model||undefined})
+   if(viewGeneration.current!==generation||currentRef.current!==session)return
+   if(result.status==='completed'){setCommandInfo(result.message||learningSummary(result.result||result.job?.result));setLearning(false);refresh();return}
+   const id=result.jobId||result.job?.id;if(!id)throw Error(result.message||'기억 추출 작업 ID를 확인할 수 없습니다.')
+   setLearningJob({id,sessionId:session,generation});setCommandInfo(result.status==='running'?'기억 추출 작업이 실행 중입니다.':'기억 추출 작업을 대기열에 등록했습니다. 저장 결과가 나오면 표시합니다.')
+  }catch(error){if(viewGeneration.current===generation){setError((error as Error).message);setLearning(false)}}
  };
- const pickSession=(s:ChatSession)=>{setCurrent(s.id);onSession(s.id);if(s.providerId)setProviderId(s.providerId);if(s.model)setModel(s.model);if(s.agentId)setAgentId(s.agentId);setLive('');setThought('');setError('')};
- const resetLocal=()=>{
-  setCurrent(undefined);onSession(undefined);setMessages([]);setLive('');setThought('');setError('');
- };
+ const pickSession=(session:ChatSession)=>{viewGeneration.current+=1;currentRef.current=session.id;setCurrent(session.id);onSession(session.id);setAttachments([]);setInput('');setBusy(false);setLearning(false);setLearningJob(null);setApproval(null);if(session.providerId)setProviderId(session.providerId);if(session.model)setModel(session.model);if(session.agentId)setAgentId(session.agentId);setLive('');setThought('');setError('')};
+ const resetLocal=()=>{viewGeneration.current+=1;currentRef.current=undefined;setCurrent(undefined);onSession(undefined);setMessages([]);setAttachments([]);setInput('');setLive('');setThought('');setBusy(false);setLearning(false);setLearningJob(null);setApproval(null);setToolStatus('');setError('');setCommandInfo('');setSlashOpen(false);inputRef.current?.focus()};
+ const ensureSession=async()=>{if(currentRef.current)return currentRef.current;const generation=viewGeneration.current;const session=await post<ChatSession>('/api/sessions',{title:'새 대화',agentId,providerId,model});if(generation!==viewGeneration.current)throw Error('대화가 변경되었습니다. 새 대화에서 다시 첨부하세요.');currentRef.current=session.id;setCurrent(session.id);onSession(session.id);void sessions.reload();return session.id};
+ const addAttachments=(items:Attachment[],binding:AttachmentBinding)=>{if(currentRef.current===binding.sessionId)setAttachments(previous=>[...previous,...items])};
+ const archiveSession=async(session:ChatSession)=>{try{await post('/api/sessions/'+session.id+'/archive',{archived:!session.archived});if(currentRef.current===session.id&&!session.archived)resetLocal();await sessions.reload()}catch(error){setError((error as Error).message)}};
+ const stop=async()=>{if(!currentRef.current)return;try{await post('/api/sessions/'+currentRef.current+'/cancel',{})}catch(error){setError((error as Error).message)}};
  const executeCommand=async(text:string)=>{
   const found=text.trim().match(/^\/([a-zA-Z]+)(?:\s+([\s\S]*))?$/);
   if(!found){setError('명령어 형식이 올바르지 않습니다. /help로 확인하세요.');return;}
@@ -204,36 +243,33 @@ export function ChatPage({sessionId,onSession,openModels}:{sessionId?:string;onS
   }
   setSlashOpen(false);void executeCommand(item.command);
  };
- const send=async(e?:FormEvent)=>{
-  e?.preventDefault();const text=input.trim();if(!text)return;
-  if(text.startsWith('/')){
-   if(busy&&text!=='/stop')return;
-   await executeCommand(text);return;
-  }
+ const send=async(event?:FormEvent)=>{
+  event?.preventDefault();const text=input.trim()||(attachments.length?'첨부 파일을 확인해줘.':'');if(!text)return;
+  if(text.startsWith('/')){if(busy&&text!=='/stop')return;await executeCommand(text);return;}
   if(busy)return;
-  // Unconfigured sessions are routed automatically to an available provider.
-  setBusy(true);setError('');setCommandInfo('');setLive('');setThought('');setInput('');setSlashOpen(false);setToolStatus('');
+  const generation=viewGeneration.current,submittedAttachments=[...attachments]
+  const visible=()=>viewGeneration.current===generation
+  setBusy(true);setError('');setCommandInfo('');setLive('');setThought('');setInput('');setAttachments([]);setSlashOpen(false);setToolStatus('');
   if(inputRef.current)inputRef.current.style.height='';
   try{
-   let id=current;
-   if(!id){const session=await post<ChatSession>('/api/sessions',{title:'새 대화',agentId,providerId,model});id=session.id;setCurrent(id);onSession(id);sessions.reload();}
-   const session=id;
-   setMessages(old=>[...old,{id:'pending-'+Date.now(),session_id:session!,role:'user',content:text,created_at:new Date().toISOString()}]);
-   await streamChat({sessionId:session,agentId,providerId,model,input:text,toolsEnabled,autoLearning:autoLearn,reasoningLanguage:reasoningKo?'ko':undefined,reasoningEffort:reasoningEffort||undefined,thinking:thinkingEnabled},event=>{
-    if(event.type==='text')setLive(old=>old+event.text);
-    if(event.type==='reasoning')setThought(old=>old+event.text);
-    if(event.type==='approval')setApproval({id:event.id,tool:event.tool,args:event.args});
-    if(event.type==='tool_start')setToolStatus('실행 중 · '+event.name);
-    if(event.type==='tool_end')setToolStatus('완료 · '+event.name);
-    if(event.type==='tool_error')setToolStatus('도구 오류 · '+event.error);
-     if(event.type==='goal_progress')setToolStatus('자율 실행 · '+event.event+' · '+event.status);
-    if(event.type==='assistant_saved'){void get<ChatMessage[]>('/api/sessions/'+session+'/messages').then(setMessages);setLive('');setThought('');}
-    if(event.type==='error')setError(event.message);
+   const session=await ensureSession();if(!visible())return
+   setMessages(old=>[...old,{id:'pending-'+Date.now(),session_id:session,role:'user',content:text,metadata:{attachments:submittedAttachments},created_at:new Date().toISOString()}]);
+   await streamChat({sessionId:session,agentId,providerId,model,input:text,attachmentIds:submittedAttachments.map(item=>item.id),toolsEnabled,autoLearning:autoLearn,reasoningLanguage:reasoningKo?'ko':undefined,reasoningEffort:reasoningEffort||undefined,thinking:reasoningEffort==='none'?false:thinkingEnabled},item=>{
+    if(!visible()||currentRef.current!==session)return
+    if(item.type==='text')setLive(old=>old+item.text);
+    if(item.type==='reasoning')setThought(old=>old+item.text);
+    if(item.type==='approval')setApproval({id:item.id,tool:item.tool,args:item.args});
+    if(item.type==='tool_start')setToolStatus('실행 중 · '+item.name);
+    if(item.type==='tool_end')setToolStatus('완료 · '+item.name);
+    if(item.type==='tool_error')setToolStatus('도구 오류 · '+item.error);
+    if(item.type==='goal_progress')setToolStatus('자율 실행 · '+item.event+' · '+item.status);
+    if(item.type==='assistant_saved'){void get<ChatMessage[]>('/api/sessions/'+session+'/messages').then(rows=>{if(visible()&&currentRef.current===session){setMessages(rows);setLive('');setThought('')}})}
+    if(item.type==='error')setError(item.message);
    });
-   setMessages(await get<ChatMessage[]>('/api/sessions/'+session+'/messages'));sessions.reload();
-  }catch(e){setError((e as Error).message)}finally{setBusy(false);setApproval(null);}
+   const rows=await get<ChatMessage[]>('/api/sessions/'+session+'/messages');if(visible()&&currentRef.current===session){setMessages(rows);setLive('');setThought('')}void sessions.reload();
+  }catch(error){if(visible()){setError((error as Error).message);setAttachments(submittedAttachments)}}finally{if(visible()){setBusy(false);setApproval(null)}}
  };
- const approve=async(ok:boolean)=>{if(!approval)return;try{await post('/api/approvals',{id:approval.id,allow:ok});setApproval(null)}catch(e){setError((e as Error).message)}};
+ const approve=async(allow:boolean)=>{if(!approval)return;try{const result=await post<{resolved:boolean;error?:string}>('/api/approvals',{id:approval.id,allow});if(!result.resolved)throw Error(result.error||'진행 중인 승인 요청이 아닙니다.');setApproval(null)}catch(error){setError((error as Error).message)}};
  const appendKey=(e:KeyboardEvent<HTMLTextAreaElement>)=>{
   if(e.nativeEvent.isComposing)return;
   if(slashOpen){
@@ -246,92 +282,28 @@ export function ChatPage({sessionId,onSession,openModels}:{sessionId?:string;onS
   }
   if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void send();}
  };
- const selectedProvider=providers.value.find(x=>x.id===providerId);
- const activePermission=permissionCopy[permissionMode];
- return <div className={'relative grid h-[calc(100dvh-64px)] min-h-[540px] grid-cols-1 bg-[#F6F3EC] '+(showHistory?'md:grid-cols-[232px_minmax(0,1fr)]':'')}>
-  {showHistory&&<Button type="button" aria-label="대화 목록 닫기" className="absolute inset-0 z-20 !h-auto !w-auto cursor-default !rounded-none !border-0 !bg-slate-900/30 md:hidden" onClick={()=>setShowHistory(false)}/>}
-  <aside className={'flex min-h-0 flex-col overflow-hidden border-r border-[#E7E0D5] bg-[#FAF7F1] '+(showHistory?'max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-30 max-md:w-[232px] max-md:shadow-2xl':'hidden')}>
-   <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-5"><div className="min-w-0"><span className="block text-[10px] font-extrabold uppercase tracking-widest text-[#C96442]">CONVERSATIONS</span><strong className="mt-1 block text-sm text-[#3A342D]">최근 대화</strong></div><Button size="icon" variant="ghost" onClick={()=>{setCurrent(undefined);onSession(undefined);inputRef.current?.focus()}} title="새 대화"><Plus size={19}/></Button></div>
-   <Button className="mx-3 mb-4 inline-flex items-center justify-center gap-2 rounded-xl border border-[#EED9CC] bg-[#F7E8E1] px-4 py-2.5 text-xs font-bold text-[#A94E30] hover:bg-[#F1DCCF]" onClick={()=>{setCurrent(undefined);onSession(undefined);setMessages([]);inputRef.current?.focus()}}><Plus size={17}/> 새 대화 시작</Button>
-   <div className="min-h-0 flex-1 overflow-y-auto px-2">{sessions.value.filter(s=>!s.roomId).map(s=><Button onClick={()=>pickSession(s)} key={s.id} title={s.title} className={'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-xs text-[#7C7469] hover:bg-[#F7E8E1] '+(current===s.id?'bg-[#F7E8E1] font-bold text-[#A94E30]':'')}><MessageCircle size={15} className="shrink-0"/><span className="truncate">{s.title}</span></Button>)}{!sessions.value.length&&<div className="p-5 text-center text-xs text-[#9C9388]">첫 번째 대화를 시작해보세요.</div>}</div>
-   <div className="border-t border-[#E7E0D5] p-4 text-[11px] text-[#7C7469]"><span><Clock3 size={14}/> 대화는 로컬 DB에 저장됩니다</span></div>
+ const selectedProvider=providers.value.find(provider=>provider.id===providerId)
+ const selectedSession=sessions.value.find(session=>session.id===current)
+ const activePermission=permissionCopy[permissionMode]
+ const listedSessions=sessions.value.filter(session=>!session.roomId&&Boolean(session.archived)===showArchived)
+ const responseControls=<ResponseControls providers={providers.value} models={models} providerId={providerId} model={model} onProvider={id=>{setProviderId(id);setModel('')}} onModel={setModel} agents={agents.value} agentId={agentId} onAgent={id=>{setAgentId(id);const agent=agents.value.find(item=>item.id===id);if(agent?.providerId){setProviderId(agent.providerId);setModel(agent.model||'')}}} thinking={thinkingEnabled} onThinking={setThinkingEnabled} effort={reasoningEffort} onEffort={setReasoningEffort} disabled={busy}/>
+ return <div className={'chat-workspace '+(showHistory?'has-chat-history':'')}>
+  <PageToolbar><Button size="icon" variant="ghost" onClick={()=>setShowHistory(value=>!value)} aria-label="대화 목록 펼치기/접기"><List size={18}/></Button><strong className="page-toolbar-title">{selectedSession?.title||(current?'대화':'새 대화')}</strong><div className="page-toolbar-actions">{current&&<><Button size="icon" variant="ghost" aria-label="현재 대화 보관" title="대화 보관" onClick={()=>selectedSession&&void archiveSession(selectedSession)}><Archive size={17}/></Button><Button size="icon" variant="ghost" aria-label="현재 대화 선택 해제" title="대화 닫기 · 기록 유지" onClick={resetLocal}><X size={17}/></Button></>}<Button size="sm" variant="ghost" onClick={openModelMenu}><HardDrive size={16}/><span className="hide-on-small">로컬 모델</span></Button><Button size="icon" variant="ghost" aria-label="대화 설정" onClick={()=>{setShowSettings(value=>!value);setModelMenu(false)}}><SlidersHorizontal size={17}/></Button></div></PageToolbar>
+  {showHistory&&<button className="chat-history-scrim" aria-label="대화 목록 닫기" onClick={()=>setShowHistory(false)}/>}
+  <aside className={'chat-history '+(showHistory?'':'is-hidden')}>
+   <div className="chat-history-heading"><strong>{showArchived?'보관한 대화':'최근 대화'}</strong><Button size="icon" variant="ghost" aria-label="새 대화" onClick={resetLocal}><Plus size={19}/></Button></div>
+   <div className="chat-history-list">{listedSessions.map(session=><div className={'chat-history-row '+(current===session.id?'is-selected':'')} key={session.id}><button className="chat-history-select" onClick={()=>pickSession(session)}><MessageCircle size={15}/><span>{session.title||'대화'}</span></button><button className="chat-history-archive" onClick={()=>void archiveSession(session)} aria-label={(session.archived?'보관 해제: ':'보관: ')+session.title} title={session.archived?'보관 해제':'보관'}><Archive size={14}/></button></div>)}{!listedSessions.length&&<p>{showArchived?'보관한 대화가 없습니다.':'새 대화를 시작해보세요.'}</p>}</div>
+   <button className="chat-archive-toggle" onClick={()=>setShowArchived(value=>!value)}><Archive size={15}/>{showArchived?'최근 대화로 돌아가기':'보관한 대화 보기'}</button>
   </aside>
-  <div className="flex min-h-0 min-w-0 flex-col">
-   <header className="relative flex h-16 shrink-0 items-center justify-between gap-2 border-b border-[#E7E0D5] bg-[#FFFDF9] px-4">
-    <div className="flex min-w-0 flex-1 items-center gap-1.5">
-      <Button size="icon" variant="ghost" onClick={()=>setShowHistory(x=>!x)} title={showHistory?'대화 목록 접기':'대화 목록 펼치기'} aria-label={showHistory?'대화 목록 접기':'대화 목록 펼치기'}><List size={18}/></Button>
-     <div className="relative flex min-w-0 items-center gap-1">
-      <SelectInput aria-label="모델 제공자" title={selectedProvider?.name||'자동 선택'} value={providerId} onChange={e=>{setProviderId(e.target.value);setModel('')}} className="!w-[124px] !border-0 !bg-transparent !py-1 !pr-6 !text-[12px]"><option value="">자동 선택</option>{providers.value.filter(p=>p.enabled).map(p=><option value={p.id} key={p.id}>{p.name}</option>)}</SelectInput>
-      <span className="text-[#B8AFA2]">/</span>
-      <SelectInput aria-label="모델 선택" title={model||'모델 없음'} value={model} onChange={e=>setModel(e.target.value)} className="!w-[196px] !border-0 !bg-transparent !py-1 !pr-6 !text-[12px]"><option value="">{models.length?'모델 선택':'모델 없음'}</option>{models.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</SelectInput>
-      <Button variant="ghost" size="sm" onClick={openModelMenu} title="설치된 로컬 모델 전환" className="ml-auto !border !border-[#E7E0D5] !bg-white !text-[#5C544A] hover:!bg-[#FAF7F1]" aria-expanded={modelMenu}><HardDrive size={14}/><span className="hidden lg:inline">로컬 모델</span><ChevronDown size={12}/></Button>
-      <Button variant="ghost" size="sm" title="로컬 모델 내리기 · VRAM 해제" onClick={()=>void unloadModel()} disabled={unloading||!(selectedProvider?.local||runtime.status==='ready')} className="!border !border-[#E7E0D5] !bg-white !text-[#5C544A] hover:!bg-[#FAF7F1] disabled:opacity-40"><Power size={14}/><span className="hidden xl:inline">{unloading?'내리는 중':'모델 내리기'}</span></Button>
-      {modelMenu&&<>
-       <Button type="button" aria-label="모델 메뉴 닫기" className="fixed inset-0 z-40 !h-auto !w-auto cursor-default !rounded-none !border-0 !bg-transparent" onClick={()=>setModelMenu(false)}/>
-       <div className="absolute left-0 top-full z-50 mt-2 w-[min(380px,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9] shadow-[0_18px_50px_rgba(36,33,29,.14)]">
-        <div className="flex items-center justify-between gap-2 border-b border-[#EFE9DF] px-3 py-2.5"><div className="min-w-0"><strong className="text-[12px] text-[#3A342D]">로컬 모델</strong><p className="truncate text-[10px] text-[#9C9388]">{runtime.status==='ready'?'실행 중 · '+(runtime.name||''):runtime.status==='loading'?'불러오는 중':'실행 중인 모델 없음'}</p></div><Button size="icon" variant="ghost" title="새로고침" onClick={()=>void loadModelMenu()}><RefreshCw size={15}/></Button></div>
-        {menuError&&<div className="border-b border-rose-100 bg-rose-50 px-3 py-2 text-[11px] text-rose-700">{menuError}</div>}
-        <div className="max-h-[320px] overflow-y-auto p-1.5">{modelsLoading&&<div className="flex items-center justify-center gap-2 p-5 text-[11px] text-[#9C9388]"><LoaderCircle size={14} className="animate-spin"/> 불러오는 중</div>}{!modelsLoading&&installed.map(m=><Button type="button" variant="ghost" key={m.id} disabled={Boolean(modelBusy)} onClick={()=>void switchLocalModel(m)} className={'flex w-full items-center gap-3 !justify-start !border-0 rounded-lg px-2.5 py-2.5 text-left hover:bg-[#FAF7F1] disabled:opacity-60 '+(runtime.status==='ready'&&runtime.id===m.id?'bg-emerald-50/60':'')}>
-         <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#F3EEE5] text-[#7C7469]"><HardDrive size={15}/></span>
-         <span className="min-w-0 flex-1"><strong className="block truncate text-[12px] text-[#3A342D]">{m.repo}</strong><small className="text-[10px] text-[#9C9388]">{m.label} · {m.format.toUpperCase()} · {formatBytes(m.bytes)}</small></span>
-         {runtime.status==='ready'&&runtime.id===m.id?<span className="shrink-0 rounded bg-emerald-100 px-2 py-1 text-[10px] font-semibold text-emerald-700">사용 중</span>:modelBusy===m.id?<span className="shrink-0 text-[10px] font-semibold text-[#C96442]">로딩 중</span>:<span className="shrink-0 text-[10px] font-semibold text-[#C96442]">실행</span>}
-        </Button>)}{!modelsLoading&&!installed.length&&<div className="p-5 text-center text-[11px] text-[#9C9388]">설치된 로컬 모델이 없습니다.</div>}</div>
-        <Button type="button" variant="ghost" onClick={()=>{setModelMenu(false);openModels()}} className="flex w-full items-center justify-between !rounded-none border-t border-[#EFE9DF] px-3 py-2.5 text-[11px] font-semibold text-[#5C544A] hover:bg-[#FAF7F1]">모델 관리 열기 <ArrowRight size={13}/></Button>
-       </div>
-      </>}
-     </div>
-    </div>
-    <div className="flex shrink-0 items-center gap-1">
-     <span className={"hidden items-center gap-2 text-[10px] font-bold uppercase tracking-wider sm:inline-flex "+(model&&!modelError?"text-emerald-700":"text-[#9C9388]")}><i className={'size-1.5 rounded-full '+(model&&!modelError?'bg-emerald-500':'bg-slate-300')}/>{model&&!modelError?(selectedProvider?.local?"LOCAL ENGINE":"CLOUD / API"):"MODEL NOT READY"}</span>
-     
-     <Button size="icon" variant="ghost" title="모델 관리" onClick={openModels}><Cpu size={18}/></Button>
-    </div>
-   </header>
-   <div data-chat-scroll className="min-h-0 flex-1 overflow-y-auto">{!messages.length&&!busy?<div className="mx-auto flex min-h-full max-w-xl flex-col justify-center px-5 py-8">
-    <div className="mb-6 flex items-center gap-3"><span className="grid size-11 place-items-center rounded-2xl bg-[#F7E8E1] text-[#C96442]"><Sparkles size={22}/></span><div><h1 className="text-[24px] font-bold tracking-[-.03em] text-[#24211D]">새 대화</h1><p className="mt-1 text-[13px] text-[#8A8176]">질문하거나 컴퓨터에서 실행할 작업을 지시하세요.</p></div></div>
-    <div className="rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9] p-5"><div className="mb-2 text-[11px] font-semibold text-[#8A8176]">예시 명령</div>{['현재 폴더의 파일 목록을 보여줘','작업공간에 README.md 파일을 만들어줘','새 프로젝트의 구조를 설계해줘'].map(t=><Button type="button" key={t} onClick={()=>{setInput(t);inputRef.current?.focus()}} className="flex w-full items-center justify-between border-t border-[#eef1f5] px-2 py-3 text-left text-[12px] text-[#4d5d73] hover:bg-[#FFFDF9]">{t}<ArrowRight size={14} className="shrink-0 text-[#9C9388]"/></Button>)}</div>
-    {!model&&<Button type="button" onClick={openModels} className="mt-4 inline-flex items-center gap-2 self-start text-[12px] font-semibold text-[#5574d7]"><Compass size={15}/> 모델을 먼저 연결하기 <ArrowRight size={14}/></Button>}
-   </div>:<div className="mx-auto flex min-h-full w-full max-w-[860px] flex-col gap-6 px-6 py-7">{messages.filter(m=>m.role!=='tool').map(m=><Message key={m.id} message={m} agentName={agents.value.find(a=>a.id===m.agent_id)?.name} showReasoning={showReasoning} />)}{(live||thought||busy)&&<div className="flex min-w-0 items-start gap-3 assistant"><div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#F3EEE5] text-[#4A443C] ai"><Sparkles size={17}/></div><div className="relative min-w-0 flex-1"><div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#4A443C]">DOMINION <span>LIVE</span>{busy&&thought&&!showReasoning&&<span className="inline-flex items-center gap-1 rounded bg-[#F3EEE5] px-1.5 py-0.5 text-[10px] font-medium text-[#7C7469]"><BrainCircuit size={11}/> 추론 중</span>}</div>{showReasoning&&thought&&<details className="mb-3 max-h-56 overflow-y-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]" open={thinking}><summary className="cursor-pointer select-none" onClick={e=>{e.preventDefault();setThinking(x=>!x)}}><BrainCircuit size={14} className="inline"/> 추론 과정 · {thought.length.toLocaleString()}자 <ChevronRight size={13} className="inline"/></summary><div className="mt-2 whitespace-pre-wrap">{thought}</div></details>}{live&&<div className="min-w-0 break-words text-sm leading-7 text-[#3A342D] [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-slate-100 [&_code]:break-words [&_ul]:list-disc [&_ul]:pl-6">{live}</div>}{busy&&!live&&<div className="flex items-center gap-2 text-xs text-[#9C9388]"><i/><i/><i/></div>}</div></div>}{toolStatus&&<div className="inline-flex items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-1.5 text-xs text-[#7C7469]"><TerminalSquare size={15}/>{toolStatus}</div>}<div ref={bottom}/></div>}</div>
-   <div className="sticky bottom-0 z-10 border-t border-[#EFE9DF] bg-white/95 px-4 py-3 backdrop-blur-sm"><div className="mx-auto w-full max-w-[860px]">{approval&&<div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><div><ShieldAlert size={20}/><span><strong>컴퓨터 작업 승인 요청</strong><small>{approval.tool} · {JSON.stringify(approval.args).slice(0,150)}</small></span></div><div><Action variant="secondary" onClick={()=>approve(false)}>거부</Action><Action onClick={()=>approve(true)}><Check size={15}/> 실행 승인</Action></div></div>}
-    {error&&<div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700"><CircleHelp size={16}/>{error}<Button onClick={()=>setError('')}><X size={14}/></Button></div>}
-    {modelError&&!model&&<div className="mb-3 text-xs text-[#7C7469]">모델 서버 미연결: {modelError} <Button onClick={openModels}>연결 관리 <ArrowRight size={13}/></Button></div>}
-    {commandInfo&&<div role="status" className="mb-3 max-h-36 overflow-auto whitespace-pre-wrap rounded-xl border border-[#EED9CC] bg-[#F7E8E1] p-3 text-xs leading-6 text-[#4A443C]">{commandInfo}</div>}
-    <div className="relative">
-    {slashOpen&&<SlashMenu items={slashItems} active={slashActive} onChoose={chooseSlash}/>}
-    <form onSubmit={send} className="overflow-visible rounded-2xl border border-[#E1D9CC] bg-[#FFFDF9] shadow-[0_8px_30px_rgba(36,33,29,.08)] focus-within:border-[#C96442] focus-within:ring-4 focus-within:ring-[#C96442]/10">
-     <TextArea ref={inputRef} rows={1} placeholder="무엇을 도와드릴까요?  / 로 명령어" value={input} onChange={e=>{const next=e.target.value;setInput(next);setSlashOpen(next.startsWith('/')&&!next.includes('\n'));setSlashActive(0);const el=e.currentTarget;el.style.height='auto';el.style.height=Math.min(el.scrollHeight,180)+'px'}} onKeyDown={appendKey} aria-controls="dominion-slash-menu" aria-expanded={slashOpen} className="!min-h-[64px] !resize-none !rounded-2xl !border-0 !bg-[#FFFDF9] !px-5 !pb-0 !pt-4 !text-[15px] !leading-7 !shadow-none !ring-0 focus:!ring-0"/>
-     <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2 pt-1">
-      <div className="flex flex-wrap items-center gap-1">
-       <div className="relative">
-        <Button type="button" variant="ghost" onClick={()=>{setPermissionOpen(x=>!x);setShowSettings(false);setModelMenu(false)}} className={'inline-flex !h-7 items-center gap-1.5 !rounded-md !border-0 !px-2 !py-0 text-[11px] font-semibold '+(permissionMode==='full'?'!bg-amber-50 text-amber-700 hover:!bg-amber-100':'!bg-[#FAF7F1] text-[#5C544A] hover:!bg-[#F3EEE5]')} title={activePermission.detail} aria-expanded={permissionOpen}>{permissionMode==='full'?<ShieldAlert size={13}/>:<ShieldCheck size={13}/>} {activePermission.label} <ChevronDown size={11}/></Button>
-        {permissionOpen&&<><Button type="button" aria-label="권한 메뉴 닫기" className="fixed inset-0 z-40 !h-auto !w-auto cursor-default !rounded-none !border-0 !bg-transparent" onClick={()=>setPermissionOpen(false)}/><div className="absolute bottom-full left-0 z-50 mb-2 w-[300px] overflow-hidden rounded-xl border border-[#E7E0D5] bg-white p-1.5 shadow-xl"><div className="px-2 py-1.5"><strong className="text-[11px] text-[#4A443C]">컴퓨터 실행 권한</strong><p className="text-[10px] text-[#9C9388]">모델이 도구를 실행할 때의 승인 방식</p></div>{(['request','workspace','full'] as PermissionMode[]).map(mode=><Button type="button" variant="ghost" key={mode} disabled={permissionBusy} onClick={()=>void changePermission(mode)} className={'flex w-full items-start gap-2 !justify-start !border-0 rounded-lg px-2 py-2 text-left hover:bg-[#FAF7F1] '+(permissionMode===mode?'bg-[#FAF7F1]':'')}><span className={'mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border '+(permissionMode===mode?'border-[#C96442] bg-[#C96442] text-white':'border-[#D8CFC2]')}>{permissionMode===mode&&<Check size={11}/>}</span><span className="min-w-0 flex-1"><strong className={'block text-[11px] '+(mode==='full'?'text-amber-700':'text-[#4A443C]')}>{permissionCopy[mode].label}</strong><small className="block text-[10px] leading-4 text-[#9C9388]">{permissionCopy[mode].detail}</small></span></Button>)}</div></>}
-       </div>
-       <SelectInput aria-label="추론 강도" value={reasoningEffort} onChange={e=>setReasoningEffort(e.target.value)} title="모델 추론 강도" className="!h-7 !w-auto !border-0 !bg-transparent !py-1 !pl-1.5 !pr-6 !text-[11px] !font-semibold !text-[#5C544A]"><option value="">추론 자동</option><option value="low">추론 낮음</option><option value="medium">추론 보통</option><option value="high">추론 높음</option></SelectInput>
-       <SelectInput aria-label="에이전트" value={agentId} onChange={e=>setAgentId(e.target.value)} className="!h-7 !w-auto !max-w-[140px] !border-0 !bg-transparent !py-1 !pl-1.5 !pr-6 !text-[11px] !font-semibold !text-[#5C544A]">{agents.value.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput>
-       <div className="relative">
-        <Button type="button" variant="ghost" onClick={()=>{setShowSettings(x=>!x);setPermissionOpen(false);setModelMenu(false)}} className="inline-flex !h-7 items-center gap-1.5 !rounded-md !border-0 !px-2 !py-0 text-[11px] font-medium text-[#7C7469] hover:bg-[#F3EEE5]" title="대화 설정" aria-expanded={showSettings}><SlidersHorizontal size={13}/><span className="hidden sm:inline">대화 설정</span></Button>
-        {showSettings&&<><Button type="button" aria-label="대화 설정 닫기" className="fixed inset-0 z-40 !h-auto !w-auto cursor-default !rounded-none !border-0 !bg-transparent" onClick={()=>setShowSettings(false)}/><div className="absolute bottom-full left-0 z-50 mb-2 w-[250px] rounded-xl border border-[#E7E0D5] bg-white p-2 shadow-xl"><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span className="inline-flex items-center gap-1.5"><BrainCircuit size={13}/> 추론 과정 표시</span><TextInput type="checkbox" checked={showReasoning} onChange={e=>setShowReasoning(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>한국어 추론 요청</span><TextInput type="checkbox" checked={reasoningKo} onChange={e=>setReasoningKo(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>모델 추론 사용</span><TextInput type="checkbox" checked={thinkingEnabled} onChange={e=>setThinkingEnabled(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>도구 사용</span><TextInput type="checkbox" checked={toolsEnabled} onChange={e=>setToolsEnabled(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>자동 학습 <small className="text-[10px] text-[#9C9388]">매 대화 후 기억 추출</small></span><TextInput type="checkbox" checked={autoLearn} onChange={e=>setAutoLearn(e.target.checked)}/></label><Button type="button" variant="ghost" disabled={!current||learning||busy} onClick={()=>void learnSession()} className="mt-1 flex w-full !justify-start gap-2 !border-0 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1] disabled:opacity-40"><BrainCircuit size={13}/>{learning?'학습 중…':'지금 학습 실행'}</Button></div></>}
-       </div>
-      </div>
-      <div className="ml-auto flex items-center gap-2">
-       <span className="hidden text-[10px] text-[#9C9388] sm:inline">Enter 전송 · Shift+Enter 줄바꿈</span>
-       <Button className="grid size-9 shrink-0 place-items-center rounded-full !border-[#C96442] !bg-[#C96442] !text-white hover:!bg-[#A94E30] disabled:opacity-40" disabled={busy||!input.trim()} type="submit" title="보내기">{busy?<LoaderCircle size={18} className="animate-spin"/>:<ArrowUp size={19}/>}</Button>
-      </div>
-     </div>
-    </form></div><div className="mt-2 text-center text-[10px] text-[#9C9388]">모델이 제공한 추론 정보만 표시됩니다</div>
-   </div></div>
+  <div className="chat-content">
+   {modelMenu&&<div className="chat-floating-panel"><div className="conversation-panel-heading"><strong>로컬 모델</strong><Button size="icon" variant="ghost" aria-label="닫기" onClick={()=>setModelMenu(false)}><X size={17}/></Button></div>{menuError&&<Notice message={menuError}/>}<div className="local-model-options">{installed.map(item=><button key={item.id} disabled={Boolean(modelBusy)} onClick={()=>void switchLocalModel(item)}><HardDrive size={17}/><span><strong>{item.repo}</strong><small>{item.label} · {formatBytes(item.bytes)}</small></span><b>{runtime.id===item.id?'사용 중':modelBusy===item.id?'불러오는 중':'실행'}</b></button>)}{modelsLoading&&<p>모델 목록을 불러오는 중…</p>}{!modelsLoading&&!installed.length&&<p>설치된 로컬 모델이 없습니다.</p>}</div><div className="conversation-panel-actions"><Button size="sm" onClick={openModels}>모델 관리</Button><Button size="sm" disabled={unloading||runtime.status!=='ready'} onClick={()=>void unloadModel()}><Power size={14}/>{unloading?'내리는 중':'모델 내리기'}</Button></div></div>}
+   {showSettings&&<div className="chat-floating-panel"><div className="conversation-panel-heading"><strong>대화 설정</strong><Button size="icon" variant="ghost" aria-label="닫기" onClick={()=>setShowSettings(false)}><X size={17}/></Button></div><label className="conversation-setting"><span>추론 과정 펼쳐 보기</span><input type="checkbox" checked={showReasoning} onChange={event=>setShowReasoning(event.target.checked)}/></label><label className="conversation-setting"><span>한국어 추론 요청</span><input type="checkbox" checked={reasoningKo} onChange={event=>setReasoningKo(event.target.checked)}/></label><label className="conversation-setting"><span>도구 사용</span><input type="checkbox" checked={toolsEnabled} onChange={event=>setToolsEnabled(event.target.checked)}/></label><label className="conversation-setting"><span>대화 후 기억 추출</span><input type="checkbox" checked={autoLearn} onChange={event=>setAutoLearn(event.target.checked)}/></label><Button size="sm" disabled={!current||busy||learning} onClick={()=>void learnSession()}><BrainCircuit size={15}/>{learning?'학습 작업 확인 중':'지금 기억 추출'}</Button></div>}
+   <div data-chat-scroll className="chat-transcript">{!messages.length&&!busy?<div className="chat-empty"><Sparkles size={25}/><h2>무엇을 함께할까요?</h2><p>질문하거나 컴퓨터에서 실행할 작업을 지시하세요.<br/>파일과 이미지는 아래에 첨부하거나 붙여넣을 수 있습니다.</p>{['현재 작업공간을 살펴보고 상태를 알려줘','프로젝트의 다음 작업을 함께 정리해줘'].map(text=><button key={text} onClick={()=>{setInput(text);inputRef.current?.focus()}}>{text}<ArrowRight size={15}/></button>)}</div>:<div className="chat-transcript-inner">{messages.filter(message=>message.role!=='tool').map(message=><Message key={message.id} message={message} agent={agents.value.find(agent=>agent.id===message.agent_id)} showReasoning={showReasoning}/>)}{(live||thought||busy)&&<div className="chat-message"><div className="chat-avatar"><Sparkles size={19}/></div><div className="chat-message-main"><div className="chat-message-author">{agents.value.find(agent=>agent.id===agentId)?.name||'DOMINION'} <span>{busy?'응답 중':'저장 중'}</span></div>{thought&&<details className="conversation-reasoning" open={showReasoning&&thinking}><summary onClick={event=>{event.preventDefault();setThinking(value=>!value)}}>추론 과정 · {thought.length.toLocaleString()}자</summary><pre>{thought}</pre></details>}{live&&<div className="chat-message-text">{live}</div>}{busy&&!live&&<div className="chat-working"><LoaderCircle size={15} className="animate-spin"/>{thought?'모델이 추론하고 있습니다.':'응답을 기다리고 있습니다.'}</div>}</div></div>}{toolStatus&&<div className="chat-tool-status"><TerminalSquare size={15}/>{toolStatus}</div>}<div ref={bottom}/></div>}</div>
+   <div className="chat-composer-wrap">{selectedSession?.roomId?<div className="conversation-readonly">그룹 대화의 원본 기록입니다.<Button onClick={()=>{try{localStorage.setItem('dominion.room.selected',selectedSession.roomId!)}catch{}window.location.hash='#/rooms'}}>그룹 대화에서 이어가기</Button></div>:<><Notice message={error}/>{commandInfo&&<div role="status" className="conversation-info">{commandInfo}</div>}{modelError&&!model&&<div className="conversation-inline-note">모델 연결 확인: {modelError}</div>}{approval&&<div className="chat-approval"><strong>{approval.tool} 실행 승인 요청</strong><pre>{JSON.stringify(approval.args,null,2)}</pre><div><Button size="sm" onClick={()=>void approve(false)}>거절</Button><Button size="sm" variant="primary" onClick={()=>void approve(true)}>이번 실행 허용</Button></div></div>}<div className="relative">{slashOpen&&<SlashMenu items={slashItems} active={slashActive} onChoose={chooseSlash}/>}<ConversationComposer input={input} onInput={value=>{setInput(value);setSlashOpen(value.startsWith('/')&&!value.includes('\n'));setSlashActive(0)}} onSend={send} inputRef={inputRef} attachments={attachments} onAddAttachments={addAttachments} onRemoveAttachment={id=>setAttachments(previous=>previous.filter(item=>item.id!==id))} resolveBinding={async()=>({sessionId:await ensureSession()})} busy={busy} onStop={stop} onKeyDown={appendKey} placeholder="메시지 입력 · / 명령어 · 이미지 붙여넣기" controls={responseControls} actions={<select className="conversation-permission" aria-label="컴퓨터 실행 권한" title={activePermission.detail} value={permissionMode} disabled={permissionBusy} onChange={event=>void changePermission(event.target.value as PermissionMode)}>{Object.entries(permissionCopy).map(([key,item])=><option value={key} key={key}>{item.label}</option>)}</select>} footer={<span>Enter 보내기 · Shift+Enter 줄바꿈 · 모델이 제공한 추론만 표시</span>}/></div></>}</div>
   </div>
  </div>
 }
-function Message({message,agentName,showReasoning}:{message:ChatMessage;agentName?:string;showReasoning?:boolean}){
- const [open,setOpen]=useState(true);const human=message.role==='user';
- return <div className={'flex min-w-0 items-start gap-3 '+(human?'':'')} data-message>
-  <div className={'grid size-9 shrink-0 place-items-center rounded-xl '+(human?'bg-[#E9E2D7] text-[#4A443C]':'bg-[#F7E8E1] text-[#A94E30]')}>{human?'U':<Sparkles size={17}/>}</div>
-  <div className="relative min-w-0 flex-1">
-   <div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#4A443C]">{human?'You':agentName||'DOMINION'}</div>
-   {showReasoning&&message.reasoning&&<details className="mb-3 max-h-56 overflow-y-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]" open={open}><summary className="cursor-pointer select-none" onClick={e=>{e.preventDefault();setOpen(v=>!v)}}><BrainCircuit size={14} className="inline"/> 추론 과정 · {message.reasoning.length.toLocaleString()}자 <ChevronRight size={13} className="inline"/></summary><div className="mt-2 whitespace-pre-wrap">{message.reasoning}</div></details>}
-   <div className={"min-w-0 break-words text-sm leading-7 text-[#3A342D] [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-slate-100 [&_code]:break-words [&_ul]:list-disc [&_ul]:pl-6 "+(human?"rounded-xl bg-[#F3EEE5] px-4 py-3":"")}>{message.content||(!human&&message.tool_calls?.length?'도구 실행 요청':'' )}</div>
-   {!human&&message.content&&<Button className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-[#7C7469] hover:bg-[#F3EEE5]" onClick={()=>navigator.clipboard.writeText(message.content)} title="복사"><Copy size={14}/></Button>}
-  </div>
- </div>
+function Message({message,agent,showReasoning}:{message:ChatMessage;agent?:Agent;showReasoning?:boolean}){
+ const human=message.role==='user',attachments=Array.isArray(message.metadata?.attachments)?message.metadata.attachments as Attachment[]:[]
+ return <article className={'chat-message '+(human?'is-owner':'')} data-message><div className="chat-avatar">{(agent?.avatar||agent?.avatarUrl)?<img src={String(agent.avatar||agent.avatarUrl)} alt=""/>:human?'나':<Sparkles size={18}/>}</div><div className="chat-message-main"><div className="chat-message-author">{human?'나':agent?.name||'DOMINION'}</div>{message.reasoning&&<details className="conversation-reasoning" open={showReasoning?undefined:false}><summary>추론 과정 · {message.reasoning.length.toLocaleString()}자</summary><pre>{message.reasoning}</pre></details>}<AttachmentList attachments={attachments}/>{message.content&&<div className="chat-message-text">{message.content}</div>}{!human&&message.content&&<button className="chat-message-copy" onClick={()=>void navigator.clipboard.writeText(message.content)} title="발언 복사"><Copy size={14}/>복사</button>}</div></article>
 }

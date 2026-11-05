@@ -75,7 +75,7 @@ export function DeveloperPage(){
  }
  const s=status.value
  return <div className="mx-auto w-full max-w-[1280px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
-  <Headline eyebrow="SELF DEVELOPMENT" title="소스 개발 스튜디오 v0.2.9" description="설치된 앱과 분리된 Git 소스 작업공간에서 UI·엔진을 수정하고, 테스트·빌드·미리보기·설치본 업데이트까지 실행하는 자기 개발 스튜디오입니다." actions={<Button variant="secondary" onClick={()=>{void status.reload();void loadDiff()}}><RefreshCw size={16}/> 상태 새로고침</Button>}/>
+  <Headline eyebrow="REPOSITORY WORKSPACE" title="소스 개발 스튜디오" description="내 Git 소스 작업공간에서 변경을 검토하고 테스트·빌드·미리보기를 실행합니다. 저장소를 연결하는 것만으로 외부 프로그램이 설치되거나 실행되지는 않습니다." actions={<Button variant="secondary" onClick={()=>{void status.reload();void loadDiff()}}><RefreshCw size={16}/> 상태 새로고침</Button>}/>
   {error&&<Notice message={error}/>}
   {message&&<div className="mb-4 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"><Check size={16}/>{message}</div>}
   <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">

@@ -101,6 +101,25 @@ pub fn enqueue(state: &AppState, kind: &str, input: Value) -> Option<Value> {
     job
 }
 
+/// Atomically deduplicate an immutable operation across HTTP requests and
+/// workers. The supplied ID belongs to the engine, never a client record.
+pub fn enqueue_once(state: &AppState, id: &str, kind: &str, input: Value) -> Option<Value> {
+    let candidate = json!({"id":id,"kind":kind,"input":input,"status":"queued",
+        "queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),
+        "attempts":0,"stepIndex":0,"stepTotal":0,"events":[]});
+    if let Some(saved) = state.store.put_if_absent("job", &candidate) {
+        state.bus.record("job", &saved);
+        state
+            .store
+            .audit("job.queued", json!({"kind":kind,"jobId":id}));
+        return Some(saved);
+    }
+    state
+        .store
+        .get("job", id)
+        .filter(|existing| existing["kind"] == kind && existing["input"] == candidate["input"])
+}
+
 /// Recovers work left behind by a crash: running jobs are re-queued (unless
 /// they already exhausted retries) and running executions become interrupted.
 pub fn recover(state: &AppState) {
@@ -122,6 +141,7 @@ pub fn recover(state: &AppState) {
             "/roomState/inFlight",
             "/workflowState/inFlight",
             "/discordState/inFlight",
+            "/videoState/inFlight",
         ]
         .iter()
         .any(|path| {
@@ -299,6 +319,8 @@ async fn run_job(state: AppState, job: Value) {
         "prompt" => run_prompt(&context, &job).await,
         "learn" => learning::run(&context, &job).await,
         "discord" => crate::engine::discord::run(&context, &job).await,
+        "video" => crate::engine::video::run(&context, &job).await,
+        "youtube_upload" => crate::engine::video::upload(&context, &job).await,
         other => Err(format!("지원하지 않는 작업 종류입니다: {other}")),
     };
 
@@ -395,10 +417,11 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
             .get("model")
             .and_then(|value| value.as_str())
             .map(str::to_string),
-        tools_enabled: true,
-        thinking: None,
+        attachment_ids: Vec::new(),
+        tools_enabled: input["toolsEnabled"].as_bool().unwrap_or(true),
+        thinking: input["thinking"].as_bool(),
         auto_learning: false,
-        reasoning_effort: None,
+        reasoning_effort: input["reasoningEffort"].as_str().map(str::to_string),
         reasoning_language: None,
         system_override: None,
     };

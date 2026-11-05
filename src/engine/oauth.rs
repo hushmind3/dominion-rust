@@ -24,7 +24,16 @@ const PROVIDERS: &[Provider] = &[
     },
     Provider {
         id: "google",
-        name: "Google / YouTube",
+        name: "Google 계정",
+        authorize: "https://accounts.google.com/o/oauth2/v2/auth",
+        token: "https://oauth2.googleapis.com/token",
+        user: "https://www.googleapis.com/oauth2/v3/userinfo",
+        scopes: "openid email profile",
+        extra: &[("access_type", "offline"), ("prompt", "consent")],
+    },
+    Provider {
+        id: "youtube",
+        name: "YouTube 업로드",
         authorize: "https://accounts.google.com/o/oauth2/v2/auth",
         token: "https://oauth2.googleapis.com/token",
         user: "https://www.googleapis.com/oauth2/v3/userinfo",
@@ -56,16 +65,21 @@ pub fn status(state: &AppState) -> Vec<Value> {
             let connected = record
                 .get("connected")
                 .and_then(|value| value.as_bool())
-                .unwrap_or(false);
+                .unwrap_or(false)
+                && state
+                    .store
+                    .has_secret(&format!("oauth:{}:token", provider.id));
             json!({
                 "id": provider.id,
                 "name": provider.name,
-                "configured": state.store.has_secret(&format!("oauth:{}:secret", provider.id)),
+                "configured": client_credentials(state, provider.id).is_ok(),
                 "connected": connected,
                 "account": record.get("account").cloned().unwrap_or(Value::Null),
+                "connectedAt": record.get("connectedAt"),
                 "callback": callback_url(state, provider.id),
                 "scopes": provider.scopes,
                 "scope": provider.scopes,
+                "grantedScopes": record.get("scopes"),
             })
         })
         .collect()
@@ -78,18 +92,24 @@ pub fn save(
     client_secret: &str,
 ) -> Result<Value, String> {
     let provider = provider(id).ok_or_else(|| format!("지원하지 않는 OAuth 제공자입니다: {id}"))?;
-    if client_id.trim().is_empty() || client_secret.trim().is_empty() {
-        return Err("Client ID 와 Client Secret 이 필요합니다.".into());
+    if client_id.trim().is_empty() || (id == "github" && client_secret.trim().is_empty()) {
+        return Err("Client ID가 필요합니다. GitHub 앱은 Client Secret도 입력하세요.".into());
     }
     let mut record = config(state, id).unwrap_or_else(|| json!({ "id": id }));
     record["id"] = json!(id);
     record["clientId"] = json!(client_id.trim());
     record["configuredAt"] = json!(chrono::Utc::now().to_rfc3339());
-    state.store.put("oauth_config", &record);
+    state
+        .store
+        .put("oauth_config", &record)
+        .ok_or("OAuth 앱 설정 저장 실패")?;
     state.save_secret(
         &format!("oauth:{}:secret", provider.id),
         &json!({ "clientId": client_id.trim(), "clientSecret": client_secret.trim() }).to_string(),
     );
+    if client_credentials(state, id).is_err() {
+        return Err("OAuth 앱 자격 증명 저장 실패".into());
+    }
     Ok(json!({
         "id": provider.id,
         "name": provider.name,
@@ -101,6 +121,11 @@ pub fn save(
 fn client_credentials(state: &AppState, id: &str) -> Result<(String, String), String> {
     let sealed = state
         .read_secret(&format!("oauth:{id}:secret"))
+        .or_else(|| {
+            (id == "youtube")
+                .then(|| state.read_secret("oauth:google:secret"))
+                .flatten()
+        })
         .ok_or_else(|| "OAuth 앱이 설정되지 않았습니다.".to_string())?;
     let value: Value = serde_json::from_str(&sealed).map_err(|error| error.to_string())?;
     let client_id = value
@@ -113,7 +138,7 @@ fn client_credentials(state: &AppState, id: &str) -> Result<(String, String), St
         .and_then(|item| item.as_str())
         .unwrap_or("")
         .to_string();
-    if client_id.is_empty() || client_secret.is_empty() {
+    if client_id.is_empty() || (id == "github" && client_secret.is_empty()) {
         return Err("OAuth 앱 자격 증명이 비어 있습니다.".into());
     }
     Ok((client_id, client_secret))
@@ -122,7 +147,17 @@ fn client_credentials(state: &AppState, id: &str) -> Result<(String, String), St
 pub fn start(state: &AppState, id: &str) -> Result<Value, String> {
     let provider = provider(id).ok_or_else(|| format!("지원하지 않는 OAuth 제공자입니다: {id}"))?;
     let (client_id, _) = client_credentials(state, id)?;
+    use base64::Engine;
+    use sha2::Digest;
     let state_token = uuid::Uuid::new_v4().to_string();
+    let verifier = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(verifier.as_bytes()));
+    state.save_secret(&format!("oauth-state:{state_token}"), &verifier);
     state.store.put(
         "oauth_state",
         &json!({
@@ -143,8 +178,16 @@ pub fn start(state: &AppState, id: &str) -> Result<Value, String> {
         for (key, value) in provider.extra {
             query.append_pair(key, value);
         }
-        if id == "google" {
-            query.append_pair("response_type", "code");
+        if id == "google" || id == "youtube" {
+            query
+                .append_pair("response_type", "code")
+                .append_pair("code_challenge", &challenge)
+                .append_pair("code_challenge_method", "S256");
+            if let Some(account) =
+                config(state, "google").and_then(|r| r["account"].as_str().map(str::to_string))
+            {
+                query.append_pair("login_hint", &account);
+            }
         }
     }
     Ok(json!({ "url": url.to_string(), "state": state_token }))
@@ -171,16 +214,29 @@ pub async fn callback(
         .ok_or("OAuth state 가 손상되었습니다.")?;
     if chrono::Utc::now().timestamp_millis() - created_ms > 10 * 60 * 1000 {
         state.store.remove("oauth_state", state_token);
+        state
+            .store
+            .remove_secret(&format!("oauth-state:{state_token}"));
         return Err("OAuth state 가 만료되었습니다. 다시 연결하세요.".into());
     }
-    if record
-        .get("provider")
-        .and_then(|value| value.as_str())
-        != Some(provider.id)
-    {
+    if record.get("provider").and_then(|value| value.as_str()) != Some(provider.id) {
         return Err("OAuth state 제공자가 일치하지 않습니다.".into());
     }
+    state
+        .store
+        .patch_if(
+            "oauth_state",
+            state_token,
+            "used",
+            &Value::Null,
+            &json!({"used":true}),
+        )
+        .ok_or("이미 처리한 OAuth state입니다.")?;
     state.store.remove("oauth_state", state_token);
+    let verifier = state.read_secret(&format!("oauth-state:{state_token}"));
+    state
+        .store
+        .remove_secret(&format!("oauth-state:{state_token}"));
 
     let (client_id, client_secret) = client_credentials(state, id)?;
     let client = reqwest::Client::new();
@@ -193,6 +249,12 @@ pub async fn callback(
     ];
     if provider.id == "github" {
         form.pop();
+    } else {
+        form.push((
+            "code_verifier",
+            verifier.ok_or("PKCE verifier가 없습니다. 다시 연결하세요.")?,
+        ));
+        form.retain(|(key, value)| *key != "client_secret" || !value.is_empty());
     }
 
     let response = client
@@ -204,6 +266,9 @@ pub async fn callback(
         .await
         .map_err(|error| format!("토큰 교환 실패: {error}"))?;
     let status = response.status();
+    if !status.is_success() {
+        return Err(format!("OAuth 토큰 교환 거부: HTTP {status}"));
+    }
     let text = response.text().await.unwrap_or_default();
     let token_value: Value = serde_json::from_str(&text)
         .map_err(|_| format!("토큰 응답을 해석할 수 없습니다 (HTTP {status})"))?;
@@ -247,6 +312,7 @@ pub async fn callback(
             "refreshToken": token_value.get("refresh_token"),
             "scopes": token_value.get("scope"),
             "obtainedAt": chrono::Utc::now().to_rfc3339(),
+            "expiresAt": token_value["expires_in"].as_i64().map(|seconds| chrono::Utc::now().timestamp() + seconds),
         })
         .to_string(),
     );
@@ -254,13 +320,24 @@ pub async fn callback(
     let mut record = config(state, id).unwrap_or_else(|| json!({ "id": id }));
     record["id"] = json!(id);
     record["connected"] = json!(true);
+    record["scopes"] = token_value
+        .get("scope")
+        .cloned()
+        .unwrap_or(json!(provider.scopes));
     record["account"] = account.clone();
     record["connectedAt"] = json!(chrono::Utc::now().to_rfc3339());
-    state.store.put("oauth_config", &record);
-    state.bus.record("oauth_config", &record);
+    if self::access_token(state, id).as_deref() != Some(access_token.as_str()) {
+        return Err("OAuth 토큰 저장 실패".into());
+    }
     state
         .store
-        .audit("oauth.connected", json!({ "provider": id, "account": account }));
+        .put("oauth_config", &record)
+        .ok_or("OAuth 연결 상태 저장 실패")?;
+    state.bus.record("oauth_config", &record);
+    state.store.audit(
+        "oauth.connected",
+        json!({ "provider": id, "account": account }),
+    );
 
     Ok(json!({ "provider": id, "connected": true, "account": account }))
 }
@@ -283,6 +360,57 @@ pub fn access_token(state: &AppState, id: &str) -> Option<String> {
         .get("accessToken")
         .and_then(|item| item.as_str())
         .map(str::to_string)
+}
+
+/// Refresh long-lived service grants in the vault; Google identity and YouTube
+/// intentionally have independent grants, expiry and disconnect operations.
+pub async fn fresh_access_token(state: &AppState, id: &str) -> Result<String, String> {
+    let raw = state
+        .read_secret(&format!("oauth:{id}:token"))
+        .ok_or("계정을 먼저 연결하세요.")?;
+    let mut token: Value =
+        serde_json::from_str(&raw).map_err(|_| "저장된 OAuth 토큰이 손상되었습니다.")?;
+    if token["expiresAt"]
+        .as_i64()
+        .is_none_or(|expiry| expiry > chrono::Utc::now().timestamp() + 60)
+    {
+        return token["accessToken"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .ok_or("액세스 토큰이 없습니다.".into());
+    }
+    let refresh = token["refreshToken"]
+        .as_str()
+        .ok_or("인증이 만료되었습니다. 계정을 다시 연결하세요.")?;
+    let provider = provider(id).ok_or("지원하지 않는 OAuth 제공자입니다.")?;
+    let (client_id, client_secret) = client_credentials(state, id)?;
+    let response = reqwest::Client::new()
+        .post(provider.token)
+        .form(&[
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("refresh_token", refresh),
+            ("grant_type", "refresh_token"),
+        ])
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|_| "OAuth 갱신 연결 실패")?;
+    if !response.status().is_success() {
+        return Err("OAuth 갱신이 거부되었습니다. 계정을 다시 연결하세요.".into());
+    }
+    let updated: Value = response.json().await.map_err(|_| "OAuth 갱신 응답 오류")?;
+    let access = updated["access_token"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or("갱신된 토큰이 없습니다.")?
+        .to_string();
+    token["accessToken"] = json!(access);
+    token["expiresAt"] =
+        json!(chrono::Utc::now().timestamp() + updated["expires_in"].as_i64().unwrap_or(3600));
+    state.save_secret(&format!("oauth:{id}:token"), &token.to_string());
+    Ok(access)
 }
 
 #[cfg(test)]
@@ -322,7 +450,10 @@ mod tests {
         assert!(url.starts_with("https://github.com/login/oauth/authorize"));
         assert!(url.contains("client_id=client-123"));
         assert!(url.contains("state="));
-        assert!(url.contains("127.0.0.1%3A4999%2Fapi%2Foauth%2Fgithub%2Fcallback") || url.contains("127.0.0.1:4999"));
+        assert!(
+            url.contains("127.0.0.1%3A4999%2Fapi%2Foauth%2Fgithub%2Fcallback")
+                || url.contains("127.0.0.1:4999")
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -330,7 +461,11 @@ mod tests {
     fn secrets_are_not_stored_in_records() {
         let (state, dir) = temp_state();
         save(&state, "github", "client-123", "super-secret").expect("save");
-        let record = state.store.get("oauth_config", "github").unwrap().to_string();
+        let record = state
+            .store
+            .get("oauth_config", "github")
+            .unwrap()
+            .to_string();
         // The client id is public; the client secret must never appear.
         assert!(!record.contains("super-secret"));
         let _ = std::fs::remove_dir_all(dir);
@@ -340,7 +475,9 @@ mod tests {
     async fn callback_rejects_unknown_state() {
         let (state, dir) = temp_state();
         save(&state, "github", "client-123", "secret").unwrap();
-        let error = callback(&state, "github", "code", "bogus-state").await.unwrap_err();
+        let error = callback(&state, "github", "code", "bogus-state")
+            .await
+            .unwrap_err();
         assert!(error.contains("state"));
         let _ = std::fs::remove_dir_all(dir);
     }

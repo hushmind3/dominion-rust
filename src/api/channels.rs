@@ -10,6 +10,9 @@ use std::path::PathBuf;
 
 /// The registry distinguishes DOMINION-owned executable drivers from planned connectors.
 fn manifests() -> PathBuf {
+    if let Some(assets) = std::env::var_os("DOMINION_ASSETS") {
+        return PathBuf::from(assets).join("channels");
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/channels")
 }
 
@@ -26,7 +29,7 @@ pub fn catalog() -> Vec<Value> {
         let Ok(mut value) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
-        let available = value.get("id").and_then(Value::as_str) == Some("discord");
+        let available = matches!(value["id"].as_str(), Some("discord" | "telegram"));
         value["available"] = json!(available);
         value["status"] = json!(if available {
             "available"
@@ -158,6 +161,47 @@ mod tests {
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }
+    #[test]
+    fn telegram_configuration_uses_vault_room_binding_and_explicit_shared_sync() {
+        let (state, dir) = test_state();
+        state.store.put(
+            "room",
+            &json!({"id":"room","name":"공용","agentIds":["a0"]}),
+        );
+        let session = crate::engine::rooms::ensure_room_session(&state, "room").unwrap();
+        state.store.write_message(
+            &json!({"id":"old","session_id":session["id"],"role":"user","content":"기존 기록"}),
+        );
+        let response = save_config(
+            &state,
+            None,
+            json!({"id":"tg","kind":"telegram","chatId":"-100","roomId":"room","allowedUserIds":["7"],"token":"fixture-token","enabled":false,"syncRoomMessages":true}),
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let config = state.store.get("channel", "tg").unwrap();
+        assert_eq!(config["driver"], "dominion-telegram");
+        assert_eq!(config["bridgeStartMessageId"], "old");
+        assert!(config.get("token").is_none());
+        assert_eq!(
+            state
+                .read_secret(&crate::engine::discord::token_name("tg"))
+                .as_deref(),
+            Some("fixture-token")
+        );
+        let public = public_channel(&state, &config);
+        assert_eq!(public["chatId"], "-100");
+        assert_eq!(public["syncRoomMessages"], true);
+        assert!(!public.to_string().contains("fixture-token"));
+        let response = save_config(&state, Some("tg"), json!({"allowedUserIds":[7]}));
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = save_config(
+            &state,
+            Some("tg"),
+            json!({"toolsEnabled":true,"allowedUserIds":[]}),
+        );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn catalog_exposes_only_implemented_drivers() {
@@ -170,7 +214,7 @@ mod tests {
         assert_eq!(discord["available"], true);
         assert!(entries
             .iter()
-            .filter(|e| e["id"] != "discord")
+            .filter(|e| e["id"] != "discord" && e["id"] != "telegram")
             .all(|e| e["available"] == false));
         assert!(discord["fields"].as_array().is_some());
     }
@@ -205,6 +249,8 @@ pub fn public_channel(state: &AppState, record: &Value) -> Value {
         "roomPolicy",
         "guildId",
         "channelId",
+        "chatId",
+        "syncRoomMessages",
         "allowedUserIds",
         "allowedBotIds",
         "replyMentionBots",
@@ -227,16 +273,33 @@ pub fn public_channel(state: &AppState, record: &Value) -> Value {
         .and_then(Value::as_str)
         .map(|s| !s.is_empty())
         .unwrap_or(false);
-    let missing = ["guildId", "channelId"]
+    let required = if record["kind"] == "telegram" {
+        vec!["chatId", "roomId"]
+    } else {
+        vec!["guildId", "channelId"]
+    };
+    let missing = required
         .into_iter()
         .filter(|k| crate::engine::discord::text(record, k).is_empty())
         .collect::<Vec<_>>();
     public["credentialsPresent"] = json!({"token":present});
     public["configured"] = json!(present && missing.is_empty());
     public["missing"] = json!(missing);
+    let outbox = state
+        .store
+        .all("channel_outbox")
+        .into_iter()
+        .filter(|item| item["bindingId"] == record["id"])
+        .collect::<Vec<_>>();
+    public["delivery"] = json!({"pending":outbox.iter().filter(|item|item["status"]=="pending").count(),"sending":outbox.iter().filter(|item|item["status"]=="sending").count(),
+        "sent":outbox.iter().filter(|item|item["status"]=="sent").count(),"needsReview":outbox.iter().filter(|item|item["status"]=="needs_review").count(),
+        "lastError":outbox.iter().find(|item|item["status"]=="needs_review").map(|item|item["error"].clone())});
     if record.get("enabled").and_then(Value::as_bool) != Some(true) {
         public["status"] = json!("disabled");
-    } else if crate::engine::discord::text(record, "driver") != "dominion-discord" {
+    } else if !matches!(
+        (record["kind"].as_str(), record["driver"].as_str()),
+        (Some("discord"), Some("dominion-discord")) | (Some("telegram"), Some("dominion-telegram"))
+    ) {
         public["status"] = json!("not_started");
         public["runtimeError"] = json!("Rust 연결 설정에서 저장·활성화가 필요합니다.");
     }
@@ -287,7 +350,7 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
         return error(StatusCode::BAD_REQUEST, "연결 ID가 올바르지 않습니다.");
     }
     let existing = state.store.get("channel", &id);
-    let mut config = json!({"id":id,"kind":"discord","agentId":"general","enabled":false,"mentionOnly":true,"replyMentionBots":false,"toolsEnabled":false,"roomPolicy":"all_or_named"});
+    let mut config = json!({"id":id,"kind":"discord","agentId":"general","enabled":false,"mentionOnly":true,"replyMentionBots":false,"toolsEnabled":false,"syncRoomMessages":false,"roomPolicy":"all_or_named"});
     for key in [
         "name",
         "kind",
@@ -300,6 +363,8 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
         "roomPolicy",
         "guildId",
         "channelId",
+        "chatId",
+        "syncRoomMessages",
         "allowedUserIds",
         "allowedBotIds",
         "replyMentionBots",
@@ -312,7 +377,39 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
             config[key] = value.clone();
         }
     }
-    config["driver"] = json!("dominion-discord");
+    for key in [
+        "enabled",
+        "mentionOnly",
+        "replyMentionBots",
+        "toolsEnabled",
+        "syncRoomMessages",
+    ] {
+        if !config[key].is_boolean() {
+            return error(
+                StatusCode::BAD_REQUEST,
+                format!("{key}는 true/false여야 합니다."),
+            );
+        }
+    }
+    for key in ["allowedUserIds", "allowedBotIds"] {
+        if let Some(value) = config.get(key) {
+            if !value.is_string()
+                && !value
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().all(Value::is_string))
+            {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    format!("{key}에는 문자열 ID 목록이 필요합니다."),
+                );
+            }
+        }
+    }
+    config["driver"] = json!(if config["kind"] == "telegram" {
+        "dominion-telegram"
+    } else {
+        "dominion-discord"
+    });
     config["revision"] = json!(uuid::Uuid::new_v4().to_string());
     config["status"] = json!(
         if config.get("enabled").and_then(Value::as_bool) == Some(true) {
@@ -321,7 +418,12 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
             "disabled"
         }
     );
-    if let Err(message) = crate::engine::discord::validate(state, &config) {
+    let validation = if config["kind"] == "telegram" {
+        crate::engine::telegram::validate(state, &config)
+    } else {
+        crate::engine::discord::validate(state, &config)
+    };
+    if let Err(message) = validation {
         return error(StatusCode::BAD_REQUEST, message);
     }
     let token = body
@@ -337,7 +439,7 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
         });
     let secret_name = crate::engine::discord::token_name(&id);
     if token.is_none() && !state.store.has_secret(&secret_name) {
-        return error(StatusCode::BAD_REQUEST, "Discord Bot Token을 입력하세요.");
+        return error(StatusCode::BAD_REQUEST, "Bot Token을 입력하세요.");
     }
     if let Some(token) = token {
         if token.len() > 512 || token.chars().any(char::is_whitespace) {
@@ -348,13 +450,29 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
         }
         state.save_secret(&secret_name, token);
     }
+    if !crate::engine::discord::text(&config, "roomId").is_empty() {
+        match crate::engine::rooms::ensure_room_session(
+            state,
+            crate::engine::discord::text(&config, "roomId"),
+        ) {
+            Ok(session) => {
+                config["bridgeStartMessageId"] = state
+                    .store
+                    .messages(crate::engine::discord::text(&session, "id"))
+                    .last()
+                    .map(|message| message["id"].clone())
+                    .unwrap_or(Value::Null)
+            }
+            Err(message) => return error(StatusCode::BAD_REQUEST, message),
+        }
+    }
     match state.store.put("channel", &config) {
         Some(record) => {
             let public = public_channel(state, &record);
             state.bus.record("channel", &public);
             state.store.audit(
                 "channel.saved",
-                json!({"connectionId":id,"kind":"discord","enabled":config.get("enabled")}),
+                json!({"connectionId":id,"kind":config["kind"],"enabled":config.get("enabled")}),
             );
             Json(public).into_response()
         }
@@ -380,7 +498,12 @@ pub async fn diagnose(State(state): State<AppState>, Path(id): Path<String>) -> 
     let Some(config) = state.store.get("channel", &id) else {
         return error(StatusCode::NOT_FOUND, "연결을 찾을 수 없습니다.");
     };
-    match crate::engine::discord::diagnose(&state, &config).await {
+    let result = if config["kind"] == "telegram" {
+        crate::engine::telegram::diagnose(&state, &config).await
+    } else {
+        crate::engine::discord::diagnose(&state, &config).await
+    };
+    match result {
         Ok(result) => Json(result).into_response(),
         Err(message) => Json(json!({"verified":false,"message":message})).into_response(),
     }

@@ -1,4 +1,3 @@
-import { ContextMenu } from './components/ContextMenu'
 import {lazy,Suspense,useCallback,useEffect,useState} from 'react'
 import {get} from './api'
 import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
@@ -18,12 +17,14 @@ const DeveloperPage=lazy(()=>import('./pages/Developer').then(module=>({default:
 function locationState(){
  const raw=window.location.hash.replace(/^#\/?/,'')
  const [name,query]=raw.split('?')
- const valid=navigation.some(group=>group.items.some(item=>item.id===name))
+ const valid=name==='capabilities'||navigation.some(group=>group.items.some(item=>item.id===name))
  return {page:(valid?name:'chat') as PageId,session:new URLSearchParams(query||'').get('session')||undefined}
 }
 export default function App(){
  const [page,setPage]=useState<PageId>(()=>locationState().page)
  const [session,setSession]=useState<string|undefined>(()=>locationState().session)
+ const [chatResetKey,setChatResetKey]=useState(0)
+ const [learningNotice,setLearningNotice]=useState<{inserted:number;skill:boolean}|null>(null)
  const [sidebar,setSidebar]=useState(false)
  const [collapsed,setCollapsed]=useState(()=>{try{const saved=localStorage.getItem('dominion.nav.collapsed');return saved===null?window.innerWidth<1200:saved==='1'}catch{return false}})
  const [palette,setPalette]=useState(false)
@@ -47,8 +48,11 @@ export default function App(){
   setPalette(false)
   window.scrollTo({top:0,behavior:'auto'})
  },[])
+ const newChat=useCallback(()=>{setSession(undefined);setChatResetKey(value=>value+1);setPage('chat');window.location.hash='#/chat';setSidebar(false);setPalette(false)},[])
+ const changeSession=useCallback((id:string|undefined)=>{setSession(id);window.history.replaceState(null,'','#/chat'+(id?'?session='+encodeURIComponent(id):''))},[])
+ useEffect(()=>{if(!learningNotice)return;const timer=setTimeout(()=>setLearningNotice(null),9000);return()=>clearTimeout(timer)},[learningNotice])
  useEffect(()=>{
-  const sync=()=>{const current=locationState();setPage(current.page);if(current.session)setSession(current.session);setSidebar(false);setPalette(false)}
+  const sync=()=>{const current=locationState();setPage(current.page);setSession(current.session);setSidebar(false);setPalette(false)}
   window.addEventListener('hashchange',sync)
   return()=>window.removeEventListener('hashchange',sync)
  },[])
@@ -70,6 +74,7 @@ export default function App(){
   stream.onmessage=event=>{
    try{
     const item=JSON.parse(event.data)
+    if(item.type==='learning_feedback'){window.dispatchEvent(new CustomEvent('dominion-learning-feedback',{detail:item}));if(Number(item.inserted)>0||item.skill)setLearningNotice({inserted:Number(item.inserted)||0,skill:Boolean(item.skill)});return}
     if(item.type==='room_event'){window.dispatchEvent(new CustomEvent('dominion-room-event',{detail:item}));return}
     if(['record','message','job_event','audit','approval','channel_status','goal_event','execution_event'].includes(item.type)){
      window.dispatchEvent(new Event('dominion-refresh'))
@@ -86,8 +91,7 @@ export default function App(){
   return()=>{mounted=false;clearInterval(poll);stream.close();window.removeEventListener('keydown',shortcuts)}
  },[])
  return <div className="min-h-screen bg-[#F6F3EC] font-sans text-[#24211D]">
-   <ContextMenu />
-  <WorkspaceSidebar page={page} open={sidebar} collapsed={collapsed} online={online} running={running} pending={pending} onNavigate={navigate} onClose={()=>setSidebar(false)}/>
+  <WorkspaceSidebar page={page} open={sidebar} collapsed={collapsed} online={online} running={running} pending={pending} onNavigate={navigate} onNewChat={newChat} onToggle={toggleNav} onClose={()=>setSidebar(false)}/>
   <main className={'min-h-screen min-w-0 transition-[margin] duration-200 '+(collapsed?'ml-0':'ml-[216px] max-[519px]:ml-0')}>
    <WorkspaceHeader page={page} online={online} collapsed={collapsed} onMenu={toggleNav} onSearch={()=>setPalette(true)}/>
    <div className={'min-w-0 page-'+page}>
@@ -95,7 +99,7 @@ export default function App(){
     {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
     {page==='memory'&&<MemoryPage/>}
     {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
-    {page==='chat'&&<ChatPage sessionId={session} onSession={setSession} openModels={()=>navigate('models')}/>}
+    {page==='chat'&&<ChatPage key={chatResetKey} sessionId={session} onSession={changeSession} openModels={()=>navigate('models')}/>}
     {page==='video'&&<VideoPage navigate={navigate}/>}
     {page==='models'&&<ModelHub/>}
     {page==='agents'&&<AgentsPage/>}
@@ -107,6 +111,7 @@ export default function App(){
     </Suspense>
    </div>
   </main>
+  {learningNotice&&<div className="learning-feedback-toast" role="status"><span>{learningNotice.inserted>0?'장기기억 '+learningNotice.inserted+'개 저장':''}{learningNotice.skill?(learningNotice.inserted>0?' · ':'')+'스킬 후보 생성':''}</span><button onClick={()=>{navigate('memory');setLearningNotice(null)}}>메모리 보기</button><button aria-label="알림 닫기" onClick={()=>setLearningNotice(null)}>×</button></div>}
   {palette&&<CommandPalette onNavigate={navigate} onClose={()=>setPalette(false)}/>}
  </div>
 }

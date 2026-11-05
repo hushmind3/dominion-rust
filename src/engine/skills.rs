@@ -8,7 +8,10 @@ pub fn roots(state: &AppState) -> Vec<(String, PathBuf)> {
     let home = std::env::var("HOME").unwrap_or_default();
     vec![
         ("DOMINION".to_string(), state.config.data_dir.join("skills")),
-        ("워크스페이스".to_string(), state.config.workspace.join("skills")),
+        (
+            "워크스페이스".to_string(),
+            state.config.workspace.join("skills"),
+        ),
         (
             "DOMINION 사용자".to_string(),
             PathBuf::from(&home).join(".dominion/skills"),
@@ -169,7 +172,8 @@ fn install(state: &AppState, source_dir: &Path) -> Result<Value, String> {
             "name": name,
             "description": description,
             "instructions": text,
-            "enabled": true,
+            "enabled": false,
+            "status": "draft",
             "source": "catalog",
             "path": target.to_string_lossy(),
         }),
@@ -186,9 +190,9 @@ pub fn import(state: &AppState, id: &str) -> Result<Value, String> {
         .get("items")
         .and_then(|value| value.as_array())
         .and_then(|items| {
-            items.iter().find(|item| {
-                item.get("id").and_then(|value| value.as_str()) == Some(id)
-            })
+            items
+                .iter()
+                .find(|item| item.get("id").and_then(|value| value.as_str()) == Some(id))
         })
         .ok_or_else(|| "카탈로그에서 스킬을 찾을 수 없습니다.".to_string())?;
     let dir = item

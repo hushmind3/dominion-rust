@@ -33,7 +33,7 @@ pub fn config(state: &AppState) -> Value {
     state.store.get(CONFIG_KIND, CONFIG_ID).unwrap_or_else(|| {
         json!({
             "id": CONFIG_ID,
-            "sourceDir": "",
+            "sourceDir": std::env::var("DOMINION_SOURCE_WORKSPACE").unwrap_or_default(),
             "repoUrl": "",
             "branch": "main",
             "previewPort": 5174,
@@ -65,7 +65,10 @@ fn package_dir(dir: &Path) -> PathBuf {
 
 fn source_dir(state: &AppState) -> Option<PathBuf> {
     let dir = config(state);
-    let path = dir.get("sourceDir").and_then(|value| value.as_str()).unwrap_or("");
+    let path = dir
+        .get("sourceDir")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     if path.trim().is_empty() {
         return None;
     }
@@ -155,7 +158,16 @@ pub async fn status(state: &AppState) -> Value {
         (
             guard.status.clone(),
             guard.url.clone(),
-            guard.logs.iter().rev().take(40).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>(),
+            guard
+                .logs
+                .iter()
+                .rev()
+                .take(40)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>(),
         )
     };
 
@@ -204,7 +216,10 @@ pub async fn connect(state: &AppState, body: &Value) -> Result<Value, String> {
     if dir.join(".git").exists() {
         // Existing checkout: nothing to clone.
     } else if dir.exists() {
-        if let Ok(true) = git(&dir, &["rev-parse", "--is-inside-work-tree"]).await.map(|v| v.trim() == "true") {
+        if let Ok(true) = git(&dir, &["rev-parse", "--is-inside-work-tree"])
+            .await
+            .map(|v| v.trim() == "true")
+        {
             // Fine.
         }
     } else {
@@ -295,7 +310,10 @@ pub fn start_job(state: AppState, kind: &str, input: Value) -> Option<Value> {
 
 async fn run_job(state: AppState, job_id: String, kind: String, input: Value) {
     let result = execute(&state, &kind, &input).await;
-    let mut job = state.store.get("dev_job", &job_id).unwrap_or_else(|| json!({}));
+    let mut job = state
+        .store
+        .get("dev_job", &job_id)
+        .unwrap_or_else(|| json!({}));
     match result {
         Ok((logs, summary)) => {
             job["status"] = json!("completed");
@@ -312,7 +330,9 @@ async fn run_job(state: AppState, job_id: String, kind: String, input: Value) {
     if let Some(saved) = state.store.put("dev_job", &job) {
         state.bus.record("dev_job", &saved);
     }
-    state.store.audit("dev.job", json!({ "jobId": job_id, "kind": kind }));
+    state
+        .store
+        .audit("dev.job", json!({ "jobId": job_id, "kind": kind }));
 }
 
 async fn execute(
@@ -328,10 +348,25 @@ async fn execute(
     }
 
     let commands: Vec<Vec<String>> = match kind {
-        "setup" => vec![vec!["npm".into(), "install".into(), "--no-audit".into(), "--no-fund".into()]],
-        "test" => vec![vec!["npm".into(), "run".into(), "test".into(), "--if-present".into()]],
+        "setup" => vec![vec![
+            "npm".into(),
+            "install".into(),
+            "--no-audit".into(),
+            "--no-fund".into(),
+        ]],
+        "test" => vec![vec![
+            "npm".into(),
+            "run".into(),
+            "test".into(),
+            "--if-present".into(),
+        ]],
         "build" => vec![vec!["npm".into(), "run".into(), "build".into()]],
-        "package" => vec![vec!["npm".into(), "run".into(), "package".into(), "--if-present".into()]],
+        "package" => vec![vec![
+            "npm".into(),
+            "run".into(),
+            "package".into(),
+            "--if-present".into(),
+        ]],
         "commit" => {
             let message = input
                 .get("message")
@@ -391,7 +426,10 @@ async fn execute(
             ));
         }
         if program == "git" && args.first().map(|value| value.as_str()) == Some("commit") {
-            result["oid"] = json!(git(&dir, &["rev-parse", "HEAD"]).await.unwrap_or_default().trim());
+            result["oid"] = json!(git(&dir, &["rev-parse", "HEAD"])
+                .await
+                .unwrap_or_default()
+                .trim());
         }
     }
     Ok((logs, result))
@@ -418,7 +456,13 @@ pub async fn start_preview(state: &AppState) -> Result<Value, String> {
     let vite = package.join("node_modules/.bin/vite");
     let mut command = if vite.exists() {
         let mut command = Command::new(&vite);
-        command.args(["--host", "127.0.0.1", "--port", &port.to_string(), "--strictPort"]);
+        command.args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--strictPort",
+        ]);
         command
     } else {
         let mut command = Command::new("npx");
@@ -533,10 +577,13 @@ mod tests {
         let store = Store::open(&cfg.db_path()).unwrap();
         let vault = Vault::open(&cfg.key_path());
         let state = AppState::new(cfg, store, vault);
-        let saved = save_config(&state, &serde_json::json!({
-            "sourceDir": "/tmp/source",
-            "branch": "dev",
-        }));
+        let saved = save_config(
+            &state,
+            &serde_json::json!({
+                "sourceDir": "/tmp/source",
+                "branch": "dev",
+            }),
+        );
         assert_eq!(saved["sourceDir"], "/tmp/source");
         assert_eq!(saved["branch"], "dev");
         assert_eq!(config(&state)["sourceDir"], "/tmp/source");

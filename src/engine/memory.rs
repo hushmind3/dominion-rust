@@ -199,9 +199,10 @@ pub fn retrieve(store: &Store, scope: &MemoryScope, query: &str, limit: usize) -
             // single newest value for a scoped fact key.
             if let Some(key) = record["key"].as_str() {
                 let owner = format!(
-                    "{}:{}:{}",
+                    "{}:{}:{}:{}",
                     record["partitionKey"].as_str().unwrap_or("local"),
                     record["agentId"].as_str().unwrap_or("default"),
+                    record["sourceAuthorKey"].as_str().unwrap_or("owner"),
                     key
                 );
                 if !fact_keys.insert(owner) {
@@ -237,7 +238,11 @@ pub fn retrieve(store: &Store, scope: &MemoryScope, query: &str, limit: usize) -
     scored
         .into_iter()
         .filter_map(|(_, record)| {
-            let key = normalize(record["text"].as_str().unwrap_or(""));
+            let key = format!(
+                "{}:{}",
+                record["sourceAuthorKey"].as_str().unwrap_or("owner"),
+                normalize(record["text"].as_str().unwrap_or(""))
+            );
             seen.insert(key).then_some(record)
         })
         .take(limit.min(20))
@@ -257,7 +262,7 @@ pub fn context_block(store: &Store, scope: &MemoryScope, query: &str) -> Option<
             json!({
                 "id": memory["id"], "type": memory["type"],
                 "text": memory["text"].as_str().unwrap_or("").chars().take(600).collect::<String>(),
-                "source": memory["source"], "sourceMessageIds": memory["sourceMessageIds"],
+                "source": memory["source"], "sourceMessageIds": memory["sourceMessageIds"],"sourceAuthors":memory["sourceAuthors"],
         "sourceRole": memory["sourceRole"], "verification": memory["verification"],
             })
         })
@@ -380,6 +385,16 @@ pub fn save_grounded(
     // Canonical text therefore stays verbatim; the proposed summary is dropped
     // and never injected as established memory evidence.
     let canonical = evidence_quote.trim();
+    let source_author_key = evidence
+        .iter()
+        .find(|message| message["role"] == "user")
+        .and_then(|message| {
+            let origin = &message["metadata"]["origin"];
+            origin["authorId"]
+                .as_str()
+                .map(|id| format!("{}:{id}", origin["kind"].as_str().unwrap_or("external")))
+        })
+        .unwrap_or_else(|| "owner".into());
     let normalized = normalize(canonical);
     let normalized_key = key.map(normalize).filter(|key| !key.is_empty());
     let existing = store
@@ -389,6 +404,7 @@ pub fn save_grounded(
             memory["partitionKey"].as_str() == Some(scope.partition_key.as_str())
                 && memory["agentId"].as_str().unwrap_or("default") == scope.owner()
                 && memory["scope"].as_str() != Some("session")
+                && memory["sourceAuthorKey"].as_str().unwrap_or("owner") == source_author_key
                 && memory["status"].as_str() != Some("superseded")
         })
         .collect::<Vec<_>>();
@@ -400,7 +416,12 @@ pub fn save_grounded(
     }
     let id = format!(
         "memory-{}",
-        stable_id(&[&scope.partition_key, scope.owner(), &normalized])
+        stable_id(&[
+            &scope.partition_key,
+            scope.owner(),
+            &source_author_key,
+            &normalized
+        ])
     );
     let saved = store
         .put(
@@ -414,7 +435,8 @@ pub fn save_grounded(
                 "learnedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
                 "sourceRole": evidence.iter().find(|message| message["content"].as_str().unwrap_or("").contains(evidence_quote))
                     .and_then(|message|message["role"].as_str()),
-                "verification": "source_quote",
+                "verification": "source_quote","sourceAuthors":evidence.iter().filter_map(|message|message["metadata"].get("origin").filter(|origin|origin.is_object())).collect::<Vec<_>>(),
+                "sourceAuthorKey":source_author_key,
             }),
         )
         .ok_or("기억 저장에 실패했습니다.")?;
@@ -598,6 +620,76 @@ mod tests {
         ));
         assert!(!visible(&record, &scope(&db, "original", "a")));
         assert!(!visible(&record, &scope(&db, "another", "a")));
+    }
+    #[test]
+    fn external_human_corrections_never_overwrite_owner_preferences() {
+        let db = store();
+        db.put("session", &json!({"id":"room-session","roomId":"room"}));
+        let actor = scope(&db, "room-session", "a");
+        for (id, text, origin) in [
+            ("owner", "기본 언어는 Rust다", Value::Null),
+            (
+                "external",
+                "기본 언어는 Python이다",
+                json!({"kind":"telegram","authorId":"7","authorName":"외부 참가자"}),
+            ),
+            (
+                "correction",
+                "기본 언어는 Kotlin이다",
+                json!({"kind":"telegram","authorId":"7","authorName":"외부 참가자"}),
+            ),
+        ] {
+            db.write_message(&json!({"id":id,"session_id":"room-session","role":"user","content":text,"metadata":{"authorKind":"owner","origin":origin}}));
+        }
+        let owner = save_grounded(
+            &db,
+            &actor,
+            "언어 선호",
+            "preference",
+            0.9,
+            Some("language"),
+            "learn",
+            &["owner".into()],
+            "기본 언어는 Rust다",
+        )
+        .unwrap();
+        let external = save_grounded(
+            &db,
+            &actor,
+            "언어 선호",
+            "preference",
+            0.9,
+            Some("language"),
+            "learn",
+            &["external".into()],
+            "기본 언어는 Python이다",
+        )
+        .unwrap();
+        save_grounded(
+            &db,
+            &actor,
+            "언어 선호",
+            "preference",
+            0.9,
+            Some("language"),
+            "learn",
+            &["correction".into()],
+            "기본 언어는 Kotlin이다",
+        )
+        .unwrap();
+        assert_eq!(
+            db.get("memory", owner["id"].as_str().unwrap()).unwrap()["status"],
+            "active"
+        );
+        assert_eq!(
+            db.get("memory", external["id"].as_str().unwrap()).unwrap()["status"],
+            "superseded"
+        );
+        let found = retrieve(&db, &actor, "기본 언어", 10);
+        assert_eq!(found.len(), 2);
+        assert!(context_block(&db, &actor, "기본 언어")
+            .unwrap()
+            .contains("외부 참가자"));
     }
 
     #[test]

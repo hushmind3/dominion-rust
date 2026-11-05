@@ -214,6 +214,32 @@ impl Store {
         Some(records)
     }
 
+    /// Increment evidence counters under the same lock as their read. Parallel
+    /// workers must not lose updates through separate get/put operations.
+    pub fn increment_counters(&self, kind: &str, id: &str, fields: &[&str]) -> Option<Value> {
+        let conn = self.conn.lock().unwrap();
+        let mut record = conn
+            .query_row(
+                "SELECT data,id,created_at,updated_at FROM records WHERE kind=?1 AND id=?2",
+                params![kind, id],
+                record_from_row,
+            )
+            .optional()
+            .ok()?
+            .unwrap_or_else(|| json!({"id":id}));
+        for field in fields {
+            record[*field] = json!(record[*field].as_u64().unwrap_or(0).saturating_add(1));
+        }
+        record["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        conn.execute("INSERT INTO records(kind,id,data) VALUES(?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,updated_at=datetime('now')",params![kind,id,record.to_string()]).ok()?;
+        conn.query_row(
+            "SELECT data,id,created_at,updated_at FROM records WHERE kind=?1 AND id=?2",
+            params![kind, id],
+            record_from_row,
+        )
+        .ok()
+    }
+
     pub fn remove(&self, kind: &str, id: &str) -> bool {
         let conn = self.conn.lock().unwrap();
         conn.execute(

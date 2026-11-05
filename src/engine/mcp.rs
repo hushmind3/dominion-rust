@@ -124,7 +124,10 @@ async fn list_server(state: &AppState, server: &Value) -> Result<Vec<McpTool>, S
     Ok(tools
         .into_iter()
         .filter_map(|tool| {
-            let name = tool.get("name").and_then(|value| value.as_str())?.to_string();
+            let name = tool
+                .get("name")
+                .and_then(|value| value.as_str())?
+                .to_string();
             Some(McpTool {
                 server_name: server_name.clone(),
                 slug: server_slug.clone(),
@@ -165,7 +168,11 @@ pub fn requires_approval(state: &AppState, qualified: &str) -> bool {
         .store
         .get("policy", "default")
         .unwrap_or_else(|| json!({}));
-    if policy.get("autoApproveMcp").and_then(|value| value.as_bool()) == Some(true) {
+    if policy
+        .get("autoApproveMcp")
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
         return false;
     }
     let qualified = qualified.to_string();
@@ -293,7 +300,9 @@ impl StdioSession {
                 }),
             )
             .await?;
-        session.notify("notifications/initialized", json!({})).await?;
+        session
+            .notify("notifications/initialized", json!({}))
+            .await?;
         Ok(session)
     }
 
@@ -323,10 +332,11 @@ impl StdioSession {
 
         loop {
             let mut line = String::new();
-            let read = tokio::time::timeout(Duration::from_secs(40), self.stdout.read_line(&mut line))
-                .await
-                .map_err(|_| format!("MCP 응답 시간 초과: {method}"))?
-                .map_err(|error| error.to_string())?;
+            let read =
+                tokio::time::timeout(Duration::from_secs(40), self.stdout.read_line(&mut line))
+                    .await
+                    .map_err(|_| format!("MCP 응답 시간 초과: {method}"))?
+                    .map_err(|error| error.to_string())?;
             if read == 0 {
                 return Err("MCP 서버가 응답 없이 종료되었습니다.".into());
             }
@@ -399,9 +409,7 @@ impl HttpSession {
                 }),
             )
             .await?;
-        session
-            .notify("notifications/initialized", json!({}))
-            .await;
+        session.notify("notifications/initialized", json!({})).await;
         Ok(session)
     }
 
@@ -537,7 +545,10 @@ mod tests {
         );
         assert!(requires_approval(&state, "mcp__echo_lab__echo"));
 
-        state.store.put("policy", &json!({ "id": "default", "autoApproveMcp": true }));
+        state.store.put(
+            "policy",
+            &json!({ "id": "default", "autoApproveMcp": true }),
+        );
         assert!(!requires_approval(&state, "mcp__echo_lab__echo"));
     }
 }

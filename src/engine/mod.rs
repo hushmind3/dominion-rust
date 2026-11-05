@@ -1,3 +1,6 @@
+pub mod goal_control;
+pub mod attachments;
+pub mod bridge;
 pub mod chat;
 pub mod compact;
 pub mod dev;
@@ -13,8 +16,9 @@ pub mod oauth;
 pub mod personas;
 pub mod rooms;
 pub mod skills;
+pub mod telegram;
 pub mod tools;
-pub mod translate;
+pub mod video;
 pub mod workflows;
 
 use crate::state::AppState;
@@ -29,10 +33,10 @@ pub struct TurnStats {
 }
 
 /// Runs a turn and collects tool evidence for the goal harness.
-pub async fn run_quiet_with_stats(
+pub async fn run_quiet_outcome(
     state: &AppState,
     request: &chat::TurnRequest,
-) -> Result<(Option<Value>, TurnStats), String> {
+) -> (Result<Option<Value>, String>, TurnStats) {
     let (sender, mut receiver) = mpsc::unbounded_channel::<Value>();
     let collector = tokio::spawn(async move {
         let mut stats = TurnStats::default();
@@ -60,7 +64,17 @@ pub async fn run_quiet_with_stats(
     let result = chat::run_turn_background(state, request, &sender).await;
     drop(sender);
     let stats = collector.await.unwrap_or_default();
-    Ok((result?, stats))
+    (result, stats)
+}
+
+/// Compatibility wrapper; harnesses that need evidence after a model/runtime
+/// error use run_quiet_outcome instead of discarding completed tool work.
+pub async fn run_quiet_with_stats(
+    state: &AppState,
+    request: &chat::TurnRequest,
+) -> Result<(Option<Value>, TurnStats), String> {
+    let (result, stats) = run_quiet_outcome(state, request).await;
+    result.map(|message| (message, stats))
 }
 
 /// Runs a turn with nobody listening on the event stream (background jobs).
@@ -119,4 +133,80 @@ pub async fn run_room_quiet(
     };
     state.bus.emit(serde_json::json!({"type":"room_event","roomId":room_id,"sessionId":session_id,"agentId":agent_id,"turnId":turn_id,"event":event}));
     result
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    use serde_json::json;
+    #[tokio::test]
+    async fn successful_write_evidence_survives_a_later_provider_failure() {
+        use axum::{response::IntoResponse, routing::post, Json, Router};
+        async fn provider(Json(body): Json<Value>) -> axum::response::Response {
+            if body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message["role"] == "tool")
+            {
+                return (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"error":"fixture failure after completed write"})),
+                )
+                    .into_response();
+            }
+            let event = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"fixture-write","function":{"name":"workspace_write","arguments":json!({"path":"proof.txt","content":"proof"}).to_string()}}]},"finish_reason":"tool_calls"}]});
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                format!("data: {event}\n\ndata: [DONE]\n\n"),
+            )
+                .into_response()
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/chat/completions", post(provider)),
+            )
+            .await
+            .unwrap()
+        });
+        let root = std::env::temp_dir().join(format!("dominion-outcome-{}", uuid::Uuid::new_v4()));
+        let config = crate::config::Config {
+            port: 0,
+            data_dir: root.clone(),
+            web_dir: root.join("web"),
+            workspace: root.clone(),
+        };
+        let state = AppState::new(
+            config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()),
+        );
+        state.store.put(
+            "provider",
+            &json!({"id":"p","baseUrl":format!("http://{addr}"),"model":"fixture"}),
+        );
+        state.store.put("session", &json!({"id":"s"}));
+        state
+            .store
+            .put("policy", &json!({"id":"default","autoApproveAll":true}));
+        let request=chat::TurnRequest::from_value(&json!({"sessionId":"s","providerId":"p","input":"Write the proof file","autoLearning":false})).unwrap();
+        let (outcome, stats) = run_quiet_outcome(&state, &request).await;
+        assert!(outcome.unwrap_err().contains("503"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("proof.txt")).unwrap(),
+            "proof"
+        );
+        assert_eq!(stats.tool_success, vec!["workspace_write"]);
+        assert_eq!(stats.evidence.len(), 1);
+        assert_eq!(stats.evidence[0]["tool"], "workspace_write");
+        assert_eq!(
+            state.store.all("execution_operation")[0]["status"],
+            "completed"
+        );
+        server.abort();
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

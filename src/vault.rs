@@ -81,7 +81,10 @@ mod tests {
         assert_eq!(vault.open_secret(&sealed).as_deref(), Some("sk-test-123"));
 
         let reopened = Vault::open(&dir.join("secret.key"));
-        assert_eq!(reopened.open_secret(&sealed).as_deref(), Some("sk-test-123"));
+        assert_eq!(
+            reopened.open_secret(&sealed).as_deref(),
+            Some("sk-test-123")
+        );
 
         let mut tampered = STANDARD.decode(&sealed).unwrap();
         let last = tampered.len() - 1;

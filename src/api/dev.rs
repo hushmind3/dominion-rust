@@ -16,10 +16,7 @@ pub async fn get_config(State(state): State<AppState>) -> Json<Value> {
     Json(dev::config(&state))
 }
 
-pub async fn save_config(
-    State(state): State<AppState>,
-    Json(body): Json<Value>,
-) -> Json<Value> {
+pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>) -> Json<Value> {
     Json(dev::save_config(&state, &body))
 }
 
@@ -73,10 +70,7 @@ pub async fn start_job(
     }
 }
 
-pub async fn preview(
-    State(state): State<AppState>,
-    Path(action): Path<String>,
-) -> Response {
+pub async fn preview(State(state): State<AppState>, Path(action): Path<String>) -> Response {
     match action.as_str() {
         "start" => match dev::start_preview(&state).await {
             Ok(result) => Json(result).into_response(),

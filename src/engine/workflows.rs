@@ -132,6 +132,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             agent_id: optional(step, "agentId"),
             provider_id: optional(step, "providerId"),
             model: optional(step, "model"),
+            attachment_ids: Vec::new(),
             tools_enabled: true,
             thinking: None,
             auto_learning: false,

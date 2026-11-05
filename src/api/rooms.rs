@@ -11,7 +11,7 @@ use axum::{
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
-type ApiResult = Result<Value, (StatusCode, String)>;
+pub(crate) type ApiResult = Result<Value, (StatusCode, String)>;
 fn response(result: ApiResult) -> Response {
     match result {
         Ok(value) => Json(value).into_response(),
@@ -225,18 +225,37 @@ pub async fn messages(State(state): State<AppState>, Path(id): Path<String>) -> 
 }
 
 fn submit(state: &AppState, id: &str, body: &Value) -> ApiResult {
+    submit_internal(state, id, body, None, true)
+}
+pub(crate) fn submit_internal(
+    state: &AppState,
+    id: &str,
+    body: &Value,
+    origin_metadata: Option<Value>,
+    tools_allowed: bool,
+) -> ApiResult {
     if !body.is_object() {
         return Err(bad("메시지 객체가 필요합니다."));
     }
     let _guard = lock(state, id)?;
-    let config = room(state, id)?;
+    let mut config = room(state, id)?;
+    if !tools_allowed {
+        config["toolsEnabled"] = json!(false);
+    }
+    if origin_metadata
+        .as_ref()
+        .is_some_and(|origin| origin["authorIsBot"] == true)
+    {
+        return Err(bad("봇 발언은 방 주인의 메시지로 제출할 수 없습니다."));
+    }
     let text = body
         .get("input")
         .or_else(|| body.get("goal"))
         .and_then(Value::as_str)
         .unwrap_or("")
         .trim();
-    if text.is_empty() || text.chars().count() > 32000 {
+    let attachment_ids = crate::engine::attachments::ids(&body["attachmentIds"]).map_err(bad)?;
+    if text.is_empty() && attachment_ids.is_empty() || text.chars().count() > 32000 {
         return Err(bad("메시지는 1~32000자여야 합니다."));
     }
     if body.get("sessionId").is_some()
@@ -250,6 +269,25 @@ fn submit(state: &AppState, id: &str, body: &Value) -> ApiResult {
     let session_id = session["id"]
         .as_str()
         .ok_or_else(|| failed("회의실 세션 ID가 없습니다."))?;
+    let attachments = crate::engine::attachments::validate_ids(state, session_id, &attachment_ids)
+        .map_err(bad)?;
+    let settings=crate::engine::chat::TurnRequest::from_value(&json!({"input":if text.is_empty(){"첨부 파일"}else{text},"thinking":body["thinking"],"reasoningEffort":body["reasoningEffort"],"providerId":body["providerId"],"model":body["model"]})).map_err(bad)?;
+    if let Some(provider) = settings.provider_id.as_deref() {
+        if !state
+            .store
+            .get("provider", provider)
+            .is_some_and(|provider| provider["enabled"].as_bool() != Some(false))
+        {
+            return Err(bad("활성 제공자를 찾을 수 없습니다."));
+        }
+    }
+    if settings
+        .model
+        .as_ref()
+        .is_some_and(|model| model.len() > 256)
+    {
+        return Err(bad("모델 이름이 너무 깁니다."));
+    }
     let nonce = if let Some(value) = body.get("clientMessageId") {
         let nonce = value
             .as_str()
@@ -263,6 +301,17 @@ fn submit(state: &AppState, id: &str, body: &Value) -> ApiResult {
     if let Some(existing) = state.store.get("job", &job_id) {
         if existing["input"]["input"] != text
             || existing["input"]["requestedAgentIds"] != body["agentIds"]
+            || existing["input"]["attachmentIds"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                != json!(attachment_ids)
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            || ["thinking", "reasoningEffort", "providerId", "model"]
+                .iter()
+                .any(|key| existing["input"][*key] != body[*key])
         {
             return Err(conflict(
                 "같은 clientMessageId로 다른 메시지를 보낼 수 없습니다.",
@@ -278,12 +327,14 @@ fn submit(state: &AppState, id: &str, body: &Value) -> ApiResult {
     }
     let speakers = rooms::plan_speakers(state, &config, text, body.get("agentIds")).map_err(bad)?;
     let generation = state.cancellation_generation(session_id);
+    let acceptance=crate::engine::chat::prepare_owner_action(state,text).map(|(request,checks)|json!({"request":request,"checks":checks}));
     let message = json!({"id":nonce,"session_id":session_id,"role":"user","agent_id":null,"content":text,
-        "metadata":{"authorKind":"owner","roomId":id,"ownerName":config["ownerName"],"clientMessageId":body["clientMessageId"]}});
+        "metadata":{"acceptance":acceptance,"authorKind":"owner","roomId":id,"ownerName":config["ownerName"],"clientMessageId":body["clientMessageId"],"attachments":attachments,"origin":origin_metadata}});
     let job = json!({"id":job_id,"kind":"room","status":"queued","attempts":0,"stepIndex":0,"stepTotal":0,"events":[],
         "queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),
         "sessionId":session_id,"input":{"roomId":id,"sessionId":session_id,"messageId":nonce,"sourceMessageId":nonce,"input":text,
-            "agentIds":speakers,"requestedAgentIds":body["agentIds"],"explicitAgentIds":body.get("agentIds").is_some(),"routingMode":config["routingMode"],"generation":generation,"roomSnapshot":config}});
+            "agentIds":speakers,"requestedAgentIds":body["agentIds"],"explicitAgentIds":body.get("agentIds").is_some(),"routingMode":config["routingMode"],"generation":generation,"roomSnapshot":config,
+            "attachmentIds":attachment_ids,"thinking":body["thinking"],"reasoningEffort":body["reasoningEffort"],"providerId":body["providerId"],"model":body["model"]}});
     let (saved_message, saved_job) = state
         .store
         .write_message_with_record(&message, "job", &job)
@@ -521,6 +572,52 @@ mod tests {
         assert!(save_room(&state, Some("room-one"), &json!({"agentIds":["missing"]})).is_err());
         assert!(save_room(&state, Some("room-one"), &json!({"activeAgentId":"a8"})).is_err());
         assert!(save_room(&state, Some("room-one"), &json!({"maxTurns":61})).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn room_attachments_and_response_overrides_are_bound_and_immutable() {
+        use base64::Engine;
+        let (state, dir) = test_state();
+        save_room(&state, None, &config()).unwrap();
+        state
+            .store
+            .put("provider", &json!({"id":"chosen","enabled":true}));
+        let file=crate::engine::attachments::upload(&state,&json!({"roomId":"room-one","name":"notes.txt","data":base64::engine::general_purpose::STANDARD.encode("실제 사용자 원문") })).unwrap();
+        let body = json!({"input":"첨부 확인","attachmentIds":[file["id"]],"thinking":false,"reasoningEffort":"minimal","providerId":"chosen","model":"chosen-model","clientMessageId":"file-turn"});
+        let submitted = submit(&state, "room-one", &body).unwrap();
+        assert_eq!(
+            submitted["message"]["metadata"]["attachments"][0]["id"],
+            file["id"]
+        );
+        assert_eq!(submitted["job"]["input"]["reasoningEffort"], "minimal");
+        assert_eq!(submitted["job"]["input"]["providerId"], "chosen");
+        let mut changed = body.clone();
+        changed["thinking"] = json!(true);
+        assert!(submit(&state, "room-one", &changed).is_err());
+        let internal = submit_internal(
+            &state,
+            "room-one",
+            &json!({"input":"외부 명령","clientMessageId":"external"}),
+            Some(json!({"transport":"telegram","messageId":"inbound-one"})),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            internal["job"]["input"]["roomSnapshot"]["toolsEnabled"],
+            false
+        );
+        assert_eq!(
+            internal["message"]["metadata"]["origin"]["transport"],
+            "telegram"
+        );
+        assert!(submit_internal(
+            &state,
+            "room-one",
+            &json!({"input":"봇을 주인으로 속임"}),
+            Some(json!({"authorIsBot":true})),
+            false
+        )
+        .is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
     #[test]

@@ -42,9 +42,15 @@ pub async fn runtime() -> Json<Value> {
 }
 
 pub async fn load(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
-    let id = body.get("id").and_then(|value| value.as_str()).unwrap_or("");
+    let id = body
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     if id.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "모델 id 가 필요합니다." })))
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "모델 id 가 필요합니다." })),
+        )
             .into_response();
     }
     let context = body
@@ -62,7 +68,10 @@ pub async fn unload(State(state): State<AppState>) -> Json<Value> {
 }
 
 pub async fn download(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
-    let repo = body.get("repo").and_then(|value| value.as_str()).unwrap_or("");
+    let repo = body
+        .get("repo")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     let option = body
         .get("optionId")
         .and_then(|value| value.as_str())

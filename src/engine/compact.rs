@@ -41,9 +41,11 @@ pub async fn run(
         .map(str::to_string);
     let prior_index = prior_id
         .as_ref()
-        .and_then(|id| history.iter().position(|row| {
-            row.get("id").and_then(|value| value.as_str()) == Some(id.as_str())
-        }))
+        .and_then(|id| {
+            history
+                .iter()
+                .position(|row| row.get("id").and_then(|value| value.as_str()) == Some(id.as_str()))
+        })
         .map(|index| index as isize)
         .unwrap_or(-1);
 
@@ -65,7 +67,10 @@ pub async fn run(
     let transcript = candidates
         .iter()
         .map(|row| {
-            let role = row.get("role").and_then(|value| value.as_str()).unwrap_or("?");
+            let role = row
+                .get("role")
+                .and_then(|value| value.as_str())
+                .unwrap_or("?");
             let content = row
                 .get("content")
                 .and_then(|value| value.as_str())
@@ -151,9 +156,10 @@ pub async fn run(
             "updatedAt": chrono::Utc::now().to_rfc3339(),
         }),
     );
-    state
-        .store
-        .audit("session.compacted", json!({ "sessionId": session_id, "summarized": candidates.len() }));
+    state.store.audit(
+        "session.compacted",
+        json!({ "sessionId": session_id, "summarized": candidates.len() }),
+    );
 
     Ok(json!({
         "sessionId": session_id,

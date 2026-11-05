@@ -1,8 +1,25 @@
+mod response;
+#[cfg(test)]
+mod tests;
+pub mod translation;
+pub mod settings;
+pub mod goals;
+pub mod executions;
+pub mod memory;
+pub mod extensions;
+pub mod approvals;
+pub mod sessions;
+pub mod agents;
+pub mod providers;
+pub mod chat;
+pub mod jobs;
+pub mod system;
+pub mod attachments;
 pub mod channels;
 pub mod collections;
 pub mod compat;
-pub mod core;
 pub mod dev;
+pub mod gateways;
 pub mod models;
 pub mod oauth;
 pub mod personas;
@@ -24,35 +41,46 @@ use tower_http::{cors::CorsLayer, services::ServeDir};
 pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         // core
-        .route("/api/health", get(core::health))
-        .route("/api/status", get(core::status))
-        .route("/api/events", get(core::events))
-        .route("/api/chat", post(core::chat))
-        .route("/api/tools", get(core::list_tools))
-        .route("/api/policy", get(core::get_policy).post(core::save_policy))
-        .route("/api/audit", get(core::audit_log))
-        .route("/api/model-route", get(core::model_route))
-        .route("/api/memory/overview", get(core::memory_overview))
-        .route("/api/translate", post(core::translate))
-        .route("/api/translate/config", get(core::translate_config))
+        .route("/api/health", get(system::health))
+        .route("/api/status", get(system::status))
+        .route(
+            "/api/settings/assistant",
+            get(settings::assistant_settings).post(settings::save_assistant_settings),
+        )
+        .route("/api/attachments", post(attachments::upload))
+        .route("/api/attachments/:id/content", get(attachments::content))
+        .route("/api/events", get(system::events))
+        .route("/api/chat", post(chat::chat))
+        .route("/api/jobs",get(jobs::list).post(jobs::create))
+        .route("/api/jobs/:id",get(jobs::one))
+        .route("/api/jobs/:id/cancel",post(jobs::cancel))
+        .route("/api/tools", get(extensions::list_tools))
+        .route("/api/policy", get(approvals::get_policy).post(approvals::save_policy))
+        .route("/api/audit", get(system::audit_log))
+        .route("/api/model-route", get(system::model_route))
+        .route("/api/memory/overview", get(memory::memory_overview))
+        .route("/api/translate", post(translation::translate))
+        .route("/api/translate/config", get(translation::translate_config))
         .route("/api/upload", post(compat::upload))
         // providers
         .route(
             "/api/providers",
-            get(core::list_providers).post(core::save_provider),
+            get(providers::list_providers).post(providers::save_provider),
         )
         .route(
             "/api/providers/:id",
-            axum::routing::delete(core::delete_provider),
+            axum::routing::delete(providers::delete_provider),
         )
-        .route("/api/providers/:id/models", get(core::provider_models))
+        .route("/api/providers/:id/models", get(providers::provider_models))
+        .route("/api/gateways/freellmapi", get(gateways::freellmapi))
+        .route("/api/providers/:id/gateway", get(gateways::inspect))
         // agents
-        .route("/api/agents", get(core::list_agents).post(core::save_agent))
-        .route("/api/agents/bulk-model", post(core::bulk_agent_model))
+        .route("/api/agents", get(agents::list_agents).post(agents::save_agent))
+        .route("/api/agents/bulk-model", post(agents::bulk_agent_model))
         .route("/api/personas/import/preview", get(personas::preview))
         .route("/api/personas/import", post(personas::import))
         .route("/api/agents/:id/avatar", get(personas::avatar))
-        .route("/api/agents/:id", axum::routing::delete(core::delete_agent))
+        .route("/api/agents/:id", axum::routing::delete(agents::delete_agent))
         .route("/api/rooms", get(rooms::list).post(rooms::save))
         .route(
             "/api/rooms/:id",
@@ -68,46 +96,48 @@ pub fn router(state: AppState) -> Router {
         // sessions
         .route(
             "/api/sessions",
-            get(core::list_sessions).post(core::create_session),
+            get(sessions::list_sessions).post(sessions::create_session),
         )
         .route(
             "/api/sessions/:id",
-            get(core::get_session)
-                .delete(core::delete_session)
-                .post(core::rename_session),
+            get(sessions::get_session)
+                .delete(sessions::delete_session)
+                .post(sessions::rename_session),
         )
-        .route("/api/sessions/:id/messages", get(core::session_messages))
-        .route("/api/sessions/:id/rename", post(core::rename_session))
-        .route("/api/sessions/:id/clear", post(core::clear_session))
-        .route("/api/sessions/:id/fork", post(core::fork_session))
-        .route("/api/sessions/:id/compact", post(core::compact_session))
-        .route("/api/sessions/:id/cancel", post(core::cancel_session))
+        .route("/api/sessions/:id/messages", get(sessions::session_messages))
+        .route("/api/sessions/:id/rename", post(sessions::rename_session))
+        .route("/api/sessions/:id/clear", post(sessions::clear_session))
+        .route("/api/sessions/:id/fork", post(sessions::fork_session))
+        .route("/api/sessions/:id/compact", post(sessions::compact_session))
+        .route("/api/sessions/:id/cancel", post(sessions::cancel_session))
+        .route("/api/sessions/:id/archive", post(sessions::archive_session))
+        .route("/api/sessions/:id/learn", post(sessions::learn))
         .route(
             "/api/executions/:id/operations",
-            get(core::execution_operations),
+            get(executions::execution_operations),
         )
-        .route("/api/skills/:id/export", get(core::export_skill))
-        .route("/api/goals", get(core::list_goals).post(core::create_goal))
+        .route("/api/skills/:id/export", get(extensions::export_skill))
+        .route("/api/goals", get(goals::list_goals).post(goals::create_goal))
         .route(
             "/api/goals/:id",
-            get(core::get_goal).delete(core::delete_goal),
+            get(goals::get_goal).delete(goals::delete_goal),
         )
         // approvals
         .route(
             "/api/approvals",
-            get(core::list_approvals).post(core::resolve_approval),
+            get(approvals::list_approvals).post(approvals::resolve_approval),
         )
         // capabilities + commands
-        .route("/api/capabilities", get(core::capabilities))
-        .route("/api/commands", get(core::commands))
+        .route("/api/capabilities", get(system::capabilities))
+        .route("/api/commands", get(system::commands))
         // compatibility surface
-        .route("/api/mcp/presets", get(core::mcp_presets))
-        .route("/api/mcp/catalog", get(core::mcp_catalog))
-        .route("/api/mcp/discover", get(core::mcp_discover))
-        .route("/api/skill-catalog", get(core::skill_catalog))
-        .route("/api/skill-catalog/meta", get(core::skill_catalog_meta))
-        .route("/api/skill-catalog/import", post(core::import_skill))
-        .route("/api/skills/import-repo", post(core::import_skill_repo))
+        .route("/api/mcp/presets", get(extensions::mcp_presets))
+        .route("/api/mcp/catalog", get(extensions::mcp_catalog))
+        .route("/api/mcp/discover", get(extensions::mcp_discover))
+        .route("/api/skill-catalog", get(extensions::skill_catalog))
+        .route("/api/skill-catalog/meta", get(extensions::skill_catalog_meta))
+        .route("/api/skill-catalog/import", post(extensions::import_skill))
+        .route("/api/skills/import-repo", post(extensions::import_skill_repo))
         .route("/api/model-library/catalog", get(models::catalog))
         .route("/api/model-library/details", get(models::details))
         .route("/api/model-library/installed", get(models::installed))
@@ -136,6 +166,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/oauth/connections", get(channels::connections))
         .route("/api/oauth/providers/:id", post(oauth::save))
         .route("/api/oauth/:id/start", get(oauth::start))
+        .route("/api/oauth/:id/open", post(oauth::open))
         .route("/api/oauth/:id/callback", get(oauth::callback))
         .route("/api/oauth/:id", axum::routing::delete(oauth::disconnect))
         .route("/api/youtube/status", get(compat::youtube_status))
@@ -153,6 +184,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/video/catalog", get(video::empty_list))
         .route("/api/video/files", get(video::empty_list))
         .route("/api/video/jobs/:id", get(video::job))
+        .route(
+            "/api/video/jobs",
+            get(video::list_jobs).post(video::create_job),
+        )
+        .route("/api/video/jobs/:id/upload", post(video::upload))
+        .route("/api/video/jobs/:id/content", get(video::content))
         .route("/api/video/open-models", post(video::not_available))
         .route("/api/video/workflows", get(video::empty_list))
         .route("/api/video/:action", post(video::not_available))
@@ -166,7 +203,10 @@ pub fn router(state: AppState) -> Router {
                 .delete(channels::remove),
         )
         .route("/api/channels/:id/diagnose", post(channels::diagnose))
-        .route("/api/executions/active", get(core::active_executions))
+        .route("/api/executions", get(executions::list))
+        .route("/api/executions/active", get(executions::active_executions))
+        .route("/api/executions/:id", get(executions::one))
+        .route("/api/executions/:id/cancel", post(executions::cancel))
         .route("/api/webhooks/:id", post(compat::not_ported));
 
     for kind in collections::COLLECTIONS {
@@ -221,6 +261,7 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn(no_stale_ui))
         .layer(middleware::from_fn_with_state(state.clone(), guard_writes))
         .layer(cors)
+        .layer(axum::extract::DefaultBodyLimit::max(12 * 1024 * 1024))
         .with_state(state)
 }
 

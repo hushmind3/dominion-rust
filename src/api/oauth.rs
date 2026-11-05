@@ -39,6 +39,45 @@ pub async fn start(State(state): State<AppState>, Path(id): Path<String>) -> Res
     }
 }
 
+/// OAuth consent belongs in the system browser, including inside WKWebView.
+/// Only URLs generated from the fixed provider registry reach the OS opener.
+pub async fn open(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let result = match oauth::start(&state, &id) {
+        Ok(value) => value,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error":error}))).into_response()
+        }
+    };
+    let Some(url) = result["url"].as_str() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    #[cfg(target_os = "macos")]
+    let launched = std::process::Command::new("/usr/bin/open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let launched = std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let launched = std::process::Command::new("xdg-open").arg(url).spawn();
+    match launched {
+        Ok(_) => Json(json!({"opened":true})).into_response(),
+        Err(_) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error":"시스템 브라우저를 열 수 없습니다."})),
+        )
+            .into_response(),
+    }
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 pub async fn callback(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -53,18 +92,15 @@ pub async fn callback(
              <h2>연결 완료</h2><p>{} 계정이 연결되었습니다.</p>\
              <p>이 창을 닫고 DOMINION으로 돌아가세요.</p>\
              <script>setTimeout(()=>window.close(),1200)</script>",
-            result
-                .get("account")
-                .map(|value| value.to_string().trim_matches('"').to_string())
-                .unwrap_or_else(|| id.clone())
+            escape_html(&result.get("account").and_then(Value::as_str).unwrap_or(&id))
         ))
         .into_response(),
-        Err(error) => Html(format!(
+        Err(error) => { let error=escape_html(&error); Html(format!(
             "<!doctype html><meta charset=\"utf-8\"><title>DOMINION</title>\
              <body style=\"font-family:-apple-system,sans-serif;padding:40px;background:#F6F3EC;color:#8a1f1f\">\
              <h2>연결 실패</h2><pre style=\"white-space:pre-wrap\">{error}</pre>"
         ))
-        .into_response(),
+        .into_response() },
     }
 }
 

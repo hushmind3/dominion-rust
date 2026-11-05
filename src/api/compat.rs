@@ -13,21 +13,15 @@ pub async fn empty_list() -> Json<Value> {
     Json(json!([]))
 }
 
-
-
-
-
-
-pub async fn youtube_status() -> Json<Value> {
-    Json(json!({
-        "connected": false,
-        "uploadAllowed": false,
-        "account": null,
-        "uploads": [],
-        "channel": null,
-    }))
+pub async fn youtube_status(State(state): State<AppState>) -> Json<Value> {
+    let connection = crate::engine::oauth::status(&state)
+        .into_iter()
+        .find(|p| p["id"] == "youtube")
+        .unwrap_or(json!({}));
+    Json(
+        json!({"connected":connection["connected"],"uploadAllowed":connection["connected"]==true&&connection["grantedScopes"].as_str().is_some_and(|s|s.split_whitespace().any(|s|s=="https://www.googleapis.com/auth/youtube.upload")),"account":connection["account"],"uploads":state.store.all("job").iter().filter(|j|j["kind"]=="youtube_upload").map(crate::engine::video::public_job).collect::<Vec<_>>(),"channel":null}),
+    )
 }
-
 
 pub async fn not_ported() -> Response {
     (

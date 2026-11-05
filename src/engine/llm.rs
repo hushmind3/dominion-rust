@@ -27,7 +27,9 @@ pub async fn complete(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim_end_matches('/');
-    let key = state.read_secret(&format!("provider:{id}")).unwrap_or_default();
+    let key = state
+        .read_secret(&format!("provider:{id}"))
+        .unwrap_or_default();
     let model = if model.is_empty() {
         provider
             .get("model")

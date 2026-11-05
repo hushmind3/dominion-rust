@@ -1,0 +1,72 @@
+name: Native desktop release
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target/desktop-engine
+            src-tauri -> target
+      - run: npm ci --prefix web
+      - run: npm run typecheck --prefix web
+      - run: cargo test --locked --release
+      - name: Build own Rust engine and native installers
+        run: node scripts/build-desktop.mjs --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        env:
+          CI: 'true'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dominion-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/**/bundle/dmg/*.dmg
+            src-tauri/target/**/bundle/nsis/*.exe
+            src-tauri/target/**/bundle/msi/*.msi
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dominion-*
+          merge-multiple: true
+          path: release-artifacts
+      - name: Attach successful platform builds to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --draft --title "DOMINION $GITHUB_REF_NAME" --notes "Native Rust desktop installers. macOS and Windows use the same DOMINION engine and React interface. Unsigned builds may require OS confirmation."
+          find release-artifacts -type f \( -name '*.dmg' -o -name '*.msi' -o -name '*-setup.exe' \) -exec gh release upload "$GITHUB_REF_NAME" {} --clobber \;

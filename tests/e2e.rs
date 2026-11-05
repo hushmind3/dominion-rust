@@ -641,3 +641,229 @@ fn concurrent_turns_on_one_session_are_rejected() {
         "expected a duplicate-session rejection, got: {combined}"
     );
 }
+
+#[test]
+fn ordinary_chat_rejects_word_only_completion() {
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"gate-claim.txt 파일을 저장했습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let session = app.post("/api/sessions", &json!({"title":"claim-only"}));
+    let stream = app.chat(&json!({
+        "sessionId": session["id"],
+        "input": "gate-claim.txt 파일을 만들어줘",
+        "autoLearning": false
+    }));
+    assert!(stream.contains("실행 증거가 부족"), "{stream}");
+    assert!(!stream.contains("assistant_saved"), "{stream}");
+    assert!(!app._root.join("gate-claim.txt").exists());
+    assert_eq!(app.get("/api/executions")[0]["status"], "failed");
+}
+
+#[test]
+fn ordinary_chat_accepts_real_tool_evidence() {
+    let (port, _) = scripted_provider(|request| {
+        let saw_tool = request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["role"] == "tool");
+        if saw_tool {
+            vec![json!({"choices":[{"delta":{"content":"파일을 만들고 확인했습니다."},"finish_reason":"stop"}]})]
+        } else {
+            vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"write-1","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"gate-real.txt\",\"content\":\"evidence\"}"}}]},"finish_reason":"tool_calls"}]})]
+        }
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let session = app.post("/api/sessions", &json!({"title":"real-evidence"}));
+    let stream = app.chat(&json!({
+        "sessionId": session["id"],
+        "input": "gate-real.txt 파일을 만들어줘",
+        "autoLearning": false
+    }));
+    assert!(stream.contains("assistant_saved"), "{stream}");
+    assert!(!stream.contains("실행 증거가 부족"), "{stream}");
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("gate-real.txt")).unwrap(),
+        "evidence"
+    );
+    let messages = app.get(&format!(
+        "/api/sessions/{}/messages",
+        session["id"].as_str().unwrap()
+    ));
+    let final_roles = messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["role"] == "assistant")
+        .count();
+    assert!(final_roles >= 1);
+    assert_eq!(app.get("/api/executions")[0]["status"], "completed");
+}
+
+#[test]
+fn native_job_prompt_runs_and_client_cannot_forge_status() {
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"job-done"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let created = app.post(
+        "/api/jobs",
+        &json!({
+            "kind": "prompt",
+            "input": {"prompt": "job prompt", "toolsEnabled": false},
+            "status": "completed",
+            "result": {"forged": true}
+        }),
+    );
+    assert_eq!(created["status"], "queued");
+    assert!(created["result"].is_null());
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut job = created;
+    while Instant::now() < deadline {
+        job = app.get(&format!("/api/jobs/{id}"));
+        if matches!(job["status"].as_str(), Some("completed" | "failed")) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    assert_eq!(job["status"], "completed", "{job}");
+    let session_id = job["result"]["sessionId"]
+        .as_str()
+        .expect("job result session")
+        .to_string();
+    let messages = app.get(&format!("/api/sessions/{session_id}/messages"));
+    assert!(messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["role"] == "assistant" && row["content"] == "job-done"));
+}
+
+#[test]
+fn executions_are_read_only_and_scoped_cancel_only_hits_running() {
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"exec-done"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let forged = app
+        .client
+        .post(format!("{}/api/executions", app.base))
+        .json(&json!({"status":"completed","tokens":999,"evidence":[{"fake":true}]}))
+        .send()
+        .unwrap();
+    assert!(
+        matches!(
+            forged.status(),
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+        ),
+        "unexpected status {}",
+        forged.status()
+    );
+    assert_eq!(app.get("/api/executions").as_array().unwrap().len(), 0);
+
+    let session = app.post("/api/sessions", &json!({"title":"exec"}));
+    app.chat(&json!({"sessionId":session["id"],"input":"hello","autoLearning":false}));
+    let executions = app.get("/api/executions");
+    let execution = &executions[0];
+    assert_eq!(execution["status"], "completed");
+    let cancel = app
+        .client
+        .post(format!(
+            "{}/api/executions/{}/cancel",
+            app.base,
+            execution["id"].as_str().unwrap()
+        ))
+        .json(&json!({}))
+        .send()
+        .unwrap();
+    assert_eq!(cancel.status(), reqwest::StatusCode::CONFLICT);
+    assert_eq!(app.get("/api/executions")[0]["status"], "completed");
+}
+
+#[test]
+fn cancelling_a_running_execution_marks_it_cancelled() {
+    let (port, _) = scripted_provider(|_| {
+        std::thread::sleep(Duration::from_secs(4));
+        vec![json!({"choices":[{"delta":{"content":"late"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let session = app.post("/api/sessions", &json!({"title":"exec-cancel"}));
+    let base = app.base.clone();
+    let chat_id = session["id"].as_str().unwrap().to_string();
+    let turn = std::thread::spawn(move || {
+        reqwest::blocking::Client::new()
+            .post(format!("{base}/api/chat"))
+            .json(&json!({"sessionId":chat_id,"input":"slow","autoLearning":false}))
+            .send()
+            .unwrap()
+            .text()
+            .unwrap()
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut execution_id = None;
+    while Instant::now() < deadline {
+        let executions = app.get("/api/executions");
+        if let Some(execution) = executions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["status"] == "running")
+        {
+            execution_id = execution["id"].as_str().map(str::to_string);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let id = execution_id.expect("running execution");
+    let cancelled = app
+        .client
+        .post(format!("{}/api/executions/{id}/cancel", app.base))
+        .json(&json!({}))
+        .send()
+        .unwrap();
+    assert_eq!(cancelled.status(), reqwest::StatusCode::OK);
+    let stream = turn.join().unwrap();
+    assert!(stream.contains("중단") || stream.contains("error"), "{stream}");
+    let stored = app.get(&format!("/api/executions/{id}"));
+    assert_eq!(stored["status"], "cancelled");
+}
+
+#[test]
+fn cancelling_a_running_job_stops_it() {
+    let (port, _) = scripted_provider(|_| {
+        std::thread::sleep(Duration::from_secs(4));
+        vec![json!({"choices":[{"delta":{"content":"late job"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let created = app.post(
+        "/api/jobs",
+        &json!({"kind":"prompt","input":{"prompt":"slow job","toolsEnabled":false}}),
+    );
+    let id = created["id"].as_str().unwrap().to_string();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut running = false;
+    while Instant::now() < deadline {
+        let job = app.get(&format!("/api/jobs/{id}"));
+        if job["status"] == "running" {
+            running = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(running, "job never started");
+    let cancelled = app
+        .client
+        .post(format!("{}/api/jobs/{id}/cancel", app.base))
+        .json(&json!({}))
+        .send()
+        .unwrap();
+    assert_eq!(cancelled.status(), reqwest::StatusCode::OK);
+    std::thread::sleep(Duration::from_millis(800));
+    let job = app.get(&format!("/api/jobs/{id}"));
+    assert_eq!(job["status"], "cancelled", "{job}");
+    assert_eq!(job["cancelRequested"], true);
+}
