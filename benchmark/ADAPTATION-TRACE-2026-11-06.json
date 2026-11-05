@@ -1,0 +1,359 @@
+{
+  "generatedAt": "2026-11-05T19:30:46.253849+00:00",
+  "model": "qwen3:4b",
+  "provider": "ollama /v1/chat/completions",
+  "task": "workspace_read missing-report.txt -> adaptation",
+  "executions": [
+    {
+      "id": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e",
+      "status": "completed",
+      "failureClass": null,
+      "adaptations": [
+        {
+          "createdAt": "2026-11-05T19:27:58.008250+00:00",
+          "hypothesis": {
+            "claim": "the same call will repeat the same failure",
+            "evidenceIds": [
+              "call_7epkoe1e"
+            ]
+          },
+          "id": "adaptation:f14ad81e5c05f8d9d64aede4242d89d6",
+          "intervention": {
+            "change": "different tool, arguments, or approach",
+            "instruction": "do not repeat the identical failed call; choose a changed action or explain the blocker"
+          },
+          "observation": {
+            "actual": "/private/var/folders/07/l1xr17n92kd01_5c1yv38b440000gn/T/dominion-real-adapt.mIh6R4/missing-report.txt: No such file or directory (os error 2)",
+            "argsDigest": "8d6bb408bef02c2a8931e667100deac1",
+            "expected": "success",
+            "kind": "tool_failure",
+            "tool": "workspace_read"
+          },
+          "operationId": "call_7epkoe1e",
+          "runId": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e",
+          "stepId": 0
+        },
+        {
+          "createdAt": "2026-11-05T19:29:40.330803+00:00",
+          "environmentVersion": 0,
+          "failureSignature": "8d6bb408bef02c2a8931e667100deac1",
+          "hypotheses": [
+            {
+              "claim": "The file 'missing-report.txt' does not exist in the workspace",
+              "id": "h1",
+              "predictions": [
+                {
+                  "predicate": {
+                    "from": "result",
+                    "path": "/exitCode",
+                    "type": "equals",
+                    "value": 0
+                  }
+                }
+              ]
+            }
+          ],
+          "hypothesisResults": [
+            {
+              "id": "h1",
+              "status": "refuted"
+            }
+          ],
+          "id": "adaptation:72eea7d58ce0ba0a4569ea62ad5accaf",
+          "interventions": [
+            {
+              "estimatedCost": 0.2,
+              "expectedChecks": [
+                "file_exists"
+              ],
+              "hypothesisIds": [
+                "h1"
+              ],
+              "id": "i1",
+              "inputs": {
+                "content": "",
+                "path": "missing-report.txt"
+              },
+              "tool": "workspace_write"
+            }
+          ],
+          "observation": {
+            "actual": "/private/var/folders/07/l1xr17n92kd01_5c1yv38b440000gn/T/dominion-real-adapt.mIh6R4/missing-report.txt: No such file or directory (os error 2)",
+            "arguments": {
+              "path": "missing-report.txt"
+            },
+            "expected": "success",
+            "kind": "tool_failure",
+            "tool": "workspace_read"
+          },
+          "result": {
+            "bytes": 0,
+            "path": "/private/var/folders/07/l1xr17n92kd01_5c1yv38b440000gn/T/dominion-real-adapt.mIh6R4/missing-report.txt",
+            "written": true
+          },
+          "runId": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e",
+          "selected": {
+            "estimatedCost": 0.2,
+            "expectedChecks": [
+              "file_exists"
+            ],
+            "hypothesisIds": [
+              "h1"
+            ],
+            "id": "i1",
+            "inputs": {
+              "content": "",
+              "path": "missing-report.txt"
+            },
+            "score": 1.8,
+            "tool": "workspace_write"
+          },
+          "stepId": 0
+        }
+      ],
+      "adaptationCheckpoint": {
+        "environmentVersion": 0,
+        "failureSignature": "8d6bb408bef02c2a8931e667100deac1",
+        "hypothesisResults": [
+          {
+            "id": "h1",
+            "status": "refuted"
+          }
+        ],
+        "selectedIntervention": "i1"
+      },
+      "lastAdaptationError": null,
+      "operations": [
+        {
+          "arguments": {
+            "content": "",
+            "path": "missing-report.txt"
+          },
+          "callId": "adapt-i1-f98a75a1-676a-45d8-88e4-41b09fed5b2c",
+          "createdAt": "2026-11-05 19:29:40",
+          "finishedAt": "2026-11-05T19:29:40.329822+00:00",
+          "id": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e:0:0:adapt-i1-f98a75a1-676a-45d8-88e4-41b09fed5b2c",
+          "opSeq": 2,
+          "origin": "adaptation",
+          "procedureNodeId": null,
+          "procedureRevision": null,
+          "procedureStrategyId": null,
+          "result": {
+            "bytes": 0,
+            "path": "/private/var/folders/07/l1xr17n92kd01_5c1yv38b440000gn/T/dominion-real-adapt.mIh6R4/missing-report.txt",
+            "written": true
+          },
+          "runId": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e",
+          "sessionId": "59e65a40-e81a-41a0-a1b1-ffba74f2a2e0",
+          "startedAt": "2026-11-05T19:29:40.328311+00:00",
+          "status": "completed",
+          "tool": "workspace_write",
+          "updatedAt": "2026-11-05 19:29:40"
+        },
+        {
+          "arguments": {
+            "path": "missing-report.txt"
+          },
+          "callId": "call_7epkoe1e",
+          "createdAt": "2026-11-05 19:27:58",
+          "finishedAt": "2026-11-05T19:27:58.007300+00:00",
+          "id": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e:0:0:call_7epkoe1e",
+          "opSeq": 1,
+          "origin": "model",
+          "procedureNodeId": null,
+          "procedureRevision": null,
+          "procedureStrategyId": null,
+          "result": {
+            "error": "/private/var/folders/07/l1xr17n92kd01_5c1yv38b440000gn/T/dominion-real-adapt.mIh6R4/missing-report.txt: No such file or directory (os error 2)"
+          },
+          "runId": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e",
+          "sessionId": "59e65a40-e81a-41a0-a1b1-ffba74f2a2e0",
+          "startedAt": "2026-11-05T19:27:58.005679+00:00",
+          "status": "failed",
+          "tool": "workspace_read",
+          "updatedAt": "2026-11-05 19:27:58"
+        }
+      ]
+    }
+  ],
+  "afterRestart": [
+    {
+      "id": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e",
+      "status": "completed",
+      "failureClass": null,
+      "adaptations": [
+        {
+          "createdAt": "2026-11-05T19:27:58.008250+00:00",
+          "hypothesis": {
+            "claim": "the same call will repeat the same failure",
+            "evidenceIds": [
+              "call_7epkoe1e"
+            ]
+          },
+          "id": "adaptation:f14ad81e5c05f8d9d64aede4242d89d6",
+          "intervention": {
+            "change": "different tool, arguments, or approach",
+            "instruction": "do not repeat the identical failed call; choose a changed action or explain the blocker"
+          },
+          "observation": {
+            "actual": "/private/var/folders/07/l1xr17n92kd01_5c1yv38b440000gn/T/dominion-real-adapt.mIh6R4/missing-report.txt: No such file or directory (os error 2)",
+            "argsDigest": "8d6bb408bef02c2a8931e667100deac1",
+            "expected": "success",
+            "kind": "tool_failure",
+            "tool": "workspace_read"
+          },
+          "operationId": "call_7epkoe1e",
+          "runId": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e",
+          "stepId": 0
+        },
+        {
+          "createdAt": "2026-11-05T19:29:40.330803+00:00",
+          "environmentVersion": 0,
+          "failureSignature": "8d6bb408bef02c2a8931e667100deac1",
+          "hypotheses": [
+            {
+              "claim": "The file 'missing-report.txt' does not exist in the workspace",
+              "id": "h1",
+              "predictions": [
+                {
+                  "predicate": {
+                    "from": "result",
+                    "path": "/exitCode",
+                    "type": "equals",
+                    "value": 0
+                  }
+                }
+              ]
+            }
+          ],
+          "hypothesisResults": [
+            {
+              "id": "h1",
+              "status": "refuted"
+            }
+          ],
+          "id": "adaptation:72eea7d58ce0ba0a4569ea62ad5accaf",
+          "interventions": [
+            {
+              "estimatedCost": 0.2,
+              "expectedChecks": [
+                "file_exists"
+              ],
+              "hypothesisIds": [
+                "h1"
+              ],
+              "id": "i1",
+              "inputs": {
+                "content": "",
+                "path": "missing-report.txt"
+              },
+              "tool": "workspace_write"
+            }
+          ],
+          "observation": {
+            "actual": "/private/var/folders/07/l1xr17n92kd01_5c1yv38b440000gn/T/dominion-real-adapt.mIh6R4/missing-report.txt: No such file or directory (os error 2)",
+            "arguments": {
+              "path": "missing-report.txt"
+            },
+            "expected": "success",
+            "kind": "tool_failure",
+            "tool": "workspace_read"
+          },
+          "result": {
+            "bytes": 0,
+            "path": "/private/var/folders/07/l1xr17n92kd01_5c1yv38b440000gn/T/dominion-real-adapt.mIh6R4/missing-report.txt",
+            "written": true
+          },
+          "runId": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e",
+          "selected": {
+            "estimatedCost": 0.2,
+            "expectedChecks": [
+              "file_exists"
+            ],
+            "hypothesisIds": [
+              "h1"
+            ],
+            "id": "i1",
+            "inputs": {
+              "content": "",
+              "path": "missing-report.txt"
+            },
+            "score": 1.8,
+            "tool": "workspace_write"
+          },
+          "stepId": 0
+        }
+      ],
+      "adaptationCheckpoint": {
+        "environmentVersion": 0,
+        "failureSignature": "8d6bb408bef02c2a8931e667100deac1",
+        "hypothesisResults": [
+          {
+            "id": "h1",
+            "status": "refuted"
+          }
+        ],
+        "selectedIntervention": "i1"
+      },
+      "lastAdaptationError": null,
+      "operations": [
+        {
+          "arguments": {
+            "content": "",
+            "path": "missing-report.txt"
+          },
+          "callId": "adapt-i1-f98a75a1-676a-45d8-88e4-41b09fed5b2c",
+          "createdAt": "2026-11-05 19:29:40",
+          "finishedAt": "2026-11-05T19:29:40.329822+00:00",
+          "id": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e:0:0:adapt-i1-f98a75a1-676a-45d8-88e4-41b09fed5b2c",
+          "opSeq": 2,
+          "origin": "adaptation",
+          "procedureNodeId": null,
+          "procedureRevision": null,
+          "procedureStrategyId": null,
+          "result": {
+            "bytes": 0,
+            "path": "/private/var/folders/07/l1xr17n92kd01_5c1yv38b440000gn/T/dominion-real-adapt.mIh6R4/missing-report.txt",
+            "written": true
+          },
+          "runId": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e",
+          "sessionId": "59e65a40-e81a-41a0-a1b1-ffba74f2a2e0",
+          "startedAt": "2026-11-05T19:29:40.328311+00:00",
+          "status": "completed",
+          "tool": "workspace_write",
+          "updatedAt": "2026-11-05 19:29:40"
+        },
+        {
+          "arguments": {
+            "path": "missing-report.txt"
+          },
+          "callId": "call_7epkoe1e",
+          "createdAt": "2026-11-05 19:27:58",
+          "finishedAt": "2026-11-05T19:27:58.007300+00:00",
+          "id": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e:0:0:call_7epkoe1e",
+          "opSeq": 1,
+          "origin": "model",
+          "procedureNodeId": null,
+          "procedureRevision": null,
+          "procedureStrategyId": null,
+          "result": {
+            "error": "/private/var/folders/07/l1xr17n92kd01_5c1yv38b440000gn/T/dominion-real-adapt.mIh6R4/missing-report.txt: No such file or directory (os error 2)"
+          },
+          "runId": "66a8f2da-1599-4afe-aa5d-55d4a51afb8e",
+          "sessionId": "59e65a40-e81a-41a0-a1b1-ffba74f2a2e0",
+          "startedAt": "2026-11-05T19:27:58.005679+00:00",
+          "status": "failed",
+          "tool": "workspace_read",
+          "updatedAt": "2026-11-05 19:27:58"
+        }
+      ]
+    }
+  ],
+  "assertions": {
+    "hypothesesGenerated": true,
+    "interventionSelected": true,
+    "hypothesisRefuted": true,
+    "adaptationCheckpointPersisted": true,
+    "adaptationCheckpointSurvivedRestart": true
+  }
+}

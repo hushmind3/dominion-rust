@@ -14,49 +14,59 @@ async fn try_complete(
     prompt: &str,
 ) -> Result<String, String> {
     let route = gateway::resolve(state, provider_id, Some(model))?;
-    let mut body = json!({
-        "model": route.model,
-        "stream": false,
-        "max_tokens": 4096,
-        "temperature": 0.2,
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": prompt }
-        ]
-    });
-    if route.disable_thinking {
-        // Qwen3 and similar local thinking models otherwise spend the whole
-        // output budget on reasoning and return empty JSON. An explicit
-        // capability profile wins over the local/remote heuristic.
-        body["think"] = json!(false);
-        body["chat_template_kwargs"] = json!({"enable_thinking": false});
-    }
+    // Thinking models can consume the entire completion budget on reasoning
+    // and return empty content. Start with a practical budget and retry once
+    // with a larger one before reporting an empty response.
+    let mut max_tokens = 8192u64;
     let client = reqwest::Client::new();
-    let response = gateway::send(&route, &client, &body, Duration::from_secs(240)).await?;
-    let response = response.response;
-    if !response.status().is_success() {
-        return Err(format!("모델 호출 실패: HTTP {}", response.status()));
-    }
-    let value: Value = response.json().await.map_err(|error| error.to_string())?;
-    gateway::record_usage(state, &route, gateway::usage_from(&value), "helper", None);
-    let choice = value
-        .get("choices")
-        .and_then(|choices| choices.get(0))
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let content = choice["message"]["content"].as_str().unwrap_or("");
-    if content.trim().is_empty() {
+    let mut last = String::new();
+    for attempt in 0..2 {
+        let mut body = json!({
+            "model": route.model,
+            "stream": false,
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": prompt }
+            ]
+        });
+        if route.disable_thinking {
+            body["think"] = json!(false);
+            body["chat_template_kwargs"] = json!({"enable_thinking": false});
+        }
+        let response = gateway::send(&route, &client, &body, Duration::from_secs(240)).await?;
+        let response = response.response;
+        if !response.status().is_success() {
+            return Err(format!("모델 호출 실패: HTTP {}", response.status()));
+        }
+        let value: Value = response.json().await.map_err(|error| error.to_string())?;
+        gateway::record_usage(state, &route, gateway::usage_from(&value), "helper", None);
+        let choice = value
+            .get("choices")
+            .and_then(|choices| choices.get(0))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let content = choice["message"]["content"].as_str().unwrap_or("");
+        if !content.trim().is_empty() {
+            return Ok(content.to_string());
+        }
         let finish = choice["finish_reason"].as_str().unwrap_or("unknown");
         let reasoning = choice["message"]["reasoning_content"]
             .as_str()
             .or_else(|| choice["message"]["reasoning"].as_str())
             .unwrap_or("");
-        return Err(format!(
-            "모델이 빈 응답을 반환했습니다 (finish={finish}, reasoning={}자)",
-            reasoning.chars().count()
-        ));
+        last = format!(
+            "모델이 빈 응답을 반환했습니다 (finish={finish}, reasoning={}자, attempt={})",
+            reasoning.chars().count(),
+            attempt + 1
+        );
+        if finish != "length" {
+            break;
+        }
+        max_tokens = (max_tokens * 2).min(16384);
     }
-    Ok(content.to_string())
+    Err(last)
 }
 
 pub async fn complete(

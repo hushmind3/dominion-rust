@@ -3054,6 +3054,81 @@ fn a_paused_program_resumes_after_restart_without_repeating_completed_steps() {
     );
 }
 
+#[test]
+fn parallel_and_nested_program_nodes_execute_concurrently() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"병렬 프로그램 완료."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let program = json!({
+        "revision":"parallel-nested-program",
+        "nodes":[
+            {"type":"call_tool","id":"seed","tool":"workspace_write",
+             "inputs":{"path":"seed.txt","content":"SEED"},"saveAs":"seed"},
+            {"type":"parallel","id":"par","nodes":[
+                {"type":"sequence","id":"s1","nodes":[
+                    {"type":"call_tool","id":"p1","tool":"shell_exec",
+                     "inputs":{"command":"sleep 1.0"},"saveAs":"p1"},
+                    {"type":"branch","id":"b1",
+                     "predicate":{"type":"exists","from":"seed","path":"/path"},
+                     "then":[{"type":"call_tool","id":"p1b","tool":"workspace_write",
+                              "inputs":{"path":"p1b.txt","content":"P1B"}}],
+                     "else":[{"type":"call_tool","id":"p1e","tool":"workspace_write",
+                              "inputs":{"path":"p1e.txt","content":"P1E"}}]}
+                ]},
+                {"type":"sequence","id":"s2","nodes":[
+                    {"type":"call_tool","id":"p2","tool":"shell_exec",
+                     "inputs":{"command":"sleep 1.0"},"saveAs":"p2"},
+                    {"type":"loop","id":"l2","maxIterations":1,
+                     "predicate":{"type":"not","predicate":{"type":"exists","from":"p2b"}},
+                     "body":[{"type":"call_tool","id":"p2b","tool":"workspace_write",
+                              "inputs":{"path":"p2b.txt","content":"P2B"},"saveAs":"p2b"}]}
+                ]}
+            ]},
+            {"type":"verify","id":"verify","checks":[
+                {"predicate":{"type":"exists","from":"seed","path":"/path"}},
+                {"predicate":{"type":"exists","from":"p1b","path":"/path"}},
+                {"predicate":{"type":"exists","from":"p2b","path":"/path"}}
+            ]}
+        ]
+    });
+    let activated = app.post(
+        "/api/benchmark/policies/state",
+        &json!({"slot":"execution","name":"parallel-nested","parameters":{"program":program}}),
+    );
+    assert_eq!(activated["active"]["status"], "active", "{activated}");
+    let started = Instant::now();
+    let stream = app.chat(&json!({"input":"병렬 프로그램을 실행해","autoLearning":false}));
+    let elapsed = started.elapsed();
+    assert!(!stream.contains("\"type\":\"error\""), "{stream}");
+    assert!(
+        elapsed < Duration::from_millis(1_700),
+        "parallel tools did not run concurrently: {elapsed:?}"
+    );
+    assert!(app._root.join("seed.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("p1b.txt")).unwrap_or_default(),
+        "P1B"
+    );
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("p2b.txt")).unwrap_or_default(),
+        "P2B"
+    );
+    assert!(!app._root.join("p1e.txt").exists());
+    let executions = app.get("/api/executions");
+    let execution = &executions.as_array().unwrap()[0];
+    let checkpoint = &execution["programCheckpoint"];
+    assert_eq!(checkpoint["status"], "completed", "{checkpoint}");
+    assert_eq!(checkpoint["parallelMode"], "concurrent", "{checkpoint}");
+    assert_eq!(
+        checkpoint["resolvedInputs"]["lastVerify"]["ok"], true,
+        "verify node did not run: {checkpoint}"
+    );
+    assert!(checkpoint["pendingOperationIds"].as_array().unwrap().is_empty());
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

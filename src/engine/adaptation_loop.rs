@@ -80,10 +80,102 @@ pub fn adaptation_prompt(
     (system.to_string(), prompt)
 }
 
+/// Extracts the first JSON object that actually contains hypotheses and
+/// interventions. Local thinking models often wrap JSON in prose or markdown,
+/// so parsing the outermost braces is not reliable.
 pub fn parse_adaptation(raw: &str) -> Option<Value> {
-    let start = raw.find('{')?;
-    let end = raw.rfind('}')?;
-    serde_json::from_str::<Value>(&raw[start..=end]).ok()
+    let bytes = raw.as_bytes();
+    for (start, _) in raw.match_indices('{') {
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escape = false;
+        for index in start..bytes.len() {
+            let byte = bytes[index];
+            if in_string {
+                if escape {
+                    escape = false;
+                } else if byte == b'\\' {
+                    escape = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => in_string = true,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Ok(value) = serde_json::from_str::<Value>(&raw[start..=index]) {
+                            if value["hypotheses"].is_array()
+                                && value["interventions"].is_array()
+                            {
+                                return Some(value);
+                            }
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Structural validation used before execution. Field errors are returned to
+/// the caller so the model can repair its output instead of being trusted.
+pub fn validate_adaptation(adaptation: &Value) -> Result<(), String> {
+    let hypotheses = adaptation["hypotheses"]
+        .as_array()
+        .filter(|items| !items.is_empty())
+        .ok_or("hypotheses must be a non-empty array")?;
+    for hypothesis in hypotheses {
+        if hypothesis["id"].as_str().is_none_or(str::is_empty) {
+            return Err("each hypothesis needs an id".into());
+        }
+        if hypothesis["claim"].as_str().is_none_or(str::is_empty) {
+            return Err(format!(
+                "hypothesis {} needs a claim",
+                hypothesis["id"]
+            ));
+        }
+        if !hypothesis["predictions"].is_array() {
+            return Err(format!(
+                "hypothesis {} predictions must be an array",
+                hypothesis["id"]
+            ));
+        }
+    }
+    let interventions = adaptation["interventions"]
+        .as_array()
+        .filter(|items| !items.is_empty())
+        .ok_or("interventions must be a non-empty array")?;
+    for intervention in interventions {
+        if intervention["id"].as_str().is_none_or(str::is_empty) {
+            return Err("each intervention needs an id".into());
+        }
+        if intervention["tool"].as_str().is_none_or(str::is_empty) {
+            return Err(format!(
+                "intervention {} needs a tool",
+                intervention["id"]
+            ));
+        }
+        if !intervention["inputs"].is_object() {
+            return Err(format!(
+                "intervention {} inputs must be an object",
+                intervention["id"]
+            ));
+        }
+        if !intervention["hypothesisIds"].is_array() {
+            return Err(format!(
+                "intervention {} hypothesisIds must be an array",
+                intervention["id"]
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn intervention_key(tool: &str, inputs: &Value) -> String {
@@ -265,6 +357,19 @@ mod selection_tests {
         let only_same = json!({"hypotheses":[],"interventions":[adaptation()["interventions"][0].clone()]});
         assert!(choose_intervention(&only_same, "shell_exec", &failed, false).is_none());
         assert!(choose_intervention(&only_same, "shell_exec", &failed, true).is_some());
+    }
+
+    #[test]
+    fn noisy_model_output_is_parsed_and_invalid_schema_is_rejected() {
+        let raw = "Here is the plan {not json} then:\n```json\n{\"hypotheses\":[{\"id\":\"h1\",\"claim\":\"missing file\",\"predictions\":[]}],\"interventions\":[{\"id\":\"i1\",\"hypothesisIds\":[\"h1\"],\"tool\":\"workspace_list\",\"inputs\":{},\"expectedChecks\":[\"entries\"],\"estimatedCost\":0.1}]}\n```\nDone.";
+        let parsed = parse_adaptation(raw).expect("prose-wrapped JSON");
+        assert_eq!(parsed["interventions"][0]["tool"], "workspace_list");
+        assert!(validate_adaptation(&parsed).is_ok());
+        let invalid = json!({
+            "hypotheses":[{"id":"h1","claim":"x","predictions":[]}],
+            "interventions":[{"id":"i1","hypothesisIds":["h1"],"tool":"workspace_list","inputs":"not-an-object"}]
+        });
+        assert!(validate_adaptation(&invalid).is_err());
     }
 
     #[test]

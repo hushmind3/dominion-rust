@@ -1146,11 +1146,12 @@ async fn run_turn_body(
                 );
                 if adaptation_attempts < 3 && !request.provider_id.as_deref().unwrap_or("").is_empty() {
                     adaptation_attempts += 1;
-                    if let Some(adapted) = attempt_model_adaptation(
+                    match attempt_model_adaptation(
                         state, tx, &session, request, session_id, execution_id, round,
                         &call.id, &call.name, &arguments, &error_text, metrics,
                         &mut budget, &mut op_seq, environment_version,
                     ).await {
+                        Ok(adapted) => {
                         let selected = &adapted["selected"];
                         let result = &adapted["result"];
                         messages.push(json!({
@@ -1171,11 +1172,16 @@ async fn run_turn_body(
                         } else {
                             adaptation_failures += 1;
                         }
-                    } else {
-                        messages.push(json!({
-                            "role":"system",
-                            "content":"적응 후보 생성에 실패했습니다. 모델은 원인 가설과 다른 도구/인자를 직접 선택하세요."
-                        }));
+                        }
+                        Err(error) => {
+                            record_adaptation_error(state, execution_id, &error);
+                            messages.push(json!({
+                                "role":"system",
+                                "content": format!(
+                                    "적응 후보 생성/실행에 실패했습니다: {error}. 모델은 원인 가설과 다른 도구/인자를 직접 선택하세요."
+                                )
+                            }));
+                        }
                     }
                 }
                 if adaptation_failures >= 2 {
@@ -1386,6 +1392,22 @@ async fn run_harness_nodes(
     Ok(synthetic)
 }
 
+fn record_adaptation_error(state: &AppState, execution_id: &str, error: &str) {
+    if let Some(mut execution) = state.store.get("execution", execution_id) {
+        execution["lastAdaptationError"] = json!(error.chars().take(600).collect::<String>());
+        if let Some(saved) = state.store.put("execution", &execution) {
+            state.bus.record("execution", &saved);
+        }
+    }
+}
+
+fn adaptation_repair_prompt(original: &str, raw: &str, error: &str) -> String {
+    format!(
+        "{original}\n\nYour previous response was rejected: {error}.\nPrevious response excerpt:\n{}\nReturn ONLY one JSON object with non-empty \"hypotheses\" and \"interventions\" arrays. Do not write prose or markdown. Each intervention needs id, hypothesisIds (array), tool, inputs (object), expectedChecks (array) and estimatedCost (number).",
+        raw.chars().take(900).collect::<String>()
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn attempt_model_adaptation(
     state: &AppState,
@@ -1403,12 +1425,19 @@ async fn attempt_model_adaptation(
     budget: &mut super::budget::BudgetLedger,
     op_seq: &mut u64,
     environment_version: u64,
-) -> Option<Value> {
-    let provider_id = request.provider_id.as_deref()?.to_string();
-    let model = request.model.as_deref()?.to_string();
-    if provider_id.is_empty() || model.is_empty() {
-        return None;
-    }
+) -> Result<Value, String> {
+    let provider_id = request
+        .provider_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("adaptation has no provider")?
+        .to_string();
+    let model = request
+        .model
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("adaptation has no model")?
+        .to_string();
     let (system, mut prompt) = crate::engine::adaptation_loop::adaptation_prompt(
         tool,
         arguments,
@@ -1438,11 +1467,35 @@ async fn attempt_model_adaptation(
         );
         prompt.push_str(&json!(examples).to_string());
     }
-    let raw = llm::complete(state, &provider_id, &model, &system, &prompt)
-        .await
-        .ok()?;
-    metrics.lock().unwrap().model_calls += 1;
-    let mut adaptation = crate::engine::adaptation_loop::parse_adaptation(&raw)?;
+    let mut attempt_prompt = prompt.clone();
+    let mut adaptation = None;
+    let mut last_error = String::new();
+    for attempt in 0..2 {
+        let raw = llm::complete(state, &provider_id, &model, &system, &attempt_prompt).await?;
+        metrics.lock().unwrap().model_calls += 1;
+        let candidate = crate::engine::adaptation_loop::parse_adaptation(&raw);
+        match candidate {
+            Some(candidate) => {
+                match crate::engine::adaptation_loop::validate_adaptation(&candidate) {
+                    Ok(()) => {
+                        adaptation = Some(candidate);
+                        break;
+                    }
+                    Err(error) => last_error = error,
+                }
+            }
+            None => {
+                last_error =
+                    "response had no JSON object with hypotheses and interventions".into();
+            }
+        }
+        if attempt == 0 {
+            attempt_prompt = adaptation_repair_prompt(&prompt, &raw, &last_error);
+        }
+    }
+    let mut adaptation = adaptation.ok_or_else(|| {
+        format!("adaptation output rejected after one repair attempt: {last_error}")
+    })?;
     adaptation["consultedExperienceRules"] = json!(applicable_rules.iter().map(|rule| json!({
         "id": rule["id"], "revision": rule["revision"],
     })).collect::<Vec<_>>());
@@ -1451,14 +1504,19 @@ async fn attempt_model_adaptation(
         tool,
         arguments,
         false,
-    )?;
-    let selected_tool = selected["tool"].as_str()?.to_string();
+    )
+    .ok_or("no distinct intervention survived selection")?;
+    let selected_tool = selected["tool"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or("selected intervention has no tool")?
+        .to_string();
     let inputs = selected["inputs"].clone();
     if !inputs.is_object() {
-        return None;
+        return Err("selected intervention inputs are not an object".into());
     }
     if !budget.charge_tool() {
-        return None;
+        return Err("adaptation tool budget is exhausted".into());
     }
     *op_seq += 1;
     let call = ToolCall {
@@ -1485,8 +1543,7 @@ async fn attempt_model_adaptation(
         None,
         None,
     )
-    .await
-    .ok()?;
+    .await?;
     let hypothesis_results =
         crate::engine::adaptation_loop::evaluate_hypotheses(&adaptation, &result);
     crate::engine::experience::record_rule_counterexamples(
@@ -1505,7 +1562,7 @@ async fn attempt_model_adaptation(
         Some(&result),
         &hypothesis_results,
     );
-    Some(json!({
+    Ok(json!({
         "record": record,
         "selected": selected,
         "result": result,
@@ -1595,6 +1652,7 @@ async fn execute_program_tool(
     budget: &mut super::budget::BudgetLedger,
     op_seq: &mut u64,
     round: usize,
+    persist: bool,
 ) -> Result<Value, String> {
     let node_id = node["id"].as_str().unwrap_or("");
     if node_id.is_empty() {
@@ -1617,7 +1675,10 @@ async fn execute_program_tool(
         arguments: arguments.to_string(),
     };
     checkpoint["pendingOperationIds"] = json!([node_id]);
-    save_program_checkpoint(state, execution_id, checkpoint);
+    checkpoint["resolvedInputs"] = resolved.clone();
+    if persist {
+        save_program_checkpoint(state, execution_id, checkpoint);
+    }
     let (result, _ok, _content) = dispatch_tool_call(
         state,
         tx,
@@ -1639,6 +1700,20 @@ async fn execute_program_tool(
     )
     .await?;
     checkpoint["pendingOperationIds"] = json!([]);
+    mark_program_completed(checkpoint, node_id);
+    let key = node["saveAs"].as_str().filter(|value| !value.is_empty()).unwrap_or(node_id);
+    resolved[key] = result.clone();
+    checkpoint["resolvedInputs"] = resolved.clone();
+    if persist {
+        save_program_checkpoint(state, execution_id, checkpoint);
+    }
+    Ok(result)
+}
+
+fn mark_program_completed(checkpoint: &mut Value, node_id: &str) {
+    if node_id.is_empty() {
+        return;
+    }
     let mut completed = checkpoint["completedOperationIds"]
         .as_array()
         .cloned()
@@ -1647,14 +1722,385 @@ async fn execute_program_tool(
         completed.push(json!(node_id));
     }
     checkpoint["completedOperationIds"] = json!(completed);
-    let key = node["saveAs"].as_str().filter(|value| !value.is_empty()).unwrap_or(node_id);
-    resolved[key] = result.clone();
-    resolved["last"] = result.clone();
-    // The observation and completed-operation marker must be durable
-    // together. Otherwise a restart skips the tool but loses its branch input.
-    checkpoint["resolvedInputs"] = resolved.clone();
-    save_program_checkpoint(state, execution_id, checkpoint);
-    Ok(result)
+}
+
+struct ProgramCtx<'a> {
+    state: &'a AppState,
+    tx: &'a UnboundedSender<Value>,
+    session: &'a Value,
+    request: &'a TurnRequest,
+    session_id: &'a str,
+    execution_id: &'a str,
+    metrics: &'a std::sync::Mutex<Metrics>,
+    generation: u64,
+}
+
+struct ProgramFrame {
+    resolved: Value,
+    checkpoint: Value,
+    budget: super::budget::BudgetLedger,
+    op_seq: u64,
+    messages: Vec<Value>,
+    paused: bool,
+}
+
+/// Executes nodes recursively so Sequence/Branch/Parallel/Loop can contain any
+/// supported node. All side effects go through the same tool gateway.
+#[allow(clippy::too_many_arguments)]
+fn execute_nodes<'a>(
+    ctx: &'a ProgramCtx<'a>,
+    nodes: Vec<Value>,
+    mut resolved: Value,
+    mut checkpoint: Value,
+    mut budget: super::budget::BudgetLedger,
+    mut op_seq: u64,
+    depth: usize,
+    persist: bool,
+    skip_completed: bool,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<ProgramFrame, String>> + Send + 'a>,
+> {
+    Box::pin(async move {
+        if depth > 16 {
+            return Err("program nesting is too deep".into());
+        }
+        let mut messages = Vec::new();
+        for (index, node) in nodes.iter().enumerate() {
+            if ctx.state.is_cancelled(ctx.session_id)
+                || ctx.state.cancellation_generation(ctx.session_id) != ctx.generation
+            {
+                return Err("실행이 중단되었습니다.".into());
+            }
+            let node_id = node["id"].as_str().unwrap_or("");
+            if skip_completed
+                && !node_id.is_empty()
+                && crate::engine::program::checkpoint_skip_completed(&checkpoint, node_id)
+            {
+                continue;
+            }
+            if persist {
+                checkpoint["nextIndex"] = json!(index);
+                checkpoint["frameStack"] = json!([{
+                    "nodeId": node_id,
+                    "index": index,
+                }]);
+                checkpoint["resolvedInputs"] = resolved.clone();
+                save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
+            }
+            match node["type"].as_str().unwrap_or("") {
+                "observe" => {
+                    let last = resolved.get("last").cloned().unwrap_or(Value::Null);
+                    if !node_id.is_empty() {
+                        resolved[node_id] = last;
+                    }
+                    mark_program_completed(&mut checkpoint, node_id);
+                }
+                "call_tool" => {
+                    let result = execute_program_tool(
+                        ctx.state,
+                        ctx.tx,
+                        ctx.session,
+                        ctx.request,
+                        ctx.session_id,
+                        ctx.execution_id,
+                        node,
+                        &mut resolved,
+                        &mut checkpoint,
+                        ctx.metrics,
+                        &mut budget,
+                        &mut op_seq,
+                        index,
+                        persist,
+                    )
+                    .await?;
+                    resolved["last"] = result;
+                }
+                "branch" => {
+                    let chosen = if crate::engine::program::predicate_holds(
+                        &node["predicate"],
+                        &resolved,
+                    )? {
+                        node["then"].as_array().cloned().unwrap_or_default()
+                    } else {
+                        node["else"].as_array().cloned().unwrap_or_default()
+                    };
+                    let frame = execute_nodes(
+                        ctx, chosen, resolved, checkpoint, budget, op_seq, depth + 1,
+                        persist, true,
+                    )
+                    .await?;
+                    resolved = frame.resolved;
+                    checkpoint = frame.checkpoint;
+                    budget = frame.budget;
+                    op_seq = frame.op_seq;
+                    messages.extend(frame.messages);
+                    if frame.paused {
+                        checkpoint["resolvedInputs"] = resolved.clone();
+                        if persist {
+                            save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
+                        }
+                        return Ok(ProgramFrame {
+                            resolved,
+                            checkpoint,
+                            budget,
+                            op_seq,
+                            messages,
+                            paused: true,
+                        });
+                    }
+                    mark_program_completed(&mut checkpoint, node_id);
+                }
+                "sequence" => {
+                    let children = node["nodes"].as_array().cloned().unwrap_or_default();
+                    let frame = execute_nodes(
+                        ctx, children, resolved, checkpoint, budget, op_seq, depth + 1,
+                        persist, true,
+                    )
+                    .await?;
+                    resolved = frame.resolved;
+                    checkpoint = frame.checkpoint;
+                    budget = frame.budget;
+                    op_seq = frame.op_seq;
+                    messages.extend(frame.messages);
+                    if frame.paused {
+                        checkpoint["resolvedInputs"] = resolved.clone();
+                        if persist {
+                            save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
+                        }
+                        return Ok(ProgramFrame {
+                            resolved,
+                            checkpoint,
+                            budget,
+                            op_seq,
+                            messages,
+                            paused: true,
+                        });
+                    }
+                    mark_program_completed(&mut checkpoint, node_id);
+                }
+                "parallel" => {
+                    let children = node["nodes"].as_array().cloned().unwrap_or_default();
+                    let child_ids = children
+                        .iter()
+                        .map(|child| json!(child["id"]))
+                        .collect::<Vec<_>>();
+                    checkpoint["pendingOperationIds"] = json!(child_ids);
+                    checkpoint["parallelMode"] = json!("concurrent");
+                    checkpoint["resolvedInputs"] = resolved.clone();
+                    if persist {
+                        save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
+                    }
+                    let base = budget.branch();
+                    let mut futures = Vec::new();
+                    for child in children.clone() {
+                        futures.push(execute_nodes(
+                            ctx,
+                            vec![child],
+                            resolved.clone(),
+                            checkpoint.clone(),
+                            base.branch(),
+                            op_seq,
+                            depth + 1,
+                            false,
+                            true,
+                        ));
+                    }
+                    let results = futures_util::future::join_all(futures).await;
+                    let mut paused = false;
+                    let mut parallel_last = serde_json::Map::new();
+                    for (child, result) in children.iter().zip(results.into_iter()) {
+                        let frame = result?;
+                        let child_id = child["id"].as_str().unwrap_or("");
+                        if let Some(map) = frame.resolved.as_object() {
+                            for (key, value) in map {
+                                if key != "last" {
+                                    resolved[key] = value.clone();
+                                }
+                            }
+                            parallel_last.insert(
+                                child_id.to_string(),
+                                frame.resolved["last"].clone(),
+                            );
+                        }
+                        if let Some(completed) =
+                            frame.checkpoint["completedOperationIds"].as_array()
+                        {
+                            for id in completed {
+                                mark_program_completed(
+                                    &mut checkpoint,
+                                    id.as_str().unwrap_or(""),
+                                );
+                            }
+                        }
+                        mark_program_completed(&mut checkpoint, child_id);
+                        budget.merge_usage(&frame.budget);
+                        op_seq = op_seq.max(frame.op_seq);
+                        messages.extend(frame.messages);
+                        paused |= frame.paused;
+                    }
+                    resolved["last"] = Value::Object(parallel_last);
+                    checkpoint["pendingOperationIds"] = json!([]);
+                    checkpoint["resolvedInputs"] = resolved.clone();
+                    if paused {
+                        checkpoint["status"] = json!("paused");
+                        if persist {
+                            save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
+                        }
+                        return Ok(ProgramFrame {
+                            resolved,
+                            checkpoint,
+                            budget,
+                            op_seq,
+                            messages,
+                            paused: true,
+                        });
+                    }
+                    mark_program_completed(&mut checkpoint, node_id);
+                }
+                "verify" => {
+                    let checks = node["checks"].as_array().cloned().unwrap_or_default();
+                    let mut results = Vec::new();
+                    let mut ok = true;
+                    for check in checks {
+                        let holds = crate::engine::program::predicate_holds(
+                            &check["predicate"],
+                            &resolved,
+                        )?;
+                        ok &= holds;
+                        results.push(json!({"predicate": check["predicate"], "ok": holds}));
+                    }
+                    resolved["lastVerify"] = json!({"ok": ok, "checks": results});
+                    if !ok {
+                        messages.push(json!({
+                            "role":"system",
+                            "content": format!(
+                                "program verify failed: {}",
+                                resolved["lastVerify"]
+                            )
+                        }));
+                    }
+                    mark_program_completed(&mut checkpoint, node_id);
+                }
+                "delegate" => {
+                    let mut child = node.clone();
+                    child["tool"] = json!("delegate_task");
+                    child["inputs"] = json!({
+                        "agentId": node["agentId"],
+                        "prompt": node["prompt"],
+                        "wait": node["wait"],
+                        "timeoutSeconds": node["timeoutSeconds"],
+                    });
+                    let result = execute_program_tool(
+                        ctx.state,
+                        ctx.tx,
+                        ctx.session,
+                        ctx.request,
+                        ctx.session_id,
+                        ctx.execution_id,
+                        &child,
+                        &mut resolved,
+                        &mut checkpoint,
+                        ctx.metrics,
+                        &mut budget,
+                        &mut op_seq,
+                        index,
+                        persist,
+                    )
+                    .await?;
+                    resolved["last"] = result;
+                }
+                "loop" => {
+                    let body = node["body"].as_array().cloned().unwrap_or_default();
+                    let max = node["maxIterations"].as_u64().unwrap_or(3).min(16);
+                    if !checkpoint["loops"].is_object() {
+                        checkpoint["loops"] = json!({});
+                    }
+                    let mut iterations = checkpoint["loops"][node_id]
+                        .as_u64()
+                        .unwrap_or(0);
+                    while iterations < max {
+                        if !crate::engine::program::predicate_holds(
+                            &node["predicate"],
+                            &resolved,
+                        )? {
+                            break;
+                        }
+                        let frame = execute_nodes(
+                            ctx,
+                            body.clone(),
+                            resolved,
+                            checkpoint,
+                            budget.clone(),
+                            op_seq,
+                            depth + 1,
+                            persist,
+                            false,
+                        )
+                        .await?;
+                        resolved = frame.resolved;
+                        checkpoint = frame.checkpoint;
+                        budget = frame.budget;
+                        op_seq = frame.op_seq;
+                        messages.extend(frame.messages);
+                        iterations += 1;
+                        checkpoint["loopIterations"] = json!(iterations);
+                        checkpoint["loops"][node_id] = json!(iterations);
+                        checkpoint["resolvedInputs"] = resolved.clone();
+                        if persist {
+                            save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
+                        }
+                        if frame.paused {
+                            checkpoint["status"] = json!("paused");
+                            return Ok(ProgramFrame {
+                                resolved,
+                                checkpoint,
+                                budget,
+                                op_seq,
+                                messages,
+                                paused: true,
+                            });
+                        }
+                    }
+                    mark_program_completed(&mut checkpoint, node_id);
+                }
+                "model_decision" => {
+                    mark_program_completed(&mut checkpoint, node_id);
+                    checkpoint["status"] = json!("paused");
+                    checkpoint["pausedNodeId"] = json!(node_id);
+                    checkpoint["nextIndex"] = json!(index + 1);
+                    checkpoint["resolvedInputs"] = resolved.clone();
+                    if persist {
+                        save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
+                    }
+                    messages.push(json!({
+                        "role":"system",
+                        "content":"program requested a model decision; control returns to the model loop with saved progress."
+                    }));
+                    return Ok(ProgramFrame {
+                        resolved,
+                        checkpoint,
+                        budget,
+                        op_seq,
+                        messages,
+                        paused: true,
+                    });
+                }
+                other => return Err(format!("unsupported program node type: {other}")),
+            }
+            checkpoint["resolvedInputs"] = resolved.clone();
+            if persist {
+                save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
+            }
+        }
+        Ok(ProgramFrame {
+            resolved,
+            checkpoint,
+            budget,
+            op_seq,
+            messages,
+            paused: false,
+        })
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1681,232 +2127,44 @@ async fn run_program(
                 && checkpoint["status"].as_str() != Some("completed")
         })
         .unwrap_or_else(|| crate::engine::program::new_checkpoint(program));
-    let mut resolved = checkpoint["resolvedInputs"].clone();
+    let resolved = checkpoint["resolvedInputs"].clone();
     let nodes = program["nodes"].as_array().cloned().unwrap_or_default();
+    let node_count = nodes.len();
     let start = checkpoint["nextIndex"].as_u64().unwrap_or(0) as usize;
+    let remaining = nodes.into_iter().skip(start).collect::<Vec<_>>();
     checkpoint["status"] = json!("running");
-    let mut messages = Vec::new();
-    for (index, node) in nodes.iter().enumerate().skip(start) {
-        if state.is_cancelled(session_id)
-            || state.cancellation_generation(session_id) != generation
-        {
-            return Err("실행이 중단되었습니다.".into());
-        }
-        checkpoint["nextIndex"] = json!(index);
-        checkpoint["frameStack"] = json!([{
-            "nodeId": node["id"],
-            "index": index,
-        }]);
+    let ctx = ProgramCtx {
+        state,
+        tx,
+        session,
+        request,
+        session_id,
+        execution_id,
+        metrics,
+        generation,
+    };
+    let frame = execute_nodes(
+        &ctx,
+        remaining,
+        resolved,
+        checkpoint,
+        budget.clone(),
+        *op_seq,
+        0,
+        true,
+        true,
+    )
+    .await?;
+    *budget = frame.budget;
+    *op_seq = frame.op_seq;
+    let mut checkpoint = frame.checkpoint;
+    let mut messages = frame.messages;
+    checkpoint["resolvedInputs"] = frame.resolved;
+    if frame.paused {
         save_program_checkpoint(state, execution_id, &checkpoint);
-        match node["type"].as_str().unwrap_or("") {
-            "observe" => {
-                let id = node["id"].as_str().unwrap_or("");
-                let last = resolved
-                    .get("last")
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                resolved[id] = last;
-                checkpoint["resolvedInputs"] = resolved.clone();
-                save_program_checkpoint(state, execution_id, &checkpoint);
-            }
-            "call_tool" => {
-                let node_id = node["id"].as_str().unwrap_or("");
-                if crate::engine::program::checkpoint_skip_completed(&checkpoint, node_id) {
-                    continue;
-                }
-                let result = execute_program_tool(
-                    state, tx, session, request, session_id, execution_id, node,
-                    &mut resolved, &mut checkpoint, metrics, budget, op_seq, index,
-                )
-                .await?;
-                resolved["last"] = result;
-            }
-            "branch" => {
-                let chosen = if crate::engine::program::predicate_holds(
-                    &node["predicate"],
-                    &resolved,
-                )? {
-                    node["then"].as_array().cloned().unwrap_or_default()
-                } else {
-                    node["else"].as_array().cloned().unwrap_or_default()
-                };
-                for child in chosen {
-                    if child["type"].as_str() != Some("call_tool") {
-                        return Err(
-                            "nested branch/loop nodes are not implemented in the minimal interpreter"
-                                .into(),
-                        );
-                    }
-                    if crate::engine::program::checkpoint_skip_completed(
-                        &checkpoint,
-                        child["id"].as_str().unwrap_or(""),
-                    ) {
-                        continue;
-                    }
-                    let result = execute_program_tool(
-                        state, tx, session, request, session_id, execution_id, &child,
-                        &mut resolved, &mut checkpoint, metrics, budget, op_seq, index,
-                    )
-                    .await?;
-                    resolved["last"] = result;
-                }
-                let mut completed = checkpoint["completedOperationIds"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                let branch_id = node["id"].as_str().unwrap_or("");
-                if !completed.iter().any(|value| value.as_str() == Some(branch_id)) {
-                    completed.push(json!(branch_id));
-                }
-                checkpoint["completedOperationIds"] = json!(completed);
-            }
-            "sequence" | "parallel" => {
-                let children = node["nodes"].as_array().cloned().unwrap_or_default();
-                if node["type"].as_str() == Some("parallel") {
-                    checkpoint["parallelMode"] = json!("sequential-fallback");
-                }
-                for child in children {
-                    match child["type"].as_str().unwrap_or("") {
-                        "call_tool" => {
-                            if crate::engine::program::checkpoint_skip_completed(
-                                &checkpoint,
-                                child["id"].as_str().unwrap_or(""),
-                            ) {
-                                continue;
-                            }
-                            let result = execute_program_tool(
-                                state, tx, session, request, session_id, execution_id,
-                                &child, &mut resolved, &mut checkpoint, metrics, budget,
-                                op_seq, index,
-                            )
-                            .await?;
-                            resolved["last"] = result;
-                        }
-                        "observe" => {
-                            let last = resolved.get("last").cloned().unwrap_or(Value::Null);
-                            if let Some(id) = child["id"].as_str() {
-                                resolved[id] = last;
-                            }
-                        }
-                        other => {
-                            return Err(format!(
-                                "sequence/parallel child node {other} is not implemented"
-                            ))
-                        }
-                    }
-                }
-            }
-            "verify" => {
-                let checks = node["checks"].as_array().cloned().unwrap_or_default();
-                let mut results = Vec::new();
-                let mut ok = true;
-                for check in checks {
-                    let holds = crate::engine::program::predicate_holds(
-                        &check["predicate"],
-                        &resolved,
-                    )?;
-                    ok &= holds;
-                    results.push(json!({"predicate": check["predicate"], "ok": holds}));
-                }
-                resolved["lastVerify"] = json!({"ok": ok, "checks": results});
-                if !ok {
-                    messages.push(json!({
-                        "role":"system",
-                        "content": format!(
-                            "program verify failed: {}",
-                            resolved["lastVerify"]
-                        )
-                    }));
-                }
-            }
-            "delegate" => {
-                let mut child = node.clone();
-                child["tool"] = json!("delegate_task");
-                child["inputs"] = json!({
-                    "agentId": node["agentId"],
-                    "prompt": node["prompt"],
-                    "wait": node["wait"],
-                    "timeoutSeconds": node["timeoutSeconds"],
-                });
-                let result = execute_program_tool(
-                    state, tx, session, request, session_id, execution_id, &child,
-                    &mut resolved, &mut checkpoint, metrics, budget, op_seq, index,
-                )
-                .await?;
-                resolved["last"] = result;
-            }
-            "loop" => {
-                let body = node["body"].as_array().cloned().unwrap_or_default();
-                let max = node["maxIterations"].as_u64().unwrap_or(3).min(8);
-                let loop_id = node["id"].as_str()
-                    .filter(|id| !id.is_empty())
-                    .ok_or("loop node needs an id for durable iteration recovery")?;
-                let mut iterations = checkpoint["loopProgress"][loop_id].as_u64().unwrap_or(0);
-                for iteration in iterations..max {
-                    if !crate::engine::program::predicate_holds(
-                        &node["predicate"],
-                        &resolved,
-                    )? {
-                        break;
-                    }
-                    for child in &body {
-                        if child["type"].as_str() != Some("call_tool") {
-                            return Err("loop body supports call_tool only for now".into());
-                        }
-                        let original_id = child["id"].as_str()
-                            .filter(|id| !id.is_empty())
-                            .ok_or("loop child call_tool needs an id")?;
-                        // The same node in two iterations is a different
-                        // operation, while a restarted *same* iteration must
-                        // never issue the tool a second time.
-                        let mut iteration_child = child.clone();
-                        let occurrence_id = format!("{loop_id}:{iteration}:{original_id}");
-                        iteration_child["id"] = json!(occurrence_id);
-                        if iteration_child["saveAs"].is_null() {
-                            iteration_child["saveAs"] = json!(original_id);
-                        }
-                        if crate::engine::program::checkpoint_skip_completed(
-                            &checkpoint, &occurrence_id,
-                        ) {
-                            continue;
-                        }
-                        let result = execute_program_tool(
-                            state, tx, session, request, session_id, execution_id,
-                            &iteration_child, &mut resolved, &mut checkpoint, metrics, budget,
-                            op_seq, index,
-                        )
-                        .await?;
-                        resolved["last"] = result;
-                    }
-                    iterations = iteration + 1;
-                    checkpoint["loopProgress"][loop_id] = json!(iterations);
-                    checkpoint["loopIterations"] = json!(iterations);
-                    checkpoint["resolvedInputs"] = resolved.clone();
-                    save_program_checkpoint(state, execution_id, &checkpoint);
-                }
-                checkpoint["loopIterations"] = json!(iterations);
-            }
-            "model_decision" => {
-                checkpoint["status"] = json!("paused");
-                checkpoint["nextIndex"] = json!(index + 1);
-                checkpoint["resolvedInputs"] = resolved.clone();
-                save_program_checkpoint(state, execution_id, &checkpoint);
-                messages.push(json!({
-                    "role":"system",
-                    "content":"program requested a model decision; control returns to the model loop with saved progress."
-                }));
-                return Ok(messages);
-            }
-            other => return Err(format!("unsupported program node type: {other}")),
-        }
-        // Persist a completed node and every input used by a subsequent
-        // branch before advancing. Pausing, crashing or restoring can no
-        // longer silently discard the observed result.
-        checkpoint["resolvedInputs"] = resolved.clone();
-        checkpoint["nextIndex"] = json!(index + 1);
-        save_program_checkpoint(state, execution_id, &checkpoint);
+        return Ok(messages);
     }
-    checkpoint["nextIndex"] = json!(nodes.len());
+    checkpoint["nextIndex"] = json!(node_count);
     checkpoint["status"] = json!("completed");
     save_program_checkpoint(state, execution_id, &checkpoint);
     messages.push(json!({

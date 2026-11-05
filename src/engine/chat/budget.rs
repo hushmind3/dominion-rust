@@ -54,6 +54,28 @@ impl BudgetLedger {
         true
     }
 
+    /// A fresh ledger for one parallel branch. Counters start at zero so the
+    /// parent can merge only the usage of this branch.
+    pub fn branch(&self) -> Self {
+        Self {
+            max_rounds: self.max_rounds.saturating_sub(self.rounds),
+            max_tools: self.max_tools.saturating_sub(self.tools),
+            max_proposals: self.max_proposals.saturating_sub(self.proposals),
+            max_elapsed: self.max_elapsed.saturating_sub(self.started.elapsed()),
+            rounds: 0,
+            tools: 0,
+            proposals: 0,
+            started: Instant::now(),
+        }
+    }
+
+    /// Adds the usage of a completed branch back into this ledger.
+    pub fn merge_usage(&mut self, branch: &Self) {
+        self.rounds = self.rounds.saturating_add(branch.rounds);
+        self.tools = self.tools.saturating_add(branch.tools);
+        self.proposals = self.proposals.saturating_add(branch.proposals);
+    }
+
     pub fn can_execute_tool(&self) -> bool {
         self.tools < self.max_tools
     }

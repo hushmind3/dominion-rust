@@ -383,3 +383,72 @@ R4 이후 `run_program`의 재시작 경로를 검사하며, 이전 구현에서
 미완료: `parallel`은 여전히 sequential fallback이며, 루프 내부의
 외부 부작용 결과가 불명확한 crash는 기존 H4 review 정책으로 남긴다.
 동적 program 생성 및 정책 실험 승격은 별개다.
+
+## 12. 실제 병렬 + 중첩 Program 노드 (2026-11-06)
+
+`runtime.rs`의 program 실행기를 재귀형 `execute_nodes`로 바꿨다.
+
+- `sequence`/`branch`/`loop`/`parallel`의 child가 다시 어떤 노드든 가질 수 있다.
+- 모든 side effect는 기존 `dispatch_tool_call` gateway를 그대로 사용한다.
+- `parallel`은 `futures_util::future::join_all`로 child를 실제 동시에 실행한다.
+  (이전의 `sequential-fallback` 제거, checkpoint `parallelMode=concurrent`)
+- 병렬 branch는 budget ledger를 branch별로 분리했다가 사용량을 합산한다.
+  (`BudgetLedger::branch`, `merge_usage`)
+- 병렬 시작 전 `pendingOperationIds`에 child id를 저장하고, 모두 끝난 뒤
+  비우고 `completedOperationIds`를 병합한다. 도중에 죽으면 pending이 남아
+  자동 재개하지 않는다.
+- `loop`는 `checkpoint.loops[nodeId]`에 iteration을 저장해 재개 위치를 보존한다.
+- `model_decision`은 nested에서도 node id를 completed로 표시하고 paused로
+  저장하므로, 재개 시 같은 지점을 반복하지 않는다.
+- `verify`는 `resolvedInputs.lastVerify`에 predicate 결과를 남긴다.
+
+E2E `parallel_and_nested_program_nodes_execute_concurrently`:
+
+- `parallel` 안에 `sequence` + `branch` + `loop`를 중첩
+- 각 branch의 `shell_exec sleep 1.0` 두 개가 동시에 실행되어
+  전체 chat이 1.7초 이내에 끝남 (순차라면 2초 이상)
+- branch then 경로, loop body, verify가 실제 실행됨
+- checkpoint `status=completed`, `parallelMode=concurrent`,
+  `resolvedInputs.lastVerify.ok=true`, `pendingOperationIds=[]`
+
+## 13. 실제 모델(qwen3:4b) 적응 trace (2026-11-06)
+
+실행 스크립트: `scripts/real-adaptation-trace.sh`
+trace artifact: `benchmark/ADAPTATION-TRACE-2026-11-06.json`
+
+시나리오:
+
+1. `workspace_read missing-report.txt`가 실제로 실패
+2. 엔진이 `llm::complete`로 qwen3:4b에 원인 가설/개입을 요청
+3. qwen3:4b가 `h1`(파일 없음)과 `i1`(workspace_write)을 생성
+4. `choose_intervention`이 `i1`을 선택 (score 1.8)
+5. `i1`이 공통 dispatch로 실제 실행되어 파일 생성
+6. 실제 결과에 대해 `h1`의 prediction(exitCode=0)이 `refuted`로 평가
+7. `adaptationCheckpoint`에 failureSignature/selectedIntervention/
+   hypothesisResults 저장
+8. 엔진을 같은 data로 재시작해도 checkpoint가 유지됨
+
+실제 trace 결과:
+
+```json
+{
+  "hypothesesGenerated": true,
+  "interventionSelected": true,
+  "hypothesisRefuted": true,
+  "adaptationCheckpointPersisted": true,
+  "adaptationCheckpointSurvivedRestart": true
+}
+```
+
+측정 중 발견한 실제 모델 문제와 수정:
+
+- qwen3:4b가 completion budget 전부를 reasoning에 쓰고 빈 content를 반환
+  (`finish=length`, reasoning 18941자) → helper `max_tokens`를 8192로 올리고
+  length로 끝나면 16384까지 1회 재시도
+- JSON 앞뒤에 추론 산문을 섞음 → `parse_adaptation`이 문자열/중첩 brace를
+  고려해 `hypotheses`+`interventions`가 있는 JSON 객체를 추출
+- 필드가 빠진 출력 → `validate_adaptation`이 거부하고, 오류를 포함한 repair
+  prompt로 1회 재요청. 잘못된 필드를 실행하지 않는다.
+- 적응 실패는 이제 `execution.lastAdaptationError`에 남는다 (silent 실패 제거).
+
+전체: `270 unit + 57 E2E + 16 benchmark` 통과.
