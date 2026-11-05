@@ -354,3 +354,32 @@ GitHub Actions `CI`, HEAD `04bbec2c`:
   typed program 합성(11절 #3)은 별도 작업으로 남는다.
 - 병렬 노드의 실제 병렬 실행, 개선기 비교(11절 #5), scope별 실모델
   실험 승격과 실계정 검증은 아직 아니다.
+
+
+## 11. R5 — 재시작 의미 보존: 관측 입력·반복 회차 checkpoint
+
+R4 이후 `run_program`의 재시작 경로를 검사하며, 이전 구현에서
+`resolved`를 메모리에서만 갱신하고 `programCheckpoint.resolvedInputs`에는
+기록하지 않는 결함을 발견했다. 완료된 call_tool ID만 남고 그 결과가 사라지면
+재시작 뒤 `branch`의 조건이 원본 실행과 달라질 수 있다.
+
+- `execute_program_tool`은 결과와 `last`를 `resolvedInputs`로 저장한 뒤
+  완료 ID와 함께 checkpoint를 갱신한다.
+- `run_program`은 각 노드 종료 시 `resolvedInputs`와 `nextIndex`를
+  함께 저장하고, `model_decision`에서 멈출 때도 입력을 보존한다.
+- `loopProgress`에 노드별 완료 회차를 저장한다. 반복 실행마다
+  `loop_id:iteration:child_id`를 operation ID로 사용하므로, 이미 끝난 회차와
+  다음 회차를 구별한다. `saveAs`가 없으면 원래 child ID를 결과 참조 이름으로
+  유지한다.
+- 프로그램 생성 단계에서 중복 노드 ID 또는 필수 ID 누락을 거부한다.
+  서로 다른 노드의 완료 표시가 충돌하면 안 되기 때문이다.
+- E2E `a_paused_program_resumes_after_restart_without_repeating_completed_steps`에
+  **재시작 이전 step1 관측을 요구하는 branch**와 잘못된 분기 차단을 추가했다.
+- 단위 `a_partially_completed_loop_resumes_with_distinct_iteration_ids`는
+  loop 첫 회차가 완료된 상태에서 복원해 첫 회차 중복 없이 다음 회차만
+  실행했는지 관측한다. 검사 경로는 workspace가 반환하는 정규화된
+  절대 경로를 고려한다.
+
+미완료: `parallel`은 여전히 sequential fallback이며, 루프 내부의
+외부 부작용 결과가 불명확한 crash는 기존 H4 review 정책으로 남긴다.
+동적 program 생성 및 정책 실험 승격은 별개다.
