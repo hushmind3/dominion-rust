@@ -863,6 +863,57 @@ fn crash_drill_leaves_no_running_execution_after_restart() {
     }
 }
 
+#[test]
+fn backup_snapshot_restores_the_engine_after_a_total_db_loss() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"복구 드릴 응답"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let stream = app.chat(&json!({"input":"복구 드릴 작업","autoLearning":false}));
+    assert!(!stream.contains("\"type\":\"error\""), "{stream}");
+    let executions = app.get("/api/executions");
+    let session_id = executions.as_array().unwrap()[0]
+        ["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let backup = app.post("/api/system/backup", &json!({}));
+    assert_eq!(backup["ok"], true, "{backup}");
+    let backup_path = PathBuf::from(backup["path"].as_str().unwrap());
+    assert!(backup_path.is_file());
+
+    let root = app._root.clone();
+    drop(app);
+    let database = root.join("runtime/dominion.sqlite");
+    std::fs::copy(&backup_path, &database).expect("restore snapshot");
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(root.join(format!("runtime/dominion.sqlite{suffix}")));
+    }
+
+    let app = TestApp::from_root(port, "native", root, &[]);
+    let executions = app.get("/api/executions");
+    assert!(
+        executions
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|execution| execution["status"] == "completed"),
+        "restored execution missing: {executions}"
+    );
+    let messages = app.get(&format!("/api/sessions/{session_id}/messages"));
+    assert!(
+        messages.as_array().unwrap().iter().any(|message| {
+            message["role"] == "assistant"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("복구 드릴 응답"))
+        }),
+        "restored transcript missing: {messages}"
+    );
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

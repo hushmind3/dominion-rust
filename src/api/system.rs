@@ -147,6 +147,30 @@ pub async fn policies(State(state): State<AppState>) -> Json<Value> {
     Json(json!(crate::engine::policy::list(&state)))
 }
 
+/// Creates a consistent snapshot inside the data directory for a restore drill.
+pub async fn create_backup(State(state): State<AppState>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let directory = state.config.data_dir.join("backups");
+    let name = format!(
+        "dominion-{}.sqlite",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+    );
+    let path = directory.join(name);
+    match state.store.backup_to(&path) {
+        Ok(bytes) => Json(json!({
+            "ok": true,
+            "path": path.to_string_lossy(),
+            "bytes": bytes,
+        }))
+        .into_response(),
+        Err(error) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": error})),
+        )
+            .into_response(),
+    }
+}
+
 // ----------------------------------------------------------------- translate
 
 pub async fn model_route(State(state): State<AppState>) -> Json<Value> {

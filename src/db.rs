@@ -710,6 +710,23 @@ impl Store {
             .filter(|lease| lease["status"].as_str() == Some("active"))
     }
 
+    /// Consistent online snapshot for a restore drill. `VACUUM INTO` includes
+    /// committed WAL content and never exposes a half-written database.
+    pub fn backup_to(&self, path: &Path) -> Result<u64, String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        let _ = std::fs::remove_file(path);
+        let target = path.to_string_lossy().to_string();
+        let conn = self.conn.lock().unwrap();
+        conn.execute("VACUUM INTO ?1", params![target])
+            .map_err(|error| format!("backup failed: {error}"))?;
+        drop(conn);
+        std::fs::metadata(path)
+            .map(|meta| meta.len())
+            .map_err(|error| error.to_string())
+    }
+
     pub fn append_event(&self, seq: u64, value: &Value) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(

@@ -48,7 +48,7 @@ adaptation_policy {
 - `candidates_need_a_powered_experiment_before_activation`
 - `activation_supersedes_the_previous_revision_and_regression_rolls_back`
 - `unknown_slots_and_non_object_parameters_are_rejected`
-- 전체: `test result: ok. 232 passed` (unit), `32 passed` (E2E), `8 passed` (bench).
+- 전체: `test result: ok. 232 passed` (unit), `33 passed` (E2E)와 함께 당시 기록, `8 passed` (bench).
 
 ## 5. 남은 것 (H9 본체)
 

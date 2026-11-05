@@ -63,3 +63,18 @@ E2E로 실제 엔진 프로세스를 사용해 두 시나리오를 실행했다.
 
 아직 아님: 장시간 soak, 실제 부하(수십~수백 세션), restore/backup drill,
 다중 기기 ACL.
+
+## 4. restore drill (2026-11-05)
+
+- `POST /api/system/backup` → `Store::backup_to` (`VACUUM INTO`)가 WAL 포함
+  일관된 스냅샷을 `data/backups/dominion-<timestamp>.sqlite`로 만든다.
+- E2E `backup_snapshot_restores_the_engine_after_a_total_db_loss`:
+  1. 대화 1회 실행 (completed execution + assistant message)
+  2. backup 생성
+  3. 엔진 종료 후 DB를 backup으로 교체, WAL/SHM 제거
+  4. 같은 data root로 재시작
+  5. execution `completed`와 원래 assistant 메시지가 복원됨
+- 통과: `test result: ok. 1 passed` (전체 E2E 33 통과에 포함)
+
+아직 아님: 정기 백업 스케줄, 보존 기간/암호화, 라이브 restore API,
+다중 기기 ACL과 대규모 soak.
