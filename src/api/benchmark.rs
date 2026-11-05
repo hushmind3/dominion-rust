@@ -142,3 +142,57 @@ pub async fn policy_state(
         Json(json!({"cleared": cleared})).into_response()
     }
 }
+
+/// Benchmark-only: register a group of policy candidates that share one search
+/// id and enqueue one experiment request per revision.
+pub async fn policy_search(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    if std::env::var("DOMINION_BENCHMARK").as_deref() != Ok("1") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let slot = body["slot"].as_str().unwrap_or("planning");
+    let search_id = body["searchId"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("policy-search-{}", uuid::Uuid::new_v4()));
+    let Some(candidates) = body["candidates"].as_array() else {
+        return (StatusCode::BAD_REQUEST, "candidates are required").into_response();
+    };
+    let mut created = Vec::new();
+    for candidate in candidates.iter().take(6) {
+        let name = candidate["name"].as_str().unwrap_or("");
+        let parameters = &candidate["parameters"];
+        match crate::engine::policy::register(
+            &state,
+            slot,
+            name,
+            parameters,
+            "benchmark policy search",
+        ) {
+            Ok(policy) => {
+                let policy_id = policy["id"].as_str().unwrap_or("");
+                let mut tagged = policy.clone();
+                tagged["searchId"] = json!(search_id);
+                if let Some(saved) = state.store.put("adaptation_policy", &tagged) {
+                    state.bus.record("adaptation_policy", &saved);
+                }
+                if let Some((request, policy, _)) =
+                    crate::engine::policy::enqueue_policy_request(
+                        &state,
+                        policy_id,
+                        "planning_evaluation",
+                        Some(&search_id),
+                    )
+                {
+                    created.push(json!({"candidate": policy, "request": request}));
+                }
+            }
+            Err(error) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
+            }
+        }
+    }
+    Json(json!({"searchId": search_id, "created": created})).into_response()
+}

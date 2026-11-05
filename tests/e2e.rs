@@ -1535,6 +1535,141 @@ fn policy_activation_is_rejected_when_the_independent_evaluator_disagrees() {
     );
 }
 
+#[test]
+fn policy_search_selects_the_best_revision_through_the_scheduler() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().unwrap();
+        let system = messages
+            .first()
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        if system.contains("You are the planner") {
+            return vec![json!({"choices":[{"delta":{"content":"1. bench/harness_report.txt 파일을 만들고 REPORT-OK를 저장한다\n2. bench/harness_audit.txt 파일을 만든다\n3. 두 파일을 검증한다"},"finish_reason":"stop"}]})];
+        }
+        let has_plan = messages.iter().any(|message| {
+            message["role"] == "system"
+                && message["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("Internal execution plan")
+        });
+        if !has_plan {
+            return vec![json!({"choices":[{"delta":{"content":"완료했습니다."},"finish_reason":"stop"}]})];
+        }
+        let done = messages
+            .last()
+            .is_some_and(|message| message["role"] == "tool")
+            || messages.iter().any(|message| {
+                message["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("모든 검증 조건이 충족")
+            });
+        if done {
+            vec![json!({"choices":[{"delta":{"content":"파일을 생성했습니다."},"finish_reason":"stop"}]})]
+        } else {
+            vec![json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"search-w1","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"bench/harness_audit.txt\",\"content\":\"audit-harness\"}"}},
+                {"index":1,"id":"search-w2","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"bench/harness_report.txt\",\"content\":\"REPORT-OK\"}"}}
+            ]},"finish_reason":"tool_calls"}]})]
+        }
+    });
+    let provider_base = format!("http://127.0.0.1:{port}/v1");
+    let extra = [
+        ("DOMINION_BENCHMARK", "1"),
+        ("DOMINION_EXPERIMENT_SCHEDULER", "1"),
+        ("DOMINION_EXPERIMENT_RUNNER", env!("CARGO_BIN_EXE_dominion-benchmark")),
+        ("DOMINION_EXPERIMENT_INTERVAL_SECS", "1"),
+        ("DOMINION_EXPERIMENT_PAIRS", "10"),
+        ("DOMINION_EXPERIMENT_MODEL", "mock"),
+        ("DOMINION_EXPERIMENT_PROVIDER_BASE", provider_base.as_str()),
+    ];
+    let app = TestApp::new_with_env(port, "native", &extra);
+    let search = app.post(
+        "/api/benchmark/policy-search",
+        &json!({
+            "slot":"planning",
+            "candidates":[
+                {"name":"outline-all","parameters":{"outline":true}},
+                {"name":"outline-only-long","parameters":{"outline":true,"minChars":1000}}
+            ]
+        }),
+    );
+    let search_id = search["searchId"].as_str().unwrap().to_string();
+    let candidates = search["created"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                item["candidate"]["name"].as_str().unwrap().to_string(),
+                item["candidate"]["id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let outline_all = candidates
+        .iter()
+        .find(|(name, _)| name == "outline-all")
+        .unwrap()
+        .1
+        .clone();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut selection = Value::Null;
+    loop {
+        let requests = app.get("/api/experiment-requests");
+        let completed = requests
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|request| request["status"] == "completed")
+            .count();
+        if let Some(record) = app
+            .get("/api/policy-searches")
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["id"] == search_id.as_str()))
+            .cloned()
+        {
+            selection = record;
+            if completed >= 2 && !selection["selectedPolicyId"].is_null() {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "search did not settle: completed={completed} selection={selection}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(
+        selection["selectedPolicyId"], outline_all.as_str(),
+        "wrong revision selected: {selection}"
+    );
+    let policies = app.get("/api/policies");
+    let policies = policies.as_array().unwrap();
+    let selected = policies
+        .iter()
+        .find(|policy| policy["id"] == outline_all.as_str())
+        .unwrap();
+    assert_eq!(selected["status"], "active", "{selected}");
+    assert!(
+        selected["lastExperiment"]["independentSemanticDelta"]
+            .as_f64()
+            .unwrap_or(0.0)
+            >= 0.05
+    );
+    let long_only = policies
+        .iter()
+        .find(|policy| policy["name"] == "outline-only-long")
+        .unwrap();
+    assert_ne!(
+        long_only["status"], "active",
+        "candidate without a plan must not be selected: {long_only}"
+    );
+    assert_eq!(selection["candidates"].as_array().unwrap().len(), 2);
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

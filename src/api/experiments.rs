@@ -377,6 +377,9 @@ pub async fn complete(
     match completed {
         Some(saved) => {
             state.bus.record("experiment_request", &saved);
+            let selection = saved["searchId"]
+                .as_str()
+                .and_then(|search_id| crate::engine::policy::select_best(&state, search_id));
             state.store.audit(
                 "experiment.request_completed",
                 json!({
@@ -386,7 +389,12 @@ pub async fn complete(
                     "verdict": verdict,
                 }),
             );
-            Json(json!({"request": saved, "promotion": promotion})).into_response()
+            Json(json!({
+                "request": saved,
+                "promotion": promotion,
+                "searchSelection": selection,
+            }))
+            .into_response()
         }
         None => (
             StatusCode::CONFLICT,
@@ -462,6 +470,7 @@ pub async fn enqueue(State(state): State<AppState>, Json(body): Json<Value>) -> 
             "revision": policy["revision"],
             "status": "queued",
             "fixture": body["fixture"].as_str().unwrap_or("planning_evaluation"),
+            "searchId": body["searchId"],
             "minIndependentUnits": crate::engine::policy::MIN_EXPERIMENT_UNITS,
             "createdAt": chrono::Utc::now().to_rfc3339(),
         });

@@ -45,17 +45,39 @@ pub fn propose_candidates(state: &AppState) -> Vec<Value> {
         if evidence.len() < PROPOSER_MIN_EVIDENCE {
             continue;
         }
-        let (name, parameters, rationale) = match class {
-            "verification_failed" => (
-                "plan-before-acting",
-                json!({"outline": true}),
-                "검증 실패가 반복되어 행동 전 계획을 세우는 정책을 제안합니다.",
-            ),
-            "limit_exceeded" | "model_error" => (
-                "skip-extra-planning",
-                json!({"outline": false}),
-                "예산/모델 실패가 반복되어 추가 계획 호출을 생략하는 정책을 제안합니다.",
-            ),
+        // Search space: the same failure cluster can be addressed by planning
+        // always, planning only long tasks, or not planning at all. Each
+        // revision gets its own experiment; the search then selects the best.
+        let variants: Vec<(&str, Value, &str)> = match class {
+            "verification_failed" => vec![
+                (
+                    "plan-before-acting",
+                    json!({"outline": true}),
+                    "검증 실패가 반복되어 행동 전 계획을 세우는 정책을 제안합니다.",
+                ),
+                (
+                    "plan-only-long-tasks",
+                    json!({"outline": true, "minChars": 200}),
+                    "짧은 작업은 건너뛰고 긴 작업만 계획하는 정책을 제안합니다.",
+                ),
+                (
+                    "skip-extra-planning",
+                    json!({"outline": false}),
+                    "계획 호출 자체를 줄이는 정책을 제안합니다.",
+                ),
+            ],
+            "limit_exceeded" | "model_error" => vec![
+                (
+                    "skip-extra-planning",
+                    json!({"outline": false}),
+                    "예산/모델 실패가 반복되어 추가 계획 호출을 생략하는 정책을 제안합니다.",
+                ),
+                (
+                    "plan-only-long-tasks",
+                    json!({"outline": true, "minChars": 400}),
+                    "긴 작업에만 계획을 사용해 호출 비용을 줄이는 정책을 제안합니다.",
+                ),
+            ],
             _ => continue,
         };
         let evidence_ids = evidence
@@ -63,44 +85,167 @@ pub fn propose_candidates(state: &AppState) -> Vec<Value> {
             .filter_map(|item| item["executionId"].as_str())
             .take(8)
             .collect::<Vec<_>>();
-        let rationale = format!(
-            "{rationale} (근거 {n}건: {ids})",
-            n = evidence.len(),
-            ids = evidence_ids.join(", ")
+        let search_id = format!(
+            "policy-search-{}",
+            crate::engine::memory::stable_id(&[
+                "planning",
+                class,
+                &evidence_ids.join(",")
+            ])
         );
-        let Ok(candidate) = register(state, "planning", name, &parameters, &rationale) else {
-            continue;
-        };
-        let policy_id = candidate["id"].as_str().unwrap_or("");
-        let revision = candidate["revision"].as_str().unwrap_or("");
-        let request_id = format!(
-            "experiment-request-policy-{}",
-            crate::engine::memory::stable_id(&[policy_id, revision])
-        );
-        if state.store.get("experiment_request", &request_id).is_none() {
-            let request = json!({
-                "id": request_id,
-                "kind": "policy",
-                "policyId": policy_id,
-                "slot": "planning",
-                "revision": revision,
-                "status": "queued",
-                "fixture": "planning_evaluation",
-                "minIndependentUnits": MIN_EXPERIMENT_UNITS,
-                "evidence": evidence.iter().take(8).cloned().collect::<Vec<_>>(),
-                "createdAt": chrono::Utc::now().to_rfc3339(),
-            });
-            if let Some(saved) = state.store.put("experiment_request", &request) {
-                state.bus.record("experiment_request", &saved);
-                state.store.audit(
-                    "policy.candidate_queued",
-                    json!({"policyId": policy_id, "requestId": saved["id"], "evidence": evidence.len()}),
-                );
-                created.push(json!({"candidate": candidate, "request": saved}));
+        for (name, parameters, base_rationale) in variants.into_iter().take(3) {
+            let rationale = format!(
+                "{base_rationale} (근거 {}건: {})",
+                evidence.len(),
+                evidence_ids.join(", ")
+            );
+            let Ok(candidate) = register(state, "planning", name, &parameters, &rationale) else {
+                continue;
+            };
+            let policy_id = candidate["id"].as_str().unwrap_or("");
+            let mut tagged = candidate.clone();
+            tagged["searchId"] = json!(search_id);
+            if let Some(saved) = state.store.put("adaptation_policy", &tagged) {
+                state.bus.record("adaptation_policy", &saved);
+            }
+            if let Some((request, policy, is_new)) =
+                enqueue_policy_request(state, policy_id, "planning_evaluation", Some(&search_id))
+            {
+                if is_new {
+                    created.push(json!({"candidate": policy, "request": request}));
+                }
             }
         }
     }
     created
+}
+
+/// Creates one durable experiment request per policy revision. Idempotent.
+pub fn enqueue_policy_request(
+    state: &AppState,
+    policy_id: &str,
+    fixture: &str,
+    search_id: Option<&str>,
+) -> Option<(Value, Value, bool)> {
+    let policy = state.store.get("adaptation_policy", policy_id)?;
+    let revision = policy["revision"].as_str().unwrap_or("");
+    let request_id = format!(
+        "experiment-request-policy-{}",
+        crate::engine::memory::stable_id(&[policy_id, revision])
+    );
+    if let Some(existing) = state.store.get("experiment_request", &request_id) {
+        return Some((existing, policy, false));
+    }
+    let request = json!({
+        "id": request_id,
+        "kind": "policy",
+        "policyId": policy_id,
+        "slot": policy["slot"],
+        "revision": revision,
+        "status": "queued",
+        "fixture": fixture,
+        "searchId": search_id,
+        "minIndependentUnits": MIN_EXPERIMENT_UNITS,
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+    });
+    let saved = state.store.put("experiment_request", &request)?;
+    state.bus.record("experiment_request", &saved);
+    state.store.audit(
+        "policy.candidate_queued",
+        json!({"policyId": policy_id, "requestId": saved["id"], "searchId": search_id}),
+    );
+    Some((saved, policy, true))
+}
+
+/// Decides whether a planning policy asks for a plan. `None` means the policy
+/// does not override the built-in heuristic.
+pub fn outline_decision(parameters: &Value, input_chars: usize) -> Option<bool> {
+    let outline = parameters["outline"].as_bool()?;
+    if !outline {
+        return Some(false);
+    }
+    match parameters["minChars"].as_u64() {
+        Some(minimum) => Some(input_chars as u64 >= minimum),
+        None => Some(true),
+    }
+}
+
+/// Selects the best evaluated revision in a search group using the more
+/// conservative of the two evaluator deltas. Ineligible or inferior revisions
+/// cannot stay active.
+pub fn select_best(state: &AppState, search_id: &str) -> Option<Value> {
+    use crate::engine::plan_quality::MIN_SEMANTIC_DELTA;
+    let policies = state
+        .store
+        .all("adaptation_policy")
+        .into_iter()
+        .filter(|policy| policy["searchId"].as_str() == Some(search_id))
+        .collect::<Vec<_>>();
+    if policies.is_empty() {
+        return None;
+    }
+    let score = |policy: &Value| -> Option<f64> {
+        let experiment = &policy["lastExperiment"];
+        let units = experiment["independentUnits"].as_u64().unwrap_or(0);
+        let verdict = experiment["verdict"].as_str().unwrap_or("");
+        let main = experiment["semanticDelta"].as_f64().unwrap_or(0.0);
+        let independent = experiment["independentSemanticDelta"]
+            .as_f64()
+            .unwrap_or(0.0);
+        (units >= MIN_EXPERIMENT_UNITS
+            && matches!(verdict, "improved" | "preliminary_support")
+            && main >= MIN_SEMANTIC_DELTA
+            && independent >= MIN_SEMANTIC_DELTA)
+            .then(|| main.min(independent))
+    };
+    let best = policies
+        .iter()
+        .filter_map(|policy| {
+            score(policy).map(|score| (policy["id"].as_str().unwrap_or("").to_string(), score))
+        })
+        .max_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.0.cmp(&a.0))
+        });
+    let mut candidates = Vec::new();
+    for mut policy in policies {
+        let id = policy["id"].as_str().unwrap_or("").to_string();
+        let candidate_score = score(&policy);
+        if best.as_ref().is_some_and(|(best_id, _)| best_id == &id) {
+            policy["status"] = json!("active");
+            policy["selectedBySearch"] = json!(search_id);
+        } else if policy["status"].as_str() == Some("active") {
+            policy["status"] = json!("superseded");
+            policy["supersededBy"] = json!(best.as_ref().map(|(id, _)| id.clone()));
+        }
+        let status = policy["status"].clone();
+        if let Some(saved) = state.store.put("adaptation_policy", &policy) {
+            state.bus.record("adaptation_policy", &saved);
+        }
+        candidates.push(json!({
+            "policyId": id,
+            "score": candidate_score,
+            "status": status,
+        }));
+    }
+    let record = json!({
+        "id": search_id,
+        "slot": "planning",
+        "selectedPolicyId": best.as_ref().map(|(id, _)| id.clone()),
+        "selectedScore": best.as_ref().map(|(_, score)| score),
+        "candidates": candidates,
+        "selectedAt": chrono::Utc::now().to_rfc3339(),
+    });
+    let saved = state.store.put("policy_search", &record);
+    if let Some(saved) = &saved {
+        state.bus.record("policy_search", saved);
+        state.store.audit(
+            "policy.search_selected",
+            json!({"searchId": search_id, "selected": record["selectedPolicyId"]}),
+        );
+    }
+    saved
 }
 
 pub fn list(state: &AppState) -> Vec<Value> {
@@ -385,21 +530,37 @@ mod tests {
             failure(&state, &id.to_string(), "verification_failed");
         }
         let created = propose_candidates(&state);
-        assert_eq!(created.len(), 1);
-        let candidate = &created[0]["candidate"];
-        assert_eq!(candidate["status"], "candidate");
-        assert_eq!(candidate["parameters"]["outline"], true);
-        assert!(candidate["rationale"]
-            .as_str()
-            .is_some_and(|text| text.contains("근거 3건")));
-        let request = &created[0]["request"];
-        assert_eq!(request["kind"], "policy");
-        assert_eq!(request["status"], "queued");
-        assert_eq!(request["minIndependentUnits"], MIN_EXPERIMENT_UNITS);
+        assert_eq!(created.len(), 3, "search should propose multiple revisions");
+        let search_ids = created
+            .iter()
+            .filter_map(|item| item["request"]["searchId"].as_str().map(str::to_string))
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(search_ids.len(), 1, "one search group per failure cluster");
+        let mut variants = created
+            .iter()
+            .map(|item| item["candidate"]["parameters"].clone())
+            .collect::<Vec<_>>();
+        variants.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+        assert!(variants.iter().any(|value| value["outline"] == false));
+        assert!(
+            variants
+                .iter()
+                .any(|value| value["outline"] == true && value["minChars"].is_u64()),
+            "min-length threshold variant missing: {variants:?}"
+        );
+        for item in &created {
+            assert_eq!(item["candidate"]["status"], "candidate");
+            assert_eq!(item["request"]["kind"], "policy");
+            assert_eq!(item["request"]["status"], "queued");
+            assert_eq!(item["request"]["minIndependentUnits"], MIN_EXPERIMENT_UNITS);
+            assert!(item["candidate"]["rationale"]
+                .as_str()
+                .is_some_and(|text| text.contains("근거 3건")));
+        }
         // Idempotent: a second pass creates nothing new.
         assert!(propose_candidates(&state).is_empty());
-        assert_eq!(state.store.all("adaptation_policy").len(), 1);
-        assert_eq!(state.store.all("experiment_request").len(), 1);
+        assert_eq!(state.store.all("adaptation_policy").len(), 3);
+        assert_eq!(state.store.all("experiment_request").len(), 3);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -537,6 +698,76 @@ mod tests {
         let record = apply_experiment_result(&state, id, &agree).unwrap();
         assert_eq!(record["status"], "active");
         assert_eq!(record["lastExperiment"]["independentSemanticDelta"], 0.2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn outline_thresholds_control_planning() {
+        assert_eq!(
+            outline_decision(&json!({"outline": true}), 10),
+            Some(true)
+        );
+        assert_eq!(
+            outline_decision(&json!({"outline":false}), 10_000),
+            Some(false)
+        );
+        assert_eq!(
+            outline_decision(&json!({"outline":true,"minChars":100}), 50),
+            Some(false)
+        );
+        assert_eq!(
+            outline_decision(&json!({"outline":true,"minChars":100}), 150),
+            Some(true)
+        );
+        assert_eq!(outline_decision(&json!({}), 10), None);
+    }
+
+    #[test]
+    fn search_selection_keeps_the_best_independent_score_only() {
+        let (state, dir) = state();
+        let search = "search-1";
+        let make = |id: &str, main: f64, independent: f64, status: &str| {
+            let mut policy = register(
+                &state,
+                "planning",
+                id,
+                &json!({"outline":true}),
+                "selection test",
+            )
+            .unwrap();
+            policy["searchId"] = json!(search);
+            policy["status"] = json!(status);
+            policy["lastExperiment"] = json!({
+                "independentUnits":10,
+                "verdict":"preliminary_support",
+                "semanticDelta":main,
+                "independentSemanticDelta":independent,
+            });
+            state.store.put("adaptation_policy", &policy);
+            policy
+        };
+        let best = make("best", 0.4, 0.35, "active");
+        let weaker = make("weaker", 0.4, 0.10, "active");
+        let rejected = make("rejected", 0.4, 0.0, "candidate");
+        let selected = select_best(&state, search).unwrap();
+        assert_eq!(selected["selectedPolicyId"], best["id"]);
+        assert_eq!(selected["selectedScore"], 0.35);
+        assert_eq!(
+            state.store.get("adaptation_policy", best["id"].as_str().unwrap()).unwrap()["status"],
+            "active"
+        );
+        assert_eq!(
+            state.store.get("adaptation_policy", weaker["id"].as_str().unwrap()).unwrap()["status"],
+            "superseded"
+        );
+        assert_eq!(
+            state.store.get("adaptation_policy", rejected["id"].as_str().unwrap()).unwrap()["status"],
+            "candidate"
+        );
+        let searches = state.store.all("policy_search");
+        assert_eq!(searches.len(), 1);
+        assert_eq!(searches[0]["selectedPolicyId"], best["id"]);
+        assert_eq!(searches[0]["candidates"].as_array().unwrap().len(), 3);
         let _ = std::fs::remove_dir_all(dir);
     }
 

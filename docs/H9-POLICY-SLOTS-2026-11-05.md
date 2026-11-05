@@ -260,3 +260,63 @@ candidate는 active가 되지 않는다.
 - independent evaluator도 heuristic이다. 외부 인간/별도 모델 평가자는 아니다.
 - evaluator 버전은 코드 상수이며 배포 버전 관리/서명은 아직 없다.
 - semantic CI는 여전히 게이트에 쓰지 않는다.
+
+## 10. Policy search (2026-11-05)
+
+### 후보 공간
+
+proposer는 failure cluster마다 하나가 아니라 **여러 revision**을 제안한다.
+
+- `verification_failed`:
+  - `plan-before-acting` `{outline:true}`
+  - `plan-only-long-tasks` `{outline:true, minChars:200}`
+  - `skip-extra-planning` `{outline:false}`
+- `limit_exceeded`/`model_error`:
+  - `skip-extra-planning` `{outline:false}`
+  - `plan-only-long-tasks` `{outline:true, minChars:400}`
+
+각 revision은 같은 `searchId`로 묶이고, **revision마다 실험 요청 1개**가 생성된다.
+`register`/요청 생성은 idempotent이며 두 번째 proposer 실행은 새 항목을 만들지 않는다.
+
+### 정책 소비 확장
+
+`policy::outline_decision(parameters, input_chars)`:
+
+- `outline=false` → 항상 계획 없음
+- `outline=true` + `minChars` → 입력 길이가 임계값 이상일 때만 계획
+- 파라미터가 없으면 기존 `needs_plan` 휴리스틱 유지
+
+### Search selection
+
+각 실험 완료 시 `policy::select_best(searchId)`가 실행된다.
+
+- eligible: `units>=8`, verdict `improved|preliminary_support`,
+  main semanticDelta>=0.05, independent semanticDelta>=0.05
+- score = **min(main, independent)** (보수적)
+- 최고 score revision만 active
+- 같은 search의 다른 active revision은 `superseded`
+- 부적격 candidate는 candidate로 남는다(활성화하지 않음)
+- `policy_search {id, selectedPolicyId, selectedScore, candidates[]}` 기록
+- API: `GET /api/policy-searches`, benchmark 전용 `POST /api/benchmark/policy-search`
+
+### 검증
+
+- proposer 테스트: cluster 1개 → 후보 3 + 요청 3, 같은 searchId, 재실행 0
+- `outline_thresholds_control_planning`
+- `search_selection_keeps_the_best_independent_score_only`
+  (min 점수 기준 선택, 열등 active superseded, 부적격 candidate 유지)
+- E2E `policy_search_selects_the_best_revision_through_the_scheduler`
+  - production scheduler + runner로 후보 2개(`outline:true`, `outline:true,minChars:1000`)를
+    실제 10-pair 실험
+  - 둘 다 request completed
+  - 계획을 만든 `outline-all`만 active로 선택
+  - 짧은 작업에서 계획하지 않는 `outline-only-long`은 active 아님
+  - `policy_search`에 후보 2개와 selectedPolicyId 기록
+
+전체: `246 unit + 40 E2E + 14 benchmark` 통과.
+
+### 한계
+
+- 후보 공간은 고정 heuristic 2~3개다. beam search나 파라미터 연속 탐색은 아직.
+- search는 failure class 단위이며, 검색 간 전역 최적 선택은 하지 않는다.
+- selection은 이미 평가된 revision만 비교한다.

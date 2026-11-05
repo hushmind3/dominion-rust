@@ -407,11 +407,13 @@ async fn run_turn_body(
             "parameters": policy["parameters"],
         }));
     }
-    let plan_requested = match planning_policy
-        .as_ref()
-        .and_then(|policy| policy["parameters"]["outline"].as_bool())
-    {
-        Some(outline) => outline,
+    let plan_requested = match planning_policy.as_ref().and_then(|policy| {
+        crate::engine::policy::outline_decision(
+            &policy["parameters"],
+            request.input.chars().count(),
+        )
+    }) {
+        Some(decision) => decision,
         None => needs_plan(&request.input, &acceptance),
     };
     let mut plan_digest: Option<String> = None;
