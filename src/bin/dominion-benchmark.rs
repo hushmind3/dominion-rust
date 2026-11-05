@@ -1007,7 +1007,9 @@ async fn main() -> Result<(), String> {
             .ok()
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
     };
-    let manifest = if let Some(manifest) = existing_manifest {
+    let manifest = if let Some(mut manifest) = existing_manifest {
+        // A resumed run may plan more pairs than the original manifest.
+        manifest["pairs"] = json!(cfg.pairs);
         manifest
     } else {
         json!({

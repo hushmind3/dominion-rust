@@ -216,3 +216,63 @@ scheduler/runner**를 만드는 문제도 발견했다. runner가 격리 엔진�
   검증되어 있지만, 실제 4B 모델에서 policy 승격까지 도달한 결과는 아직 없다.
 - update_config는 4 pair뿐이라 inconclusive다.
 - 단일 머신/단일 fixture군이며 holdout 전이 평가는 아직 없다.
+
+## 9. Real 4B policy experiment + 10-pair update_config (2026-11-05)
+
+### 9.1 planning policy through production scheduler
+
+격리 production 엔진(`TMPDIR/dom-polreal.AiMQFA`)에 scheduler env를 주고
+`POST /api/benchmark/policy-search`로 planning 후보 1개를 queued로 만들었다.
+
+- searchId: `policy-search-2b2765bd-fefe-4ff3-8513-2ef4312b30b1`
+- policyId: `policy-6d9b030538d95f0a84bcded5f1f33db1`
+- requestId: `experiment-request-policy-26832460062d06f130e3b7e566e37506`
+- runner raw evidence: `TMPDIR/dominion-s7-37e53d84-b867-4366-8c57-70d36e9516e3`
+  - `trials.jsonl` 20줄
+  - `manifest.json`, `summary.json`, `artifacts/` 보존
+
+scheduler가 runner를 실행해 request를 claim했고 20 trial을 완료했다.
+production 엔진을 30분 대기 후 종료했을 때 마지막 trial이 아직 실행 중이라
+completion 호출은 엔진 재시작 후 claim token으로 제출했다. summary는
+`BENCH_RECALCULATE=1`로 raw trials에서 재계산했다.
+
+| arm | strict success | planQuality | independent | p50 |
+|---|---|---|---|---|
+| baseline (no plan) | 0/10 | 0.0 | 0.0 | 26,524ms |
+| treatment (outline=true) | 0/10 | **0.8233** | **0.8722** | 161,057ms |
+
+- effect: delta 0.0, semanticDelta 0.8233, independentSemanticDelta 0.8722,
+  units 10, verdict **inconclusive**
+- outer gate 결과: 정책은 **candidate 유지(승격 거부)**
+  - success delta가 없고 verdict가 inconclusive이기 때문
+  - `policy_search.selectedPolicyId = null`
+  - request: `completed`, `promotionStatus=candidate`, `promotionEvidence=E0`
+
+해석: 실제 4B는 계획을 세우면 semantic 점수는 크게 올렸지만, 파일 산출물
+성공으로 이어지지 않아 semantic gate만으로 승격되지 않았다. 이는 gate가
+의도대로 동작한 **거부 사례**다.
+
+### 9.2 update_config 10 pair (resume)
+
+기존 4-pair root(`TMPDIR/dominion-s7-b2ee57a7-a23a-4100-b6df-255a9fd3cf00`)를
+`BENCH_PAIRS=10`으로 재개해 6 pair를 추가했다.
+
+| arm | runs | strict success | compliance | p50 | p95 | tokens |
+|---|---|---|---|---|---|---|
+| baseline | 10 | 0/10 | 0 | 138,594ms | 300,004ms | 77,443 |
+| treatment | 10 | **10/10** | 10 | 94,075ms | 119,352ms | 55,765 |
+
+- experimentId: `60a652ac-9555-45f5-877a-d3e2e733f4f1`
+- usable independent units: **9** (pair 6 baseline이 300초 timeout)
+- delta 1.0, CI [0.0946, 1.0], verdict **inconclusive**
+- runner 출력: `promotion: status=validated evidence=E1_observed`
+  (E2 실험 승격이 아니라 기존 관찰 등급)
+- raw trials: 위 root의 `trials.jsonl` 20줄
+
+### 9.3 남은 것
+
+- 실제 4B에서 **semantic-gated policy 승격**은 아직 없다. 이번 실행은 거부 사례다.
+- update_config는 9 usable units로 inconclusive다. 10+ units 확보가 필요하다.
+- policy trial이 baseline보다 약 6배 느려(161s vs 26s) 장시간 실험 비용이 크다.
+- manifest pairs는 resume 시 갱신하도록 수정했지만, 기존 summary의 `assigned`
+  표기는 실행 시점 값이다.
