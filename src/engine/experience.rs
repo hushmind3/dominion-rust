@@ -50,6 +50,41 @@ pub fn record(
     tools: &[String],
     gaps: &[String],
 ) -> Option<Value> {
+    record_with_scope(
+        state, scope, request, outcome, lesson, avoid, evidence_ids, tools, gaps, false,
+    )
+}
+
+/// Shared cases are visible to every agent in the same partition.
+pub fn record_shared(
+    state: &AppState,
+    scope: &MemoryScope,
+    request: &str,
+    outcome: &str,
+    lesson: &str,
+    avoid: &str,
+    evidence_ids: &[String],
+    tools: &[String],
+    gaps: &[String],
+) -> Option<Value> {
+    record_with_scope(
+        state, scope, request, outcome, lesson, avoid, evidence_ids, tools, gaps, true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_with_scope(
+    state: &AppState,
+    scope: &MemoryScope,
+    request: &str,
+    outcome: &str,
+    lesson: &str,
+    avoid: &str,
+    evidence_ids: &[String],
+    tools: &[String],
+    gaps: &[String],
+    shared: bool,
+) -> Option<Value> {
     let request = request.trim().chars().take(2000).collect::<String>();
     let lesson = lesson.trim().chars().take(2000).collect::<String>();
     if request.is_empty() || lesson.is_empty() || !matches!(outcome, "success" | "failure") {
@@ -60,7 +95,11 @@ pub fn record(
         "experience-{}",
         memory::stable_id(&[
             &scope.partition_key,
-            scope.agent_id.as_deref().unwrap_or("default"),
+            if shared {
+                "shared"
+            } else {
+                scope.agent_id.as_deref().unwrap_or("default")
+            },
             &sig,
             outcome,
             &normalize(&lesson),
@@ -85,7 +124,7 @@ pub fn record(
         "experience",
         &json!({
             "id": id,
-            "scope": if scope.agent_id.is_some() { "agent" } else { "shared" },
+            "scope": if shared || scope.agent_id.is_none() { "shared" } else { "agent" },
             "agentId": scope.agent_id,
             "partitionKey": scope.partition_key,
             "sessionId": scope.session_id,
@@ -190,7 +229,11 @@ pub fn consolidate(state: &AppState) -> Value {
         let key = format!(
             "{}:{}:{}:{}",
             record["partitionKey"].as_str().unwrap_or(""),
-            record["agentId"].as_str().unwrap_or("default"),
+            if record["scope"].as_str() == Some("shared") {
+                "shared"
+            } else {
+                record["agentId"].as_str().unwrap_or("default")
+            },
             record["signature"].as_str().unwrap_or(""),
             record["outcome"].as_str().unwrap_or("")
         );
@@ -290,6 +333,20 @@ mod tests {
         let b = MemoryScope::for_session(&state.store, "t", Some("b"));
         record(&state, &a, "파일 작성", "success", "A의 절차", "", &[], &[], &[]).unwrap();
         assert!(retrieve(&state, &b, "파일 작성", 5).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shared_cases_reach_other_agents() {
+        let (state, dir) = state();
+        state.store.put("session", &json!({"id":"t","agentId":"b"}));
+        let a = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let b = MemoryScope::for_session(&state.store, "t", Some("b"));
+        record_shared(
+            &state, &a, "파일 작성", "success", "공유 절차를 재사용한다", "", &[], &[], &[],
+        )
+        .unwrap();
+        assert!(!retrieve(&state, &b, "파일 작성", 5).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 

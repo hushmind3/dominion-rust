@@ -36,6 +36,9 @@ pub fn propose(
     } else {
         "agent"
     };
+    if kind == "strategy" && rationale.trim().chars().count() < 12 {
+        return None;
+    }
     let key = memory::stable_id(&[
         &scope.partition_key,
         scope.agent_id.as_deref().unwrap_or("default"),
@@ -45,6 +48,41 @@ pub fn propose(
     let id = format!("improvement-{key}");
     if let Some(existing) = state.store.get("improvement", &id) {
         return Some(existing);
+    }
+
+    // A similar strategy that already passed probation wins. A similar one
+    // still on probation is superseded by newer evidence instead of silently
+    // accumulating duplicates.
+    let mut supersedes: Option<String> = None;
+    if kind == "strategy" {
+        for existing in state.store.all("improvement") {
+            if existing["kind"].as_str() != Some("strategy")
+                || existing["id"].as_str() == Some(id.as_str())
+                || !visible(&existing, scope)
+            {
+                continue;
+            }
+            let status = existing["status"].as_str().unwrap_or("");
+            if !matches!(status, "adopted" | "validated") {
+                continue;
+            }
+            let existing_text = existing["text"].as_str().unwrap_or("");
+            if similarity(existing_text, text) < 0.6 {
+                continue;
+            }
+            if status == "validated" {
+                return Some(existing);
+            }
+            let mut old = existing;
+            old["status"] = json!("superseded");
+            old["supersededBy"] = json!(id);
+            old["supersededAt"] = json!(chrono::Utc::now().to_rfc3339());
+            if let Some(saved) = state.store.put("improvement", &old) {
+                state.bus.record("improvement", &saved);
+            }
+            supersedes = Some(old["id"].as_str().unwrap_or("").to_string());
+            break;
+        }
     }
 
     let mut status = "adopted";
@@ -108,6 +146,7 @@ pub fn propose(
             "rationale": rationale,
             "tool": tool_name,
             "evidenceMessageIds": evidence_ids,
+            "supersedes": supersedes,
             "status": status,
             "reason": reason,
             "baselineSuccess": baseline,
@@ -167,6 +206,24 @@ fn normalize(text: &str) -> String {
         .collect()
 }
 
+fn similarity(left: &str, right: &str) -> f64 {
+    let grams = |text: &str| -> std::collections::HashSet<(char, char)> {
+        let chars = normalize(text).chars().collect::<Vec<_>>();
+        chars
+            .windows(2)
+            .map(|pair| (pair[0], pair[1]))
+            .collect()
+    };
+    let left_grams = grams(left);
+    let right_grams = grams(right);
+    if left_grams.is_empty() || right_grams.is_empty() {
+        return f64::from(normalize(left) == normalize(right));
+    }
+    let intersection = left_grams.intersection(&right_grams).count() as f64;
+    let union = left_grams.union(&right_grams).count().max(1) as f64;
+    intersection / union
+}
+
 fn visible(record: &Value, scope: &MemoryScope) -> bool {
     if record["partitionKey"].as_str() != Some(scope.partition_key.as_str()) {
         return false;
@@ -215,7 +272,11 @@ fn baseline_success(state: &AppState, scope: &MemoryScope) -> f64 {
 pub fn context_block(state: &AppState, scope: &MemoryScope) -> Option<String> {
     let mut lines = Vec::new();
     for improvement in state.store.all("improvement") {
-        if improvement["status"].as_str() != Some("adopted") || !visible(&improvement, scope) {
+        if !matches!(
+            improvement["status"].as_str(),
+            Some("adopted" | "validated")
+        ) || !visible(&improvement, scope)
+        {
             continue;
         }
         let text = improvement["text"].as_str().unwrap_or("").trim();
@@ -408,7 +469,7 @@ mod tests {
             &scope,
             "strategy",
             "파일 작업은 workspace_write로 먼저 시도한다",
-            "실패 후 성공한 절차",
+            "실패 후 성공한 절차를 다음 턴에 재사용한다",
             &["m1".into()],
             None,
             "shared",
@@ -442,7 +503,7 @@ mod tests {
             &scope_a,
             "strategy",
             "A만 쓰는 전략",
-            "근거",
+            "A 에이전트의 실행에서 확인된 근거",
             &["m1".into()],
             None,
             "agent",
@@ -464,6 +525,73 @@ mod tests {
         assert!(!context_block(&state, &scope_a)
             .unwrap_or_default()
             .contains("재시도 예산"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn validated_improvements_are_injected_after_probation() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let record = propose(
+            &state,
+            &scope,
+            "strategy",
+            "검증된 파일 절차를 재사용한다",
+            "실패 후 성공한 절차를 다음 턴에 재사용한다",
+            &["m1".into()],
+            None,
+            "shared",
+        )
+        .unwrap();
+        for index in 0..5 {
+            let execution = json!({"id":format!("ok{index}"),"sessionId":"s","agentId":"a","status":"completed"});
+            state.store.put("execution", &execution);
+            record_execution(&state, &execution);
+        }
+        let stored = state
+            .store
+            .get("improvement", record["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(stored["status"], "validated");
+        assert!(context_block(&state, &scope)
+            .unwrap_or_default()
+            .contains("검증된 파일 절차"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn validated_strategy_wins_over_a_similar_duplicate() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let first = propose(
+            &state,
+            &scope,
+            "strategy",
+            "파일 작업은 workspace_write로 먼저 시도한다",
+            "실패 후 성공한 절차를 다음 턴에 재사용한다",
+            &["m1".into()],
+            None,
+            "shared",
+        )
+        .unwrap();
+        for index in 0..5 {
+            let execution = json!({"id":format!("v{index}"),"sessionId":"s","agentId":"a","status":"completed"});
+            state.store.put("execution", &execution);
+            record_execution(&state, &execution);
+        }
+        let duplicate = propose(
+            &state,
+            &scope,
+            "strategy",
+            "파일 작업은 workspace_write를 먼저 시도한다",
+            "같은 절차가 다시 관찰되어 중복 생성을 막는다",
+            &["m2".into()],
+            None,
+            "shared",
+        )
+        .unwrap();
+        assert_eq!(duplicate["id"], first["id"]);
+        assert_eq!(duplicate["status"], "validated");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

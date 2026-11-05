@@ -73,6 +73,16 @@ pub fn enqueue(
     )
 }
 
+fn operation_summary(operation: &Value) -> Value {
+    json!({
+        "id": operation["id"],
+        "tool": operation["tool"],
+        "status": operation["status"],
+        "arguments": operation["arguments"],
+        "result": operation["result"],
+    })
+}
+
 pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let state = &context.state;
     let input = job.get("input").cloned().unwrap_or_else(|| json!({}));
@@ -149,14 +159,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 .filter(move |operation| operation["runId"].as_str() == Some(run_id.as_str()))
                 .collect::<Vec<_>>()
         })
-        .map(|operation| {
-            json!({
-                "tool": operation["tool"],
-                "status": operation["status"],
-                "arguments": operation["arguments"],
-                "result": operation["result"],
-            })
-        })
+        .map(|operation| operation_summary(&operation))
         .take(20)
         .collect::<Vec<_>>();
 
@@ -212,7 +215,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         previous_request
     };
     let reflection_text = if lesson.is_empty() { root_cause.clone() } else { lesson.clone() };
-    let experience_record = experience::record(
+    let experience_record = experience::record_shared(
         state,
         &scope,
         &request,
@@ -262,7 +265,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                         "text": text.chars().take(1600).collect::<String>(),
                         "type": "lesson",
                         "importance": 0.85,
-                        "scope": if scope.agent_id.is_some() { "agent" } else { "shared" },
+                        "scope": "shared",
                         "agentId": scope.agent_id,
                         "partitionKey": scope.partition_key,
                         "source": "reflect",
@@ -412,6 +415,15 @@ mod tests {
         );
         assert!(correction_to_reflect(&state, "s", "파일 설명해줘").is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn operation_summary_keeps_evidence_id() {
+        let summary = operation_summary(&json!({
+            "id": "op-1", "tool": "workspace_write", "status": "completed"
+        }));
+        assert_eq!(summary["id"], "op-1");
+        assert_eq!(summary["tool"], "workspace_write");
     }
 
     #[test]

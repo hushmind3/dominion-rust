@@ -71,8 +71,12 @@ pub fn visible(record: &Value, scope: &MemoryScope) -> bool {
         if partition != scope.partition_key {
             return false;
         }
-        if record["scope"].as_str() == Some("session") {
+        let record_scope = record["scope"].as_str().unwrap_or("shared");
+        if record_scope == "session" {
             return record["sessionId"].as_str() == Some(scope.session_id.as_str());
+        }
+        if matches!(record_scope, "shared" | "global") {
+            return true;
         }
         return record["agentId"].as_str().unwrap_or("default") == scope.owner();
     }
@@ -169,9 +173,6 @@ fn terms(text: &str) -> BTreeSet<String> {
 
 pub fn retrieve(store: &Store, scope: &MemoryScope, query: &str, limit: usize) -> Vec<Value> {
     let query_terms = terms(query);
-    if query_terms.is_empty() {
-        return Vec::new();
-    }
     let compact_query = normalize(query);
     let mut records = store.all("memory");
     records.sort_by(|a, b| {
@@ -555,6 +556,28 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0]["id"], "one");
     }
+    #[test]
+    fn partitioned_shared_memories_reach_other_agents() {
+        let db = store();
+        db.put("session", &json!({"id":"s","agentId":"a"}));
+        db.put("session", &json!({"id":"t","agentId":"b"}));
+        let owner = scope(&db, "s", "a");
+        let other = scope(&db, "t", "b");
+        db.put(
+            "memory",
+            &json!({
+                "id":"shared","text":"모든 답변 끝에 DOMINION을 붙인다",
+                "partitionKey":owner.partition_key,"scope":"shared","agentId":"a",
+                "type":"preference","importance":0.8
+            }),
+        );
+        let record = db.get("memory", "shared").unwrap();
+        assert!(visible(&record, &other));
+        assert!(context_block(&db, &other, "2+2")
+            .unwrap_or_default()
+            .contains("DOMINION"));
+    }
+
     #[test]
     fn assistant_claims_cannot_become_facts_and_corrections_replace_keys() {
         let db = store();
