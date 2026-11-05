@@ -1275,6 +1275,66 @@ fn determine_task_outcome(execution: &Value) -> TaskOutcome {
     TaskOutcome::Failed
 }
 
+fn record_success_experience(
+    state: &AppState,
+    record: &Value,
+    execution_id: &str,
+    task_outcome: TaskOutcome,
+) -> Option<Value> {
+    if task_outcome != TaskOutcome::Succeeded {
+        return None;
+    }
+    let acceptance_text = record["acceptanceText"].as_str()?;
+    let final_message_id = record["finalMessageId"].as_str()?;
+    let marker_id = format!("success-experience:{execution_id}");
+    let marker = json!({
+        "id": marker_id,
+        "executionId": execution_id,
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+    });
+    if state
+        .store
+        .put_if_absent("success_experience_marker", &marker)
+        .is_none()
+    {
+        return None;
+    }
+    let scope = crate::engine::memory::MemoryScope::for_session(
+        &state.store,
+        record["sessionId"].as_str().unwrap_or(""),
+        record["agentId"].as_str(),
+    );
+    let lesson = format!(
+        "검증 조건을 실제 도구 결과로 충족함. 결과 요약: {}",
+        record["finalAnswer"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(300)
+            .collect::<String>()
+    );
+    let tools = record["toolsUsed"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    crate::engine::experience::record_shared(
+        state,
+        &scope,
+        acceptance_text,
+        "success",
+        &lesson,
+        "",
+        &[final_message_id.to_string(), execution_id.to_string()],
+        &tools,
+        &[],
+    )
+}
+
 /// The single terminal judgment for every turn path. `finalize_execution`
 /// remains as the implementation used by existing tests.
 pub(super) fn finish_attempt(
@@ -1365,6 +1425,9 @@ pub(super) fn finalize_execution(
         })
         .collect::<Vec<_>>();
     record["strategyCompliance"] = json!(compliance);
+    let task_outcome = determine_task_outcome(&record);
+    record["taskOutcome"] =
+        serde_json::to_value(task_outcome).unwrap_or_else(|_| json!("unknown"));
     let updates = match crate::engine::improve::execution_updates(state, &record) {
         Ok(updates) => updates,
         Err(error) => {
@@ -1398,8 +1461,6 @@ pub(super) fn finalize_execution(
         Compliance, EvidenceKind, EvidenceRef, LabelProvenance, Observation,
         ObservationRegime,
     };
-    let task_outcome = determine_task_outcome(&record);
-    record["taskOutcome"] = serde_json::to_value(task_outcome).unwrap_or_else(|_| json!("unknown"));
     let compliance_entries = record["strategyCompliance"]
         .as_array()
         .cloned()
@@ -1463,11 +1524,13 @@ pub(super) fn finalize_execution(
         Vec::new()
     };
 
+    let mut applied = false;
     match state
         .store
         .finalize_once(&record, &marker, &updates, &observations)
     {
         Ok(crate::db::FinalizeOutcome::Applied) => {
+            applied = true;
             if let Some(saved) = state.store.get("execution", execution_id) {
                 state.bus.record("execution", &saved);
             }
@@ -1505,48 +1568,11 @@ pub(super) fn finalize_execution(
         }
     }
 
-    // A success experience requires Succeeded, not merely a completed stream.
-    if task_outcome == TaskOutcome::Succeeded {
-        if let (Some(acceptance_text), Some(final_message_id)) = (
-            record["acceptanceText"].as_str(),
-            record["finalMessageId"].as_str(),
-        ) {
-            let scope = crate::engine::memory::MemoryScope::for_session(
-                &state.store,
-                record["sessionId"].as_str().unwrap_or(""),
-                record["agentId"].as_str(),
-            );
-            let lesson = format!(
-                "검증 조건을 실제 도구 결과로 충족함. 결과 요약: {}",
-                record["finalAnswer"]
-                    .as_str()
-                    .unwrap_or("")
-                    .chars()
-                    .take(300)
-                    .collect::<String>()
-            );
-            let tools = record["toolsUsed"]
-                .as_array()
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| item.as_str().map(str::to_string))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let _ = crate::engine::experience::record_shared(
-                state,
-                &scope,
-                acceptance_text,
-                "success",
-                &lesson,
-                "",
-                &[final_message_id.to_string(), execution_id.to_string()],
-                &tools,
-                &[],
-            );
-        }
+    // A success experience requires Succeeded and a first-time finalization.
+    if applied && task_outcome == TaskOutcome::Succeeded {
+        let _ = record_success_experience(state, &record, execution_id, task_outcome);
     }
+
 }
 
 fn retitle_if_placeholder(state: &AppState, session: &Value, text: &str) {
@@ -1616,7 +1642,24 @@ fn record_tool_stat(state: &AppState, session_id: &str, agent_id: Option<&str>, 
 #[cfg(test)]
 mod outcome_tests {
     use super::*;
+    use crate::config::Config;
+    use crate::db::Store;
+    use crate::vault::Vault;
     use serde_json::json;
+
+    fn state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("dominion-outcome-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let store = Store::open(&config.db_path()).unwrap();
+        let vault = Vault::open(&config.key_path());
+        (AppState::new(config, store, vault), dir)
+    }
 
     fn execution(status: &str, acceptance: bool, acceptance_text: Value) -> Value {
         json!({
@@ -1673,6 +1716,35 @@ mod outcome_tests {
             "result":{"verified":true,"triggered":true,"followed":false}
         }]);
         assert_eq!(determine_task_outcome(&value), TaskOutcome::Succeeded);
+    }
+
+    #[test]
+    fn success_experience_is_idempotent() {
+        let (state, dir) = state();
+        let execution = json!({
+            "id":"exec-once","sessionId":"s","agentId":null,
+            "acceptanceText":"create a verified file",
+            "finalMessageId":"m1","finalAnswer":"verified",
+            "toolsUsed":["workspace_write"]
+        });
+        assert!(record_success_experience(
+            &state,
+            &execution,
+            "exec-once",
+            TaskOutcome::Succeeded
+        )
+        .is_some());
+        assert!(record_success_experience(
+            &state,
+            &execution,
+            "exec-once",
+            TaskOutcome::Succeeded
+        )
+        .is_none());
+        let experiences = state.store.all("experience");
+        assert_eq!(experiences.len(), 1);
+        assert_eq!(experiences[0]["occurrences"], 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

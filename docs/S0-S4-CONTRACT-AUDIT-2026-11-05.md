@@ -87,6 +87,9 @@
 **S3 테스트 충족도**
 
 - 있음: `procedure_violation...`, `completed_chat_without_verification_is_not_a_success`, `tools_disabled_action_is_failed_not_succeeded`, cancel `taskOutcome=cancelled`, MAX_ROUNDS `taskOutcome=failed`, `determine_task_outcome` 단위 테스트, BudgetLedger 테스트, `simple_deterministic_tasks_skip_the_planner`
+- 추가: `task_outcome_gates_strategy_success` — succeeded/failed/answered_unverified별 전략 집계, `success_experience_is_idempotent` — 같은 execution의 성공 경험 1회
+- `execution_updates`는 `taskOutcome`을 먼저 확정한 뒤 전략 성공/실패를 판정한다.
+- 성공 경험은 `success_experience_marker`로 execution 단위 멱등하다.
 - 없음: 실제 승인 거절 E2E는 아직 없음(코드 경로는 dispatch/denied 처리)
 
 **S3 결론:** 구현 완료. 승인 거절 E2E는 S4/S7에서 보강한다.

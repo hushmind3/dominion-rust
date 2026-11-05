@@ -413,7 +413,7 @@ pub fn execution_updates(
     let agent_id = execution["agentId"].as_str();
     let scope = MemoryScope::for_session(&state.store, session_id, agent_id);
     let run_id = execution["id"].as_str().unwrap_or("");
-    let completed = execution["status"].as_str() == Some("completed");
+    let task_outcome = execution["taskOutcome"].as_str().unwrap_or("");
     let applied = execution["appliedImprovementIds"]
         .as_array()
         .map(|items| {
@@ -497,8 +497,15 @@ pub fn execution_updates(
             {
                 continue;
             }
+            let followed = entry["result"]["followed"].as_bool() == Some(true);
+            let success = task_outcome == "succeeded" && followed;
+            let failure = task_outcome == "failed"
+                || (task_outcome == "succeeded" && !followed);
+            if !success && !failure {
+                continue;
+            }
             uses += 1;
-            if entry["result"]["followed"].as_bool() == Some(true) && completed {
+            if success {
                 successes += 1;
             } else {
                 failures += 1;
@@ -728,7 +735,7 @@ mod tests {
         .unwrap();
         assert_eq!(adopted["status"], "adopted");
         for index in 0..5 {
-            let execution = json!({"id":format!("e{index}"),"sessionId":"s","agentId":"a","status":"failed","toolCalls":1,"appliedImprovementIds":[adopted["id"]],
+            let execution = json!({"id":format!("e{index}"),"sessionId":"s","agentId":"a","status":"failed","toolCalls":1,"taskOutcome":"failed","appliedImprovementIds":[adopted["id"]],
                 "strategyCompliance":[{"strategyId":adopted["id"],"applicable":true,
                     "result":{"verified":true,"triggered":true,"followed":false}}]});
             state.store.put("execution", &execution);
@@ -797,7 +804,7 @@ mod tests {
         )
         .unwrap();
         for index in 0..5 {
-            let execution = json!({"id":format!("ok{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"appliedImprovementIds":[record["id"]],
+            let execution = json!({"id":format!("ok{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"taskOutcome":"succeeded","appliedImprovementIds":[record["id"]],
                 "strategyCompliance":[{"strategyId":record["id"],"applicable":true,
                     "result":{"verified":true,"triggered":true,"followed":true}}]});
             state.store.put("execution", &execution);
@@ -830,7 +837,7 @@ mod tests {
         )
         .unwrap();
         for index in 0..5 {
-            let execution = json!({"id":format!("v{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"appliedImprovementIds":[first["id"]],
+            let execution = json!({"id":format!("v{index}"),"sessionId":"s","agentId":"a","status":"completed","toolCalls":1,"taskOutcome":"succeeded","appliedImprovementIds":[first["id"]],
                 "strategyCompliance":[{"strategyId":first["id"],"applicable":true,
                     "result":{"verified":true,"triggered":true,"followed":true}}]});
             state.store.put("execution", &execution);
@@ -932,7 +939,7 @@ mod tests {
         .unwrap();
         let execution = json!({
             "id":"exec-once","sessionId":"s","agentId":"a","status":"completed",
-            "toolCalls":1,"appliedImprovementIds":[record["id"]],
+            "toolCalls":1,"taskOutcome":"succeeded","appliedImprovementIds":[record["id"]],
             "strategyCompliance":[{
                 "strategyId":record["id"],"applicable":true,
                 "result":{"verified":true,"triggered":true,"followed":true}
@@ -979,6 +986,48 @@ mod tests {
             .get("improvement_revision", &first)
             .unwrap();
         assert_eq!(old["revision"], first);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn task_outcome_gates_strategy_success() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let record = propose(
+            &state,
+            &scope,
+            "strategy",
+            "taskOutcome으로 전략 성과를 판정한다",
+            "completed와 검증된 성공을 분리한다",
+            &["m1".into()],
+            None,
+            "shared",
+        )
+        .unwrap();
+        for (id, outcome, followed) in [
+            ("e1", "succeeded", true),
+            ("e2", "succeeded", false),
+            ("e3", "answered_unverified", true),
+            ("e4", "failed", true),
+        ] {
+            let execution = json!({
+                "id":id,"sessionId":"s","agentId":"a","status":"completed",
+                "taskOutcome":outcome,"toolCalls":1,
+                "appliedImprovementIds":[record["id"]],
+                "strategyCompliance":[{
+                    "strategyId":record["id"],"applicable":true,
+                    "result":{"verified":true,"triggered":true,"followed":followed}
+                }]
+            });
+            record_execution(&state, &execution);
+        }
+        let stored = state
+            .store
+            .get("improvement", record["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(stored["uses"], 3);
+        assert_eq!(stored["successes"], 1);
+        assert_eq!(stored["failures"], 2);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
