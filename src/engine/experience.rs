@@ -337,7 +337,30 @@ pub fn context_block_with_manifest(
     scope: &MemoryScope,
     query: &str,
 ) -> (Option<String>, Vec<Value>) {
-    let cases = retrieve(state, scope, query, 5);
+    let algorithm = crate::engine::algorithms::active(state, "context.selection");
+    let method_limit = algorithm
+        .as_ref()
+        .and_then(|item| item["parameters"]["methodLimit"].as_u64())
+        .unwrap_or(3) as usize;
+    let failure_boost = algorithm
+        .as_ref()
+        .and_then(|item| item["parameters"]["failureBoost"].as_f64())
+        .unwrap_or(2.0);
+    let mut cases = retrieve(state, scope, query, 5);
+    if failure_boost > 1.0 {
+        cases.sort_by(|a, b| {
+            let score = |case: &Value| {
+                if case["outcome"].as_str() == Some("failure") {
+                    failure_boost
+                } else {
+                    1.0
+                }
+            };
+            score(b)
+                .partial_cmp(&score(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
     let query_tokens = tokens(query);
     let observation = json!({"task": query});
     let mut methods = state
@@ -366,7 +389,7 @@ pub fn context_block_with_manifest(
         })
         .collect::<Vec<_>>();
     methods.sort_by(|a, b| b.0.cmp(&a.0));
-    methods.truncate(3);
+    methods.truncate(method_limit.min(8));
     if cases.is_empty() && methods.is_empty() {
         return (None, Vec::new());
     }
@@ -637,6 +660,8 @@ pub fn matching_rules(
     limit: usize,
 ) -> Vec<Value> {
     let observation = method_observation(state, failed_tool, failed_inputs, error);
+    let probe_unknown =
+        crate::engine::algorithms::variant(state, "learning.applicability") == "probe-unknown";
     let mut rules = state.store.all("experience_rule").into_iter().filter(|rule| {
         if !rule_visible(rule, scope)
             || rule["status"].as_str() != Some("candidate")
@@ -652,7 +677,11 @@ pub fn matching_rules(
         {
             return false;
         }
-        method_applicability(rule, &observation) == "true"
+        match method_applicability(rule, &observation) {
+            "true" => true,
+            "unknown" => probe_unknown,
+            _ => false,
+        }
     }).collect::<Vec<_>>();
     rules.sort_by(|a,b| {
         b["supportingCases"].as_array().map(Vec::len).unwrap_or(0)
@@ -661,7 +690,8 @@ pub fn matching_rules(
     });
     rules.truncate(limit.min(5));
     for rule in &mut rules {
-        rule["applicabilityVerdict"] = json!("true");
+        rule["applicabilityVerdict"] =
+            json!(method_applicability(rule, &observation));
         rule["observation"] = observation.clone();
     }
     rules

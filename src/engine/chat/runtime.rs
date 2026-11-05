@@ -1069,6 +1069,24 @@ async fn run_turn_body(
                     )
                 }));
             }
+            if crate::engine::algorithms::variant(state, "tool.selection")
+                == "read-before-write"
+                && matches!(
+                    call.name.as_str(),
+                    "workspace_write" | "file_write" | "shell_exec" | "terminal_exec"
+                )
+                && !completed_operations.iter().any(|operation| {
+                    matches!(
+                        operation["tool"].as_str(),
+                        Some("workspace_list" | "workspace_read" | "file_list" | "file_read")
+                    )
+                })
+            {
+                messages.push(json!({
+                    "role":"system",
+                    "content":"도구 선택 알고리즘(read-before-write): 쓰기 전에 workspace_list/workspace_read로 대상 상태를 먼저 확인하는 것이 권장됩니다. 이 힌트는 실행을 막지 않습니다."
+                }));
+            }
             let call_key = format!("{}:{}", call.name, arguments);
             let current_fingerprint =
                 environment_fingerprint(state, &call.name, &arguments);
@@ -1936,6 +1954,8 @@ fn execute_nodes<'a>(
         if depth > 16 {
             return Err("program nesting is too deep".into());
         }
+        let verification_strict =
+            crate::engine::algorithms::variant(ctx.state, "verification.predicate") == "strict";
         let mut messages = Vec::new();
         for (index, node) in nodes.iter().enumerate() {
             if ctx.state.is_cancelled(ctx.session_id)
@@ -2022,6 +2042,9 @@ fn execute_nodes<'a>(
                             node["then"].as_array().cloned().unwrap_or_default()
                         }
                         PredicateVerdict::False => {
+                            node["else"].as_array().cloned().unwrap_or_default()
+                        }
+                        PredicateVerdict::Unknown if verification_strict => {
                             node["else"].as_array().cloned().unwrap_or_default()
                         }
                         PredicateVerdict::Unknown => {
@@ -2201,7 +2224,13 @@ fn execute_nodes<'a>(
                         match verdict {
                             PredicateVerdict::True => {}
                             PredicateVerdict::False => ok = false,
-                            PredicateVerdict::Unknown => unknown = true,
+                            PredicateVerdict::Unknown => {
+                                if verification_strict {
+                                    ok = false;
+                                } else {
+                                    unknown = true;
+                                }
+                            }
                         }
                         results.push(json!({
                             "predicate": check["predicate"],
@@ -2479,6 +2508,9 @@ async fn run_program(
     let mut op_seq_local = *op_seq;
     let mut messages = Vec::new();
     let mut revisions = 0usize;
+    let max_revisions = crate::engine::algorithms::active(state, "program.repair")
+        .and_then(|algorithm| algorithm["parameters"]["maxRevisions"].as_u64())
+        .unwrap_or(2) as usize;
     loop {
         let frame = execute_nodes(
             &ctx,
@@ -2500,7 +2532,7 @@ async fn run_program(
         let Some(failure) = frame.failure else {
             break;
         };
-        if revisions >= 2 {
+        if revisions >= max_revisions {
             messages.push(json!({
                 "role":"system",
                 "content":"program revision limit reached; stop and report the observed failure."
@@ -2576,6 +2608,21 @@ async fn run_program(
     checkpoint["resolvedInputs"] = resolved;
     if checkpoint["status"].as_str() == Some("paused") {
         save_program_checkpoint(state, execution_id, &checkpoint);
+        return Ok(messages);
+    }
+    if !checkpoint["programFailure"].is_null() {
+        // The program could not be repaired. Do not pretend it completed:
+        // preserve the failure and require review/model continuation.
+        checkpoint["status"] = json!("needs_review");
+        save_program_checkpoint(state, execution_id, &checkpoint);
+        messages.push(json!({
+            "role":"system",
+            "content": format!(
+                "program stopped with an unresolved failure at {}: {}",
+                checkpoint["programFailure"]["nodeId"],
+                checkpoint["programFailure"]["result"]
+            )
+        }));
         return Ok(messages);
     }
     checkpoint["nextIndex"] = json!(node_count);
@@ -3816,6 +3863,68 @@ mod outcome_tests {
         let ops = state.store.all("execution_operation");
         assert_eq!(ops.len(), 1, "resumed iteration zero was replayed: {ops:?}");
         assert_eq!(std::fs::read_to_string(dir.join("repeat.txt")).unwrap(), "REPEAT");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_program_revision_does_not_mark_the_program_completed() {
+        let (state, dir) = state();
+        state.store.put("policy", &json!({"id":"default","autoApproveAll":true}));
+        let execution_id = "exec-revision-failure";
+        state.store.put(
+            "execution",
+            &json!({
+                "id": execution_id, "status": "running",
+                "taskId": execution_id, "sessionId": "s1",
+                "request": "실패 프로그램"
+            }),
+        );
+        let session = json!({"id":"s1"});
+        let request = TurnRequest {
+            session_id: Some("s1".into()),
+            input: "실패 프로그램".into(),
+            attachment_ids: Vec::new(),
+            agent_id: None,
+            provider_id: None,
+            model: None,
+            tools_enabled: true,
+            tools_execution_enabled: true,
+            thinking: None,
+            reasoning_effort: None,
+            reasoning_language: None,
+            auto_learning: false,
+            system_override: None,
+            task_id: None,
+            parent_task_id: None,
+            task_revision: None,
+            verification_owner: None,
+        };
+        let program = json!({
+            "revision":"p-revision-failure",
+            "nodes":[
+                {"type":"call_tool","id":"try","tool":"shell_exec",
+                 "inputs":{"command":"exit 7"},"saveAs":"try","onFailure":"revise"}
+            ]
+        });
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let metrics = std::sync::Mutex::new(Metrics::default());
+        let mut budget = super::super::budget::BudgetLedger::new(
+            MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED,
+        );
+        let mut op_seq = 0u64;
+        let generation = state.cancellation_generation("s1");
+        run_program(
+            &state, &tx, &session, &request, "s1", execution_id, &program,
+            &metrics, &mut budget, &mut op_seq, generation,
+        )
+        .await
+        .expect("program runs and reports the unresolved failure");
+        let execution = state.store.get("execution", execution_id).unwrap();
+        assert_eq!(
+            execution["programCheckpoint"]["status"], "needs_review",
+            "{execution}"
+        );
+        assert!(!execution["programCheckpoint"]["programFailure"].is_null());
         let _ = std::fs::remove_dir_all(dir);
     }
 

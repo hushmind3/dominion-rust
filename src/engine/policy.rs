@@ -38,8 +38,15 @@ pub fn default_optimizer() -> Value {
 pub fn active_optimizer(state: &AppState) -> Value {
     state
         .store
-        .get("optimizer_policy", "optimizer-active")
-        .filter(|policy| policy["status"].as_str() == Some("active"))
+        .all("optimizer_policy")
+        .into_iter()
+        .find(|policy| policy["status"].as_str() == Some("active"))
+        .or_else(|| {
+            state
+                .store
+                .get("optimizer_policy", "optimizer-active")
+                .filter(|policy| policy["status"].as_str() == Some("active"))
+        })
         .unwrap_or_else(default_optimizer)
 }
 

@@ -17,7 +17,7 @@ type Algorithm = {
   revision:string
   activatedAt?:string
 }
-type KindGroup = {kind:string;label:string;active?:Algorithm;algorithms:Algorithm[]}
+type KindGroup = {kind:string;label:string;kernels:string[];active?:Algorithm;algorithms:Algorithm[]}
 
 export function AlgorithmsPage(){
   const [kinds,setKinds]=useState<KindGroup[]>([])
@@ -124,8 +124,11 @@ export function AlgorithmsPage(){
           <label className="block text-xs text-[#6F675D]">이름
             <TextInput value={name} onChange={e=>setName(e.target.value)} placeholder="예: uncertainty-aware"/>
           </label>
-          <label className="block text-xs text-[#6F675D]">구현 variant
-            <TextInput value={variant} onChange={e=>setVariant(e.target.value)} placeholder="예: probe-first"/>
+          <label className="block text-xs text-[#6F675D]">실행 커널
+            <SelectInput value={variant} onChange={e=>setVariant(e.target.value)}>
+              {(kinds.find(group=>group.kind===kind)?.kernels||[]).map(kernel=><option key={kernel} value={kernel}>{kernel}</option>)}
+            </SelectInput>
+            <span className="mt-1 block text-[10px] text-[#9C9388]">등록된 Rust 커널만 활성화할 수 있습니다. 새 커널은 엔진 구현으로 추가됩니다.</span>
           </label>
           <label className="block text-xs text-[#6F675D]">parameters (JSON)
             <TextArea rows={4} value={parameters} onChange={e=>setParameters(e.target.value)}/>
