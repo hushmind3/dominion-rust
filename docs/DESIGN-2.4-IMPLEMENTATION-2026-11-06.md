@@ -300,3 +300,57 @@ E2E `a_mid_adaptation_restart_restores_hypotheses_and_does_not_repeat_completed_
      (완료 단계/개입 재실행 없음)
 
 전체: `269 unit + 56 E2E + 16 benchmark` 통과.
+
+
+## 10. R4 — 조건부 경험 추출·재사용 연결 (설계 2.4 §6, 11절 #2)
+
+이번 단계의 구현은 기존 `experience` 저장 및 `chat/runtime.rs` 실행 흐름을
+유지하며, 원인 범위가 관측 가능한 **경험 후보**만 재사용한다. 정식 정책
+활성화·실모델 전이 입증과는 별도다.
+
+### 실행 연결
+
+1. `finalize_execution`에서 `TaskOutcome::Succeeded`이며 루트 작업에 대한
+   첫 검증 성공 경험이 기록된 경우에만 `learn_verified_adaptations` 실행.
+2. `execution.adaptations`에서 실패한 도구/에러 유형/입력 필드 구조와
+   뒤이어 성공한 개입 도구/입력 구조를 뽑는다. 실패 유형은
+   `not_found`, `permission_denied`, `timeout`, `rate_limited`,
+   `invalid_inputs`로 시작한다. 분류 불가면 보류한다.
+3. `experience_rule`에 applicability, intervention 템플릿, supportingCases,
+   counterexamples, revision을 저장한다. **과거 인자값/파일 내용/비밀값은
+   복제하지 않고 필드 구조만 저장**한다. 같은 루트 task를 독립 근거로
+   여러 번 세지 않는다.
+4. 새 실행에서 도구 실패 시 `attempt_model_adaptation`이 같은 파티션·
+   도구·오류 유형·인자 구조와 일치하는 후보를 검색한다.
+   원래 값 재실행 없이 규칙 ID/revision/템플릿을 모델의 적응 판단에
+   공급하고, 선택된 개입은 기존 `dispatch_tool_call`로 실행한다.
+5. `record_adaptation`에 consultedExperienceRules ID/revision을 남긴다.
+   조건이 맞는 방법을 재사용했으나 명시적 실패가 발생하면
+   `record_rule_counterexamples`가 반례와 새 revision을 기록한다.
+   현재는 반례가 생긴 후보를 후속 힌트에서 제외하며 재조사는 다음 단계다.
+
+### 검증
+
+GitHub Actions `CI`, HEAD `04bbec2c`:
+`npm run build --prefix web` 성공,
+`cargo test --release` **16 benchmark + 270 unit + 56 E2E = 342개 성공**.
+단위 테스트는 verified candidate 추출/재검색, 다른 작업의 입력값으로 일치,
+다른 error/field shape 배제, 채널 파티션 격리, 중복 성공 근거 제거,
+실패 개입 반례 배제, 미검증·결과 미확정 학습 제외를 검증한다.
+
+별도 CI 수정: `dominion-benchmark.rs::canonical`에서 존재하지 않는
+최종 경로가 있더라도 기존 상위 경로와 symlink를 해석하도록 변경.
+`/tmp/../Users` 탈출과 symlink 통한 임시 디렉터리 이탈을 거절한다.
+기존 Ubuntu CI 실패가 이 수정 후 성공했다.
+
+### 다음 순서 / 미완료
+
+- 경험 후보의 실제 **서로 다른 과제 간 모델 실행 E2E**와 held-out 전이 실험은
+  아직 없다. 현재 통과 테스트는 주로 fixture+조건 매칭 확인이다.
+- predicate는 현재 오류 유형·도구·인자 필드 구조의 보수적 최소 집합이다.
+  원인별 환경 특징 생성, Unknown probe, 반례 분할 및 다중 환경 비교는
+  아직 구현 전이다.
+- 프로그램 자체를 모델이 생성·수정하고 개입 결과를 보고 분기하는
+  typed program 합성(11절 #3)은 별도 작업으로 남는다.
+- 병렬 노드의 실제 병렬 실행, 개선기 비교(11절 #5), scope별 실모델
+  실험 승격과 실계정 검증은 아직 아니다.
