@@ -14,6 +14,9 @@ struct Runtime {
     status: String,
     id: String,
     name: String,
+    engine: String,
+    backend: String,
+    model_key: String,
     error: String,
     logs: Vec<String>,
 }
@@ -26,6 +29,9 @@ fn runtime() -> &'static Mutex<Runtime> {
             status: "idle".into(),
             id: String::new(),
             name: String::new(),
+            engine: String::new(),
+            backend: String::new(),
+            model_key: String::new(),
             error: String::new(),
             logs: Vec::new(),
         })
@@ -83,7 +89,82 @@ pub fn installed(state: &AppState) -> Vec<Value> {
                     .map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()),
             }))
         })
+        .chain(lmstudio_models())
         .collect()
+}
+
+/// Models already managed by LM Studio (including its native MLX runtime).
+fn lmstudio_models() -> Vec<Value> {
+    let Some(lms) = lms_bin() else {
+        return Vec::new();
+    };
+    let Ok(output) = std::process::Command::new(lms)
+        .args(["ls", "--json"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let Ok(items) = serde_json::from_slice::<Vec<Value>>(&output.stdout) else {
+        return Vec::new();
+    };
+    items
+        .into_iter()
+        .filter(|item| item["type"] == "llm")
+        .filter_map(|item| {
+            let key = item["modelKey"].as_str()?.to_string();
+            let raw_format = item["format"].as_str().unwrap_or("gguf");
+            let format = if raw_format == "safetensors" || raw_format == "mlx" {
+                "mlx"
+            } else {
+                "gguf"
+            };
+            let bytes = item["sizeBytes"].as_u64().unwrap_or(0);
+            Some(json!({
+                "id": format!("lms:{key}"),
+                "repo": item["publisher"].as_str().unwrap_or(&key),
+                "optionId": key,
+                "source": "lmstudio",
+                "format": format,
+                "label": item["displayName"].as_str().unwrap_or(&key),
+                "bytes": bytes,
+                "sizeLabel": format_bytes(bytes),
+                "engine": if format == "mlx" { "MLX (LM Studio)" } else { "LM Studio (GGUF)" },
+                "installedAt": Value::Null,
+            }))
+        })
+        .collect()
+}
+
+fn lms_bin() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("DOMINION_LMS_BIN") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
+    let path = PathBuf::from(home).join(".lmstudio/bin/lms");
+    path.is_file().then_some(path)
+}
+
+fn llama_server_bin() -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join(if cfg!(windows) { "llama-server.exe" } else { "llama-server" }))
+        .chain(
+            ["/opt/homebrew/bin/llama-server", "/usr/local/bin/llama-server"]
+                .into_iter()
+                .map(PathBuf::from),
+        )
+        .find(|path| path.is_file())
+}
+
+fn llama_available() -> bool {
+    llama_server_bin().is_some()
 }
 
 fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
@@ -169,13 +250,13 @@ fn total_memory() -> u64 {
     0
 }
 
-pub fn runtime_snapshot() -> Value {
+pub fn runtime_snapshot(_state: &AppState) -> Value {
     let mut guard = runtime().lock().unwrap();
     if let Some(child) = guard.child.as_mut() {
         match child.try_wait() {
             Ok(Some(status)) => {
                 guard.status = "error".into();
-                guard.error = format!("llama-server 종료 (exit {status})");
+                guard.error = format!("{} 종료 (exit {status})", guard.engine);
                 guard.child = None;
             }
             _ => {}
@@ -192,13 +273,14 @@ pub fn runtime_snapshot() -> Value {
         "status": guard.status,
         "id": guard.id,
         "name": guard.name,
-        "engine": "llama.cpp",
+        "engine": if guard.engine.is_empty() { "none" } else { guard.engine.as_str() },
+        "backend": guard.backend,
         "port": RUNTIME_PORT,
         "error": guard.error,
         "logs": logs.into_iter().rev().collect::<Vec<_>>(),
         "capabilities": {
-            "gguf": { "available": true, "backend": "llama.cpp", "installable": false },
-            "mlx": { "available": false },
+            "gguf": { "available": lms_bin().is_some() || llama_available(), "backend": "llama.cpp", "installable": false },
+            "mlx": { "available": lms_bin().is_some(), "backend": "LM Studio MLX" },
             "memory": {
                 "total": total_memory(),
                 "free": 0,
@@ -211,6 +293,9 @@ pub fn runtime_snapshot() -> Value {
 }
 
 pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, String> {
+    if let Some(key) = id.strip_prefix("lms:") {
+        return load_lmstudio(state, id, key, context).await;
+    }
     let dir = models_dir(state);
     let candidate = dir.join(id);
     let resolved = if candidate.is_file() {
@@ -229,6 +314,9 @@ pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, Str
         let mut guard = runtime().lock().unwrap();
         guard.status = "loading".into();
         guard.id = id.to_string();
+        guard.engine = "llama.cpp".into();
+        guard.backend = "llama".into();
+        guard.model_key = id.to_string();
         guard.name = resolved
             .file_name()
             .map(|value| value.to_string_lossy().to_string())
@@ -237,7 +325,9 @@ pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, Str
         guard.logs.clear();
     }
 
-    let mut command = Command::new("llama-server");
+    let llama_server = llama_server_bin()
+        .ok_or("llama-server를 찾을 수 없습니다. llama.cpp를 설치하거나 PATH를 확인하세요.")?;
+    let mut command = Command::new(llama_server);
     command.args([
         "-m",
         &resolved.to_string_lossy(),
@@ -342,6 +432,129 @@ pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, Str
     Err(guard.error.clone())
 }
 
+async fn load_lmstudio(
+    state: &AppState,
+    id: &str,
+    key: &str,
+    context: u64,
+) -> Result<Value, String> {
+    let lms = lms_bin().ok_or("LM Studio CLI(lms)를 찾을 수 없습니다. LM Studio를 설치하세요.")?;
+    unload(state);
+    {
+        let mut guard = runtime().lock().unwrap();
+        guard.status = "loading".into();
+        guard.id = id.to_string();
+        guard.name = key.to_string();
+        guard.engine = "MLX (LM Studio)".into();
+        guard.backend = "lmstudio".into();
+        guard.model_key = key.to_string();
+        guard.error.clear();
+        guard.logs.clear();
+    }
+
+    let running = std::process::Command::new(&lms)
+        .args(["server", "status", "--json"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| serde_json::from_slice::<Value>(&output.stdout).ok())
+        .and_then(|value| value["running"].as_bool())
+        .unwrap_or(false);
+    if !running {
+        let output = std::process::Command::new(&lms)
+            .args(["server", "start", "--port", "1234"])
+            .output()
+            .map_err(|error| format!("LM Studio 서버 시작 실패: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "LM Studio 서버 시작 실패: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+    }
+
+    let already_loaded = std::process::Command::new(&lms)
+        .args(["ps", "--json"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| serde_json::from_slice::<Vec<Value>>(&output.stdout).ok())
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item["modelKey"].as_str() == Some(key)
+                    || item["identifier"].as_str() == Some(key)
+            })
+        });
+    if !already_loaded {
+        let output = std::process::Command::new(&lms)
+            .args([
+                "load",
+                key,
+                "--gpu",
+                "max",
+                "--context-length",
+                &context.clamp(512, 32768).to_string(),
+            ])
+            .output()
+            .map_err(|error| format!("LM Studio 모델 로드 실패: {error}"))?;
+        if !output.status.success() {
+            let mut guard = runtime().lock().unwrap();
+            guard.status = "error".into();
+            guard.error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(guard.error.clone());
+        }
+    }
+
+    let client = reqwest::Client::new();
+    for _ in 0..240 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Ok(response) = client
+            .get("http://127.0.0.1:1234/v1/models")
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+        {
+            if response.status().is_success() {
+                let value: Value = response.json().await.unwrap_or_else(|_| json!({}));
+                let served = value["data"]
+                    .as_array()
+                    .and_then(|items| {
+                        items.iter().find(|item| item["id"] == key).or_else(|| items.first())
+                    })
+                    .and_then(|item| item["id"].as_str())
+                    .unwrap_or(key);
+                {
+                    let mut guard = runtime().lock().unwrap();
+                    guard.status = "ready".into();
+                }
+                state.store.put(
+                    "provider",
+                    &json!({
+                        "id": PROVIDER_ID,
+                        "name": "DOMINION Native",
+                        "baseUrl": "http://127.0.0.1:1234/v1",
+                        "kind": "openai",
+                        "local": true,
+                        "enabled": true,
+                        "model": served,
+                        "description": "LM Studio MLX runtime managed by the Rust engine",
+                    }),
+                );
+                return Ok(json!({
+                    "status": "ready",
+                    "id": id,
+                    "name": served,
+                    "engine": "MLX (LM Studio)",
+                }));
+            }
+        }
+    }
+    let mut guard = runtime().lock().unwrap();
+    guard.status = "error".into();
+    guard.error = "MLX 모델 로딩 시간이 초과되었습니다.".into();
+    Err(guard.error.clone())
+}
+
 fn push_log(line: String) {
     let mut guard = runtime().lock().unwrap();
     guard.logs.push(line);
@@ -357,6 +570,13 @@ pub fn unload(state: &AppState) -> Value {
         .bus
         .emit(json!({ "type": "record", "kind": "provider", "removed": PROVIDER_ID }));
     let mut guard = runtime().lock().unwrap();
+    if guard.backend == "lmstudio" && !guard.model_key.is_empty() {
+        if let Some(lms) = lms_bin() {
+            let _ = std::process::Command::new(lms)
+                .args(["unload", &guard.model_key])
+                .output();
+        }
+    }
     if let Some(child) = guard.child.as_mut() {
         #[cfg(unix)]
         if let Some(pid) = child.id() {
@@ -370,6 +590,9 @@ pub fn unload(state: &AppState) -> Value {
     guard.status = "idle".into();
     guard.id.clear();
     guard.name.clear();
+    guard.engine.clear();
+    guard.backend.clear();
+    guard.model_key.clear();
     json!({ "status": "idle" })
 }
 
@@ -677,7 +900,10 @@ mod tests {
         std::fs::create_dir_all(&models).unwrap();
         std::fs::write(models.join("tiny.gguf"), b"x").unwrap();
         std::fs::write(models.join("notes.txt"), b"x").unwrap();
-        let items = installed(&state);
+        let items = installed(&state)
+            .into_iter()
+            .filter(|item| item["source"] != "lmstudio")
+            .collect::<Vec<_>>();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["id"], "tiny.gguf");
         assert_eq!(items[0]["format"], "gguf");

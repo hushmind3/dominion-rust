@@ -301,9 +301,11 @@ pub(super) async fn stream_completion(
                 completion.usage = total;
             }
             if let Some(reason) = piece["choices"][0]["finish_reason"].as_str() {
-                if matches!(reason, "length" | "content_filter") {
-                    return Err(format!("모델 응답이 완료되지 않았습니다: {reason}"));
+                if reason == "content_filter" {
+                    return Err("모델 응답이 콘텐츠 필터로 중단되었습니다.".into());
                 }
+                // Small/local models often hit the token limit. Keep the partial
+                // answer instead of failing the whole turn.
                 terminated = true;
             }
             let Some(delta) = piece

@@ -37,8 +37,8 @@ pub async fn jobs(State(state): State<AppState>) -> Json<Value> {
     Json(json!(models::jobs(&state)))
 }
 
-pub async fn runtime() -> Json<Value> {
-    Json(models::runtime_snapshot())
+pub async fn runtime(State(state): State<AppState>) -> Json<Value> {
+    Json(models::runtime_snapshot(&state))
 }
 
 pub async fn load(State(state): State<AppState>, Json(body): Json<Value>) -> Response {

@@ -152,6 +152,21 @@ npm start            # release Rust 엔진과 화면 실행
 
 도구 실행은 모두 감사 로그(`audit`)에 기록됩니다.
 
+### 로컬 모델 백엔드 (GGUF + MLX)
+
+맥에서는 두 가지 로컬 추론을 모두 지원합니다. **Python은 쓰지 않습니다.**
+
+| 형식 | 런타임 | 선택 방법 |
+| --- | --- | --- |
+| GGUF | llama.cpp (`llama-server`) | 모델 라이브러리의 `*.gguf` |
+| MLX | LM Studio 네이티브 MLX (`lms`) | LM Studio에 설치된 모델 (`lms:<modelKey>`) |
+
+- MLX 모델은 LM Studio의 `lms ls --json`에서 자동으로 목록에 합쳐집니다.
+- MLX 로드: `lms server start` → `lms load <key> --gpu max` → `127.0.0.1:1234/v1` 제공자 등록
+- GGUF 로드: `llama-server`를 4319에 띄우고 `dominion-native` 제공자 등록
+- 언로드 시 MLX는 `lms unload`, GGUF는 프로세스 그룹 종료
+- `runtime.capabilities.mlx.available` / `gguf.available`로 현재 백엔드 확인
+
 ### 로컬 모델
 
 `llama-server`(llama.cpp)를 Rust가 직접 관리합니다. 모델 로드 시

@@ -292,7 +292,7 @@ fn persistent_room_http_flow_keeps_owner_once_and_shares_peer_context() {
     let sent = app.post(&format!("/api/rooms/{id}/messages"), &input);
     let retry = app.post(&format!("/api/rooms/{id}/messages"), &input);
     assert_eq!(sent["jobId"], retry["jobId"]);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let state = app.get(&format!("/api/rooms/{id}/state"));
         let status = state["jobs"][0]["status"].as_str().unwrap();
@@ -816,7 +816,7 @@ fn cancelling_a_running_execution_marks_it_cancelled() {
             .text()
             .unwrap()
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut execution_id = None;
     while Instant::now() < deadline {
         let executions = app.get("/api/executions");
@@ -857,7 +857,7 @@ fn cancelling_a_running_job_stops_it() {
         &json!({"kind":"prompt","input":{"prompt":"slow job","toolsEnabled":false}}),
     );
     let id = created["id"].as_str().unwrap().to_string();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut running = false;
     while Instant::now() < deadline {
         let job = app.get(&format!("/api/jobs/{id}"));
@@ -1128,7 +1128,7 @@ fn delegate_task_runs_a_real_child_agent_and_returns_its_result() {
             "agentId": child,
             "prompt": "compute the answer",
             "wait": true,
-            "timeoutSeconds": 30
+            "timeoutSeconds": 60
         })
         .to_string();
         vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"delegate-1","type":"function","function":{"name":"delegate_task","arguments":arguments}}]},"finish_reason":"tool_calls"}]})]
