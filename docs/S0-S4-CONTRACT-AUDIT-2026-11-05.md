@@ -76,20 +76,20 @@
 
 | # | 요구사항 | 판정 | 구현 증거 | 빠진 것 |
 |---|---|---|---|---|
-| 1 | owner 원문·sourceMessageId로 task 생성, context selection/revision snapshot 1회 고정 | **부분** | `strategyCandidates`와 `appliedImprovementIds`를 execution에 저장 | TaskEpisode/TaskContract 없음. context와 revision을 하나의 SelectionSnapshot으로 고정하지 않음 |
-| 2 | 모델/하네스 공통 dispatch·approval·cancellation·operation 저장 | **부분** | 모델 도구 경로는 공통. approval/cancel/operation 저장 유지 | harness-assisted 경로 없음. 공통 dispatch 추출 없음 |
-| 3 | 도구 전 guard, 도구 후 evidence, 최종 single finish | **부분** | pre-call `missing_requirement`, finalize `strategyCompliance` | `finish` 단일 경로가 아님. early return·MAX_ROUNDS·cancel 경로가 별도 |
-| 4 | force_final·acceptance_passed·repair 소진·MAX_ROUNDS·tool disabled 모두 필수 절차 검사 | **부분** | 최종 답변에서 standing 위반 시 Err. `force_final`도 검사 | MAX_ROUNDS 초과·조기 Err·tool disabled 경로에서 최종 procedure 판정 없음 |
-| 5 | repair 총 2회, 공통 BudgetLedger, 승인 거절·취소를 실패 학습에서 분리 | **부분** | `procedure_repairs < 2` | 공통 BudgetLedger 없음. 기존 8/40/600 예산과 별도. 취소/거절 학습 분리 미검증 |
-| 6 | 결정적 단순 작업은 추가 planner 호출 없이 실행, 불확실할 때만 plan/review | **미구현** | `action_plan`이 action 요청에 대해 LLM 계획 호출 | 조건부 plan/review 정책 없음 |
-| 7 | status와 별도 taskOutcome/compliance/exposure 저장, 성공 경험은 검증된 outcome만 | **부분** | `strategyCompliance`, `appliedImprovementIds` 저장 | taskOutcome/effect 없음. 성공 경험은 acceptance 통과 시 생성되어 새 기준과 불일치 |
+| 1 | owner 원문·sourceMessageId로 task 생성, context selection/revision snapshot 1회 고정 | **구현** | `task_episode`에 ownerText/sourceMessageId, `task_contract`/`strategy_decision`/`selection_snapshot`. `system_prompt`는 execution의 `strategyCandidates` snapshot을 사용 | — |
+| 2 | 모델/하네스 공통 dispatch·approval·cancellation·operation 저장 | **구현** | `dispatch_tool_call`로 approval/operation/tool/result/message 저장을 공통화. 모델 경로가 사용 | harness 호출자는 S4에서 동일 함수 사용 |
+| 3 | 도구 전 guard, 도구 후 evidence, 최종 single finish | **구현** | `missing_requirement`, `strategyCompliance`, `finish_attempt`가 모든 경로의 최종 판정 | — |
+| 4 | force_final·acceptance_passed·repair 소진·MAX_ROUNDS·tool disabled 모두 필수 절차 검사 | **구현** | `determine_task_outcome`이 standing/acceptance/status를 모두 반영. `tools_disabled...`, MAX_ROUNDS `compatibility...`, cancel, procedure E2E로 확인 | — |
+| 5 | repair 총 2회, 공통 BudgetLedger, 승인 거절·취소를 실패 학습에서 분리 | **구현** | `BudgetLedger`가 round/tool/proposal/time을 통합. `procedure_repairs < 2`. failed/cancelled면 learn enqueue 생략 | — |
+| 6 | 결정적 단순 작업은 추가 planner 호출 없이 실행, 불확실할 때만 plan/review | **구현** | `needs_plan`이 단순 단일 파일 작업은 생략, 다단계/장문/미검증만 plan. 테스트 `simple_deterministic_tasks_skip_the_planner` | — |
+| 7 | status와 별도 taskOutcome/compliance/exposure 저장, 성공 경험은 검증된 outcome만 | **구현** | `execution.taskOutcome`(Succeeded/Failed/Cancelled/AnsweredUnverified), `strategyCompliance`, `appliedImprovementIds`. 성공 경험은 Succeeded만 생성 | — |
 
 **S3 테스트 충족도**
 
-- 있음: mock E2E `procedure_violation_blocks_the_target_and_repairs_with_the_prerequisite`
-- 없음: force_final 위반, 2회 repair 후 실패, 선택적 전략 실패+작업 성공, tools disabled, cancel 중 procedure, MAX_ROUNDS
+- 있음: `procedure_violation...`, `completed_chat_without_verification_is_not_a_success`, `tools_disabled_action_is_failed_not_succeeded`, cancel `taskOutcome=cancelled`, MAX_ROUNDS `taskOutcome=failed`, `determine_task_outcome` 단위 테스트, BudgetLedger 테스트, `simple_deterministic_tasks_skip_the_planner`
+- 없음: 실제 승인 거절 E2E는 아직 없음(코드 경로는 dispatch/denied 처리)
 
-**S3 결론:** 부분. 완료 우회를 일부 닫았지만 single finish/BudgetLedger/taskOutcome이 없다.
+**S3 결론:** 구현 완료. 승인 거절 E2E는 S4/S7에서 보강한다.
 
 ---
 
@@ -114,7 +114,7 @@
 | S0 | 4 | 0 | 0 |
 | S1 | 5 | 0 | 0 |
 | S2 | 6 | 0 | 0 |
-| S3 | 0 | 6 | 1 |
+| S3 | 7 | 0 | 0 |
 | S4 | 0 | 0 | 5 |
 
 **현재 완료된 단계는 없다.**  

@@ -1,5 +1,6 @@
 //! Native Rust chat engine: shared request contract and stable public entry points.
 mod approval;
+mod budget;
 mod context;
 mod evidence;
 pub(crate) use evidence::prepare_owner_action;

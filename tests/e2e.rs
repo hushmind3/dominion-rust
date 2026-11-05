@@ -207,6 +207,7 @@ fn compatibility_tools_are_available_and_round_limit_is_a_failure() {
         .contains("workspace_list"));
     assert!(calls[0].get("tools").is_none());
     assert_eq!(app.get("/api/executions")[0]["status"], "failed");
+    assert_eq!(app.get("/api/executions")[0]["taskOutcome"], "failed");
     let messages = app.get(&format!(
         "/api/sessions/{}/messages",
         session["id"].as_str().unwrap()
@@ -259,6 +260,7 @@ fn cancelling_a_stalled_model_does_not_wait_for_network_data() {
     assert!(stream.contains("중단"));
     assert!(!stream.contains("too late"));
     assert_eq!(app.get("/api/executions")[0]["status"], "cancelled");
+    assert_eq!(app.get("/api/executions")[0]["taskOutcome"], "cancelled");
 }
 
 #[test]
@@ -1307,6 +1309,47 @@ fn correction_turn_failure_still_enqueues_reflection() {
 }
 
 #[test]
+fn completed_chat_without_verification_is_not_a_success() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"안녕하세요."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let session = app.post("/api/sessions", &json!({"title":"plain chat"}));
+    let stream = app.chat(&json!({
+        "sessionId": session["id"],
+        "input": "간단히 인사해",
+        "toolsEnabled": false,
+        "autoLearning": false
+    }));
+    assert!(stream.contains("assistant_saved"), "{stream}");
+    let executions = app.get("/api/executions");
+    assert_eq!(executions[0]["status"], "completed");
+    assert_eq!(executions[0]["taskOutcome"], "answered_unverified");
+    assert!(app.get("/api/experience").as_array().unwrap().is_empty());
+}
+
+#[test]
+fn tools_disabled_action_is_failed_not_succeeded() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"만들었습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let session = app.post("/api/sessions", &json!({"title":"disabled tools"}));
+    let stream = app.chat(&json!({
+        "sessionId": session["id"],
+        "input": "report.txt 파일을 만들어줘",
+        "toolsEnabled": false,
+        "autoLearning": false
+    }));
+    assert!(stream.contains("error"), "{stream}");
+    let executions = app.get("/api/executions");
+    assert_eq!(executions[0]["status"], "failed");
+    assert_eq!(executions[0]["taskOutcome"], "failed");
+}
+
+#[test]
 fn benchmark_identity_reports_the_isolated_roots() {
     let _serial = serial();
     let port = start_mock_provider();
@@ -1476,6 +1519,7 @@ fn procedure_violation_blocks_the_target_and_repairs_with_the_prerequisite() {
         .iter()
         .find(|execution| execution["sessionId"] == after_id)
         .expect("post execution");
+    assert_eq!(execution["taskOutcome"], "succeeded");
     let compliance = execution["strategyCompliance"].as_array().expect("compliance");
     assert!(compliance.iter().any(|item| {
         item["applicable"] == true

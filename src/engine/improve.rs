@@ -329,6 +329,45 @@ pub fn injected_ids(state: &AppState, scope: &MemoryScope) -> Vec<String> {
         .collect()
 }
 
+/// Formats a frozen improvement snapshot without re-querying the database.
+pub fn context_block_values(values: &[Value]) -> Option<String> {
+    let mut lines = Vec::new();
+    for improvement in values.iter().take(6) {
+        if !matches!(
+            improvement["status"].as_str(),
+            Some("adopted" | "validated")
+        ) {
+            continue;
+        }
+        let text = improvement["text"].as_str().unwrap_or("").trim();
+        if text.is_empty() {
+            continue;
+        }
+        let label = match improvement["kind"].as_str() {
+            Some("tool_policy") => "도구 정책",
+            Some("strategy") => "실행 전략",
+            _ => continue,
+        };
+        lines.push(format!("- [{label}] {text}"));
+        if improvement["verification"]["type"].as_str() == Some("procedure") {
+            lines.push(format!(
+                "  required verification: {}",
+                improvement["verification"]
+                    .to_string()
+                    .chars()
+                    .take(800)
+                    .collect::<String>()
+            ));
+        }
+    }
+    (!lines.is_empty()).then(|| {
+        format!(
+            "Improvements adopted from prior execution outcomes (follow unless evidence says otherwise):\n{}",
+            lines.join("\n")
+        )
+    })
+}
+
 /// Adopted strategies/tool policies for the current agent and shared partition.
 pub fn context_block(state: &AppState, scope: &MemoryScope) -> Option<String> {
     let mut lines = Vec::new();

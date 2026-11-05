@@ -3,11 +3,24 @@ use super::{TurnRequest, HISTORY_LIMIT};
 use crate::state::AppState;
 use serde_json::{json, Value};
 
+#[allow(dead_code)] // compatibility wrapper for tests and old callers
 pub(super) fn system_prompt(
     state: &AppState,
     request: &TurnRequest,
     session_id: &str,
     query: &str,
+) -> String {
+    system_prompt_with_snapshot(state, request, session_id, query, None)
+}
+
+/// Builds the prompt from the execution's frozen strategy snapshot instead of
+/// re-querying the improvement table mid-turn.
+pub(super) fn system_prompt_with_snapshot(
+    state: &AppState,
+    request: &TurnRequest,
+    session_id: &str,
+    query: &str,
+    improvements: Option<&[Value]>,
 ) -> String {
     let mut prompt = String::from(
         "You are DOMINION, an agentic AI workspace running on a Rust engine. \
@@ -32,7 +45,9 @@ pub(super) fn system_prompt(
             }
         }
     }
-    if let Some(context) = context_block(state, session_id, request.agent_id.as_deref(), query) {
+    if let Some(context) =
+        context_block(state, session_id, request.agent_id.as_deref(), query, improvements)
+    {
         prompt.push_str("\n\n");
         prompt.push_str(&context);
     }
@@ -64,6 +79,7 @@ fn context_block(
     session_id: &str,
     agent_id: Option<&str>,
     query: &str,
+    improvements: Option<&[Value]>,
 ) -> Option<String> {
     let scope = crate::engine::memory::MemoryScope::for_session(&state.store, session_id, agent_id);
     let memories = crate::engine::memory::context_block(&state.store, &scope, query);
@@ -101,7 +117,10 @@ fn context_block(
         }
     }
 
-    let adopted = crate::engine::improve::context_block(state, &scope);
+    let adopted = match improvements {
+        Some(values) => crate::engine::improve::context_block_values(values),
+        None => crate::engine::improve::context_block(state, &scope),
+    };
     let experience = crate::engine::experience::context_block(state, &scope, query);
     if memories.is_none()
         && skills.is_empty()

@@ -1,7 +1,7 @@
 //! Turn lifecycle, cancellation, limits, tool orchestration and durable evidence.
 use super::{
     approval::{close_pending_approvals, request_approval},
-    context::{history, system_prompt},
+    context::history,
     protocol::tool_manual,
     provider::{select_provider, stream_completion},
 };
@@ -9,6 +9,7 @@ use super::{
     parse_text_tool_calls, Metrics, ToolCall, TurnRequest, MAX_ELAPSED, MAX_ROUNDS, MAX_TOKENS, MAX_TOOL_CALLS,
 };
 use super::evidence::{evidence_for_source, prepare_owner_action};
+use crate::engine::adaptation::types::TaskOutcome;
 use crate::engine::goals;
 use crate::{
     engine::{
@@ -250,12 +251,19 @@ async fn run_turn_with_policy(
         _ = wait_cancelled(state, &session_id, generation) => Err("실행이 중단되었습니다.".into()),
         _ = tx.closed() => Err("응답 연결이 종료되어 실행이 중단되었습니다.".into()),
     };
-    finalize_execution(state, &execution_id, &result, &metrics);
+    finish_attempt(state, &execution_id, &result, &metrics);
     close_pending_approvals(state, &session_id);
 
     if request.auto_learning {
-        // Ordinary learning only makes sense once a usable answer was stored.
-        if matches!(&result, Ok(Some(_))) {
+        // Do not turn a failed or cancelled execution (including approval
+        // denial) into a success-learning sample.
+        let task_outcome = state
+            .store
+            .get("execution", &execution_id)
+            .and_then(|execution| execution["taskOutcome"].as_str().map(str::to_string))
+            .unwrap_or_default();
+        let failed_or_cancelled = matches!(task_outcome.as_str(), "failed" | "cancelled");
+        if matches!(&result, Ok(Some(_))) && !failed_or_cancelled {
             crate::engine::learning::enqueue(
                 state,
                 &session_id,
@@ -321,6 +329,14 @@ async fn run_turn_body(
             }))
             .ok_or("사용자 메시지를 저장할 수 없습니다.")?;
         state.bus.message(&user_message);
+        if let Some(mut episode) = state.store.get("task_episode", execution_id) {
+            episode["sourceMessageId"] = user_message["id"].clone();
+            episode["ownerText"] = json!(request.input);
+            if let Some(contract) = episode["contract"].as_object_mut() {
+                contract["source"] = json!("owner");
+            }
+            state.store.put("task_episode", &episode);
+        }
         retitle_if_placeholder(state, &session, &request.input);
     }
     let reply_to = if let Some(id) = source_message_id {
@@ -364,14 +380,24 @@ async fn run_turn_body(
     let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
 
     let provider = select_provider(state, request, &session)?;
-    let system = system_prompt(state, request, session_id, &request.input);
+    let system = super::context::system_prompt_with_snapshot(
+        state,
+        request,
+        session_id,
+        &request.input,
+        Some(&strategy_candidates),
+    );
     let mut messages = vec![json!({ "role": "system", "content": system })];
     messages.extend(history(state, session_id, request.agent_id.as_deref()));
     metrics.lock().unwrap().context_elapsed_ms = turn_started.elapsed().as_millis() as u64;
 
     // Action requests get an explicit plan before tools. Conversational turns
     // do not pay for this extra model call.
-    if acceptance.is_some() && request.tools_enabled && source_message_id.is_none() {
+    if acceptance.is_some()
+        && request.tools_enabled
+        && source_message_id.is_none()
+        && needs_plan(&request.input, &acceptance)
+    {
         if let Some(plan) = action_plan(state, request, acceptance.as_ref().map(|(text, _)| text.as_str()).unwrap_or("")).await {
             messages.insert(1, json!({"role":"system","content":format!("Internal execution plan. Verify every step with real tools, never claims:\n{plan}")}));
             metrics.lock().unwrap().model_calls += 1;
@@ -416,8 +442,15 @@ async fn run_turn_body(
     let mut force_final = false;
     let mut call_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut acceptance_passed = false;
+    let mut budget = super::budget::BudgetLedger::new(MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED);
 
     for round in 0..MAX_ROUNDS {
+        if !budget.charge_round() {
+            return Err("모델 라운드 예산을 초과했습니다.".into());
+        }
+        if budget.expired() {
+            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
+        }
         if state.is_cancelled(session_id) || state.cancellation_generation(session_id) != generation
         {
             return Err("실행이 중단되었습니다.".into());
@@ -636,10 +669,9 @@ async fn run_turn_body(
                             gaps.join("; ")
                         ));
                     }
-                    let tool_calls = metrics.lock().unwrap().tool_calls as usize;
                     if acceptance_retries < 2
                         && round + 1 < MAX_ROUNDS
-                        && tool_calls + 1 < MAX_TOOL_CALLS
+                        && budget.can_execute_tool()
                     {
                         acceptance_retries += 1;
                         let _ = tx.send(json!({
@@ -733,9 +765,10 @@ async fn run_turn_body(
             if tx.is_closed() {
                 return Err("응답 연결이 종료되어 실행이 중단되었습니다.".into());
             }
-            if metrics.lock().unwrap().tool_calls as usize >= MAX_TOOL_CALLS {
+            if !budget.charge_proposal() {
                 return Err(format!(
-                    "도구 호출 제한({MAX_TOOL_CALLS}회)을 초과했습니다."
+                    "도구 제안 예산({}회)을 초과했습니다.",
+                    MAX_TOOL_CALLS.saturating_mul(2)
                 ));
             }
             if state.is_cancelled(session_id)
@@ -822,140 +855,33 @@ async fn run_turn_body(
                 }
                 continue;
             }
-            let started_at = chrono::Utc::now().to_rfc3339();
-            let tool_started = std::time::Instant::now();
-            let _ = tx.send(json!({ "type": "tool_start", "name": call.name, "id": call.id }));
-
-            let needs_approval = if call.name.starts_with("mcp__") {
-                mcp::requires_approval(state, &call.name)
-            } else {
-                tools::requires_approval(&call.name)
-            };
-            let allowed = if needs_approval {
-                request_approval(state, tx, session_id, &call.name, &arguments).await
-            } else {
-                true
-            };
-
-            op_seq += 1;
-            let operation_id = format!("{execution_id}:{round}:{call_index}:{}", call.id);
-            state
-                .store
-                .put(
-                    "execution_operation",
-                    &json!({
-                        "id": operation_id, "runId": execution_id, "sessionId": session_id,
-                        "callId": call.id, "tool": call.name, "arguments": arguments,
-                        "opSeq": op_seq, "status": "running", "startedAt": started_at,
-                    }),
-                )
-                .ok_or("도구 실행 시작을 저장할 수 없습니다.")?;
-            let (result, ok) = if allowed {
-                let context = ToolContext {
-                    workspace: &state.config.workspace,
-                    store: &state.store,
-                    state,
-                    session_id,
-                    agent_id: request.agent_id.as_deref(),
-                };
-                let outcome = if call.name.starts_with("mcp__") {
-                    mcp::call(state, &call.name, &arguments).await
-                } else {
-                    tools::execute(&context, &call.name, &arguments).await
-                };
-                match outcome {
-                    Ok(value) if tool_succeeded(&value) => {
-                        let _ = tx.send(json!({
-                            "type": "tool_end",
-                            "name": call.name,
-                            "id": call.id,
-                            "arguments": arguments,
-                            "result": value,
-                        }));
-                        (value, true)
-                    }
-                    Ok(value) => {
-                        let _ = tx.send(json!({ "type": "tool_error", "name": call.name,
-                            "id": call.id, "error": "도구가 실패 결과를 반환했습니다.", "result": value }));
-                        (value, false)
-                    }
-                    Err(error) => {
-                        let _ = tx.send(json!({
-                            "type": "tool_error",
-                            "name": call.name,
-                            "id": call.id,
-                            "error": error,
-                        }));
-                        (json!({ "error": error }), false)
-                    }
-                }
-            } else {
-                let _ = tx.send(json!({
-                    "type": "tool_error",
-                    "name": call.name,
-                    "id": call.id,
-                    "error": "사용자가 실행을 거부했습니다.",
-                }));
-                (json!({ "error": "Denied by the user" }), false)
-            };
-
-            {
-                let mut counters = metrics.lock().unwrap();
-                counters.tool_calls += 1;
-                counters.tool_elapsed_ms += tool_started.elapsed().as_millis() as u64;
+            if !budget.charge_tool() {
+                return Err(format!(
+                    "도구 호출 제한({MAX_TOOL_CALLS}회)을 초과했습니다."
+                ));
             }
-            record_tool_stat(state, session_id, request.agent_id.as_deref(), &call.name, ok);
-            state.store.audit(
-                "tool.call",
-                json!({
-                    "tool": call.name,
-                    "args": arguments,
-                    "allowed": allowed,
-                    "round": round,
-                }),
-            );
-            let operation = state
-                .store
-                .put(
-                    "execution_operation",
-                    &json!({
-                        "id": operation_id,
-                        "runId": execution_id,
-                        "sessionId": session_id,
-                        "callId": call.id,
-                        "tool": call.name,
-                        "arguments": arguments,
-                        "result": result,
-                        "status": if ok { "completed" } else { "failed" },
-                        "startedAt": started_at,
-                        "finishedAt": chrono::Utc::now().to_rfc3339(),
-                    }),
-                )
-                .ok_or("도구 수행 결과를 저장하지 못했습니다. 실행 기록을 확인하세요.")?;
-            state.bus.record("execution_operation", &operation);
-
-            let tool_content = if provider.tool_mode == "compat" {
-                clip(&result.to_string(), 6000)
-            } else {
-                result.to_string()
-            };
+            op_seq += 1;
+            let (_result, _ok, tool_content) = dispatch_tool_call(
+                state,
+                tx,
+                &session,
+                request,
+                session_id,
+                execution_id,
+                call,
+                arguments,
+                metrics,
+                op_seq,
+                round,
+                call_index,
+                provider.tool_mode == "compat",
+            )
+            .await?;
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call.id,
                 "content": tool_content,
             }));
-            let saved = state
-                .store
-                .write_message(&json!({
-                    "session_id": session_id,
-                    "role": "tool",
-                    "content": tool_content,
-                    "tool_call_id": call.id,
-                    "agent_id": request.agent_id,
-                    "metadata": {"authorKind":"tool","roomId":session.get("roomId"),"executionId":execution_id},
-                }))
-                .ok_or("도구 결과 메시지를 저장할 수 없습니다.")?;
-            state.bus.message(&saved);
         }
 
         // Check acceptance after the tool round, not only when the model
@@ -1008,6 +934,22 @@ async fn run_turn_body(
         return Err("모델이 빈 응답을 반환했습니다.".into());
     }
 
+    if let Some(mut execution) = state.store.get("execution", execution_id) {
+        execution["acceptancePassed"] = json!(acceptance_passed);
+        execution["acceptanceText"] = acceptance
+            .as_ref()
+            .map(|(text, _)| json!(text))
+            .unwrap_or(Value::Null);
+        execution["finalAnswer"] = json!(final_content.chars().take(600).collect::<String>());
+        execution["toolsUsed"] = json!(
+            call_counts
+                .keys()
+                .filter_map(|key| key.split(':').next().map(str::to_string))
+                .collect::<Vec<_>>()
+        );
+        execution["budget"] = budget.snapshot();
+        state.store.put("execution", &execution);
+    }
     let saved = state
         .store
         .write_message(&json!({
@@ -1020,31 +962,9 @@ async fn run_turn_body(
         }))
         .ok_or("최종 응답을 저장할 수 없습니다.")?;
     state.bus.message(&saved);
-    if acceptance_passed {
-        if let Some((acceptance_text, _)) = &acceptance {
-            let scope = crate::engine::memory::MemoryScope::for_session(
-                &state.store, session_id, request.agent_id.as_deref(),
-            );
-            let lesson = format!(
-                "검증 조건을 실제 도구 결과로 충족함. 결과 요약: {}",
-                final_content.chars().take(300).collect::<String>()
-            );
-            let tools = call_counts
-                .keys()
-                .filter_map(|key| key.split(':').next().map(str::to_string))
-                .collect::<Vec<_>>();
-            let _ = crate::engine::experience::record_shared(
-                state,
-                &scope,
-                acceptance_text,
-                "success",
-                &lesson,
-                "",
-                &[saved["id"].as_str().unwrap_or("").to_string(), execution_id.to_string()],
-                &tools,
-                &[],
-            );
-        }
+    if let Some(mut execution) = state.store.get("execution", execution_id) {
+        execution["finalMessageId"] = saved["id"].clone();
+        state.store.put("execution", &execution);
     }
     Ok(Some(saved))
 }
@@ -1054,6 +974,154 @@ fn clip(text: &str, limit: usize) -> String {
         return text.to_string();
     }
     text.chars().take(limit).collect::<String>() + "\n… (truncated for small models)"
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_tool_call(
+    state: &AppState,
+    tx: &UnboundedSender<Value>,
+    session: &Value,
+    request: &TurnRequest,
+    session_id: &str,
+    execution_id: &str,
+    call: &ToolCall,
+    arguments: Value,
+    metrics: &std::sync::Mutex<Metrics>,
+    op_seq: u64,
+    round: usize,
+    call_index: usize,
+    compat: bool,
+) -> Result<(Value, bool, String), String> {
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let tool_started = std::time::Instant::now();
+    let _ = tx.send(json!({ "type": "tool_start", "name": call.name, "id": call.id }));
+
+    let needs_approval = if call.name.starts_with("mcp__") {
+        mcp::requires_approval(state, &call.name)
+    } else {
+        tools::requires_approval(&call.name)
+    };
+    let allowed = if needs_approval {
+        request_approval(state, tx, session_id, &call.name, &arguments).await
+    } else {
+        true
+    };
+
+    let operation_id = format!("{execution_id}:{round}:{call_index}:{}", call.id);
+    state
+        .store
+        .put(
+            "execution_operation",
+            &json!({
+                "id": operation_id, "runId": execution_id, "sessionId": session_id,
+                "callId": call.id, "tool": call.name, "arguments": arguments,
+                "opSeq": op_seq, "status": "running", "startedAt": started_at,
+            }),
+        )
+        .ok_or("도구 실행 시작을 저장할 수 없습니다.")?;
+    let (result, ok) = if allowed {
+        let context = ToolContext {
+            workspace: &state.config.workspace,
+            store: &state.store,
+            state,
+            session_id,
+            agent_id: request.agent_id.as_deref(),
+        };
+        let outcome = if call.name.starts_with("mcp__") {
+            mcp::call(state, &call.name, &arguments).await
+        } else {
+            tools::execute(&context, &call.name, &arguments).await
+        };
+        match outcome {
+            Ok(value) if tool_succeeded(&value) => {
+                let _ = tx.send(json!({
+                    "type": "tool_end",
+                    "name": call.name,
+                    "id": call.id,
+                    "arguments": arguments,
+                    "result": value,
+                }));
+                (value, true)
+            }
+            Ok(value) => {
+                let _ = tx.send(json!({ "type": "tool_error", "name": call.name,
+                    "id": call.id, "error": "도구가 실패 결과를 반환했습니다.", "result": value }));
+                (value, false)
+            }
+            Err(error) => {
+                let _ = tx.send(json!({
+                    "type": "tool_error",
+                    "name": call.name,
+                    "id": call.id,
+                    "error": error,
+                }));
+                (json!({ "error": error }), false)
+            }
+        }
+    } else {
+        let _ = tx.send(json!({
+            "type": "tool_error",
+            "name": call.name,
+            "id": call.id,
+            "error": "사용자가 실행을 거부했습니다.",
+        }));
+        (json!({ "error": "Denied by the user" }), false)
+    };
+
+    {
+        let mut counters = metrics.lock().unwrap();
+        counters.tool_calls += 1;
+        counters.tool_elapsed_ms += tool_started.elapsed().as_millis() as u64;
+    }
+    record_tool_stat(state, session_id, request.agent_id.as_deref(), &call.name, ok);
+    state.store.audit(
+        "tool.call",
+        json!({
+            "tool": call.name,
+            "args": arguments,
+            "allowed": allowed,
+            "round": round,
+        }),
+    );
+    let operation = state
+        .store
+        .put(
+            "execution_operation",
+            &json!({
+                "id": operation_id,
+                "runId": execution_id,
+                "sessionId": session_id,
+                "callId": call.id,
+                "tool": call.name,
+                "arguments": arguments,
+                "result": result,
+                "opSeq": op_seq,
+                "status": if ok { "completed" } else { "failed" },
+                "startedAt": started_at,
+                "finishedAt": chrono::Utc::now().to_rfc3339(),
+            }),
+        )
+        .ok_or("도구 수행 결과를 저장하지 못했습니다. 실행 기록을 확인하세요.")?;
+    state.bus.record("execution_operation", &operation);
+
+    let tool_content = if compat {
+        clip(&result.to_string(), 6000)
+    } else {
+        result.to_string()
+    };
+    let saved = state
+        .store
+        .write_message(&json!({
+            "session_id": session_id,
+            "role": "tool",
+            "content": tool_content,
+            "tool_call_id": call.id,
+            "agent_id": request.agent_id,
+            "metadata": {"authorKind":"tool","roomId":session.get("roomId"),"executionId":execution_id},
+        }))
+        .ok_or("도구 결과 메시지를 저장할 수 없습니다.")?;
+    state.bus.message(&saved);
+    Ok((result, ok, tool_content))
 }
 
 fn record_soft_tool_error(
@@ -1082,6 +1150,28 @@ fn record_soft_tool_error(
 struct ActionReview {
     gaps: Vec<String>,
     next_action: Option<String>,
+}
+
+/// Deterministic single-step file work should not pay for an extra planner
+/// call. Multi-step, long or unverified requests still get one.
+fn needs_plan(input: &str, acceptance: &Option<(String, Value)>) -> bool {
+    let text = input.trim();
+    if text.chars().count() > 240 || text.contains('\n') {
+        return true;
+    }
+    if ["그리고", "그 다음", "다음으로", "한 뒤", "후에", "then", "after", ";"]
+        .iter()
+        .any(|marker| text.contains(marker))
+    {
+        return true;
+    }
+    match acceptance {
+        Some((_, checks)) => checks
+            .as_array()
+            .map(|items| items.is_empty())
+            .unwrap_or(true),
+        None => true,
+    }
 }
 
 async fn action_plan(state: &AppState, request: &TurnRequest, text: &str) -> Option<String> {
@@ -1151,6 +1241,49 @@ pub(super) fn tool_succeeded(value: &Value) -> bool {
             .get("status")
             .and_then(Value::as_u64)
             .is_none_or(|code| code < 400)
+}
+
+fn standing_violation(execution: &Value) -> bool {
+    execution["strategyCompliance"]
+        .as_array()
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item["authority"].as_str() == Some("standing")
+                    && item["applicable"].as_bool() == Some(true)
+                    && item["result"]["verified"].as_bool() == Some(true)
+                    && item["result"]["triggered"].as_bool() == Some(true)
+                    && item["result"]["followed"].as_bool() == Some(false)
+            })
+        })
+}
+
+fn determine_task_outcome(execution: &Value) -> TaskOutcome {
+    match execution["status"].as_str() {
+        Some("cancelled") => return TaskOutcome::Cancelled,
+        Some("completed") => {}
+        _ => return TaskOutcome::Failed,
+    }
+    if standing_violation(execution) {
+        return TaskOutcome::Failed;
+    }
+    if execution["acceptancePassed"].as_bool() == Some(true) {
+        return TaskOutcome::Succeeded;
+    }
+    if execution["acceptanceText"].is_null() {
+        return TaskOutcome::AnsweredUnverified;
+    }
+    TaskOutcome::Failed
+}
+
+/// The single terminal judgment for every turn path. `finalize_execution`
+/// remains as the implementation used by existing tests.
+pub(super) fn finish_attempt(
+    state: &AppState,
+    execution_id: &str,
+    result: &Result<Option<Value>, String>,
+    metrics: &std::sync::Mutex<Metrics>,
+) {
+    finalize_execution(state, execution_id, result, metrics);
 }
 
 pub(super) fn finalize_execution(
@@ -1263,18 +1396,14 @@ pub(super) fn finalize_execution(
 
     use crate::engine::adaptation::types::{
         Compliance, EvidenceKind, EvidenceRef, LabelProvenance, Observation,
-        ObservationRegime, TaskOutcome,
+        ObservationRegime,
     };
+    let task_outcome = determine_task_outcome(&record);
+    record["taskOutcome"] = serde_json::to_value(task_outcome).unwrap_or_else(|_| json!("unknown"));
     let compliance_entries = record["strategyCompliance"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let outcome = match record["status"].as_str() {
-        Some("completed") => TaskOutcome::Succeeded,
-        Some("cancelled") => TaskOutcome::Cancelled,
-        Some("failed") => TaskOutcome::Failed,
-        _ => TaskOutcome::Unknown,
-    };
     let compliance = if compliance_entries.iter().any(|entry| {
         matches!(entry["result"]["status"].as_str(), Some("unknown" | "invalid"))
     }) {
@@ -1314,7 +1443,7 @@ pub(super) fn finalize_execution(
     let observation = Observation {
         decision_id: execution_id.to_string(),
         attempt_id: execution_id.to_string(),
-        outcome,
+        outcome: task_outcome,
         compliance,
         checks: compliance_entries.clone(),
         evidence,
@@ -1373,6 +1502,49 @@ pub(super) fn finalize_execution(
             if let Some(saved) = state.store.put("execution", &record) {
                 state.bus.record("execution", &saved);
             }
+        }
+    }
+
+    // A success experience requires Succeeded, not merely a completed stream.
+    if task_outcome == TaskOutcome::Succeeded {
+        if let (Some(acceptance_text), Some(final_message_id)) = (
+            record["acceptanceText"].as_str(),
+            record["finalMessageId"].as_str(),
+        ) {
+            let scope = crate::engine::memory::MemoryScope::for_session(
+                &state.store,
+                record["sessionId"].as_str().unwrap_or(""),
+                record["agentId"].as_str(),
+            );
+            let lesson = format!(
+                "검증 조건을 실제 도구 결과로 충족함. 결과 요약: {}",
+                record["finalAnswer"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(300)
+                    .collect::<String>()
+            );
+            let tools = record["toolsUsed"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let _ = crate::engine::experience::record_shared(
+                state,
+                &scope,
+                acceptance_text,
+                "success",
+                &lesson,
+                "",
+                &[final_message_id.to_string(), execution_id.to_string()],
+                &tools,
+                &[],
+            );
         }
     }
 }
@@ -1437,6 +1609,81 @@ fn record_tool_stat(state: &AppState, session_id: &str, agent_id: Option<&str>, 
             &[format!("tool-stat:{name}")],
             Some(name),
             "shared",
+        );
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn execution(status: &str, acceptance: bool, acceptance_text: Value) -> Value {
+        json!({
+            "status": status,
+            "acceptancePassed": acceptance,
+            "acceptanceText": acceptance_text,
+            "strategyCompliance": []
+        })
+    }
+
+    #[test]
+    fn completed_is_not_automatically_succeeded() {
+        assert_eq!(
+            determine_task_outcome(&execution("completed", false, Value::Null)),
+            TaskOutcome::AnsweredUnverified
+        );
+        assert_eq!(
+            determine_task_outcome(&execution("completed", false, json!("check"))),
+            TaskOutcome::Failed
+        );
+        assert_eq!(
+            determine_task_outcome(&execution("completed", true, json!("check"))),
+            TaskOutcome::Succeeded
+        );
+    }
+
+    #[test]
+    fn standing_violation_forces_failure() {
+        let mut value = execution("completed", true, json!("check"));
+        value["strategyCompliance"] = json!([{
+            "strategyId":"s1","authority":"standing","applicable":true,
+            "result":{"verified":true,"triggered":true,"followed":false}
+        }]);
+        assert_eq!(determine_task_outcome(&value), TaskOutcome::Failed);
+    }
+
+    #[test]
+    fn simple_deterministic_tasks_skip_the_planner() {
+        let checks = Some((
+            "create report".to_string(),
+            json!([{"type":"file_changed","path":"report.txt"}]),
+        ));
+        assert!(!needs_plan("report.txt 파일을 만들어줘", &checks));
+        assert!(needs_plan("파일을 만들고 그리고 내용도 확인해", &checks));
+        assert!(needs_plan("report.txt 파일을 만들어줘", &None));
+        assert!(needs_plan(&"가".repeat(300), &checks));
+    }
+
+    #[test]
+    fn adaptive_strategy_violation_still_allows_task_success() {
+        let mut value = execution("completed", true, json!("check"));
+        value["strategyCompliance"] = json!([{
+            "strategyId":"s1","authority":"adaptive","applicable":true,
+            "result":{"verified":true,"triggered":true,"followed":false}
+        }]);
+        assert_eq!(determine_task_outcome(&value), TaskOutcome::Succeeded);
+    }
+
+    #[test]
+    fn cancelled_and_failed_are_not_success() {
+        assert_eq!(
+            determine_task_outcome(&execution("cancelled", true, json!("check"))),
+            TaskOutcome::Cancelled
+        );
+        assert_eq!(
+            determine_task_outcome(&execution("failed", true, json!("check"))),
+            TaskOutcome::Failed
         );
     }
 }
