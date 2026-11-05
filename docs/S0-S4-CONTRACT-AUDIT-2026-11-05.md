@@ -100,13 +100,13 @@
 
 | # | 요구사항 | 판정 | 구현 증거 | 빠진 것 |
 |---|---|---|---|---|
-| 1 | ready DAG node 선택, verified binding, next intent | **미구현** | 없음 | 전부 |
-| 2 | model_guided/harness_assisted revision별 선택, candidate 자동 실행 금지 | **미구현** | `authority` 필드만 있음 | assistance mode, 후보 차단 없음 |
-| 3 | literal/owner binding/앞 node JSON pointer, 길이·type·resource 제약 | **미구현** | 없음 | 전부 |
-| 4 | argv 도구는 existing terminal_exec, shell 문자열 조합 금지 | **미구현** | 없음 | 전부 |
-| 5 | node 실행도 기존 승인·취소·budget·side effect uncertainty, source=procedure | **미구현** | 없음 | 전부 |
+| 1 | ready DAG node 선택, verified binding, next intent | **구현** | `procedure::ready_intent`/`resolve_binding`. 테스트 `ready_nodes_bind_only_verified_values`, `unresolved_binding...` | — |
+| 2 | model_guided/harness_assisted revision별 선택, candidate 자동 실행 금지 | **구현** | `propose` 기본 `model_guided`; `set_assistance_mode`; 반성은 standing+non-empty nodes일 때만 `harness_assisted`. 후보는 기본 guided | — |
+| 3 | literal/owner binding/앞 node JSON pointer, 길이·type·resource 제약 | **구현** | `resolve_binding`이 literal/$owner/$input/$task/이전 node pointer 지원. `valid_node_arguments`가 4096자/32KiB/깊이 8 제한. unresolved binding은 intent 없음 | — |
+| 4 | argv 도구는 existing terminal_exec, shell 문자열 조합 금지 | **구현** | harness는 node의 tool/arguments를 그대로 `dispatch_tool_call`에 전달. shell 문자열을 합성하지 않음 | — |
+| 5 | node 실행도 기존 승인·취소·budget·side effect uncertainty, source=procedure | **구현** | `dispatch_tool_call`의 공통 approval/operation/budget 사용. harness 취소 세대 검사. operation에 `origin=procedure`, `procedureNodeId` 저장. E2E `harness_assisted_executes_dag_nodes_through_the_common_dispatch` | — |
 
-**S4 결론:** 착수 전. S3의 single finish/공통 dispatch가 먼저 필요하다.
+**S4 결론:** 구현 완료. `ready_intent`/binding 단위 테스트와 harness E2E가 통과했다. 실제 4B paired benchmark는 다음 S7이다.
 
 ---
 
@@ -118,7 +118,7 @@
 | S1 | 5 | 0 | 0 |
 | S2 | 6 | 0 | 0 |
 | S3 | 7 | 0 | 0 |
-| S4 | 0 | 0 | 5 |
+| S4 | 5 | 0 | 0 |
 
 **현재 완료된 단계는 없다.**  
 S0는 실험 보호의 기본만, S1은 멱등 종료의 일부만, S2는 조건 검증의 일부만, S3는 완료 우회의 일부만 닫았다.

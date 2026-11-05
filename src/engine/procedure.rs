@@ -110,6 +110,28 @@ fn validate_bindings(value: &Value, bindings: &Value, nodes: &[Value]) -> Vec<St
     errors
 }
 
+fn valid_argument_value(value: &Value, depth: usize) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    match value {
+        Value::String(text) => text.chars().count() <= 4096,
+        Value::Array(items) => items
+            .iter()
+            .all(|item| valid_argument_value(item, depth + 1)),
+        Value::Object(map) => map
+            .values()
+            .all(|item| valid_argument_value(item, depth + 1)),
+        _ => true,
+    }
+}
+
+fn valid_node_arguments(value: &Value) -> bool {
+    value.is_object()
+        && value.to_string().len() <= 32_768
+        && valid_argument_value(value, 0)
+}
+
 fn validate_dag(nodes: &[Value], edges: &[Value], bindings: &Value) -> Vec<String> {
     let mut errors = Vec::new();
     if nodes.len() > 16 {
@@ -135,8 +157,10 @@ fn validate_dag(nodes: &[Value], edges: &[Value], bindings: &Value) -> Vec<Strin
         if !catalog.contains(tool) && !tool.starts_with("mcp__") {
             errors.push(format!("unsupported DAG tool: {tool}"));
         }
-        if !node["arguments"].is_object() {
-            errors.push(format!("DAG node {id} arguments must be an object"));
+        if !valid_node_arguments(&node["arguments"]) {
+            errors.push(format!(
+                "DAG node {id} arguments exceed bounds or are not an object"
+            ));
         }
         errors.extend(validate_bindings(
             &node["arguments"],
@@ -585,6 +609,105 @@ pub fn sort_operations(operations: &mut [Value]) {
     });
 }
 
+fn resolve_binding(
+    value: &Value,
+    bindings: &Value,
+    request: &str,
+    results: &std::collections::HashMap<String, Value>,
+) -> Option<Value> {
+    match value {
+        Value::String(text) if text.starts_with('$') => {
+            let rest = text.trim_start_matches('$');
+            if matches!(rest, "owner" | "input" | "task") {
+                return Some(json!(request));
+            }
+            if let Some((node, pointer)) = rest.split_once('.') {
+                let result = results.get(node)?;
+                if pointer.is_empty() {
+                    return Some(result.clone());
+                }
+                let pointer = if pointer.starts_with('/') {
+                    pointer.to_string()
+                } else {
+                    format!("/{}", pointer.replace('.', "/"))
+                };
+                return result.pointer(&pointer).cloned();
+            }
+            bindings.get(rest).cloned()
+        }
+        Value::Array(items) => Some(Value::Array(
+            items
+                .iter()
+                .map(|item| resolve_binding(item, bindings, request, results))
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        Value::Object(map) => {
+            let mut resolved = serde_json::Map::new();
+            for (key, item) in map {
+                resolved.insert(
+                    key.clone(),
+                    resolve_binding(item, bindings, request, results)?,
+                );
+            }
+            Some(Value::Object(resolved))
+        }
+        other => Some(other.clone()),
+    }
+}
+
+/// Selects the next ready DAG node and resolves only literal, owner/input,
+/// or previously verified node-result bindings.
+pub fn ready_intent(
+    strategy: &Value,
+    operations: &[Value],
+    request: &str,
+    results: &std::collections::HashMap<String, Value>,
+) -> Option<(String, String, Value)> {
+    let verification = &strategy["verification"];
+    if verification["type"].as_str() != Some("procedure") {
+        return None;
+    }
+    let nodes = verification["nodes"].as_array()?;
+    if nodes.is_empty() {
+        return None;
+    }
+    let completed = operations
+        .iter()
+        .filter(|operation| operation["origin"].as_str() == Some("procedure"))
+        .filter_map(|operation| operation["procedureNodeId"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    for node in nodes {
+        let Some(id) = node["id"].as_str() else {
+            continue;
+        };
+        if completed.contains(id) {
+            continue;
+        }
+        let dependencies = verification["edges"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|edge| edge["to"].as_str() == Some(id))
+            .filter_map(|edge| edge["from"].as_str())
+            .collect::<Vec<_>>();
+        if dependencies.iter().any(|dependency| !completed.contains(dependency)) {
+            continue;
+        }
+        let tool = node["tool"].as_str()?.to_string();
+        let arguments = resolve_binding(
+            &node["arguments"],
+            &verification["bindings"],
+            request,
+            results,
+        )?;
+        if !valid_node_arguments(&arguments) {
+            continue;
+        }
+        return Some((id.to_string(), tool, arguments));
+    }
+    None
+}
+
 /// Evaluates a strategy against the completed operations and file state.
 /// `verified=false` means the strategy has no machine-checkable procedure.
 pub fn evaluate(strategy: &Value, operations: &[Value], workspace: &Path) -> Value {
@@ -842,6 +965,56 @@ mod tests {
         assert_eq!(result["followed"], false);
         assert_eq!(result["status"], "not_triggered");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ready_nodes_bind_only_verified_values() {
+        let strategy = json!({
+            "id":"harness",
+            "verification": normalize(&json!({
+                "type":"procedure",
+                "appliesTo":{"paths":["out.txt"]},
+                "bindings":{"literal":"bound"},
+                "nodes":[
+                    {"id":"prep","tool":"workspace_write","arguments":{"path":"audit.txt","content":"ok"}},
+                    {"id":"write","tool":"workspace_write","arguments":{"path":"$prep.path","content":"$literal"}}
+                ],
+                "edges":[{"from":"prep","to":"write"}]
+            }))
+        });
+        let mut results = std::collections::HashMap::new();
+        let (id, tool, _arguments) =
+            ready_intent(&strategy, &[], "out.txt", &results).expect("first node");
+        assert_eq!(id, "prep");
+        assert_eq!(tool, "workspace_write");
+        results.insert(
+            "prep".into(),
+            json!({"path":"audit.txt","written":true}),
+        );
+        let (id, _, arguments) =
+            ready_intent(&strategy, &[json!({"origin":"procedure","procedureNodeId":"prep"})], "out.txt", &results)
+                .expect("second node");
+        assert_eq!(id, "write");
+        assert_eq!(arguments["path"], "audit.txt");
+        assert_eq!(arguments["content"], "bound");
+    }
+
+    #[test]
+    fn unresolved_binding_does_not_produce_an_intent() {
+        let strategy = json!({
+            "id":"harness",
+            "verification": normalize(&json!({
+                "type":"procedure",
+                "nodes":[{"id":"write","tool":"workspace_write","arguments":{"path":"out.txt","content":"$missing"}}]
+            }))
+        });
+        assert!(ready_intent(
+            &strategy,
+            &[],
+            "out.txt",
+            &std::collections::HashMap::new()
+        )
+        .is_none());
     }
 
     #[test]

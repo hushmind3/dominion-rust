@@ -160,6 +160,7 @@ pub fn propose(
         "supersedes": supersedes,
         "verification": {"type": "unverified"},
         "authority": "adaptive",
+        "assistanceMode": "model_guided",
         "version": 1,
         "scoreVersion": 2,
         "evidenceGrade": "E0",
@@ -574,6 +575,18 @@ pub fn record_execution(state: &AppState, execution: &Value) {
             );
         }
     }
+}
+
+/// Selects model-guided or harness-assisted execution for a verified revision.
+pub fn set_assistance_mode(state: &AppState, id: &str, mode: &str) -> Option<Value> {
+    if !matches!(mode, "model_guided" | "harness_assisted") {
+        return None;
+    }
+    let mut record = state.store.get("improvement", id)?;
+    record["assistanceMode"] = json!(mode);
+    let saved = state.store.put("improvement", &record)?;
+    state.bus.record("improvement", &saved);
+    Some(saved)
 }
 
 /// Owner corrections are standing constraints; learned strategies are adaptive.

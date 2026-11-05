@@ -1519,11 +1519,128 @@ fn procedure_violation_blocks_the_target_and_repairs_with_the_prerequisite() {
         .iter()
         .find(|execution| execution["sessionId"] == after_id)
         .expect("post execution");
-    assert_eq!(execution["taskOutcome"], "succeeded");
+    assert_eq!(execution["taskOutcome"], "succeeded", "{}", execution);
     let compliance = execution["strategyCompliance"].as_array().expect("compliance");
     assert!(compliance.iter().any(|item| {
         item["applicable"] == true
             && item["result"]["verified"] == true
             && item["result"]["followed"] == true
     }));
+}
+
+#[test]
+fn harness_assisted_executes_dag_nodes_through_the_common_dispatch() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().cloned().unwrap_or_default();
+        let system = messages
+            .first()
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        if system.contains("반성기") {
+            let reflection = json!({
+                "rootCause": "선행 audit 없이 report를 작성했다",
+                "expected": "audit 먼저",
+                "actual": "report만 작성",
+                "lesson": "harness 절차로 audit 후 report를 실행한다",
+                "avoid": "선행 작업 생략",
+                "strategy": {
+                    "text": "harness 절차로 audit 후 report를 실행한다",
+                    "rationale": "주인의 교정에서 확인된 선행 조건",
+                    "verification": {
+                        "type":"procedure",
+                        "appliesTo":{"paths":["harness_report.txt"]},
+                        "bindings":{},
+                        "nodes":[
+                            {"id":"audit","tool":"workspace_write","arguments":{"path":"harness_audit.txt","content":"audit-harness"}},
+                            {"id":"report","tool":"workspace_write","arguments":{"path":"harness_report.txt","content":"REPORT-OK"}}
+                        ],
+                        "edges":[{"from":"audit","to":"report"}],
+                        "after":[{"kind":"file_contains","path":"harness_audit.txt","text":"audit-harness"}]
+                    }
+                },
+                "skill": null,
+                "memory": null
+            })
+            .to_string();
+            return vec![json!({"choices":[{"delta":{"content":reflection},"finish_reason":"stop"}]})];
+        }
+        if system.contains("증거 기반 학습기") {
+            let empty = json!({
+                "memories": [], "skill": null, "strategies": [],
+                "toolPolicies": [], "harnessProposal": null
+            })
+            .to_string();
+            return vec![json!({"choices":[{"delta":{"content":empty},"finish_reason":"stop"}]})];
+        }
+        vec![json!({"choices":[{"delta":{"content":"확인했습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll": true}));
+
+    let session = app.post("/api/sessions", &json!({"title":"harness setup"}));
+    let session_id = session["id"].as_str().unwrap();
+    app.chat(&json!({
+        "sessionId": session_id,
+        "input": "간단히 설명해",
+        "toolsEnabled": false,
+        "autoLearning": false
+    }));
+    let correction = app.chat(&json!({
+        "sessionId": session_id,
+        "input": "아니, harness_report.txt를 만들기 전에 harness_audit.txt를 먼저 만들어. 다시 해.",
+        "toolsEnabled": false,
+        "autoLearning": true
+    }));
+    assert!(correction.contains("error"), "{correction}");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        if app.get("/api/jobs").as_array().unwrap().iter().any(|job| {
+            job["kind"] == "reflect" && job["status"] == "completed"
+        }) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = std::fs::remove_file(app._root.join("harness_report.txt"));
+    let _ = std::fs::remove_file(app._root.join("harness_audit.txt"));
+    let post = app.post("/api/sessions", &json!({"title":"harness post"}));
+    let post_id = post["id"].as_str().unwrap();
+    let stream = app.chat(&json!({
+        "sessionId": post_id,
+        "input": "harness_report.txt 파일을 만들고 내용을 REPORT-OK로 저장해.",
+        "toolsEnabled": true,
+        "autoLearning": false
+    }));
+    assert!(!stream.contains("error"), "{stream}");
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("harness_audit.txt")).unwrap(),
+        "audit-harness"
+    );
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("harness_report.txt")).unwrap(),
+        "REPORT-OK"
+    );
+    let executions = app.get("/api/executions");
+    let execution = executions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|execution| execution["sessionId"] == post_id)
+        .expect("post execution");
+    assert_eq!(execution["taskOutcome"], "succeeded");
+    let operations = app.get(&format!(
+        "/api/executions/{}/operations",
+        execution["id"].as_str().unwrap()
+    ));
+    let nodes = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|operation| operation["origin"] == "procedure")
+        .filter_map(|operation| operation["procedureNodeId"].as_str())
+        .collect::<Vec<_>>();
+    assert!(nodes.contains(&"audit"));
+    assert!(nodes.contains(&"report"));
 }

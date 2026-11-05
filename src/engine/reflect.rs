@@ -286,6 +286,17 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                     record["id"].as_str().unwrap_or(""),
                     authority,
                 );
+                if authority == "standing"
+                    && verification["nodes"]
+                        .as_array()
+                        .is_some_and(|nodes| !nodes.is_empty())
+                {
+                    improve::set_assistance_mode(
+                        state,
+                        record["id"].as_str().unwrap_or(""),
+                        "harness_assisted",
+                    );
+                }
             }
         }
     }

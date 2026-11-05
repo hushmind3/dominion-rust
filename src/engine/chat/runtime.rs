@@ -444,6 +444,22 @@ async fn run_turn_body(
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED);
 
+    let harness_messages = run_harness_nodes(
+        state,
+        tx,
+        &session,
+        request,
+        session_id,
+        execution_id,
+        &strategy_candidates,
+        metrics,
+        &mut budget,
+        &mut op_seq,
+        generation,
+    )
+    .await?;
+    messages.extend(harness_messages);
+
     for round in 0..MAX_ROUNDS {
         if !budget.charge_round() {
             return Err("모델 라운드 예산을 초과했습니다.".into());
@@ -715,6 +731,11 @@ async fn run_turn_body(
                         gaps.join("; ")
                     ));
                 }
+                acceptance_passed = true;
+                state.store.audit(
+                    "acceptance.passed",
+                    json!({"sessionId": session_id, "executionId": execution_id, "round": round}),
+                );
             }
 
             finished = true;
@@ -875,6 +896,8 @@ async fn run_turn_body(
                 round,
                 call_index,
                 provider.tool_mode == "compat",
+                "model",
+                None,
             )
             .await?;
             messages.push(json!({
@@ -977,6 +1000,101 @@ fn clip(text: &str, limit: usize) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn run_harness_nodes(
+    state: &AppState,
+    tx: &UnboundedSender<Value>,
+    session: &Value,
+    request: &TurnRequest,
+    session_id: &str,
+    execution_id: &str,
+    strategy_candidates: &[Value],
+    metrics: &std::sync::Mutex<Metrics>,
+    budget: &mut super::budget::BudgetLedger,
+    op_seq: &mut u64,
+    generation: u64,
+) -> Result<Vec<Value>, String> {
+    let mut synthetic = Vec::new();
+    for strategy in strategy_candidates {
+        if strategy["assistanceMode"].as_str() != Some("harness_assisted") {
+            continue;
+        }
+        if !crate::engine::procedure::applies(strategy, &request.input, None, None) {
+            continue;
+        }
+        let mut results = std::collections::HashMap::new();
+        for _ in 0..16 {
+            if state.is_cancelled(session_id)
+                || state.cancellation_generation(session_id) != generation
+            {
+                return Err("실행이 중단되었습니다.".into());
+            }
+            let operations = state
+                .store
+                .all("execution_operation")
+                .into_iter()
+                .filter(|operation| operation["runId"].as_str() == Some(execution_id))
+                .collect::<Vec<_>>();
+            for operation in &operations {
+                if operation["origin"].as_str() == Some("procedure") {
+                    if let Some(node) = operation["procedureNodeId"].as_str() {
+                        results.insert(node.to_string(), operation["result"].clone());
+                    }
+                }
+            }
+            let Some((node, tool, arguments)) = crate::engine::procedure::ready_intent(
+                strategy,
+                &operations,
+                &request.input,
+                &results,
+            ) else {
+                break;
+            };
+            if !budget.charge_tool() {
+                return Err(format!(
+                    "harness 절차 도구 예산({MAX_TOOL_CALLS}회)을 초과했습니다."
+                ));
+            }
+            *op_seq += 1;
+            let call = ToolCall {
+                id: format!("procedure-{node}-{}", uuid::Uuid::new_v4()),
+                name: tool,
+                arguments: arguments.to_string(),
+            };
+            let (result, ok, content) = dispatch_tool_call(
+                state,
+                tx,
+                session,
+                request,
+                session_id,
+                execution_id,
+                &call,
+                arguments,
+                metrics,
+                *op_seq,
+                0,
+                0,
+                true,
+                "procedure",
+                Some(&node),
+            )
+            .await?;
+            results.insert(node.clone(), result);
+            synthetic.push(json!({
+                "role": "system",
+                "content": format!(
+                    "Harness procedure node {node} executed (origin=procedure). result: {}",
+                    content.chars().take(1200).collect::<String>()
+                )
+            }));
+            if !ok {
+                break;
+            }
+        }
+    }
+    Ok(synthetic)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_tool_call(
     state: &AppState,
     tx: &UnboundedSender<Value>,
@@ -991,6 +1109,8 @@ async fn dispatch_tool_call(
     round: usize,
     call_index: usize,
     compat: bool,
+    origin: &str,
+    procedure_node: Option<&str>,
 ) -> Result<(Value, bool, String), String> {
     let started_at = chrono::Utc::now().to_rfc3339();
     let tool_started = std::time::Instant::now();
@@ -1015,7 +1135,8 @@ async fn dispatch_tool_call(
             &json!({
                 "id": operation_id, "runId": execution_id, "sessionId": session_id,
                 "callId": call.id, "tool": call.name, "arguments": arguments,
-                "opSeq": op_seq, "status": "running", "startedAt": started_at,
+                "opSeq": op_seq, "origin": origin, "procedureNodeId": procedure_node,
+                "status": "running", "startedAt": started_at,
             }),
         )
         .ok_or("도구 실행 시작을 저장할 수 없습니다.")?;
@@ -1096,6 +1217,8 @@ async fn dispatch_tool_call(
                 "arguments": arguments,
                 "result": result,
                 "opSeq": op_seq,
+                "origin": origin,
+                "procedureNodeId": procedure_node,
                 "status": if ok { "completed" } else { "failed" },
                 "startedAt": started_at,
                 "finishedAt": chrono::Utc::now().to_rfc3339(),
