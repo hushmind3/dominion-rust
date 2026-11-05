@@ -102,7 +102,13 @@ fn context_block(
     }
 
     let adopted = crate::engine::improve::context_block(state, &scope);
-    if memories.is_none() && skills.is_empty() && reliability.is_empty() && adopted.is_none() {
+    let experience = crate::engine::experience::context_block(state, &scope, query);
+    if memories.is_none()
+        && skills.is_empty()
+        && reliability.is_empty()
+        && adopted.is_none()
+        && experience.is_none()
+    {
         return None;
     }
     let mut block = memories.unwrap_or_default();
@@ -121,6 +127,10 @@ fn context_block(
     if let Some(adopted) = adopted {
         block.push_str("\n\n");
         block.push_str(&adopted);
+    }
+    if let Some(experience) = experience {
+        block.push_str("\n\n");
+        block.push_str(&experience);
     }
     Some(block)
 }

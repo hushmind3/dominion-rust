@@ -5,6 +5,8 @@ pub mod chat;
 pub mod compact;
 pub mod dev;
 pub mod discord;
+pub mod experience;
+pub mod reflect;
 pub mod goals;
 pub mod improve;
 pub mod jobs;

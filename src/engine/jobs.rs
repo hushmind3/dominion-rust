@@ -1,6 +1,6 @@
 use crate::engine::chat::TurnRequest;
 use crate::engine::run_quiet;
-use crate::engine::{goals, learning, rooms, workflows};
+use crate::engine::{goals, learning, reflect, rooms, workflows};
 use crate::state::AppState;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -352,6 +352,7 @@ async fn run_job(state: AppState, job: Value) {
         "goal" => goals::run(&context, &job).await,
         "prompt" => run_prompt(&context, &job).await,
         "learn" => learning::run(&context, &job).await,
+        "reflect" => reflect::run(&context, &job).await,
         "discord" => crate::engine::discord::run(&context, &job).await,
         "video" => crate::engine::video::run(&context, &job).await,
         "youtube_upload" => crate::engine::video::upload(&context, &job).await,

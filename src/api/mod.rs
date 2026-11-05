@@ -6,6 +6,7 @@ pub mod settings;
 pub mod goals;
 pub mod improvements;
 pub mod executions;
+pub mod experience;
 pub mod memory;
 pub mod extensions;
 pub mod approvals;
@@ -207,6 +208,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/executions", get(executions::list))
         .route("/api/executions/active", get(executions::active_executions))
         .route("/api/improvements", get(improvements::list))
+        .route("/api/experience", get(experience::list))
         .route("/api/improvements/:id/:action", post(improvements::decide))
         .route("/api/executions/:id", get(executions::one))
         .route("/api/executions/:id/cancel", post(executions::cancel))

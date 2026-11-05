@@ -144,13 +144,30 @@ async fn run_turn_with_policy(
     finalize_execution(state, &execution_id, &result, &metrics);
     close_pending_approvals(state, &session_id);
 
-    if request.auto_learning && matches!(&result, Ok(Some(_))) {
-        crate::engine::learning::enqueue(
-            state,
-            &session_id,
-            request.provider_id.as_deref().unwrap_or(""),
-            request.model.as_deref().unwrap_or(""),
-        );
+    if request.auto_learning {
+        // Ordinary learning only makes sense once a usable answer was stored.
+        if matches!(&result, Ok(Some(_))) {
+            crate::engine::learning::enqueue(
+                state,
+                &session_id,
+                request.provider_id.as_deref().unwrap_or(""),
+                request.model.as_deref().unwrap_or(""),
+            );
+        }
+        // A correction is worth reflecting on even when the corrective turn
+        // itself failed, because the failure is additional evidence.
+        if let Some(correction_id) =
+            crate::engine::reflect::correction_to_reflect(state, &session_id, &request.input)
+        {
+            crate::engine::reflect::enqueue(
+                state,
+                &session_id,
+                &correction_id,
+                request.agent_id.as_deref(),
+                request.provider_id.as_deref().unwrap_or(""),
+                request.model.as_deref().unwrap_or(""),
+            );
+        }
     }
     result
 }
@@ -782,6 +799,32 @@ async fn run_turn_body(
         }))
         .ok_or("최종 응답을 저장할 수 없습니다.")?;
     state.bus.message(&saved);
+    if acceptance_passed {
+        if let Some((acceptance_text, _)) = &acceptance {
+            let scope = crate::engine::memory::MemoryScope::for_session(
+                &state.store, session_id, request.agent_id.as_deref(),
+            );
+            let lesson = format!(
+                "검증 조건을 실제 도구 결과로 충족함. 결과 요약: {}",
+                final_content.chars().take(300).collect::<String>()
+            );
+            let tools = call_counts
+                .keys()
+                .filter_map(|key| key.split(':').next().map(str::to_string))
+                .collect::<Vec<_>>();
+            let _ = crate::engine::experience::record(
+                state,
+                &scope,
+                acceptance_text,
+                "success",
+                &lesson,
+                "",
+                &[saved["id"].as_str().unwrap_or("").to_string(), execution_id.to_string()],
+                &tools,
+                &[],
+            );
+        }
+    }
     Ok(Some(saved))
 }
 

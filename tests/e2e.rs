@@ -143,6 +143,7 @@ impl TestApp {
 
 #[test]
 fn command_failure_persists_actual_evidence() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|request| {
         let saw_tool = request["messages"]
             .as_array()
@@ -178,6 +179,7 @@ fn command_failure_persists_actual_evidence() {
 
 #[test]
 fn compatibility_tools_are_available_and_round_limit_is_a_failure() {
+    let _serial = serial();
     let (port, requests) = scripted_provider(|_| {
         vec![
             json!({"choices":[{"delta":{"content":"<tool_call>{\"name\":\"workspace_list\",\"arguments\":{}}</tool_call>"},"finish_reason":"stop"}]}),
@@ -213,6 +215,7 @@ fn compatibility_tools_are_available_and_round_limit_is_a_failure() {
 
 #[test]
 fn cancelling_a_stalled_model_does_not_wait_for_network_data() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|_| {
         std::thread::sleep(Duration::from_secs(5));
         vec![json!({"choices":[{"delta":{"content":"too late"},"finish_reason":"stop"}]})]
@@ -254,6 +257,7 @@ fn cancelling_a_stalled_model_does_not_wait_for_network_data() {
 
 #[test]
 fn disabled_tools_cannot_be_enabled_by_the_model() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|_| {
         vec![
             json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"forbidden","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\"forbidden.txt\",\"content\":\"should never exist\"}"}}]},"finish_reason":"tool_calls"}]}),
@@ -270,6 +274,7 @@ fn disabled_tools_cannot_be_enabled_by_the_model() {
 
 #[test]
 fn persistent_room_http_flow_keeps_owner_once_and_shares_peer_context() {
+    let _serial = serial();
     let (port, requests) = scripted_provider(|request| {
         let system = request["messages"][0]["content"].as_str().unwrap();
         let reply = if system.contains("Active agent: Alice (id: a)") {
@@ -327,6 +332,7 @@ fn persistent_room_http_flow_keeps_owner_once_and_shares_peer_context() {
 
 #[test]
 fn reused_model_call_ids_do_not_overwrite_prior_tool_evidence() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|request| {
         let count = request["messages"]
             .as_array()
@@ -358,6 +364,12 @@ fn reused_model_call_ids_do_not_overwrite_prior_tool_evidence() {
     assert!(operations
         .iter()
         .all(|operation| operation["status"] == "completed"));
+}
+
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn free_port() -> u16 {
@@ -478,6 +490,7 @@ fn temp_root() -> PathBuf {
 
 #[test]
 fn chat_sse_persistence_and_origin_guard() {
+    let _serial = serial();
     let provider_port = start_mock_provider();
     let port = free_port();
     let root = temp_root();
@@ -586,6 +599,7 @@ fn chat_sse_persistence_and_origin_guard() {
 
 #[test]
 fn concurrent_turns_on_one_session_are_rejected() {
+    let _serial = serial();
     let provider_port = start_mock_provider();
     let port = free_port();
     let root = temp_root();
@@ -657,6 +671,7 @@ fn concurrent_turns_on_one_session_are_rejected() {
 
 #[test]
 fn ordinary_chat_rejects_word_only_completion() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|_| {
         vec![json!({"choices":[{"delta":{"content":"gate-claim.txt 파일을 저장했습니다."},"finish_reason":"stop"}]})]
     });
@@ -675,6 +690,7 @@ fn ordinary_chat_rejects_word_only_completion() {
 
 #[test]
 fn ordinary_chat_accepts_real_tool_evidence() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|request| {
         let saw_tool = request["messages"]
             .as_array()
@@ -717,6 +733,7 @@ fn ordinary_chat_accepts_real_tool_evidence() {
 
 #[test]
 fn native_job_prompt_runs_and_client_cannot_forge_status() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|_| {
         vec![json!({"choices":[{"delta":{"content":"job-done"},"finish_reason":"stop"}]})]
     });
@@ -758,6 +775,7 @@ fn native_job_prompt_runs_and_client_cannot_forge_status() {
 
 #[test]
 fn executions_are_read_only_and_scoped_cancel_only_hits_running() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|_| {
         vec![json!({"choices":[{"delta":{"content":"exec-done"},"finish_reason":"stop"}]})]
     });
@@ -799,6 +817,7 @@ fn executions_are_read_only_and_scoped_cancel_only_hits_running() {
 
 #[test]
 fn cancelling_a_running_execution_marks_it_cancelled() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|_| {
         std::thread::sleep(Duration::from_secs(4));
         vec![json!({"choices":[{"delta":{"content":"late"},"finish_reason":"stop"}]})]
@@ -847,6 +866,7 @@ fn cancelling_a_running_execution_marks_it_cancelled() {
 
 #[test]
 fn cancelling_a_running_job_stops_it() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|_| {
         std::thread::sleep(Duration::from_secs(4));
         vec![json!({"choices":[{"delta":{"content":"late job"},"finish_reason":"stop"}]})]
@@ -883,6 +903,7 @@ fn cancelling_a_running_job_stops_it() {
 
 #[test]
 fn room_manual_learning_enqueues_each_participant_with_its_own_watermark() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|_| {
         vec![json!({"choices":[{"delta":{"content":"참가자 발언"},"finish_reason":"stop"}]})]
     });
@@ -953,6 +974,7 @@ fn room_manual_learning_enqueues_each_participant_with_its_own_watermark() {
 
 #[test]
 fn token_budget_is_enforced_from_stream_usage() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|request| {
         if request["messages"]
             .as_array()
@@ -982,6 +1004,7 @@ fn token_budget_is_enforced_from_stream_usage() {
 
 #[test]
 fn reviewer_repairs_a_claim_with_a_real_tool() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|request| {
         let messages = request["messages"].as_array().unwrap();
         let system = messages
@@ -1039,6 +1062,7 @@ fn reviewer_repairs_a_claim_with_a_real_tool() {
 
 #[test]
 fn verified_work_completes_without_waiting_for_the_model_to_stop() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|request| {
         let messages = request["messages"].as_array().unwrap();
         let system = messages
@@ -1074,6 +1098,7 @@ fn verified_work_completes_without_waiting_for_the_model_to_stop() {
 
 #[test]
 fn compat_mode_executes_a_bare_json_tool_call_from_a_weak_model() {
+    let _serial = serial();
     let (port, _) = scripted_provider(|request| {
         let messages = request["messages"].as_array().unwrap();
         let system = messages
@@ -1107,6 +1132,7 @@ fn compat_mode_executes_a_bare_json_tool_call_from_a_weak_model() {
 
 #[test]
 fn delegate_task_runs_a_real_child_agent_and_returns_its_result() {
+    let _serial = serial();
     use std::sync::{Arc, Mutex};
     let child_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let slot = child_slot.clone();
@@ -1198,4 +1224,78 @@ fn delegate_task_runs_a_real_child_agent_and_returns_its_result() {
         .unwrap()
         .iter()
         .any(|job| job["kind"] == "prompt" && job["status"] == "completed"));
+}
+
+#[test]
+fn correction_turn_failure_still_enqueues_reflection() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().cloned().unwrap_or_default();
+        let is_reflection = messages.iter().any(|message| {
+            message["role"] == "system"
+                && message["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("실패를 분석하는 반성기")
+        });
+        if is_reflection {
+            return vec![json!({"choices":[{"delta":{"content":
+                "{\"rootCause\":\"도구를 쓰지 않고 말로만 끝냈다\",\"expected\":\"파일 생성\",\"actual\":\"설명만 함\",\"lesson\":\"행동 요청은 도구 결과로 검증한다\",\"avoid\":\"도구 호출 없이 완료 선언\",\"strategy\":null,\"skill\":null,\"memory\":null}"
+            },"finish_reason":"stop"}]})];
+        }
+        let last_user = messages
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "user")
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("")
+            .to_string();
+        if last_user.contains("틀렸") {
+            // The corrective turn itself fails: reflection must still be queued.
+            vec![json!({"choices":[{"delta":{},"finish_reason":"content_filter"}]})]
+        } else {
+            vec![json!({"choices":[{"delta":{"content":"설명만 했습니다."},"finish_reason":"stop"}]})]
+        }
+    });
+    let app = TestApp::new(port, "native");
+    let session = app.post("/api/sessions", &json!({"title":"reflect on failure"}));
+    let session_id = session["id"].as_str().unwrap();
+    let first = app.chat(&json!({
+        "sessionId": session_id, "input": "러스트의 장점을 한 문장으로 말해",
+        "toolsEnabled": false, "autoLearning": false
+    }));
+    assert!(first.contains("assistant_saved"), "{first}");
+
+    let second = app.chat(&json!({
+        "sessionId": session_id, "input": "아니 그게 아니라, 틀렸어. 다시 해.",
+        "toolsEnabled": false, "autoLearning": true
+    }));
+    assert!(second.contains("error"), "{second}");
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut reflect_status = String::new();
+    while Instant::now() < deadline {
+        if let Some(job) = app
+            .get("/api/jobs")
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|job| job["kind"] == "reflect")
+        {
+            reflect_status = job["status"].as_str().unwrap_or("").to_string();
+            if matches!(reflect_status.as_str(), "completed" | "failed") {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        reflect_status, "completed",
+        "reflection did not complete after failed correction turn"
+    );
+    let experience = app.get("/api/experience");
+    assert!(
+        !experience.as_array().unwrap().is_empty(),
+        "reflection produced no experience"
+    );
 }

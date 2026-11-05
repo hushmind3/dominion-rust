@@ -289,7 +289,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
          이전 사실을 정정하는 경우 동일한 key를 사용한다. 해당 새 메시지에 근거가 없으면 memories:[],skill:null을 반환한다.",
         &json!({"messages":transcript,"existingFactKeys":existing_keys}).to_string()).await?;
     let parsed = parse_learning(&raw)?;
-    let result = apply_learning(state, &scope, batch, &parsed)?;
+    let mut result = apply_learning(state, &scope, batch, &parsed)?;
+    let consolidation = crate::engine::experience::consolidate(state);
+    result["experienceConsolidation"] = consolidation;
     state
         .store
         .put(
