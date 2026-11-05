@@ -1,5 +1,6 @@
 pub mod goal_control;
 pub mod attachments;
+pub mod backup_keys;
 pub mod bridge;
 pub mod chat;
 pub mod compact;

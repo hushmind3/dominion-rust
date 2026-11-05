@@ -1767,6 +1767,64 @@ fn policy_patches_activate_rollback_and_reject_stale_bases() {
         .is_some_and(|text| text.contains("base revision")));
 }
 
+#[test]
+fn backup_key_rotation_reencrypts_and_restores() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"키 회전 응답"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let stream = app.chat(&json!({"input":"키 회전 작업","autoLearning":false}));
+    assert!(!stream.contains("\"type\":\"error\""), "{stream}");
+    let backup = app.post("/api/system/backup", &json!({}));
+    let backup_path = backup["path"].as_str().unwrap().to_string();
+
+    // Rotation is maintenance-only.
+    let early = app
+        .client
+        .post(format!("{}/api/system/backup-keys/rotate", app.base))
+        .json(&json!({"keepOld":false}))
+        .send()
+        .unwrap();
+    assert_eq!(early.status(), reqwest::StatusCode::CONFLICT);
+
+    app.post("/api/system/maintenance", &json!({"enabled":true}));
+    let before = app.get("/api/system/backup-keys");
+    assert_eq!(before["activeVersion"], 1, "{before}");
+    let rotated = app.post(
+        "/api/system/backup-keys/rotate",
+        &json!({"keepOld":false}),
+    );
+    assert_eq!(rotated["ok"], true, "{rotated}");
+    assert_eq!(rotated["activeVersion"], 2, "{rotated}");
+    assert_eq!(rotated["previousVersion"], 1, "{rotated}");
+    assert_eq!(rotated["reencrypted"], 1, "{rotated}");
+    assert_eq!(rotated["retainedVersions"], json!([2]), "{rotated}");
+    assert!(!app._root.join("runtime/backup-keys/key-1.key").exists());
+
+    // The re-encrypted snapshot restores under the new key.
+    let restored = app.post(
+        "/api/system/restore",
+        &json!({"path":backup_path,"confirm":true}),
+    );
+    assert_eq!(restored["ok"], true, "{restored}");
+    assert_eq!(restored["executions"], 1, "{restored}");
+    let executions = app.get("/api/executions");
+    assert_eq!(executions.as_array().unwrap().len(), 1);
+    assert_eq!(executions.as_array().unwrap()[0]["status"], "completed");
+
+    let kept = app.post(
+        "/api/system/backup-keys/rotate",
+        &json!({"keepOld":true}),
+    );
+    assert_eq!(kept["activeVersion"], 3, "{kept}");
+    assert_eq!(kept["retainedVersions"], json!([2,3]), "{kept}");
+    let status = app.get("/api/system/backup-keys");
+    assert_eq!(status["activeVersion"], 3, "{status}");
+    assert_eq!(status["versions"], json!([2,3]), "{status}");
+    app.post("/api/system/maintenance", &json!({"enabled":false}));
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

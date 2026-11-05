@@ -279,6 +279,40 @@ pub async fn list_backups(State(state): State<AppState>) -> Json<Value> {
     Json(json!(items))
 }
 
+pub async fn backup_keys(State(state): State<AppState>) -> Json<Value> {
+    Json(crate::engine::backup_keys::status(&state))
+}
+
+pub async fn rotate_backup_keys(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !state.maintenance_mode() {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            Json(json!({"error":"키 회전은 유지보수 모드에서만 가능합니다."})),
+        )
+            .into_response();
+    }
+    let keep_old = body["keepOld"].as_bool().unwrap_or(false);
+    match crate::engine::backup_keys::rotate(&state, keep_old) {
+        Ok(report) => Json(json!({
+            "ok": true,
+            "activeVersion": report.active_version,
+            "previousVersion": report.previous_version,
+            "reencrypted": report.reencrypted,
+            "retainedVersions": report.retained_versions,
+        }))
+        .into_response(),
+        Err(error) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
 pub async fn maintenance(
     State(state): State<AppState>,
     Json(body): Json<Value>,
@@ -354,7 +388,7 @@ pub async fn restore_backup(
                 .into_response()
         }
     };
-    let Some(bytes) = state.vault.open_bytes(&sealed) else {
+    let Some(bytes) = crate::engine::backup_keys::decrypt_backup(&state, &sealed) else {
         return (
             axum::http::StatusCode::BAD_REQUEST,
             Json(json!({"error":"이 키로 백업을 복호화할 수 없습니다."})),

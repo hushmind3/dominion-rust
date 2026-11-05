@@ -151,3 +151,63 @@ E2E로 실제 엔진 프로세스를 사용해 두 시나리오를 실행했다.
 - 키 회전/키 백업 정책.
 - 라이브 restore 중 진행 중 job/runner의 명시적 drain.
 - 장시간 soak, 다중기기 ACL.
+
+## 7. Versioned backup keys and rotation (2026-11-05)
+
+### Keyring
+
+- `data/backup-keys/key-<version>.key` (32 bytes, 0600)
+- `data/backup-keys/active` (현재 version)
+- 백업 envelope: `DOMBAK2` + `u32 LE version` + 12-byte nonce + ciphertext
+- `KeyRing::load_or_create`가 없으면 version 1을 생성한다.
+- 기존 `secret.key`는 provider secret과 legacy snapshot용으로 유지된다.
+
+### Backup / restore
+
+- `maintenance::backup_now`는 active backup key로 암호화한다.
+- restore는 envelope version으로 키를 찾는다.
+  - versioned: 해당 version 키가 없으면 복호화 실패 (조용히 넘어가지 않음)
+  - legacy(`DOMBAK2` 없음): 기존 vault key로 fallback
+- maintenance mode에서는 정기 백업 daemon도 tick을 건너뛴다.
+
+### Rotation
+
+`backup_keys::rotate(state, keep_old)`:
+
+1. 기존 모든 `.enc`를 현재 키(또는 legacy vault)로 복호화
+2. 새 version 키 생성, 모든 백업을 **temp 파일**로 재암호화
+3. 새 키 파일과 active version 기록
+4. temp를 원본으로 rename
+5. `keep_old=false`면 이전 키 삭제, true면 보존
+6. audit `backup.keys_rotated`
+
+중간 실패 시 원본 백업은 그대로 남고 새 active로 전환되지 않는다.
+rotation은 **maintenance mode에서만** API로 허용된다.
+
+### API
+
+- `GET /api/system/backup-keys` → `{activeVersion, versions}`
+- `POST /api/system/backup-keys/rotate {keepOld}` (maintenance 필요)
+- `POST /api/system/restore`는 회전 후 새 키로 복호화한다.
+
+### 검증
+
+- `rotation_reencrypts_backups_and_drops_old_keys`
+  - version 1 → 2, 재암호화 1건, old key 삭제
+  - 새 키로 DB 복호화 후 레코드 확인
+- `keep_old_retains_the_previous_key_version` (retained [1,2])
+- `a_missing_key_version_cannot_decrypt`
+- E2E `backup_key_rotation_reencrypts_and_restores`
+  - maintenance 없이 rotate → 409
+  - maintenance에서 rotate keepOld=false → active 2, key-1 삭제
+  - **회전 후 restore** 성공, execution 1건 보존
+  - keepOld=true 재회전 → versions [2,3]
+
+전체: `252 unit + 42 E2E + 14 benchmark` 통과.
+
+### 남은 것
+
+- 원격 키 escrow / HSM, 키 서명.
+- provider secret vault(`secret.key`) 회전은 별도 절차다.
+- 원격 offsite 전송(S3/SSH), 보존 기간/immutability.
+- 장시간 soak, 다중기기 ACL.

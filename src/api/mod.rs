@@ -92,6 +92,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/policy-searches", get(system::policy_searches))
         .route("/api/policy-patches", get(system::policy_patches))
         .route("/api/system/backup", post(system::create_backup))
+        .route("/api/system/backup-keys", get(system::backup_keys))
+        .route(
+            "/api/system/backup-keys/rotate",
+            post(system::rotate_backup_keys),
+        )
         .route("/api/system/backups", get(system::list_backups))
         .route("/api/system/maintenance", post(system::maintenance))
         .route("/api/system/restore", post(system::restore_backup))

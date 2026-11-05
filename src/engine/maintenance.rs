@@ -65,10 +65,8 @@ pub fn backup_now(state: &AppState) -> Result<PathBuf, String> {
     let temp = directory.join(format!(".backup-{}.tmp", uuid::Uuid::new_v4()));
     state.store.backup_to(&temp)?;
     let bytes = std::fs::read(&temp).map_err(|error| error.to_string())?;
-    let sealed = state
-        .vault
-        .seal_bytes(&bytes)
-        .ok_or("백업 암호화에 실패했습니다.")?;
+    let ring = crate::engine::backup_keys::KeyRing::load_or_create(&state.config.data_dir)?;
+    let sealed = ring.encrypt(&bytes)?;
     let path = directory.join(format!("dominion-{stamp}.sqlite.enc"));
     std::fs::write(&path, &sealed).map_err(|error| error.to_string())?;
     let _ = std::fs::remove_file(&temp);
@@ -102,6 +100,9 @@ pub fn start(state: AppState) {
         ticker.tick().await;
         loop {
             ticker.tick().await;
+            if state.maintenance_mode() {
+                continue;
+            }
             match backup_now(&state) {
                 Ok(path) => state.store.audit(
                     "backup.created",
@@ -148,7 +149,8 @@ mod tests {
         assert_eq!(path.extension().and_then(|value| value.to_str()), Some("enc"));
         let sealed = std::fs::read(&path).unwrap();
         assert!(!sealed.starts_with(b"SQLite format 3"));
-        let plain = state.vault.open_bytes(&sealed).expect("decrypt");
+        let plain =
+            crate::engine::backup_keys::decrypt_backup(&state, &sealed).expect("decrypt");
         assert!(plain.starts_with(b"SQLite format 3"));
         let restored_path = dir.join("restored.sqlite");
         std::fs::write(&restored_path, &plain).unwrap();

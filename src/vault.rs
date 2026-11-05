@@ -56,6 +56,9 @@ impl Vault {
     }
 
     /// Binary envelope: 12-byte nonce followed by ChaCha20-Poly1305 ciphertext.
+    /// Backup keyrings now own encryption; this remains for legacy snapshots
+    /// and binary-secret callers.
+    #[allow(dead_code)]
     pub fn seal_bytes(&self, plaintext: &[u8]) -> Option<Vec<u8>> {
         let mut nonce_bytes = [0u8; 12];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
