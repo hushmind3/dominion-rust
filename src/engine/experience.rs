@@ -42,6 +42,89 @@ fn visible(record: &Value, scope: &MemoryScope) -> bool {
         || record["agentId"].as_str() == scope.agent_id.as_deref()
 }
 
+/// Observable features used by LearnedMethod applicability predicates.
+pub fn method_observation(
+    state: &AppState,
+    failed_tool: &str,
+    failed_inputs: &Value,
+    error: &str,
+) -> Value {
+    let mut path_state = serde_json::Map::new();
+    for key in ["path", "cwd"] {
+        let Some(value) = failed_inputs.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        let path = if std::path::Path::new(value).is_absolute() {
+            std::path::PathBuf::from(value)
+        } else {
+            state.config.workspace.join(value)
+        };
+        match std::fs::metadata(&path) {
+            Ok(metadata) => {
+                path_state.insert(key.to_string(), json!({
+                    "exists": true,
+                    "isDir": metadata.is_dir(),
+                    "len": metadata.len(),
+                }));
+            }
+            Err(_) => {
+                path_state.insert(key.to_string(), json!({"exists": false}));
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(&state.config.workspace) {
+        for entry in read_dir.flatten().take(64) {
+            entries.push((
+                entry.file_name().to_string_lossy().to_string(),
+                entry.metadata().map(|meta| meta.len()).unwrap_or(0),
+            ));
+        }
+    }
+    entries.sort();
+    json!({
+        "tool": failed_tool,
+        "arguments": failed_inputs,
+        "error": error.chars().take(600).collect::<String>(),
+        "failureClass": failure_class(error),
+        "inputShape": input_shape(failed_inputs),
+        "pathState": path_state,
+        "environmentFingerprint": memory::stable_id(&[
+            &json!(entries).to_string(),
+            &json!(path_state).to_string(),
+        ]),
+    })
+}
+
+/// Three-valued applicability. Unknown is not applied as if it were True.
+pub fn method_applicability(method: &Value, observation: &Value) -> &'static str {
+    use crate::engine::program::{predicate_verdict, PredicateVerdict};
+    let predicates = method["applicabilityPredicates"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if predicates.is_empty() {
+        // Legacy rules match on their structured fields.
+        let matches = method["applicability"]["failedTool"].as_str()
+            == observation["tool"].as_str()
+            && method["applicability"]["failureClass"].as_str()
+                == observation["failureClass"].as_str()
+            && method["applicability"]["failedInputShape"].as_str()
+                == observation["inputShape"].as_str();
+        return if matches { "true" } else { "false" };
+    }
+    let mut unknown = false;
+    for predicate in predicates {
+        match predicate_verdict(&predicate, observation) {
+            Ok(PredicateVerdict::True) => {}
+            Ok(PredicateVerdict::False) => return "false",
+            Ok(PredicateVerdict::Unknown) => unknown = true,
+            Err(_) => unknown = true,
+        }
+    }
+    if unknown { "unknown" } else { "true" }
+}
+
 #[allow(dead_code)] // retained for agent-private cases and direct tests
 pub fn record(
     state: &AppState,
@@ -240,10 +323,40 @@ pub fn context_block_with_manifest(
     query: &str,
 ) -> (Option<String>, Vec<Value>) {
     let cases = retrieve(state, scope, query, 5);
-    if cases.is_empty() {
+    let query_tokens = tokens(query);
+    let observation = json!({"task": query});
+    let mut methods = state
+        .store
+        .all("experience_rule")
+        .into_iter()
+        .filter(|method| {
+            method["scope"].as_str() == Some("shared")
+                && method["partitionKey"].as_str() == Some(scope.partition_key.as_str())
+                && method["status"].as_str() == Some("candidate")
+                && method["supportingCases"].as_array().is_some_and(|v| !v.is_empty())
+        })
+        .filter_map(|method| {
+            let verdict = method_applicability(&method, &observation);
+            if verdict == "false" {
+                return None;
+            }
+            let trigger = method["trigger"].as_str().unwrap_or("").to_lowercase();
+            let overlap = query_tokens
+                .iter()
+                .filter(|token| trigger.contains(token.as_str()))
+                .count();
+            if verdict == "unknown" && overlap == 0 {
+                return None;
+            }
+            Some((overlap, verdict, method))
+        })
+        .collect::<Vec<_>>();
+    methods.sort_by(|a, b| b.0.cmp(&a.0));
+    methods.truncate(3);
+    if cases.is_empty() && methods.is_empty() {
         return (None, Vec::new());
     }
-    let manifest = cases
+    let mut manifest = cases
         .iter()
         .map(|case| {
             let id = case["id"].as_str().unwrap_or("");
@@ -261,7 +374,7 @@ pub fn context_block_with_manifest(
         })
         .collect::<Vec<_>>();
     let mut block = String::from("Similar past task cases (failure cases are warnings):");
-    for case in cases {
+    for case in &cases {
         let outcome = case["outcome"].as_str().unwrap_or("");
         let request = case["request"].as_str().unwrap_or("").chars().take(220).collect::<String>();
         let lesson = case["lesson"].as_str().unwrap_or("").chars().take(320).collect::<String>();
@@ -270,6 +383,26 @@ pub fn context_block_with_manifest(
         if !avoid.is_empty() {
             block.push_str("\n  avoid: ");
             block.push_str(&avoid);
+        }
+    }
+    if !methods.is_empty() {
+        block.push_str("\n\nConditional learned methods (apply only after checking the predicate):");
+        for (_, verdict, method) in &methods {
+            block.push_str(&format!(
+                "\n- [{}] revision {}: use {} ({}) on `{}`; confidence {}",
+                verdict,
+                method["revision"].as_str().unwrap_or(""),
+                method["intervention"]["tool"].as_str().unwrap_or(""),
+                method["intervention"]["inputShape"].as_str().unwrap_or(""),
+                method["trigger"].as_str().unwrap_or(""),
+                method["confidence"].as_f64().unwrap_or(0.0),
+            ));
+            manifest.push(json!({
+                "kind": "learned_method",
+                "id": method["id"],
+                "revision": method["revision"],
+                "applicability": verdict,
+            }));
         }
     }
     (Some(block), manifest)
@@ -362,12 +495,32 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
             &scope.partition_key, failed_tool, kind, &failed_shape,
             selected_tool, &selected_shape,
         ]));
+        let before = adaptation["beforeObservation"].clone();
+        let mut predicates = vec![
+            json!({"type":"equals","from":"observation","path":"/tool","value":failed_tool}),
+            json!({"type":"equals","from":"observation","path":"/failureClass","value":kind}),
+            json!({"type":"equals","from":"observation","path":"/inputShape","value":failed_shape}),
+        ];
+        if let Some(paths) = before["pathState"].as_object() {
+            for (key, state) in paths {
+                if let Some(exists) = state["exists"].as_bool() {
+                    predicates.push(json!({
+                        "type":"equals",
+                        "from":"observation",
+                        "path": format!("/pathState/{key}/exists"),
+                        "value": exists,
+                    }));
+                }
+            }
+        }
         let mut rule = state.store.get("experience_rule", &id).unwrap_or_else(|| json!({
             "id": id,
             "scope": "shared",
             "partitionKey": scope.partition_key,
             "status": "candidate",
             "evidenceGrade": "E1_observed",
+            "applicabilityPredicates": predicates,
+            "trigger": format!("{failed_tool} {kind}"),
             "applicability": {
                 "failedTool": failed_tool,
                 "failureClass": kind,
@@ -379,10 +532,24 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
                 // Store the parameter *schema*, not old file contents, API
                 // tokens, paths or other potentially private argument values.
             },
+            "predictedEffects": adaptation["selected"]["evaluation"],
+            "verificationChecks": adaptation["selected"]["expectedChecks"],
+            "effectByEnvironment": {},
+            "confidence": 0.4,
             "supportingCases": [],
             "counterexamples": [],
             "createdAt": chrono::Utc::now().to_rfc3339(),
         }));
+        if !rule["applicabilityPredicates"].is_array() {
+            rule["applicabilityPredicates"] = json!(predicates);
+        }
+        let environment = before["environmentFingerprint"]
+            .as_str()
+            .unwrap_or("unknown");
+        rule["effectByEnvironment"][environment] = json!({
+            "successes": rule["supportingCases"].as_array().map(Vec::len).unwrap_or(0) + 1,
+            "failures": rule["counterexamples"].as_array().map(Vec::len).unwrap_or(0),
+        });
         // One root task, not one agent/room speaker, counts as one case.
         let case_id = execution["taskId"].as_str().unwrap_or(execution_id);
         let mut supports = rule["supportingCases"].as_array().cloned().unwrap_or_default();
@@ -397,6 +564,37 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
         rule["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
         if let Some(saved) = state.store.put("experience_rule", &rule) {
             state.bus.record("experience_rule", &saved);
+            let learning_id = format!(
+                "learning-case-{}",
+                memory::stable_id(&[execution_id, &id])
+            );
+            let learning_case = json!({
+                "id": learning_id,
+                "agentId": execution["agentId"],
+                "taskId": case_id,
+                "sourceMessageIds": [execution_id],
+                "originalRequest": execution["request"],
+                "previousBehavior": adaptation["observation"],
+                "ownerCorrection": Value::Null,
+                "expectedOutcome": "the selected tool succeeds",
+                "observedOutcome": adaptation["result"],
+                "failureHypotheses": adaptation["hypotheses"],
+                "verifiedCause": adaptation["selected"]["evaluation"],
+                "improvedMethod": saved["intervention"],
+                "evidenceRefs": [execution_id, adaptation["id"]],
+                "environmentFeatures": before,
+                "scope": "shared",
+                "partitionKey": scope.partition_key,
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+            });
+            state.store.put("learning_case", &learning_case);
+            rule["confidence"] = json!((
+                1.0 + rule["supportingCases"].as_array().map(Vec::len).unwrap_or(0) as f64
+            ) / (
+                2.0 + rule["supportingCases"].as_array().map(Vec::len).unwrap_or(0) as f64
+                    + rule["counterexamples"].as_array().map(Vec::len).unwrap_or(0) as f64
+            ));
+            state.store.put("experience_rule", &rule);
             saved_rules.push(saved);
         }
     }
@@ -413,17 +611,24 @@ pub fn matching_rules(
     error: &str,
     limit: usize,
 ) -> Vec<Value> {
-    let Some(kind) = failure_class(error) else { return Vec::new() };
-    let Some(shape) = input_shape(failed_inputs) else { return Vec::new() };
+    let observation = method_observation(state, failed_tool, failed_inputs, error);
     let mut rules = state.store.all("experience_rule").into_iter().filter(|rule| {
-        rule["scope"].as_str() == Some("shared")
-            && rule["partitionKey"].as_str() == Some(scope.partition_key.as_str())
-            && rule["status"].as_str() == Some("candidate")
-            && rule["applicability"]["failedTool"].as_str() == Some(failed_tool)
-            && rule["applicability"]["failureClass"].as_str() == Some(kind)
-            && rule["applicability"]["failedInputShape"].as_str() == Some(shape.as_str())
-            && rule["counterexamples"].as_array().is_some_and(Vec::is_empty)
-            && rule["supportingCases"].as_array().is_some_and(|v| !v.is_empty())
+        if rule["scope"].as_str() != Some("shared")
+            || rule["partitionKey"].as_str() != Some(scope.partition_key.as_str())
+            || rule["status"].as_str() != Some("candidate")
+            || !rule["supportingCases"].as_array().is_some_and(|v| !v.is_empty())
+        {
+            return false;
+        }
+        let has_predicates = rule["applicabilityPredicates"]
+            .as_array()
+            .is_some_and(|v| !v.is_empty());
+        if !has_predicates
+            && !rule["counterexamples"].as_array().is_some_and(Vec::is_empty)
+        {
+            return false;
+        }
+        method_applicability(rule, &observation) == "true"
     }).collect::<Vec<_>>();
     rules.sort_by(|a,b| {
         b["supportingCases"].as_array().map(Vec::len).unwrap_or(0)
@@ -431,6 +636,10 @@ pub fn matching_rules(
             .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
     });
     rules.truncate(limit.min(5));
+    for rule in &mut rules {
+        rule["applicabilityVerdict"] = json!("true");
+        rule["observation"] = observation.clone();
+    }
     rules
 }
 
@@ -460,6 +669,36 @@ pub fn record_rule_counterexamples(
             examples.truncate(24);
         }
         rule["counterexamples"] = json!(examples);
+        // Narrow, do not discard: exclude the exact observed environment and
+        // keep the method available where the failure was not reproduced.
+        if let Some(execution) = state.store.get("execution", execution_id) {
+            if let Some(fingerprint) = execution["lastAdaptation"]["environmentFingerprint"]
+                .as_str()
+                .or_else(|| execution["adaptationCheckpoint"]["environmentFingerprint"].as_str())
+            {
+                let mut predicates = rule["applicabilityPredicates"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let already = predicates.iter().any(|predicate| {
+                    predicate["type"].as_str() == Some("not")
+                        && predicate["predicate"]["path"].as_str()
+                            == Some("/environmentFingerprint")
+                });
+                if !already {
+                    predicates.push(json!({
+                        "type":"not",
+                        "predicate": {
+                            "type":"equals",
+                            "from":"observation",
+                            "path":"/environmentFingerprint",
+                            "value": fingerprint,
+                        }
+                    }));
+                    rule["applicabilityPredicates"] = json!(predicates);
+                }
+            }
+        }
         rule["revision"] = json!(memory::stable_id(&[
             id, &rule["supportingCases"].to_string(), &rule["counterexamples"].to_string()
         ]));

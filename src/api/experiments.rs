@@ -356,7 +356,10 @@ fn trial_success(trial: &Value) -> bool {
 
 /// Recomputes ITT success numbers from submitted raw trials and rejects a
 /// completion whose claimed verdict/delta/units do not match the evidence.
-pub fn verify_evidence(body: &Value) -> Result<(f64, u64, String, u64, u64), String> {
+pub fn verify_evidence(
+    body: &Value,
+    request: &Value,
+) -> Result<(f64, u64, String, u64, u64), String> {
     use sha2::Digest;
     use std::collections::BTreeMap;
     let manifest = body["manifest"]
@@ -375,6 +378,29 @@ pub fn verify_evidence(body: &Value) -> Result<(f64, u64, String, u64, u64), Str
     if body["manifestHash"].as_str() != Some(expected_hash.as_str()) {
         return Err("manifest hash mismatch".into());
     }
+    // The runner's manifest must match the copy the server froze before any
+    // trial started; a self-consistent runner manifest is not enough.
+    if let Some(frozen) = request["frozenManifest"].as_object() {
+        if let Some(expected_pairs) = frozen
+            .get("totalBudget")
+            .and_then(|budget| budget.get("pairs"))
+        {
+            if manifest.get("pairs") != Some(expected_pairs) {
+                return Err("submitted pairs differ from the server-frozen contract".into());
+            }
+        }
+        if let (Some(fixture), Some(fixtures)) = (
+            manifest.get("fixture").and_then(Value::as_str),
+            frozen.get("fixtures").and_then(Value::as_array),
+        ) {
+            if !fixtures
+                .iter()
+                .any(|item| item.as_str() == Some(fixture))
+            {
+                return Err("submitted fixture differs from the server-frozen contract".into());
+            }
+        }
+    }
     let trials = body["trials"]
         .as_array()
         .filter(|items| !items.is_empty())
@@ -385,9 +411,26 @@ pub fn verify_evidence(body: &Value) -> Result<(f64, u64, String, u64, u64), Str
             .as_u64()
             .filter(|pair| *pair < pairs)
             .ok_or("trial pair out of range")?;
+        if let Some(revision) = trial["revision"].as_str() {
+            if request["revision"].as_str().is_some_and(|rev| rev != revision) {
+                return Err(format!("trial revision {revision} does not match the request"));
+            }
+        }
         match trial["arm"].as_str() {
-            Some("baseline") => by_pair.entry(pair).or_default().0 = Some(trial),
-            Some("treatment") => by_pair.entry(pair).or_default().1 = Some(trial),
+            Some("baseline") => {
+                let slot = by_pair.entry(pair).or_default();
+                if slot.0.is_some() {
+                    return Err(format!("duplicate baseline trial for pair {pair}"));
+                }
+                slot.0 = Some(trial);
+            }
+            Some("treatment") => {
+                let slot = by_pair.entry(pair).or_default();
+                if slot.1.is_some() {
+                    return Err(format!("duplicate treatment trial for pair {pair}"));
+                }
+                slot.1 = Some(trial);
+            }
             _ => return Err("trial arm must be baseline or treatment".into()),
         }
     }
@@ -504,7 +547,7 @@ pub async fn complete(
     let mut promotion_allowed = verdict != "not_evaluable";
     let mut evidence_summary = Value::Null;
     if promotion_allowed {
-        match verify_evidence(&body) {
+        match verify_evidence(&body, &request) {
             Ok((delta, units, recomputed_verdict, timeouts, planned)) => {
                 body["delta"] = json!(delta);
                 body["independentUnits"] = json!(units);

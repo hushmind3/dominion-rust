@@ -504,6 +504,7 @@ pub fn record_adaptation(
         "failureSignature": record["failureSignature"],
         "selectedIntervention": selected["id"],
         "selectedEvaluation": selected["evaluation"],
+        "environmentFingerprint": adaptation["environmentFingerprint"],
         "beforeObservation": adaptation["beforeObservation"],
         "hypothesisResults": hypothesis_results,
     });

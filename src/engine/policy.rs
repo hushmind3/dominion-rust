@@ -17,6 +17,175 @@ pub const PROPOSER_MIN_EVIDENCE: usize = 3;
 /// Derives planning-policy candidates from failure clusters. Proposals are
 /// candidates only: the outer gate in `apply_experiment_result` requires an
 /// independent >=8-unit experiment before activation.
+/// The optimizer is itself a versioned policy. These fields decide how
+/// failures become candidates and how much exploration each search spends.
+pub fn default_optimizer() -> Value {
+    json!({
+        "id": "optimizer-active",
+        "revision": "optimizer-v1",
+        "status": "active",
+        "evidenceSelection": "recent_failures",
+        "failureClustering": "by_failure_class",
+        "candidateGeneration": "settings_and_probe",
+        "candidateDeduplication": "by_failure_class_and_mechanism",
+        "explorationPolicy": "balanced",
+        "experimentAllocation": {"pairs": MIN_EXPERIMENT_UNITS},
+        "stoppingPolicy": "after_min_units",
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+pub fn active_optimizer(state: &AppState) -> Value {
+    state
+        .store
+        .get("optimizer_policy", "optimizer-active")
+        .filter(|policy| policy["status"].as_str() == Some("active"))
+        .unwrap_or_else(default_optimizer)
+}
+
+pub fn register_optimizer(
+    state: &AppState,
+    name: &str,
+    parameters: &Value,
+    rationale: &str,
+) -> Option<Value> {
+    let id = format!(
+        "optimizer-{}",
+        crate::engine::memory::stable_id(&[name, &parameters.to_string()])
+    );
+    if let Some(existing) = state.store.get("optimizer_policy", &id) {
+        return Some(existing);
+    }
+    let mut policy = default_optimizer();
+    policy["id"] = json!(id);
+    policy["revision"] = json!(crate::engine::memory::stable_id(&[&id, &parameters.to_string()]));
+    policy["name"] = json!(name);
+    policy["status"] = json!("candidate");
+    policy["rationale"] = json!(rationale);
+    if let Some(object) = parameters.as_object() {
+        for (key, value) in object {
+            policy[key] = value.clone();
+        }
+    }
+    state.store.put("optimizer_policy", &policy)
+}
+
+/// Chooses the optimizer with the best observed candidate yield per cost.
+/// Only real search episodes count; an optimizerRevision string alone is not
+/// evidence.
+pub fn meta_improve(state: &AppState) -> Option<Value> {
+    use std::collections::BTreeMap;
+    // Keep one structurally different optimizer available so selection is a
+    // real comparison, not a single incumbent with no challenger.
+    let mut optimizers = state.store.all("optimizer_policy");
+    if optimizers.len() < 2 {
+        register_optimizer(
+            state,
+            "counterexample-first",
+            &json!({
+                "failureClustering": "by_failure_class_and_recovery",
+                "candidateGeneration": "counterexample_first",
+                "explorationPolicy": "wide",
+                "stoppingPolicy": "after_min_units",
+            }),
+            "반례를 먼저 찾고 더 넓게 탐색하는 개선 정책",
+        );
+        optimizers = state.store.all("optimizer_policy");
+    }
+    let episodes = state.store.all("search_episode");
+    let active = active_optimizer(state);
+    let active_revision = active["revision"].as_str().unwrap_or("optimizer-v1").to_string();
+    let active_episodes = episodes.iter().filter(|episode| {
+        episode["optimizerRevision"].as_str() == Some(active_revision.as_str())
+    }).count();
+    let has_untried = optimizers.iter().any(|optimizer| {
+        optimizer["revision"].as_str() != Some(active_revision.as_str())
+            && !episodes.iter().any(|episode| {
+                episode["optimizerRevision"] == optimizer["revision"]
+            })
+    });
+    if active_episodes > 0 && has_untried {
+        if let Some(challenger) = optimizers.iter().find(|optimizer| {
+            optimizer["revision"].as_str() != Some(active_revision.as_str())
+                && !episodes.iter().any(|episode| {
+                    episode["optimizerRevision"] == optimizer["revision"]
+                })
+        }) {
+            for mut policy in state.store.all("optimizer_policy") {
+                if policy["status"].as_str() == Some("active") {
+                    policy["status"] = json!("superseded");
+                    policy["supersededBy"] = challenger["id"].clone();
+                    state.store.put("optimizer_policy", &policy);
+                }
+            }
+            let mut activated = challenger.clone();
+            activated["status"] = json!("active");
+            activated["activatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            activated["activationReason"] = json!("online exploration round");
+            let saved = state.store.put("optimizer_policy", &activated)?;
+            state.store.audit(
+                "optimizer.exploration",
+                json!({"from": active_revision, "to": activated["revision"]}),
+            );
+            return Some(saved);
+        }
+    }
+    let mut stats: BTreeMap<String, (f64, f64, f64)> = BTreeMap::new();
+    for episode in state.store.all("search_episode") {
+        let revision = episode["optimizerRevision"]
+            .as_str()
+            .unwrap_or("optimizer-v1")
+            .to_string();
+        let entry = stats.entry(revision).or_insert((0.0, 0.0, 0.0));
+        entry.0 += 1.0;
+        if episode["selectedPolicy"].as_str().is_some() {
+            entry.1 += 1.0;
+        }
+        entry.2 += episode["cost"].as_f64().unwrap_or(0.0);
+    }
+    let incumbent = active_optimizer(state);
+    let incumbent_revision = incumbent["revision"].as_str().unwrap_or("optimizer-v1");
+    let mut best = (incumbent_revision.to_string(), -1.0);
+    for (revision, (runs, wins, cost)) in &stats {
+        if *runs < 1.0 {
+            continue;
+        }
+        // Laplace smoothing keeps a single lucky search from dominating.
+        let score = (wins + 1.0) / (runs + 2.0) - cost * 0.001;
+        if score > best.1 {
+            best = (revision.clone(), score);
+        }
+    }
+    if best.0 == incumbent_revision {
+        return None;
+    }
+    let candidate = state.store.all("optimizer_policy").into_iter().find(|policy| {
+        policy["revision"].as_str() == Some(best.0.as_str())
+    })?;
+    for mut policy in state.store.all("optimizer_policy") {
+        if policy["status"].as_str() == Some("active") {
+            policy["status"] = json!("superseded");
+            policy["supersededBy"] = candidate["id"].clone();
+            state.store.put("optimizer_policy", &policy);
+        }
+    }
+    let mut activated = candidate;
+    activated["status"] = json!("active");
+    activated["activatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    let saved = state.store.put("optimizer_policy", &activated)?;
+    state.store.audit(
+        "optimizer.meta_improved",
+        json!({
+            "from": incumbent_revision,
+            "to": best.0,
+            "score": best.1,
+            "episodes": stats,
+        }),
+    );
+    state.bus.record("optimizer_policy", &saved);
+    Some(saved)
+}
+
 pub fn propose_candidates(state: &AppState) -> Vec<Value> {
     use std::collections::BTreeMap;
     let mut clusters: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
@@ -40,8 +209,12 @@ pub fn propose_candidates(state: &AppState) -> Vec<Value> {
             "recoveryHint": execution["recoveryHint"],
         }));
     }
+    let optimizer = active_optimizer(state);
+    let optimizer_revision = optimizer["revision"].as_str().unwrap_or("optimizer-v1").to_string();
+    let variant_limit = if optimizer["explorationPolicy"].as_str() == Some("wide") { 3 } else { 2 };
     let mut created = Vec::new();
-    for (class, evidence) in clusters {
+    for (class, evidence) in clusters.iter() {
+        let class = *class;
         if evidence.len() < PROPOSER_MIN_EVIDENCE {
             continue;
         }
@@ -93,7 +266,7 @@ pub fn propose_candidates(state: &AppState) -> Vec<Value> {
                 &evidence_ids.join(",")
             ])
         );
-        for (name, parameters, base_rationale) in variants.into_iter().take(3) {
+        for (name, parameters, base_rationale) in variants.into_iter().take(variant_limit) {
             let rationale = format!(
                 "{base_rationale} (근거 {}건: {})",
                 evidence.len(),
@@ -105,6 +278,7 @@ pub fn propose_candidates(state: &AppState) -> Vec<Value> {
             let policy_id = candidate["id"].as_str().unwrap_or("");
             let mut tagged = candidate.clone();
             tagged["searchId"] = json!(search_id);
+            tagged["optimizerRevision"] = json!(optimizer_revision);
             if let Some(saved) = state.store.put("adaptation_policy", &tagged) {
                 state.bus.record("adaptation_policy", &saved);
             }
@@ -116,8 +290,109 @@ pub fn propose_candidates(state: &AppState) -> Vec<Value> {
                 }
             }
         }
+
+        // R5: generate a real executable control-flow candidate, not a
+        // settings toggle. The probe observes tool state before the model
+        // decides, which is a different program from the baseline loop.
+        let probe_revision = format!(
+            "probe-{}-{}",
+            class,
+            crate::engine::memory::stable_id(&[class, &evidence_ids.join(",")])
+        );
+        let program = json!({
+            "revision": probe_revision,
+            "nodes": [
+                {"type":"call_tool","id":"probe_workspace","tool":"workspace_list",
+                 "inputs":{"path":""},"saveAs":"probe"},
+                {"type":"observe","id":"probe_observation"},
+                {"type":"model_decision","id":"probe_decision"}
+            ]
+        });
+        if crate::engine::program::validate(&program).is_ok() {
+            let parameters = json!({"program": program});
+            let name = format!("probe-before-acting-{class}");
+            if let Ok(mut candidate) = register(
+                state,
+                "execution",
+                &name,
+                &parameters,
+                &format!(
+                    "{} 실패 {}건에서 관측 우선 probe 프로그램을 생성했습니다.",
+                    class,
+                    evidence.len()
+                ),
+            ) {
+                let optimization_id = format!(
+                    "optimization-{}",
+                    crate::engine::memory::stable_id(&[class, &evidence_ids.join(",")])
+                );
+                let optimization = json!({
+                    "id": optimization_id,
+                    "parentRevision": "baseline",
+                    "targetComponent": "execution_program",
+                    "problemEvidence": evidence_ids,
+                    "mechanism": "observe workspace before the next decision",
+                    "changedPolicy": parameters,
+                    "predictedBenefit": "fewer blind retries after a failed action",
+                    "applicability": {"failureClass": class},
+                    "testRequirements": ["same model", "same fixture", "paired budget"],
+                    "estimatedCost": 0.1,
+                    "status": "proposed",
+                    "candidateId": candidate["id"],
+                    "createdAt": chrono::Utc::now().to_rfc3339(),
+                });
+                state.store.put("optimization_candidate", &optimization);
+                let search_id = format!(
+                    "execution-search-{}",
+                    crate::engine::memory::stable_id(&[class, &evidence_ids.join(",")])
+                );
+                candidate["searchId"] = json!(search_id);
+                candidate["optimizerRevision"] = json!(optimizer_revision);
+                let policy_id = candidate["id"].as_str().unwrap_or("").to_string();
+                if let Some(saved) = state.store.put("adaptation_policy", &candidate) {
+                    state.bus.record("adaptation_policy", &saved);
+                }
+                if let Some((request, policy, is_new)) = enqueue_policy_request(
+                    state, &policy_id, "planning_evaluation", Some(&search_id),
+                ) {
+                    if is_new {
+                        created.push(json!({"candidate": policy, "request": request}));
+                    }
+                }
+            }
+        }
     }
     created
+}
+
+/// Freezes the experiment contract before any trial runs. Runners can report
+/// their own manifest, but completion is compared against this server copy.
+pub fn frozen_manifest(
+    request_id: &str,
+    fixture: &str,
+    candidate_revision: &str,
+    units: u64,
+) -> (Value, String) {
+    use sha2::Digest;
+    let manifest = json!({
+        "experimentId": request_id,
+        "candidateRevision": candidate_revision,
+        "baselineRevision": "baseline",
+        "modelRevision": "runner-reported",
+        "toolRevisions": [],
+        "fixtures": [fixture],
+        "environmentSeeds": [],
+        "pairAssignments": (0..units).collect::<Vec<_>>(),
+        "evaluationRules": {
+            "primary": "task success (ITT)",
+            "secondary": ["plan quality", "cost", "latency"],
+            "missingOutcome": "failure",
+        },
+        "totalBudget": {"pairs": units},
+        "stoppingRules": {"minIndependentUnits": units},
+    });
+    let hash = format!("{:x}", sha2::Sha256::digest(manifest.to_string().as_bytes()));
+    (manifest, hash)
 }
 
 /// Creates one durable experiment request per policy revision. Idempotent.
@@ -136,6 +411,9 @@ pub fn enqueue_policy_request(
     if let Some(existing) = state.store.get("experiment_request", &request_id) {
         return Some((existing, policy, false));
     }
+    let (manifest, manifest_hash) = frozen_manifest(
+        &request_id, fixture, revision, MIN_EXPERIMENT_UNITS,
+    );
     let request = json!({
         "id": request_id,
         "kind": "policy",
@@ -146,6 +424,8 @@ pub fn enqueue_policy_request(
         "fixture": fixture,
         "searchId": search_id,
         "minIndependentUnits": MIN_EXPERIMENT_UNITS,
+        "frozenManifest": manifest,
+        "frozenManifestHash": manifest_hash,
         "createdAt": chrono::Utc::now().to_rfc3339(),
     });
     let saved = state.store.put("experiment_request", &request)?;
@@ -222,6 +502,13 @@ pub fn select_best(state: &AppState, search_id: &str) -> Option<Value> {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| b.0.cmp(&a.0))
         });
+    let policy_count = policies.len();
+    let optimizer_revision = policies
+        .iter()
+        .find_map(|policy| policy["optimizerRevision"].as_str())
+        .unwrap_or("optimizer-v1")
+        .to_string();
+    let selected_policy_id = best.as_ref().map(|(id, _)| id.clone());
     let mut candidates = Vec::new();
     for mut policy in policies {
         let id = policy["id"].as_str().unwrap_or("").to_string();
@@ -259,6 +546,18 @@ pub fn select_best(state: &AppState, search_id: &str) -> Option<Value> {
             json!({"searchId": search_id, "selected": record["selectedPolicyId"]}),
         );
     }
+    state.store.put(
+        "search_episode",
+        &json!({
+            "id": format!("search-{}", crate::engine::memory::stable_id(&[search_id, &optimizer_revision])),
+            "searchId": search_id,
+            "optimizerRevision": optimizer_revision,
+            "generatedCandidates": policy_count,
+            "selectedPolicy": selected_policy_id,
+            "cost": policy_count as f64 * 0.1,
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
     saved
 }
 

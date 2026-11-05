@@ -304,8 +304,36 @@ fn baseline_success(state: &AppState, scope: &MemoryScope) -> f64 {
     }
 }
 
+/// Statistical estimate used to choose which strategies enter a run.
+pub fn strategy_estimate(improvement: &Value) -> Value {
+    let uses = improvement["uses"].as_u64().unwrap_or(0) as f64;
+    let successes = improvement["successes"].as_u64().unwrap_or(0) as f64;
+    let failures = improvement["failures"].as_u64().unwrap_or(0) as f64;
+    let baseline = improvement["baselineSuccess"].as_f64().unwrap_or(0.5);
+    let rate = if uses > 0.0 { successes / uses } else { baseline };
+    // Beta(1,1) posterior variance is a cheap uncertainty proxy; more
+    // observations make a strategy eligible for exploitation.
+    let uncertainty = 1.0 / (uses + 1.0).sqrt();
+    let benefit = rate - baseline;
+    let risk = if uses > 0.0 { failures / uses } else { 0.5 };
+    let cost = improvement["estimatedCost"].as_f64().unwrap_or(0.1);
+    let similarity = improvement["environmentSimilarity"].as_f64().unwrap_or(0.5);
+    let score = benefit + 0.3 * similarity - 0.5 * risk - 0.2 * cost - 0.3 * uncertainty;
+    json!({
+        "applicability": 1.0,
+        "verifiedSuccesses": successes,
+        "verifiedFailures": failures,
+        "estimatedBenefit": benefit,
+        "uncertainty": uncertainty,
+        "expectedCost": cost,
+        "failureRisk": risk,
+        "environmentSimilarity": similarity,
+        "score": score,
+    })
+}
+
 pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
-    state
+    let mut candidates = state
         .store
         .all("improvement")
         .into_iter()
@@ -322,8 +350,61 @@ pub fn active_values(state: &AppState, scope: &MemoryScope) -> Vec<Value> {
                         .as_str()
                         .is_some_and(|id| in_canary_bucket(&scope.session_id, id)))
         })
-        .take(6)
-        .collect()
+        .map(|mut improvement| {
+            let estimate = strategy_estimate(&improvement);
+            improvement["selectionEstimate"] = estimate.clone();
+            improvement["selectionScore"] = estimate["score"].clone();
+            improvement["selectionUncertainty"] = estimate["uncertainty"].clone();
+            improvement
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| {
+        b["selectionScore"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .partial_cmp(&a["selectionScore"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut selected = candidates.iter().take(6).cloned().collect::<Vec<_>>();
+    // Exploration: if a high-uncertainty strategy was left out, spend one
+    // slot on it instead of always exploiting the current leaders.
+    if let Some(explore) = candidates
+        .iter()
+        .skip(selected.len())
+        .filter(|candidate| {
+            candidate["selectionUncertainty"]
+                .as_f64()
+                .unwrap_or(0.0)
+                > 0.5
+        })
+        .max_by(|a, b| {
+            a["selectionUncertainty"]
+                .as_f64()
+                .unwrap_or(0.0)
+                .partial_cmp(&b["selectionUncertainty"].as_f64().unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    {
+        if selected.len() >= 6 {
+            selected.pop();
+        }
+        selected.push(explore.clone());
+    }
+    // Softmax over the recorded scores gives the real selection probability
+    // for the snapshot instead of pretending every arm is played at 1.0.
+    let max = selected
+        .iter()
+        .map(|item| item["selectionScore"].as_f64().unwrap_or(0.0))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let weights = selected
+        .iter()
+        .map(|item| (item["selectionScore"].as_f64().unwrap_or(0.0) - max).exp())
+        .collect::<Vec<_>>();
+    let total = weights.iter().sum::<f64>().max(f64::MIN_POSITIVE);
+    for (improvement, weight) in selected.iter_mut().zip(weights) {
+        improvement["selectionProbability"] = json!(weight / total);
+    }
+    selected
 }
 
 /// IDs of the improvements that will be injected into this turn's prompt.
@@ -441,6 +522,17 @@ pub fn execution_updates(
         })
         .unwrap_or_default();
     let operations = state.store.try_all("execution_operation")?;
+    let applied_strategy_count = state
+        .store
+        .try_all("improvement")?
+        .iter()
+        .filter(|improvement| {
+            improvement["kind"].as_str() == Some("strategy")
+                && improvement["id"]
+                    .as_str()
+                    .is_some_and(|id| applied.contains(id))
+        })
+        .count();
     let mut updates = Vec::new();
     for mut improvement in state.store.try_all("improvement")? {
         if improvement["scoreVersion"].as_u64().unwrap_or(1) < 2 {
@@ -500,6 +592,17 @@ pub fn execution_updates(
             let Some(entry) = compliance.get(id) else {
                 continue;
             };
+            // A and B applied together cannot attribute the outcome to either.
+            // Only isolated experiments or single-strategy runs update counts.
+            if applied_strategy_count > 1 {
+                improvement["confoundedByBundle"] = json!(true);
+                improvement["lastBundleId"] = json!(format!("bundle:{run_id}"));
+                improvement["lastCompliance"] = entry["result"].clone();
+                improvement["lastObservedAt"] =
+                    json!(chrono::Utc::now().to_rfc3339());
+                updates.push(improvement);
+                continue;
+            }
             if entry["applicable"].as_bool() != Some(true)
                 || entry["result"]["verified"].as_bool() != Some(true)
                 || entry["result"]["triggered"].as_bool() != Some(true)
@@ -827,6 +930,9 @@ pub fn schedule_experiments(state: &AppState) -> Vec<Value> {
             crate::engine::memory::stable_id(&[&id, revision])
         );
         if state.store.get("experiment_request", &request_id).is_none() {
+            let (manifest, manifest_hash) = crate::engine::policy::frozen_manifest(
+                &request_id, "audit_report", revision, MIN_EXPERIMENT_UNITS,
+            );
             let request = json!({
                 "id": request_id,
                 "strategyId": id,
@@ -834,6 +940,8 @@ pub fn schedule_experiments(state: &AppState) -> Vec<Value> {
                 "status": "queued",
                 "fixture": "audit_report",
                 "minIndependentUnits": MIN_EXPERIMENT_UNITS,
+                "frozenManifest": manifest,
+                "frozenManifestHash": manifest_hash,
                 "createdAt": chrono::Utc::now().to_rfc3339(),
             });
             if let Some(saved) = state.store.put("experiment_request", &request) {
