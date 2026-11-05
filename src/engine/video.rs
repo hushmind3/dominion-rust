@@ -28,7 +28,12 @@ pub fn config(state: &AppState) -> Value {
     value
 }
 pub fn ffmpeg(state: &AppState) -> Option<PathBuf> {
-    let cfg = config(state);
+    ffmpeg_from_config(&config(state))
+}
+
+/// Resolve the encoder from the job's frozen config so a later settings change
+/// cannot redirect an already queued render.
+fn ffmpeg_from_config(cfg: &Value) -> Option<PathBuf> {
     let selected = cfg["ffmpegPath"].as_str().unwrap_or("");
     if !selected.is_empty() {
         let path = PathBuf::from(selected);
@@ -259,7 +264,7 @@ async fn native(ctx: &JobContext, input: &Value, dir: &Path) -> Result<Value, St
         json!({"title":title,"scenes":scenes,"duration":duration,"audio":"silent"}).to_string(),
     )
     .map_err(|e| e.to_string())?;
-    let encoder = ffmpeg(&ctx.state).ok_or("FFmpeg를 찾을 수 없습니다.")?;
+    let encoder = ffmpeg_from_config(&input["config"]).ok_or("FFmpeg를 찾을 수 없습니다.")?;
     let mut command = tokio::process::Command::new(encoder);
     command.current_dir(dir).args([
         "-hide_banner",
@@ -503,7 +508,8 @@ pub fn enqueue_upload(state: &AppState, id: &str, body: &Value) -> Result<Value,
     let mut uuid = [0u8; 16];
     uuid.copy_from_slice(&digest[..16]);
     let upload_id = uuid::Uuid::from_bytes(uuid).to_string();
-    let candidate = json!({"id":upload_id,"kind":"youtube_upload","status":"queued","queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),"input":{"videoJobId":id,"privacyStatus":privacy},"attempts":0,"stepIndex":0,"stepTotal":0,"events":[]});
+    let made_for_kids = body["madeForKids"].as_bool().unwrap_or(false);
+    let candidate = json!({"id":upload_id,"kind":"youtube_upload","status":"queued","queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),"input":{"videoJobId":id,"privacyStatus":privacy,"madeForKids":made_for_kids},"attempts":0,"stepIndex":0,"stepTotal":0,"events":[]});
     let job = if let Some(inserted) = state.store.put_if_absent("job", &candidate) {
         state.bus.record("job", &inserted);
         state.store.audit(
@@ -540,16 +546,23 @@ pub async fn upload(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     let path = output_path(&ctx.state, id)?;
     let video = ctx.state.store.get("job", id).ok_or("영상이 없습니다.")?;
     let token = oauth::fresh_access_token(&ctx.state, "youtube").await?;
-    let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
-    if bytes.len() > 256 * 1024 * 1024 {
+    let size = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| e.to_string())?
+        .len();
+    if size > 256 * 1024 * 1024 {
         return Err("업로드 크기 제한은 256MiB입니다.".into());
+    }
+    let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
+    if bytes.len() as u64 != size {
+        return Err("업로드 중 파일 크기가 변경되었습니다. 다시 시도하세요.".into());
     }
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())?;
     progress(ctx, "authorizing", 5)?;
-    let response=client.post("https://www.googleapis.com/upload/youtube/v3/videos").query(&[("uploadType","resumable"),("part","snippet,status")]).bearer_auth(&token).header("X-Upload-Content-Length",bytes.len()).header("X-Upload-Content-Type","video/mp4").json(&json!({"snippet":{"title":video["input"]["title"],"description":video["input"]["brief"]},"status":{"privacyStatus":job["input"]["privacyStatus"],"selfDeclaredMadeForKids":false}})).timeout(Duration::from_secs(30)).send().await.map_err(|_|"YouTube 업로드 세션 연결 실패")?;
+    let response=client.post("https://www.googleapis.com/upload/youtube/v3/videos").query(&[("uploadType","resumable"),("part","snippet,status")]).bearer_auth(&token).header("X-Upload-Content-Length",bytes.len()).header("X-Upload-Content-Type","video/mp4").json(&json!({"snippet":{"title":video["input"]["title"],"description":video["input"]["brief"]},"status":{"privacyStatus":job["input"]["privacyStatus"],"selfDeclaredMadeForKids":job["input"]["madeForKids"].as_bool().unwrap_or(false)}})).timeout(Duration::from_secs(30)).send().await.map_err(|_|"YouTube 업로드 세션 연결 실패")?;
     if !response.status().is_success() {
         return Err(format!(
             "YouTube 업로드 세션 거부: HTTP {}",
@@ -616,6 +629,18 @@ pub async fn upload(ctx: &JobContext, job: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn frozen_ffmpeg_path_wins_over_current_settings() {
+        let dir = std::env::temp_dir().join(format!("dominion-ffmpeg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("ffmpeg-custom");
+        std::fs::write(&fake, b"binary").unwrap();
+        let cfg = json!({"ffmpegPath": fake.to_string_lossy()});
+        assert_eq!(ffmpeg_from_config(&cfg).as_deref(), Some(fake.as_path()));
+        assert!(ffmpeg_from_config(&json!({"ffmpegPath":"/definitely/missing/ffmpeg"})).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn native_cards_render_unicode_and_escape_markup() {
         let dir =

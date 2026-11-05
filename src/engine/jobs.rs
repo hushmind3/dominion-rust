@@ -236,10 +236,16 @@ pub fn start(state: AppState) {
 
 fn next_queued(state: &AppState) -> Option<Value> {
     let jobs = state.store.all("job");
+    let learning_running = jobs
+        .iter()
+        .any(|job| job["status"] == "running" && job["kind"] == "learn");
     let mut queued = jobs
         .iter()
         .cloned()
         .filter(|job| job.get("status").and_then(|value| value.as_str()) == Some("queued"))
+        // Learning is background work: at most one at a time, so it can never
+        // occupy every worker while a prompt/room/workflow job waits.
+        .filter(|job| !(job["kind"] == "learn" && learning_running))
         .filter(|job| {
             if !matches!(job["kind"].as_str(), Some("room" | "meeting")) {
                 return true;
@@ -266,6 +272,11 @@ fn next_queued(state: &AppState) -> Option<Value> {
         })
         .collect::<Vec<_>>();
     queued.sort_by(|a, b| {
+        let priority = |job: &Value| u8::from(job["kind"] == "learn");
+        let by_priority = priority(a).cmp(&priority(b));
+        if by_priority != std::cmp::Ordering::Equal {
+            return by_priority;
+        }
         let left = a
             .get("queuedAt")
             .or_else(|| a.get("createdAt"))
@@ -517,6 +528,40 @@ mod tests {
         running["status"] = json!("running");
         state.store.put("job", &running);
         assert!(next_queued(&state).is_none());
+    }
+
+    #[test]
+    fn learning_jobs_are_priority_last_and_serialized() {
+        let state = temp_state();
+        let learn1 = enqueue(&state, "learn", json!({"sessionId":"s"})).unwrap();
+        let learn2 = enqueue(&state, "learn", json!({"sessionId":"t"})).unwrap();
+        let prompt = enqueue(&state, "prompt", json!({"prompt":"interactive"})).unwrap();
+
+        let first = next_queued(&state).expect("prompt is picked first");
+        assert_eq!(first["id"], prompt["id"]);
+        state.store.patch_if(
+            "job",
+            prompt["id"].as_str().unwrap(),
+            "status",
+            &json!("queued"),
+            &json!({"status":"running"}),
+        );
+
+        let second = next_queued(&state).expect("one learning job runs");
+        assert!(second["id"] == learn1["id"] || second["id"] == learn2["id"]);
+        state.store.patch_if(
+            "job",
+            second["id"].as_str().unwrap(),
+            "status",
+            &json!("queued"),
+            &json!({"status":"running"}),
+        );
+
+        assert!(
+            next_queued(&state).is_none(),
+            "a second learning job must wait while one is running"
+        );
+        let _ = std::fs::remove_dir_all(&state.config.data_dir);
     }
 
     #[test]
