@@ -8,7 +8,7 @@
 use crate::state::AppState;
 use serde_json::{json, Value};
 
-pub const SLOTS: &[&str] = &["planning"];
+pub const SLOTS: &[&str] = &["planning", "recovery"];
 pub const MIN_EXPERIMENT_UNITS: u64 = 8;
 
 /// Minimum distinct recorded failures before a candidate is proposed.
@@ -155,6 +155,20 @@ pub fn enqueue_policy_request(
         json!({"policyId": policy_id, "requestId": saved["id"], "searchId": search_id}),
     );
     Some((saved, policy, true))
+}
+
+/// Recovery retry budgets from the `recovery` slot. Values are clamped so a
+/// policy can tune, but not remove, execution safety limits.
+pub fn recovery_limits(parameters: &Value) -> (usize, usize) {
+    let acceptance = parameters["maxAcceptanceRetries"]
+        .as_u64()
+        .unwrap_or(2)
+        .min(4) as usize;
+    let repairs = parameters["maxProcedureRepairs"]
+        .as_u64()
+        .unwrap_or(2)
+        .min(4) as usize;
+    (acceptance, repairs)
 }
 
 /// Decides whether a planning policy asks for a plan. `None` means the policy
@@ -415,16 +429,14 @@ pub fn apply_experiment_result(
         let slot = policy["slot"].as_str().unwrap_or("").to_string();
         // Planning policies must also improve the semantic plan metric. A
         // file-success win with no better plan is not enough for activation.
-        let semantic_ok = if slot == "planning" {
-            let main_ok = semantic_delta
-                .is_some_and(|value| value >= crate::engine::plan_quality::MIN_SEMANTIC_DELTA);
-            let independent_ok = independent_semantic_delta.is_some_and(|value| {
-                value >= crate::engine::plan_quality::MIN_SEMANTIC_DELTA
-            });
-            main_ok && independent_ok
-        } else {
-            true
-        };
+        // Every slot uses the same independent-experiment gate: both semantic
+        // evaluators must agree that the revision is not worse.
+        let main_ok = semantic_delta
+            .is_some_and(|value| value >= crate::engine::plan_quality::MIN_SEMANTIC_DELTA);
+        let independent_ok = independent_semantic_delta.is_some_and(|value| {
+            value >= crate::engine::plan_quality::MIN_SEMANTIC_DELTA
+        });
+        let semantic_ok = main_ok && independent_ok;
         if !semantic_ok {
             policy["requiresExperiment"] = json!(true);
             policy["semanticVerified"] = json!(false);
@@ -768,6 +780,46 @@ mod tests {
         assert_eq!(searches.len(), 1);
         assert_eq!(searches[0]["selectedPolicyId"], best["id"]);
         assert_eq!(searches[0]["candidates"].as_array().unwrap().len(), 3);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recovery_limits_are_bounded_and_configurable() {
+        assert_eq!(recovery_limits(&json!({})), (2, 2));
+        assert_eq!(
+            recovery_limits(&json!({"maxAcceptanceRetries":1,"maxProcedureRepairs":0})),
+            (1, 0)
+        );
+        // A policy can tune but not remove safety bounds entirely.
+        assert_eq!(
+            recovery_limits(&json!({"maxAcceptanceRetries":99,"maxProcedureRepairs":99})),
+            (4, 4)
+        );
+    }
+
+    #[test]
+    fn a_recovery_policy_uses_the_same_experiment_gate() {
+        let (state, dir) = state();
+        let candidate = register(
+            &state,
+            "recovery",
+            "fewer-retries",
+            &json!({"maxAcceptanceRetries":0,"maxProcedureRepairs":0}),
+            "recovery gate",
+        )
+        .unwrap();
+        let id = candidate["id"].as_str().unwrap();
+        let underpowered = json!({"experimentId":"r1","verdict":"preliminary_support","delta":0.2,"semanticDelta":0.2,"independentSemanticDelta":0.2,"independentUnits":4,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, id, &underpowered).unwrap();
+        assert_eq!(record["status"], "candidate");
+
+        let staged = json!({"experimentId":"r2","verdict":"preliminary_support","delta":0.2,"semanticDelta":0.2,"independentSemanticDelta":0.2,"independentUnits":8,"oracleVersion":"v1"});
+        let record = apply_experiment_result(&state, id, &staged).unwrap();
+        assert_eq!(record["status"], "active");
+        assert_eq!(
+            recovery_limits(&record["parameters"]),
+            (0, 0)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

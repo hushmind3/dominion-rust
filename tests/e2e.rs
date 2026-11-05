@@ -1825,6 +1825,83 @@ fn backup_key_rotation_reencrypts_and_restores() {
     app.post("/api/system/maintenance", &json!({"enabled":false}));
 }
 
+#[test]
+fn the_recovery_slot_changes_retry_behavior_only_after_a_valid_experiment() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"완료했습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    let policy = app.post(
+        "/api/benchmark/policies",
+        &json!({
+            "slot":"recovery",
+            "name":"fewer-acceptance-retries",
+            "parameters":{"maxAcceptanceRetries":0,"maxProcedureRepairs":0},
+            "rationale":"recovery slot test"
+        }),
+    );
+    let policy_id = policy["id"].as_str().unwrap().to_string();
+    assert_eq!(policy["status"], "candidate");
+
+    // Underpowered experiment cannot activate the slot.
+    let underpowered = app.post(
+        "/api/benchmark/policies/experiment",
+        &json!({
+            "policyId":policy_id,"experimentId":"recovery-small",
+            "verdict":"preliminary_support","delta":0.2,
+            "semanticDelta":0.2,"independentSemanticDelta":0.2,
+            "independentUnits":4,"oracleVersion":"v1"
+        }),
+    );
+    assert_eq!(underpowered["status"], "candidate", "{underpowered}");
+    let stream = app.chat(&json!({
+        "input":"bench/harness_report.txt 파일을 만들어줘",
+        "autoLearning":false
+    }));
+    assert!(
+        stream.contains("acceptance_retry"),
+        "candidate policy must not change behavior: {stream}"
+    );
+
+    let activated = app.post(
+        "/api/benchmark/policies/experiment",
+        &json!({
+            "policyId":policy_id,"experimentId":"recovery-powered",
+            "verdict":"preliminary_support","delta":0.2,
+            "semanticDelta":0.2,"independentSemanticDelta":0.2,
+            "independentUnits":8,"oracleVersion":"v1"
+        }),
+    );
+    assert_eq!(activated["status"], "active", "{activated}");
+    let stream = app.chat(&json!({
+        "input":"bench/harness_report.txt 파일을 만들어줘",
+        "autoLearning":false
+    }));
+    assert!(
+        !stream.contains("acceptance_retry"),
+        "active recovery policy did not change the retry branch: {stream}"
+    );
+    let executions = app.get("/api/executions");
+    assert!(
+        executions
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|execution| execution["status"] == "failed"),
+        "{executions}"
+    );
+    let policies = app.get("/api/policies");
+    let active = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == policy_id.as_str())
+        .unwrap();
+    assert_eq!(active["status"], "active");
+    assert_eq!(active["slot"], "recovery");
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

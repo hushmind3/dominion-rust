@@ -348,6 +348,13 @@ async fn run_turn_body(
     };
     let mut acceptance_retries = 0usize;
     let mut procedure_repairs = 0usize;
+    let recovery_policy = crate::engine::policy::active(state, "recovery");
+    let (max_acceptance_retries, max_procedure_repairs) = recovery_policy
+        .as_ref()
+        .map(|policy| {
+            crate::engine::policy::recovery_limits(&policy["parameters"])
+        })
+        .unwrap_or((2, 2));
     let mut op_seq = 0u64;
 
     let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"taskId":task_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
@@ -402,6 +409,14 @@ async fn run_turn_body(
     if let Some(policy) = &planning_policy {
         context_items.push(json!({
             "kind": "planning_policy",
+            "id": policy["id"],
+            "revision": policy["revision"],
+            "parameters": policy["parameters"],
+        }));
+    }
+    if let Some(policy) = &recovery_policy {
+        context_items.push(json!({
+            "kind": "recovery_policy",
             "id": policy["id"],
             "revision": policy["revision"],
             "parameters": policy["parameters"],
@@ -734,7 +749,7 @@ async fn run_turn_body(
                     let standing = violations.iter().any(|violation| {
                         violation["authority"].as_str() == Some("standing")
                     });
-                    if !force_final && procedure_repairs < 2 {
+                    if !force_final && procedure_repairs < max_procedure_repairs {
                         procedure_repairs += 1;
                         let _ = tx.send(json!({
                             "type": "procedure_retry",
@@ -819,7 +834,7 @@ async fn run_turn_body(
                             gaps.join("; ")
                         ));
                     }
-                    if acceptance_retries < 2
+                    if acceptance_retries < max_acceptance_retries
                         && round + 1 < MAX_ROUNDS
                         && budget.can_execute_tool()
                     {
