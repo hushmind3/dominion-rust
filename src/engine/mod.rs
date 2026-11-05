@@ -1,5 +1,6 @@
 pub mod goal_control;
 pub mod adaptation_loop;
+pub mod agent_growth;
 pub mod algorithms;
 pub mod attachments;
 pub mod backup_keys;

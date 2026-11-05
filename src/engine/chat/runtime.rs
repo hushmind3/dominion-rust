@@ -3586,6 +3586,26 @@ pub(super) fn finalize_execution(
         );
     }
 
+    // Every terminal execution updates only this agent's growth record:
+    // runs, failures, failing tools and concrete guidance for next time.
+    if let Some(agent_id) = record["agentId"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            record["sessionId"].as_str().and_then(|session_id| {
+                state
+                    .store
+                    .get("session", session_id)
+                    .and_then(|session| session["agentId"].as_str().map(str::to_string))
+            })
+        })
+    {
+        let mut growth_record = record.clone();
+        growth_record["agentId"] = json!(agent_id);
+        let _ = crate::engine::agent_growth::record(state, &growth_record);
+    }
+
     // A success experience requires Succeeded and a first-time finalization.
     if applied && task_outcome == TaskOutcome::Succeeded {
         // Use the same first-success-per-root marker as the original case

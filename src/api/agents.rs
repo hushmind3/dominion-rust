@@ -88,3 +88,7 @@ pub async fn delete_agent(State(state): State<AppState>, Path(id): Path<String>)
     Json(json!({ "ok": true }))
 }
 
+
+pub async fn growth(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
+    Json(crate::engine::agent_growth::growth(&state, &id))
+}
