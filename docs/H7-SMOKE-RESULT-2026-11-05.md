@@ -276,3 +276,61 @@ completion 호출은 엔진 재시작 후 claim token으로 제출했다. summar
 - policy trial이 baseline보다 약 6배 느려(161s vs 26s) 장시간 실험 비용이 크다.
 - manifest pairs는 resume 시 갱신하도록 수정했지만, 기존 summary의 `assigned`
   표기는 실행 시점 값이다.
+
+## 10. update_config 12-pair + explicit-pair policy run (2026-11-05)
+
+### 10.1 update_config 12 pair (11 usable)
+
+기존 10-pair root를 `BENCH_PAIRS=12`로 재개해 pair 10, 11을 추가했다.
+
+- experimentId: `60a652ac-9555-45f5-877a-d3e2e733f4f1`
+- raw trials: `TMPDIR/dominion-s7-b2ee57a7-a23a-4100-b6df-255a9fd3cf00`
+
+| arm | runs | strict success | compliance | p50 | p95 | tokens |
+|---|---|---|---|---|---|---|
+| baseline | 12 | 0/12 | 0 | 112,490ms | 295,432ms | 90,764 |
+| treatment | 12 | **12/12** | 12 | 94,075ms | 107,600ms | 66,894 |
+
+- usable paired units: **11** (pair 6 baseline 300초 timeout)
+- delta 1.0, CI **[0.181, 1.0]**, verdict **preliminary_support**
+- runner 출력: `promotion: status=validated evidence=E2`
+
+### 10.2 explicit-pair planning policy run (rejected)
+
+task가 두 출력 파일을 모두 명시하는 새 fixture `planning_pair`를 추가하고
+production scheduler로 실제 4B policy 실험을 실행했다.
+
+- production root: `TMPDIR/dom-polpair.wk5cks`
+- searchId: `policy-search-c44a3ba2-a005-4740-82db-9b78b3da2264`
+- policyId: `policy-e1439c3d8baaed27fd04f86ea524853e`
+- requestId: `experiment-request-policy-4b18ffa5c4e27defdd8b64b39878deb4`
+- raw evidence: `TMPDIR/dominion-s7-6443a795-9da7-4885-a59e-65a97e8542b9`
+  - `trials.jsonl` 20줄
+
+| arm | runs | success | planQuality | independent | p50 |
+|---|---|---|---|---|---|
+| baseline | 10 | 10/10 | 0.8700 | 0.8784 | 158,453ms |
+| treatment | 9 | 9/9 | 0.8722 | 0.8965 | 168,314ms |
+
+- effect: delta 0.0, semanticDelta 0.0056, independentSemanticDelta 0.0215,
+  units 9, verdict **inconclusive**
+- 결과: **승격 거부**. 서버 재계산 semantic gate가
+  `promotionError=semantic gate rejected`를 기록했고 정책은 candidate 유지.
+
+원인: 새 task가 "만들고/저장" 다단계 문장이라 **내장 needs_plan 휴리스틱이
+baseline에서도 계획을 호출**했다. baseline planQuality가 0.87로 treatment와
+거의 같아 정책 대조가 성립하지 않았다.
+
+수정: runner policy mode의 baseline은 slot을 비우는 대신 sandbox에
+`{"outline": false}` 정책을 명시적으로 적용하도록 변경했다. 이후 실행에서는
+baseline이 항상 무계획이다.
+
+투명성 caveat: production 엔진을 50분 후 종료할 때 runner가 아직 실행 중이어서
+summary는 raw trials에서 재계산하고 completion은 엔진 재시작 후 claim token으로
+제출했다.
+
+### 10.3 남은 것
+
+- 명시적 no-plan baseline으로 **실제 4B policy 승격**을 다시 시험해야 한다.
+- policy trial은 baseline보다 여전히 느리다(≈160s/trial).
+- update_config는 11 units로 preliminary_support지만 holdout은 없다.

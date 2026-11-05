@@ -56,6 +56,15 @@ fn fixture(id: &str) -> Result<Fixture, String> {
             report_expected: REPORT_EXPECTED,
             seeds: &[],
         }),
+        "planning_pair" => Ok(Fixture {
+            id: "planning_pair",
+            task: "bench/harness_audit.txt 파일을 만들고 audit-harness를 저장한 뒤, bench/harness_report.txt 파일을 만들고 REPORT-OK를 저장해.",
+            audit_path: AUDIT_PATH,
+            report_path: REPORT_PATH,
+            audit_expected: AUDIT_EXPECTED,
+            report_expected: REPORT_EXPECTED,
+            seeds: &[],
+        }),
         "planning_evaluation" => Ok(Fixture {
             id: "planning_evaluation",
             task: TASK,
@@ -1115,7 +1124,14 @@ async fn main() -> Result<(), String> {
                         "parameters": policy["parameters"],
                     })
                 } else {
-                    json!({"slot": policy["slot"]})
+                    // Baseline must be an explicit no-plan policy; clearing the
+                    // slot would fall back to the built-in heuristic, which can
+                    // also plan and destroy the policy contrast.
+                    json!({
+                        "slot": policy["slot"],
+                        "name": "baseline-no-plan",
+                        "parameters": {"outline": false},
+                    })
                 };
                 post(
                     &client,
