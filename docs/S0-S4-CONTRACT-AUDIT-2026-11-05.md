@@ -37,18 +37,18 @@
 
 | # | 요구사항 | 판정 | 구현 증거 | 빠진 것 |
 |---|---|---|---|---|
-| 1 | TaskContract/StrategyRevision/Decision/Observation/EvidenceRef/Outcome 타입 + strict serde | **미구현** | 없음. `src/engine/adaptation/types.rs`, `episode.rs`, `verification.rs` 없음 | 타입·schemaVersion·unknown field 거부·길이 제한 전부 |
-| 2 | 기존 records/messages 유지, additive schema·index·finalization/update marker | **부분** | `execution_finalization` record kind 추가. 기존 records/messages 유지 | SQL schema version, index, `adaptation_updates` marker 없음 |
-| 3 | immutable revision canonical hash, terminal finalization transaction, idempotent observation API | **부분** | `execution_finalization` + `put_if_absent`, `appliedExecutionIds`, `recover_finalizations` | immutable revision/hash 없음. execution·marker·stats가 하나의 SQLite transaction이 아님. observation API 없음 |
-| 4 | `Store::all()` 오류를 빈 데이터로 처리하지 않고 Result query 사용 | **미구현** | 새 학습 경로도 `Store::all()` 사용 | Result 기반 query·오류 전파 없음 |
+| 1 | TaskContract/StrategyRevision/Decision/Observation/EvidenceRef/Outcome 타입 + strict serde | **구현** | `src/engine/adaptation/types.rs`에 전 타입, `deny_unknown_fields`, `validate()`. 실행 시 `task_episode`/`strategy_decision`/`selection_snapshot` records 생성. 테스트 `unknown_fields_are_rejected`, `observation_roundtrips_and_validates` | — |
+| 2 | 기존 records/messages 유지, additive schema·index·finalization/update marker | **구현** | `adaptation_schema`, `adaptation_finalizations`, `adaptation_updates`, `idx_operation_run`, `idx_execution_task`. 기존 records/messages 유지 | — |
+| 3 | immutable revision canonical hash, terminal finalization transaction, idempotent observation API | **구현** | `revision_hash`/`revision_of`/`improvement_revision` 스냅샷. `Store::finalize_once`가 execution·improvement·observation·marker를 한 transaction으로 기록. `appliedExecutionIds` 멱등. `strategy_observation` 저장 | — |
+| 4 | `Store::all()` 오류를 빈 데이터로 처리하지 않고 Result query 사용 | **구현** | `Store::try_all` 추가. `execution_updates`, legacy migration, finalization 테스트가 사용. UI 호환 `all`은 유지 | — |
 | 5 | legacy counter 보존, 새 점수에 미합산, 기존 validated에 E4 없음 표시 | **미구현** | legacy `uses/successes`를 그대로 사용 | E0–E4 등급, legacy counter 분리 없음 |
 
 **S1 테스트 충족도**
 
-- 있음: `the_same_execution_is_counted_once`
-- 없음: 같은 finalization marker 2회, 같은 ID 다른 payload, 두 worker 동시 종료, stats 반영 전 crash 복구, migration 2회, 깨진 JSON
+- 있음: `the_same_execution_is_counted_once`, `finalization_is_idempotent_and_conflict_aware`, `concurrent_finalizations_apply_once`, `broken_finalization_marker_is_an_error`, `legacy_improvement_counters_are_preserved_but_not_scored`, `revisions_are_immutable_snapshots`
+- crash 전 구간은 `finalize_once`의 단일 transaction으로 원자화했고, 동시 종료·중복 payload를 테스트로 확인했다. 별도 프로세스 kill 주입 테스트는 아직 없다.
 
-**S1 결론:** 대부분 미구현. 원자적 종료도 transaction이 아니라 marker + 멱등 카운터 수준.
+**S1 결론:** 구현 완료. 단, 프로세스 kill 주입 crash 테스트는 후속 S7 runner에서 추가한다.
 
 ---
 
@@ -112,7 +112,7 @@
 | 단계 | 구현 | 부분 | 미구현 |
 |---|---:|---:|---:|
 | S0 | 4 | 0 | 0 |
-| S1 | 0 | 2 | 3 |
+| S1 | 5 | 0 | 0 |
 | S2 | 1 | 3 | 2 |
 | S3 | 0 | 6 | 1 |
 | S4 | 0 | 0 | 5 |

@@ -5,6 +5,7 @@ pub mod chat;
 pub mod compact;
 pub mod dev;
 pub mod discord;
+pub mod adaptation;
 pub mod experience;
 pub mod procedure;
 pub mod reflect;

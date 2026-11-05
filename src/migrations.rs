@@ -6,7 +6,36 @@ use serde_json::{json, Value};
 pub fn run(state: &AppState) -> Result<(), String> {
     provider_secrets(state)?;
     collection_names(state)?;
+    legacy_improvements(state)?;
     interrupted_approvals(state)
+}
+
+/// Preserve old counters for display, but keep them out of the new score.
+fn legacy_improvements(state: &AppState) -> Result<(), String> {
+    for mut record in state.store.try_all("improvement")? {
+        if record["scoreVersion"].as_u64().unwrap_or(0) >= 2 {
+            continue;
+        }
+        let legacy = json!({
+            "uses": record["uses"].as_u64().unwrap_or(0),
+            "successes": record["successes"].as_u64().unwrap_or(0),
+            "failures": record["failures"].as_u64().unwrap_or(0),
+        });
+        record["legacyCounters"] = legacy;
+        record["scoreVersion"] = json!(1);
+        if record["evidenceGrade"].is_null() {
+            record["evidenceGrade"] = json!(if record["status"].as_str() == Some("validated") {
+                "legacy_observed"
+            } else {
+                "legacy"
+            });
+        }
+        state
+            .store
+            .put("improvement", &record)
+            .ok_or_else(|| format!("cannot migrate improvement {}", record["id"]))?;
+    }
+    Ok(())
 }
 fn provider_secrets(state: &AppState) -> Result<(), String> {
     for provider in state.store.all("provider") {
@@ -171,6 +200,25 @@ mod tests {
             state.store.get("approval", "a").unwrap()["status"],
             "interrupted"
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_improvement_counters_are_preserved_but_not_scored() {
+        let (state, dir) = state();
+        state.store.put(
+            "improvement",
+            &json!({
+                "id":"legacy-1","kind":"strategy","status":"validated",
+                "uses":7,"successes":5,"failures":2,"text":"old"
+            }),
+        );
+        run(&state).unwrap();
+        run(&state).unwrap();
+        let stored = state.store.get("improvement", "legacy-1").unwrap();
+        assert_eq!(stored["scoreVersion"], 1);
+        assert_eq!(stored["legacyCounters"]["uses"], 7);
+        assert_eq!(stored["evidenceGrade"], "legacy_observed");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

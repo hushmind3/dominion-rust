@@ -3,6 +3,31 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinalizeOutcome {
+    Applied,
+    AlreadyApplied,
+    Conflict,
+}
+
+fn upsert_tx(
+    tx: &rusqlite::Transaction<'_>,
+    kind: &str,
+    value: &Value,
+) -> Result<(), String> {
+    let id = value["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| format!("{kind} record has no id"))?;
+    tx.execute(
+        "INSERT INTO records(kind, id, data) VALUES(?1, ?2, ?3)
+         ON CONFLICT(kind, id) DO UPDATE SET data=excluded.data, updated_at=datetime('now')",
+        params![kind, id, value.to_string()],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// Durable store. Records are schemaless JSON documents grouped by `kind`,
 /// which is exactly the contract the React client already speaks.
 #[derive(Clone)]
@@ -51,7 +76,29 @@ impl Store {
                  name TEXT PRIMARY KEY,
                  value TEXT NOT NULL,
                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS adaptation_schema(
+                 version INTEGER PRIMARY KEY,
+                 applied_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS adaptation_finalizations(
+                 attempt_id TEXT NOT NULL,
+                 evaluation_revision TEXT NOT NULL,
+                 payload_hash TEXT NOT NULL,
+                 applied_at TEXT NOT NULL,
+                 PRIMARY KEY(attempt_id, evaluation_revision)
+             );
+             CREATE TABLE IF NOT EXISTS adaptation_updates(
+                 observation_id TEXT NOT NULL,
+                 projection_version TEXT NOT NULL,
+                 PRIMARY KEY(observation_id, projection_version)
+             );
+             CREATE INDEX IF NOT EXISTS idx_operation_run
+                 ON records(json_extract(data,'$.runId'))
+                 WHERE kind='execution_operation';
+             CREATE INDEX IF NOT EXISTS idx_execution_task
+                 ON records(json_extract(data,'$.taskId'))
+                 WHERE kind='execution';",
         )?;
         // Older databases predate reasoning/tool columns.
         for (column, decl) in [
@@ -66,6 +113,10 @@ impl Store {
                 [],
             );
         }
+        conn.execute(
+            "INSERT OR IGNORE INTO adaptation_schema(version, applied_at) VALUES(1, datetime('now'))",
+            [],
+        )?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -84,6 +135,26 @@ impl Store {
             Err(_) => return Vec::new(),
         };
         rows.filter_map(|row| row.ok()).collect()
+    }
+
+    /// Error-preserving variant for the new learning/finalization paths.
+    /// `all` remains for React-facing compatibility, but new paths must not
+    /// interpret a database error as an empty collection.
+    pub fn try_all(&self, kind: &str) -> Result<Vec<Value>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT data, id, created_at, updated_at FROM records WHERE kind=?1 ORDER BY updated_at DESC",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([kind], record_from_row)
+            .map_err(|error| error.to_string())?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row.map_err(|error| error.to_string())?);
+        }
+        Ok(records)
     }
 
     pub fn count(&self, kind: &str) -> usize {
@@ -238,6 +309,68 @@ impl Store {
             record_from_row,
         )
         .ok()
+    }
+
+    /// Atomically writes the terminal execution, improvement updates,
+    /// observations and finalization marker. Duplicate identical payloads are
+    /// AlreadyApplied; a different payload for the same attempt is a Conflict.
+    pub fn finalize_once(
+        &self,
+        execution: &Value,
+        marker: &Value,
+        improvements: &[Value],
+        observations: &[Value],
+    ) -> Result<FinalizeOutcome, String> {
+        let execution_id = execution["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("finalization execution id is missing")?;
+        let marker_id = marker["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("finalization marker id is missing")?;
+        let payload_hash = marker["payloadHash"]
+            .as_str()
+            .ok_or("finalization payload hash is missing")?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT data FROM records WHERE kind='execution_finalization' AND id=?1",
+                [marker_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if let Some(existing) = existing {
+            let value: Value = serde_json::from_str(&existing)
+                .map_err(|error| format!("broken finalization marker: {error}"))?;
+            if value["payloadHash"].as_str() != Some(payload_hash) {
+                return Ok(FinalizeOutcome::Conflict);
+            }
+            if value["statsApplied"].as_bool() == Some(true) {
+                return Ok(FinalizeOutcome::AlreadyApplied);
+            }
+        }
+        upsert_tx(&tx, "execution", execution)?;
+        for improvement in improvements {
+            upsert_tx(&tx, "improvement", improvement)?;
+        }
+        for observation in observations {
+            upsert_tx(&tx, "strategy_observation", observation)?;
+        }
+        let mut applied_marker = marker.clone();
+        applied_marker["statsApplied"] = json!(true);
+        applied_marker["appliedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        upsert_tx(&tx, "execution_finalization", &applied_marker)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO adaptation_finalizations(attempt_id, evaluation_revision, payload_hash, applied_at)
+             VALUES(?1, ?2, ?3, datetime('now'))",
+            params![execution_id, payload_hash, payload_hash],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(FinalizeOutcome::Applied)
     }
 
     pub fn remove(&self, kind: &str, id: &str) -> bool {
@@ -592,5 +725,87 @@ mod tests {
             .is_none());
         assert_eq!(store.get("agent", "a").unwrap()["model"], "old");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finalization_is_idempotent_and_conflict_aware() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let execution = json!({"id":"exec-1","status":"completed"});
+        let marker = json!({"id":"execution:exec-1","payloadHash":"hash-1"});
+        let improvement = json!({"id":"imp-1","uses":0,"status":"adopted"});
+        let observation = json!({"id":"obs-1"});
+        assert_eq!(
+            store
+                .finalize_once(&execution, &marker, &[improvement.clone()], &[observation.clone()])
+                .unwrap(),
+            FinalizeOutcome::Applied
+        );
+        assert_eq!(
+            store
+                .finalize_once(&execution, &marker, &[improvement.clone()], &[observation.clone()])
+                .unwrap(),
+            FinalizeOutcome::AlreadyApplied
+        );
+        let conflicting = json!({"id":"execution:exec-1","payloadHash":"hash-2"});
+        assert_eq!(
+            store
+                .finalize_once(&execution, &conflicting, &[], &[])
+                .unwrap(),
+            FinalizeOutcome::Conflict
+        );
+        assert_eq!(store.get("improvement", "imp-1").unwrap()["uses"], 0);
+        assert_eq!(store.try_all("improvement").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn concurrent_finalizations_apply_once() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let execution = json!({"id":"exec-2","status":"completed"});
+        let marker = json!({"id":"execution:exec-2","payloadHash":"hash-2"});
+        let improvement = json!({"id":"imp-2","uses":0});
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let store = store.clone();
+            let execution = execution.clone();
+            let marker = marker.clone();
+            let improvement = improvement.clone();
+            handles.push(std::thread::spawn(move || {
+                store
+                    .finalize_once(&execution, &marker, &[improvement], &[])
+                    .unwrap()
+            }));
+        }
+        let outcomes = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(outcomes.contains(&FinalizeOutcome::Applied));
+        assert!(outcomes.contains(&FinalizeOutcome::AlreadyApplied));
+        assert_eq!(store.try_all("execution_finalization").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn try_all_preserves_records_and_returns_them() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.put("memory", &json!({"id":"m1","text":"a"}));
+        store.put("memory", &json!({"id":"m2","text":"b"}));
+        let records = store.try_all("memory").unwrap();
+        assert_eq!(records.len(), 2);
+    }
+
+    #[test]
+    fn broken_finalization_marker_is_an_error() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO records(kind,id,data) VALUES('execution_finalization','execution:broken','{bad')",
+                [],
+            )
+            .unwrap();
+        }
+        let execution = json!({"id":"broken","status":"completed"});
+        let marker = json!({"id":"execution:broken","payloadHash":"hash"});
+        assert!(store.finalize_once(&execution, &marker, &[], &[]).is_err());
     }
 }

@@ -1,3 +1,4 @@
+use crate::engine::adaptation::types::revision_hash;
 use crate::engine::memory::{self, MemoryScope};
 use crate::state::AppState;
 use serde_json::{json, Value};
@@ -145,33 +146,33 @@ pub fn propose(
         baseline_success(state, scope)
     };
 
-    let saved = state.store.put(
-        "improvement",
-        &json!({
-            "id": id,
-            "kind": kind,
-            "scope": record_scope,
-            "agentId": scope.agent_id,
-            "partitionKey": scope.partition_key,
-            "sessionId": scope.session_id,
-            "text": text,
-            "rationale": rationale,
-            "tool": tool_name,
-            "evidenceMessageIds": evidence_ids,
-            "supersedes": supersedes,
-            "verification": {"type": "unverified"},
-            "authority": "adaptive",
-            "version": 1,
-            "status": status,
-            "reason": reason,
-            "baselineSuccess": baseline,
-            "uses": 0,
-            "successes": 0,
-            "failures": 0,
-            "createdAt": chrono::Utc::now().to_rfc3339(),
-            "adoptedAt": if status == "adopted" { json!(chrono::Utc::now().to_rfc3339()) } else { Value::Null },
-        }),
-    );
+    let record = seal(json!({
+        "id": id,
+        "kind": kind,
+        "scope": record_scope,
+        "agentId": scope.agent_id,
+        "partitionKey": scope.partition_key,
+        "sessionId": scope.session_id,
+        "text": text,
+        "rationale": rationale,
+        "tool": tool_name,
+        "evidenceMessageIds": evidence_ids,
+        "supersedes": supersedes,
+        "verification": {"type": "unverified"},
+        "authority": "adaptive",
+        "version": 1,
+        "scoreVersion": 2,
+        "evidenceGrade": "E0",
+        "status": status,
+        "reason": reason,
+        "baselineSuccess": baseline,
+        "uses": 0,
+        "successes": 0,
+        "failures": 0,
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+        "adoptedAt": if status == "adopted" { json!(chrono::Utc::now().to_rfc3339()) } else { Value::Null },
+    }));
+    let saved = state.store.put("improvement", &record);
     if let Some(saved) = &saved {
         state.bus.record("improvement", saved);
         state.store.audit(
@@ -212,6 +213,22 @@ fn reject(
         state.bus.record("improvement", saved);
     }
     saved
+}
+
+fn revision_of(record: &Value) -> String {
+    let mut clean = record.clone();
+    if let Some(map) = clean.as_object_mut() {
+        map.remove("revision");
+        map.remove("previousRevision");
+        map.remove("createdAt");
+        map.remove("updatedAt");
+    }
+    revision_hash(&clean)
+}
+
+fn seal(mut record: Value) -> Value {
+    record["revision"] = json!(revision_of(&record));
+    record
 }
 
 fn normalize(text: &str) -> String {
@@ -345,16 +362,19 @@ pub fn context_block(state: &AppState, scope: &MemoryScope) -> Option<String> {
     })
 }
 
-/// Updates probation counters after an execution and rolls back regressions.
-pub fn record_execution(state: &AppState, execution: &Value) {
+/// Computes the improvement records that a terminal execution should apply.
+/// This function never writes; `finalize_once` commits the result atomically.
+pub fn execution_updates(
+    state: &AppState,
+    execution: &Value,
+) -> Result<Vec<Value>, String> {
     let Some(session_id) = execution["sessionId"].as_str() else {
-        return;
+        return Ok(Vec::new());
     };
     let agent_id = execution["agentId"].as_str();
     let scope = MemoryScope::for_session(&state.store, session_id, agent_id);
     let run_id = execution["id"].as_str().unwrap_or("");
     let completed = execution["status"].as_str() == Some("completed");
-
     let applied = execution["appliedImprovementIds"]
         .as_array()
         .map(|items| {
@@ -376,7 +396,12 @@ pub fn record_execution(state: &AppState, execution: &Value) {
                 .collect::<std::collections::HashMap<_, _>>()
         })
         .unwrap_or_default();
-    for mut improvement in state.store.all("improvement") {
+    let operations = state.store.try_all("execution_operation")?;
+    let mut updates = Vec::new();
+    for mut improvement in state.store.try_all("improvement")? {
+        if improvement["scoreVersion"].as_u64().unwrap_or(1) < 2 {
+            continue;
+        }
         let id = improvement["id"].as_str().unwrap_or("");
         if improvement["status"].as_str() != Some("adopted")
             || !visible(&improvement, &scope)
@@ -403,30 +428,27 @@ pub fn record_execution(state: &AppState, execution: &Value) {
             let Some(tool) = improvement["tool"].as_str() else {
                 continue;
             };
-            let operations = state
-                .store
-                .all("execution_operation")
-                .into_iter()
+            let matching = operations
+                .iter()
                 .filter(|operation| {
                     operation["runId"].as_str() == Some(run_id)
                         && operation["tool"].as_str() == Some(tool)
                 })
                 .collect::<Vec<_>>();
-            if operations.is_empty() {
+            if matching.is_empty() {
                 continue;
             }
-            uses += operations.len() as u64;
-            successes += operations
+            uses += matching.len() as u64;
+            successes += matching
                 .iter()
                 .filter(|operation| operation["status"] == "completed")
                 .count() as u64;
-            failures += operations
+            failures += matching
                 .iter()
                 .filter(|operation| operation["status"] == "failed")
                 .count() as u64;
         } else {
             let Some(entry) = compliance.get(id) else {
-                // No compliance record: an unverified strategy is not a trial.
                 continue;
             };
             if entry["applicable"].as_bool() != Some(true)
@@ -469,17 +491,40 @@ pub fn record_execution(state: &AppState, execution: &Value) {
                     "관찰 성공률 {:.2} 가 기준 {:.2} 보다 낮아 롤백했습니다.",
                     rate, baseline
                 ));
-                state.store.audit(
-                    "improvement.rolled_back",
-                    json!({"id": improvement["id"], "rate": rate, "baseline": baseline}),
-                );
             } else {
                 improvement["status"] = json!("validated");
+                improvement["evidenceGrade"] = json!("E2");
                 improvement["validatedAt"] = json!(chrono::Utc::now().to_rfc3339());
             }
         }
-        if let Some(saved) = state.store.put("improvement", &improvement) {
-            state.bus.record("improvement", &saved);
+        updates.push(improvement);
+    }
+    Ok(updates)
+}
+
+/// Legacy wrapper for tests and non-transactional callers.
+pub fn record_execution(state: &AppState, execution: &Value) {
+    match execution_updates(state, execution) {
+        Ok(updates) => {
+            for saved in updates {
+                let rolled_back = saved["rolledBackAt"].is_string();
+                let id = saved["id"].clone();
+                if let Some(stored) = state.store.put("improvement", &saved) {
+                    state.bus.record("improvement", &stored);
+                    if rolled_back {
+                        state.store.audit(
+                            "improvement.rolled_back",
+                            json!({"id": id}),
+                        );
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            state.store.audit(
+                "improvement.update_failed",
+                json!({"executionId": execution["id"], "error": error}),
+            );
         }
     }
 }
@@ -487,7 +532,15 @@ pub fn record_execution(state: &AppState, execution: &Value) {
 /// Owner corrections are standing constraints; learned strategies are adaptive.
 pub fn set_authority(state: &AppState, id: &str, authority: &str) -> Option<Value> {
     let mut record = state.store.get("improvement", id)?;
+    let previous = record["revision"].as_str().unwrap_or("").to_string();
+    if !previous.is_empty() {
+        let mut snapshot = record.clone();
+        snapshot["id"] = json!(previous);
+        state.store.put("improvement_revision", &snapshot);
+    }
+    record["previousRevision"] = json!(previous);
     record["authority"] = json!(authority);
+    record["revision"] = json!(revision_of(&record));
     let saved = state.store.put("improvement", &record)?;
     state.bus.record("improvement", &saved);
     Some(saved)
@@ -500,9 +553,17 @@ pub fn attach_verification(
     verification: &Value,
 ) -> Option<Value> {
     let mut record = state.store.get("improvement", id)?;
+    let previous = record["revision"].as_str().unwrap_or("").to_string();
+    if !previous.is_empty() {
+        let mut snapshot = record.clone();
+        snapshot["id"] = json!(previous);
+        state.store.put("improvement_revision", &snapshot);
+    }
+    record["previousRevision"] = json!(previous);
     record["verification"] = verification.clone();
     record["version"] = json!(record["version"].as_u64().unwrap_or(1) + 1);
     record["verifiedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    record["revision"] = json!(revision_of(&record));
     let saved = state.store.put("improvement", &record)?;
     state.bus.record("improvement", &saved);
     state.store.audit(
@@ -845,6 +906,39 @@ mod tests {
             .unwrap();
         assert_eq!(stored["uses"], 1);
         assert_eq!(stored["successes"], 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn revisions_are_immutable_snapshots() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let record = propose(
+            &state,
+            &scope,
+            "strategy",
+            "revision 스냅샷을 남긴다",
+            "검증 정의가 바뀌어도 이전 revision을 보존한다",
+            &["m1".into()],
+            None,
+            "shared",
+        )
+        .unwrap();
+        let first = record["revision"].as_str().unwrap().to_string();
+        assert_eq!(record["scoreVersion"], 2);
+        let updated = attach_verification(
+            &state,
+            record["id"].as_str().unwrap(),
+            &json!({"type":"procedure","after":[{"kind":"file_exists","path":"a.txt"}]}),
+        )
+        .unwrap();
+        assert_ne!(updated["revision"], first);
+        assert_eq!(updated["previousRevision"], first);
+        let old = state
+            .store
+            .get("improvement_revision", &first)
+            .unwrap();
+        assert_eq!(old["revision"], first);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

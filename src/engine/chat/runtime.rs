@@ -146,6 +146,103 @@ async fn run_turn_with_policy(
         .to_string();
     state.bus.record("execution", &execution);
 
+    {
+        use crate::engine::adaptation::types::{
+            CandidateScore, Decision, SelectionSnapshot, StrategyRevision,
+            TaskContract, revision_hash,
+        };
+        let contract = TaskContract {
+            task_id: execution_id.clone(),
+            revision: revision_hash(&json!({
+                "sessionId": session_id,
+                "input": request.input,
+                "agentId": request.agent_id,
+            })),
+            source: "owner".into(),
+            scope: json!({"sessionId": session_id}),
+            intent: request.input.clone(),
+            family: "chat".into(),
+            mandatory: Vec::new(),
+            bindings: json!({}),
+            permissions: json!({}),
+            budget: json!({"maxRounds": MAX_ROUNDS, "maxTools": MAX_TOOL_CALLS}),
+        };
+        let strategies = strategy_candidates
+            .iter()
+            .filter_map(|strategy| {
+                let revision = StrategyRevision {
+                    strategy_id: strategy["id"].as_str()?.to_string(),
+                    revision: strategy["revision"].as_str()?.to_string(),
+                    parent: strategy["previousRevision"].as_str().map(str::to_string),
+                    applicability: strategy["verification"]["appliesTo"].clone(),
+                    authority: strategy["authority"]
+                        .as_str()
+                        .unwrap_or("adaptive")
+                        .to_string(),
+                    procedure: Some(strategy["verification"].clone()),
+                    advice: strategy["text"].as_str().map(str::to_string),
+                    checks: Vec::new(),
+                    provenance: Vec::new(),
+                    compatibility: json!({}),
+                    scope: json!({"sessionId": session_id}),
+                };
+                revision.validate().ok()?;
+                Some(revision)
+            })
+            .collect::<Vec<_>>();
+        let candidates = applied_improvement_ids
+            .iter()
+            .map(|id| CandidateScore {
+                arm_id: id.clone(),
+                mean: 0.5,
+                uncertainty: 0.5,
+                cost: 0.0,
+                risk: 0.0,
+                probability: 1.0 / applied_improvement_ids.len().max(1) as f64,
+            })
+            .collect::<Vec<_>>();
+        let selected = applied_improvement_ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "none".into());
+        let decision = Decision {
+            id: execution_id.clone(),
+            task_id: execution_id.clone(),
+            slot: "strategy".into(),
+            context: json!({"sessionId": session_id}),
+            candidates,
+            selected,
+            probability: 1.0,
+            policy_revision: "legacy".into(),
+            rng_seed: 0,
+        };
+        let snapshot = SelectionSnapshot {
+            contract: contract.clone(),
+            strategies,
+            decisions: vec![decision.clone()],
+            context_items: Vec::new(),
+            memory_watermark: "".into(),
+            snapshot_hash: revision_hash(&json!({"executionId": execution_id})),
+        };
+        if contract.validate().is_ok()
+            && decision.validate().is_ok()
+            && snapshot.validate().is_ok()
+        {
+            let _ = state.store.put(
+                "task_episode",
+                &json!({"id": execution_id, "contract": contract, "attemptId": execution_id}),
+            );
+            let _ = state.store.put(
+                "strategy_decision",
+                &serde_json::to_value(&decision).unwrap_or_else(|_| json!({})),
+            );
+            let _ = state.store.put(
+                "selection_snapshot",
+                &serde_json::to_value(&snapshot).unwrap_or_else(|_| json!({})),
+            );
+        }
+    }
+
     let metrics = std::sync::Mutex::new(Metrics::default());
     let result = tokio::select! {
         result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, record_input, generation, source_message_id)) =>
@@ -1147,10 +1244,24 @@ pub(super) fn finalize_execution(
         })
         .collect::<Vec<_>>();
     record["strategyCompliance"] = json!(compliance);
+    let updates = match crate::engine::improve::execution_updates(state, &record) {
+        Ok(updates) => updates,
+        Err(error) => {
+            state.store.audit(
+                "execution.finalization_update_failed",
+                json!({"executionId": execution_id, "error": error}),
+            );
+            if let Some(saved) = state.store.put("execution", &record) {
+                state.bus.record("execution", &saved);
+            }
+            return;
+        }
+    };
     let operations_json = serde_json::to_string(&operations).unwrap_or_default();
     let payload_hash = crate::engine::memory::stable_id(&[
         &record.to_string(),
         &operations_json,
+        &serde_json::to_string(&updates).unwrap_or_default(),
     ]);
     let marker_id = format!("execution:{execution_id}");
     let marker = json!({
@@ -1161,45 +1272,120 @@ pub(super) fn finalize_execution(
         "execution": record.clone(),
         "createdAt": chrono::Utc::now().to_rfc3339(),
     });
-    let inserted = state
+
+    use crate::engine::adaptation::types::{
+        Compliance, EvidenceKind, EvidenceRef, LabelProvenance, Observation,
+        ObservationRegime, TaskOutcome,
+    };
+    let compliance_entries = record["strategyCompliance"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let outcome = match record["status"].as_str() {
+        Some("completed") => TaskOutcome::Succeeded,
+        Some("cancelled") => TaskOutcome::Cancelled,
+        Some("failed") => TaskOutcome::Failed,
+        _ => TaskOutcome::Unknown,
+    };
+    let compliance = if compliance_entries.iter().any(|entry| {
+        matches!(entry["result"]["status"].as_str(), Some("unknown" | "invalid"))
+    }) {
+        Compliance::Unknown
+    } else if compliance_entries.iter().any(|entry| {
+        entry["applicable"] == true
+            && entry["result"]["triggered"] == true
+            && entry["result"]["followed"] == true
+    }) {
+        Compliance::Followed
+    } else if compliance_entries.iter().any(|entry| {
+        entry["applicable"] == true && entry["result"]["triggered"] == true
+    }) {
+        Compliance::Violated
+    } else if compliance_entries
+        .iter()
+        .any(|entry| entry["applicable"] == true)
+    {
+        Compliance::NotTriggered
+    } else {
+        Compliance::NotApplicable
+    };
+    let evidence = operations
+        .iter()
+        .filter_map(|operation| {
+            let id = operation["id"].as_str()?;
+            Some(EvidenceRef {
+                kind: EvidenceKind::Operation,
+                id: id.to_string(),
+                revision: None,
+                scope: json!({"sessionId": record["sessionId"]}),
+                observed_at: operation["startedAt"].as_str().map(str::to_string),
+                digest: None,
+            })
+        })
+        .collect::<Vec<_>>();
+    let observation = Observation {
+        decision_id: execution_id.to_string(),
+        attempt_id: execution_id.to_string(),
+        outcome,
+        compliance,
+        checks: compliance_entries.clone(),
+        evidence,
+        costs: json!({
+            "tokens": record["tokens"],
+            "toolCalls": record["toolCalls"],
+            "iterations": record["iterations"],
+        }),
+        regime: ObservationRegime::ProductionObserved,
+        labels: LabelProvenance::DeterministicOracle,
+    };
+    let observations = if observation.validate().is_ok() {
+        let mut value = serde_json::to_value(&observation).unwrap_or_else(|_| json!({}));
+        value["id"] = json!(format!("observation:{execution_id}"));
+        vec![value]
+    } else {
+        Vec::new()
+    };
+
+    match state
         .store
-        .put_if_absent("execution_finalization", &marker)
-        .is_some();
-    let existing = if inserted {
-        None
-    } else {
-        state.store.get("execution_finalization", &marker_id)
-    };
-    let should_apply = if inserted {
-        true
-    } else {
-        match &existing {
-            Some(existing)
-                if existing["payloadHash"].as_str() == Some(payload_hash.as_str()) =>
-            {
-                existing["statsApplied"].as_bool() != Some(true)
+        .finalize_once(&record, &marker, &updates, &observations)
+    {
+        Ok(crate::db::FinalizeOutcome::Applied) => {
+            if let Some(saved) = state.store.get("execution", execution_id) {
+                state.bus.record("execution", &saved);
             }
-            Some(_) => {
-                state.store.audit(
-                    "execution.finalization_conflict",
-                    json!({"executionId": execution_id}),
-                );
-                record["finalizationConflict"] = json!(true);
-                false
+            for update in &updates {
+                state.bus.record("improvement", update);
             }
-            None => true,
+            for observation in &observations {
+                state.bus.record("strategy_observation", observation);
+            }
         }
-    };
-    if should_apply {
-        crate::engine::improve::record_execution(state, &record);
-        if let Some(mut marker) = state.store.get("execution_finalization", &marker_id) {
-            marker["statsApplied"] = json!(true);
-            marker["appliedAt"] = json!(chrono::Utc::now().to_rfc3339());
-            state.store.put("execution_finalization", &marker);
+        Ok(crate::db::FinalizeOutcome::AlreadyApplied) => {
+            state.store.audit(
+                "execution.finalization_already_applied",
+                json!({"executionId": execution_id}),
+            );
         }
-    }
-    if let Some(saved) = state.store.put("execution", &record) {
-        state.bus.record("execution", &saved);
+        Ok(crate::db::FinalizeOutcome::Conflict) => {
+            state.store.audit(
+                "execution.finalization_conflict",
+                json!({"executionId": execution_id}),
+            );
+            record["finalizationConflict"] = json!(true);
+            if let Some(saved) = state.store.put("execution", &record) {
+                state.bus.record("execution", &saved);
+            }
+        }
+        Err(error) => {
+            state.store.audit(
+                "execution.finalization_failed",
+                json!({"executionId": execution_id, "error": error}),
+            );
+            if let Some(saved) = state.store.put("execution", &record) {
+                state.bus.record("execution", &saved);
+            }
+        }
     }
 }
 
