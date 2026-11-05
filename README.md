@@ -346,8 +346,17 @@ GET /api/experience
 다른 에이전트에서도 지켜지는지를 파일 내용으로 검사합니다.
 
 ```bash
+BENCH_ROOT=/tmp/dominion-bench-$(uuidgen) \
+DOMINION_BASE=http://127.0.0.1:4401 \
 BENCH_PROVIDER="Ollama Qwen3 4B" BENCH_ROUNDS=3 scripts/task-benchmark.sh
 ```
+
+- `BENCH_ROOT`에는 `benchmark`가 적힌 `.dominion-benchmark-sentinel`이 있어야 합니다.
+- `DOMINION_BASE`가 없거나 라이브 `4317`이면 실행을 거부합니다.
+- 저장소 루트나 운영 workspace를 `BENCH_ROOT`로 쓰면 거부합니다.
+- 승인은 `workspace_write` 등 fixture 도구에만 범위 한정하며, 전역
+  `autoApproveAll`을 켜지 않습니다.
+- 서버 identity·data/workspace handshake와 Rust 실험 runner는 아직 미구현입니다.
 
 - Baseline: 규칙 없이 `bench/rule.txt` 생성
 - 교정 학습: 작업 전 `bench/audit.txt`에 `before:rule.txt`를 쓰도록 교정

@@ -12,8 +12,9 @@ set -uo pipefail
 BASE="${DOMINION_BASE:-}"
 PROVIDER_NAME="${BENCH_PROVIDER:-Ollama Qwen3 4B}"
 ROUNDS="${BENCH_ROUNDS:-3}"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BENCH_DIR="$ROOT/bench"
+BENCH_ROOT="${BENCH_ROOT:-}"
+WORKSPACE="$BENCH_ROOT/workspace"
+BENCH_DIR="$WORKSPACE/bench"
 TASK='bench/rule.txt 파일을 만들고 내용을 RULE-OK로 저장해.'
 CORRECTION='아니, bench 작업을 할 때는 먼저 bench/audit.txt 파일을 만들고 내용을 정확히 before:rule.txt 로 저장해야 해. 그 다음 bench/rule.txt를 만들어. 다시 해.'
 
@@ -90,6 +91,26 @@ if [ "$BASE" = "http://127.0.0.1:4317" ] && [ "${ALLOW_LIVE_BENCHMARK:-0}" != "1
   echo "Refusing to modify the live 4317 service. Set ALLOW_LIVE_BENCHMARK=1 only if intentional." >&2
   exit 2
 fi
+if [ -z "$BENCH_ROOT" ]; then
+  echo "BENCH_ROOT must be a disposable benchmark root (data/workspace/sentinel)." >&2
+  exit 2
+fi
+SENTINEL="$BENCH_ROOT/.dominion-benchmark-sentinel"
+if [ ! -f "$SENTINEL" ] || ! grep -qi 'benchmark' "$SENTINEL"; then
+  echo "Missing or invalid benchmark sentinel: $SENTINEL" >&2
+  exit 2
+fi
+ROOT_REAL="$(cd "$BENCH_ROOT" 2>/dev/null && pwd -P)" || {
+  echo "BENCH_ROOT does not exist: $BENCH_ROOT" >&2
+  exit 2
+}
+case "$ROOT_REAL/" in
+  "$HOME/dominion-rust/"*)
+    echo "Refusing to use the live repository as BENCH_ROOT." >&2
+    exit 2
+    ;;
+esac
+mkdir -p "$WORKSPACE"
 PROVIDER_ID=$(provider_id)
 if [ -z "$PROVIDER_ID" ]; then
   echo "provider not found: $PROVIDER_NAME" >&2
@@ -104,9 +125,9 @@ for item in json.load(sys.stdin):
 ' "$PROVIDER_NAME")
 echo "provider=$PROVIDER_NAME model=$MODEL"
 
-# Benchmark approvals only. The task uses workspace writes.
+# Scoped fixture approval only. Never enable global auto-approval.
 curl -fsS -X POST "$BASE/api/policy" -H 'Content-Type: application/json' \
-  -d '{"autoApproveAll":true}' >/dev/null
+  -d '{"autoApproveAll":false,"autoApproveMcp":false,"autoApprove":["workspace_write","workspace_read","workspace_list","file_read","file_write"]}' >/dev/null
 
 AGENT_A=$(new_agent "Bench Agent A")
 echo "agentA=$AGENT_A"

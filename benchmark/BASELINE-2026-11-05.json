@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-05T04:59:30.258013+00:00",
+  "branch": "codex/native-memory-harness",
+  "head": "f6740e441f1f2e818a65ef11312cf906f2228ac9",
+  "remoteHead": "f6740e441f1f2e818a65ef11312cf906f2228ac9",
+  "trackedDiffSha256": "0e3905b85e9106d72f50149a1ea72d1bca50203e016e470848dd672d00c38112",
+  "statusSha256": "a268c8033f4699a4da300d3872a7b02b823aad463710ff3ee8e09b28563e39e8",
+  "status": [
+    " M scripts/task-benchmark.sh"
+  ],
+  "note": "S0 baseline manifest. It records the starting point; it is not an experiment result."
+}
