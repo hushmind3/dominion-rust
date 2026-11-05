@@ -1862,6 +1862,9 @@ async fn run_program(
                         let mut iteration_child = child.clone();
                         let occurrence_id = format!("{loop_id}:{iteration}:{original_id}");
                         iteration_child["id"] = json!(occurrence_id);
+                        if iteration_child["saveAs"].is_null() {
+                            iteration_child["saveAs"] = json!(original_id);
+                        }
                         if crate::engine::program::checkpoint_skip_completed(
                             &checkpoint, &occurrence_id,
                         ) {
@@ -3082,6 +3085,63 @@ mod outcome_tests {
             .unwrap()
             .iter()
             .any(|item| item == "try"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_partially_completed_loop_resumes_with_distinct_iteration_ids() {
+        let (state, dir) = state();
+        state.store.put("policy", &json!({"id":"default","autoApproveAll":true}));
+        state.store.put("execution", &json!({
+            "id":"loop-resume","taskId":"loop-resume","sessionId":"s1",
+            "status":"running","request":"반복 작성",
+            "programCheckpoint":{
+                "schemaVersion":1,"programRevision":"p-loop","status":"running",
+                "frameStack":[],"nextIndex":0,
+                "resolvedInputs":{"condition":true,"write":{"path":"repeat.txt"}},
+                "completedOperationIds":["repeat:0:write"],
+                "pendingOperationIds":[],"loopProgress":{}
+            }
+        }));
+        let session = json!({"id":"s1"});
+        let request = TurnRequest {
+            session_id: Some("s1".into()), input: "반복 작성".into(),
+            attachment_ids: Vec::new(), agent_id: None, provider_id: None,
+            model: None, tools_enabled: true, tools_execution_enabled: true,
+            thinking: None, reasoning_effort: None, reasoning_language: None,
+            auto_learning: false, system_override: None, task_id: None,
+            parent_task_id: None, task_revision: None, verification_owner: None,
+        };
+        let program = json!({
+            "revision":"p-loop",
+            "nodes":[{
+                "type":"loop","id":"repeat","maxIterations":2,
+                "predicate":{"type":"equals","from":"condition","value":true},
+                "body":[{"type":"call_tool","id":"write",
+                    "tool":"workspace_write",
+                    "inputs":{"path":"repeat.txt","content":"REPEAT"}}]
+            }]
+        });
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let metrics = std::sync::Mutex::new(Metrics::default());
+        let mut budget = super::super::budget::BudgetLedger::new(
+            MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED,
+        );
+        let mut op_seq = 0;
+        run_program(&state, &tx, &session, &request, "s1", "loop-resume",
+            &program, &metrics, &mut budget, &mut op_seq,
+            state.cancellation_generation("s1")).await.unwrap();
+        let execution = state.store.get("execution", "loop-resume").unwrap();
+        let checkpoint = &execution["programCheckpoint"];
+        assert_eq!(checkpoint["loopProgress"]["repeat"], 2);
+        assert_eq!(checkpoint["status"], "completed");
+        assert_eq!(checkpoint["resolvedInputs"]["write"]["path"], "repeat.txt");
+        let completed = checkpoint["completedOperationIds"].as_array().unwrap();
+        assert!(completed.iter().any(|x| x == "repeat:0:write"));
+        assert!(completed.iter().any(|x| x == "repeat:1:write"));
+        let ops = state.store.all("execution_operation");
+        assert_eq!(ops.len(), 1, "resumed iteration zero was replayed: {ops:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("repeat.txt")).unwrap(), "REPEAT");
         let _ = std::fs::remove_dir_all(dir);
     }
 
