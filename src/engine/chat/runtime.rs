@@ -605,6 +605,7 @@ async fn run_turn_body(
         if let Some(policy) = &program_policy {
             if let Some(program) = policy["parameters"]["program"].as_object() {
                 let program = crate::engine::program::validate(&json!(program))?;
+                restore_program_state(state, task_id, execution_id, &program)?;
                 let program_messages = run_program(
                     state,
                     tx,
@@ -1483,6 +1484,64 @@ async fn attempt_model_adaptation(
     }))
 }
 
+/// Restores a durable program/adaptation checkpoint approved by startup wake.
+fn restore_program_state(
+    state: &AppState,
+    task_id: &str,
+    execution_id: &str,
+    program: &Value,
+) -> Result<(), String> {
+    let source = state
+        .store
+        .all("execution")
+        .into_iter()
+        .filter(|execution| {
+            execution["id"].as_str() != Some(execution_id)
+                && execution["taskId"].as_str() == Some(task_id)
+                && execution["status"].as_str() == Some("interrupted")
+                && execution["programResumeApproved"].as_bool() == Some(true)
+                && execution["programCheckpoint"]["programRevision"].as_str()
+                    == program["revision"].as_str()
+        })
+        .max_by_key(|execution| {
+            execution["startedAt"].as_str().unwrap_or("").to_string()
+        });
+    let Some(source) = source else {
+        return Ok(());
+    };
+    let checkpoint = &source["programCheckpoint"];
+    if checkpoint["pendingOperationIds"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty())
+    {
+        return Err("중단된 program 연산의 결과를 확인해야 합니다.".into());
+    }
+    let source_id = source["id"].as_str().unwrap_or("");
+    if let Some(mut target) = state.store.get("execution", execution_id) {
+        target["programCheckpoint"] = checkpoint.clone();
+        if let Some(adaptations) = source.get("adaptations") {
+            target["adaptations"] = adaptations.clone();
+        }
+        if let Some(adaptation_checkpoint) = source.get("adaptationCheckpoint") {
+            target["adaptationCheckpoint"] = adaptation_checkpoint.clone();
+        }
+        if let Some(last_adaptation) = source.get("lastAdaptation") {
+            target["lastAdaptation"] = last_adaptation.clone();
+        }
+        target["resumedFromExecutionId"] = json!(source_id);
+        state.store.put("execution", &target);
+    }
+    let mut old = source.clone();
+    old["programResumeApproved"] = json!(false);
+    old["resumedByExecutionId"] = json!(execution_id);
+    state.store.put("execution", &old);
+    state.store.audit(
+        "program.resumed",
+        json!({"from": source_id, "to": execution_id, "revision": program["revision"]}),
+    );
+    Ok(())
+}
+
 fn save_program_checkpoint(state: &AppState, execution_id: &str, checkpoint: &Value) {
     if let Some(mut execution) = state.store.get("execution", execution_id) {
         execution["programCheckpoint"] = checkpoint.clone();
@@ -1773,6 +1832,7 @@ async fn run_program(
             }
             "model_decision" => {
                 checkpoint["status"] = json!("paused");
+                checkpoint["nextIndex"] = json!(index + 1);
                 save_program_checkpoint(state, execution_id, &checkpoint);
                 messages.push(json!({
                     "role":"system",

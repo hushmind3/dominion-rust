@@ -25,6 +25,30 @@ fn has_side_effect(operations: &[Value]) -> bool {
     })
 }
 
+/// A program checkpoint is resumable when its revision still matches an active
+/// execution policy and no tool call is left pending/uncertain.
+fn resumable_program(state: &AppState, execution: &Value) -> Option<Value> {
+    let checkpoint = &execution["programCheckpoint"];
+    if checkpoint.is_null()
+        || !matches!(checkpoint["status"].as_str(), Some("running" | "paused"))
+    {
+        return None;
+    }
+    if checkpoint["pendingOperationIds"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty())
+    {
+        return None;
+    }
+    let revision = checkpoint["programRevision"].as_str()?;
+    let active = state.store.all("adaptation_policy").iter().any(|policy| {
+        policy["slot"].as_str() == Some("execution")
+            && policy["status"].as_str() == Some("active")
+            && policy["parameters"]["program"]["revision"].as_str() == Some(revision)
+    });
+    active.then(|| checkpoint.clone())
+}
+
 /// Creates one durable wake decision per interrupted execution. Returns the
 /// decisions created by this call.
 pub fn recover(state: &AppState) -> Vec<Value> {
@@ -64,6 +88,31 @@ pub fn recover(state: &AppState) -> Vec<Value> {
             ("needs_review", "중단된 도구의 외부 결과를 확인해야 합니다.", Value::Null)
         } else if pending_approval {
             ("needs_review", "해결되지 않은 승인 요청이 있습니다.", Value::Null)
+        } else if let Some(_checkpoint) = resumable_program(state, &execution) {
+            if let Some(mut old) = state.store.get("execution", execution_id) {
+                old["programResumeApproved"] = json!(true);
+                state.store.put("execution", &old);
+            }
+            let input = json!({
+                "prompt": request,
+                "sessionId": session_id,
+                "agentId": execution["agentId"],
+                "providerId": execution["providerId"],
+                "model": execution["model"],
+                "taskId": execution["taskId"],
+                "taskRevision": execution["taskRevision"],
+                "toolsEnabled": true,
+                "toolsExecutionEnabled": true,
+                "resumedExecutionId": execution_id,
+            });
+            match crate::engine::jobs::enqueue(state, "resume", input) {
+                Some(job) => (
+                    "queued",
+                    "durable program checkpoint를 이어서 재개합니다.",
+                    job["id"].clone(),
+                ),
+                None => ("needs_review", "재개 작업을 만들 수 없습니다.", Value::Null),
+            }
         } else if has_side_effect(&run_operations) {
             (
                 "needs_review",

@@ -220,3 +220,58 @@ E2E `a_program_consumes_sequence_verify_loop_and_model_decision_nodes`:
 - ModelDecision 이후 program 재개는 아직 자동이 아니다.
 - process kill 후 program 자동 재개는 runtime 함수 수준 checkpoint resume만 검증됐다.
 - 개선기(§9) 비교와 scope별 deployment는 아직이다.
+
+## 8. 재시작 후 Program/Adaptation 복원 (2026-11-06)
+
+### wake 경로
+
+`engine/wake.rs`의 interrupt recovery에 program 재개 판정을 추가했다.
+
+- execution에 `programCheckpoint`가 있고 `status`가 `running|paused`일 때
+- `pendingOperationIds`가 비어 있을 때 (미확정 외부 행동은 재개하지 않고 review)
+- 같은 `programRevision`을 가진 `execution` 슬롯의 active policy가 있을 때
+- 위 조건이면 execution에 `programResumeApproved=true`를 남기고 `resume` job을
+  enqueue한다.
+
+기존의 `has_side_effect` 판정보다 program 재개 판정을 먼저 둔다. 완료된 side
+effect가 있어도 checkpoint가 깨끗하면 이어서 실행한다.
+
+### runtime 복원
+
+`runtime.rs::restore_program_state`:
+
+- 같은 `taskId`의 이전 interrupted execution 중
+  `programResumeApproved=true`이고 `programRevision`이 현재 program과 같은 것을
+  고른다.
+- `programCheckpoint`, `adaptations`, `adaptationCheckpoint`, `lastAdaptation`을
+  새 execution으로 복사하고 `resumedFromExecutionId`를 기록한다.
+- 이전 execution의 승인 플래그를 해제해 중복 재개를 막는다.
+- `pendingOperationIds`가 남아 있으면 명시적 오류로 멈춘다.
+- `model_decision`은 `nextIndex=index+1`로 저장한다. 재개 시 그 node를 다시
+  만나지 않고 다음 node부터 실행한다.
+
+### E2E: 프로세스 kill 후 program 재개
+
+`a_paused_program_resumes_after_restart_without_repeating_completed_steps`:
+
+1. program: `step1.txt` write → `model_decision` → `step2.txt` write
+2. 실행 중 `step1.txt` 생성 확인 후 프로세스 상태를 drop(=kill)한다.
+3. 같은 root로 TestApp을 다시 시작한다. startup wake가 interrupted execution을
+   찾아 resume job을 만든다.
+4. 재개된 execution이 `step2.txt`를 쓰고 programCheckpoint가 completed가 된다.
+5. 검증:
+   - `step1.txt == "ONE"`, `step2.txt == "TWO"`
+   - `step1.txt` write operation은 **정확히 1회** (완료 node 재실행 없음)
+   - `resumedFromExecutionId`가 기록됨
+
+### 정확한 현재 한계
+
+- program 재개는 **깨끗한 checkpoint**(pending 없음)만 자동 처리한다.
+  도구 호출 도중 kill되어 결과가 unknown인 경우는 review가 필요하다.
+- `parallel`은 여전히 순차 fallback이다.
+- loop/sequence child는 `call_tool`/`observe`만 지원한다.
+- `model_decision` 이후는 program을 계속 실행하지만, 모델이 program 자체를
+  수정/합성하지는 않는다.
+- 경험 predicate 추출(§6), 개선기 비교(§9), 실제 모델 정책 활성화는 아직이다.
+
+전체: `269 unit + 55 E2E + 16 benchmark` 통과.

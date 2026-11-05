@@ -2803,6 +2803,98 @@ fn consecutive_failed_adaptations_stop_the_no_progress_loop() {
     assert_eq!(shells, 4, "unexpected retry loop: {operations}");
 }
 
+#[test]
+fn a_paused_program_resumes_after_restart_without_repeating_completed_steps() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        std::thread::sleep(Duration::from_millis(1_800));
+        vec![json!({"choices":[{"delta":{"content":"재개 완료."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let program = json!({
+        "revision":"restart-program",
+        "nodes":[
+            {"type":"call_tool","id":"step1","tool":"workspace_write","inputs":{"path":"step1.txt","content":"ONE"},"saveAs":"step1"},
+            {"type":"model_decision","id":"pause"},
+            {"type":"call_tool","id":"step2","tool":"workspace_write","inputs":{"path":"step2.txt","content":"TWO"},"saveAs":"step2"}
+        ]
+    });
+    let activated = app.post(
+        "/api/benchmark/policies/state",
+        &json!({"slot":"execution","name":"restart-program","parameters":{"program":program}}),
+    );
+    assert_eq!(activated["active"]["status"], "active", "{activated}");
+    let root = app._root.clone();
+    let handle = app.chat_async(&json!({
+        "input":"step1.txt와 step2.txt 파일을 만들어줘",
+        "autoLearning":false
+    }));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !root.join("step1.txt").exists() {
+        assert!(Instant::now() < deadline, "program did not write step1");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    drop(app);
+    let _ = handle.join();
+
+    let app = TestApp::from_root(port, "native", root.clone(), &[]);
+    let deadline = Instant::now() + Duration::from_secs(25);
+    while !root.join("step2.txt").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "resumed program did not write step2: {}",
+            app.get("/api/executions")
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let deadline = Instant::now() + Duration::from_secs(25);
+    loop {
+        let executions = app.get("/api/executions");
+        if executions.as_array().unwrap().iter().any(|execution| {
+            execution["programCheckpoint"]["status"] == "completed"
+                && execution["resumedFromExecutionId"].is_string()
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "resumed execution did not complete: {executions}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        std::fs::read_to_string(root.join("step1.txt")).unwrap_or_default(),
+        "ONE"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("step2.txt")).unwrap_or_default(),
+        "TWO"
+    );
+    let executions = app.get("/api/executions");
+    let step1_writes = executions
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|execution| {
+            let id = execution["id"].as_str().unwrap_or("");
+            app.get(&format!("/api/executions/{id}/operations"))
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|operation| {
+            operation["tool"] == "workspace_write"
+                && operation["arguments"]["path"] == "step1.txt"
+        })
+        .count();
+    assert_eq!(
+        step1_writes, 1,
+        "completed program step was re-executed after restart"
+    );
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")
