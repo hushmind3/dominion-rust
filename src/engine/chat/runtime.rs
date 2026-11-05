@@ -1649,6 +1649,10 @@ async fn execute_program_tool(
     checkpoint["completedOperationIds"] = json!(completed);
     let key = node["saveAs"].as_str().filter(|value| !value.is_empty()).unwrap_or(node_id);
     resolved[key] = result.clone();
+    resolved["last"] = result.clone();
+    // The observation and completed-operation marker must be durable
+    // together. Otherwise a restart skips the tool but loses its branch input.
+    checkpoint["resolvedInputs"] = resolved.clone();
     save_program_checkpoint(state, execution_id, checkpoint);
     Ok(result)
 }
@@ -1702,6 +1706,7 @@ async fn run_program(
                     .cloned()
                     .unwrap_or(Value::Null);
                 resolved[id] = last;
+                checkpoint["resolvedInputs"] = resolved.clone();
                 save_program_checkpoint(state, execution_id, &checkpoint);
             }
             "call_tool" => {
@@ -1833,28 +1838,47 @@ async fn run_program(
             "loop" => {
                 let body = node["body"].as_array().cloned().unwrap_or_default();
                 let max = node["maxIterations"].as_u64().unwrap_or(3).min(8);
-                let mut iterations = 0u64;
-                for iteration in 0..max {
+                let loop_id = node["id"].as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or("loop node needs an id for durable iteration recovery")?;
+                let mut iterations = checkpoint["loopProgress"][loop_id].as_u64().unwrap_or(0);
+                for iteration in iterations..max {
                     if !crate::engine::program::predicate_holds(
                         &node["predicate"],
                         &resolved,
                     )? {
                         break;
                     }
-                    iterations = iteration + 1;
                     for child in &body {
                         if child["type"].as_str() != Some("call_tool") {
                             return Err("loop body supports call_tool only for now".into());
                         }
+                        let original_id = child["id"].as_str()
+                            .filter(|id| !id.is_empty())
+                            .ok_or("loop child call_tool needs an id")?;
+                        // The same node in two iterations is a different
+                        // operation, while a restarted *same* iteration must
+                        // never issue the tool a second time.
+                        let mut iteration_child = child.clone();
+                        let occurrence_id = format!("{loop_id}:{iteration}:{original_id}");
+                        iteration_child["id"] = json!(occurrence_id);
+                        if crate::engine::program::checkpoint_skip_completed(
+                            &checkpoint, &occurrence_id,
+                        ) {
+                            continue;
+                        }
                         let result = execute_program_tool(
                             state, tx, session, request, session_id, execution_id,
-                            child, &mut resolved, &mut checkpoint, metrics, budget,
+                            &iteration_child, &mut resolved, &mut checkpoint, metrics, budget,
                             op_seq, index,
                         )
                         .await?;
                         resolved["last"] = result;
                     }
+                    iterations = iteration + 1;
+                    checkpoint["loopProgress"][loop_id] = json!(iterations);
                     checkpoint["loopIterations"] = json!(iterations);
+                    checkpoint["resolvedInputs"] = resolved.clone();
                     save_program_checkpoint(state, execution_id, &checkpoint);
                 }
                 checkpoint["loopIterations"] = json!(iterations);
@@ -1862,6 +1886,7 @@ async fn run_program(
             "model_decision" => {
                 checkpoint["status"] = json!("paused");
                 checkpoint["nextIndex"] = json!(index + 1);
+                checkpoint["resolvedInputs"] = resolved.clone();
                 save_program_checkpoint(state, execution_id, &checkpoint);
                 messages.push(json!({
                     "role":"system",
@@ -1871,6 +1896,12 @@ async fn run_program(
             }
             other => return Err(format!("unsupported program node type: {other}")),
         }
+        // Persist a completed node and every input used by a subsequent
+        // branch before advancing. Pausing, crashing or restoring can no
+        // longer silently discard the observed result.
+        checkpoint["resolvedInputs"] = resolved.clone();
+        checkpoint["nextIndex"] = json!(index + 1);
+        save_program_checkpoint(state, execution_id, &checkpoint);
     }
     checkpoint["nextIndex"] = json!(nodes.len());
     checkpoint["status"] = json!("completed");
