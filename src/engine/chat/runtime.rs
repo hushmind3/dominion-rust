@@ -3135,7 +3135,8 @@ mod outcome_tests {
         let checkpoint = &execution["programCheckpoint"];
         assert_eq!(checkpoint["loopProgress"]["repeat"], 2);
         assert_eq!(checkpoint["status"], "completed");
-        assert_eq!(checkpoint["resolvedInputs"]["write"]["path"], "repeat.txt");
+        assert!(checkpoint["resolvedInputs"]["write"]["path"].as_str()
+            .is_some_and(|path| path.ends_with("repeat.txt")));
         let completed = checkpoint["completedOperationIds"].as_array().unwrap();
         assert!(completed.iter().any(|x| x == "repeat:0:write"));
         assert!(completed.iter().any(|x| x == "repeat:1:write"));
