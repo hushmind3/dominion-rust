@@ -203,3 +203,60 @@ semantic 조건을 못 넘으면 candidate를 유지하고
 - 메타 평가자(평가자 자체의 품질) 분리는 아직이다.
 
 전체: `240 unit + 38 E2E + 10 benchmark` 통과.
+
+## 9. Evaluator-independent meta-evaluation (2026-11-05)
+
+### 버전 분리
+
+- main evaluator: `plan-quality-main` v1, metric `plan_quality_v1`
+  (단어 토큰 + 번호 단계)
+- independent evaluator: `plan-quality-independent` v1,
+  metric `plan_quality_independent_v1`
+  (문자 bigram + 문장/라인 구조)
+- 두 점수 모두 execution에 저장된다:
+  `planQuality`, `planQualityIndependent`.
+
+### Runner → production 재계산
+
+runner는 policy trial마다 raw `plan`(최대 4,000자),
+`planQuality`, `planQualityIndependent`를 기록하고 completion에 다음을 보낸다.
+
+- `semanticEvaluator {id,version}`
+- `independentEvaluator {id,version}`
+- `task`
+- `plans [{pair,arm,plan}]`
+
+production `complete`는 runner가 주장한 semanticDelta를 그대로 믿지 않는다.
+
+1. evaluator id/version이 현재 서버 버전과 다르면 승격 거부
+2. `plans`가 없으면 승격 거부
+3. main/independent evaluator로 **직접 재계산**
+4. 둘 중 하나라도 `MIN_SEMANTIC_DELTA(0.05)` 미만이면 승격 거부
+5. 통과 시 재계산 값으로 policy outer gate 호출
+
+`policy::apply_experiment_result`도 planning 슬롯에서
+`semanticDelta >= 0.05` **그리고** `independentSemanticDelta >= 0.05`를 요구한다.
+
+거부되어도 request는 `completed`로 남고 `promotionError`에 사유가 기록된다.
+candidate는 active가 되지 않는다.
+
+### 검증
+
+- `the_independent_evaluator_shares_the_direction_but_not_the_algorithm`
+  (main과 metric/evaluator가 다름, 좋은 계획 > 모호한 계획)
+- `planning_activation_rejects_an_independent_evaluator_disagreement`
+  (main 0.4 / independent 0 → candidate, 둘 다 0.2 → active)
+- `policy_effect_reports_semantic_plan_delta`
+- E2E `policy_activation_is_rejected_when_the_independent_evaluator_disagrees`
+  - evaluator version 999 → request completed, promotionError=version, candidate 유지
+  - 올바른 버전 + 양 arm 동일 계획 → independent delta 0 → `semantic gate rejected`
+  - 올바른 버전 + 개선 계획 → active, `independentSemanticDelta >= 0.05`
+- 기존 runner 정책 E2E도 production 재계산을 통과해 active.
+
+전체: `244 unit + 39 E2E + 14 benchmark` 통과.
+
+### 한계
+
+- independent evaluator도 heuristic이다. 외부 인간/별도 모델 평가자는 아니다.
+- evaluator 버전은 코드 상수이며 배포 버전 관리/서명은 아직 없다.
+- semantic CI는 여전히 게이트에 쓰지 않는다.

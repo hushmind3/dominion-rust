@@ -225,6 +225,64 @@ pub async fn release_runner(
     Json(json!({"released": released})).into_response()
 }
 
+fn recompute_semantic_deltas(plans: &[Value], task: &str) -> (f64, f64) {
+    use std::collections::BTreeMap;
+    let mut pairs: BTreeMap<u64, (Option<f64>, Option<f64>, Option<f64>, Option<f64>)> =
+        BTreeMap::new();
+    for item in plans {
+        let Some(pair) = item["pair"].as_u64() else {
+            continue;
+        };
+        let plan = item["plan"].as_str().unwrap_or("");
+        let entry = pairs.entry(pair).or_default();
+        match item["arm"].as_str() {
+            Some("baseline") => {
+                entry.0 = Some(
+                    crate::engine::plan_quality::score(plan, task)["total"]
+                        .as_f64()
+                        .unwrap_or(0.0),
+                );
+                entry.1 = Some(
+                    crate::engine::plan_quality::score_independent(plan, task)["total"]
+                        .as_f64()
+                        .unwrap_or(0.0),
+                );
+            }
+            Some("treatment") => {
+                entry.2 = Some(
+                    crate::engine::plan_quality::score(plan, task)["total"]
+                        .as_f64()
+                        .unwrap_or(0.0),
+                );
+                entry.3 = Some(
+                    crate::engine::plan_quality::score_independent(plan, task)["total"]
+                        .as_f64()
+                        .unwrap_or(0.0),
+                );
+            }
+            _ => {}
+        }
+    }
+    let mut main = Vec::new();
+    let mut independent = Vec::new();
+    for (_, (b, bi, t, ti)) in pairs {
+        if let (Some(b), Some(t)) = (b, t) {
+            main.push(t - b);
+        }
+        if let (Some(b), Some(t)) = (bi, ti) {
+            independent.push(t - b);
+        }
+    }
+    let mean = |values: &[f64]| {
+        if values.is_empty() {
+            0.0
+        } else {
+            values.iter().sum::<f64>() / values.len() as f64
+        }
+    };
+    (mean(&main), mean(&independent))
+}
+
 pub async fn complete(
     State(state): State<AppState>,
     axum::extract::Path(request_id): axum::extract::Path<String>,
@@ -233,9 +291,9 @@ pub async fn complete(
     let Some(request) = state.store.get("experiment_request", &request_id) else {
         return (StatusCode::NOT_FOUND, Json(json!({"error":"unknown request"}))).into_response();
     };
-    let token = body["claimToken"].as_str().unwrap_or("");
+    let token = body["claimToken"].as_str().unwrap_or("").to_string();
     if request["status"].as_str() != Some("claimed")
-        || request["claimToken"].as_str() != Some(token)
+        || request["claimToken"].as_str() != Some(token.as_str())
         || token.is_empty()
     {
         return (
@@ -246,10 +304,49 @@ pub async fn complete(
     }
     let strategy_id = request["strategyId"].as_str().unwrap_or("");
     let policy_id = request["policyId"].as_str().unwrap_or("");
-    let verdict = body["verdict"].as_str().unwrap_or("inconclusive");
+    let verdict = body["verdict"]
+        .as_str()
+        .unwrap_or("inconclusive")
+        .to_string();
+    let mut body = body;
+    let verdict = verdict.as_str();
     let mut promotion = Value::Null;
     let mut promotion_error = Value::Null;
-    if verdict != "not_evaluable" {
+    let mut promotion_allowed = verdict != "not_evaluable";
+    if request["kind"].as_str() == Some("policy") && promotion_allowed {
+        use crate::engine::plan_quality;
+        let version_matches = body["semanticEvaluator"]["id"].as_str()
+            == Some(plan_quality::EVALUATOR_ID)
+            && body["semanticEvaluator"]["version"].as_u64()
+                == Some(plan_quality::EVALUATOR_VERSION as u64)
+            && body["independentEvaluator"]["id"].as_str()
+                == Some(plan_quality::INDEPENDENT_EVALUATOR_ID)
+            && body["independentEvaluator"]["version"].as_u64()
+                == Some(plan_quality::INDEPENDENT_EVALUATOR_VERSION as u64);
+        let task = body["task"].as_str().unwrap_or("");
+        let plans = body["plans"].as_array().cloned().unwrap_or_default();
+        if !version_matches {
+            promotion_allowed = false;
+            promotion_error = json!("evaluator version mismatch");
+        } else if plans.is_empty() {
+            promotion_allowed = false;
+            promotion_error = json!("plans missing; independent evaluation impossible");
+        } else {
+            let (main_delta, independent_delta) = recompute_semantic_deltas(&plans, task);
+            if main_delta < plan_quality::MIN_SEMANTIC_DELTA
+                || independent_delta < plan_quality::MIN_SEMANTIC_DELTA
+            {
+                promotion_allowed = false;
+                promotion_error = json!(format!(
+                    "semantic gate rejected (main={main_delta:.3}, independent={independent_delta:.3})"
+                ));
+            } else {
+                body["semanticDelta"] = json!(main_delta);
+                body["independentSemanticDelta"] = json!(independent_delta);
+            }
+        }
+    }
+    if promotion_allowed {
         let applied = if request["kind"].as_str() == Some("policy") {
             crate::engine::policy::apply_experiment_result(&state, policy_id, &body)
         } else {
@@ -264,7 +361,7 @@ pub async fn complete(
         "experiment_request",
         &request_id,
         "claimToken",
-        &json!(token),
+        &json!(token.as_str()),
         &json!({
             "status": "completed",
             "completedAt": chrono::Utc::now().to_rfc3339(),

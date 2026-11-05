@@ -11,6 +11,10 @@
 //! ```text
 //! BENCH_RECALCULATE=1 BENCH_ROOT=/path/to/experiment target/release/dominion-benchmark
 //! ```
+#[allow(dead_code)]
+#[path = "../engine/plan_quality.rs"]
+mod plan_quality;
+
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -403,6 +407,18 @@ fn aggregate(trials: &[Value], arm: &str, pairs: usize) -> Value {
             .sum::<f64>()
             / rows.len() as f64
     };
+    let independent_plan_quality = if rows.is_empty() {
+        0.0
+    } else {
+        rows.iter()
+            .map(|trial| {
+                trial["planQualityIndependent"]
+                    .as_f64()
+                    .unwrap_or(0.0)
+            })
+            .sum::<f64>()
+            / rows.len() as f64
+    };
     json!({
         "assigned": pairs,
         "runs": rows.len(),
@@ -415,6 +431,7 @@ fn aggregate(trials: &[Value], arm: &str, pairs: usize) -> Value {
         "triggerCoverage": if applicable == 0 { Value::Null } else { json!(compliant as f64 / applicable as f64) },
         "tokens": tokens,
         "planQuality": round4(plan_quality),
+        "planQualityIndependent": round4(independent_plan_quality),
         "p50Ms": percentile(&mut latencies.clone(), 0.50),
         "p95Ms": percentile(&mut latencies, 0.95),
     })
@@ -434,6 +451,7 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
         .unwrap_or(0);
     let mut deltas = Vec::new();
     let mut semantic_deltas = Vec::new();
+    let mut independent_semantic_deltas = Vec::new();
     let mut units = 0usize;
     for pair in 0..pairs {
         let baseline = trials
@@ -455,6 +473,9 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
         let bq = baseline["planQuality"].as_f64().unwrap_or(0.0);
         let tq = treatment["planQuality"].as_f64().unwrap_or(0.0);
         semantic_deltas.push(tq - bq);
+        let bi = baseline["planQualityIndependent"].as_f64().unwrap_or(0.0);
+        let ti = treatment["planQualityIndependent"].as_f64().unwrap_or(0.0);
+        independent_semantic_deltas.push(ti - bi);
     }
     let n = deltas.len();
     let mean = if n == 0 {
@@ -474,6 +495,12 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
         0.0
     } else {
         semantic_deltas.iter().sum::<f64>() / semantic_deltas.len() as f64
+    };
+    let independent_semantic_mean = if independent_semantic_deltas.is_empty() {
+        0.0
+    } else {
+        independent_semantic_deltas.iter().sum::<f64>()
+            / independent_semantic_deltas.len() as f64
     };
     let semantic_halfwidth = if semantic_deltas.is_empty() {
         1.0
@@ -498,6 +525,7 @@ fn pair_effect(trials: &[Value], seed: u64) -> Value {
         "verdict": verdict,
         "semanticMetric": "plan_quality_v1",
         "semanticDelta": round4(semantic_mean),
+        "independentSemanticDelta": round4(independent_semantic_mean),
         "semanticCi": [
             round4((semantic_mean - semantic_halfwidth).max(-1.0)),
             round4((semantic_mean + semantic_halfwidth).min(1.0))
@@ -1110,6 +1138,8 @@ async fn main() -> Result<(), String> {
                     "taskOutcome": "unknown",
                     "requiresCompliance": policy_claim.is_none(),
                     "planQuality": 0.0,
+                    "planQualityIndependent": 0.0,
+                    "planText": "",
                     "planSteps": 0,
                 });
                 append_jsonl(&trials_path, &trial)?;
@@ -1230,6 +1260,13 @@ async fn main() -> Result<(), String> {
                 "planQuality": execution["planQuality"]["total"]
                     .as_f64()
                     .unwrap_or(0.0),
+                "planQualityIndependent": execution["planQualityIndependent"]["total"]
+                    .as_f64()
+                    .unwrap_or(0.0),
+                "planText": execution["plan"]
+                    .as_str()
+                    .map(|text| text.chars().take(4_000).collect::<String>())
+                    .unwrap_or_default(),
                 "planSteps": execution["planQuality"]["steps"]
                     .as_u64()
                     .unwrap_or(0),
@@ -1275,6 +1312,17 @@ async fn main() -> Result<(), String> {
         let request_id = claim["request"]["id"].as_str().unwrap_or("");
         let token = claim["request"]["claimToken"].as_str().unwrap_or("");
         let effect = &summary["effect"];
+        let plans = trials
+            .iter()
+            .filter(|trial| trial["arm"].as_str().is_some())
+            .map(|trial| {
+                json!({
+                    "pair": trial["pair"],
+                    "arm": trial["arm"],
+                    "plan": trial["planText"],
+                })
+            })
+            .collect::<Vec<_>>();
         let completed = post(
             &client,
             &format!("{url}/api/experiment-requests/{request_id}/complete"),
@@ -1285,7 +1333,18 @@ async fn main() -> Result<(), String> {
                 "delta": effect["delta"],
                 "independentUnits": effect["independentUnits"],
                 "semanticDelta": effect["semanticDelta"],
+                "independentSemanticDelta": effect["independentSemanticDelta"],
                 "semanticMetric": effect["semanticMetric"],
+                "semanticEvaluator": {
+                    "id": crate::plan_quality::EVALUATOR_ID,
+                    "version": crate::plan_quality::EVALUATOR_VERSION,
+                },
+                "independentEvaluator": {
+                    "id": crate::plan_quality::INDEPENDENT_EVALUATOR_ID,
+                    "version": crate::plan_quality::INDEPENDENT_EVALUATOR_VERSION,
+                },
+                "task": cfg.fixture.task,
+                "plans": plans,
                 "oracleVersion": manifest["oracleVersion"],
             }),
         )

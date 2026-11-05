@@ -7,6 +7,13 @@
 use serde_json::{json, Value};
 
 pub const METRIC_VERSION: &str = "plan_quality_v1";
+pub const EVALUATOR_ID: &str = "plan-quality-main";
+pub const EVALUATOR_VERSION: u32 = 1;
+/// Independent evaluator with a different implementation, used by the outer
+/// gate to detect evaluator-specific wins.
+pub const INDEPENDENT_METRIC_VERSION: &str = "plan_quality_independent_v1";
+pub const INDEPENDENT_EVALUATOR_ID: &str = "plan-quality-independent";
+pub const INDEPENDENT_EVALUATOR_VERSION: u32 = 1;
 /// Minimum semantic delta required before a planning policy can activate.
 pub const MIN_SEMANTIC_DELTA: f64 = 0.05;
 
@@ -48,7 +55,9 @@ pub fn score(plan: &str, request: &str) -> Value {
     let chars = trimmed.chars().count();
     if chars == 0 {
         return json!({
-            "metric": METRIC_VERSION, "total": 0.0, "structure": 0.0,
+            "metric": METRIC_VERSION,
+            "evaluator": {"id": EVALUATOR_ID, "version": EVALUATOR_VERSION},
+            "total": 0.0, "structure": 0.0,
             "relevance": 0.0, "steps": 0, "hasVerification": false, "chars": 0
         });
     }
@@ -95,12 +104,85 @@ pub fn score(plan: &str, request: &str) -> Value {
     let total = (0.55 * structure + 0.45 * relevance).clamp(0.0, 1.0);
     json!({
         "metric": METRIC_VERSION,
+        "evaluator": {"id": EVALUATOR_ID, "version": EVALUATOR_VERSION},
         "total": (total * 10_000.0).round() / 10_000.0,
         "structure": (structure * 10_000.0).round() / 10_000.0,
         "relevance": (relevance * 10_000.0).round() / 10_000.0,
         "steps": steps,
         "hasVerification": verification,
         "chars": chars,
+    })
+}
+
+fn bigrams(text: &str) -> std::collections::HashSet<(char, char)> {
+    let normalized = text
+        .to_lowercase()
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .collect::<Vec<_>>();
+    normalized
+        .windows(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
+}
+
+/// Independent evaluator: character-bigram overlap instead of word tokens and
+/// sentence/line structure instead of numbered steps. It is intentionally a
+/// different algorithm so the outer gate can detect a metric-specific win.
+pub fn score_independent(plan: &str, request: &str) -> Value {
+    let trimmed = plan.trim();
+    if trimmed.is_empty() {
+        return json!({
+            "metric": INDEPENDENT_METRIC_VERSION,
+            "evaluator": {"id": INDEPENDENT_EVALUATOR_ID, "version": INDEPENDENT_EVALUATOR_VERSION},
+            "total": 0.0, "structure": 0.0, "relevance": 0.0,
+            "steps": 0, "hasVerification": false, "chars": 0
+        });
+    }
+    let request_grams = bigrams(request);
+    let plan_grams = bigrams(trimmed);
+    let relevance = if request_grams.is_empty() {
+        0.0
+    } else {
+        (request_grams
+            .intersection(&plan_grams)
+            .count() as f64
+            / request_grams.len() as f64)
+            .min(1.0)
+    };
+    let non_empty_lines = trimmed
+        .lines()
+        .filter(|line| line.trim().chars().count() >= 2)
+        .count();
+    let verification = has_verification(trimmed);
+    let sequencing = ["그리고", "다음", "then", "after", "먼저"]
+        .iter()
+        .any(|word| trimmed.to_lowercase().contains(word));
+    let mut structure: f64 = match non_empty_lines {
+        0 => 0.0,
+        1 => 0.4,
+        2..=8 => 0.9,
+        _ => 0.6,
+    };
+    if verification {
+        structure = (structure + 0.15).min(1.0);
+    }
+    if sequencing {
+        structure = (structure + 0.1).min(1.0);
+    }
+    if trimmed.chars().count() < 20 {
+        structure *= 0.5;
+    }
+    let total = (0.5 * structure + 0.5 * relevance).clamp(0.0, 1.0);
+    json!({
+        "metric": INDEPENDENT_METRIC_VERSION,
+        "evaluator": {"id": INDEPENDENT_EVALUATOR_ID, "version": INDEPENDENT_EVALUATOR_VERSION},
+        "total": (total * 10_000.0).round() / 10_000.0,
+        "structure": (structure * 10_000.0).round() / 10_000.0,
+        "relevance": (relevance * 10_000.0).round() / 10_000.0,
+        "steps": non_empty_lines,
+        "hasVerification": verification,
+        "chars": trimmed.chars().count(),
     })
 }
 
@@ -131,6 +213,28 @@ mod tests {
         assert!(
             relevant["total"].as_f64().unwrap() > vague["total"].as_f64().unwrap()
         );
+    }
+
+    #[test]
+    fn the_independent_evaluator_shares_the_direction_but_not_the_algorithm() {
+        let good = score_independent(
+            "1. bench/harness_report.txt 파일을 만든다\n2. REPORT-OK 내용을 저장한다\n3. 검증한다",
+            REQUEST,
+        );
+        let empty = score_independent("", REQUEST);
+        let vague = score_independent("1. 작업을 진행한다\n2. 완료한다", REQUEST);
+        assert_eq!(empty["total"], 0.0);
+        assert!(good["total"].as_f64().unwrap() > 0.5, "{good}");
+        assert!(
+            good["total"].as_f64().unwrap() > vague["total"].as_f64().unwrap()
+        );
+        assert_eq!(good["metric"], INDEPENDENT_METRIC_VERSION);
+        assert_eq!(good["evaluator"]["id"], INDEPENDENT_EVALUATOR_ID);
+        assert_eq!(
+            good["evaluator"]["version"],
+            INDEPENDENT_EVALUATOR_VERSION
+        );
+        assert_ne!(good["metric"], METRIC_VERSION);
     }
 
     #[test]

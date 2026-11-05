@@ -1300,6 +1300,13 @@ fn policy_experiment_activates_a_candidate_through_the_runner() {
             >= 0.05,
         "semantic gate metric missing: {policy}"
     );
+    assert!(
+        policy["lastExperiment"]["independentSemanticDelta"]
+            .as_f64()
+            .unwrap_or(0.0)
+            >= 0.05,
+        "independent semantic gate metric missing: {policy}"
+    );
     let _ = std::fs::remove_dir_all(bench_root);
 }
 
@@ -1388,6 +1395,143 @@ fn the_production_scheduler_runs_a_queued_experiment_without_manual_invocation()
             .as_str()
             .is_some_and(|text| text.contains("request completed")),
         "runner output missing from scheduler record: {run}"
+    );
+}
+
+#[test]
+fn policy_activation_is_rejected_when_the_independent_evaluator_disagrees() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"unused"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    let make_request = |name: &str| -> (String, String, String) {
+        let policy = app.post(
+            "/api/benchmark/policies",
+            &json!({
+                "slot":"planning","name":name,
+                "parameters":{"outline":true},"rationale":"meta gate test"
+            }),
+        );
+        let policy_id = policy["id"].as_str().unwrap().to_string();
+        let request = app.post(
+            "/api/benchmark/experiment-requests",
+            &json!({"policyId":policy_id, "fixture":"planning_evaluation"}),
+        );
+        let request_id = request["id"].as_str().unwrap().to_string();
+        let claimed = app.post(
+            "/api/experiment-requests/claim",
+            &json!({"runnerId":format!("meta-{name}"),"ttlSeconds":60}),
+        );
+        (policy_id, request_id, claimed["request"]["claimToken"].as_str().unwrap().to_string())
+    };
+    let good_plan = "1. bench/harness_report.txt 파일을 만들고 REPORT-OK를 저장한다\n2. bench/harness_audit.txt 파일을 만든다\n3. 두 파일을 검증한다";
+    let vague_plan = "1. 작업을 진행한다\n2. 완료한다";
+
+    // 1) Version mismatch rejects promotion even with a perfect claimed delta.
+    let (policy_id, request_id, token) = make_request("version-mismatch");
+    let completed = app.post(
+        &format!("/api/experiment-requests/{request_id}/complete"),
+        &json!({
+            "claimToken": token,
+            "experimentId":"meta-1",
+            "verdict":"preliminary_support",
+            "delta":1.0,"independentUnits":10,
+            "semanticDelta":0.9,"independentSemanticDelta":0.9,
+            "semanticEvaluator":{"id":"plan-quality-main","version":999},
+            "independentEvaluator":{"id":"plan-quality-independent","version":1},
+            "task":"bench/harness_report.txt 파일을 만들고 내용을 REPORT-OK로 저장해.",
+            "plans":[
+                {"pair":0,"arm":"baseline","plan":""},
+                {"pair":0,"arm":"treatment","plan":good_plan}
+            ]
+        }),
+    );
+    assert_eq!(completed["request"]["status"], "completed");
+    let policies = app.get("/api/policies");
+    let policy = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == policy_id.as_str())
+        .unwrap();
+    assert_eq!(policy["status"], "candidate", "{policy}");
+    assert!(
+        completed["request"]["promotionError"]
+            .as_str()
+            .is_some_and(|text| text.contains("version")),
+        "{completed}"
+    );
+
+    // 2) Correct versions, but the independent score does not improve.
+    let (policy_id, request_id, token) = make_request("independent-disagrees");
+    let completed = app.post(
+        &format!("/api/experiment-requests/{request_id}/complete"),
+        &json!({
+            "claimToken": token,
+            "experimentId":"meta-2",
+            "verdict":"preliminary_support",
+            "delta":1.0,"independentUnits":10,
+            "semanticDelta":0.9,"independentSemanticDelta":0.9,
+            "semanticEvaluator":{"id":"plan-quality-main","version":1},
+            "independentEvaluator":{"id":"plan-quality-independent","version":1},
+            "task":"bench/harness_report.txt 파일을 만들고 내용을 REPORT-OK로 저장해.",
+            "plans":[
+                {"pair":0,"arm":"baseline","plan":vague_plan},
+                {"pair":0,"arm":"treatment","plan":vague_plan}
+            ]
+        }),
+    );
+    assert_eq!(completed["request"]["status"], "completed");
+    let policies = app.get("/api/policies");
+    let policy = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == policy_id.as_str())
+        .unwrap();
+    assert_eq!(policy["status"], "candidate", "{policy}");
+    assert!(
+        completed["request"]["promotionError"]
+            .as_str()
+            .is_some_and(|text| text.contains("semantic gate rejected")),
+        "{completed}"
+    );
+
+    // 3) Both evaluators agree, so the candidate activates.
+    let (policy_id, request_id, token) = make_request("both-agree");
+    let completed = app.post(
+        &format!("/api/experiment-requests/{request_id}/complete"),
+        &json!({
+            "claimToken": token,
+            "experimentId":"meta-3",
+            "verdict":"preliminary_support",
+            "delta":1.0,"independentUnits":10,
+            "semanticDelta":0.9,"independentSemanticDelta":0.9,
+            "semanticEvaluator":{"id":"plan-quality-main","version":1},
+            "independentEvaluator":{"id":"plan-quality-independent","version":1},
+            "task":"bench/harness_report.txt 파일을 만들고 내용을 REPORT-OK로 저장해.",
+            "plans":[
+                {"pair":0,"arm":"baseline","plan":""},
+                {"pair":0,"arm":"treatment","plan":good_plan}
+            ]
+        }),
+    );
+    assert_eq!(completed["request"]["status"], "completed");
+    let policies = app.get("/api/policies");
+    let policy = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == policy_id.as_str())
+        .unwrap();
+    assert_eq!(policy["status"], "active", "{policy}");
+    assert!(
+        policy["lastExperiment"]["independentSemanticDelta"]
+            .as_f64()
+            .unwrap_or(0.0)
+            >= 0.05,
+        "{policy}"
     );
 }
 

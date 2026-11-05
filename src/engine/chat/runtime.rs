@@ -428,6 +428,8 @@ async fn run_turn_body(
                 execution["plan"] = json!(plan.chars().take(4_000).collect::<String>());
                 execution["planQuality"] =
                     crate::engine::plan_quality::score(&plan, &request.input);
+                execution["planQualityIndependent"] =
+                    crate::engine::plan_quality::score_independent(&plan, &request.input);
                 if let Some(policy) = &planning_policy {
                     execution["planPolicyId"] = policy["id"].clone();
                     execution["planPolicyRevision"] = policy["revision"].clone();
