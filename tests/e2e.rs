@@ -2148,6 +2148,75 @@ fn a_failed_remote_upload_keeps_the_local_snapshot() {
     assert!(snapshots > 0, "local snapshot was removed after remote failure");
 }
 
+#[test]
+fn only_one_runner_can_settle_and_promote_an_experiment() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"unused"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    let policy = app.post(
+        "/api/benchmark/policies",
+        &json!({
+            "slot":"planning","name":"cas-settle",
+            "parameters":{"outline":true},"rationale":"settle CAS"
+        }),
+    );
+    let policy_id = policy["id"].as_str().unwrap().to_string();
+    let request = app.post(
+        "/api/benchmark/experiment-requests",
+        &json!({"policyId":policy_id,"fixture":"planning_evaluation"}),
+    );
+    let request_id = request["id"].as_str().unwrap().to_string();
+    let claimed = app.post(
+        "/api/experiment-requests/claim",
+        &json!({"runnerId":"cas-runner","ttlSeconds":60}),
+    );
+    let token = claimed["request"]["claimToken"].as_str().unwrap().to_string();
+    let good_plan = "1. bench/harness_report.txt 파일을 만들고 REPORT-OK를 저장한다\n2. bench/harness_audit.txt 파일을 만든다\n3. 두 파일을 검증한다";
+    let body = json!({
+        "claimToken": token,
+        "experimentId":"cas-exp",
+        "verdict":"preliminary_support",
+        "delta":1.0,"independentUnits":10,
+        "semanticDelta":0.5,"independentSemanticDelta":0.5,
+        "semanticEvaluator":{"id":"plan-quality-main","version":1},
+        "independentEvaluator":{"id":"plan-quality-independent","version":1},
+        "task":"bench/harness_report.txt 파일을 만들고 내용을 REPORT-OK로 저장해.",
+        "plans":[
+            {"pair":0,"arm":"baseline","plan":""},
+            {"pair":0,"arm":"treatment","plan":good_plan}
+        ]
+    });
+    let base = app.base.clone();
+    let url = format!("{base}/api/experiment-requests/{request_id}/complete");
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let client = app.client.clone();
+        let url = url.clone();
+        let body = body.clone();
+        handles.push(std::thread::spawn(move || {
+            client.post(url).json(&body).send().unwrap().status().as_u16()
+        }));
+    }
+    let mut statuses = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    statuses.sort();
+    assert_eq!(statuses, vec![200, 409], "settlement was not exclusive");
+    let policies = app.get("/api/policies");
+    let policy = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == policy_id.as_str())
+        .unwrap();
+    assert_eq!(policy["status"], "active", "{policy}");
+    let requests = app.get("/api/experiment-requests");
+    assert_eq!(requests.as_array().unwrap()[0]["status"], "completed");
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

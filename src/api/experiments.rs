@@ -19,6 +19,28 @@ pub async fn claim(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     // reclaimers from both winning the same request.
     let now_ms = chrono::Utc::now().timestamp_millis();
     for stale in state.store.all("experiment_request") {
+        let stale_settling = stale["status"].as_str() == Some("settling")
+            && stale["settleExpiresAtMs"]
+                .as_i64()
+                .unwrap_or(i64::MAX)
+                <= now_ms;
+        if stale_settling {
+            if let Some(id) = stale["id"].as_str() {
+                let _ = state.store.patch_if(
+                    "experiment_request",
+                    id,
+                    "status",
+                    &json!("settling"),
+                    &json!({
+                        "status": "queued",
+                        "claimToken": Value::Null,
+                        "settleToken": Value::Null,
+                        "reason": "settlement expired",
+                    }),
+                );
+            }
+            continue;
+        }
         if stale["status"].as_str() == Some("claimed")
             && stale["claimExpiresAtMs"].as_i64().unwrap_or(i64::MAX) <= now_ms
         {
@@ -302,6 +324,36 @@ pub async fn complete(
         )
             .into_response();
     }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if request["claimExpiresAtMs"].as_i64().unwrap_or(i64::MAX) < now_ms {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"claim expired; request must be reclaimed"})),
+        )
+            .into_response();
+    }
+    // Atomically take the settlement slot before any promotion write. A stale
+    // or racing runner loses the CAS and cannot promote.
+    let settle_token = uuid::Uuid::new_v4().to_string();
+    let Some(request) = state.store.patch_if(
+        "experiment_request",
+        &request_id,
+        "claimToken",
+        &json!(token.as_str()),
+        &json!({
+            "status": "settling",
+            "claimToken": Value::Null,
+            "settleToken": settle_token,
+            "settlingAt": chrono::Utc::now().to_rfc3339(),
+            "settleExpiresAtMs": now_ms + 300_000,
+        }),
+    ) else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"claim is no longer active"})),
+        )
+            .into_response();
+    };
     let strategy_id = request["strategyId"].as_str().unwrap_or("");
     let policy_id = request["policyId"].as_str().unwrap_or("");
     let verdict = body["verdict"]
@@ -360,8 +412,8 @@ pub async fn complete(
     let completed = state.store.patch_if(
         "experiment_request",
         &request_id,
-        "claimToken",
-        &json!(token.as_str()),
+        "settleToken",
+        &json!(settle_token.as_str()),
         &json!({
             "status": "completed",
             "completedAt": chrono::Utc::now().to_rfc3339(),
