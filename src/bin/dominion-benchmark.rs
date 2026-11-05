@@ -26,7 +26,9 @@ const AUDIT_PATH: &str = "bench/harness_audit.txt";
 const REPORT_PATH: &str = "bench/harness_report.txt";
 const AUDIT_EXPECTED: &str = "audit-harness";
 const REPORT_EXPECTED: &str = "REPORT-OK";
-const UPDATE_TASK: &str = "bench/config_input.txt를 읽고 bench/config.txt에 mode=final을 저장해.";
+// The read-only input deliberately uses a non-source extension so automatic
+// acceptance inference does not demand that an input file change.
+const UPDATE_TASK: &str = "bench/config_input.cfg를 읽고 bench/config.txt에 mode=final을 저장해.";
 
 #[derive(Clone, Debug)]
 struct Fixture {
@@ -54,10 +56,10 @@ fn fixture(id: &str) -> Result<Fixture, String> {
             id: "update_config",
             task: UPDATE_TASK,
             audit_path: "bench/config.txt",
-            report_path: "bench/config_input.txt",
+            report_path: "bench/config_input.cfg",
             audit_expected: "mode=final",
             report_expected: "mode=draft",
-            seeds: &[("bench/config_input.txt", "mode=draft")],
+            seeds: &[("bench/config_input.cfg", "mode=draft")],
         }),
         other => Err(format!(
             "BENCH_FIXTURE must be audit_report or update_config (got {other})"
@@ -638,6 +640,8 @@ fn write_outputs(root: &Path, manifest: &Value, trials: &[Value]) -> Result<Valu
         "schemaVersion": SCHEMA_VERSION,
         "experimentId": manifest["experimentId"],
         "mode": manifest["mode"],
+        "fixture": manifest["fixture"],
+        "evaluationRole": manifest["evaluationRole"],
         "model": manifest["model"],
         "oracleVersion": ORACLE_VERSION,
         "arms": {
@@ -777,7 +781,11 @@ async fn main() -> Result<(), String> {
                 "workspace_read",
                 "workspace_list",
                 "file_read",
-                "file_write"
+                "file_write",
+                // The engine runs in a disposable temp workspace and the model
+                // legitimately verifies files with shell commands. Without this
+                // scoped approval every verification waits 120s and times out.
+                "shell_exec"
             ]
         }),
     )

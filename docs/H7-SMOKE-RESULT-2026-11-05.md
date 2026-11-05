@@ -101,3 +101,46 @@ runner는 이제 `BENCH_FIXTURE`로 작업군을 선택한다.
 fixture task와 oracle expected는 manifest/snapshot에 함께 저장된다.
 
 아직: holdout 전용 fixture 예약, fixture별 최소 표본 규칙, 작업군 간 전이 평가.
+
+## 7. update_config fixture 실제 측정 (2026-11-05)
+
+### 7.1 첫 실행: 전부 timeout (실패 사례)
+
+초기 fixture는 read-only 입력도 `.txt`였고, task 문장에 입력/출력 경로가 모두
+있었다. 엔진의 acceptance 추론이 **입력 파일도 변경되어야 한다**고 판단해
+`config_input.txt`가 그대로면 검증이 영원히 실패했다. 모델은 6~7 라운드를
+반복했고 300초 client timeout / 600초 engine 제한에 걸렸다.
+
+추가로 모델이 파일 검증에 쓰는 `shell_exec`가 benchmark 정책에 없어
+approval 120초 대기가 발생했다.
+
+이 실행의 결론: **not_evaluated**, trial 8개 전부 strict success 0.
+
+### 7.2 수정
+
+1. `verification::infer_criteria`: 읽기 동사(읽/확인/조회/read/check)와 쓰기 동사가
+   함께 있고 경로가 2개 이상이면 **마지막 경로만** 출력으로 추론한다.
+   회귀 테스트 `reading_an_input_does_not_require_it_to_change`.
+2. benchmark 격리 sandbox 정책에 `shell_exec`를 scoped auto-approve로 추가
+   (임시 workspace 전용).
+3. fixture 입력을 `config_input.cfg`로 바꿔 자동 추론 대상에서 제외(방어적).
+
+### 7.3 재측정 (2 pair, real)
+
+| arm | runs | strict success | compliance | p50 | tokens |
+|---|---|---|---|---|---|
+| baseline | 2 | 0/2 | 0 | 112,471ms | 15,003 |
+| treatment | 2 | 2/2 | 2 | 65,157ms | 7,904 |
+
+- delta 1.0, CI [0.0, 1.0], units 2, verdict `inconclusive`
+- runner가 승격을 시도했으나 `units < 8`이라 **승격되지 않음**
+  (출력: `promotion: status=adopted evidence=E0`)
+- oracle: `config.txt=mode=final`, `config_input.cfg=mode=draft` 유지 확인
+- treatment가 baseline보다 빨랐다(65s vs 112s). 표본 2라 단정하지 않는다.
+
+### 7.4 해석 제한
+
+- strict success는 standing procedure 준수를 포함한다. baseline(model_guided)도
+  같은 절차를 주입받지만 DAG를 결정적으로 실행하지 않아 compliance가 0이다.
+  즉 이 delta는 **"고정 절차 실행 보조"의 효과**이며 모델의 일반 능력 향상이 아니다.
+- fixture마다 task/oracle이 다르므로 두 fixture 결과를 합쳐 일반화하지 않는다.

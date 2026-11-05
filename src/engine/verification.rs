@@ -109,6 +109,12 @@ pub(crate) fn infer_criteria(goal: &str) -> Vec<Value> {
     if !deletion && !writing {
         return vec![];
     }
+    // "a.txt를 읽고 b.txt에 저장해" must not require the read-only input to
+    // change. With both a read and a write verb, only the last path is the
+    // likely output; without a read verb every path is still inferred.
+    let reading = ["읽", "확인", "조회", "read", "check"]
+        .iter()
+        .any(|verb| lower.contains(verb));
     let mut paths = Vec::new();
     for raw in goal.split(|c: char| {
         c.is_whitespace() || matches!(c, '`' | '\'' | '"' | ',' | '(' | ')' | '[' | ']')
@@ -143,6 +149,11 @@ pub(crate) fn infer_criteria(goal: &str) -> Vec<Value> {
             {
                 paths.push(json!({"type":if deletion {"file_absent"} else {"file_changed"},"path":path,"inferred":true}));
             }
+        }
+    }
+    if reading && paths.len() > 1 {
+        if let Some(output) = paths.pop() {
+            paths = vec![output];
         }
     }
     paths
@@ -383,3 +394,22 @@ pub(crate) fn acceptance_gaps(
     gaps
 }
 
+
+#[cfg(test)]
+mod inference_tests {
+    use super::*;
+
+    #[test]
+    fn reading_an_input_does_not_require_it_to_change() {
+        let checks = infer_criteria("a.txt를 읽고 b.txt에 결과를 저장해");
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0]["path"], "b.txt");
+        assert_eq!(checks[0]["type"], "file_changed");
+    }
+
+    #[test]
+    fn multiple_outputs_are_still_inferred_without_a_read_verb() {
+        let checks = infer_criteria("a.txt와 b.txt를 만들어줘");
+        assert_eq!(checks.len(), 2, "{checks:?}");
+    }
+}
