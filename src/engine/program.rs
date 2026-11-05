@@ -1,10 +1,6 @@
-//! Minimal typed Program IR (design 2.4, section 11-3).
-//!
-//! Nodes: Observe, CallTool, Branch, Loop. The runtime executes CallTool and
-//! Branch today; Loop is typed and validated but returns an explicit
-//! unsupported error instead of pretending to run. Checkpoints store the
-//! program revision, frame stack, resolved inputs and completed/pending
-//! operation ids so a future scheduler can resume from an exact position.
+//! Typed Program IR (design 2.4, section 11-3).
+//! A single runtime interprets the nodes and persists its observations,
+//! completed operation IDs, branch inputs and per-loop iteration positions.
 use serde_json::{json, Value};
 
 pub const SUPPORTED_REVISION: u32 = 1;
@@ -21,10 +17,34 @@ pub fn validate(program: &Value) -> Result<Value, String> {
     if nodes.is_empty() || nodes.len() > 64 {
         return Err("program.nodes must contain 1..64 nodes".into());
     }
+    let mut identifiers = std::collections::HashSet::new();
     for node in nodes {
         validate_node(node)?;
+        validate_identifiers(node, &mut identifiers)?;
     }
     Ok(json!({"revision": revision, "nodes": nodes}))
+}
+
+/// Prevents different tool nodes (including nested branches and loop bodies)
+/// from sharing a completed-operation identity after a restart.
+fn validate_identifiers(
+    node: &Value,
+    identifiers: &mut std::collections::HashSet<String>,
+) -> Result<(), String> {
+    let kind = node["type"].as_str().unwrap_or("");
+    if let Some(id) = node["id"].as_str().filter(|id| !id.is_empty()) {
+        if !identifiers.insert(id.to_string()) {
+            return Err(format!("duplicate program node id: {id}"));
+        }
+    } else if matches!(kind, "call_tool" | "branch" | "loop" | "observe" | "delegate") {
+        return Err(format!("{kind}.id is required for durable execution"));
+    }
+    for field in ["nodes", "then", "else", "body"] {
+        for child in node[field].as_array().into_iter().flatten() {
+            validate_identifiers(child, identifiers)?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_node(node: &Value) -> Result<(), String> {
@@ -102,6 +122,7 @@ pub fn new_checkpoint(program: &Value) -> Value {
         "resolvedInputs": {},
         "completedOperationIds": [],
         "pendingOperationIds": [],
+        "loopProgress": {},
     })
 }
 
@@ -213,6 +234,23 @@ mod tests {
         assert!(validate(&program()).is_ok());
         assert!(validate(&json!({"revision":"p","nodes":[{"type":"nope"}]})).is_err());
         assert!(validate(&json!({"nodes":[]})).is_err());
+    }
+
+    #[test]
+    fn durable_program_rejects_duplicate_and_missing_effect_ids() {
+        let mut duplicate = program();
+        duplicate["nodes"][1]["else"][0]["id"] = json!("try");
+        assert!(validate(&duplicate).is_err());
+        let mut missing = program();
+        missing["nodes"][0].as_object_mut().unwrap().remove("id");
+        assert!(validate(&missing).is_err());
+        let mut loop_missing = program();
+        loop_missing["nodes"].as_array_mut().unwrap().push(json!({
+            "type":"loop","maxIterations":2,
+            "predicate":{"type":"exists","from":"loop_condition"},
+            "body":[{"type":"call_tool","id":"write","tool":"workspace_write","inputs":{"path":"out","content":"x"}}]
+        }));
+        assert!(validate(&loop_missing).is_err());
     }
 
     #[test]
