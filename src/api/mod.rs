@@ -82,7 +82,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/harness-evolution", get(harness_evolution::list).post(harness_evolution::propose))
         .route("/api/harness-evolution/:id/validate", post(harness_evolution::validate))
         .route("/api/harness-evolution/:id/promote", post(harness_evolution::promote))
-        .route("/api/harness-evolution/:id/activate", post(harness_evolution::activate))
         .route("/api/harness-evolution/:id/rollback", post(harness_evolution::rollback))
         .route("/api/algorithms", get(algorithms::list).post(algorithms::register))
         .route("/api/algorithms/generate", post(algorithms::generate))
