@@ -508,18 +508,15 @@ pub fn variant(state: &AppState, kind: &str) -> String {
         })
 }
 
-fn agent_of(state: &AppState, agent_id: Option<&str>) -> Option<String> {
-    agent_id
-        .map(str::to_string)
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            state
-                .store
-                .all("agent")
-                .into_iter()
-                .find(|agent| agent["enabled"].as_bool() != Some(false))
-                .and_then(|agent| agent["id"].as_str().map(str::to_string))
-        })
+fn agent_of(_state: &AppState, agent_id: Option<&str>) -> Option<String> {
+    // A turn without an agent still needs a stable scope. Use the shared
+    // "global" statistics instead of silently picking another bot.
+    Some(
+        agent_id
+            .filter(|value| !value.is_empty())
+            .unwrap_or("global")
+            .to_string(),
+    )
 }
 
 fn stat_id(agent: &str, kind: &str, revision: &str) -> String {
@@ -656,12 +653,30 @@ pub fn variant_for_agent(
         .unwrap_or_else(|| variant(state, kind))
 }
 
+/// Records the observable outcome of a specific algorithm decision. The final
+/// task outcome is only a fallback; this signal distinguishes which domain
+/// actually succeeded or failed.
+pub fn mark_signal(state: &AppState, execution_id: &str, kind: &str, ok: bool) {
+    let usage_id = format!(
+        "algorithm-usage-{}",
+        crate::engine::memory::stable_id(&[execution_id, kind])
+    );
+    let Some(mut usage) = state.store.get("algorithm_usage", &usage_id) else {
+        return;
+    };
+    usage["signal"] = json!({"ok": ok, "kind": kind});
+    usage["signalUpdatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    if let Some(saved) = state.store.put("algorithm_usage", &usage) {
+        state.bus.record("algorithm_usage", &saved);
+    }
+}
+
 /// Applies the execution outcome to every algorithm used during that run.
 pub fn finalize_execution(state: &AppState, execution: &Value) {
     let Some(execution_id) = execution["id"].as_str() else {
         return;
     };
-    let success = execution["taskOutcome"].as_str() == Some("succeeded");
+    let task_success = execution["taskOutcome"].as_str() == Some("succeeded");
     for mut usage in state.store.all("algorithm_usage") {
         if usage["executionId"].as_str() != Some(execution_id)
             || usage["status"].as_str() != Some("pending")
@@ -675,6 +690,8 @@ pub fn finalize_execution(state: &AppState, execution: &Value) {
         ) else {
             continue;
         };
+        // Domain signal wins over the whole-task fallback.
+        let success = usage["signal"]["ok"].as_bool().unwrap_or(task_success);
         let id = stat_id(agent, kind, revision);
         let mut stat = state.store.get("algorithm_stat", &id).unwrap_or_else(|| {
             json!({
@@ -1170,6 +1187,33 @@ mod tests {
                 && stat["revision"] == chosen["revision"]
         }).expect("global stat");
         assert_eq!(global["uses"], 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_domain_signal_overrides_whole_task_success() {
+        let (state, dir) = state();
+        seed(&state);
+        let chosen = choose_for_agent(
+            &state, "verification.predicate", Some("agent-a"), Some("exec-signal"),
+        )
+        .expect("algorithm");
+        mark_signal(&state, "exec-signal", "verification.predicate", false);
+        finalize_execution(
+            &state,
+            &json!({"id":"exec-signal","agentId":"agent-a","taskOutcome":"succeeded"}),
+        );
+        let stat = state
+            .store
+            .all("algorithm_stat")
+            .into_iter()
+            .find(|stat| {
+                stat["agentId"] == "agent-a"
+                    && stat["revision"] == chosen["revision"]
+            })
+            .unwrap();
+        assert_eq!(stat["successes"], 0, "{stat}");
+        assert_eq!(stat["failures"], 1, "{stat}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

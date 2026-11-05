@@ -281,12 +281,23 @@ fn record_with_scope(
 }
 
 /// Retrieves similar cases and bumps their usage counters.
+#[allow(dead_code)]
 pub fn retrieve(state: &AppState, scope: &MemoryScope, query: &str, limit: usize) -> Vec<Value> {
+    retrieve_with_execution(state, scope, query, limit, None)
+}
+
+pub fn retrieve_with_execution(
+    state: &AppState,
+    scope: &MemoryScope,
+    query: &str,
+    limit: usize,
+    execution_id: Option<&str>,
+) -> Vec<Value> {
     let retrieval = crate::engine::algorithms::choose_for_agent(
         state,
         "memory.retrieval",
         scope.agent_id.as_deref(),
-        None,
+        execution_id,
     );
     let failure_boost = retrieval
         .as_ref()
@@ -351,11 +362,20 @@ pub fn context_block_with_manifest(
     scope: &MemoryScope,
     query: &str,
 ) -> (Option<String>, Vec<Value>) {
+    context_block_with_manifest_at(state, scope, query, None)
+}
+
+pub fn context_block_with_manifest_at(
+    state: &AppState,
+    scope: &MemoryScope,
+    query: &str,
+    execution_id: Option<&str>,
+) -> (Option<String>, Vec<Value>) {
     let algorithm = crate::engine::algorithms::choose_for_agent(
         state,
         "context.selection",
         scope.agent_id.as_deref(),
-        None,
+        execution_id,
     );
     let method_limit = algorithm
         .as_ref()
@@ -365,7 +385,7 @@ pub fn context_block_with_manifest(
         .as_ref()
         .and_then(|item| item["parameters"]["failureBoost"].as_f64())
         .unwrap_or(2.0);
-    let mut cases = retrieve(state, scope, query, 5);
+    let mut cases = retrieve_with_execution(state, scope, query, 5, execution_id);
     if failure_boost > 1.0 {
         cases.sort_by(|a, b| {
             let score = |case: &Value| {
@@ -629,7 +649,7 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
             state,
             "multiagent.sharing",
             scope.agent_id.as_deref(),
-            None,
+            Some(execution_id),
         )
         .and_then(|algorithm| algorithm["parameters"]["minAgents"].as_u64())
         .unwrap_or(2) as usize;

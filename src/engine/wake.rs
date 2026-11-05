@@ -82,6 +82,35 @@ pub fn recover(state: &AppState) -> Vec<Value> {
         let request = execution["request"].as_str().unwrap_or("");
         let session_id = execution["sessionId"].as_str().unwrap_or("");
         let task_outcome = execution["taskOutcome"].as_str().unwrap_or("");
+        // If the process died after creating the execution but before the
+        // owner message was persisted, the execution still carries the exact
+        // request. Recover that message once instead of refusing to resume.
+        if !request.trim().is_empty()
+            && state.store.get("session", session_id).is_some()
+            && !state
+                .store
+                .messages(session_id)
+                .iter()
+                .any(|message| message["role"].as_str() == Some("user"))
+        {
+            let saved = state.store.write_message(&json!({
+                "session_id": session_id,
+                "role": "user",
+                "content": request,
+                "agent_id": execution["agentId"],
+                "metadata": {
+                    "authorKind": "owner",
+                    "recovered": true,
+                    "executionId": execution_id,
+                },
+            }));
+            if saved.is_some() {
+                state.store.audit(
+                    "wake.owner_message_recovered",
+                    json!({"executionId": execution_id}),
+                );
+            }
+        }
         let (decision, reason, job_id) = if task_outcome == "succeeded" {
             ("skipped", "이미 성공한 실행입니다.", Value::Null)
         } else if unknown {
@@ -238,6 +267,21 @@ mod tests {
         );
         // A second startup must not enqueue another resume.
         assert!(recover(&state).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_lost_owner_message_is_recovered_from_the_execution_request() {
+        let (state, dir) = state();
+        state.store.clear_messages("session-1");
+        interrupted(&state, "run-missing-message");
+        let created = recover(&state);
+        assert_eq!(created[0]["decision"], "queued", "{:?}", created);
+        let messages = state.store.messages("session-1");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "파일을 확인해");
+        assert_eq!(messages[0]["metadata"]["recovered"], true);
         let _ = std::fs::remove_dir_all(dir);
     }
 

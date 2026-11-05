@@ -367,12 +367,13 @@ async fn run_turn_body(
     let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"taskId":task_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
 
     let provider = select_provider(state, request, &session)?;
-    let prompt_context = super::context::system_prompt_with_manifest(
+    let prompt_context = super::context::system_prompt_with_manifest_at(
         state,
         request,
         session_id,
         &request.input,
         Some(&strategy_candidates),
+        Some(execution_id),
     );
     let mut messages = vec![json!({ "role": "system", "content": prompt_context.prompt })];
     let history_messages = history(
@@ -1102,6 +1103,9 @@ async fn run_turn_body(
                         state, tx, session_id, request, execution_id, &call.name, &call.id,
                         error, metrics,
                     );
+                    crate::engine::algorithms::mark_signal(
+                        state, execution_id, "tool.selection", false,
+                    );
                     messages.push(json!({
                         "role":"tool","tool_call_id":call.id,
                         "content": json!({"error":error,"toolSelectionBlocked":true}).to_string()
@@ -1215,6 +1219,12 @@ async fn run_turn_body(
                 None,
             )
             .await?;
+            crate::engine::algorithms::mark_signal(
+                state, execution_id, "tool.selection", ok,
+            );
+            crate::engine::algorithms::mark_signal(
+                state, execution_id, "recovery.strategy", ok,
+            );
             if ok {
                 failed_calls.remove(&call_key);
                 if matches!(
@@ -1724,7 +1734,7 @@ async fn attempt_model_adaptation(
         name: selected_tool,
         arguments: inputs.to_string(),
     };
-    let (result, _ok, _content) = dispatch_tool_call(
+    let (result, ok, _content) = dispatch_tool_call(
         state,
         tx,
         session,
@@ -1744,6 +1754,12 @@ async fn attempt_model_adaptation(
         None,
     )
     .await?;
+    crate::engine::algorithms::mark_signal(
+        state, execution_id, "adaptation.selection", ok,
+    );
+    crate::engine::algorithms::mark_signal(
+        state, execution_id, "learning.applicability", ok,
+    );
     let hypothesis_results = crate::engine::adaptation_loop::evaluate_hypotheses_phased(
         &adaptation,
         &before_observation,
@@ -2249,6 +2265,12 @@ fn execute_nodes<'a>(
                             });
                         }
                         mark_program_completed(&mut checkpoint, node_id);
+                        crate::engine::algorithms::mark_signal(
+                            ctx.state,
+                            ctx.execution_id,
+                            "execution.parallelism",
+                            true,
+                        );
                         if persist {
                             save_program_checkpoint(
                                 ctx.state, ctx.execution_id, &checkpoint,
@@ -2323,6 +2345,12 @@ fn execute_nodes<'a>(
                         });
                     }
                     mark_program_completed(&mut checkpoint, node_id);
+                    crate::engine::algorithms::mark_signal(
+                        ctx.state,
+                        ctx.execution_id,
+                        "execution.parallelism",
+                        true,
+                    );
                 }
                 "verify" => {
                     use crate::engine::program::PredicateVerdict;
@@ -2356,6 +2384,12 @@ fn execute_nodes<'a>(
                         "unknown": unknown,
                         "checks": results,
                     });
+                    crate::engine::algorithms::mark_signal(
+                        ctx.state,
+                        ctx.execution_id,
+                        "verification.predicate",
+                        ok && !unknown,
+                    );
                     if !ok {
                         messages.push(json!({
                             "role":"system",
@@ -2689,6 +2723,9 @@ async fn run_program(
                 checkpoint["status"] = json!("running");
                 save_revised_program(state, execution_id, &revised);
                 save_program_checkpoint(state, execution_id, &checkpoint);
+                crate::engine::algorithms::mark_signal(
+                    state, execution_id, "program.repair", true,
+                );
                 messages.push(json!({
                     "role":"system",
                     "content": format!(
@@ -2706,6 +2743,9 @@ async fn run_program(
             }
             Ok(None) => break,
             Err(error) => {
+                crate::engine::algorithms::mark_signal(
+                    state, execution_id, "program.repair", false,
+                );
                 record_adaptation_error(
                     state,
                     execution_id,

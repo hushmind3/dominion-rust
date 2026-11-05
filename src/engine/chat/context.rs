@@ -39,6 +39,17 @@ pub(super) fn system_prompt_with_manifest(
     query: &str,
     improvements: Option<&[Value]>,
 ) -> PromptContext {
+    system_prompt_with_manifest_at(state, request, session_id, query, improvements, None)
+}
+
+pub(super) fn system_prompt_with_manifest_at(
+    state: &AppState,
+    request: &TurnRequest,
+    session_id: &str,
+    query: &str,
+    improvements: Option<&[Value]>,
+    execution_id: Option<&str>,
+) -> PromptContext {
     let mut prompt = String::from(
         "You are DOMINION, an agentic AI workspace running on a Rust engine. \
          Answer in Korean unless the user writes in another language. \
@@ -78,7 +89,9 @@ pub(super) fn system_prompt_with_manifest(
         }
     }
     if let Some((context, mut context_items, watermark)) =
-        context_block_with_manifest(state, session_id, request.agent_id.as_deref(), query, improvements)
+        context_block_with_manifest(
+            state, session_id, request.agent_id.as_deref(), query, improvements, execution_id,
+        )
     {
         prompt.push_str("\n\n");
         prompt.push_str(&context);
@@ -145,7 +158,7 @@ fn context_block(
     query: &str,
     improvements: Option<&[Value]>,
 ) -> Option<String> {
-    context_block_with_manifest(state, session_id, agent_id, query, improvements)
+    context_block_with_manifest(state, session_id, agent_id, query, improvements, None)
         .map(|(block, _, _)| block)
 }
 
@@ -155,6 +168,7 @@ fn context_block_with_manifest(
     agent_id: Option<&str>,
     query: &str,
     improvements: Option<&[Value]>,
+    execution_id: Option<&str>,
 ) -> Option<(String, Vec<Value>, String)> {
     let scope = crate::engine::memory::MemoryScope::for_session(&state.store, session_id, agent_id);
     let (memories, mut items) =
@@ -233,7 +247,9 @@ fn context_block_with_manifest(
         None => crate::engine::improve::context_block(state, &scope),
     };
     let (experience, mut experience_items) =
-        crate::engine::experience::context_block_with_manifest(state, &scope, query);
+        crate::engine::experience::context_block_with_manifest_at(
+            state, &scope, query, execution_id,
+        );
     items.append(&mut experience_items);
     if memories.is_none()
         && skills.is_empty()

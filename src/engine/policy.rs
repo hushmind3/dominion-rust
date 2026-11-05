@@ -337,6 +337,12 @@ pub fn propose_candidates(state: &AppState) -> Vec<Value> {
                 &evidence_ids.join(",")
             ])
         );
+        let _search_algorithm = crate::engine::algorithms::choose_for_agent(
+            state,
+            "selfimprove.search",
+            None,
+            Some(&search_id),
+        );
         for (name, parameters, base_rationale) in variants.into_iter().take(variant_limit) {
             let rationale = format!(
                 "{base_rationale} (근거 {}건: {})",
@@ -710,6 +716,13 @@ pub fn select_best(state: &AppState, search_id: &str) -> Option<Value> {
             json!({"searchId": search_id, "selected": record["selectedPolicyId"]}),
         );
     }
+    crate::engine::algorithms::finalize_execution(
+        state,
+        &json!({
+            "id": search_id,
+            "taskOutcome": if selected_policy_id.is_some() { "succeeded" } else { "failed" },
+        }),
+    );
     state.store.put(
         "search_episode",
         &json!({
