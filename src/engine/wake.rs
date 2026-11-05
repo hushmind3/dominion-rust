@@ -85,13 +85,14 @@ pub fn recover(state: &AppState) -> Vec<Value> {
         // If the process died after creating the execution but before the
         // owner message was persisted, the execution still carries the exact
         // request. Recover that message once instead of refusing to resume.
+        let has_owner_message = state.store.messages(session_id).iter().any(|message| {
+            message["role"].as_str() == Some("user")
+                && (message["content"].as_str() == Some(request)
+                    || message["metadata"]["executionId"].as_str() == Some(execution_id))
+        });
         if !request.trim().is_empty()
             && state.store.get("session", session_id).is_some()
-            && !state
-                .store
-                .messages(session_id)
-                .iter()
-                .any(|message| message["role"].as_str() == Some("user"))
+            && !has_owner_message
         {
             let saved = state.store.write_message(&json!({
                 "session_id": session_id,
@@ -282,6 +283,21 @@ mod tests {
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[0]["content"], "파일을 확인해");
         assert_eq!(messages[0]["metadata"]["recovered"], true);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_lost_latest_request_is_recovered_even_when_older_messages_exist() {
+        let (state, dir) = state();
+        // The helper already stored an older user message.
+        interrupted(&state, "run-new-request");
+        let mut execution = state.store.get("execution", "run-new-request").unwrap();
+        execution["request"] = json!("새로운 요청");
+        state.store.put("execution", &execution);
+        let created = recover(&state);
+        assert_eq!(created[0]["decision"], "queued", "{:?}", created);
+        let messages = state.store.messages("session-1");
+        assert!(messages.iter().any(|message| message["content"] == "새로운 요청"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -870,11 +870,14 @@ pub fn record_rule_counterexamples(
         .store
         .get("execution", execution_id)
         .and_then(|execution| execution["agentId"].as_str().map(str::to_string));
-    let mode = crate::engine::algorithms::variant_for_agent(
+    let mode = crate::engine::algorithms::choose_for_agent(
         state,
         "learning.counterexample",
         agent_id.as_deref(),
-    );
+        Some(execution_id),
+    )
+    .and_then(|algorithm| algorithm["implementation"].as_str().map(str::to_string))
+    .unwrap_or_else(|| "narrow".into());
     if mode == "disable" {
         return;
     }

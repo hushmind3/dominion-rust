@@ -664,7 +664,16 @@ pub fn mark_signal(state: &AppState, execution_id: &str, kind: &str, ok: bool) {
     let Some(mut usage) = state.store.get("algorithm_usage", &usage_id) else {
         return;
     };
-    usage["signal"] = json!({"ok": ok, "kind": kind});
+    if !usage["signal"].is_object() {
+        usage["signal"] = json!({"kind": kind, "successes": 0, "failures": 0});
+    }
+    if ok {
+        usage["signal"]["successes"] =
+            json!(usage["signal"]["successes"].as_u64().unwrap_or(0) + 1);
+    } else {
+        usage["signal"]["failures"] =
+            json!(usage["signal"]["failures"].as_u64().unwrap_or(0) + 1);
+    }
     usage["signalUpdatedAt"] = json!(chrono::Utc::now().to_rfc3339());
     if let Some(saved) = state.store.put("algorithm_usage", &usage) {
         state.bus.record("algorithm_usage", &saved);
@@ -690,8 +699,15 @@ pub fn finalize_execution(state: &AppState, execution: &Value) {
         ) else {
             continue;
         };
-        // Domain signal wins over the whole-task fallback.
-        let success = usage["signal"]["ok"].as_bool().unwrap_or(task_success);
+        // Domain signals win over the whole-task fallback. Multiple events in
+        // one run are aggregated, not overwritten by the last one.
+        let success = if usage["signal"].is_object() {
+            let successes = usage["signal"]["successes"].as_u64().unwrap_or(0);
+            let failures = usage["signal"]["failures"].as_u64().unwrap_or(0);
+            successes > 0 && failures == 0 || successes > failures
+        } else {
+            task_success
+        };
         let id = stat_id(agent, kind, revision);
         let mut stat = state.store.get("algorithm_stat", &id).unwrap_or_else(|| {
             json!({
@@ -720,7 +736,14 @@ pub fn finalize_execution(state: &AppState, execution: &Value) {
             state.bus.record("algorithm_stat", &saved);
         }
         // Collective statistics: a new bot starts from what the group has
-        // already learned instead of a blank slate.
+        // already learned instead of a blank slate. A global execution already
+        // updated this record above; do not count it twice.
+        if agent == "global" {
+            usage["status"] = json!("completed");
+            usage["success"] = json!(success);
+            state.store.put("algorithm_usage", &usage);
+            continue;
+        }
         let global_id = stat_id("global", kind, revision);
         let mut global = state.store.get("algorithm_stat", &global_id).unwrap_or_else(|| {
             json!({
@@ -1214,6 +1237,34 @@ mod tests {
             .unwrap();
         assert_eq!(stat["successes"], 0, "{stat}");
         assert_eq!(stat["failures"], 1, "{stat}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn global_execution_is_counted_once_and_signals_aggregate() {
+        let (state, dir) = state();
+        seed(&state);
+        let chosen = choose_for_agent(
+            &state, "adaptation.selection", None, Some("exec-global"),
+        )
+        .expect("algorithm");
+        mark_signal(&state, "exec-global", "adaptation.selection", false);
+        mark_signal(&state, "exec-global", "adaptation.selection", false);
+        mark_signal(&state, "exec-global", "adaptation.selection", true);
+        finalize_execution(
+            &state,
+            &json!({"id":"exec-global","taskOutcome":"succeeded"}),
+        );
+        let stats = state
+            .store
+            .all("algorithm_stat")
+            .into_iter()
+            .filter(|stat| stat["revision"] == chosen["revision"])
+            .collect::<Vec<_>>();
+        assert_eq!(stats.len(), 1, "global was counted twice: {stats:?}");
+        assert_eq!(stats[0]["uses"], 1, "{stats:?}");
+        assert_eq!(stats[0]["successes"], 0, "last signal overwrote failures");
+        assert_eq!(stats[0]["failures"], 1, "{stats:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

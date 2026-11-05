@@ -716,6 +716,12 @@ pub fn select_best(state: &AppState, search_id: &str) -> Option<Value> {
             json!({"searchId": search_id, "selected": record["selectedPolicyId"]}),
         );
     }
+    let improved = best
+        .as_ref()
+        .is_some_and(|(_, score)| *score > 0.0);
+    crate::engine::algorithms::mark_signal(
+        state, search_id, "selfimprove.search", improved,
+    );
     crate::engine::algorithms::finalize_execution(
         state,
         &json!({

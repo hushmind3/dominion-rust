@@ -3751,8 +3751,6 @@ pub(super) fn finalize_execution(
         growth_record["agentId"] = json!(agent_id);
         let _ = crate::engine::agent_growth::record(state, &growth_record);
     }
-    crate::engine::algorithms::finalize_execution(state, &record);
-
     // A success experience requires Succeeded and a first-time finalization.
     if applied && task_outcome == TaskOutcome::Succeeded {
         // Use the same first-success-per-root marker as the original case
@@ -3762,6 +3760,9 @@ pub(super) fn finalize_execution(
             let _ = crate::engine::experience::learn_verified_adaptations(state, &record);
         }
     }
+    // Finalize after learning so algorithm usages created while learning
+    // (for example multiagent.sharing) are included in this execution.
+    crate::engine::algorithms::finalize_execution(state, &record);
 
 }
 
