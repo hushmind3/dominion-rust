@@ -3247,6 +3247,88 @@ fn block_write_without_read_algorithm_blocks_and_then_allows_the_write() {
     assert_eq!(writes, 1, "{operations}");
 }
 
+#[test]
+fn per_bot_growth_changes_only_that_bots_next_prompt() {
+    let _serial = serial();
+    let calls = Arc::new(Mutex::new(0u32));
+    let counter = calls.clone();
+    let (port, requests) = scripted_provider(move |_| {
+        let mut count = counter.lock().unwrap();
+        *count += 1;
+        match *count {
+            1 | 2 | 4 | 5 => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":format!("fail-{count}"),"type":"function","function":{"name":"shell_exec","arguments":"{\"command\":\"exit 7\"}"}}]},"finish_reason":"tool_calls"}]})],
+            _ => vec![json!({"choices":[{"delta":{"content":"완료했습니다."},"finish_reason":"stop"}]})],
+        }
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let agent_a = app.post("/api/agents", &json!({"name":"growth-a","systemPrompt":"A"}));
+    let agent_b = app.post("/api/agents", &json!({"name":"growth-b","systemPrompt":"B"}));
+    let a_id = agent_a["id"].as_str().unwrap();
+    let b_id = agent_b["id"].as_str().unwrap();
+    let session_a = app.post("/api/sessions", &json!({"title":"a","agentId":a_id}));
+    let a_session = session_a["id"].as_str().unwrap();
+    for index in 1..=2 {
+        let _ = app.chat(&json!({
+            "sessionId": a_session,
+            "agentId": a_id,
+            "input": format!("A 실패 작업 {index}"),
+            "autoLearning": false
+        }));
+    }
+    let growth = app.get(&format!("/api/agents/{a_id}/growth"));
+    assert!(growth["runs"].as_u64().unwrap_or(0) >= 2, "{growth}");
+    assert!(!growth["guidance"].as_array().unwrap_or(&Vec::new()).is_empty(), "{growth}");
+    let _ = app.chat(&json!({
+        "sessionId": a_session,
+        "agentId": a_id,
+        "input": "A 세 번째 작업",
+        "autoLearning": false
+    }));
+    let session_b = app.post("/api/sessions", &json!({"title":"b","agentId":b_id}));
+    let b_session = session_b["id"].as_str().unwrap();
+    let _ = app.chat(&json!({
+        "sessionId": b_session,
+        "agentId": b_id,
+        "input": "B 첫 작업",
+        "autoLearning": false
+    }));
+    let requests = requests.lock().unwrap();
+    let prompt_for = |needle: &str| -> String {
+        requests
+            .iter()
+            .find_map(|request| {
+                let messages = request["messages"].as_array()?;
+                let has_user = messages.iter().any(|message| {
+                    message["role"] == "user"
+                        && message["content"]
+                            .as_str()
+                            .is_some_and(|content| content.contains(needle))
+                });
+                if !has_user {
+                    return None;
+                }
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "system")
+                    .and_then(|message| message["content"].as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+    };
+    let a_prompt = prompt_for("A 세 번째 작업");
+    assert!(a_prompt.contains("Agent growth"), "A growth missing: {a_prompt}");
+    assert!(
+        a_prompt.contains("tool_failed") || a_prompt.contains("shell_exec"),
+        "A failure guidance missing: {a_prompt}"
+    );
+    let b_prompt = prompt_for("B 첫 작업");
+    assert!(
+        !b_prompt.contains("Agent growth"),
+        "B inherited A's growth: {b_prompt}"
+    );
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")
