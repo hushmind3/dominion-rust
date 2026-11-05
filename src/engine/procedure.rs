@@ -55,6 +55,171 @@ fn valid_after(value: &Value) -> bool {
     }
 }
 
+fn tool_catalog() -> std::collections::HashSet<String> {
+    crate::engine::tools::definitions()
+        .into_iter()
+        .filter_map(|definition| {
+            definition["function"]["name"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+fn validate_bindings(value: &Value, bindings: &Value, nodes: &[Value]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let node_ids = nodes
+        .iter()
+        .filter_map(|node| node["id"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    fn walk(
+        value: &Value,
+        bindings: &Value,
+        node_ids: &std::collections::HashSet<&str>,
+        errors: &mut Vec<String>,
+    ) {
+        match value {
+            Value::String(text) if text.starts_with('$') => {
+                let name = text
+                    .trim_start_matches('$')
+                    .split('.')
+                    .next()
+                    .unwrap_or("");
+                if !bindings[name].is_null()
+                    || matches!(name, "owner" | "input" | "task")
+                    || node_ids.contains(name)
+                {
+                    return;
+                }
+                errors.push(format!("undefined binding: {text}"));
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, bindings, node_ids, errors);
+                }
+            }
+            Value::Object(map) => {
+                for item in map.values() {
+                    walk(item, bindings, node_ids, errors);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(value, bindings, &node_ids, &mut errors);
+    errors
+}
+
+fn validate_dag(nodes: &[Value], edges: &[Value], bindings: &Value) -> Vec<String> {
+    let mut errors = Vec::new();
+    if nodes.len() > 16 {
+        errors.push("DAG nodes exceed 16".into());
+    }
+    if edges.len() > 32 {
+        errors.push("DAG edges exceed 32".into());
+    }
+    let catalog = tool_catalog();
+    let mut ids = std::collections::HashSet::new();
+    for node in nodes {
+        let Some(id) = node["id"].as_str().filter(|id| !id.is_empty()) else {
+            errors.push("DAG node id is missing".into());
+            continue;
+        };
+        if !ids.insert(id) {
+            errors.push(format!("duplicate DAG node: {id}"));
+        }
+        let Some(tool) = node["tool"].as_str().filter(|tool| !tool.is_empty()) else {
+            errors.push(format!("DAG node {id} has no tool"));
+            continue;
+        };
+        if !catalog.contains(tool) && !tool.starts_with("mcp__") {
+            errors.push(format!("unsupported DAG tool: {tool}"));
+        }
+        if !node["arguments"].is_object() {
+            errors.push(format!("DAG node {id} arguments must be an object"));
+        }
+        errors.extend(validate_bindings(
+            &node["arguments"],
+            bindings,
+            nodes,
+        ));
+    }
+    let mut adjacency: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for edge in edges {
+        let Some(from) = edge["from"].as_str() else {
+            errors.push("DAG edge has no from".into());
+            continue;
+        };
+        let Some(to) = edge["to"].as_str() else {
+            errors.push("DAG edge has no to".into());
+            continue;
+        };
+        if !ids.contains(from) || !ids.contains(to) {
+            errors.push(format!("DAG edge references an unknown node: {from}->{to}"));
+            continue;
+        }
+        if from == to {
+            errors.push(format!("DAG self dependency: {from}"));
+        }
+        adjacency.entry(from).or_default().push(to);
+    }
+    fn visit<'a>(
+        node: &'a str,
+        adjacency: &std::collections::HashMap<&'a str, Vec<&'a str>>,
+        state: &mut std::collections::HashMap<&'a str, u8>,
+        depth: usize,
+        errors: &mut Vec<String>,
+    ) {
+        if depth > 8 {
+            errors.push("DAG depth exceeds 8".into());
+            return;
+        }
+        match state.get(node).copied().unwrap_or(0) {
+            1 => {
+                errors.push(format!("DAG cycle at {node}"));
+                return;
+            }
+            2 => return,
+            _ => {}
+        }
+        state.insert(node, 1);
+        if let Some(children) = adjacency.get(node) {
+            for child in children {
+                visit(child, adjacency, state, depth + 1, errors);
+            }
+        }
+        state.insert(node, 2);
+    }
+    let mut state = std::collections::HashMap::new();
+    for id in &ids {
+        visit(id, &adjacency, &mut state, 0, &mut errors);
+    }
+    errors
+}
+
+/// Rejects contradictory file equality checks for the same path.
+fn contradictory_after(after: &[Value]) -> Vec<String> {
+    let mut expected: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::new();
+    let mut errors = Vec::new();
+    for item in after {
+        if item["kind"].as_str() != Some("file_equals") {
+            continue;
+        }
+        let Some(path) = item["path"].as_str() else {
+            continue;
+        };
+        let text = item["text"].as_str().unwrap_or("");
+        if let Some(previous) = expected.insert(path, text) {
+            if previous != text {
+                errors.push(format!("contradictory file_equals for {path}"));
+            }
+        }
+    }
+    errors
+}
+
 /// Accepts only the documented shape. Anything ambiguous becomes `unverified`;
 /// an unverified strategy is never promoted by the probation counter.
 pub fn normalize(value: &Value) -> Value {
@@ -98,13 +263,31 @@ pub fn normalize(value: &Value) -> Value {
             Vec::new()
         }
     };
+    let nodes = match value["nodes"].as_array() {
+        Some(items) => items.clone(),
+        None if value["nodes"].is_null() => Vec::new(),
+        None => {
+            errors.push("nodes must be an array".to_string());
+            Vec::new()
+        }
+    };
+    let edges = match value["edges"].as_array() {
+        Some(items) => items.clone(),
+        None if value["edges"].is_null() => Vec::new(),
+        None => {
+            errors.push("edges must be an array".to_string());
+            Vec::new()
+        }
+    };
+    errors.extend(validate_dag(&nodes, &edges, &value["bindings"]));
+    errors.extend(contradictory_after(&after));
     if !errors.is_empty() {
         return json!({
             "type": "invalid",
             "reason": errors.join("; "),
         });
     }
-    if before.is_empty() && after.is_empty() {
+    if before.is_empty() && after.is_empty() && nodes.is_empty() {
         return unverified();
     }
     json!({
@@ -112,6 +295,9 @@ pub fn normalize(value: &Value) -> Value {
         "appliesTo": value["appliesTo"].clone(),
         "before": before,
         "after": after,
+        "nodes": nodes,
+        "edges": edges,
+        "bindings": value["bindings"].clone(),
     })
 }
 
@@ -255,10 +441,18 @@ pub fn missing_requirement(
             }
         }
         let require = &entry["require"];
-        if operations
+        let last_target = operations
             .iter()
-            .any(|operation| operation_matches(operation, require))
-        {
+            .rposition(|operation| operation_matches(operation, when));
+        let last_require = operations
+            .iter()
+            .rposition(|operation| operation_matches(operation, require));
+        let satisfied = match (last_require, last_target) {
+            (Some(require), Some(target)) => require > target,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if satisfied {
             continue;
         }
         let tool = require["tool"].as_str().unwrap_or("required");
@@ -272,53 +466,123 @@ pub fn missing_requirement(
 
 const MAX_PROCEDURE_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
-fn read_workspace_file(workspace: &Path, path: &str) -> Option<String> {
-    if !safe_relative(path) {
-        return None;
-    }
-    let candidate = workspace.join(path);
-    let metadata = std::fs::symlink_metadata(&candidate).ok()?;
-    if metadata.file_type().is_symlink() || metadata.len() > MAX_PROCEDURE_FILE_BYTES {
-        return None;
-    }
-    let canonical_workspace = workspace.canonicalize().ok()?;
-    let canonical = candidate.canonicalize().ok()?;
-    if !canonical.starts_with(&canonical_workspace) {
-        return None;
-    }
-    std::fs::read_to_string(canonical).ok()
+enum FileRead {
+    Text(String),
+    Missing,
+    Unknown,
 }
 
-fn check_after(condition: &Value, operations: &[Value], workspace: &Path) -> bool {
+fn read_workspace_file(workspace: &Path, path: &str) -> FileRead {
+    if !safe_relative(path) {
+        return FileRead::Unknown;
+    }
+    let candidate = workspace.join(path);
+    let metadata = match std::fs::symlink_metadata(&candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return FileRead::Missing
+        }
+        Err(_) => return FileRead::Unknown,
+    };
+    if metadata.file_type().is_symlink() || metadata.len() > MAX_PROCEDURE_FILE_BYTES {
+        return FileRead::Unknown;
+    }
+    let canonical_workspace = match workspace.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return FileRead::Unknown,
+    };
+    let canonical = match candidate.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return FileRead::Missing
+        }
+        Err(_) => return FileRead::Unknown,
+    };
+    if !canonical.starts_with(&canonical_workspace) {
+        return FileRead::Unknown;
+    }
+    match std::fs::read_to_string(canonical) {
+        Ok(text) => FileRead::Text(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            FileRead::Missing
+        }
+        Err(_) => FileRead::Unknown,
+    }
+}
+
+fn check_after(
+    condition: &Value,
+    operations: &[Value],
+    workspace: &Path,
+) -> (bool, bool) {
     match condition["kind"].as_str() {
-        Some("tool_called") => operations
-            .iter()
-            .any(|operation| operation_matches(operation, condition)),
-        Some("file_exists") => condition["path"]
-            .as_str()
-            .and_then(|path| read_workspace_file(workspace, path))
-            .is_some(),
+        Some("tool_called") => (
+            operations
+                .iter()
+                .any(|operation| operation_matches(operation, condition)),
+            false,
+        ),
+        Some("file_exists") => {
+            let Some(path) = condition["path"].as_str() else {
+                return (false, true);
+            };
+            if !safe_relative(path) {
+                return (false, true);
+            }
+            match std::fs::symlink_metadata(workspace.join(path)) {
+                Ok(metadata) if metadata.file_type().is_symlink() => (false, true),
+                Ok(_) => (true, false),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    (false, false)
+                }
+                Err(_) => (false, true),
+            }
+        }
         Some("file_equals") => {
             let Some(path) = condition["path"].as_str() else {
-                return false;
-            };
-            let Some(actual) = read_workspace_file(workspace, path) else {
-                return false;
+                return (false, true);
             };
             let expected = condition["text"].as_str().unwrap_or("");
-            actual.trim_end() == expected.trim_end()
+            match read_workspace_file(workspace, path) {
+                FileRead::Text(actual) => (
+                    actual.trim_end() == expected.trim_end(),
+                    false,
+                ),
+                FileRead::Missing => (false, false),
+                FileRead::Unknown => (false, true),
+            }
         }
         Some("file_contains") => {
             let Some(path) = condition["path"].as_str() else {
-                return false;
+                return (false, true);
             };
-            let Some(actual) = read_workspace_file(workspace, path) else {
-                return false;
-            };
-            actual.contains(condition["text"].as_str().unwrap_or(""))
+            let expected = condition["text"].as_str().unwrap_or("");
+            match read_workspace_file(workspace, path) {
+                FileRead::Text(actual) => (actual.contains(expected), false),
+                FileRead::Missing => (false, false),
+                FileRead::Unknown => (false, true),
+            }
         }
-        _ => false,
+        _ => (false, true),
     }
+}
+
+/// Sort operations by the engine's monotonic sequence, then by timestamp/id
+/// for legacy records that predate `opSeq`.
+pub fn sort_operations(operations: &mut [Value]) {
+    operations.sort_by(|left, right| {
+        left["opSeq"]
+            .as_u64()
+            .unwrap_or(u64::MAX)
+            .cmp(&right["opSeq"].as_u64().unwrap_or(u64::MAX))
+            .then_with(|| {
+                left["startedAt"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(right["startedAt"].as_str().unwrap_or(""))
+            })
+            .then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
+    });
 }
 
 /// Evaluates a strategy against the completed operations and file state.
@@ -339,33 +603,51 @@ pub fn evaluate(strategy: &Value, operations: &[Value], workspace: &Path) -> Val
     }
     let mut violations = Vec::new();
     let mut checks = Vec::new();
+    let mut unknown = false;
     let before = verification["before"].as_array().cloned().unwrap_or_default();
     let mut triggered = before.is_empty();
 
     for entry in &before {
         let when = &entry["when"];
         let require = &entry["require"];
-        let target = operations
+        let targets = operations
             .iter()
-            .position(|operation| operation_matches(operation, when));
-        let prerequisite = operations
+            .enumerate()
+            .filter(|(_, operation)| operation_matches(operation, when))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let prerequisites = operations
             .iter()
-            .position(|operation| operation_matches(operation, require));
-        if target.is_some() || prerequisite.is_some() {
+            .enumerate()
+            .filter(|(_, operation)| operation_matches(operation, require))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if !targets.is_empty() || !prerequisites.is_empty() {
             triggered = true;
         }
-        let ok = match (prerequisite, target) {
-            (Some(prerequisite), Some(target)) => prerequisite < target,
-            (Some(_), None) => false,
-            (None, Some(_)) => false,
-            (None, None) => true,
-        };
+        // Each target call needs a prerequisite after the previous target.
+        let mut previous_target = None;
+        let mut ok = true;
+        for target in &targets {
+            let lower = previous_target.map(|index| index + 1).unwrap_or(0);
+            if !prerequisites
+                .iter()
+                .any(|prerequisite| *prerequisite >= lower && *prerequisite < *target)
+            {
+                ok = false;
+                break;
+            }
+            previous_target = Some(*target);
+        }
+        if targets.is_empty() && !prerequisites.is_empty() {
+            ok = false;
+        }
         checks.push(json!({
             "kind": "before",
             "require": require,
             "when": when,
             "ok": ok,
-            "triggered": target.is_some() || prerequisite.is_some(),
+            "triggered": !targets.is_empty() || !prerequisites.is_empty(),
         }));
         if !ok {
             violations.push(json!({
@@ -382,9 +664,13 @@ pub fn evaluate(strategy: &Value, operations: &[Value], workspace: &Path) -> Val
     }
 
     for condition in verification["after"].as_array().into_iter().flatten() {
-        let ok = check_after(condition, operations, workspace);
-        checks.push(json!({ "kind": "after", "condition": condition, "ok": ok }));
-        if !ok {
+        let (ok, cannot_verify) = check_after(condition, operations, workspace);
+        unknown |= cannot_verify;
+        checks.push(json!({
+            "kind": "after", "condition": condition, "ok": ok,
+            "unknown": cannot_verify
+        }));
+        if !ok && !cannot_verify {
             violations.push(json!({
                 "kind": "after",
                 "message": format!("후속 조건을 충족하지 못했습니다: {}", condition),
@@ -392,8 +678,10 @@ pub fn evaluate(strategy: &Value, operations: &[Value], workspace: &Path) -> Val
         }
     }
 
-    let followed = triggered && violations.is_empty();
-    let status = if !triggered {
+    let followed = triggered && violations.is_empty() && !unknown;
+    let status = if unknown {
+        "unknown"
+    } else if !triggered {
         "not_triggered"
     } else if followed {
         "followed"
@@ -404,6 +692,7 @@ pub fn evaluate(strategy: &Value, operations: &[Value], workspace: &Path) -> Val
         "verified": true,
         "triggered": triggered,
         "followed": followed,
+        "unknown": unknown,
         "status": status,
         "violations": violations,
         "checks": checks,
@@ -518,10 +807,16 @@ mod tests {
         std::fs::write(&outside, "outside").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, dir.join("link.txt")).unwrap();
-        assert!(read_workspace_file(&dir, "link.txt").is_none());
+        assert!(matches!(
+            read_workspace_file(&dir, "link.txt"),
+            FileRead::Unknown
+        ));
         let big = "x".repeat((MAX_PROCEDURE_FILE_BYTES + 1) as usize);
         std::fs::write(dir.join("big.txt"), big).unwrap();
-        assert!(read_workspace_file(&dir, "big.txt").is_none());
+        assert!(matches!(
+            read_workspace_file(&dir, "big.txt"),
+            FileRead::Unknown
+        ));
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_file(outside);
     }
@@ -546,6 +841,94 @@ mod tests {
         assert_eq!(result["triggered"], false);
         assert_eq!(result["followed"], false);
         assert_eq!(result["status"], "not_triggered");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dag_cycles_unknowns_and_contradictions_are_rejected() {
+        let valid = json!({
+            "type":"procedure",
+            "appliesTo":{"paths":["out.txt"]},
+            "nodes":[
+                {"id":"prep","tool":"workspace_write","arguments":{"path":"audit.txt","content":"ok"}},
+                {"id":"write","tool":"workspace_write","arguments":{"path":"out.txt","content":"ok"}}
+            ],
+            "edges":[{"from":"prep","to":"write"}],
+            "bindings":{}
+        });
+        assert_eq!(normalize(&valid)["type"], "procedure");
+        let mut cycle = valid.clone();
+        cycle["edges"] = json!([{"from":"prep","to":"write"},{"from":"write","to":"prep"}]);
+        assert_eq!(normalize(&cycle)["type"], "invalid");
+        let mut self_edge = valid.clone();
+        self_edge["edges"] = json!([{"from":"prep","to":"prep"}]);
+        assert_eq!(normalize(&self_edge)["type"], "invalid");
+        let mut unknown = valid.clone();
+        unknown["edges"] = json!([{"from":"prep","to":"missing"}]);
+        assert_eq!(normalize(&unknown)["type"], "invalid");
+        let mut unsupported = valid.clone();
+        unsupported["nodes"][0]["tool"] = json!("not_a_real_tool");
+        assert_eq!(normalize(&unsupported)["type"], "invalid");
+        let mut binding = valid.clone();
+        binding["nodes"][0]["arguments"]["content"] = json!("$missing");
+        assert_eq!(normalize(&binding)["type"], "invalid");
+        let mut contradiction = valid.clone();
+        contradiction["after"] = json!([
+            {"kind":"file_equals","path":"out.txt","text":"a"},
+            {"kind":"file_equals","path":"out.txt","text":"b"}
+        ]);
+        assert_eq!(normalize(&contradiction)["type"], "invalid");
+    }
+
+    #[test]
+    fn repeated_target_requires_a_fresh_prerequisite() {
+        let strategy = strategy();
+        let audit = operation("workspace_write", "audit.txt");
+        let report = operation("workspace_write", "report.txt");
+        assert!(missing_requirement(
+            &strategy,
+            "workspace_write",
+            &json!({"path":"report.txt","content":"ok"}),
+            &[audit.clone(), report.clone()],
+        )
+        .is_some());
+        let mut second_audit = operation("workspace_write", "audit.txt");
+        second_audit["id"] = json!("audit-2");
+        let second_report = json!({
+            "id":"report-2","tool":"workspace_write","status":"completed",
+            "arguments":{"path":"report.txt","content":"ok"}
+        });
+        let result = evaluate(
+            &strategy,
+            &[audit, report, second_audit, second_report],
+            Path::new("."),
+        );
+        assert_eq!(result["followed"], false);
+    }
+
+    #[test]
+    fn operations_sort_by_monotonic_sequence() {
+        let mut operations = vec![
+            json!({"id":"late","opSeq":2,"startedAt":"2026-01-01T00:00:02Z"}),
+            json!({"id":"early","opSeq":1,"startedAt":"2026-01-01T00:00:01Z"}),
+        ];
+        sort_operations(&mut operations);
+        assert_eq!(operations[0]["id"], "early");
+    }
+
+    #[test]
+    fn unreadable_artifacts_are_unknown() {
+        let dir = std::env::temp_dir().join(format!("dominion-proc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("dir.txt")).unwrap();
+        let strategy = json!({
+            "id":"unknown","verification":normalize(&json!({
+                "type":"procedure","appliesTo":{"paths":["dir.txt"]},
+                "after":[{"kind":"file_equals","path":"dir.txt","text":"x"}]
+            }))
+        });
+        let result = evaluate(&strategy, &[], &dir);
+        assert_eq!(result["status"], "unknown");
+        assert_eq!(result["followed"], false);
         let _ = std::fs::remove_dir_all(dir);
     }
 

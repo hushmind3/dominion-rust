@@ -8,6 +8,7 @@ pub mod discord;
 pub mod adaptation;
 pub mod experience;
 pub mod procedure;
+pub mod verification;
 pub mod reflect;
 pub mod goals;
 pub mod improve;

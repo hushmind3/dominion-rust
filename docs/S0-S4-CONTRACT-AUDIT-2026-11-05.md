@@ -57,18 +57,18 @@
 | # | 요구사항 | 판정 | 구현 증거 | 빠진 것 |
 |---|---|---|---|---|
 | 1 | normalize의 조건 필터링 → 전체 schema 오류 거부 | **구현** | `procedure::normalize`가 하나라도 invalid면 `type:"invalid"` 반환. 테스트 `one_invalid_condition_rejects_the_whole_revision` | — |
-| 2 | typed arg/resource 비교, canonical workspace, symlink·크기, operation seq | **부분** | `argument_matches` 정확 경로 일치, `read_workspace_file` symlink/2MiB/canonical 검사. 테스트 `exact_paths_do_not_match_suffixes_or_commands`, `symlink_and_oversized_files_are_rejected` | 단조 `opSeq` 없음. `startedAt` 정렬 사용. typed resource adapter 없음 |
-| 3 | DAG cycle·자기 의존·미정의 binding·미지원 도구·모순 조건 거부 | **미구현** | 없음 | DAG/binding/tool catalog/모순 검사 전부 |
-| 4 | Before를 각 target event에서 검사, per_target/task lifetime·invalidation 정의 | **부분** | `missing_requirement`는 현재 호출마다 검사. `evaluate`는 첫 target/prerequisite 위치만 비교 | target 반복, invalidation, per_target/task lifetime 없음 |
-| 5 | NotTriggered/Unknown/Violated/Followed 구분 | **부분** | `not_triggered`, `followed`, `violated`, `unverified`/`invalid` 구현. 테스트 `empty_execution_is_not_triggered_not_compliant` | `Unknown`(읽기 오류·권한 오류) 없음. 읽기 실패는 false로 처리 |
-| 6 | goals 검사 구현을 공통 모듈로 이동, 기존 wrapper/successCriteria 호환 | **미구현** | `goals::check_acceptance`가 그대로 존재 | `verification.rs` 공통 모듈 이동 없음 |
+| 2 | typed arg/resource 비교, canonical workspace, symlink·크기, operation seq | **구현** | `argument_matches` 정확 경로 일치, canonical/symlink/2MiB 검사, 실행 `opSeq`와 `procedure::sort_operations`. 테스트 `exact_paths...`, `symlink...`, `operations_sort_by_monotonic_sequence` | — |
+| 3 | DAG cycle·자기 의존·미정의 binding·미지원 도구·모순 조건 거부 | **구현** | `validate_dag`/`validate_bindings`/`contradictory_after`. 테스트 `dag_cycles_unknowns_and_contradictions_are_rejected` | — |
+| 4 | Before를 각 target event에서 검사, per_target/task lifetime·invalidation 정의 | **구현** | `missing_requirement`/`evaluate`가 각 target마다 직전 target 이후의 새 prerequisite을 요구. 테스트 `repeated_target_requires_a_fresh_prerequisite` | — |
+| 5 | NotTriggered/Unknown/Violated/Followed 구분 | **구현** | `not_triggered`/`unknown`/`followed`/`violated`/`unverified`/`invalid`. 읽기 오류는 Unknown. 테스트 `unreadable_artifacts_are_unknown`, `empty_execution...` | — |
+| 6 | goals 검사 구현을 공통 모듈로 이동, 기존 wrapper/successCriteria 호환 | **구현** | `src/engine/verification.rs`로 acceptance 구현 이동. `goals`는 `pub use` wrapper 유지. 기존 goals tests 통과 | — |
 
 **S2 테스트 충족도**
 
-- 있음: 파일명 부분일치, `echo filename`, 잘못된 condition 하나, symlink, 순서 역전, NotTriggered
-- 없음: 이미 존재하는 결과, empty contains, binary 존재, permission error, target 반복, timestamp 동률
+- 있음: 파일명 부분일치, `echo filename`, 잘못된 condition, symlink, 순서 역전, NotTriggered, Unknown, target 반복, DAG cycle/self/unknown/unsupported/binding/contradiction, opSeq
+- 없음: binary 존재, permission error의 실제 OS 주입 테스트(디렉터리 읽기 오류로 Unknown은 확인)
 
-**S2 결론:** 1번만 완전 구현. compiler라기보다 런타임 조건 검사기 수준.
+**S2 결론:** 구현 완료. binary/permission OS 주입은 S7 sandbox runner에서 보강한다.
 
 ---
 
@@ -113,7 +113,7 @@
 |---|---:|---:|---:|
 | S0 | 4 | 0 | 0 |
 | S1 | 5 | 0 | 0 |
-| S2 | 1 | 3 | 2 |
+| S2 | 6 | 0 | 0 |
 | S3 | 0 | 6 | 1 |
 | S4 | 0 | 0 | 5 |
 

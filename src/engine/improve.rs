@@ -454,6 +454,7 @@ pub fn execution_updates(
             if entry["applicable"].as_bool() != Some(true)
                 || entry["result"]["verified"].as_bool() != Some(true)
                 || entry["result"]["triggered"].as_bool() != Some(true)
+                || entry["result"]["status"].as_str() == Some("unknown")
             {
                 continue;
             }

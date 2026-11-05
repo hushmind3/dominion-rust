@@ -359,6 +359,7 @@ async fn run_turn_body(
         .and_then(|text| prepare_owner_action(state, text));
     let mut acceptance_retries = 0usize;
     let mut procedure_repairs = 0usize;
+    let mut op_seq = 0u64;
 
     let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
 
@@ -515,15 +516,7 @@ async fn run_turn_body(
                             && operation["status"].as_str() == Some("completed")
                     })
                     .collect::<Vec<_>>();
-                operations.sort_by(|left, right| {
-                    left["startedAt"]
-                        .as_str()
-                        .unwrap_or("")
-                        .cmp(right["startedAt"].as_str().unwrap_or(""))
-                        .then_with(|| {
-                            left["id"].as_str().cmp(&right["id"].as_str())
-                        })
-                });
+                crate::engine::procedure::sort_operations(&mut operations);
                 let violations = strategy_candidates
                     .iter()
                     .filter(|strategy| {
@@ -844,6 +837,7 @@ async fn run_turn_body(
                 true
             };
 
+            op_seq += 1;
             let operation_id = format!("{execution_id}:{round}:{call_index}:{}", call.id);
             state
                 .store
@@ -852,7 +846,7 @@ async fn run_turn_body(
                     &json!({
                         "id": operation_id, "runId": execution_id, "sessionId": session_id,
                         "callId": call.id, "tool": call.name, "arguments": arguments,
-                        "status": "running", "startedAt": started_at,
+                        "opSeq": op_seq, "status": "running", "startedAt": started_at,
                     }),
                 )
                 .ok_or("도구 실행 시작을 저장할 수 없습니다.")?;
@@ -1209,13 +1203,7 @@ pub(super) fn finalize_execution(
         .into_iter()
         .filter(|operation| operation["runId"].as_str() == Some(execution_id))
         .collect::<Vec<_>>();
-    operations.sort_by(|left, right| {
-        left["startedAt"]
-            .as_str()
-            .unwrap_or("")
-            .cmp(right["startedAt"].as_str().unwrap_or(""))
-            .then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
-    });
+    crate::engine::procedure::sort_operations(&mut operations);
     let request_text = record["request"].as_str().unwrap_or("");
     let compliance = record["strategyCandidates"]
         .as_array()
