@@ -754,6 +754,112 @@ fn a_clean_interrupted_run_is_woken_and_resumed_after_restart() {
     assert!(!requests.lock().unwrap().is_empty());
 }
 
+#[test]
+fn load_matrix_completes_parallel_sessions_without_cross_talk() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        std::thread::sleep(Duration::from_millis(80));
+        let input = request["messages"]
+            .as_array()
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .rev()
+                    .find(|message| message["role"] == "user")
+            })
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("");
+        vec![json!({"choices":[{"delta":{"content":format!("응답:{input}")},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let mut handles = Vec::new();
+    for index in 0..6 {
+        handles.push(app.chat_async(&json!({
+            "input":format!("동시 작업 {index}"),
+            "autoLearning":false
+        })));
+    }
+    for handle in handles {
+        let stream = handle.join().unwrap();
+        assert!(!stream.contains("\"type\":\"error\""), "{stream}");
+    }
+    let executions = app.get("/api/executions");
+    assert_eq!(executions.as_array().unwrap().len(), 6);
+    assert!(executions
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|execution| execution["status"] == "completed"));
+    assert!(app.get("/api/executions/active").as_array().unwrap().is_empty());
+}
+
+#[test]
+fn crash_drill_leaves_no_running_execution_after_restart() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        std::thread::sleep(Duration::from_millis(900));
+        vec![json!({"choices":[{"delta":{"content":"크래시 드릴 응답"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let root = app._root.clone();
+    let mut handles = Vec::new();
+    for index in 0..4 {
+        handles.push(app.chat_async(&json!({
+            "input":format!("크래시 드릴 {index}"),
+            "autoLearning":false
+        })));
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.get("/api/executions/active").as_array().unwrap().is_empty() {
+        assert!(Instant::now() < deadline, "runs did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(app);
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    let app = TestApp::from_root(port, "native", root, &[]);
+    let deadline = Instant::now() + Duration::from_secs(25);
+    loop {
+        let executions = app.get("/api/executions");
+        let running = executions
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|execution| execution["status"] == "running")
+            .count();
+        let jobs = app.get("/api/jobs");
+        let busy = jobs
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|job| matches!(job["status"].as_str(), Some("queued" | "running")))
+            .count();
+        if running == 0 && busy == 0 {
+            let executions = executions.as_array().unwrap();
+            assert!(executions.len() >= 4, "{executions:?}");
+            assert!(
+                executions.iter().all(|execution| matches!(
+                    execution["status"].as_str(),
+                    Some("interrupted" | "completed" | "failed" | "cancelled")
+                )),
+                "dangling status: {executions:?}"
+            );
+            assert!(
+                !app.get("/api/run-wakes").as_array().unwrap().is_empty(),
+                "crash recovery did not record wake decisions"
+            );
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "recovery did not settle: running={running} busy={busy}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

@@ -35,3 +35,31 @@ runner는 `BENCH_FIXTURE`로 두 작업군을 지원한다.
 - 잘못된 fixture id는 실행 전에 거부한다.
 
 아직 아님: holdout 전용 예약 규칙, fixture별 최소 표본, 작업군 간 전이 측정.
+
+## 3. H10 load / crash matrix (2026-11-05)
+
+E2E로 실제 엔진 프로세스를 사용해 두 시나리오를 실행했다.
+
+### load: 병렬 세션
+
+`load_matrix_completes_parallel_sessions_without_cross_talk`
+
+- 6개 세션에 동시에 chat 요청 (mock provider)
+- 결과: 6/6 execution `completed`, active 0, 세션 간 응답 교차 없음
+- 통과 출력: `test result: ok. 1 passed`
+
+### crash: 실행 중 프로세스 kill → 재시작
+
+`crash_drill_leaves_no_running_execution_after_restart`
+
+- 4개 세션 실행 중 엔진 프로세스 종료
+- 같은 data root로 재시작
+- 결과:
+  - `status=running` execution 0
+  - queued/running job 0 (wake resume job이 끝날 때까지 대기)
+  - execution 수 ≥ 4, 모든 상태가 interrupted/completed/failed/cancelled
+  - `run_wake` 결정이 실제로 기록됨
+- 통과 출력: `test result: ok. 1 passed` (4.27s)
+
+아직 아님: 장시간 soak, 실제 부하(수십~수백 세션), restore/backup drill,
+다중 기기 ACL.

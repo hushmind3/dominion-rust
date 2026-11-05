@@ -779,6 +779,20 @@ pub fn apply_experiment_result(
         .put("improvement", &record)
         .ok_or("실험 결과를 저장할 수 없습니다.")?;
     state.bus.record("improvement", &saved);
+    for mut request in state.store.all("experiment_request") {
+        if request["strategyId"].as_str() == Some(strategy_id)
+            && request["status"].as_str() == Some("queued")
+        {
+            request["status"] = json!("completed");
+            request["experimentId"] = json!(experiment_id);
+            request["verdict"] = json!(verdict);
+            request["units"] = json!(units);
+            request["completedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            if let Some(saved_request) = state.store.put("experiment_request", &request) {
+                state.bus.record("experiment_request", &saved_request);
+            }
+        }
+    }
     state.store.audit(
         "improvement.experiment_result",
         json!({
@@ -791,6 +805,50 @@ pub fn apply_experiment_result(
         }),
     );
     Ok(saved)
+}
+
+/// Creates durable experiment requests for strategies that only have
+/// production evidence. Idempotent: one request per strategy revision.
+pub fn schedule_experiments(state: &AppState) -> Vec<Value> {
+    let mut created = Vec::new();
+    for mut improvement in state.store.all("improvement") {
+        if improvement["status"].as_str() != Some("validated")
+            || improvement["requiresExperiment"] != true
+            || improvement["experimentRequestId"].as_str().is_some()
+        {
+            continue;
+        }
+        let Some(id) = improvement["id"].as_str().map(str::to_string) else {
+            continue;
+        };
+        let revision = improvement["revision"].as_str().unwrap_or("");
+        let request_id = format!(
+            "experiment-request-{}",
+            crate::engine::memory::stable_id(&[&id, revision])
+        );
+        if state.store.get("experiment_request", &request_id).is_none() {
+            let request = json!({
+                "id": request_id,
+                "strategyId": id,
+                "revision": revision,
+                "status": "queued",
+                "fixture": "audit_report",
+                "minIndependentUnits": MIN_EXPERIMENT_UNITS,
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+            });
+            if let Some(saved) = state.store.put("experiment_request", &request) {
+                state.bus.record("experiment_request", &saved);
+                state.store.audit(
+                    "experiment.queued",
+                    json!({"strategyId": id, "requestId": saved["id"]}),
+                );
+                created.push(saved);
+            }
+        }
+        improvement["experimentRequestId"] = json!(request_id);
+        state.store.put("improvement", &improvement);
+    }
+    created
 }
 
 pub fn list(state: &AppState) -> Vec<Value> {
@@ -884,6 +942,37 @@ mod tests {
         assert_eq!(record["status"], "validated");
         assert_eq!(record["evidenceGrade"], "E2");
         assert_eq!(record["validatedBy"], "isolated_experiment");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn observed_strategies_get_one_durable_experiment_request() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        state.store.put(
+            "improvement",
+            &json!({
+                "id":"needs-exp","kind":"strategy","scope":"agent","agentId":"a",
+                "partitionKey":scope.partition_key,"status":"validated","scoreVersion":2,
+                "evidenceGrade":"E1_observed","requiresExperiment":true,
+                "revision":"rev-1","text":"check first","uses":6,"successes":6,
+                "failures":0,"appliedExecutionIds":[]
+            }),
+        );
+        let created = schedule_experiments(&state);
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0]["status"], "queued");
+        assert_eq!(created[0]["minIndependentUnits"], MIN_EXPERIMENT_UNITS);
+        let stored = state.store.get("improvement", "needs-exp").unwrap();
+        assert_eq!(stored["experimentRequestId"], created[0]["id"]);
+        // Second scheduling pass is idempotent.
+        assert!(schedule_experiments(&state).is_empty());
+
+        let experiment = json!({"experimentId":"exp-req","verdict":"preliminary_support","delta":0.4,"independentUnits":10,"oracleVersion":"v1"});
+        apply_experiment_result(&state, "needs-exp", &experiment).unwrap();
+        let requests = state.store.all("experiment_request");
+        assert_eq!(requests[0]["status"], "completed");
+        assert_eq!(requests[0]["experimentId"], "exp-req");
         let _ = std::fs::remove_dir_all(dir);
     }
 

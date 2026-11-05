@@ -139,6 +139,10 @@ pub async fn run_wakes(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.store.all("run_wake")))
 }
 
+pub async fn experiment_requests(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(state.store.all("experiment_request")))
+}
+
 // ----------------------------------------------------------------- translate
 
 pub async fn model_route(State(state): State<AppState>) -> Json<Value> {

@@ -61,6 +61,7 @@ async fn serve(mut config: Config, open_browser: bool, parent_bound: bool) -> Re
     engine::jobs::recover(&state);
     engine::wake::recover(&state);
     engine::improve::recover_finalizations(&state);
+    engine::improve::schedule_experiments(&state);
     engine::jobs::start(state.clone());
     engine::discord::start(state.clone());
     engine::telegram::start(state.clone());

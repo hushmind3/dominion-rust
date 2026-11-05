@@ -2082,6 +2082,13 @@ pub(super) fn finalize_execution(
             for observation in &observations {
                 state.bus.record("strategy_observation", observation);
             }
+            let queued = crate::engine::improve::schedule_experiments(state);
+            if !queued.is_empty() {
+                state.store.audit(
+                    "experiment.scheduled",
+                    json!({"executionId": execution_id, "requests": queued.len()}),
+                );
+            }
         }
         Ok(crate::db::FinalizeOutcome::AlreadyApplied) => {
             state.store.audit(
