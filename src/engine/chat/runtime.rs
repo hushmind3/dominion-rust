@@ -820,7 +820,7 @@ async fn run_turn_body(
                 .keys()
                 .filter_map(|key| key.split(':').next().map(str::to_string))
                 .collect::<Vec<_>>();
-            let _ = crate::engine::experience::record(
+            let _ = crate::engine::experience::record_shared(
                 state,
                 &scope,
                 acceptance_text,

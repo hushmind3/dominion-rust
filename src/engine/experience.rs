@@ -42,6 +42,7 @@ fn visible(record: &Value, scope: &MemoryScope) -> bool {
         || record["agentId"].as_str() == scope.agent_id.as_deref()
 }
 
+#[allow(dead_code)] // retained for agent-private cases and direct tests
 pub fn record(
     state: &AppState,
     scope: &MemoryScope,
