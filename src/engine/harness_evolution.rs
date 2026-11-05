@@ -181,6 +181,124 @@ fn test_counts(log: &str) -> (u64, u64) {
     (passed, failed)
 }
 
+/// Called when learning/improve proposes a harness improvement. It creates a
+/// durable patch request immediately; patch authoring and build validation are
+/// separate steps so evidence is not lost and no build runs implicitly.
+pub fn enqueue_from_improvement(state: &AppState, improvement: &Value) -> Option<Value> {
+    let improvement_id = improvement["id"].as_str()?;
+    let repository = repo_root()?;
+    let id = format!(
+        "harness-proposal-{}",
+        crate::engine::memory::stable_id(&["improvement", improvement_id])
+    );
+    if let Some(existing) = state.store.get("harness_proposal", &id) {
+        return Some(existing);
+    }
+    let record = json!({
+        "id": id,
+        "reason": improvement["text"],
+        "status": "needs_patch",
+        "source": "learning",
+        "sourceImprovementId": improvement_id,
+        "evidenceIds": improvement["evidenceMessageIds"],
+        "predictedBenefit": improvement["rationale"],
+        "baseRevision": head(&repository),
+        "baseBranch": current_branch(&repository),
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+    });
+    let saved = state.store.put("harness_proposal", &record)?;
+    state.bus.record("harness_proposal", &saved);
+    state.store.audit(
+        "harness.queued_from_learning",
+        json!({"id": saved["id"], "improvementId": improvement_id}),
+    );
+    Some(saved)
+}
+
+/// Requests a unified diff from the configured learning model. The generated
+/// patch still has to pass the same path validation and isolated build/test as
+/// a manually submitted proposal.
+pub async fn generate_patch(state: &AppState, id: &str) -> Result<Value, String> {
+    let Some(mut proposal) = state.store.get("harness_proposal", id) else {
+        return Err("proposal not found".into());
+    };
+    if !matches!(
+        proposal["status"].as_str(),
+        Some("needs_patch" | "rejected" | "proposed")
+    ) {
+        return Err(format!("cannot generate a patch for status {}", proposal["status"]));
+    }
+    let (provider_id, model) = crate::engine::llm::learning_route(state)
+        .or_else(|| {
+            state
+                .store
+                .all("provider")
+                .into_iter()
+                .find(|provider| provider["enabled"].as_bool() != Some(false))
+                .and_then(|provider| {
+                    Some((
+                        provider["id"].as_str()?.to_string(),
+                        provider["model"].as_str()?.to_string(),
+                    ))
+                })
+        })
+        .ok_or("no enabled provider is available for patch generation")?;
+    let reason = proposal["reason"].as_str().unwrap_or("");
+    let benefit = proposal["predictedBenefit"].as_str().unwrap_or("");
+    let prompt = format!(
+        "Improve the Rust harness itself.\nReason: {reason}\nExpected benefit: {benefit}\nAllowed paths: src/, tests/, web/src/, Cargo.toml.\nReturn ONLY a unified diff starting with `diff --git`. No prose, no markdown fences. The diff must include @@ hunks and must not rename files or change modes."
+    );
+    let system = "You are a precise Rust patch author. Output a single unified diff that fixes the stated harness bottleneck. Keep the change minimal and testable.";
+    let raw = crate::engine::llm::complete(state, &provider_id, &model, system, &prompt).await?;
+    let start = raw.find("diff --git").ok_or("model returned no unified diff")?;
+    let patch = raw[start..].trim_end().to_string();
+    validate_patch(&patch)?;
+    proposal["patch"] = json!(patch);
+    proposal["status"] = json!("proposed");
+    proposal["patchSource"] = json!({"providerId": provider_id, "model": model});
+    proposal["patchGeneratedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    let saved = state
+        .store
+        .put("harness_proposal", &proposal)
+        .ok_or("proposal could not be saved")?;
+    state.bus.record("harness_proposal", &saved);
+    state.store.audit("harness.patch_generated", json!({"id": id}));
+    Ok(saved)
+}
+
+/// Opt-in background loop: one proposal at a time, patch generation then
+/// isolated build/test. Promotion still requires the explicit flag/API.
+pub fn start_worker(state: AppState) {
+    if std::env::var("DOMINION_AUTO_EVOLVE").as_deref() != Ok("1") {
+        return;
+    }
+    let interval = std::env::var("DOMINION_AUTO_EVOLVE_INTERVAL_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(300)
+        .max(30);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(interval));
+        loop {
+            ticker.tick().await;
+            let next = state
+                .store
+                .all("harness_proposal")
+                .into_iter()
+                .find(|proposal| proposal["status"].as_str() == Some("needs_patch"));
+            let Some(proposal) = next else {
+                continue;
+            };
+            let Some(id) = proposal["id"].as_str().map(str::to_string) else {
+                continue;
+            };
+            if generate_patch(&state, &id).await.is_ok() {
+                let _ = validate(&state, &id).await;
+            }
+        }
+    });
+}
+
 pub fn list(state: &AppState) -> Value {
     let mut items = state.store.all("harness_proposal");
     items.sort_by(|a, b| {
@@ -193,6 +311,7 @@ pub fn list(state: &AppState) -> Value {
         "proposals": items,
         "sourceRoot": repo_root().map(|path| path.to_string_lossy().to_string()),
         "selfUpdateEnabled": std::env::var("DOMINION_ALLOW_SELF_UPDATE").as_deref() == Ok("1"),
+        "autoEvolveEnabled": std::env::var("DOMINION_AUTO_EVOLVE").as_deref() == Ok("1"),
     })
 }
 
@@ -760,6 +879,48 @@ mod tests {
         .unwrap();
         assert_eq!(saved["status"], "proposed");
         assert_eq!(list(&state)["proposals"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn learning_harness_improvement_becomes_a_durable_patch_request() {
+        let (state, dir) = state();
+        let improvement = state
+            .store
+            .put(
+                "improvement",
+                &json!({
+                    "id":"improvement-harness",
+                    "kind":"harness",
+                    "status":"proposed",
+                    "text":"reduce retry budget",
+                    "rationale":"repeated timeout evidence",
+                    "evidenceMessageIds":["m1"]
+                }),
+            )
+            .unwrap();
+        let proposal = enqueue_from_improvement(&state, &improvement).unwrap();
+        assert_eq!(proposal["status"], "needs_patch");
+        assert_eq!(proposal["source"], "learning");
+        assert_eq!(proposal["sourceImprovementId"], "improvement-harness");
+        let again = enqueue_from_improvement(&state, &improvement).unwrap();
+        assert_eq!(again["id"], proposal["id"]);
+        assert_eq!(state.store.all("harness_proposal").len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn patch_generation_requires_an_enabled_provider() {
+        let (state, dir) = state();
+        let saved = propose(
+            &state,
+            &json!({"reason":"improve program", "patch": patch("src/engine/program.rs")}),
+        )
+        .unwrap();
+        let error = generate_patch(&state, saved["id"].as_str().unwrap())
+            .await
+            .unwrap_err();
+        assert!(error.contains("provider"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

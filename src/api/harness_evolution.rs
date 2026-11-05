@@ -56,3 +56,13 @@ pub async fn activate(
         Err(error) => (axum::http::StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response(),
     }
 }
+
+pub async fn generate_patch(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    match crate::engine::harness_evolution::generate_patch(&state, &id).await {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => (axum::http::StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response(),
+    }
+}

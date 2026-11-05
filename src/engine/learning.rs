@@ -548,6 +548,7 @@ fn apply_learning(
         ) {
             harness_proposed = record["status"] == "proposed";
             if harness_proposed {
+                crate::engine::harness_evolution::enqueue_from_improvement(state, &record);
                 harness_item = Some(text.clone());
             }
         }
