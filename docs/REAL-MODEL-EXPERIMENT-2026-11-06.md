@@ -40,10 +40,15 @@ every run.
 
 ### Answer accuracy (secondary, noisy)
 
-| Provider | `none` | `bm25` |
-| --- | --- | --- |
-| Pollinations free API | 0/3 | 1/3 |
-| Ollama llama3.2:3b | 0/3 | 2/3 |
+Two runs were performed (before and after the concurrent memory/rerank fixes):
+
+| Provider | `none` | `bm25` run 1 | `bm25` run 2 |
+| --- | --- | --- | --- |
+| Pollinations free API | 0/3 | 1/3 | 2/3 |
+| Ollama llama3.2:3b | 0/3 | 2/3 | 1/3 |
+
+Answer accuracy varies between runs; retrieval inclusion did not (0/6 vs 6/6
+in both runs).
 
 Notable behavior:
 
@@ -52,8 +57,9 @@ Notable behavior:
   understates retrieval success.
 - The local 3B model sometimes dumped the retrieved evidence instead of a
   one-line answer. The code was present in its answer text in those cases.
-- One clean free-API success: `bm25` + `token expiration audit code` answered
-  exactly `EAGLE9021`.
+- Clean free-API successes on the second run: `bm25` answered both
+  `token expiration audit code` and one other question with the exact code.
+- The first run answered `token expiration audit code` exactly `EAGLE9021`.
 
 ### Latency and cost
 
