@@ -695,6 +695,22 @@ pub fn learning_sweep(state: &crate::state::AppState) -> usize {
             if state.store.get("memory_maintenance_observation", &observation_id).is_some() {
                 continue;
             }
+            // Preservation is a legitimate policy, not a failed deletion.
+            // Abstention is recorded but does not influence success/failure UCB
+            // until downstream evidence can establish whether keeping helped.
+            let kernel = preview["implementation"].as_str()
+                .or_else(|| preview["variant"].as_str()).unwrap_or("");
+            if matches!(kernel, "never" | "none") {
+                state.store.put("memory_maintenance_observation", &json!({
+                    "id": observation_id, "agentId": owner, "kind": kind,
+                    "revision": preview["revision"], "eligibleIds": eligible,
+                    "changed": 0, "status": "abstained",
+                    "metric": "preservation_no_quality_label",
+                    "observedAt": chrono::Utc::now().to_rfc3339(), "modelCalls": 0
+                }));
+                evaluated += 1;
+                continue;
+            }
             let execution_id = format!("memory-maintenance-run-{}", uuid::Uuid::new_v4());
             let selected = crate::engine::algorithms::choose_for_agent(
                 state, kind, Some(&owner), Some(&execution_id),
@@ -721,6 +737,7 @@ pub fn learning_sweep(state: &crate::state::AppState) -> usize {
                 "id":observation_id, "agentId":owner, "kind":kind,
                 "executionId":execution_id,"revision":selected["revision"],
                 "eligibleIds":observed, "changed":changed,"success":success,
+                "metric":"maintenance_coverage_proxy",
                 "observedAt":chrono::Utc::now().to_rfc3339(),
                 "modelCalls":0
             }));
@@ -1696,11 +1713,10 @@ mod per_agent_memory_learning_tests {
         assert_eq!(learning_sweep(&state),1);
         assert_eq!(learning_sweep(&state),0);
         assert_eq!(state.store.get("memory","old-one").unwrap()["status"],"active");
-        let stat=state.store.all("algorithm_stat").into_iter()
-            .find(|record| record["agentId"] == "bot"
-                && record["kind"] == "memory.forgetting").unwrap();
-        assert_eq!(stat["uses"],1);
-        assert_eq!(stat["failures"],1);
+        assert!(state.store.all("algorithm_stat").into_iter().all(|record| {
+            record["agentId"] != "bot" || record["kind"] != "memory.forgetting"
+        }), "preservation policy must not be punished for abstaining");
+        assert_eq!(state.store.all("memory_maintenance_observation")[0]["status"], "abstained");
         let _ = std::fs::remove_dir_all(dir);
     }
 
