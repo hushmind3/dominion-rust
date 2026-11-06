@@ -268,6 +268,34 @@ fn normalize_assistant_reasoning(messages: &mut [Value], required: bool) {
     }
 }
 
+/// Reflection requires the original reasoning for every earlier assistant
+/// message. History produced by another model (or by a tool-only turn) cannot
+/// satisfy that. In that case keep the system context and the current user
+/// message; this is the provider's own recommended fallback.
+fn trim_history_for_reasoning(messages: Vec<Value>) -> (Vec<Value>, bool) {
+    let incompatible = messages.iter().any(|message| {
+        message["role"] == "assistant"
+            && message["reasoning_content"]
+                .as_str()
+                .is_none_or(str::is_empty)
+    });
+    if !incompatible {
+        return (messages, false);
+    }
+    let mut trimmed = Vec::new();
+    if let Some(system) = messages.iter().find(|message| message["role"] == "system") {
+        trimmed.push(system.clone());
+    }
+    if let Some(user) = messages
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "user")
+    {
+        trimmed.push(user.clone());
+    }
+    (trimmed, true)
+}
+
 fn escaped_content_chars(text: &str) -> usize {
     text.chars().map(|ch| match ch {
         '"' | '\\' | '\n' | '\r' | '\t' | '\u{0008}' | '\u{000c}' => 2,
@@ -548,9 +576,23 @@ async fn stream_completion_once(
     // DeepSeek and Reflection require `reasoning_content` on every earlier
     // assistant message. Most other OpenAI-compatible endpoints reject
     // unknown fields, so only send it where the provider requires it.
-    let requires_reasoning_content = provider.reasoning_protocol == "deepseek"
-        || provider.base_url.contains("api.reflection.ai");
+    let reflection_provider = provider.base_url.contains("api.reflection.ai");
+    let requires_reasoning_content =
+        provider.reasoning_protocol == "deepseek" || reflection_provider;
     normalize_assistant_reasoning(&mut provider_messages, requires_reasoning_content);
+    if reflection_provider {
+        let (trimmed, changed) = trim_history_for_reasoning(provider_messages);
+        provider_messages = trimmed;
+        if changed {
+            state.store.audit(
+                "reflection.history_trimmed",
+                json!({
+                    "sessionId": session_id,
+                    "reason": "assistant history has no reasoning_content",
+                }),
+            );
+        }
+    }
     let mut body = json!({
         "model": provider.model,
         "messages": provider_messages,
@@ -1078,6 +1120,31 @@ async fn stream_anthropic_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incompatible_reflection_history_is_trimmed_to_system_and_last_user() {
+        let messages = vec![
+            json!({"role":"system","content":"s"}),
+            json!({"role":"assistant","content":"old","reasoning_content":""}),
+            json!({"role":"user","content":"old user"}),
+            json!({"role":"assistant","content":"ok","reasoning_content":"real"}),
+            json!({"role":"user","content":"current"}),
+        ];
+        let (trimmed, changed) = trim_history_for_reasoning(messages);
+        assert!(changed);
+        assert_eq!(trimmed.len(), 2, "{trimmed:?}");
+        assert_eq!(trimmed[0]["role"], "system");
+        assert_eq!(trimmed[1]["content"], "current");
+
+        let compatible = vec![
+            json!({"role":"system","content":"s"}),
+            json!({"role":"assistant","content":"ok","reasoning_content":"real"}),
+            json!({"role":"user","content":"current"}),
+        ];
+        let (kept, changed) = trim_history_for_reasoning(compatible);
+        assert!(!changed);
+        assert_eq!(kept.len(), 3, "{kept:?}");
+    }
 
     #[test]
     fn reflection_requires_reasoning_content_on_assistant_history() {
