@@ -695,13 +695,13 @@ async fn run_turn_body(
             counters.iterations = round as u32 + 1;
         }
 
-        if let Some(tokens) = provider.context_tokens {
+        {
             let chars: usize = messages
                 .iter()
                 .filter_map(|message| message["content"].as_str())
                 .map(str::len)
                 .sum();
-            if chars > (tokens as usize).saturating_mul(4) {
+            if chars > provider.context_tokens.unwrap_or(16_384) as usize * 4 {
                 if !context_overflow {
                     context_overflow = true;
                     if let Some(mut execution) = state.store.get("execution", execution_id) {
@@ -713,7 +713,22 @@ async fn run_turn_body(
         }
         let model_started = std::time::Instant::now();
         let model_offset_ms = turn_started.elapsed().as_millis() as u64;
-        let round_tools = if force_final { Vec::new() } else { tool_definitions.clone() };
+        let mut round_tools = if force_final { Vec::new() } else { tool_definitions.clone() };
+        if !round_tools.is_empty() {
+            let budget = provider
+                .context_tokens
+                .map(|tokens| {
+                    let reserve = provider
+                        .max_output_tokens
+                        .unwrap_or(tokens / 8)
+                        .min(tokens / 4)
+                        .max(128);
+                    ((tokens.saturating_sub(reserve) as usize) * 4 / 2)
+                        .clamp(4_000, 60_000)
+                })
+                .unwrap_or(60_000);
+            round_tools = trim_tool_definitions(round_tools, budget);
+        }
         let completion_result = stream_completion(
             state,
             &client,
@@ -1925,6 +1940,22 @@ fn restore_program_state(
         json!({"from": source_id, "to": execution_id, "revision": program["revision"]}),
     );
     Ok(())
+}
+
+fn trim_tool_definitions(definitions: Vec<Value>, budget: usize) -> Vec<Value> {
+    let mut kept = Vec::new();
+    let mut used = 0usize;
+    for definition in definitions {
+        let size = serde_json::to_string(&definition)
+            .map(|text| text.len())
+            .unwrap_or(0);
+        if used + size > budget && !kept.is_empty() {
+            continue;
+        }
+        used += size;
+        kept.push(definition);
+    }
+    kept
 }
 
 fn save_program_checkpoint(state: &AppState, execution_id: &str, checkpoint: &Value) {

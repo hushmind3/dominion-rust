@@ -4109,7 +4109,12 @@ fn compat_mode_executes_a_bare_json_tool_call_from_a_weak_model() {
             .first()
             .and_then(|message| message["content"].as_str())
             .unwrap_or("");
-        let saw_tool = messages.iter().any(|message| message["role"] == "tool");
+        let saw_tool = messages.iter().any(|message| {
+            message["role"] == "tool"
+                || message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("Tool observation"))
+        });
         if system.contains("planner") {
             return vec![json!({"choices":[{"delta":{"content":"1. weak.txt 생성\\n2. 확인"}}]})];
         }
