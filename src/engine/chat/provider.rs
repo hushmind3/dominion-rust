@@ -496,6 +496,12 @@ async fn stream_completion_once(
     tx: &UnboundedSender<Value>,
     convert_native_history: bool,
 ) -> Result<Completion, String> {
+    if provider.reasoning_protocol == "anthropic" {
+        return stream_anthropic_once(
+            state, client, provider, messages, tools, request, session_id, tx,
+        )
+        .await;
+    }
     let started = std::time::Instant::now();
     let compatible = provider.tool_mode == "compat";
     let manual = if compatible && !tools.is_empty() {
@@ -726,6 +732,318 @@ async fn stream_completion_once(
         })
         .collect();
 
+    crate::engine::gateway::record_usage_total(
+        state,
+        &provider.id,
+        &provider.model,
+        provider.local,
+        "chat",
+        Some(session_id),
+        completion.usage,
+    );
+    Ok(completion)
+}
+
+fn anthropic_message_text(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        return text.to_string();
+    }
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn push_anthropic_message(out: &mut Vec<Value>, role: &str, mut blocks: Vec<Value>) {
+    if blocks.is_empty() {
+        return;
+    }
+    if let Some(last) = out.last_mut() {
+        if last["role"].as_str() == Some(role) {
+            if let Some(content) = last["content"].as_array_mut() {
+                content.append(&mut blocks);
+                return;
+            }
+        }
+    }
+    out.push(json!({"role": role, "content": blocks}));
+}
+
+/// Converts the engine's OpenAI-style transcript into Anthropic message
+/// blocks: system is separate, tool results become user tool_result blocks,
+/// and assistant tool calls become tool_use blocks.
+fn anthropic_messages(messages: &[Value]) -> (String, Vec<Value>) {
+    let mut system = String::new();
+    let mut out: Vec<Value> = Vec::new();
+    for message in messages {
+        match message["role"].as_str().unwrap_or("user") {
+            "system" => {
+                let text = anthropic_message_text(&message["content"]);
+                if !text.trim().is_empty() {
+                    if !system.is_empty() {
+                        system.push_str("\n\n");
+                    }
+                    system.push_str(&text);
+                }
+            }
+            "tool" => {
+                let content = anthropic_message_text(&message["content"]);
+                push_anthropic_message(
+                    &mut out,
+                    "user",
+                    vec![json!({
+                        "type": "tool_result",
+                        "tool_use_id": message["tool_call_id"].as_str().unwrap_or(""),
+                        "content": content,
+                    })],
+                );
+            }
+            "assistant" => {
+                let mut blocks = Vec::new();
+                let text = anthropic_message_text(&message["content"]);
+                if !text.trim().is_empty() {
+                    blocks.push(json!({"type": "text", "text": text}));
+                }
+                for call in message["tool_calls"].as_array().into_iter().flatten() {
+                    let function = &call["function"];
+                    let name = function["name"].as_str().unwrap_or("tool");
+                    let input = function["arguments"]
+                        .as_str()
+                        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                        .filter(Value::is_object)
+                        .unwrap_or_else(|| json!({}));
+                    blocks.push(json!({
+                        "type": "tool_use",
+                        "id": call["id"].as_str().filter(|id| !id.is_empty())
+                            .map(str::to_string)
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                        "name": name,
+                        "input": input,
+                    }));
+                }
+                push_anthropic_message(&mut out, "assistant", blocks);
+            }
+            _ => {
+                let text = anthropic_message_text(&message["content"]);
+                if !text.trim().is_empty() {
+                    push_anthropic_message(&mut out, "user", vec![json!({"type": "text", "text": text})]);
+                }
+            }
+        }
+    }
+    (system.trim().to_string(), out)
+}
+
+fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
+    tools
+        .iter()
+        .filter_map(|tool| {
+            let function = tool.get("function").unwrap_or(tool);
+            let name = function["name"].as_str()?;
+            Some(json!({
+                "name": name,
+                "description": function["description"].as_str().unwrap_or(""),
+                "input_schema": function["parameters"].clone(),
+            }))
+        })
+        .collect()
+}
+
+async fn stream_anthropic_once(
+    state: &AppState,
+    client: &reqwest::Client,
+    provider: &ProviderRef,
+    messages: &[Value],
+    tools: &[Value],
+    request: &TurnRequest,
+    session_id: &str,
+    tx: &UnboundedSender<Value>,
+) -> Result<Completion, String> {
+    let started = std::time::Instant::now();
+    let (system, provider_messages) = anthropic_messages(messages);
+    let mut body = json!({
+        "model": provider.model,
+        "messages": provider_messages,
+        "stream": true,
+        "max_tokens": provider.max_output_tokens.unwrap_or(4096),
+    });
+    if !system.is_empty() {
+        body["system"] = json!(system);
+    }
+    let tools = anthropic_tools(tools);
+    if !tools.is_empty() {
+        body["tools"] = json!(tools);
+    }
+    let effort = request.reasoning_effort.as_deref();
+    if request.thinking == Some(true)
+        || (request.thinking != Some(false) && matches!(effort, Some("low" | "medium" | "high")))
+    {
+        let budget = match effort {
+            Some("low") => 1024,
+            Some("medium") => 2048,
+            _ => 4096,
+        };
+        body["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
+        let max_tokens = body["max_tokens"].as_u64().unwrap_or(4096).max(budget + 1024);
+        body["max_tokens"] = json!(max_tokens);
+    }
+
+    let _permit = crate::engine::gateway::acquire(&provider.base_url, provider.local).await;
+    let response = client
+        .post(format!("{}/messages", provider.base_url))
+        .header("Content-Type", "application/json")
+        .header("x-api-key", &provider.api_key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| format!("{} 연결 실패: {error}", provider.name))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "{} 호출 실패 (HTTP {status}): {}",
+            provider.name,
+            text.chars().take(600).collect::<String>()
+        ));
+    }
+
+    let mut completion = Completion::default();
+    let mut calls: Vec<ToolCall> = Vec::new();
+    let mut blocks = std::collections::BTreeMap::<usize, (String, String, String)>::new();
+    let mut buffer = SseBuffer::default();
+    let mut stream = response.bytes_stream();
+    let mut terminated = false;
+    let mut text_pending = String::new();
+    let mut in_text_tool_call = false;
+    let mut input_tokens = 0u64;
+    let mut output_tokens = 0u64;
+
+    'stream: while let Some(chunk) = stream.next().await {
+        if state.is_cancelled(session_id) {
+            return Err("실행이 중단되었습니다.".into());
+        }
+        let chunk = chunk.map_err(|error| format!("스트림 오류: {error}"))?;
+        buffer.push(&chunk)?;
+        while let Some(block) = buffer.pop()? {
+            let payload = block
+                .lines()
+                .filter(|line| line.starts_with("data:"))
+                .map(|line| line[5..].trim_start())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if payload.is_empty() || payload == "[DONE]" {
+                continue;
+            }
+            let piece: Value = serde_json::from_str(&payload)
+                .map_err(|_| "Anthropic 스트림 JSON이 올바르지 않습니다.")?;
+            match piece["type"].as_str().unwrap_or("") {
+                "message_start" => {
+                    input_tokens = piece["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0);
+                }
+                "content_block_start" => {
+                    let content = &piece["content_block"];
+                    if content["type"].as_str() == Some("tool_use") {
+                        let index = piece["index"].as_u64().unwrap_or(0) as usize;
+                        let initial = content["input"]
+                            .as_object()
+                            .filter(|input| !input.is_empty())
+                            .map(|_| content["input"].to_string())
+                            .unwrap_or_default();
+                        blocks.insert(
+                            index,
+                            (
+                                content["id"].as_str().unwrap_or("").to_string(),
+                                content["name"].as_str().unwrap_or("tool").to_string(),
+                                initial,
+                            ),
+                        );
+                        if completion.first_delta_ms.is_none() {
+                            completion.first_delta_ms = Some(started.elapsed().as_millis() as u64);
+                        }
+                    }
+                }
+                "content_block_delta" => {
+                    let delta = &piece["delta"];
+                    match delta["type"].as_str().unwrap_or("") {
+                        "text_delta" => {
+                            let text = delta["text"].as_str().unwrap_or("");
+                            if !text.is_empty() {
+                                if completion.first_delta_ms.is_none() {
+                                    completion.first_delta_ms = Some(started.elapsed().as_millis() as u64);
+                                }
+                                completion.content.push_str(text);
+                                stream_visible_text(tx, text, &mut text_pending, &mut in_text_tool_call);
+                            }
+                        }
+                        "thinking_delta" => {
+                            let text = delta["thinking"].as_str().unwrap_or("");
+                            if !text.is_empty() {
+                                if completion.first_delta_ms.is_none() {
+                                    completion.first_delta_ms = Some(started.elapsed().as_millis() as u64);
+                                }
+                                completion.reasoning.push_str(text);
+                                let _ = tx.send(json!({"type": "reasoning", "text": text}));
+                            }
+                        }
+                        "input_json_delta" => {
+                            let index = piece["index"].as_u64().unwrap_or(0) as usize;
+                            if let Some(entry) = blocks.get_mut(&index) {
+                                entry.2.push_str(delta["partial_json"].as_str().unwrap_or(""));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                "content_block_stop" => {
+                    let index = piece["index"].as_u64().unwrap_or(0) as usize;
+                    if let Some((id, name, raw)) = blocks.remove(&index) {
+                        let arguments = if raw.trim().is_empty() {
+                            json!({})
+                        } else {
+                            serde_json::from_str::<Value>(&raw)
+                                .ok()
+                                .filter(Value::is_object)
+                                .unwrap_or_else(|| json!({}))
+                        };
+                        calls.push(ToolCall {
+                            id: if id.is_empty() { uuid::Uuid::new_v4().to_string() } else { id },
+                            name,
+                            arguments: arguments.to_string(),
+                        });
+                    }
+                }
+                "message_delta" => {
+                    output_tokens = piece["usage"]["output_tokens"].as_u64().unwrap_or(output_tokens);
+                }
+                "message_stop" => {
+                    terminated = true;
+                    break 'stream;
+                }
+                "error" => {
+                    return Err(format!("Anthropic 오류: {}", piece["error"]));
+                }
+                _ => {}
+            }
+        }
+        if completion.content.len() + completion.reasoning.len() > 2_000_000 {
+            return Err("모델 응답 크기 제한을 초과했습니다.".into());
+        }
+    }
+    if !in_text_tool_call
+        && !text_pending.is_empty()
+        && !TEXT_TOOL_OPEN.starts_with(&text_pending)
+    {
+        let _ = tx.send(json!({"type": "text", "text": text_pending}));
+    }
+    if !terminated {
+        return Err("Anthropic 스트림이 완료 신호 없이 종료되었습니다.".into());
+    }
+    completion.tool_calls = calls;
+    completion.usage = input_tokens + output_tokens;
     crate::engine::gateway::record_usage_total(
         state,
         &provider.id,
@@ -990,5 +1308,101 @@ mod tests {
         }
         assert_eq!(text, "파일을 생성했습니다.");
         assert!(!text.contains("tool_call"));
+    }
+
+    #[tokio::test]
+    async fn anthropic_native_stream_translates_messages_tools_and_usage() {
+        use axum::{routing::post, Router, Json};
+        use std::sync::{Arc, Mutex};
+        let observed = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let captured = observed.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/messages",
+            post(move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                let captured = captured.clone();
+                async move {
+                    captured.lock().unwrap().push(json!({
+                        "headerKey": headers.get("x-api-key").and_then(|v| v.to_str().ok()),
+                        "headerVersion": headers.get("anthropic-version").and_then(|v| v.to_str().ok()),
+                        "body": body,
+                    }));
+                    let events = [
+                        json!({"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}),
+                        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+                        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"안녕"}}),
+                        json!({"type":"content_block_stop","index":0}),
+                        json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool_1","name":"workspace_read","input":{}}}),
+                        json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"x\"}"}}),
+                        json!({"type":"content_block_stop","index":1}),
+                        json!({"type":"message_delta","usage":{"output_tokens":5}}),
+                        json!({"type":"message_stop"}),
+                    ];
+                    let payload = events
+                        .iter()
+                        .map(|event| format!("event: x\ndata: {event}\n\n"))
+                        .collect::<String>();
+                    ([(axum::http::header::CONTENT_TYPE, "text/event-stream")], payload)
+                }
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let root = std::env::temp_dir().join(format!("dominion-anthropic-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config = crate::config::Config {
+            port: 0, data_dir: root.clone(), web_dir: root.join("web"), workspace: root.clone(),
+        };
+        let state = AppState::new(
+            config,
+            crate::db::Store::open(&root.join("db.sqlite")).unwrap(),
+            crate::vault::Vault::open(&root.join("keys.json")),
+        );
+        let provider = ProviderRef {
+            id: "anthropic".into(), name: "Anthropic".into(),
+            base_url: format!("http://{address}"), api_key: "secret".into(),
+            model: "claude-test".into(), tool_mode: "native".into(),
+            reasoning_protocol: "anthropic".into(), local: false,
+            context_tokens: None, max_output_tokens: Some(4096),
+        };
+        let request = TurnRequest::from_value(&json!({
+            "input":"안녕","sessionId":"s","autoLearning":false
+        })).unwrap();
+        let messages = vec![
+            json!({"role":"system","content":"system rule"}),
+            json!({"role":"user","content":"안녕"}),
+            json!({"role":"assistant","content":"","tool_calls":[
+                {"id":"call_1","type":"function","function":{"name":"workspace_read","arguments":"{\"path\":\"x\"}"}}
+            ]}),
+            json!({"role":"tool","tool_call_id":"call_1","content":"ok"}),
+        ];
+        let tools = vec![json!({"type":"function","function":{
+            "name":"workspace_read","description":"read",
+            "parameters":{"type":"object","properties":{"path":{"type":"string"}}}
+        }})];
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let completion = stream_completion_once(
+            &state, &reqwest::Client::new(), &provider, &messages, &tools,
+            &request, "s", &tx, false,
+        ).await.unwrap();
+        assert_eq!(completion.content, "안녕");
+        assert_eq!(completion.usage, 15);
+        assert_eq!(completion.tool_calls.len(), 1);
+        assert_eq!(completion.tool_calls[0].name, "workspace_read");
+        assert_eq!(
+            serde_json::from_str::<Value>(&completion.tool_calls[0].arguments).unwrap(),
+            json!({"path":"x"})
+        );
+        let calls = observed.lock().unwrap();
+        let body = &calls[0]["body"];
+        assert_eq!(calls[0]["headerKey"], "secret");
+        assert_eq!(calls[0]["headerVersion"], "2023-06-01");
+        assert_eq!(body["system"], "system rule");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
+        assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+        server.abort();
+        let _ = std::fs::remove_dir_all(root);
     }
 }

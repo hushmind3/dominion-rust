@@ -2439,6 +2439,41 @@ fn regressed_experiment_rolls_back_the_candidate() {
 }
 
 #[test]
+fn manual_learn_requests_semantic_extraction() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"{\"memories\":[],\"skill\":null}"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let session = app.post("/api/sessions", &json!({"title":"semantic learn"}));
+    let session_id = session["id"].as_str().unwrap();
+    let path = app._root.join("runtime/dominion.sqlite");
+    let conn = Connection::open(path).unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO messages(id,session_id,role,content,agent_id) VALUES(?1,?2,'user',?3,'a')",
+        rusqlite::params!["learn-user", session_id, "앞으로 답변은 한국어로만 해"],
+    ).unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO messages(id,session_id,role,content,agent_id) VALUES(?1,?2,'assistant',?3,'a')",
+        rusqlite::params!["learn-assistant", session_id, "알겠습니다"],
+    ).unwrap();
+    drop(conn);
+    let provider = app.get("/api/providers")[0]["id"].as_str().unwrap().to_string();
+    let response = app.client
+        .post(format!("{}/api/sessions/{session_id}/learn", app.base))
+        .json(&json!({"providerId":provider,"model":"mock"}))
+        .send()
+        .unwrap();
+    let status = response.status();
+    let queued: Value = serde_json::from_str(&response.text().unwrap()).unwrap_or(Value::Null);
+    assert!(status.is_success(), "learn failed: {status} {queued}");
+    let job = &queued["job"];
+    assert_eq!(job["kind"], "learn", "{queued}");
+    assert_eq!(job["input"]["semantic"], true, "{queued}");
+    assert_eq!(job["input"]["automatic"], true, "{queued}");
+}
+
+#[test]
 fn completion_rejects_fake_or_incomplete_evidence() {
     let _serial = serial();
     let (port, _) = scripted_provider(|_| {

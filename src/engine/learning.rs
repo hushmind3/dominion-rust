@@ -53,6 +53,33 @@ pub fn enqueue_for_agent(
     enqueue_for_agent_through(state, session_id, agent_id, provider_id, model, None)
 }
 
+/// Manual learning restores the Node behavior: an explicit user action may use
+/// the model for semantic extraction. Automatic chat learning stays model-free.
+pub fn enqueue_semantic_for_agent_through(
+    state: &AppState,
+    session_id: &str,
+    agent_id: Option<&str>,
+    provider_id: &str,
+    model: &str,
+    through_message_id: Option<&str>,
+) -> Option<Value> {
+    enqueue_for_agent_through_mode(
+        state, session_id, agent_id, provider_id, model, through_message_id, true,
+    )
+}
+
+pub fn enqueue_semantic(
+    state: &AppState,
+    session_id: &str,
+    provider_id: &str,
+    model: &str,
+) -> Option<Value> {
+    let actor = effective_agent(state, session_id);
+    enqueue_for_agent_through_mode(
+        state, session_id, actor.as_deref(), provider_id, model, None, true,
+    )
+}
+
 /// Room-wide manual learning needs an explicit watermark per participant so
 /// each agent learns its own turns up to the message it actually produced.
 pub fn enqueue_for_agent_through(
@@ -63,11 +90,24 @@ pub fn enqueue_for_agent_through(
     model: &str,
     through_message_id: Option<&str>,
 ) -> Option<Value> {
+    enqueue_for_agent_through_mode(
+        state, session_id, agent_id, provider_id, model, through_message_id, false,
+    )
+}
+
+fn enqueue_for_agent_through_mode(
+    state: &AppState,
+    session_id: &str,
+    agent_id: Option<&str>,
+    provider_id: &str,
+    model: &str,
+    through_message_id: Option<&str>,
+    semantic: bool,
+) -> Option<Value> {
     let session = state.store.get("session", session_id)?;
-    let agent = match agent_id {
-        Some(id) => Some(state.store.get("agent", id)?),
-        None => None,
-    };
+    // A deleted or synthetic agent id may still own historical messages.
+    // Learning must not fail just because the agent record is gone.
+    let agent = agent_id.and_then(|id| state.store.get("agent", id));
     if let Some(room_id) = session["roomId"].as_str() {
         let room = state.store.get("room", room_id)?;
         if agent_id.is_none()
@@ -164,6 +204,7 @@ pub fn enqueue_for_agent_through(
         "providerId":resolved_provider,
         "model":resolved_model,
         "automatic":true,
+        "semantic":semantic,
     });
     for job in state.store.all("job") {
         if job["kind"] == "learn"
@@ -172,6 +213,12 @@ pub fn enqueue_for_agent_through(
             && job["input"]["agentId"] == input["agentId"]
             && job["input"]["throughMessageId"] == input["throughMessageId"]
         {
+            if semantic && job["input"]["semantic"].as_bool() != Some(true) {
+                let mut upgraded = job.clone();
+                upgraded["input"]["semantic"] = json!(true);
+                upgraded["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+                return state.store.put("job", &upgraded);
+            }
             return Some(job);
         }
     }
@@ -850,8 +897,12 @@ mod tests {
             .store
             .write_message(&json!({"id":"one","session_id":"s","role":"user","content":"기억해"}));
         let first = enqueue(&state, "s", "", "").unwrap();
+        assert_eq!(first["input"]["semantic"], false, "{first}");
         let duplicate = enqueue(&state, "s", "", "").unwrap();
         assert_eq!(first["id"], duplicate["id"]);
+        let manual = enqueue_semantic(&state, "s", "", "").unwrap();
+        assert_eq!(manual["id"], first["id"]);
+        assert_eq!(manual["input"]["semantic"], true, "{manual}");
         state.store.write_message(
             &json!({"id":"two","session_id":"s","role":"assistant","content":"알겠어"}),
         );
@@ -862,6 +913,7 @@ mod tests {
         assert_eq!(second["input"]["throughMessageId"], "two");
         assert_eq!(second["input"]["providerId"], "provider-a");
         assert_eq!(second["input"]["model"], "local-rust");
+        assert_eq!(second["input"]["semantic"], false, "{second}");
         let _ = std::fs::remove_dir_all(dir);
     }
     #[test]

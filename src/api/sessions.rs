@@ -179,6 +179,9 @@ pub async fn learn(State(state):State<AppState>,Path(id):Path<String>,Json(body)
     if session["channelContext"]["authorIsBot"]==true{return error(StatusCode::FORBIDDEN,"봇 발언은 주인의 기억 근거로 학습하지 않습니다.")}
     let messages=state.store.messages(&id);
     if messages.is_empty(){return Json(json!({"status":"completed","result":{"memories":0,"skill":false,"reason":"no messages"},"message":"기억을 추출할 대화가 없습니다."})).into_response();}
+    // A manual user action may use the model for semantic extraction. Chat
+    // auto-learning stays deterministic unless a caller explicitly opts in.
+    let semantic=body["semantic"].as_bool().unwrap_or(true);
     // A room shares one session but each participant has its own memory scope.
     // Never reuse the last speaker's session provider for the whole room.
     if let Some(room_id)=session["roomId"].as_str(){
@@ -193,7 +196,12 @@ pub async fn learn(State(state):State<AppState>,Path(id):Path<String>,Json(body)
             if state.store.get("agent",agent_id).is_none(){continue}
             let through=messages.iter().rev().find(|message|message["agent_id"].as_str()==Some(agent_id)).and_then(|message|message["id"].as_str());
             let Some(through)=through else{continue};
-            if let Some(job)=engine::learning::enqueue_for_agent_through(&state,&id,Some(agent_id),explicit_provider.unwrap_or(""),explicit_model.unwrap_or(""),Some(through)){
+            let queued=if semantic {
+                engine::learning::enqueue_semantic_for_agent_through(&state,&id,Some(agent_id),explicit_provider.unwrap_or(""),explicit_model.unwrap_or(""),Some(through))
+            } else {
+                engine::learning::enqueue_for_agent_through(&state,&id,Some(agent_id),explicit_provider.unwrap_or(""),explicit_model.unwrap_or(""),Some(through))
+            };
+            if let Some(job)=queued{
                 jobs.push(json!({"agentId":agent_id,"jobId":job["id"],"status":job["status"]}));
             }
         }
@@ -205,7 +213,12 @@ pub async fn learn(State(state):State<AppState>,Path(id):Path<String>,Json(body)
     let provider=body["providerId"].as_str().or(session["providerId"].as_str()).unwrap_or("");
     if !provider.is_empty()&&state.store.get("provider",provider).is_none_or(|p|p["enabled"]==false){return error(StatusCode::BAD_REQUEST,"사용 가능한 학습 제공자를 선택하세요.")}
     let model=body["model"].as_str().or(session["model"].as_str()).unwrap_or("");
-    match engine::learning::enqueue(&state,&id,provider,model){
+    let queued=if semantic {
+        engine::learning::enqueue_semantic(&state,&id,provider,model)
+    } else {
+        engine::learning::enqueue(&state,&id,provider,model)
+    };
+    match queued{
         Some(job)=>(StatusCode::ACCEPTED,Json(json!({"jobId":job["id"],"status":job["status"],"job":job}))).into_response(),
         None=>{
             let through=messages.last().and_then(|m|m["id"].as_str());

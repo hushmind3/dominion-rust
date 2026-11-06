@@ -62,14 +62,9 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    if body.get("kind").and_then(|value| value.as_str()) == Some("anthropic") {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "Anthropic 네이티브 형식은 지원하지 않습니다. OpenAI 호환 엔드포인트를 사용하세요.",
-        );
-    }
     let kind = match body.get("kind").and_then(|value| value.as_str()) {
         Some("ollama") => "ollama",
+        Some("anthropic") => "anthropic",
         _ => "openai",
     };
 
@@ -90,6 +85,8 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
             _ =>
                 if kind == "ollama" {
                     "compat"
+                } else if kind == "anthropic" {
+                    "native"
                 } else {
                     "auto"
                 },
@@ -147,6 +144,8 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
     let url = if kind == "ollama" {
         let native = base.trim_end_matches("/v1").trim_end_matches('/');
         format!("{native}/api/tags")
+    } else if kind == "anthropic" {
+        format!("{base}/models")
     } else {
         format!(
             "{base}/models{}",
@@ -163,13 +162,34 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
 
     let client = reqwest::Client::new();
     let mut request = client.get(&url).timeout(Duration::from_secs(12));
-    if !key.is_empty() {
+    if kind == "anthropic" {
+        request = request
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01");
+    } else if !key.is_empty() {
         request = request.header("Authorization", format!("Bearer {key}"));
     }
     match request.send().await {
         Ok(response) if response.status().is_success() => {
             let value: Value = response.json().await.unwrap_or_else(|_| json!({}));
-            let models: Vec<Value> = if kind == "ollama" {
+            let models: Vec<Value> = if kind == "anthropic" {
+                value["data"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.get("id").and_then(Value::as_str))
+                            .map(|id| json!({
+                                "id": id,
+                                "name": value["data"].as_array().and_then(|all| all.iter()
+                                    .find(|item| item["id"] == id))
+                                    .and_then(|item| item["display_name"].as_str())
+                                    .unwrap_or(id)
+                            }))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else if kind == "ollama" {
                 value["models"]
                     .as_array()
                     .map(|items| {

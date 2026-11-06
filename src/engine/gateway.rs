@@ -94,7 +94,9 @@ fn default_tool_mode(provider: &Value, kind: &str) -> String {
         .filter(|value| matches!(*value, "native" | "compat" | "auto"))
         .map(str::to_string)
         .unwrap_or_else(|| {
-            if kind == "ollama" || provider["local"].as_bool() == Some(true) {
+            if kind == "anthropic" {
+                "native".into()
+            } else if kind == "ollama" || provider["local"].as_bool() == Some(true) {
                 "compat".into()
             } else {
                 "auto".into()
@@ -107,7 +109,9 @@ fn default_reasoning_protocol(provider: &Value, kind: &str, model: &str, id: &st
         .as_str()
         .map(str::to_string)
         .unwrap_or_else(|| {
-            if model.to_ascii_lowercase().contains("deepseek") {
+            if kind == "anthropic" {
+                "anthropic".into()
+            } else if model.to_ascii_lowercase().contains("deepseek") {
                 "deepseek".into()
             } else if kind == "ollama" || id == "dominion-native" {
                 "chat_template".into()
