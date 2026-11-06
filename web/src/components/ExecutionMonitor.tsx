@@ -30,7 +30,7 @@ export function ExecutionMonitor(){
  const [prompt,setPrompt]=useState(''),[agentChoice,setAgentChoice]=useState(''),[info,setInfo]=useState('')
  const [selected,setSelected]=useState<string|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('')
  const availableAgents=agents.value.filter(x=>x.providerId&&x.model)
- const executorId=availableAgents.some(x=>x.id===agentChoice)?agentChoice:availableAgents[0]?.id||'general'
+ const executorId=availableAgents.some(x=>x.id===agentChoice)?agentChoice:availableAgents[0]?.id||''
  const current=runs.value.find(x=>x.id===selected)||runs.value[0]
  const count=runs.value.filter(x=>active(x.status)).length
  const execute=async()=>{
@@ -62,7 +62,7 @@ export function ExecutionMonitor(){
    <TextArea rows={3} value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder="에이전트가 실행할 작업을 입력하세요."/>
    <div className="mt-3 flex flex-wrap items-center gap-2">
     <SelectInput value={executorId} onChange={e=>setAgentChoice(e.target.value)} aria-label="실행할 에이전트">
-     {!availableAgents.length&&<option value="general">자동 모델 선택</option>}
+     {!availableAgents.length&&<option value="">모델이 설정된 에이전트가 없습니다</option>}
      {availableAgents.map(a=><option key={a.id} value={a.id}>{a.name} · {a.model}</option>)}
     </SelectInput>
     <Button variant="primary" disabled={busy||!executorId||!prompt.trim()} onClick={()=>void execute()}><Play size={15}/> 실행</Button>

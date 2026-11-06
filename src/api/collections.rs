@@ -105,6 +105,72 @@ pub async fn save(
         }
         crate::engine::mcp::invalidate();
     }
+    if kind == "skill" {
+        // The execution path ignores `draft` even when `enabled` is true.
+        // Make the public toggle and the engine contract agree.
+        let enabled = body["enabled"].as_bool() == Some(true);
+        if enabled {
+            let status = body["status"].as_str().unwrap_or("");
+            if status.is_empty() || status == "draft" {
+                body["status"] = json!("active");
+            }
+        }
+    }
+    if kind == "automation" {
+        let automation_kind = body["kind"].as_str().unwrap_or("");
+        let input = &body["input"];
+        let valid = match automation_kind {
+            "prompt" => {
+                input["prompt"]
+                    .as_str()
+                    .is_some_and(|value| !value.trim().is_empty())
+                    && input["agentId"].as_str().is_some_and(|id| {
+                        state.store.get("agent", id).is_some()
+                    })
+            }
+            "meeting" => {
+                input["goal"]
+                    .as_str()
+                    .is_some_and(|value| !value.trim().is_empty())
+                    && input["roomId"].as_str().is_some_and(|id| {
+                        state.store.get("room", id).is_some()
+                    })
+            }
+            _ => false,
+        };
+        let interval = body["intervalMinutes"].as_i64().unwrap_or(0);
+        if !valid || interval < 1 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "자동화는 유형에 맞는 작업 내용·에이전트 또는 회의실·1분 이상 간격이 필요합니다."
+                })),
+            )
+                .into_response();
+        }
+    }
+    if kind == "workflow" {
+        let steps = body["steps"].as_array().cloned().unwrap_or_default();
+        let valid = !steps.is_empty()
+            && steps.len() <= 30
+            && steps.iter().all(|step| {
+                step["prompt"]
+                    .as_str()
+                    .is_some_and(|value| !value.trim().is_empty())
+                    && step["agentId"].as_str().is_some_and(|id| {
+                        state.store.get("agent", id).is_some()
+                    })
+            });
+        if !valid {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "워크플로의 모든 단계에는 실행 지시문과 실제 등록된 에이전트가 필요합니다."
+                })),
+            )
+                .into_response();
+        }
+    }
     match state.store.put(&kind, &body) {
         Some(record) => {
             state.bus.record(&kind, &record);

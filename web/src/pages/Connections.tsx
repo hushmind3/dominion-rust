@@ -32,7 +32,7 @@ export function ConnectionsPage(){
  const ready=registry.value.filter(x=>x.available).length;
  const openEditor=(entry:ChannelEntry,existing?:Channel)=>{
   if(!entry.available)return;
-  const record:any=existing?{...existing}:{name:entry.name,kind:entry.id,enabled:false,syncRoomMessages:entry.mode==='outbound',mentionOnly:true,roomId:'',roomPolicy:'all_or_named',agentId:'general',providerId:'',model:''};
+  const record:any=existing?{...existing}:{name:entry.name,kind:entry.id,enabled:false,syncRoomMessages:entry.mode==='outbound',mentionOnly:true,roomId:'',roomPolicy:'all_or_named',agentId:'',providerId:'',model:''};
   for(const field of entry.fields)if(field.type==='secret')record[field.key]='';
   setEditor({entry,record});setError('');
  };
@@ -94,7 +94,7 @@ export function ConnectionsPage(){
     {editor.record.roomId&&<div className="rounded-xl border border-[#EED9CC] bg-[#F7E8E1] p-3 text-xs leading-6 text-blue-800"><UsersRound size={19}/><div><strong>이 채널은 회의실 실행기로 연결됩니다.</strong><p>{editor.entry.maxRoomParticipants?'이 채널은 참가자 최대 '+editor.entry.maxRoomParticipants+'명의 회의실을 연결할 수 있습니다.':editor.entry.mode==='outbound'?'회의실에서 생성된 응답을 지정한 채널로 보냅니다.':'회의실의 발언 설정에 따라 에이전트가 응답합니다.'}</p></div></div>}
     {editor.record.roomId&&editor.entry.mode!=='outbound'&&<FormField label="발언자 선택 정책"><SelectInput  value={editor.record.roomPolicy||'all_or_named'} onChange={e=>setEditor({...editor,record:{...editor.record,roomPolicy:e.target.value}})}><option value="all_or_named">이름 지정 시 해당 인원 · 지정 없으면 전체</option><option value="named_only">이름을 지정한 에이전트만</option><option value="round_robin">회차마다 1명씩 돌아가며 발언</option></SelectInput></FormField>}
     {editor.entry.mode!=='outbound'&&<>
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2"><FormField label="에이전트"><SelectInput  value={editor.record.agentId||'general'} onChange={e=>setEditor({...editor,record:{...editor.record,agentId:e.target.value}})}>{agents.value.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput></FormField><FormField label="모델 제공자"><SelectInput  value={editor.record.providerId||''} onChange={e=>setEditor({...editor,record:{...editor.record,providerId:e.target.value}})}><option value="">에이전트 기본값</option>{providers.value.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</SelectInput></FormField></div>
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2"><FormField label="에이전트"><SelectInput  value={editor.record.agentId||''} onChange={e=>setEditor({...editor,record:{...editor.record,agentId:e.target.value}})}><option value="">에이전트 선택</option>{agents.value.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput></FormField><FormField label="모델 제공자"><SelectInput  value={editor.record.providerId||''} onChange={e=>setEditor({...editor,record:{...editor.record,providerId:e.target.value}})}><option value="">에이전트 기본값</option>{providers.value.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</SelectInput></FormField></div>
     <FormField label="모델 ID · 선택"><TextInput  value={editor.record.model||''} onChange={e=>setEditor({...editor,record:{...editor.record,model:e.target.value}})} placeholder="에이전트 기본 모델 사용"/></FormField>
     <label className="inline-flex items-center gap-2 text-sm text-[#4A443C]"><TextInput type="checkbox" checked={editor.record.mentionOnly!==false} onChange={e=>setEditor({...editor,record:{...editor.record,mentionOnly:e.target.checked}})}/> 그룹에서는 봇 멘션이 있을 때만 답변</label>
     </>}

@@ -608,6 +608,66 @@ fn room_debate_knowledge_is_recalled_by_a_different_model_with_provenance() {
 }
 
 #[test]
+fn invalid_automations_and_workflows_are_rejected_before_execution() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let provider = app.get("/api/providers")[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent = app.post(
+        "/api/agents",
+        &json!({"name":"A","systemPrompt":"A","providerId":provider,"model":"mock"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let status = |path: &str, body: &Value| -> u16 {
+        app.client
+            .post(format!("{}{path}", app.base))
+            .json(body)
+            .send()
+            .unwrap()
+            .status()
+            .as_u16()
+    };
+    assert_eq!(
+        status(
+            "/api/automations",
+            &json!({"kind":"prompt","input":{"prompt":"x","agentId":""},"intervalMinutes":10,"enabled":true})
+        ),
+        400,
+        "an automation without an existing agent must not be saved"
+    );
+    let automation = app.post(
+        "/api/automations",
+        &json!({"kind":"prompt","input":{"prompt":"x","agentId":agent},"intervalMinutes":10,"enabled":true}),
+    );
+    assert!(automation["id"].is_string(), "{automation}");
+    assert_eq!(
+        status(
+            "/api/workflows",
+            &json!({"name":"W","steps":[{"name":"s","prompt":"","agentId":agent}]})
+        ),
+        400,
+        "a workflow with an empty step prompt must not be saved"
+    );
+    let workflow = app.post(
+        "/api/workflows",
+        &json!({"name":"W","steps":[{"name":"s","prompt":"do","agentId":agent}]}),
+    );
+    assert!(workflow["id"].is_string(), "{workflow}");
+    let skill = app.post(
+        "/api/skills",
+        &json!({"id":"skill-contract","name":"S","instructions":"i","enabled":true,"status":"draft"}),
+    );
+    assert_eq!(skill["status"], "active", "{skill}");
+}
+
+#[test]
 fn persistent_room_http_flow_keeps_owner_once_and_shares_peer_context() {
     let _serial = serial();
     let (port, requests) = scripted_provider(|request| {
