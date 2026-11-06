@@ -559,99 +559,115 @@ fn compression_sweep_kernel(
 ) -> (usize, Vec<String>) {
     let kernel = algorithm["implementation"].as_str()
         .or_else(|| algorithm["variant"].as_str()).unwrap_or("extractive");
-    if kernel == "none" {
-        return (0, Vec::new());
-    }
+    if kernel == "none" { return (0, Vec::new()); }
     let max_age_days = algorithm["parameters"]["maxAgeDays"].as_f64().unwrap_or(30.0);
     let max_importance = algorithm["parameters"]["maxImportance"].as_f64().unwrap_or(0.35);
-    let min_group = algorithm["parameters"]["minGroup"].as_u64().unwrap_or(2) as usize;
+    let min_group = algorithm["parameters"]["minGroup"].as_u64().unwrap_or(2).max(2) as usize;
     let now = chrono::Utc::now();
-    let mut eligible = store.all("memory").into_iter()
-        .filter(|record| record["status"].as_str() == Some("active")
-            && record["key"].is_null()
-            && matches!(record["type"].as_str(), Some("fact" | "lesson")))
-        .filter(|record| owner.is_none_or(|agent| maintenance_owner(record) == agent))
-        .filter(|record| {
-            let importance = record["importance"].as_f64().unwrap_or(0.5);
-            if importance > max_importance { return false; }
-            let raw = record["lastUsedAt"].as_str()
-                .or_else(|| record["learnedAt"].as_str())
-                .or_else(|| record["createdAt"].as_str());
-            raw.and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
-                .is_some_and(|at| {
-                    (now - at.with_timezone(&chrono::Utc)).num_seconds() as f64 / 86_400.0
-                        >= max_age_days
-                })
-        })
-        .collect::<Vec<_>>();
-    eligible.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
-    if eligible.len() < min_group {
-        return (0, Vec::new());
+
+    // NEVER merge memories from different visibility, sessions, authors or
+    // partitions. A shared/global summary must retain the original scope.
+    let mut groups = std::collections::BTreeMap::<String, Vec<Value>>::new();
+    for record in store.all("memory") {
+        if record["status"].as_str() != Some("active")
+            || record["key"].is_string()
+            || !matches!(record["type"].as_str(), Some("fact" | "lesson"))
+            || record["source"].as_str() == Some("compression")
+            || owner.is_some_and(|agent| maintenance_owner(&record) != agent)
+            || record["importance"].as_f64().unwrap_or(0.5) > max_importance
+        { continue; }
+        let raw = record["lastUsedAt"].as_str()
+            .or_else(|| record["learnedAt"].as_str())
+            .or_else(|| record["createdAt"].as_str());
+        let old_enough = raw
+            .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+            .is_some_and(|at| {
+                (now - at.with_timezone(&chrono::Utc)).num_seconds() as f64 / 86_400.0
+                    >= max_age_days
+            });
+        if !old_enough || record["text"].as_str().is_none_or(str::is_empty) { continue; }
+        let group_key = json!([
+            record["scope"], record["partitionKey"], record["agentId"],
+            record["sessionId"], record["sourceAuthorKey"], record["type"],
+        ]).to_string();
+        groups.entry(group_key).or_default().push(record);
     }
-    let ids = eligible.iter()
-        .filter_map(|record| record["id"].as_str().map(str::to_string))
-        .collect::<Vec<_>>();
-    if dry_run {
-        return (0, ids);
-    }
-    let owner = owner.unwrap_or("global");
-    let summary_id = format!(
-        "memory-compressed-{}",
-        stable_id(&[owner, &ids.join(",")])
-    );
-    if store.get("memory", &summary_id).is_some() {
-        return (0, ids);
-    }
-    let texts = eligible.iter()
-        .filter_map(|record| record["text"].as_str())
-        .map(|text| text.chars().take(40).collect::<String>())
-        .collect::<Vec<_>>();
-    let mut evidence = Vec::new();
-    let mut sources = Vec::new();
-    let mut importance = 0.0f64;
-    let mut partition = "local".to_string();
-    for record in &eligible {
-        importance = importance.max(record["importance"].as_f64().unwrap_or(0.0));
-        if let Some(value) = record["partitionKey"].as_str() { partition = value.to_string(); }
-        for id in record["evidenceMessageIds"].as_array().into_iter().flatten() {
-            if !evidence.contains(id) { evidence.push(id.clone()); }
-        }
-        for id in record["sourceMessageIds"].as_array().into_iter().flatten() {
-            if !sources.contains(id) { sources.push(id.clone()); }
-        }
-    }
-    let summary = json!({
-        "id": summary_id,
-        "text": format!("압축된 기억: {}", texts.join(" | ")),
-        "type": "lesson",
-        "importance": importance,
-        "scope": "agent",
-        "agentId": owner,
-        "partitionKey": partition,
-        "status": "active",
-        "source": "compression",
-        "revision": stable_id(&[owner, &ids.join(",")]),
-        "createdAt": now.to_rfc3339(),
-        "learnedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-        "evidenceMessageIds": evidence,
-        "sourceMessageIds": sources,
-        "compressedFrom": ids,
-    });
-    if store.put("memory", &summary).is_none() {
-        return (0, Vec::new());
-    }
+
     let mut archived = 0;
-    for id in &ids {
-        if store.patch_if("memory", id, "status", &json!("active"), &json!({
-            "status": "archived",
-            "compressedInto": summary["id"],
-            "compressedAt": now.to_rfc3339(),
-            "archiveReason": "extractive memory compression; original evidence preserved"
-        })).is_some() {
-            archived += 1;
+    let mut eligible = Vec::new();
+    for (group_key, mut group) in groups {
+        if group.len() < min_group { continue; }
+        group.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        let ids = group.iter()
+            .filter_map(|record| record["id"].as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        if ids.len() != group.len() { continue; }
+        eligible.extend(ids.iter().cloned());
+        if dry_run { continue; }
+        let summary_id = format!("memory-compressed-{}",
+            stable_id(&[&group_key, &ids.join(",")]));
+        let first = &group[0];
+        if let Some(existing) = store.get("memory", &summary_id) {
+            // A previous sweep may have persisted the summary just before a
+            // crash. Resume only if it is the same scoped summary.
+            if existing["source"] != "compression"
+                || existing["compressedFrom"] != json!(ids)
+                || existing["status"] != "active"
+            { continue; }
+        } else {
+            let texts = group.iter()
+                .filter_map(|record| record["text"].as_str())
+                .map(|text| text.chars().take(40).collect::<String>())
+                .collect::<Vec<_>>();
+            let mut evidence = Vec::new();
+            let mut sources = Vec::new();
+            let mut importance = 0.0f64;
+            for record in &group {
+                importance = importance.max(
+                    record["importance"].as_f64().unwrap_or(0.0));
+                for id in record["evidenceMessageIds"].as_array().into_iter().flatten() {
+                    if !evidence.contains(id) { evidence.push(id.clone()); }
+                }
+                for id in record["sourceMessageIds"].as_array().into_iter().flatten() {
+                    if !sources.contains(id) { sources.push(id.clone()); }
+                }
+            }
+            let summary = json!({
+                "id": summary_id,
+                "text": format!("압축된 기억: {}", texts.join(" | ")),
+                "type": first["type"],
+                "importance": importance,
+                "scope": first["scope"],
+                "agentId": first["agentId"],
+                "partitionKey": first["partitionKey"],
+                "sessionId": first["sessionId"],
+                "sourceAuthorKey": first["sourceAuthorKey"],
+                "status": "active",
+                "source": "compression",
+                "lossySummary": true,
+                "revision": stable_id(&[&group_key, &ids.join(",")]),
+                "createdAt": now.to_rfc3339(),
+                "learnedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                "evidenceMessageIds": evidence,
+                "sourceMessageIds": sources,
+                "compressedFrom": ids,
+            });
+            if store.put("memory", &summary).is_none() { continue; }
+        }
+        // Original records are retained in the DB as archived evidence.
+        for id in &ids {
+            if store.patch_if("memory", id, "status", &json!("active"), &json!({
+                "status": "archived",
+                "compressedInto": summary_id,
+                "compressedAt": now.to_rfc3339(),
+                "archiveReason": "extractive compression; original evidence preserved",
+            })).is_some() {
+                archived += 1;
+            }
         }
     }
-    (archived, ids)
+    eligible.sort();
+    (archived, eligible)
 }
 
 /// Runs evidence-driven model-free maintenance independently for each bot.
