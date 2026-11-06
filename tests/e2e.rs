@@ -1183,16 +1183,25 @@ fn scheduled_backup_creates_a_snapshot_without_a_request() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(snapshots > 0, "scheduler did not create an encrypted snapshot");
-    let offsite_files = std::fs::read_dir(&offsite)
-        .map(|entries| {
-            entries
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| {
-                    entry.path().extension().and_then(|value| value.to_str()) == Some("enc")
-                })
-                .count()
-        })
-        .unwrap_or(0);
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let mut offsite_files = 0;
+    while Instant::now() < deadline {
+        offsite_files = std::fs::read_dir(&offsite)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .filter(|entry| {
+                        entry.path().extension().and_then(|value| value.to_str())
+                            == Some("enc")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        if offsite_files > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     assert!(offsite_files > 0, "offsite copy was not created");
     let _ = std::fs::remove_dir_all(offsite);
 }

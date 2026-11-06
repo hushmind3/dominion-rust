@@ -1908,6 +1908,17 @@ async fn attempt_model_adaptation(
         );
         prompt.push_str(&json!(examples).to_string());
     }
+    if let Some(principles) = crate::engine::principle::context_block(
+        state,
+        request.agent_id.as_deref(),
+        &model,
+        tool,
+        error,
+        Some(execution_id),
+    ) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&principles);
+    }
     let mut attempt_prompt = prompt.clone();
     let mut adaptation = None;
     let mut last_error = String::new();
@@ -4191,6 +4202,13 @@ pub(super) fn finalize_execution(
         growth_record["agentId"] = json!(agent_id);
         let _ = crate::engine::agent_growth::record(state, &growth_record);
     }
+    // Close the principle loop before learning new ones: a used principle
+    // gains a supporting case or counterexample for this run.
+    let _ = crate::engine::principle::finalize_usage(
+        state,
+        &record,
+        task_outcome == TaskOutcome::Succeeded,
+    );
     // A success experience requires Succeeded and a first-time finalization.
     if applied && task_outcome == TaskOutcome::Succeeded {
         // Use the same first-success-per-root marker as the original case
@@ -4198,6 +4216,7 @@ pub(super) fn finalize_execution(
         // evidence for conditional intervention rules.
         if record_success_experience(state, &record, execution_id, task_outcome).is_some() {
             let _ = crate::engine::experience::learn_verified_adaptations(state, &record);
+            let _ = crate::engine::principle::learn_from_execution(state, &record);
         }
     }
     mark_run_signals(state, &record);

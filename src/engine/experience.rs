@@ -565,7 +565,7 @@ pub fn context_block_with_manifest_at(
 
 /// A deliberately narrow, observable applicability feature. Unknown errors
 /// stay unknown: they must not be generalized into a reusable rule.
-fn failure_class(error: &str) -> Option<&'static str> {
+pub(crate) fn failure_class(error: &str) -> Option<&'static str> {
     let lower = error.to_lowercase();
     if lower.contains("permission denied") || lower.contains("access denied") {
         Some("permission_denied")
@@ -576,6 +576,11 @@ fn failure_class(error: &str) -> Option<&'static str> {
         Some("timeout")
     } else if lower.contains("rate limit") || lower.contains("too many requests") {
         Some("rate_limited")
+    } else if lower.contains("conflict") || lower.contains("stale")
+        || lower.contains("version mismatch") || lower.contains("sha mismatch")
+        || lower.contains("precondition") || lower.contains(" 409")
+    {
+        Some("stale_state")
     } else if lower.contains("invalid argument") || lower.contains("invalid params")
         || lower.contains("schema validation") {
         Some("invalid_inputs")
