@@ -151,6 +151,50 @@ pub(super) fn close_pending_approvals(state: &AppState, session_id: &str) {
     }
 }
 
+/// Expire orphaned approval records after the same 120-second window as the
+/// live waiter. This runs on startup and periodically; compare-and-swap keeps
+/// a concurrent owner decision from being overwritten.
+pub(super) fn expire_stale_approvals(state: &AppState) -> usize {
+    let now = chrono::Utc::now();
+    let mut expired = 0;
+    for record in state.store.all("approval") {
+        if record["status"] != "pending" {
+            continue;
+        }
+        let stale = match record["requestedAt"].as_str()
+            .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        {
+            Some(at) => (now - at.with_timezone(&chrono::Utc))
+                .to_std()
+                .is_ok_and(|elapsed| elapsed >= APPROVAL_TIMEOUT),
+            // Legacy records without a timestamp cannot retain an orphaned
+            // pending request when its original execution no longer runs.
+            None => record["runId"].as_str().is_none_or(|run_id| {
+                state.store.get("execution", run_id)
+                    .is_none_or(|execution| execution["status"] != "running")
+            }),
+        };
+        if !stale {
+            continue;
+        }
+        let Some(id) = record["id"].as_str() else { continue };
+        if let Some(saved) = state.store.patch_if(
+            "approval", id, "status", &json!("pending"), &json!({
+                "status":"expired",
+                "decision":"deny",
+                "resolvedAt":now.to_rfc3339(),
+                "reason":"approval timeout",
+            }),
+        ) {
+            state.approvals.lock().unwrap().remove(id);
+            state.bus.approval(&saved);
+            state.store.audit("approval.expired", json!({"approvalId":id,"runId":record["runId"]}));
+            expired += 1;
+        }
+    }
+    expired
+}
+
 pub(super) async fn request_approval(
     state: &AppState,
     tx: &UnboundedSender<Value>,
@@ -303,6 +347,37 @@ mod tests {
             "orphaned": orphaned,
             "decidedAt": decided,
         })
+    }
+
+    #[test]
+    fn stale_approvals_expire_once_while_fresh_and_approved_records_survive() {
+        let dir = std::env::temp_dir().join(format!("dominion-approval-expire-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = crate::config::Config {
+            port:0, data_dir:dir.clone(), web_dir:dir.join("web"), workspace:dir.clone(),
+        };
+        let state = AppState::new(config,
+            crate::db::Store::open(&dir.join("store.sqlite")).unwrap(),
+            Vault::open(&dir.join("keys.json")));
+        let old = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        let fresh = chrono::Utc::now().to_rfc3339();
+        for (id, status, requested_at) in [
+            ("old", "pending", old.as_str()),
+            ("fresh", "pending", fresh.as_str()),
+            ("decided", "approved", old.as_str()),
+        ] {
+            state.store.put("approval", &json!({
+                "id":id, "status":status, "runId":"old-run",
+                "requestedAt":requested_at,
+            }));
+        }
+        assert_eq!(expire_stale_approvals(&state), 1);
+        assert_eq!(state.store.get("approval","old").unwrap()["status"], "expired");
+        assert_eq!(state.store.get("approval","old").unwrap()["decision"], "deny");
+        assert_eq!(state.store.get("approval","fresh").unwrap()["status"], "pending");
+        assert_eq!(state.store.get("approval","decided").unwrap()["status"], "approved");
+        assert_eq!(expire_stale_approvals(&state), 0, "no second expiration");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
