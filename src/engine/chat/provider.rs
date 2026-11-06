@@ -253,6 +253,21 @@ fn fixed_prompt_chars(messages: &[Value]) -> usize {
 
 /// Count serialized JSON string characters (without the surrounding quotes).
 /// Escaping matters for structured tool results containing JSON or newlines.
+fn normalize_assistant_reasoning(messages: &mut [Value], required: bool) {
+    for message in messages {
+        if message["role"] != "assistant" {
+            continue;
+        }
+        if required {
+            if !message["reasoning_content"].is_string() {
+                message["reasoning_content"] = json!("");
+            }
+        } else if let Some(map) = message.as_object_mut() {
+            map.remove("reasoning_content");
+        }
+    }
+}
+
 fn escaped_content_chars(text: &str) -> usize {
     text.chars().map(|ch| match ch {
         '"' | '\\' | '\n' | '\r' | '\t' | '\u{0008}' | '\u{000c}' => 2,
@@ -530,17 +545,12 @@ async fn stream_completion_once(
             first_system["content"] = json!(format!("{existing}\n\n{manual}"));
         }
     }
-    for message in &mut provider_messages {
-        if message["role"] == "assistant" {
-            if provider.reasoning_protocol == "deepseek" {
-                if message.get("reasoning_content").is_none() {
-                    message["reasoning_content"] = json!("");
-                }
-            } else if let Some(map) = message.as_object_mut() {
-                map.remove("reasoning_content");
-            }
-        }
-    }
+    // DeepSeek and Reflection require `reasoning_content` on every earlier
+    // assistant message. Most other OpenAI-compatible endpoints reject
+    // unknown fields, so only send it where the provider requires it.
+    let requires_reasoning_content = provider.reasoning_protocol == "deepseek"
+        || provider.base_url.contains("api.reflection.ai");
+    normalize_assistant_reasoning(&mut provider_messages, requires_reasoning_content);
     let mut body = json!({
         "model": provider.model,
         "messages": provider_messages,
@@ -1068,6 +1078,22 @@ async fn stream_anthropic_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reflection_requires_reasoning_content_on_assistant_history() {
+        let mut messages = vec![
+            json!({"role":"system","content":"s"}),
+            json!({"role":"assistant","content":"a"}),
+            json!({"role":"assistant","content":"b","reasoning_content":"kept"}),
+            json!({"role":"user","content":"u"}),
+        ];
+        normalize_assistant_reasoning(&mut messages, true);
+        assert_eq!(messages[1]["reasoning_content"], "", "{messages:?}");
+        assert_eq!(messages[2]["reasoning_content"], "kept", "{messages:?}");
+        assert!(messages[0].get("reasoning_content").is_none());
+        normalize_assistant_reasoning(&mut messages, false);
+        assert!(messages[1].get("reasoning_content").is_none(), "{messages:?}");
+    }
 
     #[test]
     fn local_chat_template_never_receives_openai_reasoning_effort() {
