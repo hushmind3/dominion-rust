@@ -400,6 +400,69 @@ pub fn forget_sweep(store: &Store) -> usize {
     archived
 }
 
+
+/** Non-destructive memory compaction. Only exact, unkeyed facts/lessons from
+ * the same scoped source are coalesced. Original evidence remains readable in
+ * archived records and can be restored without a model call. */
+pub fn compact_sweep(store: &Store) -> usize {
+    let algorithm = active_kernel(store, "memory.compaction");
+    let kernel = algorithm["implementation"].as_str()
+        .or_else(|| algorithm["variant"].as_str())
+        .unwrap_or("exact");
+    if kernel == "never" {
+        return 0;
+    }
+    let mut records = store.all("memory").into_iter()
+        .filter(|record| record["status"].as_str() == Some("active")
+            && record["key"].is_null()
+            && matches!(record["type"].as_str(), Some("fact" | "lesson")))
+        .collect::<Vec<_>>();
+    // Keep stronger, better-evidenced memories. IDs make equal-score
+    // comparisons deterministic even when SQLite iteration order changes.
+    records.sort_by(|left, right| {
+        let importance = |record: &Value| {
+            record["importance"].as_f64().unwrap_or(0.5).clamp(0.0, 1.0)
+        };
+        importance(right).total_cmp(&importance(left))
+            .then_with(|| {
+                right["sourceMessageIds"].as_array().map(Vec::len).unwrap_or(0)
+                    .cmp(&left["sourceMessageIds"].as_array().map(Vec::len).unwrap_or(0))
+            })
+            .then_with(|| right["createdAt"].as_str().unwrap_or("")
+                .cmp(left["createdAt"].as_str().unwrap_or("")))
+            .then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
+    });
+    let mut retained = std::collections::HashMap::<String, String>::new();
+    let mut archived = 0usize;
+    for record in records {
+        let Some(id) = record["id"].as_str() else { continue };
+        let Some(text) = record["text"].as_str() else { continue };
+        // Deliberately do not collapse punctuation or semantic differences.
+        // It is safer to miss a duplicate than lose a distinct instruction.
+        let canonical = text.split_whitespace().collect::<Vec<_>>()
+            .join(" ").to_lowercase();
+        if canonical.is_empty() { continue; }
+        let key = json!([
+            record["partitionKey"], record["scope"], record["agentId"],
+            record["sessionId"], record["sourceAuthorKey"], record["type"],
+            canonical
+        ]).to_string();
+        if let Some(keeper) = retained.get(&key) {
+            if store.patch_if("memory", id, "status", &json!("active"), &json!({
+                "status": "archived",
+                "compactedInto": keeper,
+                "compactedAt": chrono::Utc::now().to_rfc3339(),
+                "archiveReason": "exact duplicate within a memory scope"
+            })).is_some() {
+                archived += 1;
+            }
+        } else {
+            retained.insert(key, id.to_string());
+        }
+    }
+    archived
+}
+
 pub fn context_block(store: &Store, scope: &MemoryScope, query: &str) -> Option<String> {
     context_block_with_manifest(store, scope, query).0
 }
@@ -1080,6 +1143,43 @@ mod memory_algorithm_tests {
         assert_eq!(content_revision(&before), content_revision(&after));
         context_block_with_manifest(&db, &scope, "다른 질문");
         assert_eq!(db.get("memory", "used-memory").unwrap()["uses"], 2);
+    }
+
+
+    #[test]
+    fn exact_memory_compaction_preserves_the_strongest_and_keeps_evidence() {
+        let db = store();
+        let scope = scope(&db, "s", "a");
+        algorithm(&db, "compact-exact", "memory.compaction", "exact", json!({}));
+        for (id, importance, count) in [("weak", 0.1, 1), ("strong", 0.9, 2)] {
+            db.put("memory", &json!({
+                "id":id, "text":"파일 오류를 먼저 확인", "type":"lesson",
+                "scope":"agent","agentId":"a","sessionId":"s",
+                "partitionKey":scope.partition_key,
+                "importance":importance,"status":"active",
+                "sourceMessageIds":vec!["evidence";count],
+                "createdAt":"2026-01-01T00:00:00Z"
+            }));
+        }
+        db.put("memory", &json!({
+            "id":"different","text":"파일 오류 확인 후 재시도", "type":"lesson",
+            "scope":"agent","agentId":"a","sessionId":"s",
+            "partitionKey":scope.partition_key,"importance":0.5,"status":"active"
+        }));
+        assert_eq!(compact_sweep(&db), 1);
+        assert_eq!(compact_sweep(&db), 0);
+        assert_eq!(db.get("memory", "strong").unwrap()["status"], "active");
+        let weak = db.get("memory", "weak").unwrap();
+        assert_eq!(weak["status"], "archived");
+        assert_eq!(weak["compactedInto"], "strong");
+        assert!(weak["sourceMessageIds"].is_array(), "source evidence remains stored");
+        assert!(retrieve(&db, &scope, "파일 오류를 먼저 확인", 10)
+            .iter().all(|row| row["id"] != "weak"));
+        assert_eq!(db.get("memory", "different").unwrap()["status"], "active");
+        let mut active = db.get("algorithm", "compact-exact").unwrap();
+        active["implementation"] = json!("never");
+        db.put("algorithm", &active);
+        assert_eq!(compact_sweep(&db), 0);
     }
 
     #[test]
