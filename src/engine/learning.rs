@@ -288,6 +288,60 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         scope.agent_id.as_deref(),
         false,
     );
+    // Automatic learning is model-free by default. Deterministic distillation
+    // already stores preferences, corrections and failed->alternative lessons;
+    // calling an LLM here only burns local GPU/CPU and is never model-weight
+    // training. Semantic extraction stays opt-in via input.semantic=true.
+    if input["semantic"].as_bool() != Some(true) {
+        let mut result = json!({
+            "sessionId": session_id,
+            "agentId": scope.agent_id,
+            "memories": deterministic["memories"],
+            "lessons": deterministic["lessons"],
+            "skill": false,
+            "rejected": 0,
+            "items": [],
+            "deterministicDistill": deterministic,
+            "learningProvider": Value::Null,
+            "learningModel": Value::Null,
+            "modelCalls": 0,
+            "reason": "deterministic learning; no model call",
+        });
+        let consolidation = crate::engine::experience::consolidate(state);
+        result["experienceConsolidation"] = consolidation;
+        state
+            .store
+            .put(
+                "learning_checkpoint",
+                &json!({
+                    "id":checkpoint_id(&scope),"sessionId":session_id,"agentId":scope.agent_id,
+                    "partitionKey":scope.partition_key,"throughMessageId":snapshot_last_id,
+                    "updatedAt":chrono::Utc::now().to_rfc3339(),
+                }),
+            )
+            .ok_or("학습 체크포인트 저장에 실패했습니다.")?;
+        state.store.audit(
+            "learning.completed",
+            json!({
+                "sessionId":session_id,"agentId":scope.agent_id,
+                "throughMessageId":snapshot_last_id,"result":result,
+                "deterministicOnly":true,
+            }),
+        );
+        let feedback = json!({
+            "id":format!("{}:{snapshot_last_id}",context.job_id),
+            "type":"learning_feedback","source":"learn","sessionId":session_id,
+            "agentId":scope.agent_id,"inserted":result["memories"],"rejected":0,
+            "skill":false,"items":[],"watermark":snapshot_last_id,
+            "jobId":context.job_id,"at":chrono::Utc::now().to_rfc3339(),
+            "effect":"deterministic memory learning; no model weight update",
+        });
+        if let Some(saved) = state.store.put("learning_feedback", &feedback) {
+            state.bus.emit(saved);
+        }
+        context.patch(json!({"result":result}));
+        return Ok(result);
+    }
     let completion = llm::complete_with_fallback(state,&preferred_provider,&preferred_model,
         "너는 증거 기반 학습기다. 아래 messages에서 사용자가 명시한 선호·사실·결정을 추출한다. assistant 발언은 근거로 쓰지 않는다. 각 기억은 반드시 해당 user 메시지의 id와, 그 메시지 내용에서 띄어쓰기까지 그대로 복사한 evidenceQuote를 포함한다. 인용이 정확하지 않으면 저장하지 않는다. JSON 하나만 출력한다. 예시 형식: {\"memories\":[{\"text\":\"사용자는 앞으로 답변을 한국어로만 받길 원한다\",\"type\":\"preference\",\"importance\":0.8,\"key\":\"answer-language\",\"sourceMessageIds\":[\"u1\"],\"evidenceQuote\":\"앞으로 답변은 항상 한국어로만 해\"}],\"skill\":null,\"strategies\":[],\"toolPolicies\":[],\"harnessProposal\":null}. 위 예시는 형식 설명이다. 실제 messages의 id와 원문을 사용하라. 추출할 것이 없으면 memories를 빈 배열로 둔다.",
         &json!({"messages":transcript,"existingFactKeys":existing_keys}).to_string()).await;
@@ -936,7 +990,7 @@ mod tests {
             &json!({"callId":"failure","runId":"exec","status":"failed"}),
         );
         let context = JobContext::new(state.clone(), "unit-learning-job".into());
-        let first_job = json!({"input":{"sessionId":"s","agentId":"a","providerId":"p","throughMessageId":"failed"}});
+        let first_job = json!({"input":{"sessionId":"s","agentId":"a","providerId":"p","throughMessageId":"failed","semantic":true}});
         let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
         let lock_id = format!("learning:{}", checkpoint_id(&scope));
         assert!(state.begin_session(&lock_id));
@@ -975,7 +1029,7 @@ mod tests {
         );
         assert_eq!(mock.requests.lock().unwrap().len(), 1);
         state.store.write_message(&json!({"id":"u2","session_id":"s","role":"user","agent_id":"a","content":"이제 답변은 영어로 작성해"}));
-        let second_job = json!({"input":{"sessionId":"s","agentId":"a","providerId":"p","throughMessageId":"u2"}});
+        let second_job = json!({"input":{"sessionId":"s","agentId":"a","providerId":"p","throughMessageId":"u2","semantic":true}});
         // A message arriving after the snapshot must wait for a later job.
         state.store.write_message(&json!({"id":"future","session_id":"s","role":"user","agent_id":"a","content":"이 미래 메시지는 아직 학습하면 안 됨"}));
         assert_eq!(run(&context, &second_job).await.unwrap()["memories"], 1);
@@ -991,7 +1045,7 @@ mod tests {
                 .unwrap()["status"],
             "superseded"
         );
-        let invalid_job = json!({"input":{"sessionId":"s","agentId":"a","providerId":"p","throughMessageId":"future"}});
+        let invalid_job = json!({"input":{"sessionId":"s","agentId":"a","providerId":"p","throughMessageId":"future","semantic":true}});
         assert!(run(&context, &invalid_job).await.is_err());
         assert_eq!(
             state
@@ -1037,5 +1091,33 @@ mod tests {
             page.last().unwrap()["id"].as_str()
         );
         assert_ne!(through.as_deref(), Some("m9"));
+    }
+
+    #[tokio::test]
+    async fn automatic_learning_never_calls_a_model() {
+        let (state, dir) = state();
+        state.store.put("session", &json!({"id":"s","agentId":"a"}));
+        state.store.write_message(&json!({
+            "id":"u1","session_id":"s","role":"user","agent_id":"a",
+            "content":"앞으로 답변은 항상 한국어로만 해"
+        }));
+        let context = JobContext::new(state.clone(), "unit-auto-learn".into());
+        let result = run(
+            &context,
+            &json!({"input":{"sessionId":"s","agentId":"a","automatic":true}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["modelCalls"], 0, "{result}");
+        assert!(result["learningModel"].is_null(), "{result}");
+        assert!(
+            result["memories"].as_u64().unwrap_or(0) >= 1,
+            "deterministic distillation found nothing: {result}"
+        );
+        assert_eq!(state.store.all("learning_feedback").len(), 1);
+        assert!(state.store.all("memory").iter().any(|memory| {
+            memory["text"].as_str().unwrap_or("").contains("한국어")
+        }));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
