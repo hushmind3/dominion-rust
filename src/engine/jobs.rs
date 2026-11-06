@@ -226,6 +226,9 @@ pub fn recover(state: &AppState) {
             state.store.put("execution_operation", &operation);
         }
     }
+    // After interrupted executions have been recorded, expire durable approvals
+    // that outlived their live waiter before wake decisions are made.
+    crate::engine::chat::expire_stale_approvals(state);
 }
 
 /// Starts the durable job worker plus the automation scheduler.
@@ -292,6 +295,9 @@ pub fn start(state: AppState) {
         loop {
             tokio::time::sleep(Duration::from_secs(30)).await;
             schedule_automations(&state);
+            // A process restart removes in-memory approval timers. The persisted
+            // deadline still expires automatically during normal operation.
+            crate::engine::chat::expire_stale_approvals(&state);
         }
     });
 
