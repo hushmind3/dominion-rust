@@ -2003,6 +2003,47 @@ fn the_recovery_slot_changes_retry_behavior_only_after_a_valid_experiment() {
 }
 
 #[test]
+fn reflection_provider_is_explicit_and_exclusive() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let first = app.post(
+        "/api/providers",
+        &json!({"name":"teacher-a","baseUrl":"http://127.0.0.1:9/v1","model":"model-a","learning":true,"enabled":true}),
+    );
+    assert_eq!(first["learning"], true, "{first}");
+    assert_eq!(first["model"], "model-a", "{first}");
+    let first_id = first["id"].as_str().unwrap().to_string();
+    let second = app.post(
+        "/api/providers",
+        &json!({"name":"teacher-b","baseUrl":"http://127.0.0.1:9/v1","model":"model-b","learning":true,"enabled":true}),
+    );
+    assert_eq!(second["learning"], true, "{second}");
+    let second_id = second["id"].as_str().unwrap().to_string();
+    let providers = app.get("/api/providers");
+    let items = providers.as_array().unwrap();
+    let a = items.iter().find(|p| p["id"] == first_id.as_str()).unwrap();
+    let b = items.iter().find(|p| p["id"] == second_id.as_str()).unwrap();
+    assert_eq!(a["learning"], false, "old reflection provider was not cleared: {providers}");
+    assert_eq!(b["learning"], true, "{providers}");
+    assert_eq!(b["model"], "model-b", "{providers}");
+
+    let response = app
+        .client
+        .post(format!("{}/api/providers", app.base))
+        .json(&json!({"name":"broken","baseUrl":"http://127.0.0.1:9/v1","learning":true}))
+        .send()
+        .unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        400,
+        "a reflection provider without a model must be rejected"
+    );
+}
+
+#[test]
 fn secret_key_rotation_preserves_provider_secrets_and_restores() {
     let _serial = serial();
     let (port, _) = scripted_provider(|_| {

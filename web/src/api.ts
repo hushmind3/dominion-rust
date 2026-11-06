@@ -1,5 +1,5 @@
 export type RecordItem = {id:string;name?:string;createdAt?:string;updatedAt?:string;[key:string]:any}
-export type Provider = RecordItem & {name:string;baseUrl:string;kind:string;enabled:boolean;hasKey?:boolean}
+export type Provider = RecordItem & {name:string;baseUrl:string;kind:string;enabled:boolean;hasKey?:boolean;model?:string;learning?:boolean}
 export type Agent = RecordItem & {name:string;description?:string;systemPrompt:string;providerId:string;model:string;color?:string;aliases?:string[];avatarUrl?:string;personaSource?:string;sourceProfile?:string;role?:string}
 export type ChatMessage = {id:string;session_id:string;role:string;content:string;reasoning?:string;agent_id?:string;tool_calls?:any[];tool_call_id?:string;metadata?:{authorKind?:string;roomId?:string;replyToMessageId?:string;executionId?:string;[key:string]:unknown};created_at:string}
 export type ChatSession = RecordItem & {title:string;agentId:string;providerId?:string;model?:string;roomId?:string}
