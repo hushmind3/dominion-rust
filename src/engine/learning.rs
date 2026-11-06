@@ -282,10 +282,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     existing_keys.sort_by(|a, b| a["key"].as_str().cmp(&b["key"].as_str()));
     let (preferred_provider, preferred_model) = llm::learning_route(state)
         .unwrap_or_else(|| (provider_id.to_string(), model.to_string()));
-    let deterministic = crate::engine::distill::distill_session(
+    let deterministic = crate::engine::distill::distill_incremental(
         state,
         session_id,
         scope.agent_id.as_deref(),
+        false,
     );
     let completion = llm::complete_with_fallback(state,&preferred_provider,&preferred_model,
         "너는 증거 기반 학습기다. 아래 messages에서 사용자가 명시한 선호·사실·결정을 추출한다. assistant 발언은 근거로 쓰지 않는다. 각 기억은 반드시 해당 user 메시지의 id와, 그 메시지 내용에서 띄어쓰기까지 그대로 복사한 evidenceQuote를 포함한다. 인용이 정확하지 않으면 저장하지 않는다. JSON 하나만 출력한다. 예시 형식: {\"memories\":[{\"text\":\"사용자는 앞으로 답변을 한국어로만 받길 원한다\",\"type\":\"preference\",\"importance\":0.8,\"key\":\"answer-language\",\"sourceMessageIds\":[\"u1\"],\"evidenceQuote\":\"앞으로 답변은 항상 한국어로만 해\"}],\"skill\":null,\"strategies\":[],\"toolPolicies\":[],\"harnessProposal\":null}. 위 예시는 형식 설명이다. 실제 messages의 id와 원문을 사용하라. 추출할 것이 없으면 memories를 빈 배열로 둔다.",

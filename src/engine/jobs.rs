@@ -246,7 +246,7 @@ pub fn retry_failed_learning(state: &AppState) -> usize {
         let Some(id) = job["id"].as_str() else {
             continue;
         };
-        let delay = 60i64.saturating_mul(attempts.max(1) as i64);
+        let delay = 300i64.saturating_mul(attempts.max(1) as i64);
         let available = chrono::Utc::now() + chrono::Duration::seconds(delay);
         if let Some(saved) = state.store.patch_if(
             "job",
@@ -300,6 +300,7 @@ pub fn start(state: AppState) {
             tokio::time::sleep(Duration::from_secs(300)).await;
             retry_failed_learning(&maintenance_state);
             crate::engine::agent_growth::sweep(&maintenance_state);
+            crate::engine::distill::sweep(&maintenance_state);
         }
     });
 }
