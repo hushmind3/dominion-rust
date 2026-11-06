@@ -286,6 +286,84 @@ pub fn retrieve(state: &AppState, scope: &MemoryScope, query: &str, limit: usize
     retrieve_with_execution(state, scope, query, limit, None)
 }
 
+
+/* Hybrid reranker uses corpus-weighted words plus Korean/spacing-resistant
+ * character n-grams. It runs entirely on stored experience records and makes
+ * no model or embedding request. This is a fuzzy lexical kernel, not a
+ * substitute for a semantic embedding index. */
+fn hybrid_terms(text: &str) -> HashSet<String> {
+    let mut result = HashSet::new();
+    let lower = text.to_lowercase();
+    for token in lower.split(|ch: char| !ch.is_alphanumeric()) {
+        let chars = token.chars().collect::<Vec<_>>();
+        if chars.len() >= 2 {
+            result.insert(format!("w:{token}"));
+            if chars.iter().any(|ch| ('가'..='힣').contains(ch)) {
+                for pair in chars.windows(2) {
+                    result.insert(format!("g:{}", pair.iter().collect::<String>()));
+                }
+            }
+        }
+    }
+    // Collapse whitespace/punctuation so "데이터베이스" also finds
+    // "데이터 베이스"; unlike substring matching, record both boundaries.
+    let compact = normalize(text);
+    let chars = compact.chars().collect::<Vec<_>>();
+    for window in chars.windows(3) {
+        result.insert(format!("c:{}", window.iter().collect::<String>()));
+    }
+    result
+}
+
+fn balanced_rerank(query: &str, cases: &[Value], failure_boost: f64) -> Vec<(f64, Value)> {
+    let query_terms = hybrid_terms(query);
+    if query_terms.is_empty() {
+        return Vec::new();
+    }
+    let documents = cases.iter().map(|record| {
+        let body = format!(
+            "{} {} {}",
+            record["signature"].as_str().unwrap_or(""),
+            record["request"].as_str().unwrap_or(""),
+            record["lesson"].as_str().unwrap_or("")
+        );
+        hybrid_terms(&body)
+    }).collect::<Vec<_>>();
+    let mut document_frequency: HashMap<&str, usize> = HashMap::new();
+    for terms in &documents {
+        for term in terms {
+            if query_terms.contains(term) {
+                *document_frequency.entry(term.as_str()).or_default() += 1;
+            }
+        }
+    }
+    let corpus = documents.len() as f64;
+    cases.iter().zip(documents.iter()).filter_map(|(record, terms)| {
+        let shared = query_terms.intersection(terms).collect::<Vec<_>>();
+        if shared.is_empty() {
+            return None;
+        }
+        let evidence = shared.iter().map(|term| {
+            let df = *document_frequency.get(term.as_str()).unwrap_or(&0) as f64;
+            let idf = (1.0 + (corpus - df + 0.5) / (df + 0.5)).ln();
+            let weight = if term.starts_with("w:") { 2.0 }
+                else if term.starts_with("g:") { 0.7 } else { 0.5 };
+            idf * weight
+        }).sum::<f64>();
+        // Normalization prevents huge stored lessons from dominating a query.
+        let coverage = shared.len() as f64 / query_terms.len().max(1) as f64;
+        let size_penalty = (terms.len().max(1) as f64).sqrt();
+        let frequency = (1.0 + record["occurrences"].as_u64().unwrap_or(1) as f64).ln();
+        let failure = if record["outcome"].as_str() == Some("failure") {
+            failure_boost.clamp(0.0, 4.0) * 0.15
+        } else {
+            0.15
+        };
+        Some((evidence / size_penalty + coverage * 4.0 + frequency * 0.10 + failure,
+              record.clone()))
+    }).collect()
+}
+
 pub fn retrieve_with_execution(
     state: &AppState,
     scope: &MemoryScope,
@@ -307,33 +385,34 @@ pub fn retrieve_with_execution(
     if query_tokens.is_empty() {
         return Vec::new();
     }
-    let mut scored = Vec::new();
-    for record in state.store.all("experience") {
-        if record["status"].as_str() != Some("active") || !visible(&record, scope) {
-            continue;
+    let kernel = retrieval.as_ref()
+        .and_then(|algorithm| algorithm["implementation"].as_str())
+        .unwrap_or("lexical");
+    let candidates = state.store.all("experience").into_iter()
+        .filter(|record| record["status"].as_str() == Some("active") && visible(record, scope))
+        .collect::<Vec<_>>();
+    let mut scored = if kernel == "balanced" {
+        balanced_rerank(query, &candidates, failure_boost)
+    } else {
+        let mut legacy = Vec::new();
+        for record in candidates {
+            let haystack = format!(
+                "{} {} {}",
+                record["signature"].as_str().unwrap_or(""),
+                record["request"].as_str().unwrap_or(""),
+                record["lesson"].as_str().unwrap_or("")
+            ).to_lowercase();
+            let overlap = query_tokens.iter()
+                .filter(|token| haystack.contains(token.as_str())).count();
+            if overlap == 0 {
+                continue;
+            }
+            let boost = if record["outcome"] == "failure" { failure_boost } else { 1.0 };
+            let occurrences = record["occurrences"].as_u64().unwrap_or(1) as f64;
+            legacy.push((overlap as f64 * 3.0 + boost + occurrences * 0.1, record));
         }
-        let haystack = format!(
-            "{} {} {}",
-            record["signature"].as_str().unwrap_or(""),
-            record["request"].as_str().unwrap_or(""),
-            record["lesson"].as_str().unwrap_or("")
-        )
-        .to_lowercase();
-        let overlap = query_tokens
-            .iter()
-            .filter(|token| haystack.contains(token.as_str()))
-            .count();
-        if overlap == 0 {
-            continue;
-        }
-        let boost = if record["outcome"] == "failure" {
-            failure_boost
-        } else {
-            1.0
-        };
-        let occurrences = record["occurrences"].as_u64().unwrap_or(1) as f64;
-        scored.push((overlap as f64 * 3.0 + boost + occurrences * 0.1, record));
-    }
+        legacy
+    };
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let selected = scored
         .into_iter()
@@ -1240,6 +1319,57 @@ mod tests {
         )
         .unwrap();
         assert!(!retrieve(&state, &discord, "파일 작성", 5).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+
+#[cfg(test)]
+mod hybrid_retrieval_tests {
+    use super::*;
+    use crate::{config::Config, db::Store, vault::Vault};
+
+    #[test]
+    fn balanced_kernel_finds_korean_spacing_variants_without_an_llm() {
+        let dir = std::env::temp_dir()
+            .join(format!("dominion-hybrid-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {port:0, data_dir:dir.clone(),
+            web_dir:dir.join("web"), workspace:dir.clone()};
+        let store = Store::open(&config.db_path()).unwrap();
+        let vault = Vault::open(&config.key_path());
+        let state = AppState::new(config, store, vault);
+        state.store.put("session", &json!({"id":"hybrid-session","agentId":"agent-a"}));
+        let scope = MemoryScope::for_session(&state.store, "hybrid-session", Some("agent-a"));
+        state.store.put("experience", &json!({
+            "id":"hybrid-1","status":"active","scope":"agent",
+            "partitionKey":scope.partition_key,"agentId":"agent-a",
+            "request":"데이터 베이스 백업", "signature":"데이터 베이스 백업",
+            "lesson":"백업 파일을 검증한다","outcome":"success","occurrences":1
+        }));
+        state.store.put("experience", &json!({
+            "id":"hybrid-2","status":"active","scope":"agent",
+            "partitionKey":scope.partition_key,"agentId":"agent-a",
+            "request":"비디오 렌더링", "signature":"비디오 렌더링",
+            "lesson":"프레임 레이트 확인","outcome":"failure","occurrences":5
+        }));
+        let lexical = retrieve(&state, &scope, "데이터베이스", 5);
+        assert!(lexical.is_empty(), "lexical must not pretend to be semantic");
+        crate::engine::algorithms::seed(&state);
+        for mut item in state.store.all("algorithm") {
+            if item["kind"] == "memory.retrieval" {
+                item["status"] = json!("disabled");
+                state.store.put("algorithm", &item);
+            }
+        }
+        state.store.put("algorithm", &json!({
+            "id":"balanced-test","kind":"memory.retrieval",
+            "status":"active","revision":"balanced-test",
+            "implementation":"balanced","parameters":{"failureBoost":2.0}
+        }));
+        let matches = retrieve(&state, &scope, "데이터베이스", 5);
+        assert_eq!(matches.len(), 1, "{matches:?}");
+        assert_eq!(matches[0]["id"], "hybrid-1");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
