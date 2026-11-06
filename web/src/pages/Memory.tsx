@@ -4,6 +4,7 @@ import {del, post, type Agent} from '../api'
 import {Button, TextInput, TextArea, SelectInput} from '../components/Primitives'
 import {Action, FormField, Headline, Notice, Panel, Subheading, useRemote} from '../components/UI'
 import {LearningRecords} from './memory/LearningRecords'
+import {GrowthDashboard} from './memory/Growth'
 
 type Memory={
  id:string;text:string;scope?:string;agentId?:string;sessionId?:string;partitionKey?:string;
@@ -86,6 +87,10 @@ export function MemoryPage(){
   <details className="mt-6 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] p-4" onToggle={event=>setShowRecords(event.currentTarget.open)}>
    <summary className="cursor-pointer font-semibold">경험, 개선안, 알고리즘과 실험 기록</summary>
    {showRecords&&<LearningRecords/>}
+  </details>
+  <details className="mt-3 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] p-4">
+   <summary className="cursor-pointer font-semibold">성장 · 전이 현황</summary>
+   <GrowthDashboard/>
   </details>
  </div>
 }

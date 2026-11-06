@@ -278,6 +278,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/executions/active", get(executions::active_executions))
         .route("/api/improvements", get(improvements::list))
         .route("/api/experience", get(experience::list))
+        .route("/api/transfer", get(experience::transfer))
         .route("/api/improvements/:id/:action", post(improvements::decide))
         .route("/api/executions/:id", get(executions::one))
         .route("/api/executions/:id/cancel", post(executions::cancel))
