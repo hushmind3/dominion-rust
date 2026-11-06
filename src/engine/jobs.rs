@@ -308,6 +308,7 @@ pub fn start(state: AppState) {
             crate::engine::agent_growth::sweep(&maintenance_state);
             crate::engine::distill::sweep(&maintenance_state);
             crate::engine::memory::forget_sweep(&maintenance_state.store);
+            crate::engine::memory::compact_sweep(&maintenance_state.store);
         }
     });
 }
