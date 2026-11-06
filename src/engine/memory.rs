@@ -2084,6 +2084,66 @@ mod regression_memory_visibility_tests {
     }
 
     #[test]
+    fn legacy_compressed_global_memories_regain_original_visibility() {
+        let (state, dir) = state();
+        for id in ["old-global-a", "old-global-b"] {
+            state.store.put("memory", &json!({
+                "id":id,"scope":"global","agentId":"original-bot",
+                "partitionKey":"local","type":"fact",
+                "status":"archived","compressedInto":"legacy-global",
+                "text":format!("global note {id}")
+            }));
+        }
+        state.store.put("memory", &json!({
+            "id":"legacy-global","source":"compression",
+            "scope":"agent","agentId":"global","partitionKey":"local",
+            "type":"lesson","status":"active",
+            "compressedFrom":["old-global-a","old-global-b"],
+            "text":"압축된 기억"
+        }));
+        assert_eq!(repair_legacy_compressions(&state.store), 1);
+        assert_eq!(repair_legacy_compressions(&state.store), 0);
+        let repaired = state.store.get("memory", "legacy-global").unwrap();
+        assert_eq!(repaired["scope"], "global");
+        assert_eq!(repaired["agentId"], "original-bot");
+        assert_eq!(repaired["type"], "fact");
+        assert!(visible(&repaired, &MemoryScope::for_session(
+            &state.store, "room-2", Some("other-bot")
+        )));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_mixed_scope_compression_restores_records_instead_of_leaking_them() {
+        let (state, dir) = state();
+        let room_one = json!(["room", "one"]).to_string();
+        let room_two = json!(["room", "two"]).to_string();
+        for (id, partition) in [("one-old", room_one.as_str()),
+                                ("two-old", room_two.as_str())] {
+            state.store.put("memory", &json!({
+                "id":id,"scope":"shared","agentId":"bot-a",
+                "partitionKey":partition,"type":"fact","importance":0.32,
+                "status":"archived","compressedInto":"legacy-mixed",
+                "text":format!("private memory {id}")
+            }));
+        }
+        state.store.put("memory", &json!({
+            "id":"legacy-mixed","source":"compression",
+            "scope":"agent","agentId":"global","partitionKey":"local",
+            "status":"active","compressedFrom":["one-old","two-old"],
+            "text":"unsafe shared summary"
+        }));
+        assert_eq!(repair_legacy_compressions(&state.store), 1);
+        assert_eq!(state.store.get("memory","legacy-mixed").unwrap()["status"], "archived");
+        for id in ["one-old","two-old"] {
+            let restored = state.store.get("memory", id).unwrap();
+            assert_eq!(restored["status"], "active");
+            assert!(restored["lastUsedAt"].is_string());
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn bm25_context_has_its_own_outcome_signal_even_when_turn_fails() {
         let (state, dir) = state();
         only_kernel(&state, "memory.rerank", "bm25");
