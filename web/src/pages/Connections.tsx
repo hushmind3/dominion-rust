@@ -2,7 +2,7 @@ import {DialogBackdrop,DialogPanel} from '../components/Dialog'
 import {StatusPill} from '../components/StatusPill'
 import {Button,TextInput,SelectInput} from '../components/Primitives'
 import {useEffect,useMemo,useState} from 'react'
-import {Activity,ArrowRight,Check,ChevronRight,Cloud,ExternalLink,Filter,Globe2,Github,KeyRound,Link2,LockKeyhole,MessageCircle,Plus,RadioTower,Search,Settings2,ShieldCheck,Trash2,UsersRound,X} from 'lucide-react'
+import {Activity,ArrowRight,Check,ChevronRight,Cloud,ExternalLink,Filter,Globe2,Github,KeyRound,Link2,LockKeyhole,MessageCircle,Plus,RadioTower,Search,Send,Settings2,ShieldCheck,Trash2,UsersRound,X} from 'lucide-react'
 import {del,openOAuth,post} from '../api'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
 
@@ -29,6 +29,7 @@ export function ConnectionsPage(){
  const installed=useMemo(()=>new Set(channels.value.map(x=>x.kind)),[channels.value]);
  const filtered=useMemo(()=>registry.value.filter(x=>(category==='all'||x.category===category)&&[x.name,x.id,x.description].join(' ').toLowerCase().includes(query.toLowerCase())),[registry.value,category,query]);
  const online=channels.value.filter(c=>active(c.status)).length;
+ const outbound=channels.value.filter(c=>c.status==='outbound_ready').length;
  const ready=registry.value.filter(x=>x.available).length;
  const openEditor=(entry:ChannelEntry,existing?:Channel)=>{
   if(!entry.available)return;
@@ -57,10 +58,11 @@ export function ConnectionsPage(){
  };
  return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
   <Headline eyebrow="CHANNEL & INTEGRATION HUB" title="연결할 수 있는 모든 세계." description="메신저는 카탈로그에서 자동 발견합니다. 설치된 드라이버와 실제 인증 상태를 따로 표시합니다." actions={<Action variant="secondary" onClick={()=>{void registry.reload();void channels.reload()}}><Activity size={16}/> 상태 새로고침</Action>}/>
-  <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
+  <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
    <div className="flex items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm"><span className="grid size-12 place-items-center rounded-xl bg-violet-50 text-violet-600"><Globe2 size={20}/></span><div><small>발견된 플랫폼</small><strong>{registry.value.length}</strong></div></div>
    <div className="flex items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm"><span className="grid size-12 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]"><RadioTower size={20}/></span><div><small>연결 코드 있음</small><strong>{ready}</strong></div></div>
    <div className="flex items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm"><span className="grid size-12 place-items-center rounded-xl bg-teal-50 text-teal-600"><Check size={20}/></span><div><small>연결됨</small><strong>{online}</strong></div></div>
+   <div className="flex items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm"><span className="grid size-12 place-items-center rounded-xl bg-sky-50 text-sky-600"><Send size={20}/></span><div><small>송신 준비</small><strong>{outbound}</strong></div></div>
   </div>
   <div className="mb-6 flex flex-wrap items-center gap-2 border-b border-[#E7E0D5] pb-3"><Button variant={view==='channels'?'primary':'ghost'} onClick={()=>setView('channels')}><RadioTower size={17}/> 메신저 · 채널 <b>{registry.value.length}</b></Button><Button variant={view==='accounts'?'primary':'ghost'} onClick={()=>setView('accounts')}><Link2 size={17}/> OAuth · 계정 <b>{accounts.value.length}</b></Button></div>
   {error&&<Notice message={error}/>}

@@ -800,6 +800,7 @@ async fn load_lmstudio(
                         "local": true,
                         "enabled": true,
                         "model": served,
+                        "toolMode": "native",
                         "description": "LM Studio MLX runtime managed by the Rust engine",
                     }),
                 );

@@ -37,3 +37,12 @@
 .room-approvals-stack{max-height:32vh;overflow:auto;margin-bottom:8px}.room-approvals-stack .room-approval:last-child{margin-bottom:0}
 
 @media(max-height:760px){.room-first-message>div:last-child{display:none}.room-empty-avatars{margin-bottom:14px}.room-first-message{padding:12px 10px}}
+
+.room-knowledge-list{display:grid;gap:9px;max-height:55vh;overflow:auto;margin-top:14px}
+.room-knowledge-item{border:1px solid #E9DFCF;background:#FBF7EF;border-radius:10px;padding:11px 13px}
+.room-knowledge-item.is-superseded{opacity:.55}
+.room-knowledge-head{display:flex;gap:6px;align-items:center;font-size:9px;color:#A18D6B;flex-wrap:wrap}
+.room-knowledge-head strong{font-size:10px;text-transform:uppercase;color:#8B6E45}
+.room-knowledge-head span{border:1px solid #E7DAC5;border-radius:4px;padding:1px 5px}
+.room-knowledge-item p{margin:6px 0;font-size:12px;line-height:1.7;color:#5F5445;white-space:pre-wrap;overflow-wrap:anywhere}
+.room-knowledge-item small{font-size:9px;color:#A3937C;overflow-wrap:anywhere}

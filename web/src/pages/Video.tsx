@@ -58,6 +58,12 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   setError('');
   try{await openOAuth('youtube')}catch(e){setError('YouTube 연결 실패: '+(e as Error).message)}
  }
+ const changeEngine=async(next:'native'|'comfyui')=>{
+  if(savingConfig)return;
+  setEngine(next);setSavingConfig(true);setError('');
+  try{await post('/api/video/config',{engine:next,comfyUrl:comfyUrl.trim()||video.value.config.comfyUrl});await video.reload()}
+  catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
+ }
  const saveComfy=async()=>{
   if(savingConfig)return;
   setSavingConfig(true);setError('');
@@ -117,7 +123,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    <div className="flex flex-wrap items-center justify-between gap-3">
     <div className="flex items-center gap-2"><Clapperboard size={18} className="text-[#C96442]"/><strong className="text-[13px] text-[#24211D]">영상 엔진</strong></div>
     <div className="flex flex-wrap items-center gap-2">
-     <SelectInput aria-label="영상 엔진" value={engine} onChange={e=>setEngine(e.target.value as 'native'|'comfyui')} className="!w-auto !text-[12px]"><option value="native">자막 카드 영상 (FFmpeg)</option><option value="comfyui">ComfyUI (로컬 · 무료)</option></SelectInput>
+     <SelectInput aria-label="영상 엔진" value={engine} onChange={e=>void changeEngine(e.target.value as 'native'|'comfyui')} disabled={savingConfig} className="!w-auto !text-[12px]"><option value="native">자막 카드 영상 (FFmpeg)</option><option value="comfyui">ComfyUI (로컬 · 무료)</option></SelectInput>
     </div>
    </div>
   </Panel>
