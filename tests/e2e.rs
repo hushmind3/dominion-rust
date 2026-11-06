@@ -378,8 +378,12 @@ fn a_room_greeting_gets_one_direct_reply_not_a_panel() {
     let system = captured[0]["messages"][0]["content"]
         .as_str()
         .unwrap_or("");
-    assert!(system.contains("first responder"), "{system}");
-    assert!(system.contains("do not invent a topic"), "{system}");
+    assert!(system.contains("Respond naturally"), "{system}");
+    assert!(system.contains("Give your own contribution only"), "{system}");
+    assert!(
+        !system.contains("If the owner only greets you"),
+        "the harness must not dictate the reply wording: {system}"
+    );
 }
 
 #[test]
