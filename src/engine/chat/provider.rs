@@ -674,21 +674,6 @@ mod tests {
         }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                Router::new()
-                    .route("/chat/completions", post(local_model))
-                    .with_state(observed.clone()),
-            ).await.unwrap()
-        });
-        // Keep a separate observer since the server owns its Arc.
-        // This test checks the entire HTTP payload, not only route selection.
-        server.abort();
-        drop(server);
-        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
         let app = Router::new().route("/chat/completions", post(local_model))
             .with_state(observed.clone());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
