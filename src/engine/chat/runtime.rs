@@ -619,6 +619,7 @@ async fn run_turn_body(
     let mut environment_version = 0u64;
     let mut adaptation_attempts = 0usize;
     let mut adaptation_failures = 0usize;
+    let mut tool_message_chars = 0usize;
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED);
 
@@ -1335,10 +1336,13 @@ async fn run_turn_body(
                     }));
                 }
             }
+            let remaining = 80_000usize.saturating_sub(tool_message_chars);
+            let bounded_content = clip(&tool_content, remaining.max(1_000));
+            tool_message_chars += bounded_content.chars().count();
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call.id,
-                "content": tool_content,
+                "content": bounded_content,
             }));
         }
 
@@ -2984,11 +2988,12 @@ async fn dispatch_tool_call(
         .ok_or("도구 수행 결과를 저장하지 못했습니다. 실행 기록을 확인하세요.")?;
     state.bus.record("execution_operation", &operation);
 
-    let tool_content = if compat {
-        clip(&result.to_string(), 6000)
-    } else {
-        result.to_string()
-    };
+    // The model message is bounded even in native mode. The full result stays
+    // in execution_operation as evidence.
+    let tool_content = clip(
+        &result.to_string(),
+        if compat { 6_000 } else { 20_000 },
+    );
     let saved = state
         .store
         .write_message(&json!({

@@ -283,6 +283,7 @@ pub fn distill_incremental(
 }
 
 /// Explicit rebuild: ignores the checkpoint but still deduplicates evidence.
+#[allow(dead_code)]
 pub fn distill_session(state: &AppState, session_id: &str, agent_id: Option<&str>) -> Value {
     distill_incremental(state, session_id, agent_id, true)
 }
