@@ -354,6 +354,16 @@ pub fn forget_sweep(store: &Store) -> usize {
     forget_sweep_kernel(store, &algorithm, None, false).0
 }
 
+/// Shared/global memories have one shared maintenance policy, rather than
+/// letting one participant's UCB archive records visible to other agents.
+fn maintenance_owner(record: &Value) -> &str {
+    if matches!(record["scope"].as_str(), Some("shared" | "global")) {
+        "global"
+    } else {
+        record["agentId"].as_str().unwrap_or("global")
+    }
+}
+
 /// Returns both changed-record count and the independently eligible evidence.
 /// owner=None is the legacy, whole-store wrapper; maintenance always supplies
 /// the agent whose memory is being evaluated.
@@ -372,7 +382,7 @@ fn forget_sweep_kernel(
     for record in store.all("memory") {
         if record["status"].as_str() != Some("active") { continue; }
         if owner.is_some_and(|agent| {
-            record["agentId"].as_str().unwrap_or("global") != agent
+            maintenance_owner(&record) != agent
         }) { continue; }
         if record["key"].is_string()
             || matches!(record["type"].as_str(),
@@ -420,7 +430,7 @@ fn compact_sweep_kernel(
             && record["key"].is_null()
             && matches!(record["type"].as_str(), Some("fact" | "lesson")))
         .filter(|record| owner.is_none_or(|agent| {
-            record["agentId"].as_str().unwrap_or("global") == agent
+            maintenance_owner(record) == agent
         }))
         .collect::<Vec<_>>();
     // Stronger, better-evidenced memories remain canonical.
@@ -473,7 +483,7 @@ fn compact_sweep_kernel(
 pub fn learning_sweep(state: &crate::state::AppState) -> usize {
     let owners = state.store.all("memory").into_iter()
         .filter(|record| record["status"].as_str() == Some("active"))
-        .map(|record| record["agentId"].as_str().unwrap_or("global").to_string())
+        .map(|record| maintenance_owner(&record).to_string())
         .collect::<BTreeSet<_>>();
     let mut evaluated = 0usize;
     for owner in owners {
