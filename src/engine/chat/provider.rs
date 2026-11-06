@@ -246,6 +246,68 @@ fn fixed_prompt_chars(messages: &[Value]) -> usize {
     }).sum::<usize>()
 }
 
+/// Count serialized JSON string characters (without the surrounding quotes).
+/// Escaping matters for structured tool results containing JSON or newlines.
+fn escaped_content_chars(text: &str) -> usize {
+    text.chars().map(|ch| match ch {
+        '"' | '\\' | '\n' | '\r' | '\t' | '\u{0008}' | '\u{000c}' => 2,
+        '\u{0000}'..='\u{001f}' => 6,
+        _ => 1,
+    }).sum()
+}
+
+/// Trim just the provider-visible copy, retaining the newest observations
+/// first. All raw results remain in the runtime/DB and are available when
+/// a larger context provider takes over a later round.
+fn clip_tool_for_provider(text: &str, allowed_encoded_chars: usize) -> String {
+    if escaped_content_chars(text) <= allowed_encoded_chars {
+        return text.to_owned();
+    }
+    const NOTICE: &str = "\n… [this model's context is full; see stored execution_operation]";
+    let notice_size = escaped_content_chars(NOTICE);
+    if allowed_encoded_chars < notice_size {
+        return if allowed_encoded_chars > 0 { "…".to_string() } else { String::new() };
+    }
+    let mut prefix = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let width = match ch {
+            '"' | '\\' | '\n' | '\r' | '\t' | '\u{0008}' | '\u{000c}' => 2,
+            '\u{0000}'..='\u{001f}' => 6,
+            _ => 1,
+        };
+        if used.saturating_add(width) > allowed_encoded_chars - notice_size {
+            break;
+        }
+        prefix.push(ch);
+        used += width;
+    }
+    prefix.push_str(NOTICE);
+    prefix
+}
+
+/// Prepare a different model's copy from the original, unabridged tool
+/// observations. No 6k/20k/80k magic limits or local/cloud distinction.
+fn fit_tool_context(provider: &ProviderRef, messages: &mut [Value], schema_chars: usize) {
+    let Some(tokens) = provider.context_tokens else { return };
+    let fixed = fixed_prompt_chars(messages)
+        .saturating_add(schema_chars)
+        .saturating_add(512);
+    let mut available = input_char_capacity(tokens, provider.max_output_tokens)
+        .saturating_sub(fixed);
+    // Preserve the most recent observation; old tool outputs get the
+    // remaining space, with each tool-call ID kept intact.
+    for message in messages.iter_mut().rev() {
+        if message["role"] != "tool" {
+            continue;
+        }
+        let Some(original) = message["content"].as_str() else { continue };
+        let clipped = clip_tool_for_provider(original, available);
+        available = available.saturating_sub(escaped_content_chars(&clipped));
+        message["content"] = json!(clipped);
+    }
+}
+
 async fn fallback_candidates(
     state: &AppState,
     primary: &ProviderRef,
@@ -259,7 +321,7 @@ async fn fallback_candidates(
     let compat_schema_chars = if tools.is_empty() {
         0
     } else {
-        super::protocol::tool_manual(tools, &request.input).await.chars().count()
+        escaped_content_chars(&super::protocol::tool_manual(tools, &request.input).await)
     };
     crate::engine::gateway::ordered_alternatives(state, &primary.id)
         .into_iter()
@@ -431,13 +493,22 @@ async fn stream_completion_once(
 ) -> Result<Completion, String> {
     let started = std::time::Instant::now();
     let compatible = provider.tool_mode == "compat";
-    let mut provider_messages = if convert_native_history {
-        compat_messages(messages)
+    let manual = if compatible && !tools.is_empty() {
+        Some(super::protocol::tool_manual(tools, &request.input).await)
     } else {
-        messages.to_vec()
+        None
     };
-    if compatible && !tools.is_empty() {
-        let manual = super::protocol::tool_manual(tools, &request.input).await;
+    let schema_chars = if let Some(text) = manual.as_deref() {
+        escaped_content_chars(text)
+    } else {
+        tools.iter().map(|tool| tool.to_string().chars().count()).sum::<usize>()
+    };
+    let mut provider_messages = messages.to_vec();
+    fit_tool_context(provider, &mut provider_messages, schema_chars);
+    if convert_native_history {
+        provider_messages = compat_messages(&provider_messages);
+    }
+    if let Some(manual) = manual {
         if let Some(first_system) = provider_messages.iter_mut()
             .find(|message| message["role"] == "system")
         {
@@ -668,6 +739,43 @@ async fn stream_completion_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_provider_receives_its_own_tool_window_from_full_evidence() {
+        let base = ProviderRef {
+            id:"local".into(), name:"local".into(), base_url:String::new(),
+            api_key:String::new(), model:"small".into(), tool_mode:"compat".into(),
+            reasoning_protocol:String::new(), local:true,
+            context_tokens:Some(4096), max_output_tokens:Some(512),
+        };
+        let original = vec![
+            json!({"role":"system","content":"working context"}),
+            json!({"role":"tool","tool_call_id":"old","content":"x".repeat(40_000)}),
+            json!({"role":"tool","tool_call_id":"latest","content":"y".repeat(9000)}),
+        ];
+        let mut local_messages = original.clone();
+        fit_tool_context(&base, &mut local_messages, 500);
+        let local_latest = local_messages[2]["content"].as_str().unwrap();
+        assert_eq!(local_latest.chars().count(), 9000, "most recent evidence wins");
+        assert!(local_messages[1]["content"].as_str().unwrap().chars().count() < 40_000);
+        assert_eq!(local_messages[1]["tool_call_id"], "old");
+
+        let mut api = base.clone();
+        api.context_tokens = Some(128_000);
+        api.local = false;
+        let mut api_messages = original.clone();
+        fit_tool_context(&api, &mut api_messages, 500);
+        assert_eq!(api_messages, original, "large API receives full evidence");
+        assert_eq!(original[1]["content"].as_str().unwrap().chars().count(), 40_000);
+    }
+
+    #[test]
+    fn json_escaped_tool_output_respects_provider_budget() {
+        let original = "\"\n\\세션".repeat(120);
+        let clipped = clip_tool_for_provider(&original, 160);
+        assert!(escaped_content_chars(&clipped) <= 160);
+        assert!(clipped.contains("stored execution_operation"));
+    }
 
     #[test]
     fn native_tool_history_can_be_replayed_to_a_compat_local_model() {
