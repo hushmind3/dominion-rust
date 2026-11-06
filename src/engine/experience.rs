@@ -958,8 +958,12 @@ pub fn record_rule_counterexamples(
     .and_then(|algorithm| algorithm["implementation"].as_str().map(str::to_string))
     .unwrap_or_else(|| "narrow".into());
     if mode == "disable" {
+        crate::engine::algorithms::mark_signal(
+            state, execution_id, "learning.counterexample", true,
+        );
         return;
     }
+    let mut changed = false;
     for hint in considered {
         let Some(id) = hint["id"].as_str() else { continue };
         let Some(mut rule) = state.store.get("experience_rule", id) else { continue };
@@ -1018,8 +1022,15 @@ pub fn record_rule_counterexamples(
         rule["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
         if let Some(saved) = state.store.put("experience_rule", &rule) {
             state.bus.record("experience_rule", &saved);
+            changed = true;
         }
     }
+    crate::engine::algorithms::mark_signal(
+        state,
+        execution_id,
+        "learning.counterexample",
+        changed,
+    );
 }
 
 /// Merges duplicates and archives the least useful cases. Called by the

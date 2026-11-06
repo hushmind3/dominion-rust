@@ -530,6 +530,20 @@ async fn run_turn_body(
     // native calls or the text-tool manual for whichever local/API model
     // actually handles each round, including after failover.
 
+    let discovered_tool_names = tool_definitions
+        .iter()
+        .filter_map(|definition| {
+            definition["function"]["name"]
+                .as_str()
+                .or_else(|| definition["name"].as_str())
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    if let Some(mut execution) = state.store.get("execution", execution_id) {
+        execution["discoveredTools"] = json!(discovered_tool_names);
+        execution["budgetChecked"] = json!(true);
+        state.store.put("execution", &execution);
+    }
     let native_tool_names = tool_definitions
         .iter()
         .filter_map(|definition| {
@@ -664,6 +678,7 @@ async fn run_turn_body(
 
     for round in 0..max_rounds {
         if !budget.charge_round() {
+            mark_budget_exhausted(state, execution_id);
             return Err("모델 라운드 예산을 초과했습니다.".into());
         }
         if budget.expired() {
@@ -677,6 +692,7 @@ async fn run_turn_body(
             return Err("실행 시간 제한(10분)을 초과했습니다.".into());
         }
         if metrics.lock().unwrap().tool_calls as usize >= max_tools {
+            mark_budget_exhausted(state, execution_id);
             return Err(format!(
                 "도구 호출 제한({max_tools}회)을 초과했습니다."
             ));
@@ -1834,6 +1850,17 @@ async fn attempt_model_adaptation(
         &before_observation,
         &result,
     );
+    if applicable_rules
+        .iter()
+        .any(|rule| rule["scope"].as_str() == Some("shared"))
+    {
+        crate::engine::algorithms::mark_signal(
+            state,
+            execution_id,
+            "multiagent.sharing",
+            tool_succeeded(&result),
+        );
+    }
     crate::engine::experience::record_rule_counterexamples(
         state, &applicable_rules, &selected, &result, execution_id,
     );
@@ -3940,6 +3967,13 @@ pub(super) fn finalize_execution(
 
 }
 
+fn mark_budget_exhausted(state: &AppState, execution_id: &str) {
+    if let Some(mut execution) = state.store.get("execution", execution_id) {
+        execution["budgetExhausted"] = json!(true);
+        state.store.put("execution", &execution);
+    }
+}
+
 fn mark_run_signals(state: &AppState, record: &Value) {
     let Some(execution_id) = record["id"].as_str() else {
         return;
@@ -3961,6 +3995,33 @@ fn mark_run_signals(state: &AppState, record: &Value) {
             crate::engine::algorithms::mark_signal(
                 state, execution_id, "strategy.selection", followed,
             );
+        }
+    }
+    if let Some(execution) = state.store.get("execution", execution_id) {
+        if execution["budgetChecked"].as_bool() == Some(true) {
+            crate::engine::algorithms::mark_signal(
+                state,
+                execution_id,
+                "execution.budget",
+                execution["budgetExhausted"].as_bool() != Some(true),
+            );
+        }
+        if let Some(available) = execution["discoveredTools"].as_array() {
+            let used = state
+                .store
+                .all("execution_operation")
+                .into_iter()
+                .filter(|operation| operation["runId"].as_str() == Some(execution_id))
+                .filter_map(|operation| operation["tool"].as_str().map(str::to_string))
+                .collect::<Vec<_>>();
+            if !used.is_empty() && !available.is_empty() {
+                let ok = used.iter().all(|tool| {
+                    available.iter().any(|name| name.as_str() == Some(tool.as_str()))
+                });
+                crate::engine::algorithms::mark_signal(
+                    state, execution_id, "tool.discovery", ok,
+                );
+            }
         }
     }
     if record["contextChecked"].as_bool() == Some(true) {
