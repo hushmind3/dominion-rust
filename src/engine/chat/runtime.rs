@@ -1150,7 +1150,7 @@ async fn run_turn_body(
             state,
             "tool.combination",
             request.agent_id.as_deref(),
-            Some(execution_id),
+            None,
         );
         if combination
             .as_ref()
@@ -1163,35 +1163,71 @@ async fn run_turn_body(
                 .cloned()
                 .collect::<Vec<_>>();
             if read_calls.len() >= 2 {
+                // Only this applicable run owns a combination usage record;
+                // a single read is not a combination measurement.
+                let _ = crate::engine::algorithms::choose_for_agent(
+                    state,
+                    "tool.combination",
+                    request.agent_id.as_deref(),
+                    Some(execution_id),
+                );
                 let base_seq = op_seq;
                 op_seq += read_calls.len() as u64;
                 let mut futures = Vec::new();
+                let mut valid_calls = Vec::new();
                 for (offset, call) in read_calls.iter().enumerate() {
-                    let Ok(arguments) = serde_json::from_str::<Value>(&call.arguments) else {
-                        continue;
-                    };
-                    futures.push(dispatch_tool_call(
-                        state,
-                        tx,
-                        &session,
-                        request,
-                        session_id,
-                        execution_id,
-                        call,
-                        arguments,
-                        metrics,
-                        base_seq + offset as u64 + 1,
-                        round,
-                        offset,
-                        provider.tool_mode == "compat",
-                        "model",
-                        None,
-                        None,
-                        None,
-                    ));
+                    match serde_json::from_str::<Value>(&call.arguments) {
+                        Ok(arguments) => {
+                            valid_calls.push((call.clone(), offset));
+                            futures.push(dispatch_tool_call(
+                                state,
+                                tx,
+                                &session,
+                                request,
+                                session_id,
+                                execution_id,
+                                call,
+                                arguments,
+                                metrics,
+                                base_seq + offset as u64 + 1,
+                                round,
+                                offset,
+                                provider.tool_mode == "compat",
+                                "model",
+                                None,
+                                None,
+                                None,
+                            ));
+                        }
+                        Err(error) => {
+                            // Every tool_call needs a matching tool message.
+                            // Dropping a malformed read would leave the next
+                            // provider round with an unanswered call id.
+                            messages.push(json!({
+                                "role":"tool",
+                                "tool_call_id":call.id,
+                                "content":json!({
+                                    "error":format!("invalid tool arguments: {error}")
+                                }).to_string(),
+                            }));
+                            crate::engine::algorithms::mark_signal(
+                                state, execution_id, "tool.selection", false,
+                            );
+                            crate::engine::algorithms::mark_signal(
+                                state, execution_id, "recovery.strategy", false,
+                            );
+                            mark_tool_argument_signal(state, request, execution_id, false);
+                        }
+                    }
                 }
                 let results = futures_util::future::join_all(futures).await;
-                for (call, result) in read_calls.iter().zip(results.into_iter()) {
+                crate::engine::algorithms::mark_signal(
+                    state,
+                    execution_id,
+                    "tool.combination",
+                    results.iter().all(|result| result.is_ok()),
+                );
+                for ((call, _offset), result) in valid_calls.iter().zip(results.into_iter()) {
                     let (content, ok) = match result {
                         Ok((_value, ok, content)) => (content, ok),
                         Err(error) => (json!({"error":error}).to_string(), false),
@@ -1228,6 +1264,7 @@ async fn run_turn_body(
             let arguments = match serde_json::from_str::<Value>(&call.arguments) {
                 Ok(value) if value.is_object() => value,
                 _ => {
+                    mark_tool_argument_signal(state, request, execution_id, false);
                     let error = format!(
                         "{} 도구 인수가 올바른 JSON 객체가 아닙니다. 인자를 고쳐 다시 호출하세요.",
                         call.name
@@ -2096,6 +2133,18 @@ fn tool_is_read_only(name: &str) -> bool {
             | "web_search" | "http_fetch" | "memory_search"
             | "task_status" | "task_result" | "account_status"
     )
+}
+
+fn mark_tool_argument_signal(
+    state: &AppState, request: &TurnRequest, execution_id: &str, ok: bool,
+) {
+    let _ = crate::engine::algorithms::choose_for_agent(
+        state,
+        "tool.arguments",
+        request.agent_id.as_deref(),
+        Some(execution_id),
+    );
+    crate::engine::algorithms::mark_signal(state, execution_id, "tool.arguments", ok);
 }
 
 fn normalize_tool_arguments(mut arguments: Value, strategy: &str) -> Value {
@@ -3192,12 +3241,21 @@ async fn dispatch_tool_call(
     procedure_strategy: Option<&str>,
     procedure_revision: Option<&str>,
 ) -> Result<(Value, bool, String), String> {
-    let argument_strategy = crate::engine::algorithms::variant_for_agent(
+    let argument_strategy = crate::engine::algorithms::choose_for_agent(
         state,
         "tool.arguments",
         request.agent_id.as_deref(),
-    );
+        Some(execution_id),
+    )
+    .and_then(|algorithm| {
+        algorithm["implementation"]
+            .as_str()
+            .or_else(|| algorithm["variant"].as_str())
+            .map(str::to_string)
+    })
+    .unwrap_or_default();
     let arguments = normalize_tool_arguments(arguments, &argument_strategy);
+    crate::engine::algorithms::mark_signal(state, execution_id, "tool.arguments", true);
     let started_at = chrono::Utc::now().to_rfc3339();
     let tool_started = std::time::Instant::now();
     let _ = tx.send(json!({ "type": "tool_start", "name": call.name, "id": call.id }));

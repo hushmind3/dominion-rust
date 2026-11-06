@@ -46,7 +46,6 @@ fn split_markers(input: &str) -> Vec<String> {
         "그 다음",
         "다음으로",
         "뒤",
-        "다음",
         "후에",
         "then",
         "after that",

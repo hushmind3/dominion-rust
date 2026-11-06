@@ -127,6 +127,23 @@ pub fn resolve(owner_text: &str, outputs: &[Value], strategy: &str) -> Value {
     })
 }
 
+/// Returns whether the ruling is corroborated by independent evidence. A
+/// decisive winner alone is not success: `latest-speaker` would otherwise get
+/// credit for an unsupported claim. When the owner stated an outcome, the
+/// ruling must match it; otherwise the winning claim must reference evidence.
+pub fn supported_outcome(resolution: &Value) -> Option<bool> {
+    if resolution["conflict"].as_bool() != Some(true) {
+        return None;
+    }
+    let outcome = resolution["outcome"].as_str()?;
+    let owner = resolution["ownerPolarity"].as_i64().unwrap_or(0);
+    if owner != 0 {
+        return Some((outcome == "success") == (owner > 0));
+    }
+    let evidence = resolution["winner"]["evidenceScore"].as_i64().unwrap_or(0);
+    (evidence > 0).then_some(true)
+}
+
 /// A short instruction for the next speaker so every participant works from
 /// the same ruling instead of re-litigating the disagreement.
 pub fn guidance(resolution: &Value) -> Option<String> {
@@ -255,5 +272,27 @@ mod tests {
             cases.len()
         );
         assert_eq!(correct, cases.len(), "conflict resolution accuracy regressed");
+    }
+
+    #[test]
+    fn only_corroborated_rulings_update_the_domain_statistic() {
+        let unsupported = resolve(
+            "테스트해",
+            &[output("a", "테스트 성공", 0), output("b", "테스트 실패", 0)],
+            "latest-speaker",
+        );
+        assert_eq!(supported_outcome(&unsupported), None, "{unsupported}");
+        let evidenced = resolve(
+            "테스트해",
+            &[output("a", "테스트 실패", 0), output("b", "테스트 완료", 2)],
+            "evidence-first",
+        );
+        assert_eq!(supported_outcome(&evidenced), Some(true), "{evidenced}");
+        let owner = resolve(
+            "아직 실패 상태야",
+            &[output("a", "테스트 완료", 0), output("b", "테스트 실패", 0)],
+            "owner-authority",
+        );
+        assert_eq!(supported_outcome(&owner), Some(true), "{owner}");
     }
 }

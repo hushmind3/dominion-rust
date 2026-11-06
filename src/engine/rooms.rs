@@ -462,14 +462,17 @@ async fn run_locked(
         if resolution["conflict"].as_bool() == Some(true)
             && resolution["revision"].as_str() != conflict_resolution["revision"].as_str()
         {
-            let decisive = resolution["outcome"].as_str() != Some("unresolved");
-            crate::engine::algorithms::record_domain_outcome(
-                state,
-                None,
-                "multiagent.conflict",
-                &conflict_strategy,
-                decisive,
-            );
+            if let Some(supported) =
+                crate::engine::debate::supported_outcome(&resolution)
+            {
+                crate::engine::algorithms::record_domain_outcome(
+                    state,
+                    None,
+                    "multiagent.conflict",
+                    &conflict_strategy,
+                    supported,
+                );
+            }
             state.store.audit(
                 "room.conflict_resolved",
                 json!({

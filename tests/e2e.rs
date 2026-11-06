@@ -3434,6 +3434,52 @@ fn parallel_reads_combination_executes_independent_reads_in_one_round() {
         .filter(|operation| operation["tool"] == "workspace_read" && operation["status"] == "completed")
         .count();
     assert_eq!(reads, 2, "{operations}");
+    let synergy = app.get("/api/synergy");
+    let combination = synergy["algorithmStats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|stat| stat["kind"] == "tool.combination")
+        .expect("combination statistic");
+    assert_eq!(combination["uses"], 1, "{combination}");
+    assert_eq!(combination["successes"], 1, "{combination}");
+}
+
+#[test]
+fn parallel_reads_answer_malformed_arguments_so_no_tool_call_is_orphaned() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().cloned().unwrap_or_default();
+        let saw_error = messages.iter().any(|message| {
+            message["role"] == "tool"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("invalid tool arguments"))
+        });
+        let saw_tool = messages.iter().any(|message| message["role"] == "tool");
+        if saw_error {
+            return vec![json!({"choices":[{"delta":{"content":"malformed-read-was-answered"},"finish_reason":"stop"}]})];
+        }
+        if saw_tool {
+            return vec![json!({"choices":[{"delta":{"content":"missing-error"},"finish_reason":"stop"}]})];
+        }
+        vec![json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"id":"read-good","type":"function","function":{"name":"workspace_read","arguments":"{\"path\":\"one.txt\"}"}},
+            {"index":1,"id":"read-bad","type":"function","function":{"name":"workspace_read","arguments":"{bad"}}
+        ]},"finish_reason":"tool_calls"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    std::fs::write(app._root.join("one.txt"), "ONE").unwrap();
+    let algorithm = app.post(
+        "/api/algorithms",
+        &json!({"kind":"tool.combination","name":"parallel-reads","implementation":"parallel-reads","parameters":{}}),
+    );
+    app.post(
+        &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
+        &json!({}),
+    );
+    let stream = app.chat(&json!({"input":"one.txt를 읽어","autoLearning":false}));
+    assert!(stream.contains("malformed-read-was-answered"), "{stream}");
 }
 
 #[test]
@@ -3464,6 +3510,15 @@ fn normalize_paths_arguments_run_through_the_common_dispatch() {
         std::fs::read_to_string(app._root.join("sub/normalized.txt")).unwrap_or_default(),
         "OK"
     );
+    let synergy = app.get("/api/synergy");
+    let arguments = synergy["algorithmStats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|stat| stat["kind"] == "tool.arguments")
+        .expect("argument statistic");
+    assert_eq!(arguments["uses"], 1, "{arguments}");
+    assert_eq!(arguments["successes"], 1, "{arguments}");
 }
 
 #[test]
