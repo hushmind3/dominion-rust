@@ -551,6 +551,109 @@ fn compact_sweep_kernel(
     (archived, eligible)
 }
 
+/// Deterministic extractive compression for old, low-importance facts and
+/// lessons. Originals are archived with their evidence intact; a new summary
+/// memory links back to them.
+fn compression_sweep_kernel(
+    store: &Store, algorithm: &Value, owner: Option<&str>, dry_run: bool,
+) -> (usize, Vec<String>) {
+    let kernel = algorithm["implementation"].as_str()
+        .or_else(|| algorithm["variant"].as_str()).unwrap_or("extractive");
+    if kernel == "none" {
+        return (0, Vec::new());
+    }
+    let max_age_days = algorithm["parameters"]["maxAgeDays"].as_f64().unwrap_or(30.0);
+    let max_importance = algorithm["parameters"]["maxImportance"].as_f64().unwrap_or(0.35);
+    let min_group = algorithm["parameters"]["minGroup"].as_u64().unwrap_or(2) as usize;
+    let now = chrono::Utc::now();
+    let mut eligible = store.all("memory").into_iter()
+        .filter(|record| record["status"].as_str() == Some("active")
+            && record["key"].is_null()
+            && matches!(record["type"].as_str(), Some("fact" | "lesson")))
+        .filter(|record| owner.is_none_or(|agent| maintenance_owner(record) == agent))
+        .filter(|record| {
+            let importance = record["importance"].as_f64().unwrap_or(0.5);
+            if importance > max_importance { return false; }
+            let raw = record["lastUsedAt"].as_str()
+                .or_else(|| record["learnedAt"].as_str())
+                .or_else(|| record["createdAt"].as_str());
+            raw.and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+                .is_some_and(|at| {
+                    (now - at.with_timezone(&chrono::Utc)).num_seconds() as f64 / 86_400.0
+                        >= max_age_days
+                })
+        })
+        .collect::<Vec<_>>();
+    eligible.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    if eligible.len() < min_group {
+        return (0, Vec::new());
+    }
+    let ids = eligible.iter()
+        .filter_map(|record| record["id"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    if dry_run {
+        return (0, ids);
+    }
+    let owner = owner.unwrap_or("global");
+    let summary_id = format!(
+        "memory-compressed-{}",
+        stable_id(&[owner, &ids.join(",")])
+    );
+    if store.get("memory", &summary_id).is_some() {
+        return (0, ids);
+    }
+    let texts = eligible.iter()
+        .filter_map(|record| record["text"].as_str())
+        .map(|text| text.chars().take(180).collect::<String>())
+        .collect::<Vec<_>>();
+    let mut evidence = Vec::new();
+    let mut sources = Vec::new();
+    let mut importance = 0.0f64;
+    let mut partition = "local".to_string();
+    for record in &eligible {
+        importance = importance.max(record["importance"].as_f64().unwrap_or(0.0));
+        if let Some(value) = record["partitionKey"].as_str() { partition = value.to_string(); }
+        for id in record["evidenceMessageIds"].as_array().into_iter().flatten() {
+            if !evidence.contains(id) { evidence.push(id.clone()); }
+        }
+        for id in record["sourceMessageIds"].as_array().into_iter().flatten() {
+            if !sources.contains(id) { sources.push(id.clone()); }
+        }
+    }
+    let summary = json!({
+        "id": summary_id,
+        "text": format!("압축된 기억: {}", texts.join(" | ")),
+        "type": "lesson",
+        "importance": importance,
+        "scope": "agent",
+        "agentId": owner,
+        "partitionKey": partition,
+        "status": "active",
+        "source": "compression",
+        "revision": stable_id(&[owner, &ids.join(",")]),
+        "createdAt": now.to_rfc3339(),
+        "learnedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        "evidenceMessageIds": evidence,
+        "sourceMessageIds": sources,
+        "compressedFrom": ids,
+    });
+    if store.put("memory", &summary).is_none() {
+        return (0, Vec::new());
+    }
+    let mut archived = 0;
+    for id in &ids {
+        if store.patch_if("memory", id, "status", &json!("active"), &json!({
+            "status": "archived",
+            "compressedInto": summary["id"],
+            "compressedAt": now.to_rfc3339(),
+            "archiveReason": "extractive memory compression; original evidence preserved"
+        })).is_some() {
+            archived += 1;
+        }
+    }
+    (archived, ids)
+}
+
 /// Runs evidence-driven model-free maintenance independently for each bot.
 /// Only a new eligible evidence snapshot is scored. Repeated idle sweeps
 /// cannot inflate the UCB success/failure counters.
@@ -561,14 +664,16 @@ pub fn learning_sweep(state: &crate::state::AppState) -> usize {
         .collect::<BTreeSet<_>>();
     let mut evaluated = 0usize;
     for owner in owners {
-        for kind in ["memory.forgetting", "memory.compaction"] {
+        for kind in ["memory.forgetting", "memory.compaction", "memory.compression"] {
             let Some(preview) = crate::engine::algorithms::choose_for_agent(
                 state, kind, Some(&owner), None,
             ) else { continue };
             let (preview_changed, eligible) = if kind == "memory.forgetting" {
                 forget_sweep_kernel(&state.store, &preview, Some(&owner), true)
-            } else {
+            } else if kind == "memory.compaction" {
                 compact_sweep_kernel(&state.store, &preview, Some(&owner), true)
+            } else {
+                compression_sweep_kernel(&state.store, &preview, Some(&owner), true)
             };
             let _ = preview_changed;
             if eligible.is_empty() { continue; }
@@ -586,8 +691,10 @@ pub fn learning_sweep(state: &crate::state::AppState) -> usize {
             ).unwrap_or(preview);
             let (changed, observed) = if kind == "memory.forgetting" {
                 forget_sweep_kernel(&state.store, &selected, Some(&owner), false)
-            } else {
+            } else if kind == "memory.compaction" {
                 compact_sweep_kernel(&state.store, &selected, Some(&owner), false)
+            } else {
+                compression_sweep_kernel(&state.store, &selected, Some(&owner), false)
             };
             // Domain signal: a kernel either acted on every independently
             // eligible stale/duplicate record or it did not. No task-success
@@ -1617,6 +1724,42 @@ mod per_agent_memory_learning_tests {
         }));
         let ranked = retrieve(&db, &scope, "apple", 5);
         assert_eq!(ranked[0]["id"], "apple-note", "{ranked:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn compression_summarizes_old_memories_and_preserves_originals() {
+        let (state, dir) = state();
+        only_kernel(&state, "memory.compression", "extractive");
+        for (id, text, evidence) in [
+            ("old-a", "예전 배포 절차 A", "m1"),
+            ("old-b", "예전 배포 절차 B", "m2"),
+        ] {
+            state.store.put("memory", &json!({
+                "id":id,"agentId":"agent-a","partitionKey":"local",
+                "scope":"agent","type":"fact","text":text,"importance":0.32,
+                "status":"active","createdAt":"2020-01-01T00:00:00Z",
+                "learnedAt":"2020-01-01T00:00:00Z",
+                "lastUsedAt":"2020-01-01T00:00:00Z",
+                "evidenceMessageIds":[evidence]
+            }));
+        }
+        let evaluated = learning_sweep(&state);
+        assert!(evaluated >= 1, "compression was not evaluated");
+        let memories = state.store.all("memory");
+        let summary = memories.iter().find(|record| {
+            record["source"].as_str() == Some("compression")
+        }).expect("compressed summary");
+        assert_eq!(summary["status"], "active");
+        assert_eq!(summary["compressedFrom"].as_array().unwrap().len(), 2);
+        assert_eq!(summary["evidenceMessageIds"].as_array().unwrap().len(), 2);
+        for id in ["old-a", "old-b"] {
+            let original = state.store.get("memory", id).unwrap();
+            assert_eq!(original["status"], "archived");
+            assert_eq!(original["compressedInto"], summary["id"]);
+            assert!(original["evidenceMessageIds"].is_array(), "evidence lost");
+        }
+        assert_eq!(learning_sweep(&state), 0, "idle sweep re-compressed");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
