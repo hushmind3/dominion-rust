@@ -79,6 +79,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/experiment-requests", get(system::experiment_requests))
         .route("/api/optimizers", get(experiments::optimizers))
         .route("/api/algorithms", get(algorithms::list).post(algorithms::register))
+        .route("/api/algorithms/evaluate", get(algorithms::evaluate))
         .route("/api/algorithms/generate", post(algorithms::generate))
         .route("/api/algorithms/:id/activate", post(algorithms::activate))
         .route("/api/algorithms/:id/disable", post(algorithms::disable))

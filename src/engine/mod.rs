@@ -4,6 +4,7 @@ pub mod distill;
 pub mod effect;
 pub mod agent_growth;
 pub mod algorithms;
+pub mod algorithm_eval;
 pub mod attachments;
 pub mod backup_keys;
 pub mod bridge;

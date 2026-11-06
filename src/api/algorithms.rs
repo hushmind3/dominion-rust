@@ -40,3 +40,7 @@ pub async fn disable(
 pub async fn generate(State(state): State<AppState>, Json(body): Json<Value>) -> Json<Value> {
     Json(crate::engine::algorithms::generate(&state, &body))
 }
+
+pub async fn evaluate(State(state): State<AppState>) -> Json<Value> {
+    Json(crate::engine::algorithm_eval::run(&state))
+}

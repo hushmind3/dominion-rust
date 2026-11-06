@@ -10,6 +10,7 @@ const sources=[
  {label:'알고리즘',endpoint:'/api/algorithms'},
  {label:'실험 요청',endpoint:'/api/experiment-requests'},
  {label:'개선 방식 평가',endpoint:'/api/optimizers'},
+ {label:'알고리즘 평가',endpoint:'/api/algorithms/evaluate'},
 ] as const
 const str=(value:any)=>typeof value==='string'?value:typeof value==='number'?String(value):''
 const count=(value:any)=>typeof value==='number'?value:undefined
@@ -112,6 +113,24 @@ const optimizer=(rec:Rec,index:number):Row=>({
  ]),
  raw:rec,
 })
+const percent=(value:any)=>typeof value==='number'?`${Math.round(value*100)}%`:''
+const evaluation=(rec:Rec,index:number):Row=>{
+ const kernels:Rec[]=Array.isArray(rec.kernels)?rec.kernels:[]
+ const improvement=typeof rec.improvement==='number'?rec.improvement:0
+ return {
+  key:str(rec.kind)||`evaluation-${index}`,
+  title:str(rec.label)||str(rec.kind)||'알고리즘 평가',
+  subtitle:`${str(rec.baseline)} → ${str(rec.winner)}`,
+  tags:[str(rec.kind),improvement>0?`+${Math.round(improvement*100)}%`:'개선 없음'].filter(Boolean),
+  facts:facts([
+   ['측정',str(rec.metric)],
+   ['기준',`${str(rec.baseline)} ${percent(rec.baselineValue)}`],
+   ['승자',`${str(rec.winner)} ${percent(rec.winnerValue)}`],
+   ...kernels.map((kernel):[string,string]=>[str(kernel.kernel)||'커널',`${percent(kernel.value)}${typeof kernel.hits==='number'?` (${kernel.hits}/${kernel.total})`:''}`]),
+  ]),
+  raw:rec,
+ }
+}
 
 const normalize=(source:number,data:any):Row[]=>{
  if(!data)return []
@@ -122,6 +141,10 @@ const normalize=(source:number,data:any):Row[]=>{
  if(source===4){
   const rows:Rec[]=Array.isArray(data.optimizers)?data.optimizers:[]
   return rows.map(optimizer)
+ }
+ if(source===5){
+  const rows:Rec[]=Array.isArray(data.dimensions)?data.dimensions:[]
+  return rows.map(evaluation)
  }
  const records:Rec[]=Array.isArray(data)?data:Array.isArray(data.items)?data.items:null
  if(!records)return [fallback(data,0)]
