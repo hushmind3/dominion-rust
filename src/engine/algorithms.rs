@@ -723,13 +723,84 @@ pub fn list(state: &AppState) -> Value {
                     .cmp(b["name"].as_str().unwrap_or(""))
             })
     });
+    // Observation counters live in `algorithm_stat`. `global` already mirrors
+    // the per-agent totals, so prefer it and fall back to summing agent rows.
+    let mut globals = std::collections::BTreeMap::new();
+    let mut agent_totals: std::collections::BTreeMap<
+        String,
+        (u64, u64, u64, Option<String>),
+    > = std::collections::BTreeMap::new();
+    let mut observed_agents: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeSet<String>,
+    > = std::collections::BTreeMap::new();
+    for stat in state.store.all("algorithm_stat") {
+        let Some(revision) = stat["revision"].as_str() else {
+            continue;
+        };
+        let agent = stat["agentId"].as_str().unwrap_or("");
+        if agent == "global" {
+            globals.insert(revision.to_string(), stat);
+            continue;
+        }
+        observed_agents
+            .entry(revision.to_string())
+            .or_default()
+            .insert(agent.to_string());
+        let entry = agent_totals
+            .entry(revision.to_string())
+            .or_insert((0, 0, 0, None));
+        entry.0 += stat["uses"].as_u64().unwrap_or(0);
+        entry.1 += stat["successes"].as_u64().unwrap_or(0);
+        entry.2 += stat["failures"].as_u64().unwrap_or(0);
+        if let Some(last) = stat["lastUsedAt"].as_str() {
+            if entry.3.as_deref().is_none_or(|current| last > current) {
+                entry.3 = Some(last.to_string());
+            }
+        }
+    }
+    let mut observations: std::collections::BTreeMap<String, Value> =
+        std::collections::BTreeMap::new();
+    for (revision, stat) in &globals {
+        observations.insert(
+            revision.clone(),
+            json!({
+                "uses": stat["uses"],
+                "successes": stat["successes"],
+                "failures": stat["failures"],
+                "successRate": stat["successRate"],
+                "lastUsedAt": stat["lastUsedAt"],
+                "agents": observed_agents.get(revision).map_or(0, |agents| agents.len()),
+            }),
+        );
+    }
+    for (revision, (uses, successes, failures, last_used)) in agent_totals {
+        let agents = observed_agents.get(&revision).map_or(0, |agents| agents.len());
+        observations.entry(revision).or_insert_with(|| {
+            json!({
+                "uses": uses,
+                "successes": successes,
+                "failures": failures,
+                "successRate": if uses > 0 { successes as f64 / uses as f64 } else { 0.0 },
+                "lastUsedAt": last_used,
+                "agents": agents,
+            })
+        });
+    }
     let kinds = KINDS
         .iter()
         .map(|kind| {
             let rows = items
                 .iter()
                 .filter(|item| item["kind"].as_str() == Some(*kind))
-                .cloned()
+                .map(|item| {
+                    let mut row = item.clone();
+                    let revision = row["revision"].as_str().unwrap_or("").to_string();
+                    if let Some(observed) = observations.get(&revision) {
+                        row["stats"] = observed.clone();
+                    }
+                    row
+                })
                 .collect::<Vec<_>>();
             json!({
                 "kind": kind,
@@ -1620,6 +1691,42 @@ mod tests {
         assert_eq!(stats[0]["uses"], 1, "{stats:?}");
         assert_eq!(stats[0]["successes"], 0, "last signal overwrote failures");
         assert_eq!(stats[0]["failures"], 1, "{stats:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn list_exposes_per_algorithm_observation_stats_without_double_counting() {
+        let (state, dir) = state();
+        seed(&state);
+        let algorithm = active(&state, "strategy.selection").unwrap();
+        let revision = algorithm["revision"].as_str().unwrap().to_string();
+        state.store.put(
+            "algorithm_stat",
+            &json!({
+                "id":"agent-stat","agentId":"agent-a","kind":"strategy.selection",
+                "revision":revision,"uses":4,"successes":3,"failures":1,
+                "successRate":0.75,"lastUsedAt":"2026-01-01T00:00:00Z"
+            }),
+        );
+        state.store.put(
+            "algorithm_stat",
+            &json!({
+                "id":"global-stat","agentId":"global","kind":"strategy.selection",
+                "revision":revision,"uses":4,"successes":3,"failures":1,
+                "successRate":0.75,"lastUsedAt":"2026-01-01T00:00:00Z"
+            }),
+        );
+        let report = list(&state);
+        let row = report["kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|kind| kind["algorithms"].as_array().unwrap().clone())
+            .find(|row| row["id"] == algorithm["id"])
+            .expect("algorithm row");
+        assert_eq!(row["stats"]["uses"], 4, "{row}");
+        assert_eq!(row["stats"]["successes"], 3, "{row}");
+        assert_eq!(row["stats"]["agents"], 1, "{row}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

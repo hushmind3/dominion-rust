@@ -9,7 +9,7 @@ type Memory={
  id:string;text:string;scope?:string;agentId?:string;sessionId?:string;partitionKey?:string;
  status?:string;retrievalEligible:boolean;source?:string;createdAt?:string;lastUsedAt?:string;
  importance?:number;verification?:string;sourceMessageIds?:string[];evidenceQuote?:string;
- forgetReason?:string;expiresAt?:string;
+ forgetReason?:string;archiveReason?:string;expiresAt?:string;
 }
 const statusLabels:Record<string,string>={active:'활성',archived:'보관',superseded:'대체됨',deleted:'삭제됨',draft:'초안',excluded:'검색 제외'}
 const sourceLabels:Record<string,string>={user:'직접 입력',learn:'학습',agent:'에이전트',reflect:'실행 검토',compression:'기억 압축'}
@@ -78,7 +78,7 @@ export function MemoryPage(){
      <div className="mb-2 flex flex-wrap items-center gap-2"><BookOpenText size={18}/><strong>{ownerName(m)}</strong><span className="text-xs text-[#7C7469]">{statusLabels[statusOf(m)]??statusOf(m)}</span><Button size="icon" variant="ghost" className="ml-auto" disabled={busy} onClick={()=>void drop(m.id)} aria-label="기억 삭제"><Trash2 size={16}/></Button></div>
      <p className="whitespace-pre-wrap">{m.text}</p>
      <div className="mt-2 flex flex-wrap gap-x-3 text-xs text-[#7C7469]"><span>출처 {sourceLabels[m.source??'user']??m.source}</span><span>중요도 {typeof m.importance==='number'?m.importance.toFixed(2):'미기록'}</span><span>마지막 검색 사용 {displayTime(m.lastUsedAt)}</span></div>
-     <details className="mt-2 text-xs text-[#5C544A]"><summary className="cursor-pointer">근거와 적용 범위</summary><div className="mt-2 grid gap-1 break-all"><span>등록 {displayTime(m.createdAt)}</span><span>검증 {m.verification==='source_quote'?'원문 인용 근거 있음':m.verification||'기록 없음'}</span>{m.partitionKey&&<span>작업 공간 {m.partitionKey}</span>}{m.sessionId&&<span>대화 ID {m.sessionId}</span>}{m.sourceMessageIds?.length?<span>원문 메시지 {m.sourceMessageIds.join(', ')}</span>:null}{m.evidenceQuote&&<blockquote>{m.evidenceQuote}</blockquote>}{m.forgetReason&&<span>보관 사유 {m.forgetReason}</span>}{m.expiresAt&&<span>만료 {displayTime(m.expiresAt)}</span>}</div></details>
+     <details className="mt-2 text-xs text-[#5C544A]"><summary className="cursor-pointer">근거와 적용 범위</summary><div className="mt-2 grid gap-1 break-all"><span>등록 {displayTime(m.createdAt)}</span><span>검증 {m.verification==='source_quote'?'원문 인용 근거 있음':m.verification||'기록 없음'}</span>{m.partitionKey&&<span>작업 공간 {m.partitionKey}</span>}{m.sessionId&&<span>대화 ID {m.sessionId}</span>}{m.sourceMessageIds?.length?<span>원문 메시지 {m.sourceMessageIds.join(', ')}</span>:null}{m.evidenceQuote&&<blockquote>{m.evidenceQuote}</blockquote>}{m.archiveReason||m.forgetReason?<span>보관 사유 {m.archiveReason??m.forgetReason}</span>:null}{m.expiresAt&&<span>만료 {displayTime(m.expiresAt)}</span>}</div></details>
     </Panel>)}</div>
     {!filtered.length&&<Panel className="p-6 text-center text-sm text-[#7C7469]">{memories.loading?'기억을 불러오는 중…':'이 조건에 해당하는 기억이 없습니다.'}</Panel>}
    </div>

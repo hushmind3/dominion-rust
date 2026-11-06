@@ -199,7 +199,21 @@ where
                     .ok_or("전송 시작을 저장할 수 없습니다.")?;
                 match send(part).await {
                     Ok(remote_id) => {
-                        if remote_id.is_empty() {
+                        if remote_id.trim().is_empty() {
+                            // The callback reported success but the platform
+                            // did not identify the message. The write may have
+                            // happened, so this part must not stay "sending"
+                            // and must never be replayed automatically.
+                            record["status"] = json!("needs_review");
+                            record["error"] = json!(
+                                "전송 결과 메시지 ID가 없어 실제 전송 여부를 확인해야 합니다. 자동 재전송하지 않습니다."
+                            );
+                            record["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
+                            let saved = state
+                                .store
+                                .put("channel_outbox", &record)
+                                .ok_or("전송 확인 상태를 저장할 수 없습니다.")?;
+                            state.bus.record("channel_outbox", &saved);
                             return Err(
                                 "전송 결과 메시지 ID가 없습니다. 전송 기록 검토가 필요합니다."
                                     .into(),
@@ -350,6 +364,36 @@ mod tests {
             state.store.all("bridge_cursor")[0]["lastMessageId"],
             "native"
         );
+        let _ = std::fs::remove_dir_all(&state.config.data_dir);
+    }
+    #[tokio::test]
+    async fn a_success_without_a_remote_id_is_persisted_for_review_and_not_replayed() {
+        let state = state();
+        let mut config = config();
+        config["syncRoomMessages"] = json!(true);
+        state.store.put("channel", &config);
+        let session = crate::engine::rooms::ensure_room_session(&state, "room").unwrap();
+        let session = text(&session, "id");
+        state.store.write_message(&json!({"id":"native","session_id":session,"role":"assistant","agent_id":"a","content":"reply with an unknown remote id"}));
+        let id = format!("outbox-{}", memory::stable_id(&["tg", "r", "native", "0"]));
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = calls.clone();
+        let error = flush(&state, &config, 4000, move |_| {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Ok(String::new()) }
+        })
+        .await
+        .unwrap_err();
+        assert!(error.contains("메시지 ID"), "{error}");
+        let record = state.store.get("channel_outbox", &id).unwrap();
+        assert_eq!(record["status"], "needs_review", "{record}");
+        assert!(record["error"].as_str().is_some_and(|error| error.contains("확인")));
+        flush(&state, &config, 4000, |_| async {
+            panic!("an unknown remote id must never be retried")
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         let _ = std::fs::remove_dir_all(&state.config.data_dir);
     }
 }
