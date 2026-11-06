@@ -1336,14 +1336,15 @@ async fn run_turn_body(
                     }));
                 }
             }
-            let remaining = 80_000usize.saturating_sub(tool_message_chars);
-            let bounded_content = clip(&tool_content, remaining.max(1_000));
-            tool_message_chars += bounded_content.chars().count();
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": bounded_content,
-            }));
+            // Every native tool call still receives a response, but the total
+            // model-visible tool content for this turn never exceeds 80k chars.
+            // Complete evidence remains in execution_operation.
+            let exhausted = append_bounded_tool_result(
+                &mut messages, &call.id, &tool_content, &mut tool_message_chars,
+            );
+            if exhausted {
+                force_final = true;
+            }
         }
 
         // Check acceptance after the tool round, not only when the model
@@ -1432,10 +1433,36 @@ async fn run_turn_body(
 }
 
 fn clip(text: &str, limit: usize) -> String {
+    const MARKER: &str = "\n… (truncated; full evidence is stored)";
     if text.chars().count() <= limit {
         return text.to_string();
     }
-    text.chars().take(limit).collect::<String>() + "\n… (truncated for small models)"
+    if limit == 0 {
+        return String::new();
+    }
+    let marker_size = MARKER.chars().count();
+    if limit <= marker_size {
+        return MARKER.chars().take(limit).collect();
+    }
+    let mut result: String = text.chars().take(limit - marker_size).collect();
+    result.push_str(MARKER);
+    result
+}
+
+/// Hard per-turn budget on the tool payload sent to the model. Even after
+/// exhaustion a tool response is emitted so native tool-call IDs stay paired.
+fn append_bounded_tool_result(
+    messages: &mut Vec<Value>,
+    call_id: &str,
+    content: &str,
+    consumed: &mut usize,
+) -> bool {
+    const MAX_TOOL_CONTENT: usize = 80_000;
+    let remaining = MAX_TOOL_CONTENT.saturating_sub(*consumed);
+    let bounded = clip(content, remaining);
+    *consumed += bounded.chars().count();
+    messages.push(json!({"role":"tool","tool_call_id":call_id,"content":bounded}));
+    content.chars().count() > bounded.chars().count() || *consumed >= MAX_TOOL_CONTENT
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3958,6 +3985,29 @@ mod outcome_tests {
             "acceptanceText": acceptance_text,
             "strategyCompliance": []
         })
+    }
+
+    #[test]
+    fn tool_results_have_hard_per_call_and_per_turn_caps() {
+        let raw = "한".repeat(40_000);
+        assert_eq!(clip(&raw, 20_000).chars().count(), 20_000);
+        assert_eq!(clip(&raw, 6_000).chars().count(), 6_000);
+        assert_eq!(clip(&raw, 3).chars().count(), 3);
+        assert_eq!(clip(&raw, 0), "");
+        let mut messages = Vec::new();
+        let mut consumed = 0;
+        for i in 0..8 {
+            append_bounded_tool_result(
+                &mut messages, &format!("tool-{i}"), &clip(&raw, 20_000), &mut consumed,
+            );
+        }
+        assert_eq!(consumed, 80_000);
+        assert_eq!(
+            messages.iter().map(|v| v["content"].as_str().unwrap_or("").chars().count()).sum::<usize>(),
+            80_000,
+        );
+        assert_eq!(messages.len(), 8, "every native tool call needs a response");
+        assert_eq!(messages[7]["content"], "");
     }
 
     #[test]
