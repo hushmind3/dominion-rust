@@ -428,6 +428,37 @@ fn finish(
         "goal.finished",
         json!({"goalId":id,"status":status,"iterations":goal.get("iterations")}),
     );
+    if status == "completed" {
+        if let Some(session_id) = goal["sessionId"].as_str().filter(|id| !id.is_empty()) {
+            let executor = goal.get("executor").cloned().unwrap_or_else(|| json!({}));
+            let agent_id = executor["agentId"].as_str().filter(|id| !id.is_empty());
+            let provider_id = executor["providerId"].as_str().unwrap_or("");
+            let model = executor["model"].as_str().unwrap_or("");
+            let through = context
+                .state
+                .store
+                .messages(session_id)
+                .last()
+                .and_then(|message| message["id"].as_str().map(str::to_string));
+            if let Some(agent_id) = agent_id {
+                crate::engine::learning::enqueue_semantic_for_agent_through(
+                    &context.state,
+                    session_id,
+                    Some(agent_id),
+                    provider_id,
+                    model,
+                    through.as_deref(),
+                );
+            } else {
+                crate::engine::learning::enqueue_semantic(
+                    &context.state,
+                    session_id,
+                    provider_id,
+                    model,
+                );
+            }
+        }
+    }
     context.emit(json!({"type":"goal_finished","goalId":id,"status":status}));
     json!({"goalId":id,"status":status,"sessionId":goal.get("sessionId"),"iterations":goal.get("iterations"),"evidence":goal.get("evidence"),"gaps":gaps})
 }

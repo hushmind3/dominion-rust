@@ -11,6 +11,9 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  const agents=useRemote<Agent[]>('/api/agents',[])
  const jobs=useRemote<any[]>('/api/jobs',[])
  const channels=useRemote<any[]>('/api/channels',[])
+ const runtime=useRemote<any>('/api/model-library/runtime',{status:'idle'})
+ const enabledProviders=providers.value.filter(p=>p.enabled)
+ const authenticatedProviders=enabledProviders.filter((p:any)=>p.hasKey||p.local).length
  const recent=[...jobs.value].sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,6)
  const busy=jobs.value.filter(j=>['queued','running','planning','reviewing','repairing'].includes(j.status)).length
  const metrics=[
@@ -36,7 +39,8 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
    <section className="rounded-xl border border-[#e1e6ec] bg-white">
     <div className="border-b border-[#F0EAE1] px-4 py-3"><h2 className="text-[13px] font-bold">연결 상태</h2></div>
     <div className="divide-y divide-[#f0f2f5] px-4">
-     <Button onClick={()=>navigate('models')} className="flex w-full items-center gap-3 py-3 text-left text-[12px]"><Cpu size={16} className="text-[#7586a0]"/><span className="flex-1">모델 제공자</span><span className="text-[11px] text-[#7c8b9b]">{providers.value.filter(p=>p.enabled).length}개 활성</span><ArrowRight size={13}/></Button>
+     <Button onClick={()=>navigate('models')} className="flex w-full items-center gap-3 py-3 text-left text-[12px]"><Cpu size={16} className="text-[#7586a0]"/><span className="flex-1">모델 제공자</span><span className="text-[11px] text-[#7c8b9b]">{enabledProviders.length}개 등록 · 키/로컬 {authenticatedProviders}개</span><ArrowRight size={13}/></Button>
+     <Button onClick={()=>navigate('models')} className="flex w-full items-center gap-3 py-3 text-left text-[12px]"><Cpu size={16} className="text-[#7586a0]"/><span className="flex-1">로컬 모델</span><span className="text-[11px] text-[#7c8b9b]">{runtime.value.status==='ready'?'실행 중 · '+(runtime.value.engine||'ready'):'대기'}</span><ArrowRight size={13}/></Button>
      <Button onClick={()=>navigate('connections')} className="flex w-full items-center gap-3 py-3 text-left text-[12px]"><RadioTower size={16} className="text-[#7586a0]"/><span className="flex-1">메신저 채널</span><span className="text-[11px] text-[#7c8b9b]">{channels.value.length}개 등록</span><ArrowRight size={13}/></Button>
      <Button onClick={()=>navigate('agents')} className="flex w-full items-center gap-3 py-3 text-left text-[12px]"><Bot size={16} className="text-[#7586a0]"/><span className="flex-1">에이전트</span><span className="text-[11px] text-[#7c8b9b]">{agents.value.length}개</span><ArrowRight size={13}/></Button>
     </div>

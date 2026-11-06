@@ -299,7 +299,7 @@ export function AgentsPage() {
             </div>
             <h3>{a.name}</h3>
             {a.role&&<span className="text-[11px] font-semibold text-[#9B8064]">{String(a.role)}</span>}
-            <p>{a.description || "설명 없음"}</p>
+            <p className="line-clamp-2" title={a.description || ""}>{a.description || "설명 없음"}</p>
             <div className="my-2 h-px bg-[#F3EEE5]" />
             <div className="mt-auto flex flex-col gap-1 border-t border-[#EFE9DF] pt-3 text-xs text-[#7C7469]">
               <span>

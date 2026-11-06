@@ -188,11 +188,52 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         json!({ "workflowId": workflow_id, "sessionId": session_id, "steps": outputs.len() }),
     );
 
+    // A workflow is a real multi-agent execution path. Its result must feed the
+    // same semantic learning pipeline as chat and rooms, not only tool logs.
+    let status = if state.is_cancelled(&session_id) {
+        "cancelled"
+    } else {
+        "completed"
+    };
+    if status == "completed" {
+        let through = state
+            .store
+            .messages(&session_id)
+            .last()
+            .and_then(|message| message["id"].as_str().map(str::to_string));
+        let mut learned = std::collections::HashSet::new();
+        for step in steps.iter().take(4) {
+            let Some(agent_id) = step["agentId"].as_str().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            if !learned.insert(agent_id.to_string()) {
+                continue;
+            }
+            let agent = state.store.get("agent", agent_id);
+            let provider_id = step["providerId"]
+                .as_str()
+                .or_else(|| agent.as_ref().and_then(|agent| agent["providerId"].as_str()))
+                .unwrap_or("");
+            let model = step["model"]
+                .as_str()
+                .or_else(|| agent.as_ref().and_then(|agent| agent["model"].as_str()))
+                .unwrap_or("");
+            crate::engine::learning::enqueue_semantic_for_agent_through(
+                state,
+                &session_id,
+                Some(agent_id),
+                provider_id,
+                model,
+                through.as_deref(),
+            );
+        }
+    }
+
     Ok(json!({
         "workflowId": workflow_id,
         "sessionId": session_id,
         "outputs": outputs,
-        "status": if state.is_cancelled(&session_id) {"cancelled"} else {"completed"},
+        "status": status,
     }))
 }
 

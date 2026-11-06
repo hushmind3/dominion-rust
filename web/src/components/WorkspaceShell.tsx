@@ -56,13 +56,15 @@ export function WorkspaceHeader({page,online,collapsed,onMenu,onSearch}:{page:Pa
 }
 export function CommandPalette({onNavigate,onClose}:{onNavigate:(id:PageId)=>void;onClose:()=>void}){
  const [query,setQuery]=useState('')
+ const [active,setActive]=useState(0)
  const filtered=useMemo(()=>items.filter(item=>item.label.toLowerCase().includes(query.trim().toLowerCase())),[query])
+ useEffect(()=>{setActive(0)},[query])
  useEffect(()=>{const h=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose()};window.addEventListener('keydown',h);return()=>window.removeEventListener('keydown',h)},[onClose])
  return <div className="fixed inset-0 z-[90] flex justify-center bg-black/40 px-3 pt-[12vh]" onMouseDown={onClose} role="presentation">
   <div className="h-fit w-full max-w-[480px] overflow-hidden rounded-xl border border-[#E7E0D5] bg-white shadow-2xl" role="dialog" aria-modal="true" aria-label="빠른 이동" onMouseDown={e=>e.stopPropagation()}>
-   <div className="flex items-center gap-2 border-b border-[#EFE9DF] px-4 py-3"><Search size={16} className="text-[#9C9388]"/><TextInput autoFocus aria-label="메뉴 검색" value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&filtered[0])onNavigate(filtered[0].id)}} placeholder="메뉴 검색" className="!border-0 !shadow-none !ring-0"/></div>
-   <div className="max-h-[55vh] overflow-auto p-2">{filtered.map(item=>{const Icon=item.icon;return <button type="button" key={item.id} onClick={()=>onNavigate(item.id)} className="flex h-10 w-full items-center gap-3 rounded-md px-3 text-left text-xs hover:bg-[#F3EEE5]"><Icon size={16}/><span className="flex-1">{item.label}</span><ChevronRight size={13} className="text-[#B8AFA2]"/></button>})}{!filtered.length&&<p className="p-5 text-center text-xs text-[#7C7469]">검색 결과 없음</p>}</div>
-   <div className="border-t border-[#EFE9DF] px-4 py-2 text-[10px] text-[#9C9388]">Enter 이동 · Esc 닫기</div>
+   <div className="flex items-center gap-2 border-b border-[#EFE9DF] px-4 py-3"><Search size={16} className="text-[#9C9388]"/><TextInput autoFocus aria-label="메뉴 검색" value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='ArrowDown'){e.preventDefault();setActive(value=>Math.min(filtered.length-1,value+1))}else if(e.key==='ArrowUp'){e.preventDefault();setActive(value=>Math.max(0,value-1))}else if(e.key==='Enter'&&filtered[active])onNavigate(filtered[active].id)}} placeholder="메뉴 검색" className="!border-0 !shadow-none !ring-0"/></div>
+   <div className="max-h-[55vh] overflow-auto p-2">{filtered.map((item,index)=>{const Icon=item.icon;return <button type="button" key={item.id} onMouseEnter={()=>setActive(index)} onClick={()=>onNavigate(item.id)} aria-selected={active===index} className={'flex h-10 w-full items-center gap-3 rounded-md px-3 text-left text-xs '+(active===index?'bg-[#F3EEE5]':'hover:bg-[#F3EEE5]')}><Icon size={16}/><span className="flex-1">{item.label}</span><ChevronRight size={13} className="text-[#B8AFA2]"/></button>})}{!filtered.length&&<p className="p-5 text-center text-xs text-[#7C7469]">검색 결과 없음</p>}</div>
+   <div className="border-t border-[#EFE9DF] px-4 py-2 text-[10px] text-[#9C9388]">↑↓ 선택 · Enter 이동 · Esc 닫기</div>
   </div>
  </div>
 }
