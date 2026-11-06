@@ -656,6 +656,95 @@ mod tests {
         assert!(compatible[1].get("tool_calls").is_none());
     }
 
+    #[tokio::test]
+    async fn failed_native_cloud_route_switches_to_compat_local_with_tool_manual() {
+        use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        async fn local_model(
+            State(observed): State<std::sync::Arc<std::sync::Mutex<Vec<Value>>>>,
+            Json(body): Json<Value>,
+        ) -> axum::response::Response {
+            observed.lock().unwrap().push(body);
+            let payload = format!(
+                "data: {}\n\ndata: [DONE]\n\n",
+                json!({"choices":[{"delta":{"content":"로컬 대체 완료"}}]})
+            );
+            ([(axum::http::header::CONTENT_TYPE, "text/event-stream")], payload)
+                .into_response()
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/chat/completions", post(local_model))
+                    .with_state(observed.clone()),
+            ).await.unwrap()
+        });
+        // Keep a separate observer since the server owns its Arc.
+        // This test checks the entire HTTP payload, not only route selection.
+        server.abort();
+        drop(server);
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route("/chat/completions", post(local_model))
+            .with_state(observed.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let root = std::env::temp_dir().join(format!("dominion-mixed-failover-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config = crate::config::Config {
+            port:0, data_dir:root.clone(), web_dir:root.join("web"), workspace:root.clone(),
+        };
+        let state = AppState::new(config, crate::db::Store::open(&root.join("db.sqlite")).unwrap(),
+            crate::vault::Vault::open(&root.join("keys.json")));
+        state.store.put("session", &json!({"id":"mixed"}));
+        state.store.put("provider", &json!({
+            "id":"cloud","baseUrl":"http://127.0.0.1:1","model":"cloud-native",
+            "toolMode":"native","enabled":true,
+        }));
+        state.store.put("provider", &json!({
+            "id":"local","baseUrl":format!("http://{address}"),"model":"local-compat",
+            "toolMode":"compat","enabled":true,"local":true,"contextTokens":8192,
+        }));
+        let request = TurnRequest::from_value(&json!({
+            "input":"도구로 파일 읽기","sessionId":"mixed","providerId":"cloud",
+            "autoLearning":false,
+        })).unwrap();
+        let primary = select_provider(&state,&request,&state.store.get("session","mixed").unwrap()).unwrap();
+        let tools = vec![json!({
+            "type":"function","function":{"name":"workspace_read","description":"Read a file",
+            "parameters":{"type":"object","properties":{"path":{"type":"string"}}}}
+        })];
+        let messages = vec![
+            json!({"role":"system","content":"You are a helper"}),
+            json!({"role":"user","content":"도구로 파일 읽기"}),
+            json!({"role":"assistant","content":"","tool_calls":[{
+                "id":"tc1","type":"function","function":{"name":"workspace_read","arguments":"{\"path\":\"test.txt\"}"}
+            }]}),
+            json!({"role":"tool","tool_call_id":"tc1","content":"test.txt 내용"}),
+        ];
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (answer, selected) = tokio::time::timeout(std::time::Duration::from_secs(5),
+            stream_completion(&state,&reqwest::Client::new(),&primary,
+                &messages,&tools,&request,"mixed",&tx)
+        ).await.unwrap().unwrap();
+        assert_eq!(selected.id,"local");
+        assert_eq!(answer.content,"로컬 대체 완료");
+        let calls = observed.lock().unwrap();
+        assert_eq!(calls.len(),1);
+        let body = &calls[0];
+        assert!(body.get("tools").is_none());
+        let prompt = body["messages"][0]["content"].as_str().unwrap();
+        assert!(prompt.contains("Available tools:"));
+        assert!(prompt.contains("workspace_read"));
+        assert_eq!(body["messages"][3]["role"],"user");
+        assert!(body["messages"][3]["content"].as_str().unwrap().contains("test.txt 내용"));
+        server.abort();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn only_transient_failures_are_replayed() {
         assert!(transient_provider_error("remote 연결 실패: refused"));
