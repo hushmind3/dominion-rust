@@ -288,6 +288,14 @@ pub(super) async fn stream_completion(
 ) -> Result<(Completion, ProviderRef), String> {
     let mut candidates = vec![provider.clone()];
     candidates.extend(fallback_candidates(state, provider, request, messages, tools));
+    // Keep normal compat sessions untouched. Translate native tool history
+    // only when a turn originally started in native mode and falls back to a
+    // compat model (also on later rounds of that same turn).
+    let original_mode = request.provider_id.as_deref()
+        .and_then(|id| state.store.get("provider", id))
+        .and_then(|item| crate::engine::gateway::route_from_provider(state, &item, None).ok())
+        .map(|route| route.tool_mode)
+        .unwrap_or_else(|| provider.tool_mode.clone());
     let mut failed = Vec::new();
 
     for candidate in candidates {
@@ -298,6 +306,7 @@ pub(super) async fn stream_completion(
         let (result, exposed) = {
             let attempt = stream_completion_once(
                 state, client, &candidate, messages, tools, request, session_id, &relay,
+                candidate.tool_mode == "compat" && original_mode != "compat",
             );
             tokio::pin!(attempt);
             let mut exposed = false;
@@ -389,10 +398,11 @@ async fn stream_completion_once(
     request: &TurnRequest,
     session_id: &str,
     tx: &UnboundedSender<Value>,
+    convert_native_history: bool,
 ) -> Result<Completion, String> {
     let started = std::time::Instant::now();
     let compatible = provider.tool_mode == "compat";
-    let mut provider_messages = if compatible {
+    let mut provider_messages = if convert_native_history {
         compat_messages(messages)
     } else {
         messages.to_vec()
