@@ -1080,7 +1080,23 @@ async fn run_turn_body(
             .ok_or("도구 호출 메시지를 저장할 수 없습니다.")?;
         state.bus.message(&saved);
 
-        for (call_index, call) in completion.tool_calls.iter().enumerate() {
+        let ordering = crate::engine::algorithms::choose_for_agent(
+            state,
+            "execution.ordering",
+            request.agent_id.as_deref(),
+            Some(execution_id),
+        );
+        let ordering_kernel = ordering
+            .as_ref()
+            .and_then(|algorithm| algorithm["implementation"].as_str())
+            .unwrap_or("as-written");
+        let mut round_calls = completion.tool_calls.clone();
+        if ordering_kernel == "read-first" {
+            round_calls.sort_by_key(|call| !tool_is_read_only(&call.name));
+        }
+        let mut ordering_used = false;
+        let mut ordering_ok = true;
+        for (call_index, call) in round_calls.iter().enumerate() {
             // A disconnected SSE client must not stop work already promised by
             // the model; explicit cancel and budgets remain the stop signals.
             if !budget.charge_proposal() {
@@ -1310,6 +1326,10 @@ async fn run_turn_body(
                 None,
             )
             .await?;
+            ordering_used = true;
+            if !ok {
+                ordering_ok = false;
+            }
             crate::engine::algorithms::mark_signal(
                 state, execution_id, "tool.selection", ok,
             );
@@ -1399,6 +1419,12 @@ async fn run_turn_body(
             messages.push(json!({
                 "role":"tool","tool_call_id":call.id,"content":tool_content,
             }));
+        }
+
+        if ordering_used {
+            crate::engine::algorithms::mark_signal(
+                state, execution_id, "execution.ordering", ordering_ok,
+            );
         }
 
         // Check acceptance after the tool round, not only when the model
@@ -1946,6 +1972,15 @@ fn restore_program_state(
         json!({"from": source_id, "to": execution_id, "revision": program["revision"]}),
     );
     Ok(())
+}
+
+fn tool_is_read_only(name: &str) -> bool {
+    matches!(
+        name,
+        "workspace_list" | "workspace_read" | "file_list" | "file_read"
+            | "web_search" | "http_fetch" | "memory_search"
+            | "task_status" | "task_result" | "account_status"
+    )
 }
 
 fn tool_name(definition: &Value) -> &str {
@@ -4671,6 +4706,21 @@ mod harness_tool_selection_tests {
         );
         assert!(relevant.iter().any(|tool| tool_name(tool) == "workspace_write"));
         assert!(relevant.iter().any(|tool| tool_name(tool) == "github_api"));
+    }
+
+    #[test]
+    fn read_first_ordering_puts_observation_before_mutation() {
+        assert!(tool_is_read_only("workspace_read"));
+        assert!(tool_is_read_only("web_search"));
+        assert!(!tool_is_read_only("workspace_write"));
+        assert!(!tool_is_read_only("shell_exec"));
+        let mut calls = vec![
+            ToolCall { id: "1".into(), name: "workspace_write".into(), arguments: "{}".into() },
+            ToolCall { id: "2".into(), name: "workspace_read".into(), arguments: "{}".into() },
+        ];
+        calls.sort_by_key(|call| !tool_is_read_only(&call.name));
+        assert_eq!(calls[0].name, "workspace_read");
+        assert_eq!(calls[1].name, "workspace_write");
     }
 
     #[test]

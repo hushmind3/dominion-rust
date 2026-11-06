@@ -105,7 +105,7 @@ pub fn plan_speakers(
             ));
         }
     }
-    let mode = routing_mode(room)?;
+    let mode = routing_mode(state, room)?;
     if let Some(value) = explicit {
         let selected = id_list(value)?;
         if selected.iter().any(|id| !roster.contains(id)) {
@@ -114,7 +114,7 @@ pub fn plan_speakers(
         return Ok(selected);
     }
     let mentioned = mentioned_agents(state, &roster, input)?;
-    match mode {
+    match mode.as_str() {
         "discussion" => {
             let mut order = mentioned;
             for id in roster {
@@ -277,8 +277,8 @@ async fn run_locked(
     let mode = existing["routingMode"]
         .as_str()
         .or_else(|| input["routingMode"].as_str())
-        .unwrap_or(routing_mode(&room)?)
-        .to_string();
+        .map(str::to_string)
+        .unwrap_or(routing_mode(state, &room)?);
     if !matches!(mode.as_str(), "discussion" | "round_robin" | "mentioned") {
         return Err("지원하지 않는 대화방 응답 방식입니다.".into());
     }
@@ -634,13 +634,23 @@ fn route_peers(
         }
     }
 }
-fn routing_mode(room: &Value) -> Result<&str, String> {
-    let mode = room["routingMode"].as_str().unwrap_or("discussion");
-    if matches!(mode, "discussion" | "round_robin" | "mentioned") {
-        Ok(mode)
-    } else {
-        Err("응답 방식은 discussion, round_robin, mentioned 중 하나여야 합니다.".into())
+fn routing_mode(state: &AppState, room: &Value) -> Result<String, String> {
+    if let Some(mode) = room["routingMode"].as_str() {
+        if matches!(mode, "discussion" | "round_robin" | "mentioned") {
+            return Ok(mode.to_string());
+        }
+        return Err("응답 방식은 discussion, round_robin, mentioned 중 하나여야 합니다.".into());
     }
+    let kernel = crate::engine::algorithms::choose_for_agent(
+        state, "multiagent.roles", None, None,
+    )
+    .and_then(|algorithm| algorithm["implementation"].as_str().map(str::to_string))
+    .unwrap_or_else(|| "discussion".into());
+    Ok(match kernel.as_str() {
+        "round-robin" => "round_robin".into(),
+        "mentioned" => "mentioned".into(),
+        _ => "discussion".into(),
+    })
 }
 fn id_list(value: &Value) -> Result<Vec<String>, String> {
     let mut seen = HashSet::new();
@@ -1262,5 +1272,24 @@ mod tests {
         ));
         assert_eq!(room(&state), record);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn default_room_routing_uses_the_multiagent_roles_algorithm() {
+        let (state, dir) = test_state();
+        crate::engine::algorithms::seed(&state);
+        for mut algorithm in state.store.all("algorithm") {
+            if algorithm["kind"].as_str() != Some("multiagent.roles") {
+                continue;
+            }
+            algorithm["status"] = json!(if algorithm["implementation"].as_str()
+                == Some("mentioned") { "active" } else { "disabled" });
+            state.store.put("algorithm", &algorithm);
+        }
+        let room = json!({"agentIds":["a","b","c"]});
+        assert_eq!(routing_mode(&state, &room).unwrap(), "mentioned");
+        let explicit = json!({"agentIds":["a","b","c"],"routingMode":"round_robin"});
+        assert_eq!(routing_mode(&state, &explicit).unwrap(), "round_robin");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
