@@ -819,7 +819,14 @@ pub fn choose_for_agent(
         .into_iter()
         .filter(|algorithm| {
             algorithm["kind"].as_str() == Some(kind)
-                && algorithm["status"].as_str() != Some("disabled")
+                // Builtins are trusted executable baselines. Generated/user
+                // candidates cannot enter live UCB exploration merely by
+                // being registered as "available": they require validation
+                // or explicit activation by the owner.
+                && (matches!(algorithm["status"].as_str(),
+                        Some("active" | "validated"))
+                    || (algorithm["status"].as_str() == Some("available")
+                        && algorithm["source"].as_str() == Some("builtin")))
                 && algorithm["implementation"]
                     .as_str()
                     .is_some_and(|implementation| kernel_exists(kind, implementation))
@@ -1406,6 +1413,34 @@ mod tests {
             strategy_before["id"],
             "activation leaked into another kind"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unverified_generated_algorithms_never_enter_live_ucb_until_promoted() {
+        let (state, dir) = state();
+        seed(&state);
+        let candidate = register(&state, &json!({
+            "kind":"memory.importance", "name":"unsafe-generated-candidate",
+            "implementation":"fixed", "source":"generated",
+            "parameters":{"usesWeight":999.0}
+        })).unwrap();
+        assert_eq!(candidate["status"], "available");
+        for mut item in state.store.all("algorithm") {
+            if item["kind"] == "memory.importance"
+                && item["id"] != candidate["id"]
+            {
+                item["status"] = json!("disabled");
+                state.store.put("algorithm", &item);
+            }
+        }
+        assert!(choose_for_agent(
+            &state, "memory.importance", Some("agent-a"), None
+        ).is_none(), "unreviewed candidate reached production");
+        let activated = activate(&state, candidate["id"].as_str().unwrap()).unwrap();
+        assert_eq!(choose_for_agent(
+            &state, "memory.importance", Some("agent-a"), None
+        ).unwrap()["id"], activated["id"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 
