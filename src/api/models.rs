@@ -11,11 +11,12 @@ use std::collections::HashMap;
 
 pub async fn catalog(Query(query): Query<HashMap<String, String>>) -> Response {
     let search = query.get("q").cloned().unwrap_or_default();
+    let format = query.get("format").cloned().unwrap_or_else(|| "gguf".into());
     let limit = query
         .get("limit")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(40);
-    match models::catalog(&search, limit).await {
+    match models::catalog(&search, limit, &format).await {
         Ok(items) => Json(json!(items)).into_response(),
         Err(error) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))).into_response(),
     }
@@ -81,7 +82,22 @@ pub async fn download(State(state): State<AppState>, Json(body): Json<Value>) ->
         .get("optionId")
         .and_then(|value| value.as_str())
         .unwrap_or("");
-    match models::start_download(state, repo.to_string(), option.to_string()) {
+    let format = body
+        .get("format")
+        .and_then(|value| value.as_str())
+        .unwrap_or("gguf")
+        .to_string();
+    let files = body
+        .get("files")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    match models::start_download_with(state, repo.to_string(), option.to_string(), format, files) {
         Ok(job) => Json(job).into_response(),
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
     }
@@ -126,14 +142,22 @@ pub async fn job_action(
                     .into_response()
             }
         }
-        "pause" | "resume" => (
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({
-                "error": "다운로드 일시정지는 아직 Rust 백엔드에서 지원하지 않습니다. 취소 후 다시 시작하세요.",
-                "ported": false,
-            })),
-        )
-            .into_response(),
+        "pause" => {
+            if models::pause_job(&state, &id) {
+                Json(json!({ "ok": true, "status": "paused" })).into_response()
+            } else {
+                (StatusCode::CONFLICT, Json(json!({ "error": "다운로드 중인 작업만 일시정지할 수 있습니다." })))
+                    .into_response()
+            }
+        }
+        "resume" => match models::resume_job(&state, &id) {
+            Some(job) => Json(job).into_response(),
+            None => (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "일시정지·실패·취소된 작업만 재개할 수 있습니다." })),
+            )
+                .into_response(),
+        },
         other => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": format!("지원하지 않는 작업입니다: {other}") })),

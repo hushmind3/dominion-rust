@@ -45,6 +45,130 @@ pub fn models_dir(state: &AppState) -> PathBuf {
     state.config.data_dir.join("models")
 }
 
+fn safe_repo(repo: &str) -> Result<String, String> {
+    let parts = repo.trim().split('/').collect::<Vec<_>>();
+    if parts.len() != 2
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || *part == "."
+                || *part == ".."
+                || part.starts_with('.')
+                || part.len() > 128
+                || !part
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+        })
+    {
+        return Err("Hugging Face 저장소는 owner/name 형식이어야 합니다.".into());
+    }
+    Ok(parts.join("/"))
+}
+
+fn safe_relative(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !path.contains(':')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn mlx_models_root() -> Option<PathBuf> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
+    Some(PathBuf::from(home).join(".lmstudio/models"))
+}
+
+fn target_root(state: &AppState, format: &str, repo: &str) -> PathBuf {
+    if format == "mlx" {
+        mlx_models_root()
+            .unwrap_or_else(|| models_dir(state).join("mlx"))
+            .join(repo)
+    } else {
+        models_dir(state).join(repo.replace('/', "--"))
+    }
+}
+
+fn find_lms_key(repo: &str) -> Option<String> {
+    let lms = lms_bin()?;
+    let output = std::process::Command::new(lms)
+        .args(["ls", "--json"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let items: Vec<Value> = serde_json::from_slice(&output.stdout).ok()?;
+    items.into_iter().find_map(|item| {
+        let path = item["path"].as_str().unwrap_or("");
+        let key = item["modelKey"].as_str().unwrap_or("");
+        (path == repo && !key.is_empty()).then(|| key.to_string())
+    })
+}
+
+fn mlx_download_files(siblings: &[Value]) -> Option<Value> {
+    let mut files = Vec::new();
+    let mut has_config = false;
+    let mut shards = 0usize;
+    let mut bytes = 0u64;
+    for sibling in siblings {
+        let Some(file) = sibling.get("rfilename").and_then(Value::as_str) else {
+            continue;
+        };
+        let lower = file.to_ascii_lowercase();
+        if lower.starts_with("original/") || lower.starts_with("onnx/") {
+            continue;
+        }
+        let include = lower == "config.json"
+            || lower.ends_with(".safetensors")
+            || lower.ends_with(".safetensors.index.json")
+            || matches!(
+                lower.rsplit('/').next().unwrap_or(""),
+                "tokenizer.json"
+                    | "tokenizer_config.json"
+                    | "special_tokens_map.json"
+                    | "vocab.json"
+                    | "merges.txt"
+                    | "added_tokens.json"
+                    | "generation_config.json"
+                    | "preprocessor_config.json"
+                    | "chat_template.jinja"
+            );
+        if !include || !safe_relative(file) {
+            continue;
+        }
+        if lower == "config.json" {
+            has_config = true;
+        }
+        if lower.ends_with(".safetensors") {
+            shards += 1;
+        }
+        let size = sibling.get("size").and_then(Value::as_u64).unwrap_or(0);
+        bytes += size;
+        files.push(json!({"path": file, "bytes": size}));
+    }
+    if !has_config || shards == 0 {
+        return None;
+    }
+    let paths = files
+        .iter()
+        .map(|file| file["path"].clone())
+        .collect::<Vec<_>>();
+    Some(json!({
+        "id": "mlx",
+        "format": "mlx",
+        "label": format!("MLX · {shards} shard{}", if shards == 1 { "" } else { "s" }),
+        "quantization": "",
+        "bytes": bytes,
+        "sizeLabel": format_bytes(bytes),
+        "files": paths,
+        "fileSizes": files,
+        "shards": shards,
+    }))
+}
+
 fn format_bytes(bytes: u64) -> String {
     if bytes >= 1_073_741_824 {
         format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
@@ -60,6 +184,11 @@ pub fn installed(state: &AppState) -> Vec<Value> {
     let dir = models_dir(state);
     let mut found = Vec::new();
     walk(&dir, 0, &mut found);
+    let lms = lmstudio_models();
+    let indexed = lms
+        .iter()
+        .filter_map(|model| model["repo"].as_str().map(str::to_string))
+        .collect::<std::collections::HashSet<_>>();
     found
         .into_iter()
         .filter(|path| {
@@ -96,8 +225,78 @@ pub fn installed(state: &AppState) -> Vec<Value> {
             let path = Path::new(record["path"].as_str()?);
             external_model(record["id"].as_str()?, path)
         }))
-        .chain(lmstudio_models())
+        .chain(lms)
+        .chain(local_mlx_models().into_iter().filter(|model| {
+            model["repo"]
+                .as_str()
+                .is_some_and(|repo| !indexed.contains(repo))
+        }))
         .collect()
+}
+
+/// MLX repositories downloaded directly from Hugging Face. LM Studio indexes
+/// them from its own model directory; until it does, they are still visible in
+/// the library so the download is not silently lost.
+fn local_mlx_models() -> Vec<Value> {
+    let Some(root) = mlx_models_root() else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    walk_dirs(&root, 0, &mut found);
+    found
+        .into_iter()
+        .filter_map(|dir| {
+            let config = dir.join("config.json");
+            if !config.is_file() {
+                return None;
+            }
+            let mut bytes = 0u64;
+            let mut shards = 0usize;
+            for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                if name.ends_with(".safetensors") {
+                    shards += 1;
+                    bytes += entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+                }
+            }
+            if shards == 0 {
+                return None;
+            }
+            let repo = dir
+                .strip_prefix(&root)
+                .ok()?
+                .to_string_lossy()
+                .to_string();
+            Some(json!({
+                "id": format!("mlx:{repo}"),
+                "repo": repo,
+                "optionId": "mlx",
+                "source": "mlx-download",
+                "format": "mlx",
+                "label": repo.rsplit('/').next().unwrap_or(&repo),
+                "bytes": bytes,
+                "sizeLabel": format_bytes(bytes),
+                "engine": "MLX (LM Studio 인식 대기)",
+                "installedAt": Value::Null,
+            }))
+        })
+        .collect()
+}
+
+fn walk_dirs(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.push(path.clone());
+            walk_dirs(&path, depth + 1, found);
+        }
+    }
 }
 
 /// Models already managed by LM Studio (including its native MLX runtime).
@@ -131,7 +330,7 @@ fn lmstudio_models() -> Vec<Value> {
             let bytes = item["sizeBytes"].as_u64().unwrap_or(0);
             Some(json!({
                 "id": format!("lms:{key}"),
-                "repo": item["publisher"].as_str().unwrap_or(&key),
+                "repo": item["path"].as_str().unwrap_or_else(|| item["publisher"].as_str().unwrap_or(&key)),
                 "optionId": key,
                 "source": "lmstudio",
                 "format": format,
@@ -272,6 +471,13 @@ pub fn remove_installed(state: &AppState, id: &str) -> Result<(), String> {
         if !state.store.remove(EXTERNAL_KIND, record) {
             return Err("등록된 모델을 찾을 수 없습니다.".into());
         }
+    } else if let Some(repo) = id.strip_prefix("mlx:") {
+        let root = mlx_models_root().ok_or("LM Studio 모델 경로를 찾을 수 없습니다.")?;
+        let path = root.join(repo);
+        if !path.starts_with(&root) || !path.is_dir() {
+            return Err("다운로드한 MLX 모델을 찾을 수 없습니다.".into());
+        }
+        std::fs::remove_dir_all(path).map_err(|error| error.to_string())?;
     } else {
         let path = managed_model_path(state, id).ok_or("DOMINION이 관리하는 모델 파일을 찾을 수 없습니다.")?;
         std::fs::remove_file(path).map_err(|error| error.to_string())?;
@@ -360,6 +566,12 @@ pub fn runtime_snapshot(state: &AppState) -> Value {
 pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, String> {
     if let Some(key) = id.strip_prefix("lms:") {
         return load_lmstudio(state, id, key, context).await;
+    }
+    if let Some(repo) = id.strip_prefix("mlx:") {
+        let key = find_lms_key(repo).ok_or(
+            "LM Studio가 아직 이 MLX 모델을 인식하지 못했습니다. 모델 관리에서 새로고침한 뒤 다시 시도하세요.",
+        )?;
+        return load_lmstudio(state, id, &key, context).await;
     }
     let resolved = if let Some(record) = id.strip_prefix("external:") {
         state.store.get(EXTERNAL_KIND, record)
@@ -652,7 +864,7 @@ pub fn unload(state: &AppState) -> Value {
 }
 
 /// Hugging Face search, mapped to the shape the model explorer expects.
-pub async fn catalog(query: &str, limit: usize) -> Result<Vec<Value>, String> {
+pub async fn catalog(query: &str, limit: usize, format: &str) -> Result<Vec<Value>, String> {
     let mut url = reqwest::Url::parse("https://huggingface.co/api/models")
         .map_err(|error| error.to_string())?;
     {
@@ -661,7 +873,7 @@ pub async fn catalog(query: &str, limit: usize) -> Result<Vec<Value>, String> {
             pairs.append_pair("search", query.trim());
         }
         pairs
-            .append_pair("filter", "gguf")
+            .append_pair("filter", if format == "mlx" { "mlx" } else { "gguf" })
             .append_pair("sort", "downloads")
             .append_pair("direction", "-1")
             .append_pair("limit", &limit.clamp(1, 100).to_string());
@@ -713,30 +925,33 @@ pub async fn details(repo: &str) -> Result<Value, String> {
     }
     let value: Value = response.json().await.map_err(|error| error.to_string())?;
     let mut options = Vec::new();
-    if let Some(siblings) = value.get("siblings").and_then(|value| value.as_array()) {
-        for sibling in siblings {
-            let Some(file) = sibling.get("rfilename").and_then(|value| value.as_str()) else {
-                continue;
-            };
-            if !file.to_ascii_lowercase().ends_with(".gguf") {
-                continue;
-            }
-            let bytes = sibling
-                .get("size")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0);
-            let quantization = file.rsplit('.').nth(1).unwrap_or("").to_uppercase();
-            options.push(json!({
-                "id": file,
-                "format": "gguf",
-                "label": file.rsplit('/').next().unwrap_or(file),
-                "quantization": quantization,
-                "bytes": bytes,
-                "sizeLabel": format_bytes(bytes),
-                "files": [file],
-                "shards": 1,
-            }));
+    let siblings = value
+        .get("siblings")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for sibling in &siblings {
+        let Some(file) = sibling.get("rfilename").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if !file.to_ascii_lowercase().ends_with(".gguf") {
+            continue;
         }
+        let bytes = sibling
+            .get("size")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let quantization = file.rsplit('.').nth(1).unwrap_or("").to_uppercase();
+        options.push(json!({
+            "id": file,
+            "format": "gguf",
+            "label": file.rsplit('/').next().unwrap_or(file),
+            "quantization": quantization,
+            "bytes": bytes,
+            "sizeLabel": format_bytes(bytes),
+            "files": [file],
+            "shards": 1,
+        }));
     }
     options.sort_by(|a, b| {
         a.get("bytes")
@@ -744,6 +959,9 @@ pub async fn details(repo: &str) -> Result<Value, String> {
             .unwrap_or(0)
             .cmp(&b.get("bytes").and_then(|value| value.as_u64()).unwrap_or(0))
     });
+    if let Some(mlx) = mlx_download_files(&siblings) {
+        options.push(mlx);
+    }
     let author = repo.split('/').next().unwrap_or("");
     Ok(json!({
         "id": repo,
@@ -771,22 +989,78 @@ pub fn jobs(state: &AppState) -> Vec<Value> {
 
 /// Streams a GGUF file from Hugging Face and records progress as a job.
 pub fn start_download(state: AppState, repo: String, option: String) -> Result<Value, String> {
-    if repo.trim().is_empty() || option.trim().is_empty() {
-        return Err("repo 와 optionId 가 필요합니다.".into());
+    start_download_with(state, repo, option, "gguf".into(), Vec::new())
+}
+
+/// Starts a GGUF or multi-file MLX download. The job stores a repo-scoped
+/// target directory and a per-file list so resume never has to guess which
+/// bytes are already on disk.
+pub fn start_download_with(
+    state: AppState,
+    repo: String,
+    option: String,
+    format: String,
+    requested_files: Vec<String>,
+) -> Result<Value, String> {
+    let repo = safe_repo(&repo)?;
+    let format = if format == "mlx" { "mlx" } else { "gguf" };
+    let option = option.trim().to_string();
+    if option.is_empty() {
+        return Err("다운로드할 배포 형식을 선택하세요.".into());
     }
-    let file = option.rsplit('/').next().unwrap_or(&option).to_string();
-    if !file.to_ascii_lowercase().ends_with(".gguf") || file.contains(['\\', ':', '?', '#']) {
-        return Err("다운로드할 GGUF 파일을 확인하세요.".into());
+    for existing in state.store.all(MODEL_KIND) {
+        if existing["repo"].as_str() == Some(repo.as_str())
+            && existing["optionId"].as_str() == Some(option.as_str())
+            && matches!(existing["status"].as_str(), Some("downloading" | "paused"))
+        {
+            return Ok(existing);
+        }
+    }
+    let files = if format == "mlx" {
+        let files = requested_files
+            .into_iter()
+            .filter(|path| safe_relative(path))
+            .collect::<Vec<_>>();
+        if files.is_empty()
+            || !files.iter().any(|path| path == "config.json")
+            || !files.iter().any(|path| path.ends_with(".safetensors"))
+        {
+            return Err("MLX 다운로드에는 config.json과 safetensors 파일이 필요합니다.".into());
+        }
+        files
+    } else {
+        let file = option.trim_start_matches('/').to_string();
+        if !file.to_ascii_lowercase().ends_with(".gguf") || !safe_relative(&file) {
+            return Err("다운로드할 GGUF 파일을 확인하세요.".into());
+        }
+        vec![file]
+    };
+    let dir = target_root(&state, format, &repo);
+    let mut total = 0u64;
+    let mut entries = Vec::new();
+    for path in &files {
+        let target = dir.join(path);
+        let partial = PathBuf::from(format!("{}.part", target.display()));
+        let downloaded = if target.is_file() {
+            std::fs::metadata(&target).map(|meta| meta.len()).unwrap_or(0)
+        } else {
+            std::fs::metadata(&partial).map(|meta| meta.len()).unwrap_or(0)
+        };
+        total += downloaded;
+        entries.push(json!({"path": path, "downloaded": downloaded, "total": 0}));
     }
     let job = state.store.put(
         MODEL_KIND,
         &json!({
             "repo": repo,
             "optionId": option,
+            "format": format,
             "status": "downloading",
-            "downloaded": 0,
+            "downloaded": total,
             "total": 0,
-            "current": file,
+            "current": files.first().cloned().unwrap_or_default(),
+            "files": entries,
+            "targetDir": dir.to_string_lossy(),
             "error": "",
             "startedAt": chrono::Utc::now().to_rfc3339(),
         }),
@@ -794,144 +1068,309 @@ pub fn start_download(state: AppState, repo: String, option: String) -> Result<V
     let Some(job) = job else {
         return Err("다운로드 작업을 만들 수 없습니다.".into());
     };
-    let job_id = job
-        .get("id")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .to_string();
+    let job_id = job["id"].as_str().unwrap_or("").to_string();
     tokio::spawn(async move {
-        download_worker(state, job_id, repo, option).await;
+        download_worker(state, job_id).await;
     });
     Ok(job)
 }
 
-async fn download_worker(state: AppState, job_id: String, repo: String, option: String) {
+fn job_status(state: &AppState, id: &str) -> String {
+    state
+        .store
+        .get(MODEL_KIND, id)
+        .and_then(|job| job["status"].as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn patch_download(state: &AppState, id: &str, patch: Value) {
+    if let Some(saved) = state.store.patch_if(
+        MODEL_KIND,
+        id,
+        "status",
+        &json!("downloading"),
+        &patch,
+    ) {
+        state.bus.record("model_job", &saved);
+    }
+}
+
+fn downloaded_total(files: &[Value]) -> u64 {
+    files
+        .iter()
+        .map(|file| file["downloaded"].as_u64().unwrap_or(0))
+        .sum()
+}
+
+fn declared_total(files: &[Value]) -> u64 {
+    files
+        .iter()
+        .map(|file| {
+            file["total"]
+                .as_u64()
+                .filter(|value| *value > 0)
+                .unwrap_or_else(|| file["downloaded"].as_u64().unwrap_or(0))
+        })
+        .sum()
+}
+
+async fn download_worker(state: AppState, job_id: String) {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
-    let dir = models_dir(&state);
-    let _ = std::fs::create_dir_all(&dir);
-    let file = option.rsplit('/').next().unwrap_or(&option).to_string();
-    let target = dir.join(&file);
-    let partial = dir.join(format!(".{job_id}.part"));
-    let url = format!("https://huggingface.co/{repo}/resolve/main/{option}?download=true");
-
-    let patch = |state: &AppState, patch: Value| {
-        if let Some(saved) = state.store.patch_if(MODEL_KIND, &job_id, "status", &json!("downloading"), &patch) {
-            state.bus.record("model_job", &saved);
-        }
+    let Some(job) = state.store.get(MODEL_KIND, &job_id) else {
+        return;
     };
-
-    let response = reqwest::Client::new()
-        .get(&url)
-        .timeout(Duration::from_secs(3600))
-        .send()
-        .await;
-    let response = match response {
-        Ok(response) if response.status().is_success() => response,
-        Ok(response) => {
-            patch(
-                &state,
-                json!({ "status": "failed", "error": format!("다운로드 HTTP {}", response.status()) }),
-            );
+    let repo = job["repo"].as_str().unwrap_or("").to_string();
+    let format = job["format"].as_str().unwrap_or("gguf").to_string();
+    let dir = PathBuf::from(job["targetDir"].as_str().unwrap_or(""));
+    let mut files = job["files"].as_array().cloned().unwrap_or_default();
+    if dir.as_os_str().is_empty() || files.is_empty() {
+        patch_download(
+            &state,
+            &job_id,
+            json!({"status": "failed", "error": "다운로드 작업 정보가 손상되었습니다."}),
+        );
+        return;
+    }
+    let client = reqwest::Client::new();
+    for index in 0..files.len() {
+        if job_status(&state, &job_id) != "downloading" {
             return;
         }
-        Err(error) => {
-            patch(
-                &state,
-                json!({ "status": "failed", "error": error.to_string() }),
-            );
-            return;
-        }
-    };
-    let total = response.content_length().unwrap_or(0);
-    patch(&state, json!({ "total": total }));
-
-    let mut file_handle = match tokio::fs::File::create(&partial).await {
-        Ok(file) => file,
-        Err(error) => {
-            patch(
-                &state,
-                json!({ "status": "failed", "error": error.to_string() }),
-            );
-            return;
-        }
-    };
-    let mut stream = response.bytes_stream();
-    let mut downloaded: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let cancelled = state
-            .store
-            .get(MODEL_KIND, &job_id)
-            .and_then(|job| job.get("status").cloned())
-            .and_then(|value| value.as_str().map(str::to_string))
-            .map(|status| status == "cancelled")
-            .unwrap_or(false);
-        if cancelled {
-            drop(file_handle);
-            let _ = tokio::fs::remove_file(&partial).await;
-            return;
-        }
-        let Ok(chunk) = chunk else {
-            patch(
-                &state,
-                json!({ "status": "failed", "error": "스트림 오류" }),
-            );
-            drop(file_handle);
-            let _ = tokio::fs::remove_file(&partial).await;
-            return;
+        let Some(path) = files[index]["path"].as_str().map(str::to_string) else {
+            continue;
         };
-        if let Err(error) = file_handle.write_all(&chunk).await {
-            patch(
+        if !safe_relative(&path) {
+            patch_download(
                 &state,
-                json!({ "status": "failed", "error": error.to_string() }),
+                &job_id,
+                json!({"status": "failed", "error": "안전하지 않은 모델 파일 경로입니다."}),
             );
-            drop(file_handle);
-            let _ = tokio::fs::remove_file(&partial).await;
             return;
         }
-        downloaded += chunk.len() as u64;
-        if downloaded % (2 * 1024 * 1024) < chunk.len() as u64 {
-            patch(&state, json!({ "downloaded": downloaded }));
+        let target = dir.join(&path);
+        if let Some(parent) = target.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
         }
+        if target.is_file() {
+            let size = std::fs::metadata(&target).map(|meta| meta.len()).unwrap_or(0);
+            files[index]["downloaded"] = json!(size);
+            patch_download(
+                &state,
+                &job_id,
+                json!({"files": files, "downloaded": downloaded_total(&files), "total": declared_total(&files), "current": path}),
+            );
+            continue;
+        }
+        let partial = PathBuf::from(format!("{}.part", target.display()));
+        let existing = std::fs::metadata(&partial).map(|meta| meta.len()).unwrap_or(0);
+        let url = format!("https://huggingface.co/{repo}/resolve/main/{path}?download=true");
+        let mut request = client.get(&url).timeout(Duration::from_secs(3600));
+        if existing > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
+        }
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                patch_download(
+                    &state,
+                    &job_id,
+                    json!({"status": "failed", "error": error.to_string()}),
+                );
+                return;
+            }
+        };
+        if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && existing > 0 {
+            let _ = tokio::fs::rename(&partial, &target).await;
+            files[index]["downloaded"] = json!(existing);
+            continue;
+        }
+        if !response.status().is_success() {
+            patch_download(
+                &state,
+                &job_id,
+                json!({"status": "failed", "error": format!("다운로드 HTTP {}", response.status())}),
+            );
+            return;
+        }
+        let append = existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        let mut output = match tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(append)
+            .truncate(!append)
+            .open(&partial)
+            .await
+        {
+            Ok(file) => file,
+            Err(error) => {
+                patch_download(
+                    &state,
+                    &job_id,
+                    json!({"status": "failed", "error": error.to_string()}),
+                );
+                return;
+            }
+        };
+        let declared = response.content_length().unwrap_or(0).saturating_add(if append { existing } else { 0 });
+        files[index]["total"] = json!(declared);
+        let mut downloaded = if append { existing } else { 0 };
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            if job_status(&state, &job_id) != "downloading" {
+                let _ = output.flush().await;
+                return;
+            }
+            let Ok(chunk) = chunk else {
+                patch_download(
+                    &state,
+                    &job_id,
+                    json!({"status": "failed", "error": "다운로드 스트림 오류"}),
+                );
+                return;
+            };
+            if let Err(error) = output.write_all(&chunk).await {
+                patch_download(
+                    &state,
+                    &job_id,
+                    json!({"status": "failed", "error": error.to_string()}),
+                );
+                return;
+            }
+            downloaded += chunk.len() as u64;
+            if downloaded % (2 * 1024 * 1024) < chunk.len() as u64 {
+                files[index]["downloaded"] = json!(downloaded);
+                let total = downloaded_total(&files);
+                patch_download(
+                    &state,
+                    &job_id,
+                    json!({"files": files, "downloaded": total, "total": declared_total(&files), "current": path}),
+                );
+            }
+        }
+        if let Err(error) = output.flush().await {
+            patch_download(
+                &state,
+                &job_id,
+                json!({"status": "failed", "error": error.to_string()}),
+            );
+            return;
+        }
+        drop(output);
+        if job_status(&state, &job_id) != "downloading" {
+            return;
+        }
+        let _commit = DOWNLOAD_COMMIT.lock().unwrap();
+        if target.exists() {
+            let _ = std::fs::remove_file(&target);
+        }
+        if let Err(error) = std::fs::rename(&partial, &target) {
+            patch_download(
+                &state,
+                &job_id,
+                json!({"status": "failed", "error": error.to_string()}),
+            );
+            return;
+        }
+        files[index]["downloaded"] = json!(downloaded);
     }
-    let flushed = file_handle.flush().await;
-    drop(file_handle);
-    let _commit = DOWNLOAD_COMMIT.lock().unwrap();
-    if state.store.get(MODEL_KIND, &job_id).is_none_or(|job| job["status"] != "downloading") {
-        let _ = std::fs::remove_file(&partial);
-        return;
-    }
-    let published = flushed.and_then(|()| std::fs::hard_link(&partial, &target));
-    let _ = std::fs::remove_file(&partial);
-    if let Err(error) = published {
-        patch(&state, json!({ "status": "failed", "error": error.to_string() }));
-        return;
-    }
-    patch(
+    let installed_id = if format == "mlx" {
+        find_lms_key(&repo)
+            .map(|key| format!("lms:{key}"))
+            .unwrap_or_else(|| format!("mlx:{repo}"))
+    } else {
+        files
+            .first()
+            .and_then(|file| file["path"].as_str())
+            .map(|path| format!("{}/{}", repo.replace('/', "--"), path))
+            .unwrap_or_else(|| repo.replace('/', "--"))
+    };
+    let done = downloaded_total(&files);
+    let declared_total = files
+        .iter()
+        .map(|file| {
+            file["total"]
+                .as_u64()
+                .filter(|value| *value > 0)
+                .unwrap_or_else(|| file["downloaded"].as_u64().unwrap_or(0))
+        })
+        .sum::<u64>()
+        .max(done);
+    patch_download(
         &state,
+        &job_id,
         json!({
             "status": "completed",
-            "installedId": file,
-            "downloaded": downloaded,
-            "total": if total == 0 { downloaded } else { total },
+            "installedId": installed_id,
+            "downloaded": done,
+            "total": declared_total,
             "finishedAt": chrono::Utc::now().to_rfc3339(),
         }),
     );
     state.store.audit(
         "model.downloaded",
-        json!({ "repo": repo, "file": file, "bytes": downloaded }),
+        json!({"repo": repo, "format": format, "files": files.len(), "bytes": done}),
     );
 }
 
-pub fn cancel_job(state: &AppState, id: &str) -> bool {
-    let _commit = DOWNLOAD_COMMIT.lock().unwrap();
+pub fn pause_job(state: &AppState, id: &str) -> bool {
     let Some(saved) = state.store.patch_if(
-        MODEL_KIND, id, "status", &json!("downloading"),
-        &json!({"status":"cancelled","finishedAt":chrono::Utc::now().to_rfc3339()}),
-    ) else { return false };
+        MODEL_KIND,
+        id,
+        "status",
+        &json!("downloading"),
+        &json!({"status": "paused", "pausedAt": chrono::Utc::now().to_rfc3339()}),
+    ) else {
+        return false;
+    };
     state.bus.record("model_job", &saved);
     true
+}
+
+pub fn resume_job(state: &AppState, id: &str) -> Option<Value> {
+    let job = state.store.get(MODEL_KIND, id)?;
+    let status = job["status"].as_str().unwrap_or("");
+    if !matches!(status, "paused" | "failed" | "cancelled") {
+        return None;
+    }
+    let saved = state.store.patch_if(
+        MODEL_KIND,
+        id,
+        "status",
+        &json!(status),
+        &json!({
+            "status": "downloading",
+            "error": "",
+            "resumedAt": chrono::Utc::now().to_rfc3339()
+        }),
+    )?;
+    state.bus.record("model_job", &saved);
+    let worker_state = state.clone();
+    let worker_id = id.to_string();
+    tokio::spawn(async move {
+        download_worker(worker_state, worker_id).await;
+    });
+    Some(saved)
+}
+
+pub fn cancel_job(state: &AppState, id: &str) -> bool {
+    for status in ["downloading", "paused"] {
+        if let Some(saved) = state.store.patch_if(
+            MODEL_KIND,
+            id,
+            "status",
+            &json!(status),
+            &json!({
+                "status": "cancelled",
+                "finishedAt": chrono::Utc::now().to_rfc3339()
+            }),
+        ) {
+            state.bus.record("model_job", &saved);
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -964,7 +1403,7 @@ mod tests {
         std::fs::write(models.join("notes.txt"), b"x").unwrap();
         let items = installed(&state)
             .into_iter()
-            .filter(|item| item["source"] != "lmstudio")
+            .filter(|item| !matches!(item["source"].as_str(), Some("lmstudio" | "mlx-download")))
             .collect::<Vec<_>>();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["id"], "tiny.gguf");
@@ -990,5 +1429,42 @@ mod tests {
         std::fs::write(&source, b"x").unwrap();
         assert!(import_local(&state, &source.to_string_lossy()).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rejects_repo_traversal_and_scopes_download_targets() {
+        assert!(safe_repo("../etc").is_err());
+        assert!(safe_repo("owner/../model").is_err());
+        assert!(safe_repo("owner/model").is_ok());
+        let (state, dir) = temp_state();
+        assert_eq!(
+            target_root(&state, "gguf", "owner/model"),
+            models_dir(&state).join("owner--model")
+        );
+        assert_eq!(
+            target_root(&state, "mlx", "owner/model"),
+            mlx_models_root().unwrap().join("owner/model")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mlx_option_requires_config_and_keeps_safetensors() {
+        let siblings = vec![
+            json!({"rfilename":"config.json","size":100}),
+            json!({"rfilename":"model.safetensors","size":1000}),
+            json!({"rfilename":"tokenizer.json","size":50}),
+            json!({"rfilename":"README.md","size":10}),
+            json!({"rfilename":"original/model.safetensors","size":1000}),
+        ];
+        let option = mlx_download_files(&siblings).expect("mlx option");
+        assert_eq!(option["format"], "mlx");
+        let files = option["files"].as_array().unwrap();
+        assert!(files.iter().any(|file| file == "config.json"));
+        assert!(files.iter().any(|file| file == "model.safetensors"));
+        assert!(files.iter().any(|file| file == "tokenizer.json"));
+        assert!(!files.iter().any(|file| file == "README.md"));
+        assert!(!files.iter().any(|file| file == "original/model.safetensors"));
+        assert_eq!(option["shards"], 1);
     }
 }
