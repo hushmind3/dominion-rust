@@ -373,6 +373,22 @@ async fn run_turn_body(
     let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"taskId":task_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
 
     let mut provider = select_provider(state, request, &session)?;
+    let budget_algorithm = crate::engine::algorithms::choose_for_agent(
+        state,
+        "execution.budget",
+        request.agent_id.as_deref(),
+        Some(execution_id),
+    );
+    let max_rounds = budget_algorithm
+        .as_ref()
+        .and_then(|algorithm| algorithm["parameters"]["maxRounds"].as_u64())
+        .unwrap_or(MAX_ROUNDS as u64)
+        .clamp(2, 24) as usize;
+    let max_tools = budget_algorithm
+        .as_ref()
+        .and_then(|algorithm| algorithm["parameters"]["maxTools"].as_u64())
+        .unwrap_or(MAX_TOOL_CALLS as u64)
+        .clamp(4, 120) as usize;
     let prompt_context = super::context::system_prompt_with_manifest_at(
         state,
         request,
@@ -498,6 +514,18 @@ async fn run_turn_body(
     if request.tools_enabled && request.tools_execution_enabled {
         tool_definitions.extend(mcp::definitions(state).await);
     }
+    let discovery = crate::engine::algorithms::choose_for_agent(
+        state,
+        "tool.discovery",
+        request.agent_id.as_deref(),
+        Some(execution_id),
+    )
+    .unwrap_or(Value::Null);
+    tool_definitions = select_tool_definitions(
+        tool_definitions,
+        &request.input,
+        &discovery,
+    );
     // Keep a native tool schema catalog. The provider adapter constructs
     // native calls or the text-tool manual for whichever local/API model
     // actually handles each round, including after failover.
@@ -571,8 +599,8 @@ async fn run_turn_body(
         "reasoningLanguage": request.reasoning_language,
         "toolsEnabled": request.tools_enabled,
         "toolsExecutionEnabled": request.tools_execution_enabled,
-        "maxRounds": MAX_ROUNDS,
-        "maxToolCalls": MAX_TOOL_CALLS,
+        "maxRounds": max_rounds,
+        "maxToolCalls": max_tools,
         "maxTokens": MAX_TOKENS,
         "maxElapsedMs": MAX_ELAPSED.as_millis() as u64,
     });
@@ -608,7 +636,7 @@ async fn run_turn_body(
     let mut adaptation_attempts = 0usize;
     let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
-    let mut budget = super::budget::BudgetLedger::new(MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED);
+    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -634,7 +662,7 @@ async fn run_turn_body(
     };
     messages.extend(harness_messages);
 
-    for round in 0..MAX_ROUNDS {
+    for round in 0..max_rounds {
         if !budget.charge_round() {
             return Err("모델 라운드 예산을 초과했습니다.".into());
         }
@@ -648,9 +676,9 @@ async fn run_turn_body(
         if started_at.elapsed() > MAX_ELAPSED {
             return Err("실행 시간 제한(10분)을 초과했습니다.".into());
         }
-        if metrics.lock().unwrap().tool_calls as usize >= MAX_TOOL_CALLS {
+        if metrics.lock().unwrap().tool_calls as usize >= max_tools {
             return Err(format!(
-                "도구 호출 제한({MAX_TOOL_CALLS}회)을 초과했습니다."
+                "도구 호출 제한({max_tools}회)을 초과했습니다."
             ));
         }
         // DECIDE: an active durable program supplies the next step; otherwise
@@ -940,7 +968,7 @@ async fn run_turn_body(
                         ));
                     }
                     if acceptance_retries < max_acceptance_retries
-                        && round + 1 < MAX_ROUNDS
+                        && round + 1 < max_rounds
                         && budget.can_execute_tool()
                     {
                         acceptance_retries += 1;
@@ -1394,7 +1422,7 @@ async fn run_turn_body(
             }
         } else {
             return Err(format!(
-                "모델 반복 제한({MAX_ROUNDS}회)에 도달하여 실행을 마치지 못했습니다."
+                "모델 반복 제한({max_rounds}회)에 도달하여 실행을 마치지 못했습니다."
             ));
         }
     }
@@ -1891,6 +1919,91 @@ fn restore_program_state(
         json!({"from": source_id, "to": execution_id, "revision": program["revision"]}),
     );
     Ok(())
+}
+
+fn tool_name(definition: &Value) -> &str {
+    definition["function"]["name"]
+        .as_str()
+        .or_else(|| definition["name"].as_str())
+        .unwrap_or("")
+}
+
+fn select_tool_definitions(
+    definitions: Vec<Value>,
+    query: &str,
+    algorithm: &Value,
+) -> Vec<Value> {
+    let strategy = algorithm["implementation"]
+        .as_str()
+        .or_else(|| algorithm["variant"].as_str())
+        .unwrap_or("all");
+    if strategy == "all" {
+        return definitions;
+    }
+    let default_core = [
+        "workspace_list", "workspace_read", "workspace_write", "shell_exec",
+        "web_search", "memory_store", "memory_search", "delegate_task",
+        "task_status", "task_result",
+    ];
+    let core = algorithm["parameters"]["tools"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_else(|| {
+            default_core
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+    if strategy == "core" {
+        return definitions
+            .into_iter()
+            .filter(|definition| core.contains(tool_name(definition)))
+            .collect();
+    }
+    // query-relevant: always keep the core set, add the best matches.
+    let tokens = query
+        .to_lowercase()
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| token.chars().count() > 1)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let extra = algorithm["parameters"]["extra"].as_u64().unwrap_or(8) as usize;
+    let mut matched = definitions
+        .iter()
+        .filter(|definition| !core.contains(tool_name(definition)))
+        .map(|definition| {
+            let haystack = serde_json::to_string(definition)
+                .unwrap_or_default()
+                .to_lowercase();
+            let score = tokens
+                .iter()
+                .filter(|token| haystack.contains(token.as_str()))
+                .count();
+            (score, definition.clone())
+        })
+        .filter(|(score, _)| *score > 0)
+        .collect::<Vec<_>>();
+    matched.sort_by(|a, b| b.0.cmp(&a.0));
+    let keep_extra = matched
+        .into_iter()
+        .take(extra)
+        .map(|(_, definition)| definition)
+        .collect::<Vec<_>>();
+    definitions
+        .into_iter()
+        .filter(|definition| {
+            core.contains(tool_name(definition))
+                || keep_extra
+                    .iter()
+                    .any(|extra| tool_name(extra) == tool_name(definition))
+        })
+        .collect()
 }
 
 fn trim_tool_definitions(definitions: Vec<Value>, budget: usize) -> Vec<Value> {
@@ -4468,5 +4581,49 @@ mod outcome_tests {
             determine_task_outcome(&execution("failed", true, json!("check"))),
             TaskOutcome::Failed
         );
+    }
+}
+
+#[cfg(test)]
+mod harness_tool_selection_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_discovery_selects_core_or_query_relevant_tools() {
+        let definitions = vec![
+            json!({"type":"function","function":{"name":"workspace_write","description":"write"}}),
+            json!({"type":"function","function":{"name":"web_search","description":"search the web"}}),
+            json!({"type":"function","function":{"name":"github_api","description":"github"}}),
+        ];
+        let core = select_tool_definitions(
+            definitions.clone(),
+            "검색",
+            &json!({"implementation":"core"}),
+        );
+        assert_eq!(core.len(), 2);
+        assert!(core.iter().all(|tool| tool_name(tool) != "github_api"));
+        let relevant = select_tool_definitions(
+            definitions,
+            "github issue",
+            &json!({"implementation":"query-relevant","parameters":{"extra":2}}),
+        );
+        assert!(relevant.iter().any(|tool| tool_name(tool) == "workspace_write"));
+        assert!(relevant.iter().any(|tool| tool_name(tool) == "github_api"));
+    }
+
+    #[test]
+    fn tool_schemas_fit_the_selected_provider_budget() {
+        let tools = (0..30)
+            .map(|index| json!({"type":"function","function":{"name":format!("tool{index}"),"description":"x".repeat(100)}}))
+            .collect::<Vec<_>>();
+        let kept = trim_tool_definitions(tools, 2_000);
+        assert!(!kept.is_empty());
+        assert!(kept.len() < 30);
+        let total = kept
+            .iter()
+            .map(|tool| serde_json::to_string(tool).unwrap().len())
+            .sum::<usize>();
+        assert!(total <= 2_000 || kept.len() == 1);
     }
 }
