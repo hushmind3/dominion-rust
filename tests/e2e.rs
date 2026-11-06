@@ -3376,6 +3376,78 @@ fn allow_all_recovery_algorithm_retries_the_same_failed_call() {
     assert_eq!(shells, 2, "allow-all did not retry: {operations}");
 }
 
+#[test]
+fn parallel_reads_combination_executes_independent_reads_in_one_round() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().cloned().unwrap_or_default();
+        let saw_tool = messages.iter().any(|message| message["role"] == "tool");
+        if saw_tool {
+            return vec![json!({"choices":[{"delta":{"content":"두 파일을 읽었습니다."},"finish_reason":"stop"}]})];
+        }
+        vec![json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"id":"read-1","type":"function","function":{"name":"workspace_read","arguments":"{\"path\":\"one.txt\"}"}},
+            {"index":1,"id":"read-2","type":"function","function":{"name":"workspace_read","arguments":"{\"path\":\"two.txt\"}"}}
+        ]},"finish_reason":"tool_calls"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    std::fs::write(app._root.join("one.txt"), "ONE").unwrap();
+    std::fs::write(app._root.join("two.txt"), "TWO").unwrap();
+    let algorithm = app.post(
+        "/api/algorithms",
+        &json!({"kind":"tool.combination","name":"parallel-reads","implementation":"parallel-reads","parameters":{}}),
+    );
+    app.post(
+        &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
+        &json!({}),
+    );
+    let stream = app.chat(&json!({"input":"one.txt와 two.txt를 읽어","autoLearning":false}));
+    assert!(stream.contains("두 파일을 읽었습니다"), "{stream}");
+    let executions = app.get("/api/executions");
+    let execution = &executions.as_array().unwrap()[0];
+    let operations = {
+        let execution_id = execution["id"].as_str().unwrap();
+        app.get(&format!("/api/executions/{execution_id}/operations"))
+    };
+    let reads = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|operation| operation["tool"] == "workspace_read" && operation["status"] == "completed")
+        .count();
+    assert_eq!(reads, 2, "{operations}");
+}
+
+#[test]
+fn normalize_paths_arguments_run_through_the_common_dispatch() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().cloned().unwrap_or_default();
+        let saw_tool = messages.iter().any(|message| message["role"] == "tool");
+        if saw_tool {
+            return vec![json!({"choices":[{"delta":{"content":"생성했습니다."},"finish_reason":"stop"}]})];
+        }
+        vec![json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"id":"write-1","type":"function","function":{"name":"workspace_write","arguments":"{\"path\":\" ./sub//normalized.txt \",\"content\":\"OK\"}"}}
+        ]},"finish_reason":"tool_calls"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let algorithm = app.post(
+        "/api/algorithms",
+        &json!({"kind":"tool.arguments","name":"normalize-paths","implementation":"normalize-paths","parameters":{}}),
+    );
+    app.post(
+        &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
+        &json!({}),
+    );
+    let _ = app.chat(&json!({"input":"normalized.txt를 만들어","autoLearning":false}));
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("sub/normalized.txt")).unwrap_or_default(),
+        "OK"
+    );
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

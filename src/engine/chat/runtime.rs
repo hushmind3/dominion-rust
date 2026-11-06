@@ -1094,6 +1094,69 @@ async fn run_turn_body(
         if ordering_kernel == "read-first" {
             round_calls.sort_by_key(|call| !tool_is_read_only(&call.name));
         }
+        let combination = crate::engine::algorithms::choose_for_agent(
+            state,
+            "tool.combination",
+            request.agent_id.as_deref(),
+            Some(execution_id),
+        );
+        if combination
+            .as_ref()
+            .and_then(|algorithm| algorithm["implementation"].as_str())
+            == Some("parallel-reads")
+        {
+            let read_calls = round_calls
+                .iter()
+                .filter(|call| tool_is_read_only(&call.name))
+                .cloned()
+                .collect::<Vec<_>>();
+            if read_calls.len() >= 2 {
+                let base_seq = op_seq;
+                op_seq += read_calls.len() as u64;
+                let mut futures = Vec::new();
+                for (offset, call) in read_calls.iter().enumerate() {
+                    let Ok(arguments) = serde_json::from_str::<Value>(&call.arguments) else {
+                        continue;
+                    };
+                    futures.push(dispatch_tool_call(
+                        state,
+                        tx,
+                        &session,
+                        request,
+                        session_id,
+                        execution_id,
+                        call,
+                        arguments,
+                        metrics,
+                        base_seq + offset as u64 + 1,
+                        round,
+                        offset,
+                        provider.tool_mode == "compat",
+                        "model",
+                        None,
+                        None,
+                        None,
+                    ));
+                }
+                let results = futures_util::future::join_all(futures).await;
+                for (call, result) in read_calls.iter().zip(results.into_iter()) {
+                    let (content, ok) = match result {
+                        Ok((_value, ok, content)) => (content, ok),
+                        Err(error) => (json!({"error":error}).to_string(), false),
+                    };
+                    messages.push(json!({
+                        "role":"tool","tool_call_id":call.id,"content":content,
+                    }));
+                    crate::engine::algorithms::mark_signal(
+                        state, execution_id, "tool.selection", ok,
+                    );
+                    crate::engine::algorithms::mark_signal(
+                        state, execution_id, "recovery.strategy", ok,
+                    );
+                }
+                round_calls.retain(|call| !tool_is_read_only(&call.name));
+            }
+        }
         let mut ordering_used = false;
         let mut ordering_ok = true;
         for (call_index, call) in round_calls.iter().enumerate() {
@@ -1981,6 +2044,31 @@ fn tool_is_read_only(name: &str) -> bool {
             | "web_search" | "http_fetch" | "memory_search"
             | "task_status" | "task_result" | "account_status"
     )
+}
+
+fn normalize_tool_arguments(mut arguments: Value, strategy: &str) -> Value {
+    if strategy != "normalize-paths" {
+        return arguments;
+    }
+    let Some(map) = arguments.as_object_mut() else {
+        return arguments;
+    };
+    for key in ["path", "cwd", "file", "filename"] {
+        let Some(raw) = map.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        let mut normalized = raw.trim().replace('\\', "/");
+        while normalized.contains("//") {
+            normalized = normalized.replace("//", "/");
+        }
+        while normalized.starts_with("./") {
+            normalized = normalized[2..].to_string();
+        }
+        if !normalized.is_empty() {
+            map.insert(key.to_string(), Value::String(normalized));
+        }
+    }
+    arguments
 }
 
 fn tool_name(definition: &Value) -> &str {
@@ -3052,6 +3140,12 @@ async fn dispatch_tool_call(
     procedure_strategy: Option<&str>,
     procedure_revision: Option<&str>,
 ) -> Result<(Value, bool, String), String> {
+    let argument_strategy = crate::engine::algorithms::variant_for_agent(
+        state,
+        "tool.arguments",
+        request.agent_id.as_deref(),
+    );
+    let arguments = normalize_tool_arguments(arguments, &argument_strategy);
     let started_at = chrono::Utc::now().to_rfc3339();
     let tool_started = std::time::Instant::now();
     let _ = tx.send(json!({ "type": "tool_start", "name": call.name, "id": call.id }));
@@ -4706,6 +4800,16 @@ mod harness_tool_selection_tests {
         );
         assert!(relevant.iter().any(|tool| tool_name(tool) == "workspace_write"));
         assert!(relevant.iter().any(|tool| tool_name(tool) == "github_api"));
+    }
+
+    #[test]
+    fn path_arguments_are_normalized_only_when_the_kernel_is_active() {
+        let raw = json!({"path":"  ./sub//file.txt  ","content":"x"});
+        let untouched = normalize_tool_arguments(raw.clone(), "none");
+        assert_eq!(untouched["path"], "  ./sub//file.txt  ");
+        let normalized = normalize_tool_arguments(raw, "normalize-paths");
+        assert_eq!(normalized["path"], "sub/file.txt");
+        assert_eq!(normalized["content"], "x");
     }
 
     #[test]
