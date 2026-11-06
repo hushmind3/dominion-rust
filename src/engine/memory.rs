@@ -188,6 +188,60 @@ fn terms(text: &str) -> BTreeSet<String> {
     out
 }
 
+fn active_kernel(store: &Store, kind: &str) -> Value {
+    store
+        .all("algorithm")
+        .into_iter()
+        .find(|algorithm| {
+            algorithm["kind"].as_str() == Some(kind)
+                && algorithm["status"].as_str() == Some("active")
+        })
+        .unwrap_or(Value::Null)
+}
+
+fn recency_bonus(record: &Value, days: f64) -> f64 {
+    let raw = record["lastUsedAt"]
+        .as_str()
+        .or_else(|| record["learnedAt"].as_str())
+        .or_else(|| record["createdAt"].as_str());
+    let Some(raw) = raw else {
+        return 0.0;
+    };
+    let Ok(at) = chrono::DateTime::parse_from_rfc3339(raw) else {
+        return 0.0;
+    };
+    let age_days = (chrono::Utc::now() - at.with_timezone(&chrono::Utc))
+        .num_seconds()
+        .max(0) as f64
+        / 86_400.0;
+    if age_days <= days {
+        0.5 * (1.0 - age_days / days.max(1.0))
+    } else {
+        0.0
+    }
+}
+
+fn importance_bonus(record: &Value, strategy: &str, algorithm: &Value) -> f64 {
+    let uses = record["uses"].as_u64().unwrap_or(0) as f64;
+    match strategy {
+        "recency-uses" => {
+            let weight = algorithm["parameters"]["usesWeight"].as_f64().unwrap_or(0.15);
+            let days = algorithm["parameters"]["recencyDays"].as_f64().unwrap_or(7.0);
+            uses.min(8.0) * weight + recency_bonus(record, days)
+        }
+        "evidence-weighted" => {
+            let uses_weight = algorithm["parameters"]["usesWeight"].as_f64().unwrap_or(0.1);
+            let evidence_weight = algorithm["parameters"]["evidenceWeight"].as_f64().unwrap_or(0.2);
+            let evidence = record["evidenceMessageIds"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0) as f64;
+            uses.min(8.0) * uses_weight + evidence.min(8.0) * evidence_weight
+        }
+        _ => 0.0,
+    }
+}
+
 pub fn retrieve(store: &Store, scope: &MemoryScope, query: &str, limit: usize) -> Vec<Value> {
     let query_terms = terms(query);
     let compact_query = normalize(query);
@@ -245,10 +299,16 @@ pub fn retrieve(store: &Store, scope: &MemoryScope, query: &str, limit: usize) -
             }
             let relevance = matched as f64
                 / (query_terms.len() as f64 * memory_terms.len().max(1) as f64).sqrt();
+            let importance_algorithm = active_kernel(store, "memory.importance");
+            let importance_strategy = importance_algorithm["implementation"]
+                .as_str()
+                .or_else(|| importance_algorithm["variant"].as_str())
+                .unwrap_or("recency-uses");
+            let bonus = importance_bonus(&record, importance_strategy, &importance_algorithm);
             let score = if always {
-                1.0 + importance
+                1.0 + importance + bonus
             } else {
-                relevance * 10.0 + if phrase { 4.0 } else { 0.0 } + importance
+                relevance * 10.0 + if phrase { 4.0 } else { 0.0 } + importance + bonus
             };
             Some((score, record))
         })
@@ -279,6 +339,67 @@ pub fn retrieve(store: &Store, scope: &MemoryScope, query: &str, limit: usize) -
 }
 
 #[allow(dead_code)] // compatibility wrapper; snapshots use the manifest form
+/// Archives low-importance memories that have not been used for a long time.
+/// Keyed facts and standing preferences/procedures are protected.
+pub fn forget_sweep(store: &Store) -> usize {
+    let algorithm = active_kernel(store, "memory.forgetting");
+    let strategy = algorithm["implementation"]
+        .as_str()
+        .or_else(|| algorithm["variant"].as_str())
+        .unwrap_or("decay");
+    if strategy == "never" {
+        return 0;
+    }
+    let min_importance = algorithm["parameters"]["minImportance"]
+        .as_f64()
+        .unwrap_or(0.3);
+    let max_age_days = algorithm["parameters"]["maxAgeDays"]
+        .as_f64()
+        .unwrap_or(30.0);
+    let now = chrono::Utc::now();
+    let mut archived = 0;
+    for mut record in store.all("memory") {
+        if record["status"].as_str() != Some("active") {
+            continue;
+        }
+        if record["key"].is_string()
+            || matches!(
+                record["type"].as_str(),
+                Some("preference" | "decision" | "procedure")
+            )
+        {
+            continue;
+        }
+        let importance = record["importance"].as_f64().unwrap_or(0.5);
+        if importance >= min_importance {
+            continue;
+        }
+        let raw = record["lastUsedAt"]
+            .as_str()
+            .or_else(|| record["learnedAt"].as_str())
+            .or_else(|| record["createdAt"].as_str());
+        let Some(raw) = raw else {
+            continue;
+        };
+        let Ok(at) = chrono::DateTime::parse_from_rfc3339(raw) else {
+            continue;
+        };
+        let age_days = (now - at.with_timezone(&chrono::Utc)).num_seconds() as f64 / 86_400.0;
+        if age_days < max_age_days {
+            continue;
+        }
+        record["status"] = json!("archived");
+        record["forgottenAt"] = json!(now.to_rfc3339());
+        record["forgetReason"] = json!(format!(
+            "importance {importance:.2} and {age_days:.0} days unused"
+        ));
+        if store.put("memory", &record).is_some() {
+            archived += 1;
+        }
+    }
+    archived
+}
+
 pub fn context_block(store: &Store, scope: &MemoryScope, query: &str) -> Option<String> {
     context_block_with_manifest(store, scope, query).0
 }
@@ -863,5 +984,84 @@ mod tests {
         assert!(!visible(&saved, &scope(&db, "room-s1", "b")));
         assert!(!visible(&saved, &scope(&db, "room-s2", "a")));
         assert!(!visible(&saved, &scope(&db, "local-s", "a")));
+    }
+}
+
+#[cfg(test)]
+mod memory_algorithm_tests {
+    use super::*;
+
+    fn store() -> Store {
+        Store::open(std::path::Path::new(":memory:")).unwrap()
+    }
+    fn scope(store: &Store, session: &str, agent: &str) -> MemoryScope {
+        MemoryScope::for_session(store, session, Some(agent))
+    }
+    fn algorithm(store: &Store, id: &str, kind: &str, implementation: &str, parameters: Value) {
+        store.put(
+            "algorithm",
+            &json!({
+                "id": id, "kind": kind, "implementation": implementation,
+                "variant": implementation, "status": "active", "parameters": parameters
+            }),
+        );
+    }
+
+    #[test]
+    fn importance_algorithm_changes_retrieval_ranking() {
+        let db = store();
+        let scope = scope(&db, "s", "a");
+        algorithm(&db, "imp-fixed", "memory.importance", "fixed", json!({}));
+        db.put("memory", &json!({
+            "id":"m-old","text":"Rust 절차 A","type":"lesson","importance":0.9,
+            "scope":"agent","agentId":"a","partitionKey":scope.partition_key,
+            "status":"active","createdAt":"2020-01-01T00:00:00Z","uses":0
+        }));
+        db.put("memory", &json!({
+            "id":"m-new","text":"Rust 절차 B","type":"lesson","importance":0.2,
+            "scope":"agent","agentId":"a","partitionKey":scope.partition_key,
+            "status":"active","createdAt":chrono::Utc::now().to_rfc3339(),"uses":6,
+            "lastUsedAt":chrono::Utc::now().to_rfc3339()
+        }));
+        let fixed = retrieve(&db, &scope, "Rust 절차", 5);
+        assert_eq!(fixed[0]["id"], "m-old", "{fixed:?}");
+        // Switch the active kernel.
+        let mut fixed_record = db.get("algorithm", "imp-fixed").unwrap();
+        fixed_record["status"] = json!("available");
+        db.put("algorithm", &fixed_record);
+        algorithm(
+            &db,
+            "imp-recency",
+            "memory.importance",
+            "recency-uses",
+            json!({"usesWeight":0.3,"recencyDays":7}),
+        );
+        let ranked = retrieve(&db, &scope, "Rust 절차", 5);
+        assert_eq!(ranked[0]["id"], "m-new", "{ranked:?}");
+    }
+
+    #[test]
+    fn forgetting_archives_only_old_low_importance_facts() {
+        let db = store();
+        let scope = scope(&db, "s", "a");
+        algorithm(&db, "forget-decay", "memory.forgetting", "decay", json!({"minImportance":0.3,"maxAgeDays":30}));
+        for (id, kind, importance, created) in [
+            ("old-low", "fact", 0.1, "2020-01-01T00:00:00Z"),
+            ("old-high", "fact", 0.9, "2020-01-01T00:00:00Z"),
+            ("old-pref", "preference", 0.1, "2020-01-01T00:00:00Z"),
+            ("new-low", "fact", 0.1, chrono::Utc::now().to_rfc3339().as_str()),
+        ] {
+            db.put("memory", &json!({
+                "id":id,"text":format!("{id} 내용"),"type":kind,"importance":importance,
+                "scope":"agent","agentId":"a","partitionKey":scope.partition_key,
+                "status":"active","createdAt":created,"lastUsedAt":created
+            }));
+        }
+        let archived = forget_sweep(&db);
+        assert_eq!(archived, 1, "{:?}", db.all("memory"));
+        assert_eq!(db.get("memory", "old-low").unwrap()["status"], "archived");
+        assert_eq!(db.get("memory", "old-high").unwrap()["status"], "active");
+        assert_eq!(db.get("memory", "old-pref").unwrap()["status"], "active");
+        assert_eq!(db.get("memory", "new-low").unwrap()["status"], "active");
     }
 }
