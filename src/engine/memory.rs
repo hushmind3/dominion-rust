@@ -1443,7 +1443,9 @@ mod per_agent_memory_learning_tests {
                 "id":format!("old-{agent}"), "agentId":agent, "partitionKey":"local",
                 "scope":"agent", "type":"fact", "text":format!("old {agent}"),
                 "importance":0.1, "status":"active",
-                "createdAt":"2020-01-01T00:00:00Z"
+                "createdAt":"2020-01-01T00:00:00Z",
+                "learnedAt":"2020-01-01T00:00:00Z",
+                "lastUsedAt":"2020-01-01T00:00:00Z"
             }));
         }
         for (id, importance) in [("copy-low",0.2),("copy-high",0.9)] {
@@ -1458,7 +1460,9 @@ mod per_agent_memory_learning_tests {
             "id":"protected","agentId":"agent-a","partitionKey":"local",
             "scope":"agent","type":"preference","text":"소중한 선호",
             "importance":0.1,"status":"active",
-            "createdAt":"2020-01-01T00:00:00Z"
+            "createdAt":"2020-01-01T00:00:00Z",
+            "learnedAt":"2020-01-01T00:00:00Z",
+            "lastUsedAt":"2020-01-01T00:00:00Z"
         }));
         assert_eq!(learning_sweep(&state), 3);
         assert_eq!(learning_sweep(&state), 0, "no idle UCB score inflation");
@@ -1488,7 +1492,9 @@ mod per_agent_memory_learning_tests {
         state.store.put("memory", &json!({
             "id":"old-one","agentId":"bot","scope":"agent","partitionKey":"local",
             "text":"stale fact","type":"fact","importance":0.1,
-            "status":"active","createdAt":"2020-01-01T00:00:00Z"
+            "status":"active","createdAt":"2020-01-01T00:00:00Z",
+            "learnedAt":"2020-01-01T00:00:00Z",
+            "lastUsedAt":"2020-01-01T00:00:00Z"
         }));
         assert_eq!(learning_sweep(&state),1);
         assert_eq!(learning_sweep(&state),0);
