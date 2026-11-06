@@ -329,6 +329,60 @@ fn disabled_tools_cannot_be_enabled_by_the_model() {
 }
 
 #[test]
+fn a_room_greeting_gets_one_direct_reply_not_a_panel() {
+    let _serial = serial();
+    let (port, requests) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"안녕하세요, 주인님."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    for (id, name) in [("a", "Alice"), ("b", "Bob")] {
+        app.post(
+            "/api/agents",
+            &json!({"id":id,"name":name,"systemPrompt":"독립 참가자","enabled":true}),
+        );
+    }
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let room = app.post(
+        "/api/rooms",
+        &json!({"name":"인사방","agentIds":["a","b"],"routingMode":"discussion","rounds":1,"maxTurns":9,"toolsEnabled":true,"autoLearning":false}),
+    );
+    let id = room["id"].as_str().unwrap();
+    let sent = app.post(
+        &format!("/api/rooms/{id}/messages"),
+        &json!({"input":"안녕","clientMessageId":"owner-greeting-001"}),
+    );
+    let job_id = sent["jobId"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let job = app.get(&format!("/api/jobs/{job_id}"));
+        let status = job["status"].as_str().unwrap_or("");
+        if matches!(status, "completed" | "failed") {
+            assert_eq!(status, "completed", "{job}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{job}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let messages = app.get(&format!("/api/rooms/{id}/messages"));
+    let assistants = messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["role"] == "assistant")
+        .collect::<Vec<_>>();
+    assert_eq!(assistants.len(), 1, "{messages}");
+    assert_eq!(assistants[0]["agent_id"], "a", "{messages}");
+    assert_eq!(assistants[0]["content"], "안녕하세요, 주인님.");
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 1, "a greeting called the whole panel");
+    let system = captured[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap_or("");
+    assert!(system.contains("first responder"), "{system}");
+    assert!(system.contains("do not invent a topic"), "{system}");
+}
+
+#[test]
 fn persistent_room_http_flow_keeps_owner_once_and_shares_peer_context() {
     let _serial = serial();
     let (port, requests) = scripted_provider(|request| {
