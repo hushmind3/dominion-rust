@@ -1221,11 +1221,16 @@ async fn run_turn_body(
                     }
                 }
                 let results = futures_util::future::join_all(futures).await;
+                // A dispatch can complete while the tool itself failed
+                // (`Ok((value, false, content))`). Combination credit requires
+                // every combined read to actually succeed.
                 crate::engine::algorithms::mark_signal(
                     state,
                     execution_id,
                     "tool.combination",
-                    results.iter().all(|result| result.is_ok()),
+                    results.iter().all(|result| {
+                        result.as_ref().is_ok_and(|(_, ok, _)| *ok)
+                    }),
                 );
                 for ((call, _offset), result) in valid_calls.iter().zip(results.into_iter()) {
                     let (content, ok) = match result {

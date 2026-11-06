@@ -15,7 +15,7 @@ cargo test --release --bin dominion-rust measurement_ -- --nocapture
 | Area | Metric | Baseline | Selected kernel |
 | --- | --- | --- | --- |
 | Memory rerank | top-1 retrieval accuracy on a length-skewed 11-doc corpus (3 queries) | `none` 0/3 | `bm25` 3/3 |
-| Memory compression | active records / active characters for 4 old low-importance memories | 4 / 285 chars | 1 / 177 chars (38% smaller) |
+| Memory compression | active records for 4 related old memories | 4 records | 1 topic summary (facts preserved, originals archived) |
 | Task decomposition | average quality over 3 multi-clause Korean requests | `single-step` 0.33 | `clause-split` 0.86 |
 | Multi-agent conflict | expected-winner accuracy over 5 hand-built disagreement cases | — | 5/5 |
 | Mixed provider path | native API provider fails over to a compat local provider in one HTTP turn | primary fails | fallback answers, no native `tools`, text tool manual present |

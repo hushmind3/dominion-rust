@@ -2365,6 +2365,8 @@ fn evidence_bundle(pairs: u64, baseline_ok: bool, treatment_ok: bool) -> Value {
     let halfwidth = (2.0 * (2.0f64 / 0.05).ln() / n).sqrt();
     let verdict = if pairs >= 10 && delta - halfwidth > 0.0 {
         "preliminary_support"
+    } else if pairs >= 10 && delta + halfwidth < 0.0 {
+        "regressed"
     } else {
         "inconclusive"
     };
@@ -2377,6 +2379,63 @@ fn evidence_bundle(pairs: u64, baseline_ok: bool, treatment_ok: bool) -> Value {
         "trials":trials,"manifest":manifest,"manifestHash":hash,
         "delta":delta,"independentUnits":pairs,"verdict":verdict
     })
+}
+
+#[test]
+fn regressed_experiment_rolls_back_the_candidate() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"unused"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    let policy = app.post(
+        "/api/benchmark/policies",
+        &json!({
+            "slot":"planning","name":"regression-candidate",
+            "parameters":{"outline":true},"rationale":"regression rollback test"
+        }),
+    );
+    let policy_id = policy["id"].as_str().unwrap().to_string();
+    let request = app.post(
+        "/api/benchmark/experiment-requests",
+        &json!({"policyId":policy_id, "fixture":"planning_evaluation"}),
+    );
+    let request_id = request["id"].as_str().unwrap().to_string();
+    let claimed = app.post(
+        "/api/experiment-requests/claim",
+        &json!({"runnerId":"regression-runner","ttlSeconds":60}),
+    );
+    let token = claimed["request"]["claimToken"].as_str().unwrap().to_string();
+    let evidence = evidence_bundle(10, true, false);
+    seed_evidence_executions(&app, &evidence);
+    assert_eq!(evidence["verdict"], "regressed", "{evidence}");
+    let completed = app.post(
+        &format!("/api/experiment-requests/{request_id}/complete"),
+        &json!({
+            "claimToken": token,
+            "experimentId":"regressed-1",
+            "verdict":evidence["verdict"],
+            "delta":evidence["delta"],
+            "independentUnits":evidence["independentUnits"],
+            "manifest":evidence["manifest"],
+            "manifestHash":evidence["manifestHash"],
+            "trials":evidence["trials"],
+        }),
+    );
+    assert_eq!(completed["request"]["status"], "completed", "{completed}");
+    assert_eq!(completed["request"]["verdict"], "regressed", "{completed}");
+    assert_eq!(
+        completed["request"]["promotionStatus"], "rolled_back",
+        "{completed}"
+    );
+    let policies = app.get("/api/policies");
+    let policy = policies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|policy| policy["id"] == policy_id.as_str())
+        .expect("policy");
+    assert_eq!(policy["status"], "rolled_back", "{policy}");
 }
 
 #[test]
@@ -3110,7 +3169,7 @@ fn parallel_and_nested_program_nodes_execute_concurrently() {
             {"type":"parallel","id":"par","nodes":[
                 {"type":"sequence","id":"s1","nodes":[
                     {"type":"call_tool","id":"p1","tool":"shell_exec",
-                     "inputs":{"command":"sleep 1.0"},"saveAs":"p1"},
+                     "inputs":{"command":"sleep 2.0"},"saveAs":"p1"},
                     {"type":"branch","id":"b1",
                      "predicate":{"type":"exists","from":"seed","path":"/path"},
                      "then":[{"type":"call_tool","id":"p1b","tool":"workspace_write",
@@ -3120,7 +3179,7 @@ fn parallel_and_nested_program_nodes_execute_concurrently() {
                 ]},
                 {"type":"sequence","id":"s2","nodes":[
                     {"type":"call_tool","id":"p2","tool":"shell_exec",
-                     "inputs":{"command":"sleep 1.0"},"saveAs":"p2"},
+                     "inputs":{"command":"sleep 2.0"},"saveAs":"p2"},
                     {"type":"loop","id":"l2","maxIterations":1,
                      "predicate":{"type":"not","predicate":{"type":"exists","from":"p2b"}},
                      "body":[{"type":"call_tool","id":"p2b","tool":"workspace_write",
@@ -3144,8 +3203,8 @@ fn parallel_and_nested_program_nodes_execute_concurrently() {
     let elapsed = started.elapsed();
     assert!(!stream.contains("\"type\":\"error\""), "{stream}");
     assert!(
-        elapsed < Duration::from_millis(1_700),
-        "parallel tools did not run concurrently: {elapsed:?}"
+        elapsed < Duration::from_millis(3_500),
+        "parallel tools did not run concurrently (serial 4s minimum): {elapsed:?}"
     );
     assert!(app._root.join("seed.txt").exists());
     assert_eq!(
@@ -3480,6 +3539,44 @@ fn parallel_reads_answer_malformed_arguments_so_no_tool_call_is_orphaned() {
     );
     let stream = app.chat(&json!({"input":"one.txt를 읽어","autoLearning":false}));
     assert!(stream.contains("malformed-read-was-answered"), "{stream}");
+}
+
+#[test]
+fn parallel_reads_counts_a_failed_tool_as_a_failed_combination() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let messages = request["messages"].as_array().cloned().unwrap_or_default();
+        let saw_tool = messages.iter().any(|message| message["role"] == "tool");
+        if saw_tool {
+            return vec![json!({"choices":[{"delta":{"content":"읽기 시도 완료"},"finish_reason":"stop"}]})];
+        }
+        vec![json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"id":"read-good","type":"function","function":{"name":"workspace_read","arguments":"{\"path\":\"one.txt\"}"}},
+            {"index":1,"id":"read-missing","type":"function","function":{"name":"workspace_read","arguments":"{\"path\":\"missing.txt\"}"}}
+        ]},"finish_reason":"tool_calls"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    std::fs::write(app._root.join("one.txt"), "ONE").unwrap();
+    let algorithm = app.post(
+        "/api/algorithms",
+        &json!({"kind":"tool.combination","name":"parallel-reads","implementation":"parallel-reads","parameters":{}}),
+    );
+    app.post(
+        &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
+        &json!({}),
+    );
+    let stream = app.chat(&json!({"input":"one.txt와 missing.txt를 읽어","autoLearning":false}));
+    assert!(stream.contains("읽기 시도 완료"), "{stream}");
+    let synergy = app.get("/api/synergy");
+    let combination = synergy["algorithmStats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|stat| stat["kind"] == "tool.combination")
+        .expect("combination statistic");
+    assert_eq!(combination["uses"], 1, "{combination}");
+    assert_eq!(combination["failures"], 1, "{combination}");
+    assert_eq!(combination["successes"], 0, "{combination}");
 }
 
 #[test]

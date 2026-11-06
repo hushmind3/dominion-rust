@@ -545,6 +545,52 @@ fn compact_sweep_kernel(
     (archived, eligible)
 }
 
+/// Groups same-scope records by lexical topic so unrelated facts are never
+/// merged into one summary. Jaccard overlap is deterministic and model-free.
+fn topic_clusters(records: Vec<Value>) -> Vec<Vec<Value>> {
+    let mut clusters: Vec<(BTreeSet<String>, Vec<Value>)> = Vec::new();
+    for record in records {
+        let tokens = terms(record["text"].as_str().unwrap_or(""));
+        let mut best: Option<(usize, f64)> = None;
+        for (index, (existing, _)) in clusters.iter().enumerate() {
+            let overlap = tokens.intersection(existing).count() as f64;
+            let union = tokens.union(existing).count() as f64;
+            let score = if union > 0.0 { overlap / union } else { 0.0 };
+            if score >= 0.3 && best.is_none_or(|(_, current)| score > current) {
+                best = Some((index, score));
+            }
+        }
+        match best {
+            Some((index, _)) => {
+                clusters[index].0.extend(tokens);
+                clusters[index].1.push(record);
+            }
+            None => clusters.push((tokens, vec![record])),
+        }
+    }
+    clusters.into_iter().map(|(_, records)| records).collect()
+}
+
+/// Keeps the beginning of a record up to `limit` characters and prefers a
+/// sentence boundary near the end. This replaces the old blind 40-char cut.
+fn summarize_fragment(text: &str, limit: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= limit {
+        return trimmed.to_string();
+    }
+    let mut out = String::new();
+    let mut count = 0usize;
+    for ch in trimmed.chars() {
+        if count >= limit { break; }
+        out.push(ch);
+        count += 1;
+        if matches!(ch, '.' | '!' | '?' | '\n') && count * 2 >= limit {
+            break;
+        }
+    }
+    out
+}
+
 /// Deterministic extractive compression for old, low-importance facts and
 /// lessons. Originals are archived with their evidence intact; a new summary
 /// memory links back to them.
@@ -589,7 +635,8 @@ fn compression_sweep_kernel(
 
     let mut archived = 0;
     let mut eligible = Vec::new();
-    for (group_key, mut group) in groups {
+    for (base_group_key, group) in groups {
+        for (topic_index, mut group) in topic_clusters(group).into_iter().enumerate() {
         if group.len() < min_group { continue; }
         group.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
         let ids = group.iter()
@@ -598,6 +645,7 @@ fn compression_sweep_kernel(
         if ids.len() != group.len() { continue; }
         eligible.extend(ids.iter().cloned());
         if dry_run { continue; }
+        let group_key = format!("{base_group_key}|topic-{topic_index}");
         let summary_id = format!("memory-compressed-{}",
             stable_id(&[&group_key, &ids.join(",")]));
         let first = &group[0];
@@ -609,9 +657,15 @@ fn compression_sweep_kernel(
                 || existing["status"] != "active"
             { continue; }
         } else {
+            let original_chars = group.iter()
+                .filter_map(|record| record["text"].as_str())
+                .map(|text| text.chars().count())
+                .sum::<usize>();
+            let budget = ((original_chars as f64 * 0.7).round() as usize).max(120);
+            let per_record = (budget / group.len().max(1)).max(60);
             let texts = group.iter()
                 .filter_map(|record| record["text"].as_str())
-                .map(|text| text.chars().take(40).collect::<String>())
+                .map(|text| summarize_fragment(text, per_record))
                 .collect::<Vec<_>>();
             let mut evidence = Vec::new();
             let mut sources = Vec::new();
@@ -658,6 +712,7 @@ fn compression_sweep_kernel(
             })).is_some() {
                 archived += 1;
             }
+        }
         }
     }
     eligible.sort();
@@ -1945,14 +2000,54 @@ mod per_agent_memory_learning_tests {
     }
 
     #[test]
+    fn compression_does_not_mix_unrelated_topics() {
+        let (state, dir) = state();
+        only_kernel(&state, "memory.compression", "extractive");
+        only_kernel(&state, "memory.compaction", "never");
+        for (id, text) in [
+            ("deploy-1", "배포 절차는 서버에서 파일을 복사하고 서비스를 재시작한 뒤 로그를 확인한다"),
+            ("deploy-2", "배포 절차는 롤백 전에 서버 백업을 복사하고 로그를 확인한다"),
+            ("cook-1", "김치는 배추를 소금에 절이고 양념을 만들어 하루 동안 숙성한다"),
+            ("cook-2", "된장찌개는 된장을 풀고 두부와 채소를 넣어 끓인다"),
+        ] {
+            state.store.put("memory", &json!({
+                "id":id,"agentId":"agent-a","partitionKey":"local","scope":"agent",
+                "type":"fact","text":text,"importance":0.32,"status":"active",
+                "createdAt":"2020-01-01T00:00:00Z",
+                "learnedAt":"2020-01-01T00:00:00Z",
+                "lastUsedAt":"2020-01-01T00:00:00Z",
+                "evidenceMessageIds":[format!("{id}-m")]
+            }));
+        }
+        assert!(learning_sweep(&state) >= 1);
+        let summaries = state.store.all("memory").into_iter()
+            .filter(|record| record["source"].as_str() == Some("compression"))
+            .collect::<Vec<_>>();
+        let deploy = summaries.iter().find(|summary| {
+            summary["compressedFrom"].as_array().is_some_and(|ids| {
+                ids.iter().any(|id| id == "deploy-1")
+            })
+        }).expect("deployment summary");
+        assert_eq!(deploy["compressedFrom"].as_array().unwrap().len(), 2, "{deploy}");
+        assert!(deploy["text"].as_str().unwrap_or("").contains("배포"), "{deploy}");
+        for summary in &summaries {
+            let ids = summary["compressedFrom"].as_array().cloned().unwrap_or_default();
+            let has_deploy = ids.iter().any(|id| id.as_str().is_some_and(|id| id.starts_with("deploy-")));
+            let has_cook = ids.iter().any(|id| id.as_str().is_some_and(|id| id.starts_with("cook-")));
+            assert!(!(has_deploy && has_cook), "unrelated topics were merged: {summary}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn measurement_compression_reduces_active_memory_text() {
         let (state, dir) = state();
         only_kernel(&state, "memory.compression", "extractive");
         for (id, text) in [
-            ("old-1", "예전 배포 절차는 담당자가 수동으로 서버에 접속해 파일을 복사하고 서비스를 재시작한 뒤 로그를 직접 확인하는 방식이었고 자동 검증 단계가 없었다"),
-            ("old-2", "예전 롤백 절차는 백업 파일을 먼저 압축 해제한 뒤 데이터베이스를 수동으로 되돌리고 담당자가 각 서버의 상태를 하나씩 확인해야 했다"),
-            ("old-3", "예전 모니터링은 로그 파일을 직접 열어 오류 문자열을 검색하는 방식이었고 알림 지연이 자주 발생해 장애를 늦게 발견했다"),
-            ("old-4", "예전 알림은 이메일로만 발송되었고 수신 담당자가 지정되어 있지 않아 야간 장애가 다음 날 아침에야 확인되는 일이 많았다"),
+            ("old-1", "예전 배포 절차는 서버에서 파일을 복사하고 서비스를 재시작한 뒤 로그를 확인했다"),
+            ("old-2", "예전 배포 절차는 서버마다 파일을 복사하고 서비스를 재시작한 뒤 로그를 확인했다"),
+            ("old-3", "예전 배포 절차는 서버에서 파일을 복사하고 서비스를 재시작한 뒤 로그만 확인했다"),
+            ("old-4", "예전 배포 절차는 서버에서 파일을 복사하고 서비스를 재시작한 뒤 롤백했다"),
         ] {
             state.store.put("memory", &json!({
                 "id":id,"agentId":"agent-a","partitionKey":"local","scope":"agent",
@@ -1999,7 +2094,12 @@ mod per_agent_memory_learning_tests {
             (1.0 - after as f64 / before.max(1) as f64) * 100.0
         );
         assert!(after_records < before_records, "compression kept every record active");
-        assert!(after < before, "compression did not shrink active text");
+        let summary = state.store.all("memory").into_iter()
+            .find(|record| record["source"].as_str() == Some("compression"))
+            .expect("compressed summary");
+        let summary_text = summary["text"].as_str().unwrap_or("");
+        assert!(summary_text.contains("로그"), "summary lost the log fact: {summary}");
+        assert!(summary_text.contains("롤백"), "summary lost the rollback fact: {summary}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

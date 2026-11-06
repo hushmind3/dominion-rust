@@ -512,11 +512,8 @@ pub fn verify_evidence(
     let alpha = 0.05;
     let halfwidth = (2.0 * (2.0f64 / alpha).ln() / n as f64).sqrt();
     let lower = (mean - halfwidth).max(-1.0);
-    let verdict = if n < 10 || lower <= 0.0 {
-        "inconclusive"
-    } else {
-        "preliminary_support"
-    };
+    let upper = (mean + halfwidth).min(1.0);
+    let verdict = experiment_verdict(mean, lower, upper, n);
     let claimed_delta = body["delta"].as_f64().unwrap_or(f64::NAN);
     let claimed_units = body["independentUnits"].as_u64().unwrap_or(0);
     let claimed_verdict = body["verdict"].as_str().unwrap_or("");
@@ -530,6 +527,23 @@ pub fn verify_evidence(
         ));
     }
     Ok((mean, n, verdict.to_string(), timeouts, pairs))
+}
+
+/// A powered paired experiment is only `preliminary_support` when the whole
+/// interval is above zero, and `regressed` when it is entirely below zero.
+/// The latter is what the strategy/policy rollback paths wait for.
+fn experiment_verdict(mean: f64, lower: f64, upper: f64, units: u64) -> &'static str {
+    if units < 10 {
+        "inconclusive"
+    } else if lower > 0.0 {
+        "preliminary_support"
+    } else if upper < 0.0 {
+        "regressed"
+    } else if mean == 0.0 {
+        "inconclusive"
+    } else {
+        "inconclusive"
+    }
 }
 
 pub async fn complete(
@@ -622,7 +636,10 @@ pub async fn complete(
             }
         }
     }
-    if request["kind"].as_str() == Some("policy") && promotion_allowed {
+    if request["kind"].as_str() == Some("policy")
+        && promotion_allowed
+        && verdict != "regressed"
+    {
         use crate::engine::plan_quality;
         let version_matches = body["semanticEvaluator"]["id"].as_str()
             == Some(plan_quality::EVALUATOR_ID)
@@ -887,4 +904,17 @@ pub async fn enqueue(State(state): State<AppState>, Json(body): Json<Value>) -> 
 
 pub async fn optimizers(State(state): State<AppState>) -> Response {
     Json(crate::engine::policy::optimizer_report(&state)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paired_verdicts_include_regression_and_require_power() {
+        assert_eq!(experiment_verdict(0.8, 0.2, 1.0, 10), "preliminary_support");
+        assert_eq!(experiment_verdict(-0.8, -1.0, -0.2, 10), "regressed");
+        assert_eq!(experiment_verdict(-0.8, -1.0, -0.2, 9), "inconclusive");
+        assert_eq!(experiment_verdict(0.05, -0.5, 0.6, 10), "inconclusive");
+    }
 }
