@@ -172,7 +172,7 @@ fn context_block_with_manifest(
 ) -> Option<(String, Vec<Value>, String)> {
     let scope = crate::engine::memory::MemoryScope::for_session(&state.store, session_id, agent_id);
     let (memories, mut items) =
-        crate::engine::memory::context_block_with_manifest(&state.store, &scope, query);
+        crate::engine::memory::context_block_with_manifest_at(state, &scope, query, execution_id);
 
     let mut skills = state
         .store
