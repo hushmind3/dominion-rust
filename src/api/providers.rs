@@ -88,11 +88,11 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
         .get("reflection")
         .or_else(|| body.get("learning"))
         .and_then(|value| value.as_bool())
-        .unwrap_or(false);
+        .unwrap_or_else(|| base_url.contains("api.reflection.ai"));
     if reflection && model.is_empty() {
         return error(
             StatusCode::BAD_REQUEST,
-            "성찰(리플렉션) 모델로 사용하려면 모델 ID가 필요합니다.",
+            "회고 분석 모델로 사용하려면 모델 ID가 필요합니다.",
         );
     }
 

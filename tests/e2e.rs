@@ -5100,7 +5100,7 @@ fn correction_turn_failure_still_enqueues_reflection() {
                 && message["content"]
                     .as_str()
                     .unwrap_or("")
-                    .contains("실패를 분석하는 리플렉션 분석기")
+                    .contains("실패를 분석하는 회고 분석기")
         });
         if is_reflection {
             return vec![json!({"choices":[{"delta":{"content":
@@ -5241,7 +5241,7 @@ fn procedure_violation_blocks_the_target_and_repairs_with_the_prerequisite() {
             .first()
             .and_then(|message| message["content"].as_str())
             .unwrap_or("");
-        if system.contains("리플렉션 분석기") {
+        if system.contains("회고 분석기") {
             let reflection = json!({
                 "rootCause": "audit를 먼저 만들지 않고 report를 작성했다",
                 "expected": "audit 먼저",
@@ -5394,7 +5394,7 @@ fn harness_assisted_executes_dag_nodes_through_the_common_dispatch() {
             .first()
             .and_then(|message| message["content"].as_str())
             .unwrap_or("");
-        if system.contains("리플렉션 분석기") {
+        if system.contains("회고 분석기") {
             let reflection = json!({
                 "rootCause": "선행 audit 없이 report를 작성했다",
                 "expected": "audit 먼저",
