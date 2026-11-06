@@ -351,82 +351,79 @@ fn retrieve_ranked(
 /// Keyed facts and standing preferences/procedures are protected.
 pub fn forget_sweep(store: &Store) -> usize {
     let algorithm = active_kernel(store, "memory.forgetting");
-    let strategy = algorithm["implementation"]
-        .as_str()
-        .or_else(|| algorithm["variant"].as_str())
-        .unwrap_or("decay");
-    if strategy == "never" {
-        return 0;
-    }
-    let min_importance = algorithm["parameters"]["minImportance"]
-        .as_f64()
-        .unwrap_or(0.3);
-    let max_age_days = algorithm["parameters"]["maxAgeDays"]
-        .as_f64()
-        .unwrap_or(30.0);
-    let now = chrono::Utc::now();
-    let mut archived = 0;
-    for mut record in store.all("memory") {
-        if record["status"].as_str() != Some("active") {
-            continue;
-        }
-        if record["key"].is_string()
-            || matches!(
-                record["type"].as_str(),
-                Some("preference" | "decision" | "procedure")
-            )
-        {
-            continue;
-        }
-        let importance = record["importance"].as_f64().unwrap_or(0.5);
-        if importance >= min_importance {
-            continue;
-        }
-        let raw = record["lastUsedAt"]
-            .as_str()
-            .or_else(|| record["learnedAt"].as_str())
-            .or_else(|| record["createdAt"].as_str());
-        let Some(raw) = raw else {
-            continue;
-        };
-        let Ok(at) = chrono::DateTime::parse_from_rfc3339(raw) else {
-            continue;
-        };
-        let age_days = (now - at.with_timezone(&chrono::Utc)).num_seconds() as f64 / 86_400.0;
-        if age_days < max_age_days {
-            continue;
-        }
-        record["status"] = json!("archived");
-        record["forgottenAt"] = json!(now.to_rfc3339());
-        record["forgetReason"] = json!(format!(
-            "importance {importance:.2} and {age_days:.0} days unused"
-        ));
-        if store.put("memory", &record).is_some() {
-            archived += 1;
-        }
-    }
-    archived
+    forget_sweep_kernel(store, &algorithm, None, false).0
 }
 
+/// Returns both changed-record count and the independently eligible evidence.
+/// owner=None is the legacy, whole-store wrapper; maintenance always supplies
+/// the agent whose memory is being evaluated.
+fn forget_sweep_kernel(
+    store: &Store, algorithm: &Value, owner: Option<&str>, dry_run: bool,
+) -> (usize, Vec<String>) {
+    let strategy = algorithm["implementation"].as_str()
+        .or_else(|| algorithm["variant"].as_str()).unwrap_or("decay");
+    let min_importance = algorithm["parameters"]["minImportance"]
+        .as_f64().unwrap_or(0.3);
+    let max_age_days = algorithm["parameters"]["maxAgeDays"]
+        .as_f64().unwrap_or(30.0);
+    let now = chrono::Utc::now();
+    let mut archived = 0;
+    let mut eligible = Vec::new();
+    for record in store.all("memory") {
+        if record["status"].as_str() != Some("active") { continue; }
+        if owner.is_some_and(|agent| {
+            record["agentId"].as_str().unwrap_or("global") != agent
+        }) { continue; }
+        if record["key"].is_string()
+            || matches!(record["type"].as_str(),
+                Some("preference" | "decision" | "procedure"))
+        { continue; }
+        let importance = record["importance"].as_f64().unwrap_or(0.5);
+        if importance >= min_importance { continue; }
+        let raw = record["lastUsedAt"].as_str()
+            .or_else(|| record["learnedAt"].as_str())
+            .or_else(|| record["createdAt"].as_str());
+        let Some(raw) = raw else { continue };
+        let Ok(at) = chrono::DateTime::parse_from_rfc3339(raw) else { continue };
+        let age_days = (now - at.with_timezone(&chrono::Utc)).num_seconds()
+            as f64 / 86_400.0;
+        if age_days < max_age_days { continue; }
+        let Some(id) = record["id"].as_str() else { continue };
+        eligible.push(id.to_string());
+        if dry_run || strategy == "never" { continue; }
+        // CAS prevents an old maintenance snapshot archiving a newly edited memory.
+        if store.patch_if("memory", id, "status", &json!("active"), &json!({
+            "status": "archived",
+            "forgottenAt": now.to_rfc3339(),
+            "forgetReason": format!("importance {importance:.2} and {age_days:.0} days unused"),
+        })).is_some() { archived += 1; }
+    }
+    eligible.sort();
+    (archived, eligible)
+}
 
 /** Non-destructive memory compaction. Only exact, unkeyed facts/lessons from
  * the same scoped source are coalesced. Original evidence remains readable in
  * archived records and can be restored without a model call. */
 pub fn compact_sweep(store: &Store) -> usize {
     let algorithm = active_kernel(store, "memory.compaction");
+    compact_sweep_kernel(store, &algorithm, None, false).0
+}
+
+fn compact_sweep_kernel(
+    store: &Store, algorithm: &Value, owner: Option<&str>, dry_run: bool,
+) -> (usize, Vec<String>) {
     let kernel = algorithm["implementation"].as_str()
-        .or_else(|| algorithm["variant"].as_str())
-        .unwrap_or("exact");
-    if kernel == "never" {
-        return 0;
-    }
+        .or_else(|| algorithm["variant"].as_str()).unwrap_or("exact");
     let mut records = store.all("memory").into_iter()
         .filter(|record| record["status"].as_str() == Some("active")
             && record["key"].is_null()
             && matches!(record["type"].as_str(), Some("fact" | "lesson")))
+        .filter(|record| owner.is_none_or(|agent| {
+            record["agentId"].as_str().unwrap_or("global") == agent
+        }))
         .collect::<Vec<_>>();
-    // Keep stronger, better-evidenced memories. IDs make equal-score
-    // comparisons deterministic even when SQLite iteration order changes.
+    // Stronger, better-evidenced memories remain canonical.
     records.sort_by(|left, right| {
         let importance = |record: &Value| {
             record["importance"].as_f64().unwrap_or(0.5).clamp(0.0, 1.0)
@@ -441,34 +438,95 @@ pub fn compact_sweep(store: &Store) -> usize {
             .then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
     });
     let mut retained = std::collections::HashMap::<String, String>::new();
-    let mut archived = 0usize;
+    let mut archived = 0;
+    let mut eligible = Vec::new();
     for record in records {
         let Some(id) = record["id"].as_str() else { continue };
         let Some(text) = record["text"].as_str() else { continue };
-        // Deliberately do not collapse punctuation or semantic differences.
-        // It is safer to miss a duplicate than lose a distinct instruction.
         let canonical = text.split_whitespace().collect::<Vec<_>>()
             .join(" ").to_lowercase();
         if canonical.is_empty() { continue; }
         let key = json!([
             record["partitionKey"], record["scope"], record["agentId"],
-            record["sessionId"], record["sourceAuthorKey"], record["type"],
-            canonical
+            record["sessionId"], record["sourceAuthorKey"], record["type"], canonical
         ]).to_string();
         if let Some(keeper) = retained.get(&key) {
+            eligible.push(id.to_string());
+            if dry_run || kernel == "never" { continue; }
             if store.patch_if("memory", id, "status", &json!("active"), &json!({
                 "status": "archived",
                 "compactedInto": keeper,
                 "compactedAt": chrono::Utc::now().to_rfc3339(),
                 "archiveReason": "exact duplicate within a memory scope"
-            })).is_some() {
-                archived += 1;
-            }
+            })).is_some() { archived += 1; }
         } else {
             retained.insert(key, id.to_string());
         }
     }
-    archived
+    eligible.sort();
+    (archived, eligible)
+}
+
+/// Runs evidence-driven model-free maintenance independently for each bot.
+/// Only a new eligible evidence snapshot is scored. Repeated idle sweeps
+/// cannot inflate the UCB success/failure counters.
+pub fn learning_sweep(state: &crate::state::AppState) -> usize {
+    let owners = state.store.all("memory").into_iter()
+        .filter(|record| record["status"].as_str() == Some("active"))
+        .map(|record| record["agentId"].as_str().unwrap_or("global").to_string())
+        .collect::<BTreeSet<_>>();
+    let mut evaluated = 0usize;
+    for owner in owners {
+        for kind in ["memory.forgetting", "memory.compaction"] {
+            let Some(preview) = crate::engine::algorithms::choose_for_agent(
+                state, kind, Some(&owner), None,
+            ) else { continue };
+            let (preview_changed, eligible) = if kind == "memory.forgetting" {
+                forget_sweep_kernel(&state.store, &preview, Some(&owner), true)
+            } else {
+                compact_sweep_kernel(&state.store, &preview, Some(&owner), true)
+            };
+            let _ = preview_changed;
+            if eligible.is_empty() { continue; }
+            let revision = preview["revision"].as_str().unwrap_or("");
+            let fingerprint = stable_id(&[
+                &owner, kind, revision, &eligible.join(","),
+            ]);
+            let observation_id = format!("memory-maintenance-{fingerprint}");
+            if state.store.get("memory_maintenance_observation", &observation_id).is_some() {
+                continue;
+            }
+            let execution_id = format!("memory-maintenance-run-{}", uuid::Uuid::new_v4());
+            let selected = crate::engine::algorithms::choose_for_agent(
+                state, kind, Some(&owner), Some(&execution_id),
+            ).unwrap_or(preview);
+            let (changed, observed) = if kind == "memory.forgetting" {
+                forget_sweep_kernel(&state.store, &selected, Some(&owner), false)
+            } else {
+                compact_sweep_kernel(&state.store, &selected, Some(&owner), false)
+            };
+            // Domain signal: a kernel either acted on every independently
+            // eligible stale/duplicate record or it did not. No task-success
+            // fallback is involved. This measures maintenance coverage, not
+            // downstream response quality.
+            let success = !observed.is_empty() && changed == observed.len();
+            crate::engine::algorithms::mark_signal(
+                state, &execution_id, kind, success,
+            );
+            crate::engine::algorithms::finalize_execution(
+                state, &json!({"id":execution_id,"taskOutcome":"failed"}),
+            );
+            state.store.put("memory_maintenance_observation", &json!({
+                "id":observation_id, "agentId":owner, "kind":kind,
+                "executionId":execution_id,"revision":selected["revision"],
+                "eligibleIds":observed, "changed":changed,"success":success,
+                "observedAt":chrono::Utc::now().to_rfc3339(),
+                "modelCalls":0
+            }));
+            evaluated += 1;
+        }
+    }
+    evaluated
 }
 
 pub fn context_block(store: &Store, scope: &MemoryScope, query: &str) -> Option<String> {
