@@ -167,6 +167,40 @@ pub fn learn_from_execution(state: &AppState, execution: &Value) -> usize {
             .unwrap_or(0);
         principle["confidence"] = json!((0.5 + 0.1 * cases as f64).min(0.95));
         principle["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        // The growth cycle does not stop at memory. Once the same principle is
+        // backed by two verified executions it becomes a strategy candidate in
+        // the existing experiment/promotion pipeline.
+        if cases >= 2 && principle["strategyCandidateId"].is_null() {
+            let evidence = principle["evidenceExecutionIds"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect::<Vec<_>>();
+            let scope = crate::engine::memory::MemoryScope::for_session(
+                &state.store,
+                execution["sessionId"].as_str().unwrap_or(""),
+                execution["agentId"].as_str(),
+            );
+            let text = format!(
+                "{} 적용: 변경/외부 작업 전에 현재 상태와 버전을 관찰하고 기대 조건과 비교한다.",
+                principle["principle"].as_str().unwrap_or("")
+            );
+            if let Some(candidate) = crate::engine::improve::propose(
+                state,
+                &scope,
+                "strategy",
+                &text,
+                "검증된 실행에서 추출한 일반 원리를 실행 전 검증 전략 후보로 승격",
+                &evidence,
+                None,
+                "global",
+            ) {
+                principle["strategyCandidateId"] = candidate["id"].clone();
+                principle["strategyCandidateAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+        }
         if state.store.put("experience_principle", &principle).is_some() {
             learned += 1;
         }
@@ -433,7 +467,30 @@ mod tests {
             assert_eq!(finalize_usage(&state, &execution, true), 1);
             assert_eq!(state.store.all("principle_usage").len(), index + 1);
         }
+        // A second verified source run promotes the principle into the
+        // existing strategy-candidate pipeline.
+        learn_from_execution(
+            &state,
+            &json!({
+                "id":"run-source-2",
+                "taskOutcome":"succeeded",
+                "model":"model-a2",
+                "agentId":"agent-a2",
+                "sessionId":"s-source-2",
+                "adaptations":[{
+                    "observation":{"tool":"github_api_update","actual":"409 conflict"},
+                    "selected":{"tool":"github_api_get","inputs":{}},
+                    "result":{"success":true}
+                }]
+            }),
+        );
+        let candidate = state.store.all("improvement").into_iter()
+            .find(|record| record["kind"].as_str() == Some("strategy"))
+            .expect("principle strategy candidate");
+        assert_eq!(candidate["scope"], "global", "{candidate}");
+        assert!(candidate["text"].as_str().unwrap_or("").contains("현재 상태와 버전"), "{candidate}");
         let principle = &state.store.all("experience_principle")[0];
+        assert_eq!(principle["strategyCandidateId"], candidate["id"], "{principle}");
         for model in ["model-b", "model-c", "model-d"] {
             assert!(principle["supportingModels"]
                 .as_array()

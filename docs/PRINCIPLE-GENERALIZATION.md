@@ -38,6 +38,8 @@ verified adaptation (mutation failed -> observation succeeded)
   -> next mutation failure in any domain/model calls context_block
   -> principle_usage is persisted with execution, agent and model
   -> finalize_usage adds a supporting case on success, or a counterexample on failure
+  -> two verified executions promote it into a global strategy candidate
+  -> the existing experiment/promotion pipeline can validate or reject that candidate
   -> confidence/support grows; the principle stays available to all agents
 ```
 
@@ -60,7 +62,9 @@ Full suite: 346 unit + 69 E2E + 16 benchmark.
 - A same-model, same-tools, same-budget before/after task benchmark. The
   transfer is proven deterministically, not yet as a live model success-rate
   experiment.
-- Strategy-layer generalization beyond the existing procedure/applicability
-  rules.
+- Strategy-layer generalization is connected through `improve::propose`, but
+  promotion still depends on the experiment runner being enabled.
+- Algorithm-layer promotion (for example a preflight verification kernel
+  activated from the principle) is not yet automatic.
 - Causal attribution for every algorithm domain; several still use domain
   signals that are proxies rather than downstream success.
