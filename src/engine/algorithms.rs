@@ -16,6 +16,7 @@ pub const KINDS: &[&str] = &[
     "tool.discovery",
     "tool.combination",
     "tool.arguments",
+    "task.decomposition",
     "execution.budget",
     "memory.retrieval",
     "memory.rerank",
@@ -27,6 +28,7 @@ pub const KINDS: &[&str] = &[
     "recovery.strategy",
     "multiagent.sharing",
     "multiagent.roles",
+    "multiagent.conflict",
     "execution.ordering",
     "execution.parallelism",
     "selfimprove.search",
@@ -46,6 +48,7 @@ pub fn executable_kernels(kind: &str) -> &'static [&'static str] {
         "tool.discovery" => &["all", "core", "query-relevant"],
         "tool.combination" => &["sequential", "parallel-reads"],
         "tool.arguments" => &["none", "normalize-paths"],
+        "task.decomposition" => &["single-step", "clause-split", "numbered-first"],
         "execution.budget" => &["standard", "extended", "lean"],
         "memory.retrieval" => &["lexical", "failure-first", "balanced"],
         "memory.rerank" => &["none", "bm25", "bm25-importance"],
@@ -57,6 +60,7 @@ pub fn executable_kernels(kind: &str) -> &'static [&'static str] {
         "recovery.strategy" => &["fingerprint", "block-identical", "allow-all"],
         "multiagent.sharing" => &["two-agents", "three-agents", "never"],
         "multiagent.roles" => &["discussion", "round-robin", "mentioned"],
+        "multiagent.conflict" => &["evidence-first", "owner-authority", "latest-speaker"],
         "execution.ordering" => &["as-written", "read-first"],
         "execution.parallelism" => &["concurrent", "sequential"],
         "selfimprove.search" => &["failure-clusters", "counterexample-first"],
@@ -82,6 +86,7 @@ pub fn kind_label(kind: &str) -> &str {
         "tool.discovery" => "도구 탐색",
         "tool.combination" => "도구 조합",
         "tool.arguments" => "도구 인자 정규화",
+        "task.decomposition" => "작업 분해",
         "execution.budget" => "실행 예산",
         "memory.retrieval" => "기억 검색",
         "memory.rerank" => "기억 재랭킹",
@@ -93,6 +98,7 @@ pub fn kind_label(kind: &str) -> &str {
         "recovery.strategy" => "복구 전략",
         "multiagent.sharing" => "에이전트 지식 공유",
         "multiagent.roles" => "에이전트 역할·발언 방식",
+        "multiagent.conflict" => "멀티에이전트 충돌 해결",
         "execution.ordering" => "도구 실행 순서",
         "execution.parallelism" => "병렬 실행",
         "selfimprove.search" => "개선 후보 탐색",
@@ -466,6 +472,27 @@ pub fn builtins() -> Vec<Value> {
             json!({}),
         ),
         builtin(
+            "task.decomposition",
+            "single-step",
+            "single-step",
+            "요청 전체를 하나의 작업으로 취급한다.",
+            json!({}),
+        ),
+        builtin(
+            "task.decomposition",
+            "clause-split",
+            "clause-split",
+            "명시적 연결어·구분자로 요청을 순서 있는 하위 작업으로 나눈다.",
+            json!({}),
+        ),
+        builtin(
+            "task.decomposition",
+            "numbered-first",
+            "numbered-first",
+            "명시적 번호/목록이 있으면 그 순서를 우선 사용한다.",
+            json!({}),
+        ),
+        builtin(
             "execution.budget",
             "standard",
             "standard",
@@ -568,6 +595,27 @@ pub fn builtins() -> Vec<Value> {
             "mentioned",
             "mentioned",
             "멘션된 참가자 중심으로 발언시킨다.",
+            json!({}),
+        ),
+        builtin(
+            "multiagent.conflict",
+            "evidence-first",
+            "evidence-first",
+            "도구 증거가 많은 참가자의 주장을 우선한다.",
+            json!({}),
+        ),
+        builtin(
+            "multiagent.conflict",
+            "owner-authority",
+            "owner-authority",
+            "주인 메시지의 명시적 상태를 우선한다.",
+            json!({}),
+        ),
+        builtin(
+            "multiagent.conflict",
+            "latest-speaker",
+            "latest-speaker",
+            "마지막 발언자의 주장을 우선한다.",
             json!({}),
         ),
         builtin(
@@ -909,6 +957,97 @@ pub fn mark_signal(state: &AppState, execution_id: &str, kind: &str, ok: bool) {
     }
 }
 
+/// Records one domain outcome for a concrete kernel. Used by harness paths that
+/// do not have a normal execution record (for example a room-level debate
+/// resolution) but still need the same per-agent and global statistics.
+pub fn record_domain_outcome(
+    state: &AppState,
+    agent_id: Option<&str>,
+    kind: &str,
+    implementation: &str,
+    ok: bool,
+) {
+    seed(state);
+    let agent = agent_of(state, agent_id).unwrap_or_else(|| "global".into());
+    let Some(revision) = state
+        .store
+        .all("algorithm")
+        .into_iter()
+        .find(|algorithm| {
+            algorithm["kind"].as_str() == Some(kind)
+                && algorithm["implementation"].as_str() == Some(implementation)
+                && algorithm["status"].as_str() != Some("disabled")
+        })
+        .and_then(|algorithm| algorithm["revision"].as_str().map(str::to_string))
+    else {
+        return;
+    };
+    apply_stat(state, &agent, kind, &revision, ok);
+}
+
+fn apply_stat(state: &AppState, agent: &str, kind: &str, revision: &str, success: bool) {
+    let id = stat_id(agent, kind, revision);
+    let mut stat = state.store.get("algorithm_stat", &id).unwrap_or_else(|| {
+        json!({
+            "id": id,
+            "agentId": agent,
+            "kind": kind,
+            "revision": revision,
+            "uses": 0,
+            "successes": 0,
+            "failures": 0,
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+        })
+    });
+    stat["uses"] = json!(stat["uses"].as_u64().unwrap_or(0) + 1);
+    if success {
+        stat["successes"] = json!(stat["successes"].as_u64().unwrap_or(0) + 1);
+    } else {
+        stat["failures"] = json!(stat["failures"].as_u64().unwrap_or(0) + 1);
+    }
+    stat["successRate"] = json!(
+        stat["successes"].as_u64().unwrap_or(0) as f64
+            / stat["uses"].as_u64().unwrap_or(1).max(1) as f64
+    );
+    stat["lastUsedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    if let Some(saved) = state.store.put("algorithm_stat", &stat) {
+        state.bus.record("algorithm_stat", &saved);
+    }
+    // Collective statistics: a new bot starts from what the group has already
+    // learned instead of a blank slate. A global agent already updated this
+    // record above; do not count it twice.
+    if agent == "global" {
+        return;
+    }
+    let global_id = stat_id("global", kind, revision);
+    let mut global = state.store.get("algorithm_stat", &global_id).unwrap_or_else(|| {
+        json!({
+            "id": global_id,
+            "agentId": "global",
+            "kind": kind,
+            "revision": revision,
+            "uses": 0,
+            "successes": 0,
+            "failures": 0,
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+        })
+    });
+    global["uses"] = json!(global["uses"].as_u64().unwrap_or(0) + 1);
+    if success {
+        global["successes"] = json!(global["successes"].as_u64().unwrap_or(0) + 1);
+    } else {
+        global["failures"] = json!(global["failures"].as_u64().unwrap_or(0) + 1);
+    }
+    global["successRate"] = json!(
+        global["successes"].as_u64().unwrap_or(0) as f64
+            / global["uses"].as_u64().unwrap_or(1).max(1) as f64
+    );
+    global["lastUsedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    if let Some(saved) = state.store.put("algorithm_stat", &global) {
+        state.bus.record("algorithm_stat", &saved);
+    }
+}
+
 /// Applies the execution outcome to every algorithm used during that run.
 pub fn finalize_execution(state: &AppState, execution: &Value) {
     let Some(execution_id) = execution["id"].as_str() else {
@@ -937,69 +1076,7 @@ pub fn finalize_execution(state: &AppState, execution: &Value) {
         } else {
             task_success
         };
-        let id = stat_id(agent, kind, revision);
-        let mut stat = state.store.get("algorithm_stat", &id).unwrap_or_else(|| {
-            json!({
-                "id": id,
-                "agentId": agent,
-                "kind": kind,
-                "revision": revision,
-                "uses": 0,
-                "successes": 0,
-                "failures": 0,
-                "createdAt": chrono::Utc::now().to_rfc3339(),
-            })
-        });
-        stat["uses"] = json!(stat["uses"].as_u64().unwrap_or(0) + 1);
-        if success {
-            stat["successes"] = json!(stat["successes"].as_u64().unwrap_or(0) + 1);
-        } else {
-            stat["failures"] = json!(stat["failures"].as_u64().unwrap_or(0) + 1);
-        }
-        stat["successRate"] = json!(
-            stat["successes"].as_u64().unwrap_or(0) as f64
-                / stat["uses"].as_u64().unwrap_or(1).max(1) as f64
-        );
-        stat["lastUsedAt"] = json!(chrono::Utc::now().to_rfc3339());
-        if let Some(saved) = state.store.put("algorithm_stat", &stat) {
-            state.bus.record("algorithm_stat", &saved);
-        }
-        // Collective statistics: a new bot starts from what the group has
-        // already learned instead of a blank slate. A global execution already
-        // updated this record above; do not count it twice.
-        if agent == "global" {
-            usage["status"] = json!("completed");
-            usage["success"] = json!(success);
-            state.store.put("algorithm_usage", &usage);
-            continue;
-        }
-        let global_id = stat_id("global", kind, revision);
-        let mut global = state.store.get("algorithm_stat", &global_id).unwrap_or_else(|| {
-            json!({
-                "id": global_id,
-                "agentId": "global",
-                "kind": kind,
-                "revision": revision,
-                "uses": 0,
-                "successes": 0,
-                "failures": 0,
-                "createdAt": chrono::Utc::now().to_rfc3339(),
-            })
-        });
-        global["uses"] = json!(global["uses"].as_u64().unwrap_or(0) + 1);
-        if success {
-            global["successes"] = json!(global["successes"].as_u64().unwrap_or(0) + 1);
-        } else {
-            global["failures"] = json!(global["failures"].as_u64().unwrap_or(0) + 1);
-        }
-        global["successRate"] = json!(
-            global["successes"].as_u64().unwrap_or(0) as f64
-                / global["uses"].as_u64().unwrap_or(1).max(1) as f64
-        );
-        global["lastUsedAt"] = json!(chrono::Utc::now().to_rfc3339());
-        if let Some(saved) = state.store.put("algorithm_stat", &global) {
-            state.bus.record("algorithm_stat", &saved);
-        }
+        apply_stat(state, agent, kind, revision, success);
         usage["status"] = json!("completed");
         usage["success"] = json!(success);
         state.store.put("algorithm_usage", &usage);

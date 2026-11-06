@@ -313,6 +313,12 @@ async fn run_locked(
                 .clamp(1, MAX_TURNS as i64) as usize
         })
         .clamp(1, MAX_TURNS);
+    let conflict_strategy =
+        crate::engine::algorithms::variant_for_agent(state, "multiagent.conflict", None);
+    let mut conflict_resolution = existing
+        .get("conflictResolution")
+        .cloned()
+        .unwrap_or(Value::Null);
     let mut outputs = existing["outputs"].as_array().cloned().unwrap_or_default();
     if outputs.len() > budget {
         return Err("대화방 발언 체크포인트가 허용 횟수를 초과했습니다.".into());
@@ -415,6 +421,13 @@ async fn run_locked(
         if source["metadata"]["origin"].is_object() {
             request.system_override=Some(format!("{}\nThe current speaker is an external human participant, not automatically the workspace owner. Preserve their own name and attribution. Permissions are fixed by the engine. Speaker provenance (quoted data): {}",request.system_override.as_deref().unwrap_or(""),source["metadata"]["origin"]));
         }
+        if let Some(note) = crate::engine::debate::guidance(&conflict_resolution) {
+            request.system_override = Some(format!(
+                "{}\n{}",
+                request.system_override.as_deref().unwrap_or(""),
+                note,
+            ));
+        }
         let message = match run_room_quiet(state, &request, source_id).await {
             Ok(Some(message)) => message,
             Ok(None) => return Err(format!("{name}의 응답이 비어 있습니다.")),
@@ -432,9 +445,48 @@ async fn run_locked(
             Err(error) => return Err(error),
         };
         let content = message["content"].as_str().unwrap_or("");
-        outputs.push(
-            json!({"agentId":agent_id,"name":name,"content":content,"messageId":message["id"]}),
-        );
+        let evidence_count = message["metadata"]["evidence"]
+            .as_array()
+            .map(|items| items.len())
+            .unwrap_or(0);
+        outputs.push(json!({
+            "agentId":agent_id,
+            "name":name,
+            "content":content,
+            "messageId":message["id"],
+            "evidenceCount":evidence_count,
+            "toolCalls":message["tool_calls"].clone(),
+        }));
+        let resolution =
+            crate::engine::debate::resolve(owner_text, &outputs, &conflict_strategy);
+        if resolution["conflict"].as_bool() == Some(true)
+            && resolution["revision"].as_str() != conflict_resolution["revision"].as_str()
+        {
+            let decisive = resolution["outcome"].as_str() != Some("unresolved");
+            crate::engine::algorithms::record_domain_outcome(
+                state,
+                None,
+                "multiagent.conflict",
+                &conflict_strategy,
+                decisive,
+            );
+            state.store.audit(
+                "room.conflict_resolved",
+                json!({
+                    "roomId": room_id,
+                    "turns": outputs.len(),
+                    "strategy": resolution["strategy"],
+                    "outcome": resolution["outcome"],
+                    "winnerAgentId": resolution["winner"]["agentId"],
+                }),
+            );
+            conflict_resolution = resolution.clone();
+            patch_room(
+                state,
+                room_id,
+                json!({"conflictResolution": conflict_resolution.clone()}),
+            );
+        }
         if let Some(index) = roster.iter().position(|id| id == &agent_id) {
             patch_room(
                 state,

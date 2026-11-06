@@ -3448,6 +3448,98 @@ fn normalize_paths_arguments_run_through_the_common_dispatch() {
     );
 }
 
+#[test]
+fn room_conflict_resolution_prefers_evidence_backed_claim() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let system = request["messages"][0]["content"].as_str().unwrap_or("");
+        let reply = if system.contains("Active agent: Alice (id: a)") {
+            "workspace_read 결과를 확인하고 작업을 완료했습니다"
+        } else {
+            "작업이 실패했습니다"
+        };
+        vec![json!({"choices":[{"delta":{"content":reply},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    for (id, name) in [("a", "Alice"), ("b", "Bob")] {
+        app.post(
+            "/api/agents",
+            &json!({"id":id,"name":name,"systemPrompt":"독립 참가자","enabled":true}),
+        );
+    }
+    let room = app.post(
+        "/api/rooms",
+        &json!({"name":"충돌 대화","agentIds":["a","b"],"routingMode":"discussion","rounds":1,"maxTurns":2,"toolsEnabled":false,"autoLearning":false}),
+    );
+    let id = room["id"].as_str().unwrap();
+    let sent = app.post(
+        &format!("/api/rooms/{id}/messages"),
+        &json!({"input":"테스트 실행 결과를 알려줘","clientMessageId":"owner-conflict-001"}),
+    );
+    let job_id = sent["jobId"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let job = app.get(&format!("/api/jobs/{job_id}"));
+        let status = job["status"].as_str().unwrap_or("");
+        if matches!(status, "completed" | "failed") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{job}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let after = app.get(&format!("/api/rooms/{id}"));
+    let resolution = &after["conflictResolution"];
+    assert_eq!(resolution["conflict"], true, "{after}");
+    assert_eq!(resolution["outcome"], "success", "{after}");
+    assert_eq!(resolution["winner"]["agentId"], "a", "{after}");
+    let synergy = app.get("/api/synergy");
+    let stat = synergy["algorithmStats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|stat| stat["kind"] == "multiagent.conflict")
+        .expect("conflict stat");
+    assert_eq!(stat["uses"], 1, "{stat}");
+    assert_eq!(stat["successes"], 1, "{stat}");
+}
+
+#[test]
+fn clause_split_decomposition_is_persisted_with_independent_quality() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_request| {
+        vec![json!({"choices":[{"delta":{"content":"세 단계로 처리하겠습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let algorithm = app.post(
+        "/api/algorithms",
+        &json!({"kind":"task.decomposition","name":"clause-split","implementation":"clause-split","parameters":{}}),
+    );
+    app.post(
+        &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
+        &json!({}),
+    );
+    let _ = app.chat(&json!({
+        "input":"설정 파일을 읽고 그리고 테스트를 실행한 뒤 결과를 보고해",
+        "autoLearning":false
+    }));
+    let executions = app.get("/api/executions");
+    let execution = executions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|execution| {
+            execution["decomposition"]["kernel"].as_str() == Some("clause-split")
+        })
+        .expect("decomposition execution");
+    let subtasks = execution["subtasks"].as_array().unwrap();
+    assert_eq!(subtasks.len(), 3, "{execution}");
+    assert_eq!(execution["decomposition"]["quality"]["orderPreserved"], true);
+    assert!(
+        execution["decomposition"]["qualityScore"].as_f64().unwrap() >= 0.75,
+        "{execution}"
+    );
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

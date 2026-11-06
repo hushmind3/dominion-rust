@@ -470,6 +470,36 @@ async fn run_turn_body(
             "programRevision": policy["parameters"]["program"]["revision"],
         }));
     }
+    // Deterministic decomposition runs before any model call. It gives the
+    // turn an engine-owned ordered sub-goal list and an independently graded
+    // signal that does not depend on whole-task success.
+    let decomposition_algorithm = crate::engine::algorithms::choose_for_agent(
+        state,
+        "task.decomposition",
+        request.agent_id.as_deref(),
+        Some(execution_id),
+    )
+    .unwrap_or(Value::Null);
+    let decomposition =
+        crate::engine::decompose::decompose(&request.input, &decomposition_algorithm);
+    let subtask_count = decomposition["subtasks"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    if let Some(mut execution) = state.store.get("execution", execution_id) {
+        execution["subtasks"] = decomposition["subtasks"].clone();
+        execution["decomposition"] = decomposition.clone();
+        state.store.put("execution", &execution);
+    }
+    context_items.push(json!({
+        "kind": "task_decomposition",
+        "kernel": decomposition["kernel"],
+        "subtasks": subtask_count,
+        "digest": crate::engine::memory::stable_id(&[
+            &request.input,
+            decomposition["kernel"].as_str().unwrap_or(""),
+        ]),
+    }));
     let plan_requested = match planning_policy.as_ref().and_then(|policy| {
         crate::engine::policy::outline_decision(
             &policy["parameters"],
@@ -477,7 +507,7 @@ async fn run_turn_body(
         )
     }) {
         Some(decision) => decision,
-        None => needs_plan(&request.input, &acceptance),
+        None => needs_plan(&request.input, &acceptance) || subtask_count > 1,
     };
     let mut plan_digest: Option<String> = None;
     if acceptance.is_some()
@@ -504,6 +534,28 @@ async fn run_turn_body(
             messages.insert(1, json!({"role":"system","content":format!("Internal execution plan. Verify every step with real tools, never claims:\n{plan}")}));
             metrics.lock().unwrap().model_calls += 1;
         }
+    }
+    if subtask_count > 1 {
+        let subtasks = decomposition["subtasks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(index, subtask)| {
+                format!(
+                    "{}. {}",
+                    index + 1,
+                    subtask["text"].as_str().unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        messages.insert(1, json!({
+            "role":"system",
+            "content":format!(
+                "Engine-owned task decomposition. Complete these subtasks in order and verify each with real tools before claiming done:\n{subtasks}"
+            )
+        }));
     }
 
     let mut tool_definitions = if request.tools_enabled && request.tools_execution_enabled {
@@ -4151,6 +4203,14 @@ fn mark_run_signals(state: &AppState, record: &Value) {
                     state, execution_id, "tool.discovery", ok,
                 );
             }
+        }
+        if let Some(score) = execution["decomposition"]["qualityScore"].as_f64() {
+            crate::engine::algorithms::mark_signal(
+                state,
+                execution_id,
+                "task.decomposition",
+                score >= 0.75,
+            );
         }
     }
     if record["contextChecked"].as_bool() == Some(true) {

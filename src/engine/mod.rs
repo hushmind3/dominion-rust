@@ -8,6 +8,8 @@ pub mod backup_keys;
 pub mod bridge;
 pub mod chat;
 pub mod compact;
+pub mod decompose;
+pub mod debate;
 pub mod dev;
 pub mod discord;
 pub mod adaptation;
