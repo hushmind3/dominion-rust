@@ -373,7 +373,7 @@ async fn run_turn_body(
 
     let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"taskId":task_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
 
-    let provider = select_provider(state, request, &session)?;
+    let mut provider = select_provider(state, request, &session)?;
     let prompt_context = super::context::system_prompt_with_manifest_at(
         state,
         request,
@@ -748,7 +748,18 @@ async fn run_turn_body(
                 }
             }
         }
-        let mut completion = completion_result?;
+        let (mut completion, selected_provider) = completion_result?;
+        if selected_provider.id != provider.id {
+            // The streamed response came from a fallback route; later rounds
+            // must continue on that route rather than retrying the dead one.
+            if let Some(mut execution) = state.store.get("execution", execution_id) {
+                execution["effectiveProviderId"] = json!(selected_provider.id);
+                execution["effectiveModel"] = json!(selected_provider.model);
+                execution["failoverAt"] = json!(chrono::Utc::now().to_rfc3339());
+                state.store.put("execution", &execution);
+            }
+            provider = selected_provider;
+        }
 
         if (!request.tools_enabled || !request.tools_execution_enabled)
             && !completion.tool_calls.is_empty()
