@@ -415,6 +415,23 @@ pub fn context_block_with_manifest(
     if memories.is_empty() {
         return (None, Vec::new());
     }
+    // Count delivered context, not merely search hits. The importance kernel
+    // learns from memories actually shown to an agent on a later turn.
+    // CAS retries keep concurrent sessions from overwriting one another.
+    for memory in &memories {
+        let Some(id) = memory["id"].as_str() else { continue };
+        for _ in 0..3 {
+            let Some(current) = store.get("memory", id) else { break };
+            let expected = current.get("uses").cloned().unwrap_or(Value::Null);
+            let next = expected.as_u64().unwrap_or(0).saturating_add(1);
+            if store.patch_if("memory", id, "uses", &expected, &json!({
+                "uses": next,
+                "lastUsedAt": chrono::Utc::now().to_rfc3339(),
+            })).is_some() {
+                break;
+            }
+        }
+    }
     // JSON escaping prevents a remembered newline from manufacturing a new
     // system instruction. Memory remains evidence, not executable policy.
     let rows = memories
@@ -1038,6 +1055,31 @@ mod memory_algorithm_tests {
         );
         let ranked = retrieve(&db, &scope, "Rust 절차", 5);
         assert_eq!(ranked[0]["id"], "m-new", "{ranked:?}");
+    }
+
+    #[test]
+    fn prompt_delivery_updates_memory_usage_without_changing_content_revision() {
+        let db = store();
+        let scope = scope(&db, "s", "a");
+        db.put("memory", &json!({
+            "id":"used-memory","text":"항상 한국어로 답변","type":"preference",
+            "importance":0.9,"scope":"agent","agentId":"a",
+            "partitionKey":scope.partition_key,"status":"active","uses":0,
+            "createdAt":"2026-01-01T00:00:00Z"
+        }));
+        let before = db.get("memory", "used-memory").unwrap();
+        assert_eq!(retrieve(&db, &scope, "다른 질문", 6).len(), 1);
+        assert_eq!(db.get("memory", "used-memory").unwrap()["uses"], 0,
+            "a search alone must not count as context delivery");
+        let (context, manifest) = context_block_with_manifest(&db, &scope, "다른 질문");
+        assert!(context.is_some());
+        assert_eq!(manifest.len(), 1);
+        let after = db.get("memory", "used-memory").unwrap();
+        assert_eq!(after["uses"], 1);
+        assert!(after["lastUsedAt"].is_string());
+        assert_eq!(content_revision(&before), content_revision(&after));
+        context_block_with_manifest(&db, &scope, "다른 질문");
+        assert_eq!(db.get("memory", "used-memory").unwrap()["uses"], 2);
     }
 
     #[test]
