@@ -243,6 +243,15 @@ fn importance_bonus(record: &Value, strategy: &str, algorithm: &Value) -> f64 {
 }
 
 pub fn retrieve(store: &Store, scope: &MemoryScope, query: &str, limit: usize) -> Vec<Value> {
+    let algorithm = active_kernel(store, "memory.importance");
+    retrieve_ranked(store, scope, query, limit, &algorithm)
+}
+
+/// Uses the exact kernel selected by the agent's UCB at the start of this turn.
+/// The compatibility wrapper above retains explicit global activation.
+fn retrieve_ranked(
+    store: &Store, scope: &MemoryScope, query: &str, limit: usize, algorithm: &Value,
+) -> Vec<Value> {
     let query_terms = terms(query);
     let compact_query = normalize(query);
     let mut records = store.all("memory");
@@ -299,12 +308,11 @@ pub fn retrieve(store: &Store, scope: &MemoryScope, query: &str, limit: usize) -
             }
             let relevance = matched as f64
                 / (query_terms.len() as f64 * memory_terms.len().max(1) as f64).sqrt();
-            let importance_algorithm = active_kernel(store, "memory.importance");
-            let importance_strategy = importance_algorithm["implementation"]
+            let importance_strategy = algorithm["implementation"]
                 .as_str()
-                .or_else(|| importance_algorithm["variant"].as_str())
+                .or_else(|| algorithm["variant"].as_str())
                 .unwrap_or("recency-uses");
-            let bonus = importance_bonus(&record, importance_strategy, &importance_algorithm);
+            let bonus = importance_bonus(&record, importance_strategy, algorithm);
             let score = if always {
                 1.0 + importance + bonus
             } else {
@@ -474,7 +482,55 @@ pub fn context_block_with_manifest(
     scope: &MemoryScope,
     query: &str,
 ) -> (Option<String>, Vec<Value>) {
-    let memories = retrieve(store, scope, query, 6);
+    let algorithm = active_kernel(store, "memory.importance");
+    context_block_ranked(store, scope, query, &algorithm)
+}
+
+/// Agent-aware retrieval: records the chosen importance algorithm as actual
+/// execution usage so it can learn independently from that bot's outcomes.
+pub fn context_block_with_manifest_at(
+    state: &crate::state::AppState,
+    scope: &MemoryScope,
+    query: &str,
+    execution_id: Option<&str>,
+) -> (Option<String>, Vec<Value>) {
+    let algorithm = crate::engine::algorithms::choose_for_agent(
+        state, "memory.importance", scope.agent_id.as_deref(), execution_id,
+    ).unwrap_or_else(|| active_kernel(&state.store, "memory.importance"));
+    let memories = retrieve_ranked(&state.store, scope, query, 6, &algorithm);
+    if let Some(execution_id) = execution_id {
+        // A graded, query-specific retrieval metric, not the whole task's
+        // success. Do not score a turn with no relevant retrieval evidence.
+        let query_terms = terms(query);
+        if !memories.is_empty() && !query_terms.is_empty() {
+            let relevance = |memory: &Value| {
+                let text = memory["text"].as_str().unwrap_or("");
+                let overlap = terms(text).intersection(&query_terms).count();
+                let standing = memory["importance"].as_f64().unwrap_or(0.5) >= 0.7
+                    && matches!(memory["type"].as_str(), Some("preference" | "procedure"));
+                overlap > 0 || standing
+            };
+            let relevant_count = memories.iter().filter(|memory| relevance(memory)).count();
+            let selected_precision = relevant_count as f64 / memories.len() as f64;
+            let high_rank_relevant = memories.first().is_some_and(relevance);
+            crate::engine::algorithms::mark_signal(
+                state, execution_id, "memory.importance",
+                selected_precision >= 0.75 && high_rank_relevant,
+            );
+        }
+    }
+    context_block_from_records(&state.store, memories)
+}
+
+fn context_block_ranked(
+    store: &Store, scope: &MemoryScope, query: &str, algorithm: &Value,
+) -> (Option<String>, Vec<Value>) {
+    context_block_from_records(store, retrieve_ranked(store, scope, query, 6, algorithm))
+}
+
+fn context_block_from_records(store: &Store, memories: Vec<Value>)
+    -> (Option<String>, Vec<Value>)
+{
     if memories.is_empty() {
         return (None, Vec::new());
     }
