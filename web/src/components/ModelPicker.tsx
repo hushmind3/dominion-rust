@@ -3,7 +3,7 @@ import {createPortal} from 'react-dom'
 import {Check, ChevronDown, LoaderCircle, Search, X} from 'lucide-react'
 import {get} from '../api'
 
-type ModelOption = {id: string; name?: string}
+type ModelOption = {id: string; name?: string; free?: boolean}
 
 type Props = {
   providerId: string
@@ -29,6 +29,7 @@ export function ModelPicker({
   const [open, setOpen] = useState(false)
   const [models, setModels] = useState<ModelOption[]>([])
   const [query, setQuery] = useState('')
+  const [freeOnly, setFreeOnly] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [position, setPosition] = useState<Position | null>(null)
@@ -108,14 +109,15 @@ export function ModelPicker({
   }, [open])
 
   const filtered = useMemo(() => {
+    const source = freeOnly ? models.filter((model) => model.free) : models
     const needle = query.trim().toLowerCase()
-    if (!needle) return models
-    return models.filter(
+    if (!needle) return source
+    return source.filter(
       (model) =>
         model.id.toLowerCase().includes(needle) ||
         (model.name || '').toLowerCase().includes(needle),
     )
-  }, [models, query])
+  }, [models, query, freeOnly])
 
   const choose = (id: string) => {
     onChange(id)
@@ -206,19 +208,38 @@ export function ModelPicker({
                     }
                   >
                     <span className="min-w-0 flex-1 truncate">{model.id}</span>
+                    {model.free && (
+                      <span className="shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">
+                        무료
+                      </span>
+                    )}
                     {model.id === value && <Check size={13} className="shrink-0" />}
                   </button>
                 ))}
               {!loading && !error && filtered.length === 0 && (
                 <div className="px-3 py-4 text-[12px] text-[#8A8176]">
-                  {models.length ? '검색 결과가 없습니다.' : '이 제공자에서 모델을 찾지 못했습니다.'}
+                  {!models.length
+                    ? '이 제공자에서 모델을 찾지 못했습니다.'
+                    : freeOnly && !models.some((model) => model.free)
+                      ? '이 제공자에서 무료로 표시된 모델이 없습니다.'
+                      : '검색 결과가 없습니다.'}
                 </div>
               )}
             </div>
 
-            <div className="flex items-center justify-between border-t border-[#EFE9DF] px-3 py-1.5 text-[10px] text-[#9C9388]">
-              <span>{filtered.length}개 표시</span>
-              <span>전체 {models.length}개</span>
+            <div className="flex items-center justify-between gap-2 border-t border-[#EFE9DF] px-3 py-1.5 text-[10px] text-[#9C9388]">
+              <label className="flex cursor-pointer items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={freeOnly}
+                  onChange={(event) => setFreeOnly(event.target.checked)}
+                  className="accent-[#C96442]"
+                />
+                무료만
+              </label>
+              <span>
+                {filtered.length}개 표시 · 전체 {models.length}개
+              </span>
             </div>
           </div>,
           document.body,

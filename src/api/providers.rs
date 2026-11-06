@@ -179,6 +179,36 @@ pub async fn delete_provider(State(state): State<AppState>, Path(id): Path<Strin
     Json(json!({ "ok": true }))
 }
 
+fn model_is_free(provider: &Value, kind: &str, base: &str, item: &Value, id: &str) -> bool {
+    if kind == "ollama" || base.contains("127.0.0.1") || base.contains("localhost") {
+        return true;
+    }
+    if provider["integration"].as_str() == Some("freellmapi") {
+        return true;
+    }
+    if id.ends_with(":free") || id.contains(":free") {
+        return true;
+    }
+    if item["free"].as_bool() == Some(true) || item["is_free"].as_bool() == Some(true) {
+        return true;
+    }
+    let Some(pricing) = item.get("pricing") else {
+        return false;
+    };
+    let zero = |key: &str| {
+        pricing
+            .get(key)
+            .and_then(|value| {
+                value
+                    .as_str()
+                    .and_then(|text| text.parse::<f64>().ok())
+                    .or_else(|| value.as_f64())
+            })
+            .is_none_or(|value| value == 0.0)
+    };
+    zero("prompt") && zero("completion")
+}
+
 pub async fn provider_models(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(provider) = state.store.get("provider", &id) else {
         return error(StatusCode::NOT_FOUND, "제공자를 찾을 수 없습니다.");
@@ -231,13 +261,16 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
                         items
                             .iter()
                             .filter_map(|item| item.get("id").and_then(Value::as_str))
-                            .map(|id| json!({
-                                "id": id,
-                                "name": value["data"].as_array().and_then(|all| all.iter()
+                            .map(|id| {
+                                let item = value["data"].as_array().and_then(|all| all.iter()
                                     .find(|item| item["id"] == id))
-                                    .and_then(|item| item["display_name"].as_str())
-                                    .unwrap_or(id)
-                            }))
+                                    .unwrap_or(&Value::Null);
+                                json!({
+                                    "id": id,
+                                    "name": item["display_name"].as_str().unwrap_or(id),
+                                    "free": model_is_free(&provider, kind, &base, item, id),
+                                })
+                            })
                             .collect()
                     })
                     .unwrap_or_default()
@@ -248,7 +281,7 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
                         items
                             .iter()
                             .filter_map(|item| item.get("name"))
-                            .map(|name| json!({ "id": name, "name": name }))
+                            .map(|name| json!({ "id": name, "name": name, "free": true }))
                             .collect()
                     })
                     .unwrap_or_default()
@@ -258,8 +291,17 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
                     .map(|items| {
                         items
                             .iter()
-                            .filter_map(|item| item.get("id"))
-                            .map(|id| json!({ "id": id, "name": id }))
+                            .filter_map(|item| item.get("id").and_then(Value::as_str))
+                            .map(|id| {
+                                let item = value["data"].as_array().and_then(|all| all.iter()
+                                    .find(|item| item["id"] == id))
+                                    .unwrap_or(&Value::Null);
+                                json!({
+                                    "id": id,
+                                    "name": id,
+                                    "free": model_is_free(&provider, kind, &base, item, id),
+                                })
+                            })
                             .collect()
                     })
                     .unwrap_or_default()
@@ -274,3 +316,23 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn free_models_include_local_freellmapi_and_zero_pricing() {
+        let local = json!({"id":"p","name":"local","baseUrl":"http://127.0.0.1:11434/v1"});
+        assert!(model_is_free(&local, "openai", "http://127.0.0.1:11434/v1", &Value::Null, "x"));
+        let free_api = json!({"id":"p","name":"free","integration":"freellmapi"});
+        assert!(model_is_free(&free_api, "openai", "https://api.example/v1", &Value::Null, "x"));
+        let free_suffix = json!({"id":"p","name":"openrouter"});
+        assert!(model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &Value::Null, "meta/llama:free"));
+        let zero = json!({"pricing":{"prompt":"0","completion":"0"}});
+        assert!(model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &zero, "meta/llama"));
+        let paid = json!({"pricing":{"prompt":"0.000001","completion":"0.000002"}});
+        assert!(!model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &paid, "meta/llama"));
+    }
+}
