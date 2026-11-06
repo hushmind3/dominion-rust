@@ -241,9 +241,10 @@ pub fn context_block(state: &AppState, agent_id: &str) -> Option<(String, Vec<Va
         growth["succeeded"].as_u64().unwrap_or(0) + growth["failed"].as_u64().unwrap_or(0)
     });
     let summary = if rated_runs > 0 {
+        let rate = growth["succeeded"].as_u64().unwrap_or(0) as f64 / rated_runs as f64;
         format!(
             "success {:.0}% over {rated_runs} verified runs",
-            growth["successRate"].as_f64().unwrap_or(0.0) * 100.0
+            rate * 100.0
         )
     } else {
         "no verified success/failure history yet".to_string()
