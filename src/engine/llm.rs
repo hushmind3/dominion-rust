@@ -87,7 +87,10 @@ pub fn learning_route(state: &AppState) -> Option<(String, String)> {
         .all("provider")
         .into_iter()
         .find(|provider| {
-            provider["learning"].as_bool() == Some(true)
+            // Accept the legacy `learning` key for providers created before
+            // the role was renamed to `reflection`.
+            (provider["reflection"].as_bool() == Some(true)
+                || provider["learning"].as_bool() == Some(true))
                 && provider["enabled"].as_bool() != Some(false)
         })
         .and_then(|provider| {
@@ -161,6 +164,15 @@ mod tests {
             "provider",
             &json!({"id":"local","name":"local","baseUrl":"http://127.0.0.1/v1","model":"small"}),
         );
+        state.store.put(
+            "provider",
+            &json!({"id":"teacher","name":"teacher","baseUrl":"https://api/v1","model":"large","reflection":true}),
+        );
+        assert_eq!(
+            learning_route(&state),
+            Some(("teacher".into(), "large".into()))
+        );
+        // Older records used `learning`; keep them working during migration.
         state.store.put(
             "provider",
             &json!({"id":"teacher","name":"teacher","baseUrl":"https://api/v1","model":"large","learning":true}),

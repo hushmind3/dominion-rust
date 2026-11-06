@@ -2011,29 +2011,29 @@ fn reflection_provider_is_explicit_and_exclusive() {
     let app = TestApp::new(port, "native");
     let first = app.post(
         "/api/providers",
-        &json!({"name":"teacher-a","baseUrl":"http://127.0.0.1:9/v1","model":"model-a","learning":true,"enabled":true}),
+        &json!({"name":"teacher-a","baseUrl":"http://127.0.0.1:9/v1","model":"model-a","reflection":true,"enabled":true}),
     );
-    assert_eq!(first["learning"], true, "{first}");
+    assert_eq!(first["reflection"], true, "{first}");
     assert_eq!(first["model"], "model-a", "{first}");
     let first_id = first["id"].as_str().unwrap().to_string();
     let second = app.post(
         "/api/providers",
-        &json!({"name":"teacher-b","baseUrl":"http://127.0.0.1:9/v1","model":"model-b","learning":true,"enabled":true}),
+        &json!({"name":"teacher-b","baseUrl":"http://127.0.0.1:9/v1","model":"model-b","reflection":true,"enabled":true}),
     );
-    assert_eq!(second["learning"], true, "{second}");
+    assert_eq!(second["reflection"], true, "{second}");
     let second_id = second["id"].as_str().unwrap().to_string();
     let providers = app.get("/api/providers");
     let items = providers.as_array().unwrap();
     let a = items.iter().find(|p| p["id"] == first_id.as_str()).unwrap();
     let b = items.iter().find(|p| p["id"] == second_id.as_str()).unwrap();
-    assert_eq!(a["learning"], false, "old reflection provider was not cleared: {providers}");
-    assert_eq!(b["learning"], true, "{providers}");
+    assert_eq!(a["reflection"], false, "old reflection provider was not cleared: {providers}");
+    assert_eq!(b["reflection"], true, "{providers}");
     assert_eq!(b["model"], "model-b", "{providers}");
 
     let response = app
         .client
         .post(format!("{}/api/providers", app.base))
-        .json(&json!({"name":"broken","baseUrl":"http://127.0.0.1:9/v1","learning":true}))
+        .json(&json!({"name":"broken","baseUrl":"http://127.0.0.1:9/v1","reflection":true}))
         .send()
         .unwrap();
     assert_eq!(
@@ -5100,7 +5100,7 @@ fn correction_turn_failure_still_enqueues_reflection() {
                 && message["content"]
                     .as_str()
                     .unwrap_or("")
-                    .contains("실패를 분석하는 반성기")
+                    .contains("실패를 분석하는 리플렉션 분석기")
         });
         if is_reflection {
             return vec![json!({"choices":[{"delta":{"content":
@@ -5241,7 +5241,7 @@ fn procedure_violation_blocks_the_target_and_repairs_with_the_prerequisite() {
             .first()
             .and_then(|message| message["content"].as_str())
             .unwrap_or("");
-        if system.contains("반성기") {
+        if system.contains("리플렉션 분석기") {
             let reflection = json!({
                 "rootCause": "audit를 먼저 만들지 않고 report를 작성했다",
                 "expected": "audit 먼저",
@@ -5394,7 +5394,7 @@ fn harness_assisted_executes_dag_nodes_through_the_common_dispatch() {
             .first()
             .and_then(|message| message["content"].as_str())
             .unwrap_or("");
-        if system.contains("반성기") {
+        if system.contains("리플렉션 분석기") {
             let reflection = json!({
                 "rootCause": "선행 audit 없이 report를 작성했다",
                 "expected": "audit 먼저",

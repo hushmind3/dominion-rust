@@ -21,6 +21,12 @@ fn public_provider(state: &AppState, mut provider: Value) -> Value {
         .unwrap_or_default()
         .to_string();
     if let Value::Object(ref mut map) = provider {
+        let reflection = map
+            .get("reflection")
+            .and_then(Value::as_bool)
+            .or_else(|| map.get("learning").and_then(Value::as_bool))
+            .unwrap_or(false);
+        map.insert("reflection".into(), json!(reflection));
         map.remove("apiKey");
         map.insert(
             "hasKey".into(),
@@ -76,14 +82,17 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
     if model.len() > 256 {
         return error(StatusCode::BAD_REQUEST, "모델 ID가 너무 깁니다.");
     }
-    let learning = body
-        .get("learning")
+    // `reflection` is the public role. Older records and clients used
+    // `learning`, so accept it as a compatibility alias.
+    let reflection = body
+        .get("reflection")
+        .or_else(|| body.get("learning"))
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    if learning && model.is_empty() {
+    if reflection && model.is_empty() {
         return error(
             StatusCode::BAD_REQUEST,
-            "반성/학습 API로 사용하려면 모델 ID가 필요합니다.",
+            "성찰(리플렉션) 모델로 사용하려면 모델 ID가 필요합니다.",
         );
     }
 
@@ -92,7 +101,9 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
     record["name"] = json!(name);
     record["baseUrl"] = json!(parsed.to_string().trim_end_matches('/'));
     record["kind"] = json!(kind);
-    record["learning"] = json!(learning);
+    record["reflection"] = json!(reflection);
+    // Keep the legacy key in sync so existing readers keep working.
+    record["learning"] = json!(reflection);
     if model.is_empty() {
         if let Value::Object(ref mut map) = record {
             map.remove("model");
@@ -100,13 +111,15 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
     } else {
         record["model"] = json!(model);
     }
-    // Only one provider can own the reflection/learning route. Selecting a
-    // new one clears the previous flag so the choice is deterministic.
-    if learning {
+    // Only one provider can own the reflection route. Selecting a new one
+    // clears both the public and legacy flags on every other provider.
+    if reflection {
         for mut other in state.store.all("provider") {
             if other["id"].as_str() != Some(id.as_str())
-                && other["learning"].as_bool() == Some(true)
+                && (other["reflection"].as_bool() == Some(true)
+                    || other["learning"].as_bool() == Some(true))
             {
+                other["reflection"] = json!(false);
                 other["learning"] = json!(false);
                 state.store.put("provider", &other);
             }
