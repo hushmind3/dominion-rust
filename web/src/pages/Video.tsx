@@ -4,7 +4,7 @@ import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
 import {openOAuth,post} from '../api'
 import {jobFinished,useJob,type JobState} from '../hooks/useJob'
-import {t} from '../i18n'
+import {t,useLocale} from '../i18n'
 
 type Workflow={id:string;name:string;bytes:number}
 type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number}}
@@ -18,6 +18,7 @@ const statusLabel=(status:string)=>status==='completed'?'완료':status==='runni
 const fmtBytes=(bytes=0)=>bytes>=1024**3?(bytes/1024**3).toFixed(1)+' GB':bytes>=1024**2?Math.round(bytes/1024**2)+' MB':'0 MB'
 
 export function VideoPage({navigate}:{navigate:(page:any)=>void}){
+ useLocale()
  const video=useRemote<VideoStatus>('/api/video/status',{config:{engine:'comfyui',comfyUrl:''},comfy:{reachable:false},workflows:[],jobs:[]},false)
  const youtube=useRemote<YoutubeStatus>('/api/youtube/status',{connected:false,uploadAllowed:false,account:null,uploads:[]})
  const oauth=useRemote<{id:string;configured:boolean;callback?:string}[]>('/api/oauth/providers',[])
