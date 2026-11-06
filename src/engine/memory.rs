@@ -582,7 +582,7 @@ fn importance_rank_quality(
         store, scope, query, 20, &json!({"implementation":"fixed"}),
     );
     let mut ideal = reference.iter()
-        .map(grade)
+        .map(|record| grade(record))
         .filter(|value| *value > 0.0)
         .collect::<Vec<_>>();
     if ideal.is_empty() { return None; }
