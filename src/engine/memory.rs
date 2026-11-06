@@ -56,7 +56,7 @@ impl MemoryScope {
 pub fn visible(record: &Value, scope: &MemoryScope) -> bool {
     if matches!(
         record["status"].as_str(),
-        Some("superseded" | "deleted" | "draft")
+        Some("superseded" | "deleted" | "draft" | "archived")
     ) || record["enabled"].as_bool() == Some(false)
     {
         return false;
@@ -1102,6 +1102,13 @@ mod memory_algorithm_tests {
         let archived = forget_sweep(&db);
         assert_eq!(archived, 1, "{:?}", db.all("memory"));
         assert_eq!(db.get("memory", "old-low").unwrap()["status"], "archived");
+        assert!(
+            !retrieve(&db, &scope, "old-low 내용", 10)
+                .iter()
+                .any(|item| item["id"] == "old-low"),
+            "archived memory must not be retrieved or injected into chat"
+        );
+
         assert_eq!(db.get("memory", "old-high").unwrap()["status"], "active");
         assert_eq!(db.get("memory", "old-pref").unwrap()["status"], "active");
         assert_eq!(db.get("memory", "new-low").unwrap()["status"], "active");
