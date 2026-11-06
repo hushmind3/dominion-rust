@@ -288,4 +288,31 @@ mod tests {
         assert!(result["subtasks"].as_array().unwrap().is_empty());
         assert_eq!(result["qualityScore"].as_f64().unwrap(), 0.0);
     }
+
+    #[test]
+    fn measurement_clause_split_improves_decomposition_quality() {
+        let requests = [
+            "설정 파일을 읽고 그리고 테스트를 실행한 뒤 결과를 보고해",
+            "로그를 확인하고 그리고 오류를 분류한 뒤 수정안을 작성해",
+            "저장소를 복제하고 다음으로 의존성을 설치한 뒤 빌드를 실행해",
+        ];
+        let average = |implementation: &str| {
+            let scores = requests
+                .iter()
+                .map(|request| {
+                    decompose(request, &algorithm(implementation))["qualityScore"]
+                        .as_f64()
+                        .unwrap_or(0.0)
+                })
+                .collect::<Vec<_>>();
+            scores.iter().sum::<f64>() / scores.len() as f64
+        };
+        let single = average("single-step");
+        let split = average("clause-split");
+        println!(
+            "decomposition measurement: avgQuality single={single:.2} clause-split={split:.2}"
+        );
+        assert!(split > single, "clause-split did not improve: {single} -> {split}");
+        assert!(split >= 0.8, "clause-split quality below target: {split}");
+    }
 }

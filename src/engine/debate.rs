@@ -208,4 +208,52 @@ mod tests {
         assert_eq!(resolution["winner"]["agentId"], "b");
         assert!(guidance(&resolution).unwrap().contains("failure"));
     }
+
+    #[test]
+    fn measurement_conflict_kernels_match_expected_outcomes() {
+        let cases: Vec<(&str, &str, Vec<Value>, &str)> = vec![
+            (
+                "evidence-first",
+                "테스트해",
+                vec![output("a", "테스트 실패", 0), output("b", "테스트 완료", 2)],
+                "b",
+            ),
+            (
+                "evidence-first",
+                "테스트해",
+                vec![output("a", "테스트 완료", 0), output("b", "테스트 실패", 3)],
+                "b",
+            ),
+            (
+                "owner-authority",
+                "아직 실패 상태야",
+                vec![output("a", "테스트 완료", 0), output("b", "테스트 실패", 0)],
+                "b",
+            ),
+            (
+                "latest-speaker",
+                "테스트해",
+                vec![output("a", "테스트 성공", 5), output("b", "테스트 실패", 0)],
+                "b",
+            ),
+            (
+                "latest-speaker",
+                "테스트해",
+                vec![output("a", "테스트 실패", 0), output("b", "테스트 성공", 0)],
+                "b",
+            ),
+        ];
+        let correct = cases
+            .iter()
+            .filter(|(strategy, owner, outputs, expected)| {
+                let resolution = resolve(owner, outputs, strategy);
+                resolution["winner"]["agentId"].as_str() == Some(*expected)
+            })
+            .count();
+        println!(
+            "conflict measurement: accuracy {correct}/{}",
+            cases.len()
+        );
+        assert_eq!(correct, cases.len(), "conflict resolution accuracy regressed");
+    }
 }

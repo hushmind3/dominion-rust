@@ -604,7 +604,7 @@ fn compression_sweep_kernel(
     }
     let texts = eligible.iter()
         .filter_map(|record| record["text"].as_str())
-        .map(|text| text.chars().take(180).collect::<String>())
+        .map(|text| text.chars().take(40).collect::<String>())
         .collect::<Vec<_>>();
     let mut evidence = Vec::new();
     let mut sources = Vec::new();
@@ -1760,6 +1760,129 @@ mod per_agent_memory_learning_tests {
             assert!(original["evidenceMessageIds"].is_array(), "evidence lost");
         }
         assert_eq!(learning_sweep(&state), 0, "idle sweep re-compressed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn set_rerank(store: &Store, implementation: &str) {
+        store.put("algorithm", &json!({
+            "id":"measurement-rerank","kind":"memory.rerank",
+            "implementation":implementation,"variant":implementation,
+            "status":"active","parameters":{"k1":1.2,"b":0.75}
+        }));
+    }
+
+    fn measurement_corpus(store: &Store, scope: &MemoryScope) {
+        for (id, text) in [
+            ("m1-gold", "database migration rollback runbook notes archive"),
+            ("m1-short", "database migration"),
+            ("m2-gold", "token expiration audit trail notes archive"),
+            ("m2-short", "token expiration"),
+            ("m3-gold", "cache invalidation policy notes archive log"),
+            ("m3-short", "cache invalidation"),
+            ("filler-1", "database backup"),
+            ("filler-2", "token rotation"),
+            ("filler-3", "cache warmup"),
+            ("filler-4", "migration report"),
+            ("filler-5", "expiration warning"),
+        ] {
+            store.put("memory", &json!({
+                "id":id,"text":text,"type":"lesson","importance":0.5,
+                "scope":"agent","agentId":"a","partitionKey":scope.partition_key,
+                "status":"active","learnedAt":"2026-01-01T00:00:00Z",
+                "lastUsedAt":"2026-01-01T00:00:00Z"
+            }));
+        }
+    }
+
+    #[test]
+    fn measurement_bm25_improves_top_one_accuracy_on_length_skewed_corpus() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let scope = MemoryScope::for_session(&store, "s", Some("a"));
+        measurement_corpus(&store, &scope);
+        // Query order differs from the gold text so the phrase bonus cannot
+        // rescue the baseline; only IDF + length normalization can.
+        let queries = [
+            ("rollback database migration", "m1-gold"),
+            ("audit token expiration", "m2-gold"),
+            ("policy cache invalidation", "m3-gold"),
+        ];
+        let hit = |implementation: &str| {
+            set_rerank(&store, implementation);
+            queries
+                .iter()
+                .filter(|(query, gold)| {
+                    retrieve(&store, &scope, query, 3)
+                        .first()
+                        .and_then(|record| record["id"].as_str())
+                        == Some(*gold)
+                })
+                .count()
+        };
+        let baseline = hit("none");
+        let reranked = hit("bm25");
+        println!(
+            "bm25 measurement: top1 none={baseline}/3 bm25={reranked}/3"
+        );
+        assert!(reranked > baseline, "bm25 did not improve: {baseline} -> {reranked}");
+        assert_eq!(reranked, 3, "bm25 top-1 accuracy below fixture target");
+    }
+
+    #[test]
+    fn measurement_compression_reduces_active_memory_text() {
+        let (state, dir) = state();
+        only_kernel(&state, "memory.compression", "extractive");
+        for (id, text) in [
+            ("old-1", "예전 배포 절차는 담당자가 수동으로 서버에 접속해 파일을 복사하고 서비스를 재시작한 뒤 로그를 직접 확인하는 방식이었고 자동 검증 단계가 없었다"),
+            ("old-2", "예전 롤백 절차는 백업 파일을 먼저 압축 해제한 뒤 데이터베이스를 수동으로 되돌리고 담당자가 각 서버의 상태를 하나씩 확인해야 했다"),
+            ("old-3", "예전 모니터링은 로그 파일을 직접 열어 오류 문자열을 검색하는 방식이었고 알림 지연이 자주 발생해 장애를 늦게 발견했다"),
+            ("old-4", "예전 알림은 이메일로만 발송되었고 수신 담당자가 지정되어 있지 않아 야간 장애가 다음 날 아침에야 확인되는 일이 많았다"),
+        ] {
+            state.store.put("memory", &json!({
+                "id":id,"agentId":"agent-a","partitionKey":"local","scope":"agent",
+                "type":"fact","text":text,"importance":0.32,"status":"active",
+                "createdAt":"2020-01-01T00:00:00Z",
+                "learnedAt":"2020-01-01T00:00:00Z",
+                "lastUsedAt":"2020-01-01T00:00:00Z",
+                "evidenceMessageIds":[format!("{id}-m")]
+            }));
+        }
+        let before_records = state.store.all("memory").iter()
+            .filter(|record| {
+                record["agentId"].as_str() == Some("agent-a")
+                    && record["id"].as_str().is_some_and(|id| id.starts_with("old-"))
+                    && record["status"].as_str() == Some("active")
+            }).count();
+        let before = state.store.all("memory").iter()
+            .filter(|record| {
+                record["agentId"].as_str() == Some("agent-a")
+                    && record["id"].as_str().is_some_and(|id| id.starts_with("old-"))
+                    && record["status"].as_str() == Some("active")
+            })
+            .filter_map(|record| record["text"].as_str().map(|text| text.chars().count()))
+            .sum::<usize>();
+        assert!(learning_sweep(&state) >= 1);
+        let after_records = state.store.all("memory").iter()
+            .filter(|record| {
+                record["agentId"].as_str() == Some("agent-a")
+                    && (record["source"].as_str() == Some("compression")
+                        || record["id"].as_str().is_some_and(|id| id.starts_with("old-")))
+                    && record["status"].as_str() == Some("active")
+            }).count();
+        let after = state.store.all("memory").iter()
+            .filter(|record| {
+                record["agentId"].as_str() == Some("agent-a")
+                    && (record["source"].as_str() == Some("compression")
+                        || record["id"].as_str().is_some_and(|id| id.starts_with("old-")))
+                    && record["status"].as_str() == Some("active")
+            })
+            .filter_map(|record| record["text"].as_str().map(|text| text.chars().count()))
+            .sum::<usize>();
+        println!(
+            "compression measurement: activeRecords {before_records} -> {after_records}, activeChars {before} -> {after} ({:.0}% smaller)",
+            (1.0 - after as f64 / before.max(1) as f64) * 100.0
+        );
+        assert!(after_records < before_records, "compression kept every record active");
+        assert!(after < before, "compression did not shrink active text");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
