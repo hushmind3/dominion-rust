@@ -544,6 +544,43 @@ pub fn context_block_with_manifest(
     context_block_ranked(store, scope, query, &algorithm)
 }
 
+/// Independent, model-free relevance rubric for comparing importance kernels.
+/// NDCG is measured against all visible scoped memory records, not task outcome.
+fn importance_rank_quality(
+    store: &Store, scope: &MemoryScope, query: &str, selected: &[Value],
+) -> Option<bool> {
+    let query_terms = terms(query);
+    if query_terms.is_empty() || selected.is_empty() { return None; }
+    let compact = normalize(query);
+    let grade = |record: &Value| -> f64 {
+        let text = record["text"].as_str().unwrap_or("");
+        let body = terms(text);
+        let overlap = query_terms.intersection(&body).count() as f64;
+        let coverage = overlap / query_terms.len().max(1) as f64;
+        let specificity = overlap / body.len().max(1) as f64;
+        let phrase = if compact.chars().count() >= 2
+            && normalize(text).contains(&compact) { 1.0 } else { 0.0 };
+        let standing = if record["importance"].as_f64().unwrap_or(0.5) >= 0.7
+            && matches!(record["type"].as_str(), Some("preference" | "procedure"))
+        { 0.25 } else { 0.0 };
+        coverage * 3.0 + specificity + phrase + standing
+    };
+    let mut ideal = store.all("memory").into_iter()
+        .filter(|record| visible(record, scope))
+        .map(|record| grade(&record))
+        .filter(|value| *value > 0.0)
+        .collect::<Vec<_>>();
+    if ideal.is_empty() { return None; }
+    ideal.sort_by(|a, b| b.total_cmp(a));
+    let discount = |index: usize| ((index + 2) as f64).log2();
+    let best = ideal.iter().take(selected.len()).enumerate()
+        .map(|(index, gain)| gain / discount(index)).sum::<f64>();
+    if best <= 0.0 { return None; }
+    let observed = selected.iter().enumerate()
+        .map(|(index, record)| grade(record) / discount(index)).sum::<f64>();
+    Some(observed / best >= 0.82)
+}
+
 /// Agent-aware retrieval: records the chosen importance algorithm as actual
 /// execution usage so it can learn independently from that bot's outcomes.
 pub fn context_block_with_manifest_at(
@@ -553,29 +590,20 @@ pub fn context_block_with_manifest_at(
     execution_id: Option<&str>,
 ) -> (Option<String>, Vec<Value>) {
     let algorithm = crate::engine::algorithms::choose_for_agent(
-        state, "memory.importance", scope.agent_id.as_deref(), execution_id,
+        state, "memory.importance", scope.agent_id.as_deref(), None,
     ).unwrap_or_else(|| active_kernel(&state.store, "memory.importance"));
     let memories = retrieve_ranked(&state.store, scope, query, 6, &algorithm);
-    if let Some(execution_id) = execution_id {
-        // A graded, query-specific retrieval metric, not the whole task's
-        // success. Do not score a turn with no relevant retrieval evidence.
-        let query_terms = terms(query);
-        if !memories.is_empty() && !query_terms.is_empty() {
-            let relevance = |memory: &Value| {
-                let text = memory["text"].as_str().unwrap_or("");
-                let overlap = terms(text).intersection(&query_terms).count();
-                let standing = memory["importance"].as_f64().unwrap_or(0.5) >= 0.7
-                    && matches!(memory["type"].as_str(), Some("preference" | "procedure"));
-                overlap > 0 || standing
-            };
-            let relevant_count = memories.iter().filter(|memory| relevance(memory)).count();
-            let selected_precision = relevant_count as f64 / memories.len() as f64;
-            let high_rank_relevant = memories.first().is_some_and(relevance);
-            crate::engine::algorithms::mark_signal(
-                state, execution_id, "memory.importance",
-                selected_precision >= 0.75 && high_rank_relevant,
-            );
-        }
+    if let (Some(execution_id), Some(success)) = (
+        execution_id,
+        importance_rank_quality(&state.store, scope, query, &memories),
+    ) {
+        // Record usage only when there is ranking evidence to grade.
+        crate::engine::algorithms::choose_for_agent(
+            state, "memory.importance", scope.agent_id.as_deref(), Some(execution_id),
+        );
+        crate::engine::algorithms::mark_signal(
+            state, execution_id, "memory.importance", success,
+        );
     }
     context_block_from_records(&state.store, memories)
 }
