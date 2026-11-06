@@ -1,6 +1,7 @@
 pub mod goal_control;
 pub mod adaptation_loop;
 pub mod distill;
+pub mod effect;
 pub mod agent_growth;
 pub mod algorithms;
 pub mod attachments;

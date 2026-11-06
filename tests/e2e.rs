@@ -2306,6 +2306,41 @@ fn a_failed_call_is_not_repeated_and_the_model_adapts() {
         .filter(|operation| operation["tool"] == "workspace_write")
         .count();
     assert_eq!(writes, 1, "adapted action did not run: {operations}");
+    let write = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["tool"] == "workspace_write")
+        .unwrap();
+    assert_eq!(write["effectState"], "verified", "{write}");
+    assert_eq!(write["toolReceipt"]["verified"], true, "{write}");
+    assert_eq!(
+        write["toolReceipt"]["verifier"]["kind"],
+        "sha256_readback",
+        "{write}"
+    );
+    assert!(
+        write["observedVersion"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:")),
+        "{write}"
+    );
+    assert_eq!(
+        execution["effectSummary"]["verifiedEffects"],
+        1,
+        "{execution}"
+    );
+    let failed = operations
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["tool"] == "shell_exec")
+        .unwrap();
+    assert_eq!(failed["effectState"], "failed", "{failed}");
+    assert_eq!(
+        failed["toolReceipt"]["failureLayer"], "execution",
+        "{failed}"
+    );
 }
 
 #[test]

@@ -3307,6 +3307,26 @@ async fn dispatch_tool_call(
     .unwrap_or_default();
     let arguments = normalize_tool_arguments(arguments, &argument_strategy);
     crate::engine::algorithms::mark_signal(state, execution_id, "tool.arguments", true);
+    // Record what the effect would be before asking for approval or running it.
+    // Only mutating calls need the session history scan.
+    let mut effect_operations = if crate::engine::effect::is_effectful(&call.name, &arguments) {
+        state
+            .store
+            .all("execution_operation")
+            .into_iter()
+            .filter(|operation| operation["sessionId"].as_str() == Some(session_id))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    effect_operations.reverse();
+    let effect = crate::engine::effect::prepare(
+        session_id,
+        &call.name,
+        &arguments,
+        &effect_operations,
+    );
+    let effect_block = crate::engine::effect::unresolved(&effect, &effect_operations);
     let started_at = chrono::Utc::now().to_rfc3339();
     let tool_started = std::time::Instant::now();
     let _ = tx.send(json!({ "type": "tool_start", "name": call.name, "id": call.id }));
@@ -3317,7 +3337,9 @@ async fn dispatch_tool_call(
         tools::requires_approval(&call.name)
     };
     let operation_id = format!("{execution_id}:{round}:{call_index}:{}", call.id);
-    let allowed = if needs_approval {
+    let allowed = if effect_block.is_some() {
+        false
+    } else if needs_approval {
         request_approval(
             state,
             tx,
@@ -3333,6 +3355,13 @@ async fn dispatch_tool_call(
         true
     };
 
+    let initial_effect_state = if effect_block.is_some() {
+        "needs_review"
+    } else if allowed {
+        "started"
+    } else {
+        "denied"
+    };
     state
         .store
         .put(
@@ -3343,12 +3372,51 @@ async fn dispatch_tool_call(
                 "opSeq": op_seq, "origin": origin, "procedureNodeId": procedure_node,
                 "procedureStrategyId": procedure_strategy,
                 "procedureRevision": procedure_revision,
+                "effectId": effect["effectId"],
+                "resourceKey": effect["resourceKey"],
+                "requestDigest": effect["requestDigest"],
+                "beforeVersion": effect["beforeVersion"],
+                "effectState": initial_effect_state,
+                "toolReceipt": {
+                    "effectId": effect["effectId"],
+                    "tool": call.name,
+                    "requestDigest": effect["requestDigest"],
+                    "resourceKey": effect["resourceKey"],
+                    "status": initial_effect_state,
+                    "verified": false,
+                    "verifier": {"kind": "pending", "revision": "effect-v1"},
+                    "beforeVersion": effect["beforeVersion"],
+                    "startedAt": started_at,
+                },
                 "status": "running", "startedAt": started_at,
             }),
         )
         .ok_or("도구 실행 시작을 저장할 수 없습니다.")?;
     let mut file_observation = None;
-    let (result, ok) = if allowed {
+    let (result, ok) = if let Some(prior) = &effect_block {
+        // The previous attempt has no confirmed outcome. Sending the same
+        // non-idempotent change again would risk a duplicate external effect.
+        let prior_state = prior["effectState"].as_str().unwrap_or("unknown");
+        let error = format!(
+            "이전 시도의 효과 상태가 확인되지 않았습니다({prior_state}). 같은 변경을 다시 보내지 말고 대상의 현재 상태를 먼저 조회한 뒤 판단하세요."
+        );
+        let value = json!({
+            "error": error,
+            "effectUnknown": true,
+            "requiresInspection": true,
+            "effectId": effect["effectId"],
+            "priorEffectState": prior_state,
+            "priorOperationId": prior["id"],
+        });
+        let _ = tx.send(json!({
+            "type": "tool_error",
+            "name": call.name,
+            "id": call.id,
+            "error": "확인되지 않은 이전 효과가 있어 재실행을 보류했습니다.",
+            "result": value,
+        }));
+        (value, false)
+    } else if allowed {
         let context = ToolContext {
             workspace: &state.config.workspace,
             store: &state.store,
@@ -3425,6 +3493,17 @@ async fn dispatch_tool_call(
             "round": round,
         }),
     );
+    let sealed = crate::engine::effect::seal(
+        &state.config.workspace,
+        &call.name,
+        &arguments,
+        &result,
+        ok,
+        !allowed && effect_block.is_none(),
+        effect_block.is_some(),
+        &effect,
+    )
+    .await;
     let operation = state
         .store
         .put(
@@ -3443,6 +3522,13 @@ async fn dispatch_tool_call(
                 "procedureNodeId": procedure_node,
                 "procedureStrategyId": procedure_strategy,
                 "procedureRevision": procedure_revision,
+                "effectId": effect["effectId"],
+                "resourceKey": effect["resourceKey"],
+                "requestDigest": effect["requestDigest"],
+                "beforeVersion": effect["beforeVersion"],
+                "effectState": sealed["effectState"],
+                "observedVersion": sealed["observedVersion"],
+                "toolReceipt": sealed["toolReceipt"],
                 "status": if ok { "completed" } else { "failed" },
                 "startedAt": started_at,
                 "finishedAt": chrono::Utc::now().to_rfc3339(),
@@ -3450,6 +3536,25 @@ async fn dispatch_tool_call(
         )
         .ok_or("도구 수행 결과를 저장하지 못했습니다. 실행 기록을 확인하세요.")?;
     state.bus.record("execution_operation", &operation);
+
+    // A verified observation of the same resource closes a pending effect for
+    // retry purposes. It does not upgrade the old effect to verified.
+    if !crate::engine::effect::is_effectful(&call.name, &arguments)
+        && sealed["toolReceipt"]["verified"].as_bool() == Some(true)
+    {
+        if let Some(resource) = effect["resourceKey"].as_str() {
+            let operations = state.store.all("execution_operation");
+            for updated in crate::engine::effect::mark_inspected(
+                &operations,
+                resource,
+                operation["id"].as_str().unwrap_or(""),
+            ) {
+                if let Some(saved) = state.store.put("execution_operation", &updated) {
+                    state.bus.record("execution_operation", &saved);
+                }
+            }
+        }
+    }
 
     // Keep the full result. The runtime selects a model-specific context
     // window when assembling the next provider request; local and cloud
@@ -4046,6 +4151,12 @@ pub(super) fn finalize_execution(
         if operation["runId"] == execution_id && operation["status"] == "running" {
             operation["status"] = json!("interrupted");
             operation["outcomeUnknown"] = json!(true);
+            operation["effectState"] = json!("effect_unknown");
+            if operation["toolReceipt"].is_object() {
+                operation["toolReceipt"]["status"] = json!("interrupted");
+                operation["toolReceipt"]["outcomeUnknown"] = json!(true);
+                operation["toolReceipt"]["verified"] = json!(false);
+            }
             operation["reason"] = json!("실행이 중단되어 도구 결과를 확정할 수 없습니다.");
             operation["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
             if let Some(saved) = state.store.put("execution_operation", &operation) {
@@ -4060,6 +4171,7 @@ pub(super) fn finalize_execution(
         .filter(|operation| operation["runId"].as_str() == Some(execution_id))
         .collect::<Vec<_>>();
     crate::engine::procedure::sort_operations(&mut operations);
+    record["effectSummary"] = crate::engine::effect::summary(&operations);
     let request_text = record["request"].as_str().unwrap_or("");
     let compliance = record["strategyCandidates"]
         .as_array()

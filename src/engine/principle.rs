@@ -93,6 +93,281 @@ fn principle_id(kind: &str, class: &str) -> String {
     )
 }
 
+const DOMAINS: &[&str] = &[
+    "filesystem",
+    "source_control",
+    "http_api",
+    "database",
+    "external_tool",
+    "system",
+];
+
+/// Capabilities are described by role, not by a concrete argument. A domain
+/// only supports a composition when it can observe a version, mutate, and
+/// independently verify. `available:false` means the principle may still be
+/// retrieved as advice, but it must not become an executable strategy there.
+fn capability_bindings(domain: &str) -> Value {
+    match domain {
+        "filesystem" => json!({
+            "observe": ["workspace_read", "file_read"],
+            "mutate": ["workspace_write", "file_write"],
+            "verify": {"kind": "sha256_readback", "available": true},
+            "version_source": "sha256",
+            "conditional_update": "content_addressed_write",
+        }),
+        "source_control" => json!({
+            "observe": ["github_api:GET"],
+            "mutate": ["github_api:PUT", "github_api:PATCH", "github_api:DELETE"],
+            "verify": {"kind": "read_after_write", "available": true},
+            "version_source": "git_object_sha_or_etag",
+            "conditional_update": "sha_conditional_update",
+        }),
+        "http_api" => json!({
+            "observe": ["http_fetch"],
+            "mutate": ["http_request"],
+            "verify": {"kind": "read_after_write", "available": false},
+            "version_source": "etag_or_last_modified",
+            "conditional_update": "if_match",
+        }),
+        "database" => json!({
+            "observe": ["sql_query"],
+            "mutate": ["sql_exec"],
+            "verify": {"kind": "read_after_write", "available": false},
+            "version_source": "row_version_or_updated_at",
+            "conditional_update": "compare_and_set",
+        }),
+        "external_tool" => json!({
+            "observe": ["mcp__*__read", "mcp__*__list"],
+            "mutate": ["mcp__*__write", "mcp__*__update"],
+            "verify": {"kind": "server_declared_readback", "available": false},
+            "version_source": "server_declared_etag",
+            "conditional_update": "server_declared_idempotency_key",
+        }),
+        _ => json!({
+            "observe": ["shell_exec", "terminal_exec"],
+            "mutate": ["shell_exec", "terminal_exec"],
+            "verify": {"kind": "artifact_or_independent_test", "available": false},
+            "version_source": "none",
+            "conditional_update": "none",
+        }),
+    }
+}
+
+fn failure_cause(class: &str) -> &'static str {
+    match class {
+        "stale_state" => "변경 대상의 현재 버전과 요청이 가정한 버전이 달랐다.",
+        "not_found" => "대상 경로나 리소스가 실제로 존재하지 않았다.",
+        "timeout" => "호출이 끝났지만 외부 효과의 상태가 확정되지 않았다.",
+        "permission_denied" => "호출자에게 해당 변경 권한이 없었다.",
+        "rate_limited" => "제공자 쿼터가 소진되어 관찰이나 변경이 거절됐다.",
+        "invalid_inputs" => "인자가 도구 스키마나 대상의 형식과 맞지 않았다.",
+        _ => "실패 원인이 관찰되지 않았다. 이 원리는 자동 적용하지 않는다.",
+    }
+}
+
+fn failure_layer(class: &str) -> &'static str {
+    match class {
+        "timeout" => "execution",
+        "permission_denied" | "rate_limited" => "authority",
+        "invalid_inputs" => "tool_arguments",
+        "stale_state" | "not_found" => "state",
+        _ => "unknown",
+    }
+}
+
+/// Structured form of a principle. This keeps the original one-line text for
+/// context injection, but adds the fields a composer needs: conditions,
+/// exclusions, typed procedure roles, expected evidence and cost.
+fn synthesize(kind: &str, class: &str, failed_tool: &str, selected_tool: &str) -> Value {
+    let source_domain = domain(failed_tool);
+    let bindings = capability_bindings(source_domain);
+    let condition = match class {
+        "stale_state" => json!({
+            "kind": "version_match",
+            "expr": "beforeVersion is known and equals the version just observed",
+            "required": true,
+        }),
+        "not_found" => json!({
+            "kind": "existence",
+            "expr": "target existence is confirmed before creating or retrying",
+            "required": true,
+        }),
+        "timeout" => json!({
+            "kind": "effect_state",
+            "expr": "previous attempt has no confirmed effect, or has been inspected",
+            "required": true,
+        }),
+        _ => json!({
+            "kind": "observed_failure",
+            "expr": "the same structural failure class is observed on the current task",
+            "required": true,
+        }),
+    };
+    let mut exclusions = vec![
+        "대상의 현재 버전을 읽을 수단이 없다.",
+        "변경이 관찰한 버전에 조건부로 묶여 있지 않다.",
+        "치환 대상이 여러 개라 하나로 특정할 수 없다.",
+        "권한이 거절되었거나 요청 자체가 승인되지 않았다.",
+        "비가역적 외부 효과이고 idempotency key나 조회 수단이 없다.",
+    ];
+    if class == "timeout" {
+        exclusions.push("이전 시도의 효과 상태를 조회하기 전에는 재전송하지 않는다.");
+    }
+    json!({
+        "schemaVersion": 2,
+        "kind": kind,
+        "failureCause": failure_cause(class),
+        "failureLayer": failure_layer(class),
+        "conditions": [
+            condition,
+            json!({
+                "kind": "mutation",
+                "expr": "the current tool mutates the same resource_key role",
+                "required": true,
+            }),
+            json!({
+                "kind": "version_capability",
+                "expr": "the target exposes a revision, etag, sha or row version",
+                "required": true,
+            }),
+        ],
+        "exclusions": exclusions,
+        "procedure": [
+            {
+                "step": 1, "operator": "observe", "role": "read_current_version",
+                "bindings": bindings["observe"],
+                "produces": ["observedVersion", "resourceKey"],
+            },
+            {
+                "step": 2, "operator": "compare", "role": "match_expected_version",
+                "requires": ["observedVersion is not null"],
+                "onMismatch": "reobserve_once_then_stop",
+            },
+            {
+                "step": 3, "operator": "mutate", "role": "conditional_write",
+                "bindings": bindings["mutate"],
+                "requires": ["compare matched"],
+                "versionSource": bindings["version_source"],
+                "conditionalUpdate": bindings["conditional_update"],
+            },
+            {
+                "step": 4, "operator": "verify", "role": "independent_readback",
+                "bindings": bindings["verify"],
+                "acceptsModelClaim": false,
+            },
+        ],
+        "expectedEvidence": {
+            "kind": "version_equals",
+            "description": "관찰한 버전과 변경 후 버전이 일치하거나, 되읽은 내용의 해시가 요청과 일치한다.",
+            "independent": true,
+        },
+        "verification": {
+            "owner": "harness",
+            "method": bindings["verify"]["kind"],
+            "modelClaimAccepted": false,
+        },
+        "cost": {"modelCalls": 0, "extraToolCalls": 1, "estTokens": 0},
+        "provenance": {
+            "sourceTool": failed_tool,
+            "recoveryTool": selected_tool,
+            "sourceDomain": source_domain,
+            "capabilities": bindings,
+        },
+        "counterexamples": [],
+        "autoApply": false,
+    })
+}
+
+/// Composes an executable strategy candidate from a principle only when the
+/// evidence is independent and the domain exposes observe/mutate/verify. It
+/// never marks the candidate promotable: a paired holdout must run first.
+pub fn compose(principle: &Value) -> Option<Value> {
+    let principle_id = principle["id"].as_str()?;
+    let evidence = principle["evidenceExecutionIds"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    let cases = principle["supportingCases"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    let counterexamples = principle["counterexamples"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    if evidence < 2 || cases < 2 || counterexamples >= cases + 1 {
+        return None;
+    }
+    let mut supported = Vec::new();
+    let mut unavailable = Vec::new();
+    for domain in DOMAINS {
+        let bindings = capability_bindings(domain);
+        let executable = bindings["mutate"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+            && bindings["verify"]["available"].as_bool() == Some(true);
+        if executable {
+            supported.push(json!({
+                "domain": domain,
+                "observe": bindings["observe"],
+                "mutate": bindings["mutate"],
+                "verify": bindings["verify"],
+                "versionSource": bindings["version_source"],
+            }));
+        } else {
+            unavailable.push(json!({
+                "domain": domain,
+                "reason": "관찰·변경·독립 검증 중 하나 이상이 도구 카탈로그에 없다.",
+            }));
+        }
+    }
+    if supported.is_empty() {
+        return None;
+    }
+    let revision = crate::engine::memory::stable_id(&[
+        principle_id,
+        principle["updatedAt"].as_str().unwrap_or(""),
+    ]);
+    let id = format!("strategy-composition-{revision}");
+    Some(json!({
+        "id": id,
+        "schemaVersion": 2,
+        "kind": "strategy_composition",
+        "status": "candidate",
+        "promotionEligible": false,
+        "promotionReason": "paired holdout evidence가 없으므로 운영 정책으로 승격하지 않는다.",
+        "principleId": principle_id,
+        "parentRevision": revision,
+        "procedure": principle["procedure"],
+        "conditions": principle["conditions"],
+        "exclusions": principle["exclusions"],
+        "expectedEvidence": principle["expectedEvidence"],
+        "supportedDomains": supported,
+        "unavailableDomains": unavailable,
+        "evidence": {
+            "executionIds": principle["evidenceExecutionIds"],
+            "supportingCases": principle["supportingCases"],
+            "supportingModels": principle["supportingModels"],
+            "supportingAgents": principle["supportingAgents"],
+            "counterexamples": principle["counterexamples"],
+            "evidenceGrade": principle["evidenceGrade"],
+        },
+        "costBound": {"extraToolCalls": 1, "modelCalls": 0},
+        "experiment": {
+            "status": "not_run",
+            "baseline": "existing path",
+            "treatment": ["observe_version", "compare", "conditional_mutate", "independent_readback"],
+            "gates": {
+                "minSuccessGain": 0.10,
+                "tokenRatioMax": 1.25,
+                "forbidDuplicateEffect": true,
+                "forbidAuthorityWidening": true,
+            },
+        },
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
 fn union_strings(record: &mut Value, key: &str, value: &str, limit: usize) {
     if value.is_empty() {
         return;
@@ -169,10 +444,44 @@ fn observed_recoveries(state: &AppState, execution_id: &str) -> Vec<Value> {
     recoveries
 }
 
+/// Stores a structured composition once the principle has independent cases.
+/// The composition is never activated here; it only becomes an experiment
+/// candidate that the existing promotion path may later evaluate.
+fn ensure_composition(state: &AppState, principle: &mut Value) -> bool {
+    if principle["strategyCompositionId"].as_str().is_some() {
+        return false;
+    }
+    let Some(composition) = compose(principle) else {
+        return false;
+    };
+    let Some(saved) = state.store.put("strategy_composition", &composition) else {
+        return false;
+    };
+    principle["strategyCompositionId"] = saved["id"].clone();
+    principle["strategyComposedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    if let Some(candidate_id) = principle["strategyCandidateId"].as_str() {
+        if let Some(mut candidate) = state.store.get("improvement", candidate_id) {
+            candidate["compositionId"] = saved["id"].clone();
+            candidate["compositionRevision"] = saved["parentRevision"].clone();
+            state.store.put("improvement", &candidate);
+        }
+    }
+    true
+}
+
 /// Learns principles only from a verified successful adaptation. The source
 /// tool/domain is evidence, never an applicability requirement.
 pub fn learn_from_execution(state: &AppState, execution: &Value) -> usize {
     if execution["taskOutcome"].as_str() != Some("succeeded") {
+        return 0;
+    }
+    // A succeeded task can still contain an unresolved external effect. It is
+    // evidence for the task result, not for a reusable positive rule.
+    if execution["effectSummary"]["unverifiedEffects"]
+        .as_u64()
+        .unwrap_or(0)
+        > 0
+    {
         return 0;
     }
     let Some(execution_id) = execution["id"].as_str() else {
@@ -226,6 +535,16 @@ pub fn learn_from_execution(state: &AppState, execution: &Value) -> usize {
                 "createdAt": chrono::Utc::now().to_rfc3339(),
             })
         });
+        // Structured conditions, exclusions, typed procedure, expected
+        // evidence and cost. The counterexample list stays owned by usage.
+        let synthesized = synthesize(kind, class, failed_tool, selected_tool);
+        if let Some(fields) = synthesized.as_object() {
+            for (key, value) in fields {
+                if key != "counterexamples" {
+                    principle[key] = value.clone();
+                }
+            }
+        }
         union_strings(&mut principle, "evidenceExecutionIds", execution_id, 64);
         union_strings(&mut principle, "supportingModels", model, 16);
         union_strings(&mut principle, "supportingAgents", agent, 16);
@@ -280,6 +599,7 @@ pub fn learn_from_execution(state: &AppState, execution: &Value) -> usize {
                 principle["strategyCandidateId"] = candidate["id"].clone();
                 principle["strategyCandidateAt"] = json!(chrono::Utc::now().to_rfc3339());
             }
+            ensure_composition(state, &mut principle);
         }
         if state.store.put("experience_principle", &principle).is_some() {
             learned += 1;
@@ -447,6 +767,7 @@ pub fn finalize_usage(state: &AppState, execution: &Value, succeeded: bool) -> u
             usage["status"] = json!("counterexample");
         }
         principle["lastUsedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        ensure_composition(state, &mut principle);
         state.store.put("experience_principle", &principle);
         usage["finalizedAt"] = json!(chrono::Utc::now().to_rfc3339());
         state.store.put("principle_usage", &usage);
@@ -613,6 +934,125 @@ mod tests {
                 .any(|value| value == model), "{principle}");
         }
         assert_eq!(principle["supportingCases"].as_array().unwrap().len(), 3);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn synthesized_principle_is_typed_not_a_prompt_sentence() {
+        let (state, dir) = state();
+        learn_from_execution(
+            &state,
+            &execution(
+                "model-a",
+                "agent-a",
+                "github_api_update",
+                "github_api_get",
+                "409 conflict: sha mismatch",
+            ),
+        );
+        let principle = &state.store.all("experience_principle")[0];
+        assert_eq!(principle["schemaVersion"], 2);
+        assert!(principle["conditions"].as_array().unwrap().len() >= 2);
+        assert!(principle["exclusions"].as_array().unwrap().len() >= 5);
+        assert_eq!(principle["failureLayer"], "state");
+        assert_eq!(principle["procedure"][0]["operator"], "observe");
+        assert_eq!(principle["procedure"][3]["operator"], "verify");
+        assert_eq!(principle["verification"]["modelClaimAccepted"], false);
+        assert_eq!(principle["autoApply"], false);
+        assert_eq!(principle["cost"]["modelCalls"], 0);
+        assert!(principle["provenance"]["capabilities"].is_object());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn composition_requires_independent_cases_and_stays_unpromoted() {
+        let (state, dir) = state();
+        learn_from_execution(
+            &state,
+            &execution(
+                "model-a",
+                "agent-a",
+                "github_api_update",
+                "github_api_get",
+                "409 conflict: sha mismatch",
+            ),
+        );
+        assert!(context_block(
+            &state,
+            Some("agent-b"),
+            "model-b",
+            "workspace_write",
+            &json!({}),
+            "409 conflict",
+            Some("run-b"),
+        )
+        .is_some());
+        finalize_usage(&state, &json!({"id":"run-b"}), true);
+        assert!(
+            state.store.all("strategy_composition").is_empty(),
+            "one source and one supporting case are not enough"
+        );
+
+        learn_from_execution(
+            &state,
+            &json!({
+                "id":"run-source-2","taskOutcome":"succeeded","model":"model-a2",
+                "agentId":"agent-a2","sessionId":"s-2",
+                "adaptations":[{
+                    "observation":{"tool":"github_api_update","actual":"409 conflict"},
+                    "selected":{"tool":"github_api_get","inputs":{}},
+                    "result":{"success":true}
+                }]
+            }),
+        );
+        assert!(context_block(
+            &state,
+            Some("agent-c"),
+            "model-c",
+            "file_write",
+            &json!({}),
+            "409 conflict: stale state",
+            Some("run-c"),
+        )
+        .is_some());
+        finalize_usage(&state, &json!({"id":"run-c"}), true);
+
+        let composition = state
+            .store
+            .all("strategy_composition")
+            .into_iter()
+            .next()
+            .expect("composition from independent evidence");
+        assert_eq!(composition["promotionEligible"], false);
+        assert_eq!(composition["experiment"]["status"], "not_run");
+        assert_eq!(composition["experiment"]["gates"]["tokenRatioMax"], 1.25);
+        let domains = composition["supportedDomains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|value| value["domain"].as_str())
+            .collect::<Vec<_>>();
+        assert!(domains.contains(&"filesystem"));
+        assert!(domains.contains(&"source_control"));
+        assert!(domains.contains(&"system") == false);
+        let principle = state.store.all("experience_principle")[0].clone();
+        assert_eq!(principle["strategyCompositionId"], composition["id"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unresolved_effects_are_not_learned_as_success() {
+        let (state, dir) = state();
+        let mut execution = execution(
+            "model-a",
+            "agent-a",
+            "github_api_update",
+            "github_api_get",
+            "409 conflict: sha mismatch",
+        );
+        execution["effectSummary"] = json!({"unverifiedEffects": 1});
+        assert_eq!(learn_from_execution(&state, &execution), 0);
+        assert!(state.store.all("experience_principle").is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
