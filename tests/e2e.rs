@@ -329,7 +329,7 @@ fn disabled_tools_cannot_be_enabled_by_the_model() {
 }
 
 #[test]
-fn a_room_greeting_gets_one_direct_reply_not_a_panel() {
+fn a_room_greeting_reaches_the_whole_discussion_room() {
     let _serial = serial();
     let (port, requests) = scripted_provider(|_| {
         vec![json!({"choices":[{"delta":{"content":"안녕하세요, 주인님."},"finish_reason":"stop"}]})]
@@ -370,11 +370,15 @@ fn a_room_greeting_gets_one_direct_reply_not_a_panel() {
         .iter()
         .filter(|row| row["role"] == "assistant")
         .collect::<Vec<_>>();
-    assert_eq!(assistants.len(), 1, "{messages}");
+    assert_eq!(assistants.len(), 2, "{messages}");
     assert_eq!(assistants[0]["agent_id"], "a", "{messages}");
-    assert_eq!(assistants[0]["content"], "안녕하세요, 주인님.");
+    assert_eq!(assistants[1]["agent_id"], "b", "{messages}");
     let captured = requests.lock().unwrap();
-    assert_eq!(captured.len(), 1, "a greeting called the whole panel");
+    assert_eq!(
+        captured.len(),
+        2,
+        "discussion mode must reach every configured participant"
+    );
     let system = captured[0]["messages"][0]["content"]
         .as_str()
         .unwrap_or("");

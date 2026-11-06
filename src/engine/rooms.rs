@@ -136,41 +136,6 @@ pub fn plan_speakers(
     }
 }
 
-/// A deterministic, model-free reading of the owner's message. It only
-/// separates "this is a greeting/short social reply" from an explicit request
-/// for a group discussion. Everything else keeps the configured routing.
-fn owner_intent(text: &str) -> &'static str {
-    let normalized = text
-        .trim()
-        .to_lowercase()
-        .chars()
-        .filter(|c| !c.is_whitespace() && !matches!(c, '.' | ',' | '!' | '?' | '~' | '…' | '。'))
-        .collect::<String>();
-    const DISCUSSION: &[&str] = &[
-        "토론", "회의", "의견", "논의", "각자", "다같이", "모두", "전원", "브레인스토밍",
-        "discuss", "debate", "meeting", "everyone", "brainstorm",
-    ];
-    if DISCUSSION.iter().any(|word| normalized.contains(word)) {
-        return "discussion";
-    }
-    const GREETINGS: &[&str] = &[
-        "안녕", "안녕하세요", "하이", "반가워", "반갑습니다", "좋은아침", "ㅎㅇ",
-        "hello", "hi", "hey", "goodmorning", "goodevening", "고마워", "고맙습니다",
-        "감사", "감사합니다", "thanks", "thankyou", "수고했어", "수고하셨습니다",
-    ];
-    const SOCIAL: &[&str] = &["네", "응", "ㅇㅇ", "ok", "오케이", "알겠어", "알겠습니다", "그래"];
-    if SOCIAL.contains(&normalized.as_str())
-        || GREETINGS.iter().any(|word| {
-            normalized == *word
-                || (normalized.starts_with(word)
-                    && normalized.chars().count() <= word.chars().count() + 6)
-        })
-    {
-        return "conversational";
-    }
-    "task"
-}
-
 /// Each job responds to one actual owner message in the shared transcript.
 /// Model instructions never create extra user messages or turn peer claims
 /// into owner facts. Autonomous exchanges end at a finite turn budget.
@@ -317,8 +282,7 @@ async fn run_locked(
     if !matches!(mode.as_str(), "discussion" | "round_robin" | "mentioned") {
         return Err("지원하지 않는 대화방 응답 방식입니다.".into());
     }
-    let intent = owner_intent(owner_text);
-    let mut initial = if let Some(value) = existing.get("initialSpeakers") {
+    let initial = if let Some(value) = existing.get("initialSpeakers") {
         id_list(value)?
     } else {
         let explicit = input["explicitAgentIds"]
@@ -338,31 +302,17 @@ async fn run_locked(
     if initial.iter().any(|id| !roster.contains(id)) {
         return Err("실행 체크포인트의 응답자가 대화방 참가자가 아닙니다.".into());
     }
-    // A greeting is not a meeting. One natural reply is enough; do not turn
-    // the whole roster into a panel or invent an agenda for it.
-    let conversational = intent == "conversational";
-    if conversational && input.get("agentIds").is_none() {
-        initial.truncate(1);
-    }
-    let rounds = if conversational {
-        1
-    } else {
-        room["rounds"].as_i64().unwrap_or(1).clamp(1, 4) as usize
-    };
-    let budget = if conversational {
-        1
-    } else {
-        existing["turnBudget"]
-            .as_u64()
-            .map(|value| value as usize)
-            .unwrap_or_else(|| {
-                room["maxTurns"]
-                    .as_i64()
-                    .unwrap_or((roster.len() * rounds) as i64)
-                    .clamp(1, MAX_TURNS as i64) as usize
-            })
-            .clamp(1, MAX_TURNS)
-    };
+    let rounds = room["rounds"].as_i64().unwrap_or(1).clamp(1, 4) as usize;
+    let budget = existing["turnBudget"]
+        .as_u64()
+        .map(|value| value as usize)
+        .unwrap_or_else(|| {
+            room["maxTurns"]
+                .as_i64()
+                .unwrap_or((roster.len() * rounds) as i64)
+                .clamp(1, MAX_TURNS as i64) as usize
+        })
+        .clamp(1, MAX_TURNS);
     let conflict_strategy =
         crate::engine::algorithms::variant_for_agent(state, "multiagent.conflict", None);
     let mut conflict_resolution = existing
@@ -883,25 +833,6 @@ fn mentioned_agents(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn greetings_do_not_start_a_group_discussion() {
-        for greeting in ["안녕", "안녕하세요", "안녕하세요 주인님", "hi", "hello!", "고마워", "ㅎㅇ"] {
-            assert_eq!(owner_intent(greeting), "conversational", "{greeting}");
-        }
-        for request in [
-            "우리 함께 의견을 나눠보자",
-            "이 주제로 토론해줘",
-            "각자 생각을 말해봐",
-            "회의 시작하자",
-            "파일을 수정해줘",
-            "테스트 실행 결과를 알려줘",
-        ] {
-            assert_ne!(owner_intent(request), "conversational", "{request}");
-        }
-        assert_eq!(owner_intent("이 주제로 토론해줘"), "discussion");
-        assert_eq!(owner_intent("파일을 수정해줘"), "task");
-    }
     use std::{
         path::PathBuf,
         sync::{Arc, Mutex},
