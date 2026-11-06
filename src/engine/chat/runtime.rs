@@ -5,7 +5,7 @@ use super::{
     provider::{select_provider, stream_completion},
 };
 use super::{
-    parse_text_tool_calls, Metrics, ProviderRef, ToolCall, TurnRequest, MAX_ELAPSED, MAX_ROUNDS, MAX_TOKENS, MAX_TOOL_CALLS,
+    parse_text_tool_calls, Metrics, ToolCall, TurnRequest, MAX_ELAPSED, MAX_ROUNDS, MAX_TOKENS, MAX_TOOL_CALLS,
 };
 use super::evidence::{evidence_for_source, prepare_owner_action};
 use crate::engine::adaptation::types::TaskOutcome;
@@ -1349,12 +1349,12 @@ async fn run_turn_body(
                     }));
                 }
             }
-            // A model sees as much evidence as its own configured context
-            // allows. There is no fixed 6k/20k/80k restriction; the full
-            // result always remains in execution_operation and session DB.
-            append_tool_result(
-                &mut messages, &call.id, &tool_content, &provider, &round_tools,
-            );
+            // Keep full evidence in the in-memory turn. Per-provider
+            // request assembly clips only when *that model's* configured
+            // context is too small, so switching local -> API can recover it.
+            messages.push(json!({
+                "role":"tool","tool_call_id":call.id,"content":tool_content,
+            }));
         }
 
         // Check acceptance after the tool round, not only when the model
@@ -1440,55 +1440,6 @@ async fn run_turn_body(
         state.store.put("execution", &execution);
     }
     Ok(Some(saved))
-}
-
-fn clip(text: &str, limit: usize) -> String {
-    const MARKER: &str = "\n… (truncated; full evidence is stored)";
-    if text.chars().count() <= limit {
-        return text.to_string();
-    }
-    if limit == 0 {
-        return String::new();
-    }
-    let marker_size = MARKER.chars().count();
-    if limit <= marker_size {
-        return MARKER.chars().take(limit).collect();
-    }
-    let mut result: String = text.chars().take(limit - marker_size).collect();
-    result.push_str(MARKER);
-    result
-}
-
-/// Use the *effective model's* declared context size. Unknown capacities
-/// are left unrestricted; the provider is responsible for its own limit.
-/// The complete tool response was persisted before this context selection.
-fn append_tool_result(
-    messages: &mut Vec<Value>,
-    call_id: &str,
-    content: &str,
-    provider: &ProviderRef,
-    tool_definitions: &[Value],
-) {
-    let allowance = provider.context_tokens.map(|tokens| {
-        let reserve = provider.max_output_tokens
-            .unwrap_or_else(|| tokens / 8)
-            .min(tokens / 4)
-            .max(128)
-            .min(tokens);
-        let capacity_chars = (tokens.saturating_sub(reserve) as usize).saturating_mul(4);
-        let used_chars: usize = messages.iter()
-            .map(|message| message.to_string().chars().count())
-            .sum::<usize>()
-            .saturating_add(
-                tool_definitions.iter().map(|tool| tool.to_string().chars().count()).sum::<usize>()
-            );
-        capacity_chars.saturating_sub(used_chars).saturating_sub(256)
-    });
-    let content = allowance.map_or_else(
-        || content.to_string(),
-        |limit| clip(content, limit),
-    );
-    messages.push(json!({"role":"tool","tool_call_id":call_id,"content":content}));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4026,35 +3977,6 @@ mod outcome_tests {
             "strategyCompliance": []
         })
     }
-
-    #[test]
-    fn model_specific_tool_context_uses_capacity_not_fixed_limits() {
-        let mut messages = vec![json!({"role":"system","content":"short"})];
-        let large = ProviderRef {
-            id:"api".into(),name:"api".into(),base_url:String::new(),
-            api_key:String::new(),model:"large".into(),tool_mode:"native".into(),
-            reasoning_protocol:String::new(),local:false,
-            context_tokens:Some(128_000),max_output_tokens:Some(2_000),
-        };
-        let content = "한".repeat(100_000);
-        append_tool_result(&mut messages,"call1",&content,&large,&[]);
-        assert_eq!(messages[1]["content"].as_str().unwrap().chars().count(), 100_000);
-
-        let mut local = large.clone();
-        local.id = "local".into();
-        local.context_tokens = Some(4_096);
-        let mut short_messages = vec![json!({"role":"system","content":"short"})];
-        append_tool_result(&mut short_messages,"call2",&content,&local,&[]);
-        let limited = short_messages[1]["content"].as_str().unwrap().chars().count();
-        assert!(limited < 20_000);
-        assert!(limited > 0);
-
-        local.context_tokens = None;
-        let mut unknown_messages = Vec::new();
-        append_tool_result(&mut unknown_messages,"call3",&content,&local,&[]);
-        assert_eq!(unknown_messages[0]["content"].as_str().unwrap().chars().count(), 100_000);
-    }
-
 
     #[test]
     fn finalization_hash_ignores_mutable_counters_and_timings() {
