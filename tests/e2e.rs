@@ -138,6 +138,12 @@ impl TestApp {
             .json()
             .unwrap()
     }
+    fn delete(&self, path: &str) {
+        let _ = self
+            .client
+            .delete(format!("{}{path}", self.base))
+            .send();
+    }
     fn get(&self, path: &str) -> Value {
         self.client
             .get(format!("{}{path}", self.base))
@@ -3537,6 +3543,58 @@ fn clause_split_decomposition_is_persisted_with_independent_quality() {
     assert!(
         execution["decomposition"]["qualityScore"].as_f64().unwrap() >= 0.75,
         "{execution}"
+    );
+}
+
+#[test]
+fn chat_fails_over_from_native_api_to_compat_provider_in_one_turn() {
+    let _serial = serial();
+    let (fallback_port, fallback_requests) = scripted_provider(|request| {
+        let has_native_tools = request.get("tools").is_some();
+        assert!(!has_native_tools, "compat provider received native tools: {request}");
+        vec![json!({"choices":[{"delta":{"content":"대체 제공자 응답"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(fallback_port, "compat");
+    for provider in app.get("/api/providers").as_array().cloned().unwrap_or_default() {
+        if let Some(id) = provider["id"].as_str() {
+            app.delete(&format!("/api/providers/{id}"));
+        }
+    }
+    let primary = app.post(
+        "/api/providers",
+        &json!({"name":"cloud-native","baseUrl":"http://127.0.0.1:1/v1","model":"cloud","enabled":true,"toolMode":"native"}),
+    );
+    let fallback = app.post(
+        "/api/providers",
+        &json!({"name":"local-compat","baseUrl":format!("http://127.0.0.1:{fallback_port}/v1"),"model":"local","enabled":true,"toolMode":"compat"}),
+    );
+    let stream = app.chat(&json!({
+        "input":"파일 도구로 상태를 확인해",
+        "providerId":primary["id"],
+        "toolsEnabled":true,
+        "autoLearning":false
+    }));
+    assert!(stream.contains("대체 제공자 응답"), "{stream}");
+    let executions = app.get("/api/executions");
+    let execution = executions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|execution| {
+            execution["effectiveProviderId"].as_str() == fallback["id"].as_str()
+        })
+        .expect("failover execution");
+    assert!(execution["failoverAt"].is_string(), "{execution}");
+    let captured = fallback_requests.lock().unwrap();
+    assert!(!captured.is_empty(), "fallback provider was not called");
+    assert!(captured.iter().all(|body| body.get("tools").is_none()));
+    assert!(
+        captured[0]["messages"][0]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Available tools:"),
+        "{}",
+        captured[0]
     );
 }
 
