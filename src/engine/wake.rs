@@ -34,19 +34,68 @@ fn resumable_program(state: &AppState, execution: &Value) -> Option<Value> {
     {
         return None;
     }
-    if checkpoint["pendingOperationIds"]
-        .as_array()
-        .is_some_and(|items| !items.is_empty())
-    {
+    // `pendingOperationIds` also contains nodes that were planned but never
+    // started. A pending node is safe to resume when it has no operation
+    // record. A completed operation is recorded as completed instead of being
+    // replayed. A running, interrupted or unknown operation requires review.
+    let execution_id = execution["id"].as_str().unwrap_or("");
+    // A database read failure is not evidence that no operation ran; keep the
+    // conservative needs_review path in that case.
+    let Ok(operations) = state.store.execution_operations(execution_id) else {
         return None;
+    };
+    let mut checkpoint = checkpoint.clone();
+    let mut completed = checkpoint["completedOperationIds"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut remaining = Vec::new();
+    for node in checkpoint["pendingOperationIds"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
+        let Some(node_id) = node.as_str() else {
+            continue;
+        };
+        let prefix = format!("program-{node_id}-");
+        let matched = operations.iter().filter(|operation| {
+            operation["callId"]
+                .as_str()
+                .is_some_and(|call_id| call_id.starts_with(&prefix))
+                || operation["procedureNodeId"].as_str() == Some(node_id)
+        });
+        let mut has_completed = false;
+        for operation in matched {
+            if operation["outcomeUnknown"] == true
+                || matches!(
+                    operation["status"].as_str(),
+                    Some("running" | "interrupted")
+                )
+            {
+                return None;
+            }
+            if operation["status"].as_str() == Some("completed") {
+                has_completed = true;
+            }
+        }
+        if has_completed {
+            if !completed.iter().any(|value| value.as_str() == Some(node_id)) {
+                completed.push(node);
+            }
+        } else {
+            remaining.push(node);
+        }
     }
+    checkpoint["completedOperationIds"] = json!(completed);
+    checkpoint["pendingOperationIds"] = json!(remaining);
     let revision = checkpoint["programRevision"].as_str()?;
     let active = state.store.all("adaptation_policy").iter().any(|policy| {
         policy["slot"].as_str() == Some("execution")
             && policy["status"].as_str() == Some("active")
             && policy["parameters"]["program"]["revision"].as_str() == Some(revision)
     }) || execution["revisedProgram"]["revision"].as_str() == Some(revision);
-    active.then(|| checkpoint.clone())
+    active.then_some(checkpoint)
 }
 
 /// Creates one durable wake decision per interrupted execution. Returns the
@@ -118,8 +167,11 @@ pub fn recover(state: &AppState) -> Vec<Value> {
             ("needs_review", "중단된 도구의 외부 결과를 확인해야 합니다.", Value::Null)
         } else if pending_approval {
             ("needs_review", "해결되지 않은 승인 요청이 있습니다.", Value::Null)
-        } else if let Some(_checkpoint) = resumable_program(state, &execution) {
+        } else if let Some(checkpoint) = resumable_program(state, &execution) {
             if let Some(mut old) = state.store.get("execution", execution_id) {
+                // Persist the reconciled pending/completed sets before the
+                // resume job reads them.
+                old["programCheckpoint"] = checkpoint;
                 old["programResumeApproved"] = json!(true);
                 state.store.put("execution", &old);
             }
@@ -323,6 +375,98 @@ mod tests {
         assert_eq!(created.len(), 3);
         assert!(created.iter().all(|item| item["decision"] == "needs_review"));
         assert!(created.iter().all(|item| item["jobId"].is_null()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn interrupted_program(state: &AppState, id: &str, pending: Value, completed: Value) {
+        interrupted(state, id);
+        let mut execution = state.store.get("execution", id).unwrap();
+        execution["programCheckpoint"] = json!({
+            "schemaVersion":1,
+            "programRevision":"p1",
+            "status":"running",
+            "frameStack":[],
+            "nextIndex":0,
+            "resolvedInputs":{},
+            "completedOperationIds":completed,
+            "pendingOperationIds":pending,
+            "loopProgress":{},
+            "observationRefs":{},
+            "adaptationRevision":0,
+        });
+        state.store.put("execution", &execution);
+        state.store.put(
+            "adaptation_policy",
+            &json!({
+                "id":"exec-policy","slot":"execution","status":"active",
+                "parameters":{"program":{"revision":"p1"}},
+            }),
+        );
+    }
+
+    #[test]
+    fn a_planned_program_node_without_an_operation_is_resumed() {
+        let (state, dir) = state();
+        interrupted_program(
+            &state,
+            "run-pending",
+            json!(["step2"]),
+            json!(["step1"]),
+        );
+        let created = recover(&state);
+        assert_eq!(created[0]["decision"], "queued", "{created:?}");
+        let execution = state.store.get("execution", "run-pending").unwrap();
+        assert_eq!(execution["programCheckpoint"]["pendingOperationIds"], json!(["step2"]));
+        assert_eq!(execution["programCheckpoint"]["completedOperationIds"], json!(["step1"]));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_completed_pending_operation_is_skipped_on_resume() {
+        let (state, dir) = state();
+        interrupted_program(
+            &state,
+            "run-completed",
+            json!(["step2"]),
+            json!(["step1"]),
+        );
+        state.store.put(
+            "execution_operation",
+            &json!({
+                "id":"op-step2","runId":"run-completed","callId":"program-step2-abc",
+                "tool":"workspace_write","status":"completed",
+            }),
+        );
+        let created = recover(&state);
+        assert_eq!(created[0]["decision"], "queued", "{created:?}");
+        let execution = state.store.get("execution", "run-completed").unwrap();
+        assert_eq!(execution["programCheckpoint"]["pendingOperationIds"], json!([]));
+        assert!(execution["programCheckpoint"]["completedOperationIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "step2"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_uncertain_pending_operation_requires_review() {
+        let (state, dir) = state();
+        interrupted_program(
+            &state,
+            "run-uncertain",
+            json!(["step2"]),
+            json!(["step1"]),
+        );
+        state.store.put(
+            "execution_operation",
+            &json!({
+                "id":"op-step2","runId":"run-uncertain","callId":"program-step2-abc",
+                "tool":"workspace_write","status":"interrupted","outcomeUnknown":true,
+            }),
+        );
+        let created = recover(&state);
+        assert_eq!(created[0]["decision"], "needs_review", "{created:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 
