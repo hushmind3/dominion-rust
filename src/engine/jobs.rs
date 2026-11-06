@@ -229,6 +229,46 @@ pub fn recover(state: &AppState) {
 }
 
 /// Starts the durable job worker plus the automation scheduler.
+/// Requeues learning jobs that failed because the learning model was
+/// unavailable. The work is kept, not lost, and a later worker picks it up.
+pub fn retry_failed_learning(state: &AppState) -> usize {
+    let mut retried = 0;
+    for job in state.store.all("job") {
+        if job["kind"].as_str() != Some("learn")
+            || job["status"].as_str() != Some("failed")
+        {
+            continue;
+        }
+        let attempts = job["attempts"].as_u64().unwrap_or(0);
+        if attempts >= 3 {
+            continue;
+        }
+        let Some(id) = job["id"].as_str() else {
+            continue;
+        };
+        let delay = 60i64.saturating_mul(attempts.max(1) as i64);
+        let available = chrono::Utc::now() + chrono::Duration::seconds(delay);
+        if let Some(saved) = state.store.patch_if(
+            "job",
+            id,
+            "status",
+            &json!("failed"),
+            &json!({
+                "status": "queued",
+                "availableAt": available.to_rfc3339(),
+                "retriedAt": chrono::Utc::now().to_rfc3339(),
+                "lastError": job["error"],
+                "error": Value::Null,
+            }),
+        ) {
+            state.bus.record("job", &saved);
+            state.store.audit("job.learning_retry", json!({"jobId": id, "attempts": attempts}));
+            retried += 1;
+        }
+    }
+    retried
+}
+
 pub fn start(state: AppState) {
     let workers = std::env::var("DOMINION_JOB_WORKERS")
         .ok()
@@ -247,10 +287,19 @@ pub fn start(state: AppState) {
         });
     }
 
+    let maintenance_state = state.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(30)).await;
             schedule_automations(&state);
+        }
+    });
+
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            retry_failed_learning(&maintenance_state);
+            crate::engine::agent_growth::sweep(&maintenance_state);
         }
     });
 }
@@ -794,5 +843,33 @@ mod tests {
             state.store.get("goal", "g").unwrap()["status"],
             "needs_review"
         );
+    }
+
+    #[test]
+    fn failed_learning_jobs_are_requeued_with_backoff() {
+        use crate::config::Config;
+        use crate::db::Store;
+        use crate::vault::Vault;
+        let dir = std::env::temp_dir().join(format!("dominion-retry-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let store = Store::open(&config.db_path()).unwrap();
+        let vault = Vault::open(&config.key_path());
+        let state = crate::state::AppState::new(config, store, vault);
+        state.store.put(
+            "job",
+            &json!({"id":"learn-failed","kind":"learn","status":"failed","attempts":1,"input":{},"error":"model unavailable"}),
+        );
+        assert_eq!(retry_failed_learning(&state), 1);
+        let job = state.store.get("job", "learn-failed").unwrap();
+        assert_eq!(job["status"], "queued");
+        assert!(job["availableAt"].is_string());
+        assert_eq!(job["lastError"], "model unavailable");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

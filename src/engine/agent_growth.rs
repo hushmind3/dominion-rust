@@ -149,6 +149,38 @@ fn add_guidance(growth: &mut Value, id: &str, text: &str, evidence: u64) {
     growth["guidance"] = json!(guidance);
 }
 
+/// Offline sweep: analyzes terminal executions that were not finalized (for
+/// example after a crash) using only stored records. No chat model is called.
+pub fn sweep(state: &AppState) -> usize {
+    let mut processed = 0;
+    for execution in state.store.all("execution") {
+        if execution["growthFinalized"].as_bool() == Some(true) {
+            continue;
+        }
+        if !matches!(
+            execution["status"].as_str(),
+            Some("completed" | "failed" | "interrupted" | "cancelled")
+        ) {
+            continue;
+        }
+        let Some(id) = execution["id"].as_str() else {
+            continue;
+        };
+        let mut growth_record = execution.clone();
+        if let Some(agent_id) = agent_of(state, &growth_record) {
+            growth_record["agentId"] = json!(agent_id);
+            let _ = record(state, &growth_record);
+        }
+        crate::engine::algorithms::finalize_execution(state, &growth_record);
+        if let Some(mut saved) = state.store.get("execution", id) {
+            saved["growthFinalized"] = json!(true);
+            state.store.put("execution", &saved);
+        }
+        processed += 1;
+    }
+    processed
+}
+
 pub fn growth(state: &AppState, agent_id: &str) -> Value {
     state.store.get("agent_growth", agent_id).unwrap_or_else(|| {
         json!({
@@ -256,6 +288,27 @@ mod tests {
         assert!(!items.is_empty());
         // Another bot never inherits agent-a's private growth.
         assert!(context_block(&state, "agent-b").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn offline_sweep_grows_a_bot_without_any_model_call() {
+        let (state, dir) = state();
+        state.store.put(
+            "execution",
+            &json!({
+                "id":"offline-run","sessionId":"s","agentId":"agent-a",
+                "status":"completed","taskOutcome":"failed","failureClass":"tool_failed"
+            }),
+        );
+        let processed = sweep(&state);
+        assert_eq!(processed, 1);
+        let growth = growth(&state, "agent-a");
+        assert_eq!(growth["runs"], 1);
+        assert_eq!(growth["failed"], 1);
+        let execution = state.store.get("execution", "offline-run").unwrap();
+        assert_eq!(execution["growthFinalized"], true);
+        assert_eq!(sweep(&state), 0, "sweep is idempotent");
         let _ = std::fs::remove_dir_all(dir);
     }
 

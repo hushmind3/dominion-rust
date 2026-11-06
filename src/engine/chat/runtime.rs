@@ -3797,6 +3797,10 @@ pub(super) fn finalize_execution(
     // Finalize after learning so algorithm usages created while learning
     // (for example multiagent.sharing) are included in this execution.
     crate::engine::algorithms::finalize_execution(state, &record);
+    if let Some(mut saved) = state.store.get("execution", execution_id) {
+        saved["growthFinalized"] = json!(true);
+        state.store.put("execution", &saved);
+    }
 
 }
 

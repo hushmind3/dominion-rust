@@ -222,7 +222,10 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     if all.is_empty() {
         return Ok(json!({"memories":0,"skill":false,"reason":"no messages"}));
     }
-    let snapshot_end = if let Some(through) = input["throughMessageId"].as_str() {
+    let snapshot_end = if let Some(through) = input["endMessageId"]
+        .as_str()
+        .or_else(|| input["throughMessageId"].as_str())
+    {
         all.iter()
             .position(|message| message["id"].as_str() == Some(through))
             .ok_or("학습 스냅샷의 원문 메시지가 삭제되었습니다.")?
@@ -230,6 +233,10 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     } else {
         all.len()
     };
+    let snapshot_last_id = all[snapshot_end - 1]["id"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or("학습 스냅샷의 마지막 메시지 ID가 없습니다.")?;
     let checkpoint = state
         .store
         .get("learning_checkpoint", &checkpoint_id(&scope));
@@ -326,6 +333,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         // end of the snapshot.
         let mut remainder = input.clone();
         remainder["throughMessageId"] = json!(through);
+        remainder["endMessageId"] = json!(snapshot_last_id);
         remainder["agentId"] = json!(scope.agent_id);
         jobs::enqueue(state, "learn", remainder).ok_or("추가 학습 작업 저장에 실패했습니다.")?;
     }
