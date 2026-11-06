@@ -29,6 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { Agent, Provider, Room, del, get, post } from "../api";
+import { ModelPicker } from "../components/ModelPicker";
 import {
   Action,
   Empty,
@@ -52,31 +53,14 @@ export function AgentsPage() {
   const agents = useRemote<Agent[]>("/api/agents", []),
     providers = useRemote<Provider[]>("/api/providers", []);
   const [edit, setEdit] = useState<Partial<Agent> | null>(null),
-    [models, setModels] = useState<string[]>([]),
     [error, setError] = useState("");
   const [showPersonaImport,setShowPersonaImport]=useState(false);
   const [bulk, setBulk] = useState(false),
     [selected, setSelected] = useState<string[]>([]),
     [bulkProvider, setBulkProvider] = useState(""),
     [bulkModel, setBulkModel] = useState(""),
-    [bulkModels, setBulkModels] = useState<string[]>([]),
     [bulkBusy, setBulkBusy] = useState(false),
     [bulkNotice, setBulkNotice] = useState("");
-  useEffect(() => {
-    if (!edit?.providerId) return;
-    get<any[]>("/api/providers/" + edit.providerId + "/models")
-      .then((x) => setModels(x.map((v) => v.id)))
-      .catch(() => setModels([]));
-  }, [edit?.providerId]);
-  useEffect(() => {
-    if (!bulkProvider) {
-      setBulkModels([]);
-      return;
-    }
-    get<any[]>("/api/providers/" + bulkProvider + "/models")
-      .then((x) => setBulkModels(x.map((v) => v.id)))
-      .catch(() => setBulkModels([]));
-  }, [bulkProvider]);
   const save = async () => {
     if (!edit?.name) return;
     setError("");
@@ -213,17 +197,14 @@ export function AgentsPage() {
               </SelectInput>
             </FormField>
             <FormField label="모델 ID">
-              <TextInput
-                list="bulk-model-options"
+              <ModelPicker
+                providerId={bulkProvider}
                 value={bulkModel}
-                onChange={(e) => setBulkModel(e.target.value)}
-                placeholder="모델 ID 입력 또는 선택"
+                onChange={setBulkModel}
+                placeholder="모델 검색 또는 선택"
+                className="w-full"
+                ariaLabel="일괄 변경 모델"
               />
-              <datalist id="bulk-model-options">
-                {bulkModels.map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
             </FormField>
             <Action
               disabled={
@@ -372,22 +353,14 @@ export function AgentsPage() {
                   </SelectInput>
                 </FormField>
                 <FormField label="모델">
-                  <SelectInput
+                  <ModelPicker
+                    providerId={edit.providerId || ""}
                     value={edit.model || ""}
-                    onChange={(e) =>
-                      setEdit({ ...edit, model: e.target.value })
-                    }
-                  >
-                    <option value="">모델 선택</option>
-                    {models.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                    {edit.model && !models.includes(edit.model) && (
-                      <option value={edit.model}>{edit.model}</option>
-                    )}
-                  </SelectInput>
+                    onChange={(model) => setEdit({ ...edit, model })}
+                    placeholder="모델 검색 또는 선택"
+                    className="w-full"
+                    ariaLabel="에이전트 모델"
+                  />
                 </FormField>
               </div>
               <FormField

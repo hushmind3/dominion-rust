@@ -4,6 +4,7 @@ import {ArrowRight,ArrowUp,BrainCircuit,Check,ChevronDown,ChevronRight,CircleHel
 import {Agent,ChatMessage,ChatSession,Provider,get,post,streamChat} from '../api'
 import {Action,Empty,Notice,StateTag,refresh,useRemote} from '../components/UI'
 import {SlashMenu,slashCandidates,slashCommands,type SlashChoice} from '../components/SlashMenu'
+import {ModelPicker} from '../components/ModelPicker'
 type Model={id:string;name:string}
 type InstalledModel={id:string;repo:string;label:string;format:string;bytes:number;source?:string}
 type Runtime={status:string;id?:string;name?:string;error?:string}
@@ -271,7 +272,7 @@ export function ChatPage({sessionId,onSession,openModels}:{sessionId?:string;onS
      <div className="relative flex min-w-0 items-center gap-1">
       <SelectInput aria-label="모델 제공자" title={selectedProvider?.name||'자동 선택'} value={providerId} onChange={e=>{modelTouched.current=true;setProviderId(e.target.value);setModel('')}} className="!w-[124px] !border-0 !bg-transparent !py-1 !pr-6 !text-[12px]"><option value="">자동 선택</option>{providers.value.filter(p=>p.enabled).map(p=><option value={p.id} key={p.id}>{p.name}</option>)}</SelectInput>
       <span className="text-[#B8AFA2]">/</span>
-      <SelectInput aria-label="모델 선택" title={model||'모델 없음'} value={model} onChange={e=>{modelTouched.current=true;setModel(e.target.value)}} className="!w-[196px] !border-0 !bg-transparent !py-1 !pr-6 !text-[12px]"><option value="">{models.length?'모델 선택':'모델 없음'}</option>{models.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</SelectInput>
+      <ModelPicker providerId={providerId} value={model} onChange={value=>{modelTouched.current=true;setModel(value)}} placeholder={models.length?'모델 선택':'모델 없음'} className="!h-7 !w-[220px] !border-0 !bg-transparent !py-1 !pl-1.5 !pr-2 !text-[11px] !font-semibold" ariaLabel="모델 선택"/>
       <Button variant="ghost" size="sm" onClick={openModelMenu} title="설치된 로컬 모델 전환" className="ml-auto !border !border-[#E7E0D5] !bg-white !text-[#5C544A] hover:!bg-[#FAF7F1]" aria-expanded={modelMenu}><HardDrive size={14}/><span className="hidden lg:inline">로컬 모델</span><ChevronDown size={12}/></Button>
       <Button variant="ghost" size="sm" title="로컬 모델 내리기 · VRAM 해제" onClick={()=>void unloadModel()} disabled={unloading||!(selectedProvider?.local||runtime.status==='ready')} className="!border !border-[#E7E0D5] !bg-white !text-[#5C544A] hover:!bg-[#FAF7F1] disabled:opacity-40"><Power size={14}/><span className="hidden xl:inline">{unloading?'내리는 중':'모델 내리기'}</span></Button>
       {modelMenu&&<>
