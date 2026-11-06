@@ -13,6 +13,11 @@ mod transport;
 
 pub use protocol::parse_text_tool_calls;
 pub use runtime::{run_room_turn, run_turn, run_turn_background, run_turn_resume};
+
+/// Clean up old durable approvals at startup and in the maintenance loop.
+pub(crate) fn expire_stale_approvals(state: &crate::state::AppState) -> usize {
+    approval::expire_stale_approvals(state)
+}
 use serde_json::Value;
 use std::time::Duration;
 pub use transport::run;
