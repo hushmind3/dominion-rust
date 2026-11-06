@@ -142,6 +142,7 @@ struct Completion {
     first_delta_ms: Option<u64>,
 }
 
+#[derive(Clone, Debug)]
 struct ProviderRef {
     id: String,
     name: String,
