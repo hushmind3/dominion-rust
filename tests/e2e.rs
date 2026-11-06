@@ -1392,12 +1392,24 @@ fn the_production_scheduler_runs_a_queued_experiment_without_manual_invocation()
         completed["status"], "completed",
         "scheduler did not complete the request: {completed}"
     );
-    let runs = app.get("/api/scheduler-runs");
-    let run = runs
-        .as_array()
-        .and_then(|items| items.first())
-        .cloned()
-        .expect("scheduler run record");
+    let run = {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(run) = app
+                .get("/api/scheduler-runs")
+                .as_array()
+                .and_then(|items| items.first())
+                .cloned()
+            {
+                break run;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "scheduler run record was not written after the request completed"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
     assert_eq!(run["status"], "success", "{run}");
     assert!(
         run["stdoutTail"]

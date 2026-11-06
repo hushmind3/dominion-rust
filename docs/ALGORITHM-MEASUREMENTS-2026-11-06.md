@@ -36,9 +36,9 @@ typecheck and production build clean.
 ## Not measured here
 
 The native-to-compat failover path is exercised at HTTP level with two mock
-providers, which proves the harness wiring. Real local/API model quality and
-before/after task performance are still not measured: they require
-user-selected local and API models, credentials, and longer live runs, and the
-current instruction set explicitly forbids long model experiments without
-approval. The deterministic measurements above are the evidence available
-without those resources.
+providers, which proves the harness wiring. A small real-model experiment was
+also run with a keyless free API (Pollinations, GPT-OSS 20B) and local Ollama
+`llama3.2:3b`: after `bm25`, the gold memory entered the delivered context
+6/6 times versus 0/6 with `none`. See
+`docs/REAL-MODEL-EXPERIMENT-2026-11-06.md`. Larger task sets, multiple models
+and statistical significance are still not measured.
