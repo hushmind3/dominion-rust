@@ -224,28 +224,57 @@ fn transient_provider_error(error: &str) -> bool {
         || error.contains("(HTTP 5")
 }
 
-fn fallback_candidates(
+/// Estimated input room for the declared model context, leaving its
+/// configured generation capacity reserved. No universal character cap.
+fn input_char_capacity(tokens: u64, max_output_tokens: Option<u64>) -> usize {
+    let reserved = max_output_tokens.unwrap_or(tokens / 8)
+        .min(tokens / 4).max(128).min(tokens);
+    (tokens.saturating_sub(reserved) as usize).saturating_mul(4)
+}
+
+/// Count the fixed prompt without the bodies of prior tool observations.
+/// Those are dynamically reduced for each candidate provider at request time.
+fn fixed_prompt_chars(messages: &[Value]) -> usize {
+    messages.iter().map(|message| {
+        if message["role"] == "tool" {
+            let mut envelope = message.clone();
+            envelope["content"] = json!("");
+            envelope.to_string().chars().count()
+        } else {
+            message.to_string().chars().count()
+        }
+    }).sum::<usize>()
+}
+
+async fn fallback_candidates(
     state: &AppState,
     primary: &ProviderRef,
     request: &TurnRequest,
     messages: &[Value],
     tools: &[Value],
 ) -> Vec<ProviderRef> {
-    // Include tool schemas and non-text message parts when checking the
-    // candidate model's actual declared context capacity.
-    let approx_chars = messages.iter()
-        .map(|message| message.to_string().chars().count())
-        .sum::<usize>()
-        .saturating_add(tools.iter().map(|tool| tool.to_string().chars().count()).sum::<usize>());
+    let fixed_chars = fixed_prompt_chars(messages);
+    let native_schema_chars = tools.iter()
+        .map(|tool| tool.to_string().chars().count()).sum::<usize>();
+    let compat_schema_chars = if tools.is_empty() {
+        0
+    } else {
+        super::protocol::tool_manual(tools, &request.input).await.chars().count()
+    };
     crate::engine::gateway::ordered_alternatives(state, &primary.id)
         .into_iter()
-        // Compat/local and native/API routes can both handle the same
-        // logical turn. Adapt the messages and tool protocol per candidate.
+        // Native/API and compat/local models can take over the same turn.
+        // A smaller context clips *only tool observations* for that attempt;
+        // it does not prevent a local fallback when the tool output is large.
         .filter(|route| {
             route.context_tokens.is_none_or(|tokens| {
-                let reserve = route.max_output_tokens.unwrap_or(tokens / 8)
-                    .min(tokens / 4).max(128).min(tokens);
-                approx_chars <= (tokens.saturating_sub(reserve) as usize).saturating_mul(4)
+                let schema_chars = if route.tool_mode == "compat" {
+                    compat_schema_chars
+                } else {
+                    native_schema_chars
+                };
+                fixed_chars.saturating_add(schema_chars).saturating_add(512)
+                    <= input_char_capacity(tokens, route.max_output_tokens)
             })
         })
         .filter(|route| {
@@ -287,7 +316,7 @@ pub(super) async fn stream_completion(
     tx: &UnboundedSender<Value>,
 ) -> Result<(Completion, ProviderRef), String> {
     let mut candidates = vec![provider.clone()];
-    candidates.extend(fallback_candidates(state, provider, request, messages, tools));
+    candidates.extend(fallback_candidates(state, provider, request, messages, tools).await);
     // Keep normal compat sessions untouched. Translate native tool history
     // only when a turn originally started in native mode and falls back to a
     // compat model (also on later rounds of that same turn).
