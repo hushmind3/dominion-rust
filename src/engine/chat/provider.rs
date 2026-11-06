@@ -229,18 +229,23 @@ fn fallback_candidates(
     primary: &ProviderRef,
     request: &TurnRequest,
     messages: &[Value],
+    tools: &[Value],
 ) -> Vec<ProviderRef> {
-    let approx_chars: usize = messages.iter()
-        .filter_map(|item| item["content"].as_str())
-        .map(str::chars)
-        .map(Iterator::count)
-        .sum();
+    // Include tool schemas and non-text message parts when checking the
+    // candidate model's actual declared context capacity.
+    let approx_chars = messages.iter()
+        .map(|message| message.to_string().chars().count())
+        .sum::<usize>()
+        .saturating_add(tools.iter().map(|tool| tool.to_string().chars().count()).sum::<usize>());
     crate::engine::gateway::ordered_alternatives(state, &primary.id)
         .into_iter()
-        .filter(|route| route.tool_mode == primary.tool_mode)
+        // Compat/local and native/API routes can both handle the same
+        // logical turn. Adapt the messages and tool protocol per candidate.
         .filter(|route| {
             route.context_tokens.is_none_or(|tokens| {
-                approx_chars <= (tokens as usize).saturating_mul(4)
+                let reserve = route.max_output_tokens.unwrap_or(tokens / 8)
+                    .min(tokens / 4).max(128).min(tokens);
+                approx_chars <= (tokens.saturating_sub(reserve) as usize).saturating_mul(4)
             })
         })
         .filter(|route| {
@@ -253,7 +258,6 @@ fn fallback_candidates(
                     || item["capabilities"]["images"] == true
             })
         })
-        .take(3)
         .map(|route| ProviderRef {
             id: route.id,
             name: route.name,
@@ -283,7 +287,7 @@ pub(super) async fn stream_completion(
     tx: &UnboundedSender<Value>,
 ) -> Result<(Completion, ProviderRef), String> {
     let mut candidates = vec![provider.clone()];
-    candidates.extend(fallback_candidates(state, provider, request, messages));
+    candidates.extend(fallback_candidates(state, provider, request, messages, tools));
     let mut failed = Vec::new();
 
     for candidate in candidates {
@@ -346,6 +350,36 @@ pub(super) async fn stream_completion(
     Err(format!("사용 가능한 제공자가 모두 실패했습니다: {}", json!(failed)))
 }
 
+/// Compatibility models consume text protocol rather than OpenAI tool-call
+/// message roles. Convert native tool history into ordinary labeled evidence,
+/// preserving it across cloud-to-local failover.
+fn compat_messages(messages: &[Value]) -> Vec<Value> {
+    messages.iter().map(|message| {
+        match message["role"].as_str() {
+            Some("tool") => json!({
+                "role":"user",
+                "content": format!(
+                    "Tool observation (tool_call_id={}): {}",
+                    message["tool_call_id"].as_str().unwrap_or("unknown"),
+                    message["content"].as_str().unwrap_or(""),
+                ),
+            }),
+            Some("assistant") if message["tool_calls"].is_array() => {
+                let calls = message["tool_calls"].as_array().unwrap();
+                let content = message["content"].as_str().unwrap_or("");
+                json!({
+                    "role":"assistant",
+                    "content": format!(
+                        "{content}\nTool requests issued: {}",
+                        serde_json::to_string(calls).unwrap_or_default()
+                    ),
+                })
+            }
+            _ => message.clone(),
+        }
+    }).collect()
+}
+
 async fn stream_completion_once(
     state: &AppState,
     client: &reqwest::Client,
@@ -357,7 +391,21 @@ async fn stream_completion_once(
     tx: &UnboundedSender<Value>,
 ) -> Result<Completion, String> {
     let started = std::time::Instant::now();
-    let mut provider_messages = messages.to_vec();
+    let compatible = provider.tool_mode == "compat";
+    let mut provider_messages = if compatible {
+        compat_messages(messages)
+    } else {
+        messages.to_vec()
+    };
+    if compatible && !tools.is_empty() {
+        let manual = super::protocol::tool_manual(tools, &request.input).await;
+        if let Some(first_system) = provider_messages.iter_mut()
+            .find(|message| message["role"] == "system")
+        {
+            let existing = first_system["content"].as_str().unwrap_or("");
+            first_system["content"] = json!(format!("{existing}\n\n{manual}"));
+        }
+    }
     for message in &mut provider_messages {
         if message["role"] == "assistant" {
             if provider.reasoning_protocol == "deepseek" {
@@ -375,7 +423,7 @@ async fn stream_completion_once(
         "stream": true,
         "stream_options": { "include_usage": true },
     });
-    if !tools.is_empty() {
+    if !compatible && !tools.is_empty() {
         body["tools"] = json!(tools);
     }
     if let Some(limit) = provider.max_output_tokens {
@@ -581,6 +629,22 @@ async fn stream_completion_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_tool_history_can_be_replayed_to_a_compat_local_model() {
+        let before = vec![
+            json!({"role":"system","content":"rules"}),
+            json!({"role":"assistant","content":"","tool_calls":[{
+                "id":"call_1","type":"function","function":{"name":"file_read","arguments":"{}"}
+            }]}),
+            json!({"role":"tool","tool_call_id":"call_1","content":"파일 내용"}),
+        ];
+        let compatible = compat_messages(&before);
+        assert_eq!(compatible[2]["role"], "user");
+        assert!(compatible[2]["content"].as_str().unwrap().contains("파일 내용"));
+        assert!(compatible[1]["content"].as_str().unwrap().contains("file_read"));
+        assert!(compatible[1].get("tool_calls").is_none());
+    }
 
     #[test]
     fn only_transient_failures_are_replayed() {
