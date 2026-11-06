@@ -29,7 +29,10 @@ pub fn catalog() -> Vec<Value> {
         let Ok(mut value) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
-        let available = matches!(value["id"].as_str(), Some("discord" | "telegram"));
+        let available = value["id"]
+            .as_str()
+            .is_some_and(|id| matches!(id, "discord" | "telegram")
+                || crate::engine::channel_adapter::supports(id));
         value["available"] = json!(available);
         value["status"] = json!(if available {
             "available"
@@ -204,6 +207,30 @@ mod tests {
     }
 
     #[test]
+    fn slack_adapter_is_saved_with_its_driver_and_required_fields() {
+        let (state, dir) = test_state();
+        let saved = save_config(
+            &state,
+            Some("slack-check"),
+            json!({
+                "kind":"slack","name":"Slack check","channelId":"C1",
+                "enabled":false,"syncRoomMessages":false,"token":"xoxb-test"
+            }),
+        );
+        assert_eq!(saved.status(), StatusCode::OK);
+        let record = state.store.get("channel", "slack-check").unwrap();
+        assert_eq!(record["driver"], "dominion-slack");
+        assert_eq!(record["kind"], "slack");
+        let missing = save_config(
+            &state,
+            Some("slack-bad"),
+            json!({"kind":"slack","name":"bad","enabled":false,"token":"xoxb-test"}),
+        );
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn catalog_exposes_only_implemented_drivers() {
         let entries = catalog();
         assert!(entries.len() >= 20, "expected the full channel registry");
@@ -212,10 +239,17 @@ mod tests {
             .find(|entry| entry["id"] == "discord")
             .expect("discord entry");
         assert_eq!(discord["available"], true);
+        let implemented = ["discord", "telegram", "slack", "matrix", "whatsapp",
+            "line", "zulip", "mattermost", "signal"];
+        for kind in implemented {
+            let entry = entries.iter().find(|e| e["id"] == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(entry["available"], true, "{entry}");
+        }
         assert!(entries
             .iter()
-            .filter(|e| e["id"] != "discord" && e["id"] != "telegram")
-            .all(|e| e["available"] == false));
+            .filter(|e| !implemented.contains(&e["id"].as_str().unwrap_or("")))
+            .all(|e| e["available"] == false), "{entries:?}");
         assert!(discord["fields"].as_array().is_some());
     }
 }
@@ -275,6 +309,14 @@ pub fn public_channel(state: &AppState, record: &Value) -> Value {
         .unwrap_or(false);
     let required = if record["kind"] == "telegram" {
         vec!["chatId", "roomId"]
+    } else if let Some(kind) = record["kind"].as_str()
+        .filter(|kind| crate::engine::channel_adapter::supports(kind))
+    {
+        crate::engine::channel_adapter::required_fields(kind)
+            .iter()
+            .copied()
+            .chain(std::iter::once("roomId"))
+            .collect()
     } else {
         vec!["guildId", "channelId"]
     };
@@ -299,7 +341,10 @@ pub fn public_channel(state: &AppState, record: &Value) -> Value {
     } else if !matches!(
         (record["kind"].as_str(), record["driver"].as_str()),
         (Some("discord"), Some("dominion-discord")) | (Some("telegram"), Some("dominion-telegram"))
-    ) {
+    ) && !record["kind"].as_str().is_some_and(|kind| {
+        crate::engine::channel_adapter::supports(kind)
+            && record["driver"].as_str() == Some(format!("dominion-{kind}").as_str())
+    }) {
         public["status"] = json!("not_started");
         public["runtimeError"] = json!("Rust 연결 설정에서 저장·활성화가 필요합니다.");
     }
@@ -369,6 +414,18 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
         "allowedBotIds",
         "replyMentionBots",
         "toolsEnabled",
+        "homeserver",
+        "userId",
+        "phoneNumberId",
+        "graphVersion",
+        "site",
+        "email",
+        "baseUrl",
+        "phoneNumber",
+        "bridgeUrl",
+        "topic",
+        "apiBase",
+        "graphBase",
     ] {
         if let Some(value) = body
             .get(key)
@@ -405,10 +462,13 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
             }
         }
     }
-    config["driver"] = json!(if config["kind"] == "telegram" {
-        "dominion-telegram"
+    let kind = config["kind"].as_str().unwrap_or("");
+    config["driver"] = json!(if kind == "telegram" {
+        "dominion-telegram".to_string()
+    } else if crate::engine::channel_adapter::supports(kind) {
+        format!("dominion-{kind}")
     } else {
-        "dominion-discord"
+        "dominion-discord".to_string()
     });
     config["revision"] = json!(uuid::Uuid::new_v4().to_string());
     config["status"] = json!(
@@ -418,8 +478,11 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
             "disabled"
         }
     );
-    let validation = if config["kind"] == "telegram" {
+    let kind = config["kind"].as_str().unwrap_or("");
+    let validation = if kind == "telegram" {
         crate::engine::telegram::validate(state, &config)
+    } else if crate::engine::channel_adapter::supports(kind) {
+        crate::engine::channel_adapter::validate(state, &config)
     } else {
         crate::engine::discord::validate(state, &config)
     };
@@ -439,7 +502,7 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
         });
     let secret_name = crate::engine::discord::token_name(&id);
     if token.is_none() && !state.store.has_secret(&secret_name) {
-        return error(StatusCode::BAD_REQUEST, "Bot Token을 입력하세요.");
+        return error(StatusCode::BAD_REQUEST, "채널 토큰을 입력하세요.");
     }
     if let Some(token) = token {
         if token.len() > 512 || token.chars().any(char::is_whitespace) {

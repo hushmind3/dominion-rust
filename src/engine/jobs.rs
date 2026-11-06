@@ -273,6 +273,7 @@ pub fn retry_failed_learning(state: &AppState) -> usize {
 }
 
 pub fn start(state: AppState) {
+    crate::engine::channel_adapter::start(state.clone());
     let workers = std::env::var("DOMINION_JOB_WORKERS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
