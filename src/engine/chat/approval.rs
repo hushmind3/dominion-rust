@@ -10,7 +10,15 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
-const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
+fn approval_timeout() -> Duration {
+    Duration::from_secs(
+        std::env::var("DOMINION_APPROVAL_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(60)
+            .max(5),
+    )
+}
 /// How long an orphaned approval may be reused after its engine process died.
 const REUSE_WINDOW_SECS: i64 = 600;
 
@@ -166,7 +174,7 @@ pub(super) fn expire_stale_approvals(state: &AppState) -> usize {
         {
             Some(at) => (now - at.with_timezone(&chrono::Utc))
                 .to_std()
-                .is_ok_and(|elapsed| elapsed >= APPROVAL_TIMEOUT),
+                .is_ok_and(|elapsed| elapsed >= approval_timeout()),
             // Legacy records without a timestamp cannot retain an orphaned
             // pending request when its original execution no longer runs.
             None => record["runId"].as_str().is_none_or(|run_id| {
@@ -302,7 +310,7 @@ pub(super) async fn request_approval(
         "operationId": operation_id,
     }));
 
-    let outcome = tokio::time::timeout(APPROVAL_TIMEOUT, receiver).await;
+    let outcome = tokio::time::timeout(approval_timeout(), receiver).await;
     state.approvals.lock().unwrap().remove(&id);
 
     let (allowed, status) = match outcome {
