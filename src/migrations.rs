@@ -8,6 +8,7 @@ pub fn run(state: &AppState) -> Result<(), String> {
     stale_leases(state)?;
     collection_names(state)?;
     legacy_improvements(state)?;
+    algorithm_statistics(state)?;
     interrupted_executions(state)?;
     interrupted_approvals(state)
 }
@@ -58,6 +59,35 @@ fn stale_leases(state: &AppState) -> Result<(), String> {
             json!({"released": released, "instance": state.instance_id}),
         );
     }
+    Ok(())
+}
+
+/// One-time repair for algorithm counters polluted by unverified chat turns.
+/// Everything is rebuilt from durable `algorithm_usage` evidence, so a rerun
+/// after a crash cannot double-count.
+fn algorithm_statistics(state: &AppState) -> Result<(), String> {
+    let marker_id = "algorithm-stat-rebuild-v2";
+    if state.store.get("migration", marker_id).is_some() {
+        return Ok(());
+    }
+    let report = crate::engine::algorithms::rebuild_stats_from_usage(state)?;
+    state
+        .store
+        .put(
+            "migration",
+            &json!({
+                "id": marker_id,
+                "kind": "algorithm_stat_rebuild",
+                "version": 2,
+                "appliedAt": chrono::Utc::now().to_rfc3339(),
+                "report": report,
+            }),
+        )
+        .ok_or("Cannot persist the algorithm statistic rebuild marker")?;
+    state.store.audit(
+        "migration.algorithm_stat_rebuild",
+        json!({"report": report}),
+    );
     Ok(())
 }
 

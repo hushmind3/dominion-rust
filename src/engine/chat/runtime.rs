@@ -4888,26 +4888,14 @@ fn mark_run_signals(state: &AppState, record: &Value) {
     }
     if let Some(ids) = record["retrievedExperienceIds"].as_array() {
         if !ids.is_empty() {
-            let tools = state
-                .store
-                .all("execution_operation")
-                .into_iter()
-                .filter(|operation| operation["runId"].as_str() == Some(execution_id))
-                .filter_map(|operation| operation["tool"].as_str().map(str::to_string))
-                .collect::<std::collections::BTreeSet<_>>();
-            let used = ids.iter().any(|id| {
-                state
-                    .store
-                    .get("experience", id.as_str().unwrap_or(""))
-                    .and_then(|case| case["tools"].as_array().cloned())
-                    .is_some_and(|cases| {
-                        cases.iter().any(|tool| {
-                            tool.as_str().is_some_and(|tool| tools.contains(tool))
-                        })
-                    })
-            });
-            crate::engine::algorithms::mark_signal(
-                state, execution_id, "memory.retrieval", used,
+            // Retrieval exposure is observable; whether the retrieved case
+            // helped is not. Tool overlap in particular is not an answer
+            // quality signal, so it must not create success/failure counters.
+            crate::engine::algorithms::mark_unrated(
+                state,
+                execution_id,
+                "memory.retrieval",
+                "retrieval effect is not independently measured; exposure is not success",
             );
         }
     }

@@ -1035,6 +1035,24 @@ pub fn mark_signal(state: &AppState, execution_id: &str, kind: &str, ok: bool) {
     }
 }
 
+/// Marks a decision as observable but not gradeable. Used when the harness can
+/// see that an algorithm ran but cannot independently judge whether it helped.
+pub fn mark_unrated(state: &AppState, execution_id: &str, kind: &str, reason: &str) {
+    let usage_id = format!(
+        "algorithm-usage-{}",
+        crate::engine::memory::stable_id(&[execution_id, kind])
+    );
+    let Some(mut usage) = state.store.get("algorithm_usage", &usage_id) else {
+        return;
+    };
+    usage["forceUnrated"] = json!(true);
+    usage["unratedReason"] = json!(reason);
+    usage["signalUpdatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    if let Some(saved) = state.store.put("algorithm_usage", &usage) {
+        state.bus.record("algorithm_usage", &saved);
+    }
+}
+
 /// Records one domain outcome for a concrete kernel. Used by harness paths that
 /// do not have a normal execution record (for example a room-level debate
 /// resolution) but still need the same per-agent and global statistics.
@@ -1126,6 +1144,35 @@ fn apply_stat(state: &AppState, agent: &str, kind: &str, revision: &str, success
     }
 }
 
+/// One durable usage can be scored only by an independent domain signal or by
+/// an explicit task outcome. An unverified conversation answer is neither a
+/// success nor a failure; treating it as a failure poisoned the counters and
+/// then fed a fake "0% success" back into the prompt.
+fn usage_rating(usage: &Value, task_outcome: &str) -> Option<(bool, &'static str)> {
+    // Some paths only observe exposure, not whether the decision helped. They
+    // force `unrated` even when the surrounding task succeeded or failed.
+    if usage["forceUnrated"].as_bool() == Some(true)
+        || usage["kind"].as_str() == Some("memory.retrieval")
+    {
+        return None;
+    }
+    if usage["signal"].is_object() {
+        let successes = usage["signal"]["successes"].as_u64().unwrap_or(0);
+        let failures = usage["signal"]["failures"].as_u64().unwrap_or(0);
+        if successes > 0 || failures > 0 {
+            return Some((
+                (successes > 0 && failures == 0) || successes > failures,
+                "domain_signal",
+            ));
+        }
+    }
+    match task_outcome {
+        "succeeded" => Some((true, "task_outcome")),
+        "failed" => Some((false, "task_outcome")),
+        _ => None,
+    }
+}
+
 /// Applies the execution outcome to every algorithm used during that run.
 pub fn finalize_execution(state: &AppState, execution: &Value) {
     let Some(execution_id) = execution["id"].as_str() else {
@@ -1145,7 +1192,7 @@ pub fn finalize_execution(state: &AppState, execution: &Value) {
         }
         return;
     }
-    let task_success = execution["taskOutcome"].as_str() == Some("succeeded");
+    let task_outcome = execution["taskOutcome"].as_str().unwrap_or("");
     for mut usage in state.store.all("algorithm_usage") {
         if usage["executionId"].as_str() != Some(execution_id)
             || usage["status"].as_str() != Some("pending")
@@ -1159,20 +1206,204 @@ pub fn finalize_execution(state: &AppState, execution: &Value) {
         ) else {
             continue;
         };
-        // Domain signals win over the whole-task fallback. Multiple events in
-        // one run are aggregated, not overwritten by the last one.
-        let success = if usage["signal"].is_object() {
-            let successes = usage["signal"]["successes"].as_u64().unwrap_or(0);
-            let failures = usage["signal"]["failures"].as_u64().unwrap_or(0);
-            successes > 0 && failures == 0 || successes > failures
-        } else {
-            task_success
-        };
-        apply_stat(state, agent, kind, revision, success);
-        usage["status"] = json!("completed");
-        usage["success"] = json!(success);
+        match usage_rating(&usage, task_outcome) {
+            Some((success, source)) => {
+                // Domain signals win over the whole-task fallback. Multiple
+                // events in one run are aggregated, not overwritten by the
+                // last one.
+                apply_stat(state, agent, kind, revision, success);
+                usage["status"] = json!("completed");
+                usage["rated"] = json!(true);
+                usage["ratingSource"] = json!(source);
+                usage["success"] = json!(success);
+            }
+            None => {
+                usage["status"] = json!("unrated");
+                usage["rated"] = json!(false);
+                usage["ratingSource"] = json!("unrated");
+                usage["success"] = Value::Null;
+                usage["unratedReason"] =
+                    json!("task outcome is not a verified success or failure");
+            }
+        }
         state.store.put("algorithm_usage", &usage);
     }
+}
+
+/// Recomputes statistics from durable usage evidence. A conversation that was
+/// never scored must not appear as an algorithm failure, so the rebuild also
+/// rewrites the usage status to `unrated` before aggregating.
+pub fn rebuild_stats_from_usage(state: &AppState) -> Result<Value, String> {
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct Aggregate {
+        uses: u64,
+        successes: u64,
+        failures: u64,
+        first_used: Option<String>,
+        last_used: Option<String>,
+    }
+
+    impl Aggregate {
+        fn add(&mut self, success: bool, at: Option<&str>) {
+            self.uses += 1;
+            if success {
+                self.successes += 1;
+            } else {
+                self.failures += 1;
+            }
+            if let Some(at) = at.filter(|value| !value.is_empty()) {
+                if self
+                    .first_used
+                    .as_deref()
+                    .is_none_or(|current| at < current)
+                {
+                    self.first_used = Some(at.to_string());
+                }
+                if self
+                    .last_used
+                    .as_deref()
+                    .is_none_or(|current| at > current)
+                {
+                    self.last_used = Some(at.to_string());
+                }
+            }
+        }
+    }
+
+    let outcomes = state
+        .store
+        .all("execution")
+        .into_iter()
+        .filter_map(|execution| {
+            Some((
+                execution["id"].as_str()?.to_string(),
+                execution["taskOutcome"].as_str().unwrap_or("").to_string(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut per_agent: BTreeMap<(String, String, String), Aggregate> = BTreeMap::new();
+    let mut global: BTreeMap<(String, String), Aggregate> = BTreeMap::new();
+    let (mut rated, mut unrated, mut skipped) = (0u64, 0u64, 0u64);
+    for mut usage in state.store.all("algorithm_usage") {
+        match usage["status"].as_str() {
+            Some("excluded" | "pending") => {
+                skipped += 1;
+                continue;
+            }
+            _ => {}
+        }
+        let (Some(agent), Some(kind), Some(revision)) = (
+            usage["agentId"].as_str().map(str::to_string),
+            usage["kind"].as_str().map(str::to_string),
+            usage["revision"].as_str().map(str::to_string),
+        ) else {
+            skipped += 1;
+            continue;
+        };
+        let outcome = usage["executionId"]
+            .as_str()
+            .and_then(|id| outcomes.get(id))
+            .map(String::as_str)
+            .unwrap_or("");
+        // Legacy `memory.retrieval` signals only checked whether a tool named
+        // in a past case happened to be called. That is an exposure proxy, not
+        // evidence that retrieval helped, so it is not a gradeable outcome.
+        if kind == "memory.retrieval" {
+            usage["forceUnrated"] = json!(true);
+            usage["unratedReason"] =
+                json!("retrieval exposure is not an independently measured outcome");
+        }
+        let at = usage["signalUpdatedAt"]
+            .as_str()
+            .or_else(|| usage["updatedAt"].as_str())
+            .or_else(|| usage["createdAt"].as_str())
+            .map(str::to_string);
+        match usage_rating(&usage, outcome) {
+            Some((success, source)) => {
+                rated += 1;
+                usage["status"] = json!("completed");
+                usage["rated"] = json!(true);
+                usage["ratingSource"] = json!(source);
+                usage["success"] = json!(success);
+                if agent != "global" {
+                    per_agent
+                        .entry((agent.clone(), kind.clone(), revision.clone()))
+                        .or_default()
+                        .add(success, at.as_deref());
+                }
+                global
+                    .entry((kind, revision))
+                    .or_default()
+                    .add(success, at.as_deref());
+            }
+            None => {
+                unrated += 1;
+                usage["status"] = json!("unrated");
+                usage["rated"] = json!(false);
+                usage["ratingSource"] = json!("unrated");
+                usage["success"] = Value::Null;
+                usage["unratedReason"] =
+                    json!("task outcome is not a verified success or failure");
+            }
+        }
+        state
+            .store
+            .put("algorithm_usage", &usage)
+            .ok_or("could not persist rebuilt algorithm usage")?;
+    }
+    // The old counters cannot be repaired in place because they contain an
+    // unknown mix of rated and unrated runs. Replace them with aggregates.
+    for stat in state.store.all("algorithm_stat") {
+        if let Some(id) = stat["id"].as_str() {
+            state.store.remove("algorithm_stat", id);
+        }
+    }
+    let mut written = 0usize;
+    let write = |agent: &str, kind: &str, revision: &str, aggregate: &Aggregate| -> Result<(), String> {
+        if aggregate.uses == 0 {
+            return Ok(());
+        }
+        let record = json!({
+            "id": stat_id(agent, kind, revision),
+            "agentId": agent,
+            "kind": kind,
+            "revision": revision,
+            "uses": aggregate.uses,
+            "successes": aggregate.successes,
+            "failures": aggregate.failures,
+            "successRate": aggregate.successes as f64 / aggregate.uses as f64,
+            "statVersion": 2,
+            "source": "usage_rebuild",
+            "createdAt": aggregate.first_used.clone().unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+            "lastUsedAt": aggregate.last_used.clone(),
+        });
+        state
+            .store
+            .put("algorithm_stat", &record)
+            .ok_or("could not persist rebuilt algorithm statistics")?;
+        Ok(())
+    };
+    for ((agent, kind, revision), aggregate) in &per_agent {
+        write(agent, kind, revision, aggregate)?;
+        written += 1;
+    }
+    for ((kind, revision), aggregate) in &global {
+        write("global", kind, revision, aggregate)?;
+        written += 1;
+    }
+    let report = json!({
+        "usages": rated + unrated,
+        "rated": rated,
+        "unrated": unrated,
+        "skipped": skipped,
+        "statistics": written,
+    });
+    state
+        .store
+        .audit("algorithm.statistics_rebuilt", report.clone());
+    Ok(report)
 }
 
 /// A compact per-agent view of which judgment kernels have worked.
@@ -1663,6 +1894,103 @@ mod tests {
             .unwrap();
         assert_eq!(stat["successes"], 0, "{stat}");
         assert_eq!(stat["failures"], 1, "{stat}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unverified_conversations_never_become_algorithm_failures() {
+        let (state, dir) = state();
+        seed(&state);
+        for index in 0..10 {
+            let execution_id = format!("exec-chat-{index}");
+            let chosen = choose_for_agent(
+                &state,
+                "context.selection",
+                Some("agent-a"),
+                Some(&execution_id),
+            )
+            .expect("algorithm");
+            finalize_execution(
+                &state,
+                &json!({
+                    "id": execution_id,
+                    "agentId": "agent-a",
+                    "taskOutcome": "answered_unverified"
+                }),
+            );
+            assert!(
+                !state
+                    .store
+                    .all("algorithm_stat")
+                    .iter()
+                    .any(|stat| stat["revision"] == chosen["revision"]),
+                "unverified chat created a failure statistic"
+            );
+        }
+        let unrated = state
+            .store
+            .all("algorithm_usage")
+            .into_iter()
+            .filter(|usage| usage["status"] == "unrated")
+            .count();
+        assert_eq!(unrated, 10, "every unverified usage must be unrated");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rebuild_drops_polluted_failures_and_keeps_rated_evidence() {
+        let (state, dir) = state();
+        seed(&state);
+        let chosen = choose_for_agent(
+            &state,
+            "context.selection",
+            Some("agent-a"),
+            Some("exec-rated"),
+        )
+        .expect("algorithm");
+        mark_signal(&state, "exec-rated", "context.selection", true);
+        finalize_execution(
+            &state,
+            &json!({
+                "id":"exec-rated","agentId":"agent-a","taskOutcome":"succeeded"
+            }),
+        );
+        let chat = choose_for_agent(
+            &state,
+            "context.selection",
+            Some("agent-a"),
+            Some("exec-chat"),
+        )
+        .expect("algorithm");
+        assert_eq!(chat["revision"], chosen["revision"]);
+        finalize_execution(
+            &state,
+            &json!({
+                "id":"exec-chat","agentId":"agent-a","taskOutcome":"answered_unverified"
+            }),
+        );
+        // Simulate the old polluted record: 9 fake failures on top of the
+        // genuine signal.
+        state.store.put(
+            "algorithm_stat",
+            &json!({
+                "id": stat_id("agent-a", "context.selection", chosen["revision"].as_str().unwrap()),
+                "agentId":"agent-a","kind":"context.selection",
+                "revision":chosen["revision"],"uses":10,"successes":1,"failures":9,
+            }),
+        );
+        let report = rebuild_stats_from_usage(&state).unwrap();
+        assert_eq!(report["unrated"], 1, "{report}");
+        let rated = report["rated"].as_u64().unwrap();
+        assert_eq!(rated, 1, "{report}");
+        let stats = state.store.all("algorithm_stat");
+        assert_eq!(stats.len(), 2, "local + global only: {stats:?}");
+        for stat in &stats {
+            assert_eq!(stat["uses"], 1, "{stat}");
+            assert_eq!(stat["successes"], 1, "{stat}");
+            assert_eq!(stat["failures"], 0, "{stat}");
+            assert_eq!(stat["statVersion"], 2, "{stat}");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

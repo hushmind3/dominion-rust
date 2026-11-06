@@ -44,6 +44,8 @@ pub fn record(state: &AppState, execution: &Value) -> Option<Value> {
                 "succeeded": 0,
                 "failed": 0,
                 "answeredUnverified": 0,
+                "unrated": 0,
+                "ratedRuns": 0,
                 "toolUses": {},
                 "toolFailures": {},
                 "failureClasses": {},
@@ -56,11 +58,20 @@ pub fn record(state: &AppState, execution: &Value) -> Option<Value> {
         Some("succeeded") => {
             growth["succeeded"] = json!(growth["succeeded"].as_u64().unwrap_or(0) + 1)
         }
+        Some("failed") => {
+            growth["failed"] = json!(growth["failed"].as_u64().unwrap_or(0) + 1)
+        }
         Some("answered_unverified") => {
             growth["answeredUnverified"] =
-                json!(growth["answeredUnverified"].as_u64().unwrap_or(0) + 1)
+                json!(growth["answeredUnverified"].as_u64().unwrap_or(0) + 1);
+            growth["unrated"] = json!(growth["unrated"].as_u64().unwrap_or(0) + 1);
         }
-        _ => growth["failed"] = json!(growth["failed"].as_u64().unwrap_or(0) + 1),
+        _ => {
+            // Cancelled/unknown/interrupted runs are not failures. Counting
+            // them as failures made every chat-only bot look like it never
+            // succeeded and then injected that fake rate back into its prompt.
+            growth["unrated"] = json!(growth["unrated"].as_u64().unwrap_or(0) + 1);
+        }
     }
     if let Some(class) = execution["failureClass"]
         .as_str()
@@ -103,9 +114,11 @@ pub fn record(state: &AppState, execution: &Value) -> Option<Value> {
             }
         }
     }
-    growth["successRate"] = json!(if growth["runs"].as_u64().unwrap_or(0) > 0 {
-        growth["succeeded"].as_u64().unwrap_or(0) as f64
-            / growth["runs"].as_u64().unwrap_or(1) as f64
+    let rated_runs = growth["succeeded"].as_u64().unwrap_or(0)
+        + growth["failed"].as_u64().unwrap_or(0);
+    growth["ratedRuns"] = json!(rated_runs);
+    growth["successRate"] = json!(if rated_runs > 0 {
+        growth["succeeded"].as_u64().unwrap_or(0) as f64 / rated_runs as f64
     } else {
         0.0
     });
@@ -182,16 +195,30 @@ pub fn sweep(state: &AppState) -> usize {
 }
 
 pub fn growth(state: &AppState, agent_id: &str) -> Value {
-    state.store.get("agent_growth", agent_id).unwrap_or_else(|| {
+    let mut growth = state.store.get("agent_growth", agent_id).unwrap_or_else(|| {
         json!({
             "agentId": agent_id,
             "runs": 0,
             "succeeded": 0,
             "failed": 0,
+            "answeredUnverified": 0,
+            "unrated": 0,
+            "ratedRuns": 0,
             "successRate": 0.0,
             "guidance": [],
         })
-    })
+    });
+    // Older records counted every terminal run as a failure denominator.
+    // Recompute from explicit outcomes so unverified chat never reads as 0%.
+    let rated_runs = growth["succeeded"].as_u64().unwrap_or(0)
+        + growth["failed"].as_u64().unwrap_or(0);
+    growth["ratedRuns"] = json!(rated_runs);
+    growth["successRate"] = json!(if rated_runs > 0 {
+        growth["succeeded"].as_u64().unwrap_or(0) as f64 / rated_runs as f64
+    } else {
+        0.0
+    });
+    growth
 }
 
 /// Guidance for this agent only. It is injected into the same agent's prompt,
@@ -210,9 +237,19 @@ pub fn context_block(state: &AppState, agent_id: &str) -> Option<(String, Vec<Va
         .filter(|item| item["confidence"].as_f64().unwrap_or(0.0) >= 0.15)
         .take(3)
         .collect::<Vec<_>>();
+    let rated_runs = growth["ratedRuns"].as_u64().unwrap_or_else(|| {
+        growth["succeeded"].as_u64().unwrap_or(0) + growth["failed"].as_u64().unwrap_or(0)
+    });
+    let summary = if rated_runs > 0 {
+        format!(
+            "success {:.0}% over {rated_runs} verified runs",
+            growth["successRate"].as_f64().unwrap_or(0.0) * 100.0
+        )
+    } else {
+        "no verified success/failure history yet".to_string()
+    };
     let mut block = format!(
-        "Agent growth (this bot only; from {runs} runs, success {:.0}%):",
-        growth["successRate"].as_f64().unwrap_or(0.0) * 100.0
+        "Agent growth (this bot only; from {runs} runs, {summary}):"
     );
     for item in &guidance {
         block.push_str(&format!(
@@ -309,6 +346,35 @@ mod tests {
         let execution = state.store.get("execution", "offline-run").unwrap();
         assert_eq!(execution["growthFinalized"], true);
         assert_eq!(sweep(&state), 0, "sweep is idempotent");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unverified_chat_is_unrated_and_does_not_report_zero_percent() {
+        let (state, dir) = state();
+        for index in 0..10 {
+            record(
+                &state,
+                &json!({
+                    "id": format!("chat-{index}"),
+                    "sessionId": "s",
+                    "agentId": "agent-a",
+                    "taskOutcome": "answered_unverified"
+                }),
+            )
+            .unwrap();
+        }
+        let growth = growth(&state, "agent-a");
+        assert_eq!(growth["runs"], 10);
+        assert_eq!(growth["failed"], 0, "{growth}");
+        assert_eq!(growth["unrated"], 10, "{growth}");
+        assert_eq!(growth["ratedRuns"], 0, "{growth}");
+        let (block, _) = context_block(&state, "agent-a").unwrap();
+        assert!(
+            block.contains("no verified success/failure history"),
+            "{block}"
+        );
+        assert!(!block.contains("success 0%"), "{block}");
         let _ = std::fs::remove_dir_all(dir);
     }
 
