@@ -6,8 +6,8 @@
 //! which applies to GitHub, databases, HTTP APIs and filesystem writes.
 //!
 //! Principles are global, carry no provider/model gate, and are only created
-//! from a verified successful adaptation. They are suggestions, never
-//! auto-executed arguments.
+//! from a verified successful adaptation. Policy promotion is intentionally
+//! opt-in and is not performed by this module.
 use crate::{engine::experience, state::AppState};
 use serde_json::{json, Value};
 
@@ -24,12 +24,19 @@ fn domain(tool: &str) -> &'static str {
         "system"
     } else if tool.contains("sql") || tool.contains("database") {
         "database"
+    } else if tool.starts_with("mcp__") {
+        "external_tool"
     } else {
         "generic"
     }
 }
 
-fn is_mutation(tool: &str) -> bool {
+fn is_mutation(tool: &str, arguments: &Value) -> bool {
+    if tool == "github_api" {
+        return arguments["method"].as_str().is_some_and(|method| {
+            matches!(method.to_ascii_uppercase().as_str(), "PUT" | "POST" | "PATCH" | "DELETE")
+        });
+    }
     [
         "write", "update", "delete", "remove", "patch", "put", "post", "create", "move",
         "rename", "edit", "commit", "push", "archive", "insert", "replace", "exec",
@@ -38,7 +45,10 @@ fn is_mutation(tool: &str) -> bool {
     .any(|word| tool.to_ascii_lowercase().contains(word))
 }
 
-fn is_observation(tool: &str) -> bool {
+fn is_observation(tool: &str, arguments: &Value) -> bool {
+    if tool == "github_api" {
+        return arguments["method"].as_str().is_none_or(|method| method.eq_ignore_ascii_case("GET"));
+    }
     [
         "read", "list", "get", "status", "head", "search", "inspect", "show", "diff",
         "fetch", "verify", "check", "query", "describe",
@@ -95,6 +105,70 @@ fn union_strings(record: &mut Value, key: &str, value: &str, limit: usize) {
     record[key] = json!(items);
 }
 
+/// A model may recover in its ordinary tool loop without invoking the separate
+/// adaptation planner. Require all three operations on one typed resource.
+fn observed_recoveries(state: &AppState, execution_id: &str) -> Vec<Value> {
+    let Ok(operations) = state.store.execution_operations(execution_id) else {
+        return Vec::new();
+    };
+    fn resource(operation: &Value) -> Option<(&str, &str, &str)> {
+        let tool = operation["tool"].as_str()?;
+        let arguments = &operation["arguments"];
+        let (scope, keys): (_, &[&str]) = match tool {
+            "github_api" => ("github_api", &["path"]),
+            "workspace_read" | "workspace_write" => ("workspace", &["path"]),
+            "file_read" | "file_write" => ("file", &["path"]),
+            tool if tool.starts_with("mcp__") => {
+                (tool.rsplit_once("__")?.0, &["key", "id", "path"])
+            }
+            _ => return None,
+        };
+        keys.iter()
+            .find_map(|key| arguments[*key].as_str().map(|value| (scope, *key, value)))
+    }
+    let mut recoveries = Vec::new();
+    for (index, failed) in operations.iter().enumerate() {
+        let tool = failed["tool"].as_str().unwrap_or_default();
+        if failed["status"] != "failed" || !is_mutation(tool, &failed["arguments"]) {
+            continue;
+        }
+        let error = failed["result"]["error"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| failed["result"].to_string());
+        if failed["result"]["status"] != 409
+            && experience::failure_class(&error) != Some("stale_state")
+        {
+            continue;
+        }
+        let Some(target) = resource(failed) else {
+            continue;
+        };
+        let mut observation = None;
+        for operation in &operations[index + 1..] {
+            if operation["status"] != "completed" || resource(operation) != Some(target) {
+                continue;
+            }
+            let name = operation["tool"].as_str().unwrap_or_default();
+            if is_observation(name, &operation["arguments"])
+                && observed_success(&operation["result"])
+            {
+                observation = Some(operation);
+            } else if name == tool && is_mutation(name, &operation["arguments"]) {
+                if let Some(observation) = observation {
+                    recoveries.push(json!({
+                        "observation":{"tool":tool,"arguments":failed["arguments"],"actual":format!("stale state: {error}")},
+                        "selected":{"tool":observation["tool"],"inputs":observation["arguments"]},
+                        "result":observation["result"],
+                    }));
+                }
+                break;
+            }
+        }
+    }
+    recoveries
+}
+
 /// Learns principles only from a verified successful adaptation. The source
 /// tool/domain is evidence, never an applicability requirement.
 pub fn learn_from_execution(state: &AppState, execution: &Value) -> usize {
@@ -104,16 +178,22 @@ pub fn learn_from_execution(state: &AppState, execution: &Value) -> usize {
     let Some(execution_id) = execution["id"].as_str() else {
         return 0;
     };
-    let model = execution["model"]
+    let _guard = state.principle_learning.lock().unwrap();
+    let model = execution["effectiveModel"]
         .as_str()
-        .or_else(|| execution["effectiveModel"].as_str())
+        .or_else(|| execution["model"].as_str())
         .unwrap_or("");
     let agent = execution["agentId"].as_str().unwrap_or("");
     let mut learned = 0usize;
-    for adaptation in execution["adaptations"].as_array().into_iter().flatten().take(20) {
+    let recoveries = observed_recoveries(state, execution_id);
+    for adaptation in execution["adaptations"].as_array().into_iter().flatten().take(20)
+        .chain(&recoveries)
+    {
         let failed_tool = adaptation["observation"]["tool"].as_str().unwrap_or("");
         let selected_tool = adaptation["selected"]["tool"].as_str().unwrap_or("");
-        if !is_mutation(failed_tool) || !is_observation(selected_tool) {
+        if !is_mutation(failed_tool, &adaptation["observation"]["arguments"])
+            || !is_observation(selected_tool, &adaptation["selected"]["inputs"])
+        {
             continue;
         }
         if !observed_success(&adaptation["result"]) {
@@ -216,10 +296,11 @@ pub fn context_block(
     agent_id: Option<&str>,
     model: &str,
     failed_tool: &str,
+    arguments: &Value,
     error: &str,
     execution_id: Option<&str>,
 ) -> Option<String> {
-    if !is_mutation(failed_tool) {
+    if !is_mutation(failed_tool, arguments) {
         return None;
     }
     let class = experience::failure_class(error).unwrap_or("unknown");
@@ -304,11 +385,19 @@ pub fn finalize_usage(state: &AppState, execution: &Value, succeeded: bool) -> u
     let Some(execution_id) = execution["id"].as_str() else {
         return 0;
     };
+    let _guard = state.principle_learning.lock().unwrap();
     let mut finalized = 0usize;
     for mut usage in state.store.all("principle_usage") {
         if usage["executionId"].as_str() != Some(execution_id)
             || usage["status"].as_str() != Some("pending")
         {
+            continue;
+        }
+        if matches!(execution["taskOutcome"].as_str(), Some("answered_unverified" | "cancelled")) {
+            usage["status"] = json!("unverified");
+            usage["finalizedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            state.store.put("principle_usage", &usage);
+            finalized += 1;
             continue;
         }
         let Some(principle_id) = usage["principleId"].as_str() else {
@@ -433,6 +522,30 @@ mod tests {
     }
 
     #[test]
+    fn direct_recovery_requires_the_same_resource_to_be_read_and_retried() {
+        let (state, dir) = state();
+        let execution = json!({"id":"direct","taskOutcome":"succeeded","model":"real-tool-loop"});
+        for (seq, tool, method, path, status, result) in [
+            (1, "github_api", "PUT", "/target", "failed", json!({"error":"409 conflict"})),
+            (2, "github_api", "GET", "/other", "completed", json!({"status":200})),
+            (4, "github_api", "PUT", "/target", "completed", json!({"status":200})),
+        ] {
+            state.store.put("execution_operation", &json!({
+                "id":format!("operation-{seq}"),"runId":"direct","opSeq":seq,"tool":tool,
+                "arguments":{"method":method,"path":path},"status":status,"result":result,
+            })).unwrap();
+        }
+        assert_eq!(learn_from_execution(&state, &execution), 0);
+        state.store.put("execution_operation", &json!({
+            "id":"operation-3","runId":"direct","opSeq":3,"tool":"github_api",
+            "arguments":{"method":"GET","path":"/target"},"status":"completed","result":{"status":200},
+        })).unwrap();
+        assert_eq!(learn_from_execution(&state, &execution), 1);
+        assert_eq!(state.store.all("experience_principle")[0]["supportingModels"], json!(["real-tool-loop"]));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn principle_transfers_to_another_domain_and_model() {
         let (state, dir) = state();
         learn_from_execution(
@@ -458,6 +571,7 @@ mod tests {
                 Some(agent),
                 model,
                 tool,
+                &json!({}),
                 "409 conflict: stale state",
                 Some(run),
             )
@@ -520,6 +634,7 @@ mod tests {
             None,
             "model-b",
             "workspace_read",
+            &json!({}),
             "no such file",
             Some("run-c"),
         )

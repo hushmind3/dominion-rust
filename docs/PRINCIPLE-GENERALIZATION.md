@@ -55,16 +55,35 @@ task.
   three different models contribute supporting cases.
 - `observations_do_not_receive_mutation_principles`
 
-Full suite: 346 unit + 69 E2E + 16 benchmark.
+Full suite after partial adoption: 350 unit + 73 E2E + 16 benchmark.
+
+## Opt-in file guard (partial adoption)
+
+This branch adopts only the verified mechanics from the `rust` experiments:
+
+- `workspace_read`/`file_read` record the canonical path and SHA-256;
+- `workspace_write`/`file_write` serialize per target path and reject a blind
+  overwrite or a write after the observed bytes changed;
+- an inline observation returns the current small-file content and hash so the
+  model can retry without a separate read;
+- experiment settlement can check exact file bytes, read/write order and a
+  1.25× cost ceiling when a preflight request is evaluated.
+
+The guard is **opt-in**. `mutation.preflight` is not promoted automatically,
+no preflight candidate is queued from principles at startup, and no exact
+replacement executor runs in the normal chat path. A policy must be registered
+and activated explicitly; otherwise file writes use the existing path.
+
+Automatic preflight promotion, deterministic exact replacement and scheduler
+expansion remain isolated in `rust` for further experiments. The guard-only
+model experiment was parity (5/10 vs 5/10), so it is not evidence of a
+success-rate improvement.
 
 ## Still missing
 
-- A same-model, same-tools, same-budget before/after task benchmark. The
-  transfer is proven deterministically, not yet as a live model success-rate
-  experiment.
-- Strategy-layer generalization is connected through `improve::propose`, but
+- A same-model, same-tools, same-budget holdout where preflight improves
+  success without a deterministic shortcut.
+- Strategy promotion remains connected through `improve::propose`, but
   promotion still depends on the experiment runner being enabled.
-- Algorithm-layer promotion (for example a preflight verification kernel
-  activated from the principle) is not yet automatic.
 - Causal attribution for every algorithm domain; several still use domain
   signals that are proxies rather than downstream success.

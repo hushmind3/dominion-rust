@@ -38,6 +38,7 @@ pub mod personas;
 pub mod plan_quality;
 pub mod policy;
 pub mod policy_patch;
+pub mod preflight_fixture;
 pub mod principle;
 pub mod rooms;
 pub mod run_state;

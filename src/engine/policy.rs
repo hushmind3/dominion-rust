@@ -8,7 +8,13 @@
 use crate::state::AppState;
 use serde_json::{json, Value};
 
-pub const SLOTS: &[&str] = &["planning", "recovery", "execution"];
+pub const SLOTS: &[&str] = &["planning", "recovery", "execution", "mutation.preflight"];
+use crate::engine::preflight_fixture as preflight;
+
+pub fn is_preflight_kernel(value: &Value) -> bool {
+    matches!(value.as_str(), Some("same-file-revision-v1" | preflight::GUARD_KERNEL | preflight::EXACT_KERNEL))
+}
+
 pub const MIN_EXPERIMENT_UNITS: u64 = 8;
 
 /// Minimum distinct recorded failures before a candidate is proposed.
@@ -571,18 +577,33 @@ pub fn enqueue_policy_request(
     fixture: &str,
     search_id: Option<&str>,
 ) -> Option<(Value, Value, bool)> {
+    enqueue_policy_evaluation(state, policy_id, fixture, search_id, None)
+}
+
+pub(crate) fn enqueue_policy_evaluation(
+    state: &AppState,
+    policy_id: &str,
+    fixture: &str,
+    search_id: Option<&str>,
+    model: Option<&str>,
+) -> Option<(Value, Value, bool)> {
     let policy = state.store.get("adaptation_policy", policy_id)?;
     let revision = policy["revision"].as_str().unwrap_or("");
-    let request_id = format!(
-        "experiment-request-policy-{}",
-        crate::engine::memory::stable_id(&[policy_id, revision])
-    );
+    let scope = model.map(|model| crate::engine::preflight_fixture::scope(
+        &std::env::var("DOMINION_EXPERIMENT_PROVIDER_BASE")
+            .unwrap_or_else(|_| "http://127.0.0.1:11434/v1".into()),
+        model, "native",
+    ));
+    let mut key = vec![policy_id, revision];
+    key.extend(scope.as_deref());
+    let request_id = format!("experiment-request-policy-{}",
+        crate::engine::memory::stable_id(&key));
+
     if let Some(existing) = state.store.get("experiment_request", &request_id) {
         return Some((existing, policy, false));
     }
-    let (manifest, manifest_hash) = frozen_manifest(
-        &request_id, fixture, revision, MIN_EXPERIMENT_UNITS,
-    );
+    let units = if policy["slot"] == "mutation.preflight" { 10 } else { MIN_EXPERIMENT_UNITS };
+    let (manifest, manifest_hash) = frozen_manifest(&request_id, fixture, revision, units);
     let request = json!({
         "id": request_id,
         "kind": "policy",
@@ -591,14 +612,20 @@ pub fn enqueue_policy_request(
         "revision": revision,
         "status": "queued",
         "fixture": fixture,
+        "evaluationModel": model,
+        "evaluationScope": scope,
         "searchId": search_id,
-        "minIndependentUnits": MIN_EXPERIMENT_UNITS,
+        "minIndependentUnits": units,
         "frozenManifest": manifest,
         "frozenManifestHash": manifest_hash,
         "externalRunner": true,
         "createdAt": chrono::Utc::now().to_rfc3339(),
     });
-    let saved = state.store.put("experiment_request", &request)?;
+    let saved = state.store.put_if_absent("experiment_request", &request);
+    let Some(saved) = saved else {
+        return state.store.get("experiment_request", &request_id)
+            .map(|existing| (existing, policy, false));
+    };
     state.bus.record("experiment_request", &saved);
     state.store.audit(
         "policy.candidate_queued",
@@ -766,6 +793,18 @@ pub fn active(state: &AppState, slot: &str) -> Option<Value> {
         })
 }
 
+/// A learned guard is selected by the runtime's task contract. Model identities
+/// recorded during evaluation are evidence, never live routing keys.
+pub fn portable_file_guard(state: &AppState) -> Option<Value> {
+    state.store.all("adaptation_policy").into_iter().find(|policy| {
+        policy["slot"] == "mutation.preflight"
+            && policy["status"] == "active"
+            && policy["parameters"]["kernel"] == preflight::GUARD_KERNEL
+            && policy["parameters"]["workload"] == preflight::GUARD_WORKLOAD
+            && policy["preflightEvidence"].as_object().is_some_and(|evidence| evidence.len() >= 2)
+    })
+}
+
 #[allow(dead_code)] // used by tests and by future slots that only need parameters
 pub fn active_parameters(state: &AppState, slot: &str) -> Value {
     active(state, slot)
@@ -789,6 +828,9 @@ pub fn register(
     }
     if !parameters.is_object() {
         return Err("정책 parameters는 객체여야 합니다.".into());
+    }
+    if slot == "mutation.preflight" && !is_preflight_kernel(&parameters["kernel"]) {
+        return Err("지원하지 않는 변경 전 검증 커널입니다.".into());
     }
     let id = format!(
         "policy-{}",
@@ -901,6 +943,9 @@ pub fn experiment_result_records(
     });
 
     let mut records: Vec<(String, Value)> = Vec::new();
+    if policy["slot"] == "mutation.preflight" {
+        return settle_file_guard(state, policy, experiment, &revision);
+    }
     if units >= MIN_EXPERIMENT_UNITS && verdict == "regressed" {
         policy["status"] = json!("rolled_back");
         policy["rolledBackAt"] = json!(chrono::Utc::now().to_rfc3339());
@@ -910,50 +955,87 @@ pub fn experiment_result_records(
         && delta > 0.0
     {
         let slot = policy["slot"].as_str().unwrap_or("").to_string();
-        // Planning policies must also improve the semantic plan metric. A
-        // file-success win with no better plan is not enough for activation.
-        // Every slot uses the same independent-experiment gate: both semantic
-        // evaluators must agree that the revision is not worse.
-        let main_ok = semantic_delta
-            .is_some_and(|value| value >= crate::engine::plan_quality::MIN_SEMANTIC_DELTA);
-        let independent_ok = independent_semantic_delta.is_some_and(|value| {
-            value >= crate::engine::plan_quality::MIN_SEMANTIC_DELTA
+        let semantic_ok = [semantic_delta, independent_semantic_delta].into_iter().all(|delta| {
+            delta.is_some_and(|value| value >= crate::engine::plan_quality::MIN_SEMANTIC_DELTA)
         });
-        let semantic_ok = main_ok && independent_ok;
         if !semantic_ok {
             policy["requiresExperiment"] = json!(true);
             policy["semanticVerified"] = json!(false);
-            policy["reason"] = json!(format!(
-                "의미 계획 개선폭이 기준({})보다 낮아 활성화하지 않았습니다.",
-                crate::engine::plan_quality::MIN_SEMANTIC_DELTA
-            ));
+            policy["reason"] = json!(format!("의미 계획 개선폭이 기준({})보다 낮아 활성화하지 않았습니다.",
+                crate::engine::plan_quality::MIN_SEMANTIC_DELTA));
             return Ok(vec![("adaptation_policy".to_string(), policy)]);
         }
         policy["semanticVerified"] = json!(true);
-        for mut other in state.store.all("adaptation_policy") {
-            if other["id"].as_str() != Some(policy_id)
-                && other["slot"].as_str() == Some(slot.as_str())
-                && other["status"].as_str() == Some("active")
-            {
-                other["status"] = json!("superseded");
-                other["supersededBy"] = policy["id"].clone();
-                other["supersededAt"] = json!(chrono::Utc::now().to_rfc3339());
-                records.push(("adaptation_policy".to_string(), other));
-            }
-        }
-        policy["status"] = json!("active");
-        policy["evidenceGrade"] = json!("E2");
-        policy["experimentRevision"] = json!(revision);
-        policy["activatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        activate_verified(state, &mut policy, &revision, &slot, &mut records);
     }
     records.push(("adaptation_policy".to_string(), policy));
     Ok(records)
 }
+fn activate_verified(
+    state: &AppState, policy: &mut Value, revision: &str, slot: &str,
+    records: &mut Vec<(String, Value)>,
+) {
+    let now = chrono::Utc::now().to_rfc3339();
+    for mut other in state.store.all("adaptation_policy") {
+        if other["id"] != policy["id"] && other["slot"] == slot && other["status"] == "active" {
+            other["status"] = json!("superseded");
+            other["supersededBy"] = policy["id"].clone();
+            other["supersededAt"] = json!(now);
+            records.push(("adaptation_policy".into(), other));
+        }
+    }
+    policy["status"] = json!("active");
+    policy["evidenceGrade"] = json!("E2");
+    policy["experimentRevision"] = json!(revision);
+    policy["activatedAt"] = json!(now);
+}
+
+fn settle_file_guard(
+    state: &AppState, mut policy: Value, experiment: &Value, revision: &str,
+) -> Result<Vec<(String, Value)>, String> {
+    let mut records = Vec::new();
+    let cohort = experiment["preflightCohort"].as_str().filter(|cohort| {
+        !cohort.is_empty() && policy["parameters"]["kernel"] == preflight::GUARD_KERNEL
+            && policy["parameters"]["workload"] == preflight::GUARD_WORKLOAD
+            && experiment["independentUnits"].as_u64().unwrap_or(0) >= 10
+            && policy["status"] != "superseded"
+    });
+    if let Some(cohort) = cohort {
+        let mut evidence = policy["preflightEvidence"].as_object().cloned().unwrap_or_default();
+        let mut rejected = policy["preflightCounterEvidence"].as_object().cloned().unwrap_or_default();
+        let rejection = experiment["preflightRejection"].as_str();
+        match (experiment["verdict"].as_str(), rejection) {
+            (Some("regressed"), _) | (_, Some("timeouts_increased" | "token_cost_exceeded")) => {
+                evidence.remove(cohort);
+                rejected.insert(cohort.into(), experiment["experimentId"].clone());
+                if policy["status"] == "active" {
+                    policy["status"] = json!("rolled_back");
+                    policy["rolledBackAt"] = json!(chrono::Utc::now().to_rfc3339());
+                }
+            }
+            (Some("preliminary_support"), None) if experiment["delta"].as_f64().unwrap_or(0.0) > 0.0 => {
+                evidence.insert(cohort.into(), experiment["experimentId"].clone());
+                rejected.remove(cohort);
+                if evidence.len() >= 2 && rejected.is_empty() && policy["status"] != "active" {
+                    activate_verified(state, &mut policy, revision, "mutation.preflight", &mut records);
+                }
+            }
+            _ => {}
+        }
+        policy["lastExperiment"]["guardRejection"] = json!(rejection);
+        policy["preflightEvidence"] = Value::Object(evidence);
+        policy["preflightCounterEvidence"] = Value::Object(rejected);
+    }
+    records.push(("adaptation_policy".into(), policy));
+    Ok(records)
+}
+
 pub fn apply_experiment_result(
     state: &AppState,
     policy_id: &str,
     experiment: &Value,
 ) -> Result<Value, String> {
+    let _settlement = state.policy_settlement.lock().unwrap();
     let records = experiment_result_records(state, policy_id, experiment)?;
     let saved = state.store.transaction(&records)?;
     for record in &saved {
@@ -982,6 +1064,45 @@ pub fn apply_experiment_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guard_requires_independent_model_evidence_and_rolls_back_for_the_workload() {
+        let (state, dir) = state();
+        let candidate = register(&state, "mutation.preflight", "guard",
+            &json!({"kernel":preflight::GUARD_KERNEL,"workload":preflight::GUARD_WORKLOAD}), "fixture").unwrap();
+        let id = candidate["id"].as_str().unwrap();
+        let settle = |cohort: Option<&str>, verdict: &str, delta: f64| apply_experiment_result(&state, id, &json!({
+            "independentUnits":10,"verdict":verdict,"delta":delta,
+            "preflightCohort":cohort,"experimentId":format!("{cohort:?}-{verdict}"),
+        })).unwrap();
+        settle(None, "preliminary_support", 1.0); // deterministic comparison
+        settle(Some("model-a"), "preliminary_support", 1.0);
+        settle(Some("model-a"), "preliminary_support", 1.0);
+        assert!(portable_file_guard(&state).is_none());
+        settle(Some("model-b"), "preliminary_support", 1.0);
+        assert_eq!(portable_file_guard(&state).unwrap()["id"], id);
+        settle(Some("model-c"), "regressed", -1.0);
+        assert!(portable_file_guard(&state).is_none());
+        settle(Some("model-b"), "preliminary_support", 1.0);
+        assert!(portable_file_guard(&state).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn costly_guard_cannot_activate_even_with_a_positive_success_verdict() {
+        let (state, dir) = state();
+        let candidate = register(&state, "mutation.preflight", "guard",
+            &json!({"kernel":preflight::GUARD_KERNEL,"workload":preflight::GUARD_WORKLOAD}), "fixture").unwrap();
+        let id = candidate["id"].as_str().unwrap();
+        for (cohort, rejection) in [("model-a", None), ("model-b", Some("token_cost_exceeded"))] {
+            apply_experiment_result(&state, id, &json!({
+                "independentUnits":10,"verdict":"preliminary_support","delta":1.0,
+                "preflightCohort":cohort,"experimentId":cohort,"preflightRejection":rejection,
+            })).unwrap();
+        }
+        assert!(portable_file_guard(&state).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     use crate::config::Config;
     use crate::db::Store;
     use crate::vault::Vault;

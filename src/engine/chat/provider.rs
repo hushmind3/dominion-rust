@@ -381,9 +381,12 @@ pub(super) async fn stream_completion(
     request: &TurnRequest,
     session_id: &str,
     tx: &UnboundedSender<Value>,
+    allow_fallback: bool,
 ) -> Result<(Completion, ProviderRef), String> {
     let mut candidates = vec![provider.clone()];
-    candidates.extend(fallback_candidates(state, provider, request, messages, tools).await);
+    if allow_fallback {
+        candidates.extend(fallback_candidates(state, provider, request, messages, tools).await);
+    }
     // Keep normal compat sessions untouched. Translate native tool history
     // only when a turn originally started in native mode and falls back to a
     // compat model (also on later rounds of that same turn).
@@ -560,14 +563,17 @@ async fn stream_completion_once(
     // The same admission slot is shared with helper (non-streaming) calls, so
     // one local model instance is never asked to run two generations at once.
     let _permit = crate::engine::gateway::acquire(&provider.base_url, provider.local).await;
-    let response = client
-        .post(format!("{}/chat/completions", provider.base_url))
+    let response = crate::engine::gateway::benchmark_request(
+        client.post(format!("{}/chat/completions", provider.base_url)),
+    )
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {}", provider.api_key))
         .json(&body)
         .send()
         .await
         .map_err(|error| format!("{} 연결 실패: {error}", provider.name))?;
+
+    crate::engine::gateway::verify_benchmark_route(&response)?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -1202,7 +1208,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let (answer, selected) = tokio::time::timeout(std::time::Duration::from_secs(5),
             stream_completion(&state,&reqwest::Client::new(),&primary,
-                &messages,&tools,&request,"mixed",&tx)
+                &messages,&tools,&request,"mixed",&tx,true)
         ).await.unwrap().unwrap();
         assert_eq!(selected.id,"local");
         assert_eq!(answer.content,"로컬 대체 완료");
@@ -1267,7 +1273,7 @@ mod tests {
             stream_completion(
                 &state, &reqwest::Client::new(), &primary,
                 &[json!({"role":"user","content":"응답해"})], &[],
-                &request, "session-failover", &tx,
+                &request, "session-failover", &tx, true,
             )
         ).await.unwrap().unwrap();
         assert_eq!(selected.id, "alternative");

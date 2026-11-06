@@ -200,6 +200,17 @@ impl Store {
         rows.filter_map(|row| row.ok()).collect()
     }
 
+    pub fn execution_operations(&self, run_id: &str) -> Result<Vec<Value>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare(
+            "SELECT data, id, created_at, updated_at FROM records
+             WHERE kind='execution_operation' AND json_extract(data,'$.runId')=?1
+             ORDER BY CAST(json_extract(data,'$.opSeq') AS INTEGER), id",
+        ).map_err(|error| error.to_string())?;
+        let rows = statement.query_map([run_id], record_from_row).map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+    }
+
     /// Error-preserving variant for the new learning/finalization paths.
     /// `all` remains for React-facing compatibility, but new paths must not
     /// interpret a database error as an empty collection.

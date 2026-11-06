@@ -1,6 +1,8 @@
 //! Shared acceptance checks used by ordinary chat and goal execution.
 use crate::state::AppState;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 pub(crate) fn string(value: &Value, key: &str) -> String {
@@ -32,6 +34,7 @@ pub fn validate_criteria(criteria: &Value) -> Result<(), String> {
         let required: &[&str] = match kind {
             "file_exists" | "file_absent" | "file_changed" => &["path"],
             "file_contains" => &["path", "contains"],
+            "file_equals" => &["path", "content"],
             "tool_succeeded" => &["tool"],
             "command_succeeded" => &["command"],
             _ => return Err(format!("지원하지 않는 검증 조건: {kind}")),
@@ -109,6 +112,13 @@ pub(crate) fn infer_criteria(goal: &str) -> Vec<Value> {
     if !deletion && !writing {
         return vec![];
     }
+    if !deletion {
+        if let Some(replacement) = goal.split('`').nth(1)
+            .and_then(|path| literal_replacement(goal, path))
+        {
+            return vec![replacement];
+        }
+    }
     // "a.txt를 읽고 b.txt에 저장해" must not require the read-only input to
     // change. With both a read and a write verb, only the last path is the
     // likely output; without a read verb every path is still inferred.
@@ -156,8 +166,83 @@ pub(crate) fn infer_criteria(goal: &str) -> Vec<Value> {
             paths = vec![output];
         }
     }
+    if let [check] = paths.as_mut_slice() {
+        let path = check["path"].as_str().unwrap_or_default();
+        if !deletion {
+            if let Some(content) = literal_creation(goal, path) {
+                *check = json!({"type":"file_equals","path":path,"content":content,"inferred":true});
+            }
+        }
+    }
     paths
 }
+
+/// Recognize a bounded, unambiguous owner contract. The hash is captured
+/// before any tool runs and covers every untouched byte as well as the edit.
+fn literal_replacement(goal: &str, path: &str) -> Option<Value> {
+    let mut parts = goal.trim().split('`');
+    let (before, file, edit, old, middle, new, after) = (
+        parts.next()?, parts.next()?, parts.next()?, parts.next()?,
+        parts.next()?, parts.next()?, parts.next()?,
+    );
+    if parts.next().is_some() || file != path || path.trim().is_empty() || path.len() > 4096
+        || path.chars().any(char::is_control) || old.is_empty() || old == new
+        || old.len() > 4096 || new.len() > 4096
+    {
+        return None;
+    }
+    let korean = before.is_empty()
+        && matches!(edit.trim(), "파일을 수정해." | "파일을 수정해 주세요.")
+        && matches!(middle.trim(), "을" | "를")
+        && matches!(after.trim_end_matches('.').trim(),
+            "으로 바꾸고 나머지 내용은 그대로 유지해" | "로 바꾸고 나머지 내용은 그대로 유지해");
+    let english = before.eq_ignore_ascii_case("edit ")
+        && edit.eq_ignore_ascii_case(" and replace ")
+        && middle.eq_ignore_ascii_case(" with ")
+        && after.trim_end_matches('.').trim().eq_ignore_ascii_case("and preserve everything else");
+    (korean || english).then(|| json!({
+        "type":"file_replace_exact", "path":path, "old":old, "new":new, "inferred":true,
+    }))
+}
+
+fn literal_creation<'a>(goal: &'a str, path: &str) -> Option<&'a str> {
+    let rest = goal.trim().trim_end_matches('.').strip_prefix(path)?
+        .strip_prefix(" 파일을 만들고 내용을 ")?.strip_suffix("로 저장해")?;
+    let content = rest.strip_prefix('`').and_then(|value| value.strip_suffix('`'))
+        .unwrap_or(rest);
+    (!content.is_empty() && content.len() <= 4096
+        && content.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')))
+        .then_some(content)
+}
+
+pub(crate) fn has_result_verifier(checks: &Value) -> bool {
+    checks.as_array().is_some_and(|items| {
+        !items.is_empty() && items.iter().all(|item| {
+            item["inferred"] != true || item["type"] != "file_changed"
+        })
+    })
+}
+
+fn read_bounded_file(path: &Path) -> Option<Vec<u8>> {
+    const LIMIT: u64 = 8 * 1024 * 1024;
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > LIMIT {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(LIMIT + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= LIMIT).then_some(bytes)
+}
+
+fn exact_replacement(bytes: Vec<u8>, old: &str, new: &str) -> Option<String> {
+    let content = String::from_utf8(bytes).ok()?;
+    if old.is_empty() || content.matches(old).count() != 1 {
+        return None;
+    }
+    Some(content.replacen(old, new, 1))
+}
+
 pub(crate) fn resolve_path(state: &AppState, path: &str) -> Result<PathBuf, String> {
     let path = Path::new(path);
     if path.is_absolute() {
@@ -208,7 +293,17 @@ pub(crate) fn fingerprint(path: &Path) -> Value {
 }
 pub(crate) fn baseline_checks(state: &AppState, mut checks: Vec<Value>) -> Value {
     for check in &mut checks {
-        if check["type"] == "file_changed" {
+        if check["type"] == "file_replace_exact" {
+            let original = resolve_path(state, check["path"].as_str().unwrap_or_default())
+                .ok().and_then(|path| read_bounded_file(&path));
+            check["sourceBytes"] = json!(original.as_ref().map(Vec::len));
+            check["expectedSha256"] = original.and_then(|bytes| exact_replacement(
+                bytes, check["old"].as_str()?, check["new"].as_str()?,
+            )).map(|expected| format!("{:x}", Sha256::digest(expected.as_bytes())))
+                .map(Value::String).unwrap_or(Value::Null);
+        } else if check["type"] == "file_changed"
+            || (check["type"] == "file_equals" && check["inferred"] == true)
+        {
             check["baseline"] = resolve_path(state, check["path"].as_str().unwrap_or(""))
                 .map(|path| fingerprint(&path))
                 .unwrap_or(Value::Null);
@@ -368,6 +463,14 @@ pub(crate) fn acceptance_gaps(
                 .map(|_| false)
                 .unwrap_or_else(|e| e.kind() == std::io::ErrorKind::NotFound),
             "file_changed" => resolved.is_file() && fingerprint(&resolved) != check["baseline"],
+            "file_replace_exact" => check["expectedSha256"].as_str().is_some_and(|expected| {
+                read_bounded_file(&resolved)
+                    .is_some_and(|bytes| format!("{:x}", Sha256::digest(bytes)) == expected)
+            }),
+            "file_equals" => check["content"].as_str().is_some_and(|expected| {
+                (check["inferred"] != true || fingerprint(&resolved) != check["baseline"])
+                    && read_bounded_file(&resolved).is_some_and(|bytes| bytes == expected.as_bytes())
+            }),
             "file_contains" => {
                 std::fs::metadata(&resolved)
                     .map(|meta| meta.is_file() && meta.len() <= 8 * 1024 * 1024)
@@ -385,6 +488,10 @@ pub(crate) fn acceptance_gaps(
             _ => false,
         };
         if !passed {
+            if kind == "file_replace_exact" {
+                gaps.push(format!("The exact replacement in {path} has not been verified. Preserve every other byte of the original file."));
+                continue;
+            }
             gaps.push(format!(
                 "검증 조건 미충족: {}",
                 serde_json::to_string(&check).unwrap_or_default()

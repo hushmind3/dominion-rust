@@ -3369,6 +3369,177 @@ fn block_write_without_read_algorithm_blocks_and_then_allows_the_write() {
 }
 
 #[test]
+fn file_preflight_blocks_blind_and_stale_writes_then_accepts_a_fresh_read() {
+    let _serial = serial();
+    let root = temp_root();
+    let target = root.join("guarded.txt");
+    std::fs::write(&target, "original").unwrap();
+    let step = std::sync::atomic::AtomicUsize::new(0);
+    let (port, _) = scripted_provider(move |_| {
+        let index = step.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if index == 2 {
+            std::fs::write(&target, "changed outside the run").unwrap();
+        }
+        let (name, args) = match index {
+            0 | 2 | 4 => ("workspace_write", json!({"path":"guarded.txt","content":"final"})),
+            1 | 3 => ("workspace_read", json!({"path":"guarded.txt"})),
+            _ => return vec![json!({"choices":[{"delta":{"content":"완료했습니다."},"finish_reason":"stop"}]})],
+        };
+        vec![json!({"choices":[{"delta":{"tool_calls":[{
+            "index":0,"id":format!("preflight-{index}"),"type":"function",
+            "function":{"name":name,"arguments":args.to_string()}
+        }]},"finish_reason":"tool_calls"}]})]
+    });
+    let app = TestApp::from_root(port, "native", root, &[("DOMINION_BENCHMARK", "1")]);
+    app.post("/api/policy", &json!({"autoApprove":["workspace_write"]}));
+    app.post("/api/benchmark/policies/state", &json!({
+        "slot":"mutation.preflight","name":"preflight-regression",
+        "parameters":{"kernel":"same-file-revision-v1"}
+    }));
+    let stream = app.chat(&json!({"input":"guarded.txt 파일을 수정해.","autoLearning":false}));
+    assert_eq!(std::fs::read_to_string(app._root.join("guarded.txt")).unwrap(), "final", "{stream}");
+    let execution = &app.get("/api/executions")[0];
+    assert_eq!(execution["taskOutcome"], "answered_unverified", "{execution}");
+    let operations = app.get(&format!("/api/executions/{}/operations", execution["id"].as_str().unwrap()));
+    let writes = operations.as_array().unwrap().iter().filter(|operation| operation["tool"] == "workspace_write").collect::<Vec<_>>();
+    assert_eq!(writes.len(), 3, "{operations}");
+    assert_eq!(writes.iter().filter(|operation| operation["result"]["preflightBlocked"] == true).count(), 2);
+    assert_eq!(writes.iter().filter(|operation| operation["status"] == "completed"
+        && operation["result"]["observedSha256"] == format!("{:x}", Sha256::digest(b"changed outside the run"))).count(), 1);
+}
+
+#[test]
+fn preflight_v2_reuses_a_rejected_write_observation_without_a_helper_call() {
+    let _serial = serial();
+    let root = temp_root();
+    std::fs::write(root.join("guarded.txt"), "mode=old\nowner=keep\n").unwrap();
+    let (port, requests) = scripted_provider(|request| {
+        let last_tool = request["messages"].as_array().unwrap().iter().rev()
+            .find(|message| message["role"] == "tool")
+            .and_then(|message| message["content"].as_str());
+        let (id, path, content) = match last_tool {
+            None => ("escape", "/guarded.txt", "blind"),
+            Some(result) if result.contains("invalidWorkspacePath") => ("blind", "guarded.txt", "blind"),
+            Some(result) if result.contains("currentContent") && result.contains("owner=keep") => {
+                ("retry", "guarded.txt", "mode=new\nowner=keep\n")
+            }
+            _ => return vec![json!({"choices":[{"delta":{"content":"완료했습니다."},"finish_reason":"stop"}]})],
+        };
+        vec![json!({"choices":[{"delta":{"tool_calls":[{
+            "index":0,"id":id,"type":"function","function":{"name":"workspace_write",
+                "arguments":json!({"path":path,"content":content}).to_string()}
+        }]},"finish_reason":"tool_calls"}]})]
+    });
+    let app = TestApp::from_root(port, "native", root, &[("DOMINION_BENCHMARK", "1")]);
+    app.post("/api/policy", &json!({"autoApprove":["workspace_write"]}));
+    app.post("/api/benchmark/policies/state", &json!({
+        "slot":"mutation.preflight","name":"preflight-inline-read",
+        "parameters":{"kernel":"same-file-revision-v2"}
+    }));
+    let stream = app.chat(&json!({"input":"guarded.txt 파일을 수정해.","autoLearning":false}));
+    assert_eq!(std::fs::read_to_string(app._root.join("guarded.txt")).unwrap(), "mode=new\nowner=keep\n", "{stream}");
+    let execution = &app.get("/api/executions")[0];
+    assert_eq!(execution["taskOutcome"], "answered_unverified", "{execution}");
+    let operations = app.get(&format!("/api/executions/{}/operations", execution["id"].as_str().unwrap()));
+    let operations = operations.as_array().unwrap();
+    assert_eq!(operations.len(), 3, "{operations:?}");
+    assert!(operations.iter().any(|op| op["result"]["preflightBlocked"] == true
+        && op["fileObservation"]["sha256"].is_string()));
+    assert!(requests.lock().unwrap().iter().all(|request| request["stream"] == true));
+}
+
+#[test]
+fn preflight_inline_observation_allows_retry_without_a_separate_read() {
+    let _serial = serial();
+    let root = temp_root();
+    let target = root.join("inline.txt");
+    std::fs::write(&target, "original").unwrap();
+    let step = std::sync::atomic::AtomicUsize::new(0);
+    let (port, _) = scripted_provider(move |_| {
+        let index = step.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if index < 2 {
+            return vec![json!({"choices":[{"delta":{"tool_calls":[{
+                "index":0,"id":format!("inline-{index}"),"type":"function",
+                "function":{"name":"workspace_write","arguments":"{\"path\":\"inline.txt\",\"content\":\"final\"}"}
+            }]},"finish_reason":"tool_calls"}]})];
+        }
+        vec![json!({"choices":[{"delta":{"content":"완료했습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::from_root(port, "native", root, &[("DOMINION_BENCHMARK", "1")]);
+    app.post("/api/policy", &json!({"autoApprove":["workspace_write"]}));
+    app.post("/api/benchmark/policies/state", &json!({
+        "slot":"mutation.preflight","name":"inline-preflight",
+        "parameters":{"kernel":"same-file-revision-v2"}
+    }));
+    let stream = app.chat(&json!({"input":"inline.txt 파일을 수정해.","autoLearning":false}));
+    let execution = &app.get("/api/executions")[0];
+    assert_eq!(std::fs::read_to_string(app._root.join("inline.txt")).unwrap(), "final", "{stream}");
+    let execution = &app.get("/api/executions")[0];
+    let operations = app.get(&format!("/api/executions/{}/operations", execution["id"].as_str().unwrap()));
+    let writes = operations.as_array().unwrap().iter()
+        .filter(|operation| operation["tool"] == "workspace_write")
+        .collect::<Vec<_>>();
+    assert_eq!(writes.len(), 2, "{operations}");
+    let blocked = writes.iter()
+        .find(|operation| operation["result"]["preflightBlocked"] == true)
+        .expect("blocked write");
+    assert_eq!(blocked["result"]["currentContent"], "original", "{operations}");
+    let completed = writes.iter()
+        .find(|operation| operation["status"] == "completed" && operation["result"]["written"] == true)
+        .expect("completed write");
+    assert_eq!(
+        completed["result"]["observedSha256"],
+        format!("{:x}", Sha256::digest(b"original")),
+        "{operations}"
+    );
+}
+
+#[test]
+fn preflight_guard_stays_selected_after_provider_failover() {
+    let _serial = serial();
+    let root = temp_root();
+    std::fs::write(root.join("guarded.txt"), "old").unwrap();
+    let (working_port, _) = scripted_provider(|request| {
+        let result = request["messages"].as_array().unwrap().iter().rev()
+            .find(|message| message["role"] == "tool")
+            .and_then(|message| message["content"].as_str());
+        let (id, content) = match result {
+            None => ("blind", "discard"),
+            Some(result) if result.contains("currentContent") => ("retry", "final"),
+            _ => return vec![json!({"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]})],
+        };
+        vec![json!({"choices":[{"delta":{"tool_calls":[{
+            "index":0,"id":id,"type":"function","function":{"name":"workspace_write","arguments":
+                json!({"path":"guarded.txt","content":content}).to_string()}
+        }]},"finish_reason":"tool_calls"}]})]
+    });
+    let dead_port = free_port();
+    let app = TestApp::from_root(dead_port, "native", root, &[("DOMINION_BENCHMARK", "1")]);
+    let primary = app.get("/api/providers")[0]["id"].as_str().unwrap().to_owned();
+    let primary_base = format!("http://127.0.0.1:{dead_port}/v1");
+    let fallback_base = format!("http://127.0.0.1:{working_port}/v1");
+    for (id, base, model) in [(&primary[..], &primary_base, "primary"), ("fallback", &fallback_base, "fallback")] {
+        app.post("/api/providers", &json!({"id":id,"name":model,"baseUrl":base,
+            "model":model,"local":true,"enabled":true,"toolMode":"native"}));
+    }
+    let guard = app.post("/api/benchmark/policies/state", &json!({
+        "slot":"mutation.preflight","name":"shared-file-guard","parameters":{"kernel":"same-file-revision-v2"},
+    }));
+    let revision = &guard["active"]["revision"];
+    assert!(revision.is_string(), "{guard}");
+    app.post("/api/policy", &json!({"autoApprove":["workspace_write"]}));
+    let stream = app.chat(&json!({"input":"guarded.txt 파일을 수정해.","providerId":primary,"autoLearning":false}));
+    assert!(stream.contains("provider_failover"), "{stream}");
+    assert_eq!(std::fs::read_to_string(app._root.join("guarded.txt")).unwrap(), "final", "{stream}");
+    let run = &app.get("/api/executions")[0];
+    assert_eq!(run["effectiveModel"], "fallback", "{run}");
+    assert_eq!(&run["preflightPolicy"]["revision"], revision, "{run}");
+    let operations = app.get(&format!("/api/executions/{}/operations", run["id"].as_str().unwrap()));
+    assert!(operations.as_array().unwrap().iter().any(|op| op["result"]["preflightBlocked"] == true
+        && &op["result"]["preflightRevision"] == revision));
+}
+
+#[test]
 fn per_bot_growth_changes_only_that_bots_next_prompt() {
     let _serial = serial();
     let calls = Arc::new(Mutex::new(0u32));

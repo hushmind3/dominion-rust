@@ -127,7 +127,23 @@ pub async fn claim(State(state): State<AppState>, Json(body): Json<Value>) -> Re
                 );
                 continue;
             };
-            if !matches!(policy["status"].as_str(), Some("candidate" | "active")) {
+            let scoped_preflight = request["evaluationScope"].is_string()
+                && request["slot"] == "mutation.preflight";
+            if request["slot"] == "mutation.preflight"
+                && (policy["parameters"]["kernel"] != crate::engine::preflight_fixture::GUARD_KERNEL
+                    || policy["parameters"]["workload"] != crate::engine::preflight_fixture::GUARD_WORKLOAD)
+            {
+                if let Some(saved) = state.store.patch_if(
+                    "experiment_request", &request_id, "status", &json!("queued"),
+                    &json!({"status":"superseded","reason":"This candidate predates the model-mediated guard evaluation contract."}),
+                ) {
+                    state.bus.record("experiment_request", &saved);
+                }
+                continue;
+            }
+            if !matches!(policy["status"].as_str(), Some("candidate" | "active"))
+                && !(scoped_preflight && matches!(policy["status"].as_str(), Some("superseded" | "rolled_back")))
+            {
                 let _ = state.store.patch_if(
                     "experiment_request",
                     &request_id,
@@ -413,6 +429,10 @@ pub fn verify_evidence(
         .as_array()
         .filter(|items| !items.is_empty())
         .ok_or("raw trials are missing")?;
+    let preflight = request["slot"] == "mutation.preflight";
+    if preflight {
+        verify_preflight_trials(body, request, trials, pairs)?;
+    }
     let mut by_pair: BTreeMap<u64, (Option<&Value>, Option<&Value>)> = BTreeMap::new();
     for trial in trials {
         let pair = trial["pair"]
@@ -529,6 +549,109 @@ pub fn verify_evidence(
     Ok((mean, n, verdict.to_string(), timeouts, pairs))
 }
 
+fn verify_preflight_trials(
+    body: &Value,
+    request: &Value,
+    trials: &[Value],
+    pairs: u64,
+) -> Result<(), String> {
+    use crate::engine::preflight_fixture as fixture;
+    let manifest = &body["manifest"];
+    let split_hash = fixture::digest(json!(fixture::CASES).to_string().as_bytes());
+    let timeout = manifest["budget"]["clientTimeoutSecs"].as_u64().unwrap_or(0);
+    if manifest["preflightMode"] != fixture::GUARD_MODE
+        || manifest["budget"] != fixture::budget(timeout)
+        || !(30..=900).contains(&timeout)
+        || manifest["toolCatalogHash"] != fixture::digest(fixture::TOOLS.join(",").as_bytes())
+        || manifest["model"]["maxOutputTokens"] != fixture::MAX_OUTPUT_TOKENS
+        || manifest["model"]["thinkingRequested"] != false
+        || manifest["model"]["toolMode"] != "native"
+        || manifest["fixture"] != fixture::ID
+        || body["manifest"]["taskSplitManifestHash"] != split_hash
+        || body["manifest"]["oracleVersion"] != fixture::ORACLE
+        || body["oracleVersion"] != fixture::ORACLE
+        || pairs > fixture::CASES.len() as u64
+    {
+        return Err("preflight holdout or oracle version mismatch".into());
+    }
+    if let Some(model) = request["evaluationModel"].as_str() {
+        if body["manifest"]["model"]["model"] != model
+            || body["manifest"]["model"]["preflightScope"] != request["evaluationScope"]
+        {
+            return Err("preflight experiment ran outside its queued model scope".into());
+        }
+    }
+    for trial in trials {
+        let pair = trial["pair"]
+            .as_u64()
+            .filter(|pair| *pair < pairs)
+            .ok_or("preflight trial pair out of range")? as usize;
+        let arm = match trial["arm"].as_str() {
+            Some("baseline") => 0,
+            Some("treatment") => 1,
+            _ => return Err("invalid preflight arm".into()),
+        };
+        if matches!(trial["errorClass"].as_str(), Some("provider_rate_limited" | "provider_route_changed")) {
+            return Err("preflight provider failure invalidated the comparison".into());
+        }
+        if trial["status"] == "invalid" {
+            return Err("preflight experiment contained invalid trials".into());
+        }
+        let artifact = &trial["artifacts"]["report"];
+        let target = format!("bench/{}", fixture::CASES[pair].0);
+        let hash = artifact["sha256"].as_str().unwrap_or_default();
+        let operations = trial["operations"]
+            .as_array()
+            .ok_or("preflight operations missing")?;
+        let (written_hash, checked) = fixture::write_evidence(pair, operations);
+        if operations.iter().any(|operation| operation["origin"] == "exact-replacement")
+            || (trial["status"] == "completed"
+                && (trial["modelCalls"].as_u64().unwrap_or(0) == 0
+                    || trial["meteredCalls"].as_u64().unwrap_or(0) == 0))
+        {
+            return Err(format!("preflight guard comparison did not run the model for pair {pair}"));
+        }
+        let artifact_ok = artifact["exists"] == true
+            && artifact["relativePath"] == target
+            && fixture::file_ok(pair, hash);
+        if trial["reportOk"] != artifact_ok
+            || trial["auditOk"] != (written_hash.as_deref() == Some(hash))
+            || trial["requiresCompliance"] != false
+        {
+            return Err(format!(
+                "preflight file/operation oracle mismatch for pair {pair}"
+            ));
+        }
+        for operation in operations
+            .iter()
+            .filter(|operation| operation["preflightRevision"].is_string())
+        {
+            if arm == 0 || operation["preflightRevision"] != request["revision"] {
+                return Err(format!(
+                    "unexpected preflight kernel revision for pair {pair}"
+                ));
+            }
+        }
+        // A treatment that overrode the guard cannot promote even if the final bytes match.
+        if arm == 1
+            && written_hash.is_some()
+            && (!checked
+                || operations.iter().any(|operation| {
+                    operation["target"] == target
+                        && operation["status"] == "completed"
+                        && matches!(
+                            operation["tool"].as_str(),
+                            Some("workspace_write" | "file_write")
+                        )
+                        && operation["preflightRevision"] != request["revision"]
+                }))
+        {
+            return Err(format!("unchecked treatment write for pair {pair}"));
+        }
+    }
+    Ok(())
+}
+
 /// A powered paired experiment is only `preliminary_support` when the whole
 /// interval is above zero, and `regressed` when it is entirely below zero.
 /// The latter is what the strategy/policy rollback paths wait for.
@@ -639,6 +762,7 @@ pub async fn complete(
     if request["kind"].as_str() == Some("policy")
         && promotion_allowed
         && verdict != "regressed"
+        && request["slot"] != "mutation.preflight"
     {
         use crate::engine::plan_quality;
         let version_matches = body["semanticEvaluator"]["id"].as_str()
@@ -672,6 +796,27 @@ pub async fn complete(
             }
         }
     }
+    if request["slot"] == "mutation.preflight" {
+        use crate::engine::preflight_fixture as fixture;
+        let cohort = fixture::evaluation_cohort(&body["manifest"]["model"]);
+        body["preflightCohort"] = if promotion_allowed { json!(cohort) } else { Value::Null };
+        if promotion_allowed {
+            let trials = body["trials"].as_array().map(Vec::as_slice).unwrap_or_default();
+            let (ratio, timeout_increased) = fixture::guard_cost(trials);
+            body["preflightRejection"] = match (ratio, timeout_increased) {
+                (_, true) => json!("timeouts_increased"),
+                (Some(ratio), false) if ratio > fixture::MAX_COST_RATIO => json!("token_cost_exceeded"),
+                (None, false) => json!("missing_token_usage"),
+                _ => Value::Null,
+            };
+            evidence_summary["tokenRatio"] = json!(ratio);
+            evidence_summary["guardRejection"] = body["preflightRejection"].clone();
+        }
+    }
+    // Independent claims can complete concurrently and must not overwrite
+    // one another's evidence or activations.
+    let _settlement = (request["kind"] == "policy")
+        .then(|| state.policy_settlement.lock().unwrap());
     let mut promotion_records: Vec<(String, Value)> = Vec::new();
     if promotion_allowed {
         let target = if request["kind"].as_str() == Some("policy") {
@@ -916,5 +1061,45 @@ mod tests {
         assert_eq!(experiment_verdict(-0.8, -1.0, -0.2, 10), "regressed");
         assert_eq!(experiment_verdict(-0.8, -1.0, -0.2, 9), "inconclusive");
         assert_eq!(experiment_verdict(0.05, -0.5, 0.6, 10), "inconclusive");
+    }
+
+    #[test]
+    fn preflight_promotion_evidence_requires_the_checked_revision_and_file_bytes() {
+        use crate::engine::preflight_fixture as fixture;
+        let (name, seed, old, new) = fixture::CASES[0];
+        let path = format!("bench/{name}");
+        let observed = fixture::digest(format!("{seed}\n").as_bytes());
+        let written = fixture::digest(format!("{}\n", seed.replacen(old, new, 1)).as_bytes());
+        let body = json!({
+            "oracleVersion": fixture::ORACLE,
+            "manifest":{"fixture":fixture::ID,"oracleVersion":fixture::ORACLE,
+                "preflightMode":fixture::GUARD_MODE,"budget":fixture::budget(60),
+                "toolCatalogHash":fixture::digest(fixture::TOOLS.join(",").as_bytes()),
+                "model":{"maxOutputTokens":fixture::MAX_OUTPUT_TOKENS,"thinkingRequested":false,"toolMode":"native"},
+                "taskSplitManifestHash":fixture::digest(json!(fixture::CASES).to_string().as_bytes())},
+        });
+        let request = json!({"revision":"candidate-revision"});
+        let mut trial = json!({
+            "arm":"treatment","pair":0,"status":"completed","reportOk":true,"auditOk":true,
+            "modelCalls":2,"meteredCalls":2,
+            "requiresCompliance":false,"artifacts":{"report":{"relativePath":path,"exists":true,"sha256":written}},
+            "operations":[
+                {"tool":"workspace_read","target":path,"opSeq":1,"status":"completed","observedSha256":observed},
+                {"tool":"workspace_write","target":path,"opSeq":2,"status":"completed","observedSha256":observed,
+                    "writtenSha256":written,"preflightChecked":true,"preflightRevision":"candidate-revision"},
+            ],
+        });
+        assert!(verify_preflight_trials(&body, &request, &[trial.clone()], 1).is_ok());
+        trial["modelCalls"] = json!(0);
+        assert!(verify_preflight_trials(&body, &request, &[trial.clone()], 1).is_err());
+        trial["modelCalls"] = json!(2);
+        trial["operations"][1]["origin"] = json!("exact-replacement");
+        assert!(verify_preflight_trials(&body, &request, &[trial.clone()], 1).is_err());
+        trial["operations"][1]["origin"] = json!("model");
+        trial["operations"][1]["preflightRevision"] = Value::Null;
+        assert!(verify_preflight_trials(&body, &request, &[trial.clone()], 1).is_err());
+        trial["operations"][1]["preflightRevision"] = json!("candidate-revision");
+        trial["artifacts"]["report"]["sha256"] = json!("unrelated-file");
+        assert!(verify_preflight_trials(&body, &request, &[trial], 1).is_err());
     }
 }

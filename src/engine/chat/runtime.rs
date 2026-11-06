@@ -136,14 +136,10 @@ async fn run_turn_with_policy(
     );
     let execution_id = uuid::Uuid::new_v4().to_string();
     let applied_improvement_ids = crate::engine::improve::injected_ids_with_execution(
-        state,
-        &improvement_scope,
-        Some(&execution_id),
+        state, &improvement_scope, Some(&execution_id),
     );
     let strategy_candidates = crate::engine::improve::active_values_with_execution(
-        state,
-        &improvement_scope,
-        Some(&execution_id),
+        state, &improvement_scope, Some(&execution_id),
     );
     // Derived prompts (goal iterations, room speakers) attach to the root the
     // parent lifecycle created. Only an owner-facing chat turn creates a root.
@@ -239,10 +235,12 @@ async fn run_turn_with_policy(
         let task_outcome = state
             .store
             .get("execution", &execution_id)
-            .and_then(|execution| execution["taskOutcome"].as_str().map(str::to_string))
-            .unwrap_or_default();
-        let failed_or_cancelled = matches!(task_outcome.as_str(), "failed" | "cancelled");
-        if matches!(&result, Ok(Some(_))) && !failed_or_cancelled {
+            .is_some_and(|execution| {
+                execution["taskOutcome"] == "succeeded"
+                    || (execution["taskOutcome"] == "answered_unverified"
+                        && execution["acceptanceText"].is_null())
+            });
+        if matches!(&result, Ok(Some(_))) && task_outcome {
             crate::engine::learning::enqueue(
                 state,
                 &session_id,
@@ -354,14 +352,41 @@ async fn run_turn_body(
         // not spend a second reviewer call on a synthesized derived prompt.
         None
     } else {
-        acceptance_source
-            .as_deref()
-            .and_then(|text| prepare_owner_action(state, text))
+        source_message_id
+            .and_then(|id| state.store.message(id))
+            .and_then(|message| {
+                let acceptance = &message["metadata"]["acceptance"];
+                Some((acceptance["request"].as_str()?.to_owned(), acceptance["checks"].clone()))
+            })
+            .or_else(|| acceptance_source.as_deref().and_then(|text| prepare_owner_action(state, text)))
     };
+    if let Some((text, checks)) = &acceptance {
+        let mut execution = state.store.get("execution", execution_id)
+            .ok_or("실행 기록을 찾을 수 없습니다.")?;
+        execution["acceptanceText"] = json!(text);
+        execution["acceptanceChecks"] = checks.clone();
+        execution["acceptanceSourceMessageId"] = json!(reply_to);
+        state.store.put("execution", &execution).ok_or("검증 조건을 저장할 수 없습니다.")?;
+        if checks.as_array().is_some_and(|checks| checks.iter().any(|check|
+            check["type"] == "file_replace_exact" && check["expectedSha256"].is_null()
+        )) {
+            return Err("원본 파일에서 바꿀 내용을 한 곳으로 확인할 수 없습니다. 파일 경로와 일치하는 원문을 확인하세요.".into());
+        }
+    }
     let mut acceptance_retries = 0usize;
     let mut procedure_repairs = 0usize;
     let recovery_policy = crate::engine::policy::active(state, "recovery");
     let program_policy = crate::engine::policy::active(state, "execution");
+    // The file guard is opt-in: an operator or a verified policy must
+    // activate mutation.preflight before it applies. No automatic promotion.
+    let selected_preflight = crate::engine::policy::portable_file_guard(state)
+        .or_else(|| crate::engine::policy::active(state, "mutation.preflight"));
+    if let Some(policy) = selected_preflight {
+        let mut execution = state.store.get("execution", execution_id)
+            .ok_or("실행 기록을 찾을 수 없습니다.")?;
+        execution["preflightPolicy"] = policy;
+        state.store.put("execution", &execution).ok_or("검증 정책을 저장할 수 없습니다.")?;
+    }
     let (max_acceptance_retries, max_procedure_repairs) = recovery_policy
         .as_ref()
         .map(|policy| {
@@ -373,6 +398,7 @@ async fn run_turn_body(
     let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"taskId":task_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
 
     let mut provider = select_provider(state, request, &session)?;
+    let allow_provider_fallback = true;
     let budget_algorithm = crate::engine::algorithms::choose_for_agent(
         state,
         "execution.budget",
@@ -729,6 +755,7 @@ async fn run_turn_body(
     messages.extend(harness_messages);
 
     for round in 0..max_rounds {
+        if finished { break; }
         if !budget.charge_round() {
             mark_budget_exhausted(state, execution_id);
             return Err("모델 라운드 예산을 초과했습니다.".into());
@@ -834,6 +861,7 @@ async fn run_turn_body(
             request,
             session_id,
             tx,
+            allow_provider_fallback,
         )
         .await;
         {
@@ -854,7 +882,7 @@ async fn run_turn_body(
                 execution["effectiveProviderId"] = json!(selected_provider.id);
                 execution["effectiveModel"] = json!(selected_provider.model);
                 execution["failoverAt"] = json!(chrono::Utc::now().to_rfc3339());
-                state.store.put("execution", &execution);
+                state.store.put("execution", &execution).ok_or("대체 모델을 실행 기록에 저장할 수 없습니다.")?;
             }
             provider = selected_provider;
         }
@@ -993,7 +1021,14 @@ async fn run_turn_body(
                 if !gaps.is_empty() {
                     // Independent reviewer: deterministic checks still win, but
                     // the reviewer supplies a concrete repair strategy.
-                    if let Some(review) = review_action(state, request, acceptance_text, &final_content, &evidence, &gaps).await {
+                    let precise_replacement = checks.as_array().is_some_and(|checks|
+                        checks.iter().any(|check| check["type"] == "file_replace_exact"));
+                    let review = if precise_replacement {
+                        None
+                    } else {
+                        review_action(state, request, acceptance_text, &final_content, &evidence, &gaps).await
+                    };
+                    if let Some(review) = review {
                         gaps.extend(review.gaps);
                         gaps.sort();
                         gaps.dedup();
@@ -1501,7 +1536,7 @@ async fn run_turn_body(
                 ) {
                     environment_version += 1;
                 }
-            } else {
+            } else if result["preflightBlocked"] != true && result["invalidWorkspacePath"] != true {
                 let error_text = result["error"]
                     .as_str()
                     .map(str::to_string)
@@ -1913,6 +1948,7 @@ async fn attempt_model_adaptation(
         request.agent_id.as_deref(),
         &model,
         tool,
+        arguments,
         error,
         Some(execution_id),
     ) {
@@ -3037,7 +3073,6 @@ async fn propose_program_revision(
     Ok(Some(revised))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_program(
     state: &AppState,
     tx: &UnboundedSender<Value>,
@@ -3312,6 +3347,7 @@ async fn dispatch_tool_call(
             }),
         )
         .ok_or("도구 실행 시작을 저장할 수 없습니다.")?;
+    let mut file_observation = None;
     let (result, ok) = if allowed {
         let context = ToolContext {
             workspace: &state.config.workspace,
@@ -3325,23 +3361,34 @@ async fn dispatch_tool_call(
         let outcome = if call.name.starts_with("mcp__") {
             mcp::call(state, &call.name, &arguments).await
         } else {
-            tools::execute(&context, &call.name, &arguments).await
+            tools::execute(&context, &call.name, &arguments, execution_id).await
         };
         match outcome {
-            Ok(value) if tool_succeeded(&value) => {
-                let _ = tx.send(json!({
-                    "type": "tool_end",
-                    "name": call.name,
-                    "id": call.id,
-                    "arguments": arguments,
-                    "result": value,
-                }));
-                (value, true)
-            }
             Ok(value) => {
-                let _ = tx.send(json!({ "type": "tool_error", "name": call.name,
-                    "id": call.id, "error": "도구가 실패 결과를 반환했습니다.", "result": value }));
-                (value, false)
+                let mut value = value;
+                if matches!(call.name.as_str(), "workspace_read" | "file_read" | "workspace_write") {
+                    file_observation = value.as_object_mut()
+                        .and_then(|value| value.remove("fileObservation"));
+                }
+                if tool_succeeded(&value) {
+                    let _ = tx.send(json!({
+                        "type": "tool_end",
+                        "name": call.name,
+                        "id": call.id,
+                        "arguments": arguments,
+                        "result": value,
+                    }));
+                    (value, true)
+                } else {
+                    let _ = tx.send(json!({ "type": "tool_error", "name": call.name,
+                        "id": call.id, "error": "도구가 실패 결과를 반환했습니다.", "result": value }));
+                    (value, false)
+                }
+            }
+            Err(error) if call.name.starts_with("workspace_") && error == tools::WORKSPACE_ESCAPE => {
+                let error = format!("{error}. Use the relative path inside the workspace, for example bench/report.txt.");
+                let _ = tx.send(json!({"type":"tool_error","name":call.name,"id":call.id,"error":error}));
+                (json!({"error":error,"invalidWorkspacePath":true}), false)
             }
             Err(error) => {
                 let _ = tx.send(json!({
@@ -3390,6 +3437,7 @@ async fn dispatch_tool_call(
                 "tool": call.name,
                 "arguments": arguments,
                 "result": result,
+                "fileObservation": file_observation,
                 "opSeq": op_seq,
                 "origin": origin,
                 "procedureNodeId": procedure_node,
@@ -3695,8 +3743,12 @@ fn determine_task_outcome(execution: &Value) -> TaskOutcome {
     if standing_violation(execution) {
         return TaskOutcome::Failed;
     }
-    if execution["acceptancePassed"].as_bool() == Some(true) {
-        return TaskOutcome::Succeeded;
+    if execution["acceptancePassed"] == true {
+        return if crate::engine::verification::has_result_verifier(&execution["acceptanceChecks"]) {
+            TaskOutcome::Succeeded
+        } else {
+            TaskOutcome::AnsweredUnverified
+        };
     }
     if execution["acceptanceText"].is_null() {
         return TaskOutcome::AnsweredUnverified;
@@ -4037,6 +4089,20 @@ pub(super) fn finalize_execution(
         .collect::<Vec<_>>();
     record["strategyCompliance"] = json!(compliance);
     record["complianceSummary"] = compliance_detail(&compliance);
+    if record["acceptancePassed"] == true {
+        if let (Some(text), Some(source), Some(session)) = (
+            record["acceptanceText"].as_str(),
+            record["acceptanceSourceMessageId"].as_str(),
+            record["sessionId"].as_str(),
+        ) {
+            let evidence = evidence_for_source(state, session, source, execution_id);
+            let gaps = goals::check_acceptance(state, text, &record["acceptanceChecks"], &evidence);
+            if !gaps.is_empty() {
+                record["acceptancePassed"] = json!(false);
+                record["acceptanceFinalGaps"] = json!(gaps);
+            }
+        }
+    }
     let task_outcome = determine_task_outcome(&record);
     record["taskOutcome"] =
         serde_json::to_value(task_outcome).unwrap_or_else(|_| json!("unknown"));
@@ -4417,6 +4483,7 @@ mod outcome_tests {
     fn execution(status: &str, acceptance: bool, acceptance_text: Value) -> Value {
         json!({
             "status": status,
+            "acceptanceChecks":[{"type":"file_equals","path":"test.txt","content":"ok"}],
             "acceptancePassed": acceptance,
             "acceptanceText": acceptance_text,
             "strategyCompliance": []

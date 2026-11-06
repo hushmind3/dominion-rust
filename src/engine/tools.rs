@@ -1,5 +1,6 @@
 use crate::db::Store;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -71,7 +72,12 @@ pub fn requires_approval(name: &str) -> bool {
     )
 }
 
-pub async fn execute(ctx: &ToolContext<'_>, name: &str, args: &Value) -> Result<Value, String> {
+pub async fn execute(
+    ctx: &ToolContext<'_>,
+    name: &str,
+    args: &Value,
+    run_id: &str,
+) -> Result<Value, String> {
     match name {
         "workspace_list" => {
             let path = resolve_workspace(ctx.workspace, string_arg(args, "path").unwrap_or("."))?;
@@ -79,11 +85,11 @@ pub async fn execute(ctx: &ToolContext<'_>, name: &str, args: &Value) -> Result<
         }
         "workspace_read" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
-            read_text(&path).await
+            observed_read(ctx, &path, run_id).await
         }
         "workspace_write" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
-            write_text(&path, &required_arg(args, "content")?).await
+            checked_write(ctx, &path, &required_arg(args, "content")?, run_id, name == "workspace_write").await
         }
         "file_list" => {
             let path = PathBuf::from(required_arg(args, "path")?);
@@ -91,11 +97,11 @@ pub async fn execute(ctx: &ToolContext<'_>, name: &str, args: &Value) -> Result<
         }
         "file_read" => {
             let path = PathBuf::from(required_arg(args, "path")?);
-            read_text(&path).await
+            observed_read(ctx, &path, run_id).await
         }
         "file_write" => {
             let path = PathBuf::from(required_arg(args, "path")?);
-            write_text(&path, &required_arg(args, "content")?).await
+            checked_write(ctx, &path, &required_arg(args, "content")?, run_id, name == "workspace_write").await
         }
         "shell_exec" => {
             let command = required_arg(args, "command")?;
@@ -399,28 +405,50 @@ fn string_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|value| value.as_str())
 }
 
+pub const WORKSPACE_ESCAPE: &str = "Path escapes the workspace";
+
 /// Reject `..` traversal and symlink escapes for workspace-scoped tools.
-fn resolve_workspace(workspace: &Path, relative: &str) -> Result<PathBuf, String> {
-    let base = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
+pub(super) fn resolve_workspace(workspace: &Path, relative: &str) -> Result<PathBuf, String> {
+    let base = canonical_target(workspace).map_err(|error| error.to_string())?;
     let candidate = Path::new(relative);
     if candidate
         .components()
         .any(|component| matches!(component, Component::ParentDir))
     {
-        return Err("Path escapes the workspace".into());
+        return Err(WORKSPACE_ESCAPE.into());
     }
     let joined = if candidate.is_absolute() {
         candidate.to_path_buf()
     } else {
         base.join(candidate)
     };
-    let resolved = joined.canonicalize().unwrap_or(joined);
+    let resolved = canonical_target(&joined).map_err(|error| error.to_string())?;
     if !resolved.starts_with(&base) {
-        return Err("Path escapes the workspace".into());
+        return Err(WORKSPACE_ESCAPE.into());
     }
     Ok(resolved)
+}
+
+/// Resolve existing ancestors even when the final file has not been created.
+fn canonical_target(path: &Path) -> std::io::Result<PathBuf> {
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if std::fs::symlink_metadata(path).is_ok() {
+                return Err(error);
+            }
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                return Err(error);
+            };
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
+            Ok(canonical_target(parent)?.join(name))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn list_dir(path: &Path) -> Result<Value, String> {
@@ -450,6 +478,9 @@ async fn read_text(path: &Path) -> Result<Value, String> {
     let metadata = tokio::fs::metadata(path)
         .await
         .map_err(|error| format!("{}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err("Target is not a regular file".into());
+    }
     if metadata.len() > 1_500_000 {
         return Err("File is larger than 1.5 MB".into());
     }
@@ -457,6 +488,170 @@ async fn read_text(path: &Path) -> Result<Value, String> {
         .await
         .map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(json!({ "path": path.to_string_lossy(), "content": text }))
+}
+
+fn preflight_policy(ctx: &ToolContext<'_>, path: &Path, run_id: &str) -> Option<Value> {
+    let run = ctx.store.get("execution", run_id)?;
+    let policy = &run["preflightPolicy"];
+    (crate::engine::policy::is_preflight_kernel(&policy["parameters"]["kernel"])
+        && policy["targetPath"].as_str().is_none_or(|target| {
+            let target = Path::new(target);
+            path == target || canonical_target(path).is_ok_and(|path| path == target)
+        }))
+        .then(|| policy.clone())
+}
+
+async fn observed_read(ctx: &ToolContext<'_>, path: &Path, run_id: &str) -> Result<Value, String> {
+    if preflight_policy(ctx, path, run_id).is_none() {
+        return read_text(path).await;
+    }
+    let canonical = tokio::fs::canonicalize(path)
+        .await
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut result = read_text(&canonical).await?;
+    result["path"] = json!(path.to_string_lossy());
+    let text = result["content"].as_str().unwrap_or_default();
+    result["fileObservation"] = json!({
+        "path": canonical.to_string_lossy(),
+        "sha256": format!("{:x}", Sha256::digest(text.as_bytes())),
+    });
+    Ok(result)
+}
+
+async fn checked_write(
+    ctx: &ToolContext<'_>,
+    path: &Path,
+    content: &str,
+    run_id: &str,
+    workspace_write: bool,
+) -> Result<Value, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let policy = preflight_policy(ctx, path, run_id);
+    let canonical = canonical_target(path);
+    let lock_path = match &canonical {
+        Ok(path) => path.as_path(),
+        Err(error) if policy.is_some() => return Err(error.to_string()),
+        Err(_) => path,
+    };
+    let lock = {
+        let mut locks = ctx.state.file_mutations.lock().unwrap();
+        locks.retain(|_, lock| lock.strong_count() != 0);
+        if let Some(lock) = locks.get(lock_path).and_then(std::sync::Weak::upgrade) {
+            lock
+        } else {
+            let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(lock_path.to_path_buf(), std::sync::Arc::downgrade(&lock));
+            lock
+        }
+    };
+    let _guard = lock.lock().await;
+    let Some(policy) = policy else {
+        return write_text(path, content).await;
+    };
+    let canonical = canonical.map_err(|error| error.to_string())?;
+    let blocked = |reason: &str| {
+        json!({"error": format!("Preflight: {reason}. Read this exact file with workspace_read or file_read, then retry with its current content."),
+            "preflightBlocked": true, "preflightRevision": policy["revision"]})
+    };
+    let target = canonical.to_string_lossy();
+    let operations = ctx.store.execution_operations(run_id)?;
+    let previous = operations.iter().rev().find(|operation| {
+        (operation["status"] == "completed" || operation["result"]["preflightBlocked"] == true)
+            && (operation["fileObservation"]["path"].as_str() == Some(target.as_ref())
+                || operation["result"]["preflightPath"].as_str() == Some(target.as_ref()))
+    });
+    let metadata = match tokio::fs::metadata(&canonical).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if previous.is_some() {
+                return Ok(blocked("the previously observed target disappeared"));
+            }
+            if let Some(parent) = canonical
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            // An absent target can be created, but must not overwrite a file
+            // that appeared between the probe and the open.
+            let mut file = match tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&canonical)
+                .await
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Ok(blocked("the target now exists"));
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            file.write_all(content.as_bytes())
+                .await
+                .map_err(|error| error.to_string())?;
+            file.flush().await.map_err(|error| error.to_string())?;
+            return Ok(
+                json!({"path": path.to_string_lossy(), "bytes": content.len(), "written": true,
+                "preflightPath": target}),
+            );
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.is_file() {
+        return Err("Preflight target is not a regular file".into());
+    }
+    let revision = previous.and_then(|operation| operation["fileObservation"]["sha256"].as_str());
+    let inline_observation = workspace_write
+        && policy["parameters"]["kernel"] == crate::engine::preflight_fixture::GUARD_KERNEL
+        && metadata.len() <= 16 * 1024;
+    if revision.is_none() && !inline_observation {
+        return Ok(blocked("there is no successful read of the existing target in this run"));
+    }
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&canonical)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    let read_limit = if revision.is_none() { 16 * 1024 + 1 } else { 1_500_001 };
+    (&mut file)
+        .take(read_limit)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|error| error.to_string())?;
+    let observed = format!("{:x}", Sha256::digest(&bytes));
+    if bytes.len() > 1_500_000 || revision != Some(observed.as_str()) {
+        let mut result = blocked(if revision.is_some() {
+            "the target changed after the read"
+        } else {
+            "there is no successful read of the existing target in this run"
+        });
+        if inline_observation && bytes.len() <= 16 * 1024 {
+            if let Ok(text) = std::str::from_utf8(&bytes) {
+                result["error"] = json!("Preflight: write skipped. The current file is below. Apply only the requested change and retry this write using the same path.");
+                result["currentContent"] = json!(text);
+                result["fileObservation"] = json!({"path":target,"sha256":observed});
+            }
+        }
+        return Ok(result);
+    }
+    use tokio::io::AsyncSeekExt;
+    file.rewind().await.map_err(|error| error.to_string())?;
+    file.write_all(content.as_bytes())
+        .await
+        .map_err(|error| error.to_string())?;
+    file.flush().await.map_err(|error| error.to_string())?;
+    file.set_len(content.len() as u64)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(
+        json!({"path": path.to_string_lossy(), "bytes": content.len(), "written": true,
+        "preflightRevision": policy["revision"], "preflightPath": target, "observedSha256": observed}),
+    )
 }
 
 async fn write_text(path: &Path, content: &str) -> Result<Value, String> {
@@ -774,6 +969,11 @@ mod tests {
         assert!(resolve_workspace(&dir, "sub").is_ok());
         assert!(resolve_workspace(&dir, "../etc/passwd").is_err());
         assert!(resolve_workspace(&dir, "/etc/passwd").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/", dir.join("outside")).unwrap();
+            assert!(resolve_workspace(&dir, "outside/nonexistent.txt").is_err());
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

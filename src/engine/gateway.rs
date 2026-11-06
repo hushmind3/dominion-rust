@@ -276,9 +276,34 @@ pub struct GatewayResponse {
     pub _permit: OwnedSemaphorePermit,
 }
 
-/// Sends one chat/completions request through shared admission, auth and one
-/// retry for a dropped idle connection. Streaming and non-streaming callers
-/// use the same path.
+pub fn benchmark_request(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    if benchmark_expected_route().is_some() {
+        request.header("X-FreeLLM-Cache", "off").header("X-FreeLLM-Compress", "off")
+    } else {
+        request
+    }
+}
+
+fn benchmark_expected_route() -> Option<String> {
+    if std::env::var("DOMINION_BENCHMARK").as_deref() != Ok("1") {
+        return None;
+    }
+    std::env::var("DOMINION_BENCHMARK_EXPECTED_ROUTE").ok().filter(|route| !route.is_empty())
+}
+
+pub fn verify_benchmark_route(response: &reqwest::Response) -> Result<(), String> {
+    if let Some(expected) = benchmark_expected_route() {
+        if response.status().is_success()
+            && response.headers().get("X-Routed-Via").and_then(|value| value.to_str().ok())
+                != Some(expected.as_str())
+        {
+            return Err("Benchmark response did not come from the pinned upstream route".into());
+        }
+    }
+    Ok(())
+}
+
+/// Sends a helper completion through shared admission and authentication.
 pub async fn send(
     route: &Route,
     client: &reqwest::Client,
@@ -288,8 +313,7 @@ pub async fn send(
     let permit = acquire(&route.base_url, route.local).await;
     let mut last_error = String::new();
     for attempt in 0..2 {
-        match client
-            .post(route.endpoint("/chat/completions"))
+        match benchmark_request(client.post(route.endpoint("/chat/completions")))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", route.api_key))
             .json(body)
@@ -297,7 +321,10 @@ pub async fn send(
             .send()
             .await
         {
-            Ok(response) => return Ok(GatewayResponse { response, _permit: permit }),
+            Ok(response) => {
+                verify_benchmark_route(&response)?;
+                return Ok(GatewayResponse { response, _permit: permit });
+            }
             Err(error) => {
                 last_error = error.to_string();
                 if attempt == 0 {

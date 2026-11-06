@@ -3,8 +3,11 @@ use crate::db::Store;
 use crate::events::Bus;
 use crate::vault::Vault;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::oneshot;
+
+type FileMutations = Arc<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -18,6 +21,10 @@ pub struct AppState {
     pub cancelled: Arc<Mutex<HashSet<String>>>,
     /// Sessions currently executing. Prevents two turns racing on one history.
     pub active: Arc<Mutex<HashSet<String>>>,
+    /// Coordinates checked and unchecked writes to the same canonical path.
+    pub file_mutations: FileMutations,
+    pub principle_learning: Arc<Mutex<()>>,
+    pub policy_settlement: Arc<Mutex<()>>,
     /// Identity of this engine process, used to own durable run leases.
     pub instance_id: String,
     /// Explicit maintenance flag. While true, non-GET writes are rejected.
@@ -40,6 +47,9 @@ impl AppState {
             approvals: Arc::new(Mutex::new(HashMap::new())),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             active: Arc::new(Mutex::new(HashSet::new())),
+            file_mutations: Arc::new(Mutex::new(HashMap::new())),
+            principle_learning: Arc::new(Mutex::new(())),
+            policy_settlement: Arc::new(Mutex::new(())),
             instance_id,
             maintenance: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
