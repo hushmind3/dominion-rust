@@ -499,20 +499,9 @@ async fn run_turn_body(
     if request.tools_enabled && request.tools_execution_enabled {
         tool_definitions.extend(mcp::definitions(state).await);
     }
-    if request.tools_enabled && request.tools_execution_enabled && provider.tool_mode == "compat" {
-        // Weak/local models without native function calling get a text
-        // protocol instead of silently losing tool access.
-        let manual = tool_manual(&tool_definitions, &request.input).await;
-        if let Some(first) = messages.first_mut() {
-            let existing = first
-                .get("content")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .to_string();
-            first["content"] = json!(format!("{existing}\n\n{manual}"));
-        }
-        tool_definitions.clear();
-    }
+    // Keep a native tool schema catalog. The provider adapter constructs
+    // native calls or the text-tool manual for whichever local/API model
+    // actually handles each round, including after failover.
 
     let native_tool_names = tool_definitions
         .iter()
@@ -619,7 +608,6 @@ async fn run_turn_body(
     let mut environment_version = 0u64;
     let mut adaptation_attempts = 0usize;
     let mut adaptation_failures = 0usize;
-    let mut tool_message_chars = 0usize;
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(MAX_ROUNDS, MAX_TOOL_CALLS, MAX_ELAPSED);
 
@@ -1347,15 +1335,12 @@ async fn run_turn_body(
                     }));
                 }
             }
-            // Every native tool call still receives a response, but the total
-            // model-visible tool content for this turn never exceeds 80k chars.
-            // Complete evidence remains in execution_operation.
-            let exhausted = append_bounded_tool_result(
-                &mut messages, &call.id, &tool_content, &mut tool_message_chars,
+            // A model sees as much evidence as its own configured context
+            // allows. There is no fixed 6k/20k/80k restriction; the full
+            // result always remains in execution_operation and session DB.
+            append_tool_result(
+                &mut messages, &call.id, &tool_content, &provider, &round_tools,
             );
-            if exhausted {
-                force_final = true;
-            }
         }
 
         // Check acceptance after the tool round, not only when the model
@@ -1460,20 +1445,36 @@ fn clip(text: &str, limit: usize) -> String {
     result
 }
 
-/// Hard per-turn budget on the tool payload sent to the model. Even after
-/// exhaustion a tool response is emitted so native tool-call IDs stay paired.
-fn append_bounded_tool_result(
+/// Use the *effective model's* declared context size. Unknown capacities
+/// are left unrestricted; the provider is responsible for its own limit.
+/// The complete tool response was persisted before this context selection.
+fn append_tool_result(
     messages: &mut Vec<Value>,
     call_id: &str,
     content: &str,
-    consumed: &mut usize,
-) -> bool {
-    const MAX_TOOL_CONTENT: usize = 80_000;
-    let remaining = MAX_TOOL_CONTENT.saturating_sub(*consumed);
-    let bounded = clip(content, remaining);
-    *consumed += bounded.chars().count();
-    messages.push(json!({"role":"tool","tool_call_id":call_id,"content":bounded}));
-    content.chars().count() > bounded.chars().count() || *consumed >= MAX_TOOL_CONTENT
+    provider: &ProviderRef,
+    tool_definitions: &[Value],
+) {
+    let allowance = provider.context_tokens.map(|tokens| {
+        let reserve = provider.max_output_tokens
+            .unwrap_or_else(|| tokens / 8)
+            .min(tokens / 4)
+            .max(128)
+            .min(tokens);
+        let capacity_chars = (tokens.saturating_sub(reserve) as usize).saturating_mul(4);
+        let used_chars: usize = messages.iter()
+            .map(|message| message.to_string().chars().count())
+            .sum::<usize>()
+            .saturating_add(
+                tool_definitions.iter().map(|tool| tool.to_string().chars().count()).sum::<usize>()
+            );
+        capacity_chars.saturating_sub(used_chars).saturating_sub(256)
+    });
+    let content = allowance.map_or_else(
+        || content.to_string(),
+        |limit| clip(content, limit),
+    );
+    messages.push(json!({"role":"tool","tool_call_id":call_id,"content":content}));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2889,7 +2890,7 @@ async fn dispatch_tool_call(
     op_seq: u64,
     round: usize,
     call_index: usize,
-    compat: bool,
+    _compat: bool,
     origin: &str,
     procedure_node: Option<&str>,
     procedure_strategy: Option<&str>,
@@ -3026,12 +3027,10 @@ async fn dispatch_tool_call(
         .ok_or("도구 수행 결과를 저장하지 못했습니다. 실행 기록을 확인하세요.")?;
     state.bus.record("execution_operation", &operation);
 
-    // The model message is bounded even in native mode. The full result stays
-    // in execution_operation as evidence.
-    let tool_content = clip(
-        &result.to_string(),
-        if compat { 6_000 } else { 20_000 },
-    );
+    // Keep the full result. The runtime selects a model-specific context
+    // window when assembling the next provider request; local and cloud
+    // models are treated according to declared capacity, not arbitrary modes.
+    let tool_content = result.to_string();
     let saved = state
         .store
         .write_message(&json!({
@@ -3999,27 +3998,33 @@ mod outcome_tests {
     }
 
     #[test]
-    fn tool_results_have_hard_per_call_and_per_turn_caps() {
-        let raw = "한".repeat(40_000);
-        assert_eq!(clip(&raw, 20_000).chars().count(), 20_000);
-        assert_eq!(clip(&raw, 6_000).chars().count(), 6_000);
-        assert_eq!(clip(&raw, 3).chars().count(), 3);
-        assert_eq!(clip(&raw, 0), "");
-        let mut messages = Vec::new();
-        let mut consumed = 0;
-        for i in 0..8 {
-            append_bounded_tool_result(
-                &mut messages, &format!("tool-{i}"), &clip(&raw, 20_000), &mut consumed,
-            );
-        }
-        assert_eq!(consumed, 80_000);
-        assert_eq!(
-            messages.iter().map(|v| v["content"].as_str().unwrap_or("").chars().count()).sum::<usize>(),
-            80_000,
-        );
-        assert_eq!(messages.len(), 8, "every native tool call needs a response");
-        assert_eq!(messages[7]["content"], "");
+    fn model_specific_tool_context_uses_capacity_not_fixed_limits() {
+        let mut messages = vec![json!({"role":"system","content":"short"})];
+        let large = ProviderRef {
+            id:"api".into(),name:"api".into(),base_url:String::new(),
+            api_key:String::new(),model:"large".into(),tool_mode:"native".into(),
+            reasoning_protocol:String::new(),local:false,
+            context_tokens:Some(128_000),max_output_tokens:Some(2_000),
+        };
+        let content = "한".repeat(100_000);
+        append_tool_result(&mut messages,"call1",&content,&large,&[]);
+        assert_eq!(messages[1]["content"].as_str().unwrap().chars().count(), 100_000);
+
+        let mut local = large.clone();
+        local.id = "local".into();
+        local.context_tokens = Some(4_096);
+        let mut short_messages = vec![json!({"role":"system","content":"short"})];
+        append_tool_result(&mut short_messages,"call2",&content,&local,&[]);
+        let limited = short_messages[1]["content"].as_str().unwrap().chars().count();
+        assert!(limited < 20_000);
+        assert!(limited > 0);
+
+        local.context_tokens = None;
+        let mut unknown_messages = Vec::new();
+        append_tool_result(&mut unknown_messages,"call3",&content,&local,&[]);
+        assert_eq!(unknown_messages[0]["content"].as_str().unwrap().chars().count(), 100_000);
     }
+
 
     #[test]
     fn finalization_hash_ignores_mutable_counters_and_timings() {
