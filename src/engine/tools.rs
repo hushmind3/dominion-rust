@@ -89,7 +89,15 @@ pub async fn execute(
         }
         "workspace_write" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
-            checked_write(ctx, &path, &required_arg(args, "content")?, run_id, name == "workspace_write").await
+            checked_write(
+                ctx,
+                &path,
+                &required_arg(args, "content")?,
+                run_id,
+                name == "workspace_write",
+                args["expectedSha256"].as_str(),
+            )
+            .await
         }
         "file_list" => {
             let path = PathBuf::from(required_arg(args, "path")?);
@@ -101,7 +109,15 @@ pub async fn execute(
         }
         "file_write" => {
             let path = PathBuf::from(required_arg(args, "path")?);
-            checked_write(ctx, &path, &required_arg(args, "content")?, run_id, name == "workspace_write").await
+            checked_write(
+                ctx,
+                &path,
+                &required_arg(args, "content")?,
+                run_id,
+                name == "workspace_write",
+                args["expectedSha256"].as_str(),
+            )
+            .await
         }
         "shell_exec" => {
             let command = required_arg(args, "command")?;
@@ -524,6 +540,7 @@ async fn checked_write(
     content: &str,
     run_id: &str,
     workspace_write: bool,
+    expected_sha256: Option<&str>,
 ) -> Result<Value, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -547,7 +564,41 @@ async fn checked_write(
     };
     let _guard = lock.lock().await;
     let Some(policy) = policy else {
-        return write_text(path, content).await;
+        // Even without the opt-in guard, a caller that supplies a frozen
+        // version gets a compare-before-write under the same per-file lock.
+        let Some(expected) = expected_sha256 else {
+            return write_text(path, content).await;
+        };
+        let canonical = canonical.map_err(|error| error.to_string())?;
+        let bytes = match tokio::fs::read(&canonical).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return Ok(json!({
+                    "error": format!("파일을 다시 읽지 못했습니다: {error}"),
+                    "staleVersion": true,
+                    "expectedSha256": expected,
+                }))
+            }
+        };
+        let observed = format!("{:x}", Sha256::digest(&bytes));
+        if observed != expected {
+            return Ok(json!({
+                "error": "파일이 읽은 뒤 변경되었습니다. 다시 읽고 판단하세요.",
+                "staleVersion": true,
+                "expectedSha256": expected,
+                "observedSha256": observed,
+                "path": path.to_string_lossy(),
+            }));
+        }
+        tokio::fs::write(&canonical, content)
+            .await
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        return Ok(json!({
+            "path": path.to_string_lossy(),
+            "bytes": content.len(),
+            "written": true,
+            "conditionalSha256": observed,
+        }));
     };
     let canonical = canonical.map_err(|error| error.to_string())?;
     let blocked = |reason: &str| {
@@ -638,6 +689,15 @@ async fn checked_write(
             }
         }
         return Ok(result);
+    }
+    if let Some(expected) = expected_sha256 {
+        if expected != observed {
+            let mut result = blocked("the target changed after the frozen version");
+            result["staleVersion"] = json!(true);
+            result["expectedSha256"] = json!(expected);
+            result["observedSha256"] = json!(observed);
+            return Ok(result);
+        }
     }
     use tokio::io::AsyncSeekExt;
     file.rewind().await.map_err(|error| error.to_string())?;
@@ -974,6 +1034,53 @@ mod tests {
             std::os::unix::fs::symlink("/", dir.join("outside")).unwrap();
             assert!(resolve_workspace(&dir, "outside/nonexistent.txt").is_err());
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_frozen_version_write_stops_when_the_file_changed() {
+        use crate::config::Config;
+        use crate::db::Store;
+        use crate::vault::Vault;
+        let dir = std::env::temp_dir().join(format!("dominion-frozen-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let store = Store::open(&config.db_path()).unwrap();
+        let state = crate::state::AppState::new(
+            config.clone(),
+            store,
+            Vault::open(&config.key_path()),
+        );
+        let path = dir.join("frozen.txt");
+        std::fs::write(&path, "one").unwrap();
+        let expected = format!("{:x}", Sha256::digest(b"one"));
+        let ctx = ToolContext {
+            workspace: &dir,
+            store: &state.store,
+            state: &state,
+            session_id: "s",
+            agent_id: None,
+            tools_enabled: true,
+            tools_execution_enabled: true,
+        };
+        let written = checked_write(&ctx, &path, "two", "run", false, Some(&expected))
+            .await
+            .unwrap();
+        assert_eq!(written["written"], true);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+
+        // The same frozen version must not overwrite a later change.
+        std::fs::write(&path, "external change").unwrap();
+        let stale = checked_write(&ctx, &path, "three", "run", false, Some(&expected))
+            .await
+            .unwrap();
+        assert_eq!(stale["staleVersion"], true, "{stale}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external change");
         let _ = std::fs::remove_dir_all(dir);
     }
 

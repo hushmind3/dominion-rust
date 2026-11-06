@@ -447,6 +447,7 @@ pub fn mark_inspected(operations: &[Value], resource: &str, inspector_id: &str) 
 pub fn summary(operations: &[Value]) -> Value {
     let mut observed = 0u64;
     let mut verified = 0u64;
+    let mut applied = 0u64;
     let mut inspected = 0u64;
     let mut unknown = 0u64;
     let mut failed = 0u64;
@@ -456,11 +457,18 @@ pub fn summary(operations: &[Value]) -> Value {
         match operation["effectState"].as_str().unwrap_or("") {
             "observed" => observed += 1,
             "verified" => verified += 1,
+            "applied" => {
+                // The tool claimed success, but no independent observation
+                // confirmed the external change.
+                applied += 1;
+                unknown += 1;
+            }
             "inspected" => {
                 inspected += 1;
                 unknown += 1;
             }
             "effect_unknown" | "needs_review" => unknown += 1,
+            "started" | "prepared" => unknown += 1,
             "failed" => failed += 1,
             "denied" => denied += 1,
             _ => {}
@@ -472,6 +480,7 @@ pub fn summary(operations: &[Value]) -> Value {
     json!({
         "observed": observed,
         "verifiedEffects": verified,
+        "appliedEffects": applied,
         "inspectedEffects": inspected,
         "unverifiedEffects": unknown,
         "failedEffects": failed,
@@ -632,9 +641,14 @@ mod tests {
         let summary = summary(&[
             json!({"effectState":"verified","toolReceipt":{"failureLayer":null}}),
             json!({"effectState":"effect_unknown","toolReceipt":{"failureLayer":"execution"}}),
+            json!({"effectState":"applied","toolReceipt":{"failureLayer":null}}),
         ]);
         assert_eq!(summary["verifiedEffects"], 1);
-        assert_eq!(summary["unverifiedEffects"], 1);
+        assert_eq!(summary["appliedEffects"], 1);
+        assert_eq!(
+            summary["unverifiedEffects"], 2,
+            "tool-claimed success without independent verification is not evidence"
+        );
         assert_eq!(summary["failureLayers"]["execution"], 1);
     }
 }

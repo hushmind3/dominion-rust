@@ -347,7 +347,7 @@ async fn run_turn_body(
             .and_then(|message| message["content"].as_str().map(str::to_string)),
         None => Some(request.input.clone()),
     };
-    let acceptance = if request.verification_owner.as_deref() == Some("parent") {
+    let mut acceptance = if request.verification_owner.as_deref() == Some("parent") {
         // The parent goal owns the final semantic review. The child still
         // records operations, deterministic evidence and cancellation; it must
         // not spend a second reviewer call on a synthesized derived prompt.
@@ -361,6 +361,34 @@ async fn run_turn_body(
             })
             .or_else(|| acceptance_source.as_deref().and_then(|text| prepare_owner_action(state, text)))
     };
+    // An ambiguous literal replacement cannot be frozen into one expected
+    // hash. Drop only that unverifiable check so the model still gets a turn;
+    // the task then remains observable but is not reported as verified.
+    let mut demote_all = false;
+    if let Some((_, checks)) = &mut acceptance {
+        let before = checks.as_array().map(Vec::len).unwrap_or(0);
+        if let Some(items) = checks.as_array_mut() {
+            items.retain(|check| {
+                !(check["type"] == "file_replace_exact"
+                    && check["expectedSha256"].as_str().is_none())
+            });
+        }
+        let after = checks.as_array().map(Vec::len).unwrap_or(0);
+        if after < before {
+            state.store.audit(
+                "acceptance.demoted",
+                json!({
+                    "executionId": execution_id,
+                    "reason": "ambiguous exact replacement: expected hash unavailable",
+                    "removedChecks": before - after,
+                }),
+            );
+            demote_all = after == 0;
+        }
+    }
+    if demote_all {
+        acceptance = None;
+    }
     if let Some((text, checks)) = &acceptance {
         let mut execution = state.store.get("execution", execution_id)
             .ok_or("실행 기록을 찾을 수 없습니다.")?;
@@ -368,11 +396,6 @@ async fn run_turn_body(
         execution["acceptanceChecks"] = checks.clone();
         execution["acceptanceSourceMessageId"] = json!(reply_to);
         state.store.put("execution", &execution).ok_or("검증 조건을 저장할 수 없습니다.")?;
-        if checks.as_array().is_some_and(|checks| checks.iter().any(|check|
-            check["type"] == "file_replace_exact" && check["expectedSha256"].is_null()
-        )) {
-            return Err("원본 파일에서 바꿀 내용을 한 곳으로 확인할 수 없습니다. 파일 경로와 일치하는 원문을 확인하세요.".into());
-        }
     }
     let mut acceptance_retries = 0usize;
     let mut procedure_repairs = 0usize;
@@ -3393,7 +3416,7 @@ async fn deterministic_tool(
             }),
         )
         .ok_or("결정적 실행 시작을 저장할 수 없습니다.")?;
-    let (result, ok) = if allowed {
+    let (mut result, ok) = if allowed {
         let context = ToolContext {
             workspace: &state.config.workspace,
             store: &state.store,
@@ -3412,6 +3435,19 @@ async fn deterministic_tool(
         }
     } else {
         (json!({"error":"Denied by the user"}), false)
+    };
+    // checked_write finds the last observed version on the operation record,
+    // not inside the tool result. Keep that contract identical to the normal
+    // dispatch path so the opt-in guard can see this read.
+    let file_observation = if matches!(
+        tool,
+        "workspace_read" | "file_read" | "workspace_write"
+    ) {
+        result
+            .as_object_mut()
+            .and_then(|value| value.remove("fileObservation"))
+    } else {
+        None
     };
     {
         let mut counters = metrics.lock().unwrap();
@@ -3436,7 +3472,8 @@ async fn deterministic_tool(
             &json!({
                 "id": operation_id, "runId": execution_id, "sessionId": session_id,
                 "callId": operation_id, "tool": tool, "arguments": arguments,
-                "result": result, "opSeq": op_seq, "origin": "deterministic_shortcut",
+                "result": result, "fileObservation": file_observation,
+                "opSeq": op_seq, "origin": "deterministic_shortcut",
                 "effectId": effect["effectId"],
                 "resourceKey": effect["resourceKey"],
                 "requestDigest": effect["requestDigest"],
@@ -3458,6 +3495,31 @@ async fn deterministic_tool(
         "result": operation["result"],
     }));
     Ok((operation["result"].clone(), operation))
+}
+
+/// Records what was already applied when a later write cannot proceed. The
+/// operations remain the primary evidence; this marker makes the partial state
+/// explicit on the execution record.
+fn record_partial_shortcut(
+    state: &AppState,
+    execution_id: &str,
+    applied: &[Value],
+    failed: &std::path::Path,
+    reason: &str,
+) {
+    if let Some(mut execution) = state.store.get("execution", execution_id) {
+        execution["deterministicShortcut"] = json!({
+            "kind": "file_replace_exact",
+            "modelCalls": 0,
+            "tokens": 0,
+            "partial": true,
+            "appliedEffectIds": applied,
+            "failedPath": failed.to_string_lossy(),
+            "reason": reason,
+            "note": "deterministic execution optimization; excluded from learning evidence",
+        });
+        state.store.put("execution", &execution);
+    }
 }
 
 /// Executes every frozen replacement before any model call. Reads are all
@@ -3487,10 +3549,19 @@ async fn run_frozen_replacements(
         .filter_map(|operation| operation["opSeq"].as_u64())
         .max()
         .unwrap_or(0);
-    let mut prepared = Vec::new();
+    let mut paths = Vec::new();
     for check in &checks {
         let raw = check["path"].as_str().ok_or("경로가 없습니다.")?;
         let path = crate::engine::verification::resolve_path(state, raw)?;
+        if paths.iter().any(|existing| existing == &path) {
+            // Two independently frozen hashes on one file cannot both be
+            // validated after the first change. Let the model handle it.
+            return Ok(None);
+        }
+        paths.push(path);
+    }
+    let mut prepared = Vec::new();
+    for (check, path) in checks.iter().zip(paths) {
         op_seq += 1;
         let (read, _) = deterministic_tool(
             state,
@@ -3507,13 +3578,14 @@ async fn run_frozen_replacements(
         let Some(content) = read["content"].as_str() else {
             return Ok(None);
         };
+        let source_sha256 = format!("{:x}", Sha256::digest(content.as_bytes()));
         let Some(expected) = replacement_content(check, content) else {
             return Ok(None);
         };
-        prepared.push((path, expected));
+        prepared.push((path, source_sha256, expected));
     }
     let mut effect_ids = Vec::new();
-    for (path, expected) in prepared {
+    for (path, source_sha256, expected) in prepared {
         op_seq += 1;
         let (_, operation) = deterministic_tool(
             state,
@@ -3522,14 +3594,39 @@ async fn run_frozen_replacements(
             session_id,
             execution_id,
             "file_write",
-            &json!({"path": path.to_string_lossy(), "content": expected}),
+            &json!({
+                "path": path.to_string_lossy(),
+                "content": expected,
+                // Compare immediately before writing, under the per-file lock.
+                "expectedSha256": source_sha256,
+            }),
             op_seq,
             metrics,
         )
         .await?;
-        if operation["effectState"] != "verified" {
+        if operation["result"]["staleVersion"].as_bool() == Some(true) {
+            record_partial_shortcut(
+                state,
+                execution_id,
+                &effect_ids,
+                &path,
+                "source version changed before write",
+            );
             return Err(format!(
-                "{} 변경을 독립적으로 검증하지 못했습니다.",
+                "{} 파일이 읽은 뒤 변경되어 쓰기를 중단했습니다. 이미 적용된 변경은 실행 기록에 남아 있습니다.",
+                path.display()
+            ));
+        }
+        if operation["effectState"] != "verified" {
+            record_partial_shortcut(
+                state,
+                execution_id,
+                &effect_ids,
+                &path,
+                "write was not independently verified",
+            );
+            return Err(format!(
+                "{} 변경을 독립적으로 검증하지 못했습니다. 이미 적용된 변경은 실행 기록에 남아 있습니다.",
                 path.display()
             ));
         }

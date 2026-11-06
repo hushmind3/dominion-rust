@@ -2402,6 +2402,64 @@ fn a_fully_specified_replacement_runs_without_a_model_call() {
 }
 
 #[test]
+fn a_frozen_replacement_passes_the_opt_in_guard() {
+    let _serial = serial();
+    let root = temp_root();
+    std::fs::create_dir_all(root.join("bench")).unwrap();
+    std::fs::write(root.join("bench/guarded.txt"), "start ALPHA end\n").unwrap();
+    let (port, requests) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"MODEL SHOULD NOT RUN"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::from_root(port, "native", root, &[("DOMINION_BENCHMARK", "1")]);
+    app.post("/api/policy", &json!({"autoApprove":["file_write"]}));
+    app.post(
+        "/api/benchmark/policies/state",
+        &json!({
+            "slot":"mutation.preflight",
+            "name":"deterministic-guard",
+            "parameters":{"kernel":"same-file-revision-v1"}
+        }),
+    );
+    let stream = app.chat(&json!({
+        "input":"edit `bench/guarded.txt` and replace `ALPHA` with `BETA` and preserve everything else.",
+        "autoLearning":false
+    }));
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("bench/guarded.txt")).unwrap(),
+        "start BETA end\n",
+        "{stream}"
+    );
+    assert!(requests.lock().unwrap().is_empty(), "the model was called");
+    let execution = &app.get("/api/executions")[0];
+    assert_eq!(execution["taskOutcome"], "succeeded", "{execution}");
+    assert_eq!(execution["modelCalls"], 0, "{execution}");
+    assert_eq!(
+        execution["deterministicShortcut"]["modelCalls"], 0,
+        "{execution}"
+    );
+    let operations = app.get(&format!(
+        "/api/executions/{}/operations",
+        execution["id"].as_str().unwrap()
+    ));
+    let items = operations.as_array().unwrap();
+    assert!(
+        items.iter().any(|operation| operation["tool"] == "file_read"
+            && operation["fileObservation"]["sha256"].is_string()),
+        "the guard could not see the deterministic read: {operations}"
+    );
+    let write = items
+        .iter()
+        .find(|operation| operation["tool"] == "file_write")
+        .unwrap();
+    assert_eq!(write["effectState"], "verified", "{write}");
+    assert_eq!(
+        write["result"]["preflightBlocked"],
+        Value::Null,
+        "{write}"
+    );
+}
+
+#[test]
 fn a_typed_execution_program_takes_the_failure_branch() {
     let _serial = serial();
     let (port, _) = scripted_provider(|_| {
