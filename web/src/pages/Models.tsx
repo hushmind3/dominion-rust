@@ -12,6 +12,7 @@ const providerPresets:ProviderPreset[]=[
  {name:'Google Gemini',baseUrl:'https://generativelanguage.googleapis.com/v1beta/openai',kind:'openai',local:false},
  {name:'OpenAI',baseUrl:'https://api.openai.com/v1',kind:'openai',local:false},
  {name:'OpenRouter',baseUrl:'https://openrouter.ai/api/v1',kind:'openai',local:false},
+ {name:'Vercel AI Gateway',baseUrl:'https://ai-gateway.vercel.sh/v1',kind:'openai',local:false},
  {name:'Groq',baseUrl:'https://api.groq.com/openai/v1',kind:'openai',local:false},
  {name:'DeepSeek',baseUrl:'https://api.deepseek.com/v1',kind:'openai',local:false},
  {name:'Mistral',baseUrl:'https://api.mistral.ai/v1',kind:'openai',local:false},
@@ -27,7 +28,7 @@ export function ModelHub(){
  const providers=useRemote<Provider[]>('/api/providers',[])
  const [counts,setCounts]=useState<Record<string,{list:string[];error?:string;busy?:boolean}>>({})
  const [error,setError]=useState('')
- const [modal,setModal]=useState(false)
+ const [modal,setModal]=useState(false),[presetMode,setPresetMode]=useState(false)
  const [edit,setEdit]=useState<Provider|null>(null)
  const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[reflection,setReflection]=useState(false)
  const probe=async(p:Provider)=>{
@@ -35,14 +36,15 @@ export function ModelHub(){
   try{const list=await get<{id:string}[]>('/api/providers/'+p.id+'/models');setCounts(old=>({...old,[p.id]:{list:list.map(m=>m.id)}}))}
   catch(e){setCounts(old=>({...old,[p.id]:{list:[],error:(e as Error).message}}))}
  }
- const open=(p?:Provider)=>{setEdit(p||null);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.model||'');setReflection(Boolean(p?.reflection ?? p?.learning));setError('');setModal(true)}
- const openPreset=(preset:ProviderPreset)=>{setEdit(null);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId(preset.model||'');setReflection(Boolean(preset.reflection));setError('');setModal(true)}
+ const open=(p?:Provider)=>{setEdit(p||null);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.model||'');setReflection(Boolean(p?.reflection ?? p?.learning));setError('');setModal(true)}
+ const openPreset=(preset:ProviderPreset)=>{setEdit(null);setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId(preset.model||'');setReflection(Boolean(preset.reflection));setError('');setModal(true)}
  const configured=(preset:ProviderPreset)=>providers.value.some(p=>p.baseUrl.replace(/\/$/,'')===preset.baseUrl.replace(/\/$/,''))
  const save=async()=>{
   if(reflection&&!modelId.trim()){setError('회고 분석 모델로 사용하려면 모델 ID가 필요합니다.');return}
   try{
-   await post('/api/providers',{id:edit?.id,name,baseUrl,kind,apiKey:apiKey||undefined,local,enabled:true,model:modelId.trim()||undefined,reflection})
+   const saved=await post<Provider>('/api/providers',{id:edit?.id,name,baseUrl,kind,apiKey:apiKey||undefined,local,enabled:true,model:modelId.trim()||undefined,reflection})
    setModal(false);await providers.reload();refresh()
+   if(!modelId.trim()) void probe(saved)
   }catch(e){setError((e as Error).message)}
  }
  return <div className="mx-auto w-full max-w-[1200px] px-4 py-5 sm:px-6 lg:py-6">
@@ -58,8 +60,27 @@ export function ModelHub(){
   <ModelExplorer/>
   {!modal&&error&&<Notice message={error}/>}
   {modal&&<DialogBackdrop onDismiss={()=>setModal(false)}><DialogPanel size="default">
-   <div className="flex items-center justify-between border-b border-[#EFE9DF] p-4"><h2 className="text-[15px] font-bold">{edit?'연결 편집':'모델 서버 연결'}</h2><Button size="icon" variant="ghost" aria-label="닫기" onClick={()=>setModal(false)}><X size={16}/></Button></div>
-   <div className="grid gap-3 p-4"><FormField label="연결 이름"><TextInput value={name} onChange={e=>setName(e.target.value)} placeholder="예: 내 LM Studio"/></FormField><FormField label="API URL"><TextInput value={baseUrl} onChange={e=>setBaseUrl(e.target.value)} placeholder="http://127.0.0.1:1234/v1"/></FormField><FormField label="형식"><SelectInput value={kind} onChange={e=>setKind(e.target.value)}><option value="openai">OpenAI 호환</option><option value="ollama">Ollama</option></SelectInput></FormField><FormField label="기본 모델 ID"><TextInput value={modelId} onChange={e=>setModelId(e.target.value)} placeholder="예: gpt-oss-20b"/></FormField><FormField label="API 키"><TextInput type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="기존 키 유지 시 비워두기"/></FormField><label className="flex items-center gap-2 text-[12px]"><TextInput type="checkbox" checked={local} onChange={e=>setLocal(e.target.checked)}/> 로컬 서버</label><label className="flex items-start gap-2 rounded-xl border border-[#F0DFD2] bg-[#FFF9F4] p-3 text-[12px] text-[#6F5A4B]"><TextInput type="checkbox" checked={reflection} onChange={e=>setReflection(e.target.checked)}/><span><strong className="block text-[#3A342D]">회고 분석 모델로 사용</strong><small className="mt-0.5 block text-[11px] text-[#9C9388]">실행 후 실패·교정을 분석해 경험을 추출할 때만 사용합니다. 일반 대화 모델과 별개로 지정할 수 있습니다.</small></span></label>{error&&<Notice message={error}/>}</div>
+   <div className="flex items-center justify-between border-b border-[#EFE9DF] p-4"><h2 className="text-[15px] font-bold">{presetMode&&!edit?name+' 연결':edit?'연결 편집':'모델 서버 연결'}</h2><Button size="icon" variant="ghost" aria-label="닫기" onClick={()=>setModal(false)}><X size={16}/></Button></div>
+   <div className="grid gap-3 p-4">
+    {presetMode&&!edit?<>
+     <div className="rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-3">
+      <strong className="block text-[13px] text-[#3A342D]">{name}</strong>
+      <div className="mt-1 break-all text-[11px] text-[#8A8176]">{baseUrl}</div>
+      {modelId&&<div className="mt-1 text-[11px] text-[#9C9388]">모델 · {modelId}</div>}
+     </div>
+     <FormField label="API 키"><TextInput autoFocus type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="API 키를 붙여넣으세요"/></FormField>
+     {reflection&&<p className="rounded-lg bg-[#FFF7EF] px-3 py-2 text-[11px] text-[#A94E30]">회고 분석 모델로 자동 지정됩니다.</p>}
+    </>:<>
+     <FormField label="연결 이름"><TextInput value={name} onChange={e=>setName(e.target.value)} placeholder="예: 내 LM Studio"/></FormField>
+     <FormField label="API URL"><TextInput value={baseUrl} onChange={e=>setBaseUrl(e.target.value)} placeholder="http://127.0.0.1:1234/v1"/></FormField>
+     <FormField label="형식"><SelectInput value={kind} onChange={e=>setKind(e.target.value)}><option value="openai">OpenAI 호환</option><option value="ollama">Ollama</option></SelectInput></FormField>
+     <FormField label="기본 모델 ID"><TextInput value={modelId} onChange={e=>setModelId(e.target.value)} placeholder="예: gpt-oss-20b"/></FormField>
+     <FormField label="API 키"><TextInput type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="기존 키 유지 시 비워두기"/></FormField>
+     <label className="flex items-center gap-2 text-[12px]"><TextInput type="checkbox" checked={local} onChange={e=>setLocal(e.target.checked)}/> 로컬 서버</label>
+     <label className="flex items-start gap-2 rounded-xl border border-[#F0DFD2] bg-[#FFF9F4] p-3 text-[12px] text-[#6F5A4B]"><TextInput type="checkbox" checked={reflection} onChange={e=>setReflection(e.target.checked)}/><span><strong className="block text-[#3A342D]">회고 분석 모델로 사용</strong><small className="mt-0.5 block text-[11px] text-[#9C9388]">실행 후 실패·교정을 분석해 경험을 추출할 때만 사용합니다. 일반 대화 모델과 별개로 지정할 수 있습니다.</small></span></label>
+    </>}
+    {error&&<Notice message={error}/>}
+   </div>
    <div className="flex justify-end gap-2 border-t border-[#EFE9DF] p-4"><Button onClick={()=>setModal(false)}>취소</Button><Button variant="primary" onClick={()=>void save()}><Check size={14}/> 저장</Button></div>
   </DialogPanel></DialogBackdrop>}
  </div>
