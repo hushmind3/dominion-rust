@@ -742,7 +742,7 @@ async fn run_turn_body(
             let mut counters = metrics.lock().unwrap();
             counters.model_elapsed_ms += model_started.elapsed().as_millis() as u64;
             if counters.first_token_ms.is_none() {
-                if let Ok(completion) = &completion_result {
+                if let Ok((completion, _effective_provider)) = &completion_result {
                     counters.first_token_ms =
                         completion.first_delta_ms.map(|ms| model_offset_ms + ms);
                 }
