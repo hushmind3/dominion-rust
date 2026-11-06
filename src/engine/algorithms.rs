@@ -1060,6 +1060,20 @@ pub fn finalize_execution(state: &AppState, execution: &Value) {
     let Some(execution_id) = execution["id"].as_str() else {
         return;
     };
+    // A deterministic shortcut made no model decision, so it carries no
+    // evidence for which judgment algorithm works better.
+    if execution["deterministicShortcut"].is_object() {
+        for mut usage in state.store.all("algorithm_usage") {
+            if usage["executionId"].as_str() == Some(execution_id)
+                && usage["status"].as_str() == Some("pending")
+            {
+                usage["status"] = json!("excluded");
+                usage["reason"] = json!("deterministic shortcut: no model decision");
+                state.store.put("algorithm_usage", &usage);
+            }
+        }
+        return;
+    }
     let task_success = execution["taskOutcome"].as_str() == Some("succeeded");
     for mut usage in state.store.all("algorithm_usage") {
         if usage["executionId"].as_str() != Some(execution_id)

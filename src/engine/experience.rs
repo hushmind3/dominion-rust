@@ -623,6 +623,9 @@ pub fn learn_verified_adaptations(state: &AppState, execution: &Value) -> Vec<Va
     if execution["taskOutcome"].as_str() != Some("succeeded") {
         return Vec::new();
     }
+    if execution["deterministicShortcut"].is_object() {
+        return Vec::new();
+    }
     if execution["effectSummary"]["unverifiedEffects"]
         .as_u64()
         .unwrap_or(0)

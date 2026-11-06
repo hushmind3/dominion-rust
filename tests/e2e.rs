@@ -2344,6 +2344,64 @@ fn a_failed_call_is_not_repeated_and_the_model_adapts() {
 }
 
 #[test]
+fn a_fully_specified_replacement_runs_without_a_model_call() {
+    let _serial = serial();
+    let (port, requests) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"MODEL SHOULD NOT RUN"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    std::fs::create_dir_all(app._root.join("bench")).unwrap();
+    std::fs::write(app._root.join("bench/frozen.txt"), "start ALPHA end\n").unwrap();
+    let _stream = app.chat(&json!({
+        "input":"edit `bench/frozen.txt` and replace `ALPHA` with `BETA` and preserve everything else.",
+        "autoLearning":false
+    }));
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("bench/frozen.txt")).unwrap(),
+        "start BETA end\n"
+    );
+    assert!(
+        requests.lock().unwrap().is_empty(),
+        "the model was called for a frozen transformation"
+    );
+    let executions = app.get("/api/executions");
+    let execution = &executions.as_array().unwrap()[0];
+    assert_eq!(execution["taskOutcome"], "succeeded", "{execution}");
+    assert_eq!(execution["modelCalls"], 0, "{execution}");
+    assert_eq!(
+        execution["deterministicShortcut"]["modelCalls"], 0,
+        "{execution}"
+    );
+    let operations = app.get(&format!(
+        "/api/executions/{}/operations",
+        execution["id"].as_str().unwrap()
+    ));
+    let items = operations.as_array().unwrap();
+    let write = items
+        .iter()
+        .find(|operation| operation["tool"] == "file_write")
+        .unwrap();
+    assert_eq!(write["effectState"], "verified", "{write}");
+    assert_eq!(
+        items
+            .iter()
+            .filter(|operation| operation["tool"] == "file_read")
+            .count(),
+        1
+    );
+    let conn = Connection::open(app._root.join("runtime/dominion.sqlite")).unwrap();
+    let rules: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM records WHERE kind='experience_rule'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rules, 0, "a deterministic shortcut became learning evidence");
+}
+
+#[test]
 fn a_typed_execution_program_takes_the_failure_branch() {
     let _serial = serial();
     let (port, _) = scripted_provider(|_| {

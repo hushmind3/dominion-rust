@@ -475,6 +475,9 @@ pub fn learn_from_execution(state: &AppState, execution: &Value) -> usize {
     if execution["taskOutcome"].as_str() != Some("succeeded") {
         return 0;
     }
+    if execution["deterministicShortcut"].is_object() {
+        return 0;
+    }
     // A succeeded task can still contain an unresolved external effect. It is
     // evidence for the task result, not for a reusable positive rule.
     if execution["effectSummary"]["unverifiedEffects"]

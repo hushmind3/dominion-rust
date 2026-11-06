@@ -18,6 +18,7 @@ use crate::{
     state::AppState,
 };
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -386,6 +387,28 @@ async fn run_turn_body(
             .ok_or("실행 기록을 찾을 수 없습니다.")?;
         execution["preflightPolicy"] = policy;
         state.store.put("execution", &execution).ok_or("검증 정책을 저장할 수 없습니다.")?;
+    }
+    // A contract that is already a complete, independently verifiable
+    // transformation does not need a model decision. This is an execution
+    // optimization, not learning evidence.
+    if let Some((text, checks)) = &acceptance {
+        if let Some(replacements) = frozen_replacements(checks) {
+            if let Some(saved) = run_frozen_replacements(
+                state,
+                request,
+                tx,
+                session_id,
+                execution_id,
+                task_id,
+                text,
+                replacements,
+                metrics,
+            )
+            .await?
+            {
+                return Ok(Some(saved));
+            }
+        }
     }
     let (max_acceptance_retries, max_procedure_repairs) = recovery_policy
         .as_ref()
@@ -3272,6 +3295,285 @@ async fn run_program(
     Ok(messages)
 }
 
+/// A fully specified replacement is executable without a model only when every
+/// acceptance requirement is the same deterministic operation and its expected
+/// hash was frozen before the turn. Anything less falls back to the model.
+fn frozen_replacements(checks: &Value) -> Option<Vec<Value>> {
+    let items = checks.as_array()?;
+    (!items.is_empty()
+        && items.len() <= 32
+        && items.iter().all(|check| {
+            check["type"] == "file_replace_exact"
+                && check["path"].as_str().is_some_and(|path| !path.is_empty())
+                && check["old"].as_str().is_some_and(|old| !old.is_empty())
+                && check["new"].as_str().is_some()
+                && check["expectedSha256"].as_str().is_some()
+        }))
+    .then(|| items.to_vec())
+}
+
+/// Applies the literal replacement only when the old text occurs once and the
+/// result matches the hash captured in the contract. A mismatch is not a
+/// failure of the task; it means the deterministic path does not apply.
+fn replacement_content(check: &Value, content: &str) -> Option<String> {
+    let old = check["old"].as_str()?;
+    let new = check["new"].as_str()?;
+    if content.matches(old).count() != 1 {
+        return None;
+    }
+    let replaced = content.replacen(old, new, 1);
+    (format!("{:x}", Sha256::digest(replaced.as_bytes())) == check["expectedSha256"].as_str()?)
+        .then_some(replaced)
+}
+
+/// Runs one deterministic tool call through the same approval, file lock,
+/// effect receipt and evidence store as a model-issued call.
+#[allow(clippy::too_many_arguments)]
+async fn deterministic_tool(
+    state: &AppState,
+    request: &TurnRequest,
+    tx: &UnboundedSender<Value>,
+    session_id: &str,
+    execution_id: &str,
+    tool: &str,
+    arguments: &Value,
+    op_seq: u64,
+    metrics: &std::sync::Mutex<Metrics>,
+) -> Result<(Value, Value), String> {
+    let mut operations = state
+        .store
+        .all("execution_operation")
+        .into_iter()
+        .filter(|operation| operation["sessionId"].as_str() == Some(session_id))
+        .collect::<Vec<_>>();
+    operations.reverse();
+    let effect = crate::engine::effect::prepare(session_id, tool, arguments, &operations);
+    let operation_id = format!("{execution_id}:frozen:{op_seq}:{tool}");
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let started = std::time::Instant::now();
+    let _ = tx.send(json!({"type":"tool_start","name":tool,"id":operation_id}));
+    let allowed = if tools::requires_approval(tool) {
+        request_approval(
+            state,
+            tx,
+            session_id,
+            tool,
+            arguments,
+            execution_id,
+            &operation_id,
+            None,
+        )
+        .await
+    } else {
+        true
+    };
+    let initial_state = if allowed { "started" } else { "denied" };
+    state
+        .store
+        .put(
+            "execution_operation",
+            &json!({
+                "id": operation_id, "runId": execution_id, "sessionId": session_id,
+                "callId": operation_id, "tool": tool, "arguments": arguments,
+                "opSeq": op_seq, "origin": "deterministic_shortcut",
+                "effectId": effect["effectId"],
+                "resourceKey": effect["resourceKey"],
+                "requestDigest": effect["requestDigest"],
+                "beforeVersion": effect["beforeVersion"],
+                "effectState": initial_state,
+                "toolReceipt": {
+                    "effectId": effect["effectId"], "tool": tool,
+                    "requestDigest": effect["requestDigest"],
+                    "resourceKey": effect["resourceKey"],
+                    "status": initial_state, "verified": false,
+                    "verifier": {"kind": "pending", "revision": "effect-v1"},
+                    "beforeVersion": effect["beforeVersion"], "startedAt": started_at,
+                },
+                "status": "running", "startedAt": started_at,
+            }),
+        )
+        .ok_or("결정적 실행 시작을 저장할 수 없습니다.")?;
+    let (result, ok) = if allowed {
+        let context = ToolContext {
+            workspace: &state.config.workspace,
+            store: &state.store,
+            state,
+            session_id,
+            agent_id: request.agent_id.as_deref(),
+            tools_enabled: request.tools_enabled,
+            tools_execution_enabled: request.tools_execution_enabled,
+        };
+        match tools::execute(&context, tool, arguments, execution_id).await {
+            Ok(value) => {
+                let ok = tool_succeeded(&value);
+                (value, ok)
+            }
+            Err(error) => (json!({"error": error}), false),
+        }
+    } else {
+        (json!({"error":"Denied by the user"}), false)
+    };
+    {
+        let mut counters = metrics.lock().unwrap();
+        counters.tool_calls += 1;
+        counters.tool_elapsed_ms += started.elapsed().as_millis() as u64;
+    }
+    let sealed = crate::engine::effect::seal(
+        &state.config.workspace,
+        tool,
+        arguments,
+        &result,
+        ok,
+        !allowed,
+        false,
+        &effect,
+    )
+    .await;
+    let operation = state
+        .store
+        .put(
+            "execution_operation",
+            &json!({
+                "id": operation_id, "runId": execution_id, "sessionId": session_id,
+                "callId": operation_id, "tool": tool, "arguments": arguments,
+                "result": result, "opSeq": op_seq, "origin": "deterministic_shortcut",
+                "effectId": effect["effectId"],
+                "resourceKey": effect["resourceKey"],
+                "requestDigest": effect["requestDigest"],
+                "beforeVersion": effect["beforeVersion"],
+                "effectState": sealed["effectState"],
+                "observedVersion": sealed["observedVersion"],
+                "toolReceipt": sealed["toolReceipt"],
+                "status": if ok { "completed" } else { "failed" },
+                "startedAt": started_at,
+                "finishedAt": chrono::Utc::now().to_rfc3339(),
+            }),
+        )
+        .ok_or("결정적 실행 결과를 저장하지 못했습니다.")?;
+    state.bus.record("execution_operation", &operation);
+    let _ = tx.send(json!({
+        "type": if ok { "tool_end" } else { "tool_error" },
+        "name": tool,
+        "id": operation_id,
+        "result": operation["result"],
+    }));
+    Ok((operation["result"].clone(), operation))
+}
+
+/// Executes every frozen replacement before any model call. Reads are all
+/// completed and validated first; a single mismatch falls back to the normal
+/// model path without mutating anything.
+#[allow(clippy::too_many_arguments)]
+async fn run_frozen_replacements(
+    state: &AppState,
+    request: &TurnRequest,
+    tx: &UnboundedSender<Value>,
+    session_id: &str,
+    execution_id: &str,
+    task_id: &str,
+    text: &str,
+    checks: Vec<Value>,
+    metrics: &std::sync::Mutex<Metrics>,
+) -> Result<Option<Value>, String> {
+    if !request.tools_enabled
+        || !request.tools_execution_enabled
+        || std::env::var("DOMINION_DETERMINISTIC_REPLACEMENT").as_deref() == Ok("0")
+    {
+        return Ok(None);
+    }
+    let existing = state.store.execution_operations(execution_id)?;
+    let mut op_seq = existing
+        .iter()
+        .filter_map(|operation| operation["opSeq"].as_u64())
+        .max()
+        .unwrap_or(0);
+    let mut prepared = Vec::new();
+    for check in &checks {
+        let raw = check["path"].as_str().ok_or("경로가 없습니다.")?;
+        let path = crate::engine::verification::resolve_path(state, raw)?;
+        op_seq += 1;
+        let (read, _) = deterministic_tool(
+            state,
+            request,
+            tx,
+            session_id,
+            execution_id,
+            "file_read",
+            &json!({"path": path.to_string_lossy()}),
+            op_seq,
+            metrics,
+        )
+        .await?;
+        let Some(content) = read["content"].as_str() else {
+            return Ok(None);
+        };
+        let Some(expected) = replacement_content(check, content) else {
+            return Ok(None);
+        };
+        prepared.push((path, expected));
+    }
+    let mut effect_ids = Vec::new();
+    for (path, expected) in prepared {
+        op_seq += 1;
+        let (_, operation) = deterministic_tool(
+            state,
+            request,
+            tx,
+            session_id,
+            execution_id,
+            "file_write",
+            &json!({"path": path.to_string_lossy(), "content": expected}),
+            op_seq,
+            metrics,
+        )
+        .await?;
+        if operation["effectState"] != "verified" {
+            return Err(format!(
+                "{} 변경을 독립적으로 검증하지 못했습니다.",
+                path.display()
+            ));
+        }
+        effect_ids.push(operation["effectId"].clone());
+    }
+    let answer = "요청한 정확 치환을 모델 호출 없이 수행하고 SHA-256으로 검증했습니다.".to_string();
+    if let Some(mut execution) = state.store.get("execution", execution_id) {
+        execution["acceptancePassed"] = json!(true);
+        execution["finalAnswer"] = json!(answer);
+        execution["toolsUsed"] = json!(["file_read", "file_write"]);
+        execution["deterministicShortcut"] = json!({
+            "kind": "file_replace_exact",
+            "modelCalls": 0,
+            "tokens": 0,
+            "checks": checks.len(),
+            "effectIds": effect_ids,
+            "note": "deterministic execution optimization; excluded from learning evidence",
+        });
+        state.store.put("execution", &execution);
+    }
+    let saved = state
+        .store
+        .write_message(&json!({
+            "session_id": session_id,
+            "role": "assistant",
+            "content": answer,
+            "agent_id": request.agent_id,
+            "metadata": {
+                "authorKind": "agent",
+                "executionId": execution_id,
+                "taskId": task_id,
+                "deterministicShortcut": true,
+                "acceptanceText": text,
+            },
+        }))
+        .ok_or("결정적 실행의 최종 응답을 저장할 수 없습니다.")?;
+    if let Some(mut execution) = state.store.get("execution", execution_id) {
+        execution["finalMessageId"] = saved["id"].clone();
+        state.store.put("execution", &execution);
+    }
+    state.bus.message(&saved);
+    Ok(Some(saved))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_tool_call(
     state: &AppState,
@@ -3870,6 +4172,11 @@ fn record_success_experience(
     if task_outcome != TaskOutcome::Succeeded {
         return None;
     }
+    // Deterministic execution is a shortcut, not evidence that the harness
+    // learned to solve a new task.
+    if record["deterministicShortcut"].is_object() {
+        return None;
+    }
     let acceptance_text = record["acceptanceText"].as_str()?;
     let final_message_id = record["finalMessageId"].as_str()?;
     // One verified success sample per root task. Nine room speakers reusing
@@ -4363,22 +4670,25 @@ pub(super) fn finalize_execution(
 
     // Every terminal execution updates only this agent's growth record:
     // runs, failures, failing tools and concrete guidance for next time.
-    if let Some(agent_id) = record["agentId"]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            record["sessionId"].as_str().and_then(|session_id| {
-                state
-                    .store
-                    .get("session", session_id)
-                    .and_then(|session| session["agentId"].as_str().map(str::to_string))
+    // A deterministic shortcut is excluded: zero model calls is not growth.
+    if record["deterministicShortcut"].is_null() {
+        if let Some(agent_id) = record["agentId"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                record["sessionId"].as_str().and_then(|session_id| {
+                    state
+                        .store
+                        .get("session", session_id)
+                        .and_then(|session| session["agentId"].as_str().map(str::to_string))
+                })
             })
-        })
-    {
-        let mut growth_record = record.clone();
-        growth_record["agentId"] = json!(agent_id);
-        let _ = crate::engine::agent_growth::record(state, &growth_record);
+        {
+            let mut growth_record = record.clone();
+            growth_record["agentId"] = json!(agent_id);
+            let _ = crate::engine::agent_growth::record(state, &growth_record);
+        }
     }
     // Close the principle loop before learning new ones: a used principle
     // gains a supporting case or counterexample for this run.
