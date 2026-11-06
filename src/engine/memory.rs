@@ -300,7 +300,9 @@ fn retrieve_ranked_with_rerank(
 ) -> Vec<Value> {
     let query_terms = terms(query);
     let compact_query = normalize(query);
-    let mut records = store.all("memory");
+    let mut records = store.all("memory").into_iter()
+        .filter(|record| visible(record, scope))
+        .collect::<Vec<_>>();
     records.sort_by(|a, b| {
         b.get("learnedAt")
             .unwrap_or(&b["createdAt"])
@@ -313,6 +315,17 @@ fn retrieve_ranked_with_rerank(
                     .unwrap_or(""),
             )
             .then_with(|| b["id"].as_str().cmp(&a["id"].as_str()))
+    });
+    // One current record per scoped fact key. Filter *before* calculating
+    // corpus statistics so archived and private memories cannot affect IDF.
+    let mut fact_keys = HashSet::new();
+    records.retain(|record| {
+        let Some(key) = record["key"].as_str() else { return true };
+        let owner = format!("{}:{}:{}:{}",
+            record["partitionKey"].as_str().unwrap_or("local"),
+            record["agentId"].as_str().unwrap_or("default"),
+            record["sourceAuthorKey"].as_str().unwrap_or("owner"), key);
+        fact_keys.insert(owner)
     });
     let rerank_strategy = rerank["implementation"]
         .as_str()
@@ -333,29 +346,10 @@ fn retrieve_ranked_with_rerank(
     } else {
         None
     };
-    let mut fact_keys = HashSet::new();
     let mut scored = records
         .into_iter()
         .enumerate()
         .filter_map(|(record_index, record)| {
-            if !visible(&record, scope) {
-                return None;
-            }
-            // Concurrent learning in two sessions can both observe the same
-            // previous value before either writes. Retrieval still chooses a
-            // single newest value for a scoped fact key.
-            if let Some(key) = record["key"].as_str() {
-                let owner = format!(
-                    "{}:{}:{}:{}",
-                    record["partitionKey"].as_str().unwrap_or("local"),
-                    record["agentId"].as_str().unwrap_or("default"),
-                    record["sourceAuthorKey"].as_str().unwrap_or("owner"),
-                    key
-                );
-                if !fact_keys.insert(owner) {
-                    return None;
-                }
-            }
             let text = record["text"].as_str()?;
             let memory_terms = terms(text);
             let matched = query_terms.intersection(&memory_terms).count();
