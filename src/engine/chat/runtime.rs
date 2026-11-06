@@ -2,11 +2,10 @@
 use super::{
     approval::{close_pending_approvals, request_approval},
     context::history,
-    protocol::tool_manual,
     provider::{select_provider, stream_completion},
 };
 use super::{
-    parse_text_tool_calls, Metrics, ToolCall, TurnRequest, MAX_ELAPSED, MAX_ROUNDS, MAX_TOKENS, MAX_TOOL_CALLS,
+    parse_text_tool_calls, Metrics, ProviderRef, ToolCall, TurnRequest, MAX_ELAPSED, MAX_ROUNDS, MAX_TOKENS, MAX_TOOL_CALLS,
 };
 use super::evidence::{evidence_for_source, prepare_owner_action};
 use crate::engine::adaptation::types::TaskOutcome;
