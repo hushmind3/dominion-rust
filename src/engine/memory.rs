@@ -783,12 +783,27 @@ fn importance_rank_quality(
         { 0.25 } else { 0.0 };
         coverage * 3.0 + specificity + phrase + standing
     };
-    // Use the same visibility, scoped fact-key deduplication and relevance
-    // admission as real retrieval. Historical superseded keyed facts must not
-    // inflate the ideal ranking's score.
-    let reference = retrieve_ranked(
-        store, scope, query, 20, &json!({"implementation":"fixed"}),
-    );
+    // Ground truth is unavailable for arbitrary natural-language queries:
+    // estimate utility from scoped lexical evidence. Include ALL eligible
+    // memories in the ideal ordering, independent of the selected reranker.
+    let mut reference = store.all("memory").into_iter()
+        .filter(|record| visible(record, scope))
+        .collect::<Vec<_>>();
+    reference.sort_by(|a, b| {
+        b["learnedAt"].as_str().or_else(|| b["createdAt"].as_str()).unwrap_or("")
+            .cmp(a["learnedAt"].as_str()
+                .or_else(|| a["createdAt"].as_str()).unwrap_or(""))
+            .then_with(|| b["id"].as_str().cmp(&a["id"].as_str()))
+    });
+    let mut fact_keys = HashSet::new();
+    reference.retain(|record| {
+        let Some(key) = record["key"].as_str() else { return true };
+        let owner = format!("{}:{}:{}:{}",
+            record["partitionKey"].as_str().unwrap_or("local"),
+            record["agentId"].as_str().unwrap_or("default"),
+            record["sourceAuthorKey"].as_str().unwrap_or("owner"), key);
+        fact_keys.insert(owner)
+    });
     let mut ideal = reference.iter()
         .map(|record| grade(record))
         .filter(|value| *value > 0.0)
@@ -816,7 +831,7 @@ pub fn context_block_with_manifest_at(
         state, "memory.importance", scope.agent_id.as_deref(), None,
     ).unwrap_or_else(|| active_kernel(&state.store, "memory.importance"));
     let rerank = crate::engine::algorithms::choose_for_agent(
-        state, "memory.rerank", scope.agent_id.as_deref(), execution_id,
+        state, "memory.rerank", scope.agent_id.as_deref(), None,
     )
     .unwrap_or_else(|| active_kernel(&state.store, "memory.rerank"));
     let memories = retrieve_ranked_with_rerank(
@@ -826,13 +841,23 @@ pub fn context_block_with_manifest_at(
         execution_id,
         importance_rank_quality(&state.store, scope, query, &memories),
     ) {
-        // Record usage only when there is ranking evidence to grade.
-        crate::engine::algorithms::choose_for_agent(
-            state, "memory.importance", scope.agent_id.as_deref(), Some(execution_id),
-        );
-        crate::engine::algorithms::mark_signal(
-            state, execution_id, "memory.importance", success,
-        );
+        // This is an independent lexical-ranking proxy, NOT an answer-quality
+        // oracle. An empty or irrelevant query never becomes a bogus
+        // task-success/failure signal for a rerank algorithm.
+        for kind in ["memory.importance", "memory.rerank"] {
+            crate::engine::algorithms::choose_for_agent(
+                state, kind, scope.agent_id.as_deref(), Some(execution_id),
+            );
+            crate::engine::algorithms::mark_signal(
+                state, execution_id, kind, success,
+            );
+            let usage_id = format!("algorithm-usage-{}",
+                stable_id(&[execution_id, kind]));
+            if let Some(mut usage) = state.store.get("algorithm_usage", &usage_id) {
+                usage["signalBasis"] = json!("lexical_ndcg_proxy");
+                state.store.put("algorithm_usage", &usage);
+            }
+        }
     }
     context_block_from_records(&state.store, memories)
 }
