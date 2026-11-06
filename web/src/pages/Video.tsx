@@ -10,7 +10,7 @@ type Workflow={id:string;name:string;bytes:number}
 type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number}}
 type VideoModel={type:string;name:string;present:boolean;path:string;sizeBytes?:number;download?:string}
 type VideoEngine='native'|'comfyui'|'openai'|'custom'|'huggingface'|'replicate'
-type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;comfyDir?:string;workflowDir:string;outputDir:string};comfy:{reachable:boolean;available?:boolean};installed?:boolean;workflows:Workflow[];models?:VideoModel[];modelsReady?:boolean;jobs:VideoJob[]}
+type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;comfyDir?:string;workflowDir:string;outputDir:string};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};installed?:boolean;workflows:Workflow[];models?:VideoModel[];modelsReady?:boolean;jobs:VideoJob[]}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
 type YoutubeStatus={connected:boolean;uploadAllowed:boolean;account?:{displayName:string;scopes:string}|null;uploads:UploadJob[]}
 const ratios={'9:16':{width:360,height:640,label:'쇼츠 · 9:16'},'16:9':{width:640,height:360,label:'가로 · 16:9'},'1:1':{width:480,height:480,label:'정사각 · 1:1'}} as const
@@ -26,7 +26,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const oauth=useRemote<{id:string;configured:boolean;callback?:string}[]>('/api/oauth/providers',[])
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
- const [engine,setEngine]=useState<VideoEngine>('comfyui'),[comfyUrl,setComfyUrl]=useState(''),[showPaths,setShowPaths]=useState(false),[savingConfig,setSavingConfig]=useState(false)
+ const [engineChoice,setEngine]=useState<'native'|'comfyui'>(),[comfyUrl,setComfyUrl]=useState(''),[showPaths,setShowPaths]=useState(false),[savingConfig,setSavingConfig]=useState(false)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[hfq,setHfq]=useState(''),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
  const [uploadFile,setUploadFile]=useState(''),[uploadTitle,setUploadTitle]=useState(''),[uploadDescription,setUploadDescription]=useState(''),[uploadPrivacy,setUploadPrivacy]=useState('private'),[uploadTags,setUploadTags]=useState('')
@@ -42,7 +42,10 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const selectedOutput=uploadFile
   ? outputs.value.find(item=>item.id===uploadFile)??(videoJob?.id===uploadFile&&videoJob.outputUrl?videoJob:undefined)
   : outputs.value[0]
- const supportedEngine=engine==='comfyui'
+ const engine=engineChoice??(video.value.config.engine==='native'?'native':'comfyui')
+ const usingComfy=engine==='comfyui'
+ const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):Boolean(video.value.native?.available)
+ const maxDuration=usingComfy?9:180
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
  useEffect(()=>{
   if(!video.value.workflows.some(item=>item.id===workflow))setWorkflow(video.value.workflows[0]?.id||'')
@@ -79,16 +82,17 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   try{await post('/api/video/jobs/'+id+'/reveal',{})}catch(e){setError((e as Error).message)}
  }
  const generate=async()=>{
-  if(!workflow||!video.value.comfy.available||!prompt.trim()||generating)return;
+  if(!ready||!prompt.trim()||generating)return;
   const requestedSeed=Number(seed);
-  if(!seed.trim()||!Number.isSafeInteger(requestedSeed)||requestedSeed < -1||
-   !Number.isInteger(seconds)||seconds<3||seconds>9||!Number.isInteger(fps)||fps<1||fps>60){
+  if(!Number.isInteger(seconds)||seconds<3||seconds>maxDuration||
+   (usingComfy&&(!seed.trim()||!Number.isSafeInteger(requestedSeed)||requestedSeed < -1||!Number.isInteger(fps)||fps<1||fps>60))){
    setError('영상 길이, FPS, 시드 값을 확인하세요.');return;
   }
   setGenerating(true);setError('');
   try{
    setVideoSubmission(await post<VideoJob>('/api/video/jobs',{
-    engine:'comfyui',title,brief:prompt,negativePrompt:negative,aspectRatio:ratio,duration:seconds,fps,seed:requestedSeed,
+    engine,title,brief:prompt,aspectRatio:ratio,duration:seconds,
+    ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
    }));
   }catch(e){setError((e as Error).message)}finally{setGenerating(false)}
  }
@@ -117,7 +121,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    <div className="flex flex-wrap items-center justify-between gap-3">
     <div className="flex items-center gap-2"><Clapperboard size={18} className="text-[#C96442]"/><strong className="text-[13px] text-[#24211D]">영상 엔진</strong></div>
     <div className="flex flex-wrap items-center gap-2">
-     <SelectInput aria-label="영상 엔진" value={engine} onChange={e=>setEngine(e.target.value as VideoEngine)} className="!w-auto !text-[12px]"><option value="comfyui">ComfyUI (로컬 · 무료)</option><option value="openai" disabled title={unavailable}>OpenAI 호환 API (Sora 등)</option><option value="custom" disabled title={unavailable}>직접 지정 API</option><option value="huggingface" disabled title={unavailable}>Hugging Face (무료 토큰)</option><option value="replicate" disabled title={unavailable}>Replicate (모델 다수 · 유료)</option></SelectInput>
+     <SelectInput aria-label="영상 엔진" value={engine} onChange={e=>setEngine(e.target.value as 'native'|'comfyui')} className="!w-auto !text-[12px]"><option value="native">자막 카드 영상 (FFmpeg)</option><option value="comfyui">ComfyUI (로컬 · 무료)</option><option value="openai" disabled title={unavailable}>OpenAI 호환 API (Sora 등)</option><option value="custom" disabled title={unavailable}>직접 지정 API</option><option value="huggingface" disabled title={unavailable}>Hugging Face (무료 토큰)</option><option value="replicate" disabled title={unavailable}>Replicate (모델 다수 · 유료)</option></SelectInput>
     </div>
    </div>
   </Panel>
@@ -137,7 +141,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     </Panel>}
    </Panel>}
   </div>
-   {(!video.value.workflows.length)&&<div className="mb-4 rounded-xl border border-[#EED9CC] bg-[#FFF9F5] p-4">
+   {usingComfy&&!video.value.workflows.length&&<div className="mb-4 rounded-xl border border-[#EED9CC] bg-[#FFF9F5] p-4">
      <strong className="text-[12px] text-[#3A342D]">영상 워크플로가 아직 없습니다</strong>
      <ol className="mt-2 grid gap-1 text-[11px] leading-5 text-[#5C544A]">
       <li>1. ComfyUI에서 영상 만드는 작업(노드 연결)을 엽니다</li>
@@ -156,17 +160,17 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
    <div className="grid min-w-0 content-start gap-4">
     {tab==='create'&&<Panel className="min-w-0 p-5">
-     <Subheading title="영상 생성" extra={<span className="text-[11px] text-[#8A8176]">{video.value.workflows.length}개 워크플로</span>}/>
+     <Subheading title="영상 생성" extra={<span className="text-[11px] text-[#8A8176]">{usingComfy?video.value.workflows.length+"개 워크플로":"FFmpeg 자막 카드"}</span>}/>
      <div className="grid gap-4">
       <FormField label="영상 제목" hint="이 제목이 생성 파일 이름과 YouTube 제목 기본값이 됩니다."><TextInput value={title} onChange={e=>setTitle(e.target.value)} placeholder="예: 비 오는 서울 골목 산책"/></FormField>
       <FormField label="프롬프트"><TextArea rows={4} value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder="예: 비 오는 서울 골목, 시네마틱, 천천히 걷는 고양이"/></FormField>
-      <FormField label="네거티브 프롬프트" hint="영상에 나오면 안 되는 요소를 적습니다. 예: blurry, watermark, low quality, text"><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label="화면 비율" hint={`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{ratios[key].label}</option>)}</SelectInput></FormField><FormField label="길이(초)" hint="최대 9초"><TextInput type="number" min={3} max={9} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/></FormField><FormField label="FPS" hint="초당 프레임 수. 높을수록 부드럽지만 느립니다."><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField></div>
-      <FormField label="시드" hint="같은 숫자를 넣으면 같은 영상이 다시 나옵니다. -1은 생성할 때마다 새 랜덤 값."><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder="-1 (랜덤)"/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>랜덤</Button></div></FormField>
-      <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-[11px] leading-5 text-[#8A8176]">워크플로에 {`{{prompt}}`} {`{{width}}`} {`{{height}}`} {`{{frames}}`} {`{{fps}}`} {`{{seed}}`} 자리표시자가 필요합니다.</p><Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!supportedEngine||!video.value.comfy.available||!workflow||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> 요청 중</>:<><Play size={15}/> 영상 생성</>}</Action></div>
+      {usingComfy&&<FormField label="네거티브 프롬프트" hint="영상에 나오면 안 되는 요소를 적습니다. 예: blurry, watermark, low quality, text"><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label="화면 비율" hint={`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{ratios[key].label}</option>)}</SelectInput></FormField><FormField label="길이(초)" hint={"최대 "+maxDuration+"초"}><TextInput type="number" min={3} max={maxDuration} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/></FormField>{usingComfy&&<FormField label="FPS" hint="초당 프레임 수. 높을수록 부드럽지만 느립니다."><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
+      {usingComfy&&<FormField label="시드" hint="같은 숫자를 넣으면 같은 영상이 다시 나옵니다. -1은 생성할 때마다 새 랜덤 값."><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder="-1 (랜덤)"/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>랜덤</Button></div></FormField>}
+      <div className="flex flex-wrap items-center justify-between gap-3">{usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">워크플로에 {`{{prompt}}`} {`{{width}}`} {`{{height}}`} {`{{frames}}`} {`{{fps}}`} {`{{seed}}`} 자리표시자가 필요합니다.</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?"입력한 내용으로 무음 자막 카드 영상을 만듭니다.":"FFmpeg가 설치되어 있어야 합니다."}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> 요청 중</>:<><Play size={15}/> 영상 생성</>}</Action></div>
      </div>
     </Panel>}
-    {tab==='settings'&&<><Panel className="min-w-0 p-5"><Subheading title="영상 모델 · 워크플로" extra={<span className="text-[11px] text-[#8A8176]">{video.value.workflows.length}개</span>}/><p className="mb-2 text-[11px] leading-5 text-[#5C544A]">워크플로는 <b>영상을 만드는 순서를 적은 설계도 파일(.json)</b>입니다. ComfyUI에서 노드를 연결해 만든 뒤 <b>Save (API Format)</b>으로 저장하면 생깁니다.</p><SelectInput value={workflow} onChange={e=>setWorkflow(e.target.value)}>{video.value.workflows.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</SelectInput>{!video.value.workflows.length&&<p className="mt-2 text-[11px] text-[#8A8176]">워크플로 JSON을 폴더에 넣으면 여기에 나타납니다.</p>}</Panel>
+    {tab==='settings'&&usingComfy&&<><Panel className="min-w-0 p-5"><Subheading title="영상 모델 · 워크플로" extra={<span className="text-[11px] text-[#8A8176]">{video.value.workflows.length}개</span>}/><p className="mb-2 text-[11px] leading-5 text-[#5C544A]">워크플로는 <b>영상을 만드는 순서를 적은 설계도 파일(.json)</b>입니다. ComfyUI에서 노드를 연결해 만든 뒤 <b>Save (API Format)</b>으로 저장하면 생깁니다.</p><SelectInput value={workflow} onChange={e=>setWorkflow(e.target.value)}>{video.value.workflows.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</SelectInput>{!video.value.workflows.length&&<p className="mt-2 text-[11px] text-[#8A8176]">워크플로 JSON을 폴더에 넣으면 여기에 나타납니다.</p>}</Panel>
     {engine==='comfyui'&&<Panel className="min-w-0 p-5">
      <Subheading title="영상 모델 파일" extra={<StateTag online={Boolean(video.value.modelsReady)}>{video.value.modelsReady?'준비됨':(video.value.models||[]).length?'확인 필요':'워크플로 필요'}</StateTag>}/>
      <p className="text-[11px] leading-5 text-[#5C544A]">ComfyUI가 아래 폴더의 모델 파일을 자동으로 인식합니다. 워크플로가 참조하는 파일 이름과 같아야 합니다.</p>
@@ -192,7 +196,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
 
    </div>
    {tab==='create'&&<div className="grid min-w-0 content-start gap-4">
-    <Panel className="min-w-0 p-5"><Subheading title="생성 결과" extra={videoJob?<StateTag online={videoJob.status==='completed'}>{statusLabel(videoJob.status)}</StateTag>:<span className="text-[11px] text-[#8A8176]">대기</span>}/>{!videoJob?<div className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#D8CFC2] bg-[#FAF7F1] text-[12px] text-[#8A8176]" style={{aspectRatio:ratios[ratio].width+" / "+ratios[ratio].height,maxHeight:420}}><Clapperboard size={24}/>영상을 생성하면 여기에 표시됩니다. <small className="text-[10px]">{ratios[ratio].label} · {ratios[ratio].width}×{ratios[ratio].height}</small></div>:<div className="grid gap-3">{!terminal(videoJob.status)&&<><div className="flex justify-between text-[11px] text-[#7C7469]"><span>{videoJob.status==='queued'?'ComfyUI 대기 중':videoJob.status==='downloading'?'결과 저장 중':'생성 중'}</span><span>{(videoJob.progress??0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-[#F3EEE5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,(videoJob.progress??0))+'%'}}/></div></>}{videoJob.outputUrl&&<div className="flex justify-center rounded-xl bg-black p-2"><video className="max-h-[520px] w-auto max-w-full rounded-lg" src={videoJob.outputUrl} controls playsInline/></div>}{videoJob.status==='completed'&&videoJob.outputUrl&&<div className="grid gap-2"><div className="flex min-w-0 items-center gap-2 rounded bg-[#FAF7F1] p-2"><span className="min-w-0 flex-1 truncate text-[11px] text-[#5C544A]" title={videoJob.title}>{videoJob.title||"output.mp4"}</span><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void reveal(videoJob.id)}>폴더 열기</Button></div><Action onClick={useResult} className="w-full"><Upload size={14}/> 업로드 폼에 채우기</Action></div>}{(videoJob.status==='failed'||videoJob.status==='needs_review'||videoJob.status==='interrupted')&&<Notice message={videoJob.error||'영상 생성에 실패했습니다.'}/>}</div>}</Panel>
+    <Panel className="min-w-0 p-5"><Subheading title="생성 결과" extra={videoJob?<StateTag online={videoJob.status==='completed'}>{statusLabel(videoJob.status)}</StateTag>:<span className="text-[11px] text-[#8A8176]">대기</span>}/>{!videoJob?<div className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#D8CFC2] bg-[#FAF7F1] text-[12px] text-[#8A8176]" style={{aspectRatio:ratios[ratio].width+" / "+ratios[ratio].height,maxHeight:420}}><Clapperboard size={24}/>영상을 생성하면 여기에 표시됩니다. <small className="text-[10px]">{ratios[ratio].label} · {ratios[ratio].width}×{ratios[ratio].height}</small></div>:<div className="grid gap-3">{!terminal(videoJob.status)&&<><div className="flex justify-between text-[11px] text-[#7C7469]"><span>{videoJob.status==='queued'?'작업 대기 중':videoJob.status==='downloading'?'결과 저장 중':'생성 중'}</span><span>{(videoJob.progress??0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-[#F3EEE5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,(videoJob.progress??0))+'%'}}/></div></>}{videoJob.outputUrl&&<div className="flex justify-center rounded-xl bg-black p-2"><video className="max-h-[520px] w-auto max-w-full rounded-lg" src={videoJob.outputUrl} controls playsInline/></div>}{videoJob.status==='completed'&&videoJob.outputUrl&&<div className="grid gap-2"><div className="flex min-w-0 items-center gap-2 rounded bg-[#FAF7F1] p-2"><span className="min-w-0 flex-1 truncate text-[11px] text-[#5C544A]" title={videoJob.title}>{videoJob.title||"output.mp4"}</span><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void reveal(videoJob.id)}>폴더 열기</Button></div><Action onClick={useResult} className="w-full"><Upload size={14}/> 업로드 폼에 채우기</Action></div>}{(videoJob.status==='failed'||videoJob.status==='needs_review'||videoJob.status==='interrupted')&&<Notice message={videoJob.error||'영상 생성에 실패했습니다.'}/>}</div>}</Panel>
     <Panel className="min-w-0 p-5"><Subheading title="YouTube 업로드" extra={<span className="text-[11px] text-[#8A8176]">{selectedOutput?'파일 준비됨':'파일 선택'}</span>}/><div className="grid gap-3"><FormField label="영상 파일" hint="출력 폴더에서 자동으로 찾은 영상입니다"><div className="flex flex-col gap-2">{outputs.value.length?<SelectInput value={selectedOutput?.id||''} onChange={e=>{
  const picked=outputs.value.find(item=>item.id===e.target.value);
  if(!picked)return;

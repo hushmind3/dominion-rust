@@ -2,6 +2,7 @@ import { ContextMenu } from './components/ContextMenu'
 import {lazy,Suspense,useCallback,useEffect,useLayoutEffect,useState} from 'react'
 import {get} from './api'
 import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
+const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.HomePage})))
 const CapabilitiesPage=lazy(()=>import('./pages/Capabilities').then(module=>({default:module.CapabilitiesPage})))
 const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
 const WorkflowsPage=lazy(()=>import('./pages/Workflows').then(module=>({default:module.WorkflowsPage})))
@@ -97,6 +98,7 @@ export default function App(){
    <WorkspaceHeader page={page} online={online} collapsed={collapsed} onMenu={toggleNav} onSearch={()=>setPalette(true)}/>
    <div className={'min-w-0 page-'+page}>
     <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
+    {page==='home'&&<HomePage navigate={navigate}/>}
     {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
     {page==='memory'&&<MemoryPage/>}
     {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}

@@ -227,7 +227,6 @@ pub async fn capabilities(State(state): State<AppState>) -> Json<Value> {
                 "namespace": "builtin",
                 "name": function.get("name")?,
                 "description": function.get("description"),
-                "operations": ["invoke"],
                 "available": true,
             }))
         })

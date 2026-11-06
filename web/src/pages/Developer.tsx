@@ -27,15 +27,16 @@ export function DeveloperPage(){
  useEffect(()=>{
   if(!jobId)return
   const timer=setInterval(async()=>{
-   try{const next=await get<DevJob>('/api/dev/jobs/'+jobId);setJob(next);if(terminal(next.status)){clearInterval(timer);setBusy('');void status.reload();if(next.status==='completed'){setMessage(next.kind+' 완료');void loadDiff()}else setError(next.error||'작업 실패')}}
+   try{const next=await get<DevJob>('/api/dev/jobs/'+jobId);setJob(next);if(terminal(next.status)){clearInterval(timer);setBusy('');void status.reload();if(next.status==='completed'){setMessage(next.kind==='commit'&&typeof next.result?.oid==='string'?'커밋: '+next.result.oid.slice(0,12):next.kind+' 완료');if(next.kind==='commit')setCommitMessage('');void loadDiff()}else setError(next.error||'작업 실패')}}
    catch(e){clearInterval(timer);setBusy('');setError((e as Error).message)}
   },1200)
   return()=>clearInterval(timer)
  },[jobId])
  const loadDiff=async()=>{try{setDiff(await get<DiffResult>('/api/dev/diff'))}catch(e){setError((e as Error).message)}}
- const run=async(kind:string)=>{
+ const run=async(kind:string,body:Record<string,unknown>={})=>{
+  if(busy)return;
   setError('');setMessage('');setBusy(kind)
-  try{const started=await post<{id:string}>(`/api/dev/${kind}`,{});setJobId(started.id);setJob({id:started.id,kind,status:'running',logs:[]})}
+  try{const started=await post<{id:string}>(`/api/dev/${kind}`,body);setJobId(started.id);setJob({id:started.id,kind,status:'running',logs:[]})}
   catch(e){setBusy('');setError((e as Error).message)}
  }
  const connect=async()=>{
@@ -56,26 +57,13 @@ export function DeveloperPage(){
  }
  const openPreview=async()=>{const url=status.value.preview.url;if(!url){setError('먼저 개발 미리보기를 시작하세요.');return}try{const bridge=(window as any).dominionDesktop;if(bridge?.openPreview)await bridge.openPreview(url);else window.open(url,'_blank')}catch(e){setError((e as Error).message)}}
  const commit=async()=>{
-  if(!commitMessage.trim()){setError('커밋 메시지를 입력하세요.');return}
-  setError('');setMessage('')
-  try{const result=await post<any>('/api/dev/commit',{message:commitMessage});setMessage('커밋: '+result.oid.slice(0,12));setCommitMessage('');await status.reload();void loadDiff()}
-  catch(e){setError((e as Error).message)}
- }
- const applyUpdate=async()=>{
-  const installer=status.value.installer?.path;if(!installer){setError('먼저 설치 파일을 생성하세요.');return}
-  if(!confirm('새 빌드를 설치하고 DOMINION을 재시작할까요? 모델·기억·설정은 유지됩니다.'))return
-  setError('');setMessage('')
-  try{
-   await post('/api/dev/update',{installer})
-   const bridge=(window as any).dominionDesktop
-   if(!bridge?.applyUpdate)throw Error('업데이트 적용은 데스크톱 앱에서만 가능합니다.')
-   await bridge.applyUpdate(installer)
-   setMessage('업데이트를 적용하고 재시작합니다...')
-  }catch(e){setError((e as Error).message)}
+  const message=commitMessage.trim();
+  if(!message){setError('커밋 메시지를 입력하세요.');return}
+  await run('commit',{message});
  }
  const s=status.value
  return <div className="mx-auto w-full max-w-[1280px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
-  <Headline eyebrow="SELF DEVELOPMENT" title="소스 개발 스튜디오 v0.2.9" description="설치된 앱과 분리된 Git 소스 작업공간에서 UI·엔진을 수정하고, 테스트·빌드·미리보기·설치본 업데이트까지 실행하는 자기 개발 스튜디오입니다." actions={<Button variant="secondary" onClick={()=>{void status.reload();void loadDiff()}}><RefreshCw size={16}/> 상태 새로고침</Button>}/>
+  <Headline eyebrow="SELF DEVELOPMENT" title="소스 개발 스튜디오 v0.2.9" description="설치된 앱과 분리된 Git 소스 작업공간에서 UI·엔진을 수정하고, 테스트·빌드·미리보기를 실행하는 개발 스튜디오입니다." actions={<Button variant="secondary" onClick={()=>{void status.reload();void loadDiff()}}><RefreshCw size={16}/> 상태 새로고침</Button>}/>
   {error&&<Notice message={error}/>}
   {message&&<div className="mb-4 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"><Check size={16}/>{message}</div>}
   <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
@@ -101,7 +89,7 @@ export function DeveloperPage(){
       <div className="flex flex-wrap gap-2"><Button variant="secondary" disabled={!s.exists||Boolean(busy)} onClick={()=>void run('setup')}><Terminal size={14}/> 개발 환경 구성</Button><Button variant="secondary" disabled={!s.exists||Boolean(busy)} onClick={()=>void run('test')}><TestTube2 size={14}/> 테스트</Button><Button variant="secondary" disabled={!s.exists||Boolean(busy)} onClick={()=>void run('build')}><Hammer size={14}/> UI 빌드</Button><Button variant="secondary" disabled={!s.exists||Boolean(busy)} onClick={()=>void run('package')}><Package size={14}/> 설치 파일 생성</Button></div>
       <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[#EFE9DF] pt-3"><Button variant="secondary" disabled={!s.exists||s.preview.status==='running'} onClick={()=>void preview('start')}><Play size={14}/> 미리보기 시작</Button><Button variant="secondary" disabled={s.preview.status!=='running'} onClick={()=>void preview('stop')}><Square size={14}/> 중지</Button><Button variant="primary" disabled={!s.preview.url} onClick={()=>void openPreview()}><Eye size={14}/> 미리보기 열기</Button><span className="text-[10px] text-[#8A8176]">{s.preview.status==='running'?s.preview.url:s.preview.status}</span></div>
      </div>
-     {s.installer&&<div className="mt-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div className="min-w-0"><strong className="block truncate text-[12px] text-[#3A342D]">{s.installer.name}</strong><small className="text-[10px] text-[#8A8176]">{fmtBytes(s.installer.bytes)} · {new Date(s.installer.mtime).toLocaleString('ko-KR')}</small></div><Button variant="primary" onClick={()=>void applyUpdate()}><UploadCloud size={14}/> 업데이트 적용</Button></div><p className="mt-2 text-[10px] leading-4 text-[#8A8176]">설치 파일은 소스 작업공간의 release 폴더에서 가져옵니다. 설치된 앱 내부 파일은 직접 수정하지 않습니다.</p></div>}
+     {s.installer&&<div className="mt-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div className="min-w-0"><strong className="block truncate text-[12px] text-[#3A342D]">{s.installer.name}</strong><small className="text-[10px] text-[#8A8176]">{fmtBytes(s.installer.bytes)} · {new Date(s.installer.mtime).toLocaleString('ko-KR')}</small></div></div><p className="mt-2 text-[10px] leading-4 text-[#8A8176]">설치 파일은 소스 작업공간의 release 폴더에서 가져옵니다. 설치된 앱 내부 파일은 직접 수정하지 않습니다.</p></div>}
     </Panel>
     <Panel className="min-w-0 p-5">
      <Subheading title="변경 사항" extra={<div className="flex items-center gap-2"><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void loadDiff()}><RefreshCw size={12}/> 새로고침</Button><span className="text-[11px] text-[#8A8176]">{diff?.count||0}개</span></div>}/>
@@ -120,7 +108,7 @@ export function DeveloperPage(){
      <ul className="grid gap-2 text-[11px] leading-5 text-[#5C544A]">
       <li>· 설치된 앱의 <code>resources/app</code>은 직접 수정하지 않습니다.</li>
       <li>· 모든 변경은 별도 Git 소스 작업공간에서 수행합니다.</li>
-      <li>· 테스트와 빌드가 통과한 설치 파일만 업데이트에 사용합니다.</li>
+      <li>· 업데이트는 빌드한 설치 파일을 열어 적용합니다.</li>
       <li>· 모델·기억·설정·API 키·스킬·작업공간은 업데이트와 분리해 보존합니다.</li>
      </ul>
     </Panel>

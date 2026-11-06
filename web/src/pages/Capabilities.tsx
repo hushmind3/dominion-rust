@@ -10,17 +10,21 @@ type Page='models'|'connections'|'extensions'|'memory'
 const families:{id:string;label:string;icon:any;page?:Page}[]=[
  {id:'all',label:'전체',icon:Layers3},
  {id:'channel',label:'메신저',icon:MessageCircle,page:'connections'},
- {id:'tool',label:'내장 도구',icon:TerminalSquare,page:'extensions'}
+ {id:'builtin',label:'내장 도구',icon:TerminalSquare,page:'extensions'}
 ]
 export function CapabilitiesPage({navigate}:{navigate:(page:Page)=>void}){
  const data=useRemote<{items:Item[];updatedAt:string}>('/api/capabilities',{items:[],updatedAt:''});
  const channels=useRemote<any[]>('/api/channels',[]);
- const [family,setFamily]=useState('all'),[query,setQuery]=useState(''),[showPlanned,setShowPlanned]=useState(false),[error,setError]=useState(''),[details,setDetails]=useState<Item|null>(null),[result,setResult]=useState<any>(null),[working,setWorking]=useState(false),[channelForm,setChannelForm]=useState<Record<string,string>>({}),[channelBusy,setChannelBusy]=useState(false),[oauthForm,setOauthForm]=useState({clientId:'',clientSecret:''}),[oauthBusy,setOauthBusy]=useState(false),[oauthUrl,setOauthUrl]=useState(''),[refreshing,setRefreshing]=useState(false),[lastRefresh,setLastRefresh]=useState(''),[probe,setProbe]=useState<Record<string,string>>({});
- const visibleItems=data.value.items.filter(item=>['channel','tool'].includes(item.namespace)&&(item.namespace!=='channel'||item.available||showPlanned));
- const rows=useMemo(()=>visibleItems.filter(x=>(family==='all'||x.namespace===family)&&[x.name,x.namespace,x.description,x.id].join(' ').toLowerCase().includes(query.toLowerCase())),[data.value.items,family,query,showPlanned]);
- const counts=useMemo(()=>Object.fromEntries(families.map(x=>[x.id,x.id==='all'?visibleItems.length:visibleItems.filter(v=>v.namespace===x.id).length])),[data.value.items,showPlanned]);
+ const catalog=useRemote<Item[]>('/api/channels/catalog',[]);
+ const [family,setFamily]=useState('all'),[query,setQuery]=useState(''),[showPlanned,setShowPlanned]=useState(false),[error,setError]=useState(''),[details,setDetails]=useState<Item|null>(null),[result,setResult]=useState<any>(null),[channelForm,setChannelForm]=useState<Record<string,string>>({}),[channelBusy,setChannelBusy]=useState(false),[oauthForm,setOauthForm]=useState({clientId:'',clientSecret:''}),[oauthBusy,setOauthBusy]=useState(false),[oauthUrl,setOauthUrl]=useState(''),[refreshing,setRefreshing]=useState(false),[lastRefresh,setLastRefresh]=useState(''),[probe,setProbe]=useState<Record<string,string>>({});
+ const visibleItems=useMemo(()=>[
+  ...data.value.items.filter(item=>item.namespace==='builtin'),
+  ...catalog.value.filter(item=>item.available||showPlanned).map(item=>({...item,namespace:'channel'})),
+ ],[data.value.items,catalog.value,showPlanned]);
+ const rows=useMemo(()=>visibleItems.filter(x=>(family==='all'||x.namespace===family)&&[x.name,x.namespace,x.description,x.id].join(' ').toLowerCase().includes(query.toLowerCase())),[visibleItems,family,query]);
+ const counts=useMemo(()=>Object.fromEntries(families.map(x=>[x.id,x.id==='all'?visibleItems.length:visibleItems.filter(v=>v.namespace===x.id).length])),[visibleItems]);
  const statusFor=(item:Item)=>{
-  if(item.namespace==='tool')return {online:true,label:'내장 도구'};
+  if(item.namespace==='builtin')return {online:true,label:'내장 도구'};
   if(item.namespace==='skill')return {online:Boolean(item.available),label:item.available?'활성':'비활성'};
   if(item.namespace==='channel')return {online:Boolean(item.available),label:item.available?'연결 코드 있음':'연결 코드 없음'};
   if(item.namespace==='model')return {online:Boolean(item.available),label:item.available?'등록됨':'비활성'};
@@ -28,7 +32,6 @@ export function CapabilitiesPage({navigate}:{navigate:(page:Page)=>void}){
   if(item.namespace==='account')return {online:Boolean(item.connected),label:item.connected?'로그인됨':item.available?'OAuth 앱 설정됨':'설정 필요'};
   return {online:Boolean(item.available),label:item.available?'준비됨':'미설정'};
  };
- const invoke=async(item:Item,operation:string)=>{setWorking(true);setError('');try{setResult(await post('/api/capabilities/'+item.namespace+'/'+item.id+'/'+operation,{}));void data.reload()}catch(e){setError((e as Error).message)}finally{setWorking(false)}};
  const openItem=(x:Item)=>{setDetails(x);setResult(null);setError('');setOauthUrl('');setOauthForm({clientId:'',clientSecret:''});setChannelForm({name:x.namespace==='channel'?x.name:''})};
  useEffect(()=>{
   const handler=(event:MessageEvent)=>{if(event.data==='dominion-oauth-complete'){void data.reload();setOauthUrl('');setDetails(current=>current&&current.namespace==='account'?{...current,connected:true}:current)}};
@@ -36,7 +39,7 @@ export function CapabilitiesPage({navigate}:{navigate:(page:Page)=>void}){
  },[]);
  const refreshAll=async()=>{
   setRefreshing(true);
-  try{await Promise.all([data.reload(),channels.reload()]);setLastRefresh(new Date().toLocaleTimeString())}finally{setRefreshing(false)}
+  try{await Promise.all([data.reload(),channels.reload(),catalog.reload()]);setLastRefresh(new Date().toLocaleTimeString())}finally{setRefreshing(false)}
  };
  const diagnoseLive=async(id:string)=>{
   setProbe(x=>({...x,[id]:'진단 중'}));
@@ -74,9 +77,9 @@ export function CapabilitiesPage({navigate}:{navigate:(page:Page)=>void}){
   <Headline eyebrow="CONNECTION HUB" title="연결 · 채널" description="메신저 채널과 내장 도구만 이 화면에서 확인합니다. 모델은 모델 관리, MCP·스킬은 MCP·스킬, 계정은 설정에서 다룹니다." actions={<div className="flex items-center gap-3"><span className="text-[11px] text-[#8A8176]">{lastRefresh?'마지막 갱신 '+lastRefresh:'아직 갱신 전'}</span><Action variant="secondary" disabled={refreshing} onClick={()=>void refreshAll()}><RefreshCw size={16} className={refreshing?'animate-spin':''}/> {refreshing?'갱신 중':'새로고침'}</Action></div>}/>
   <Panel className="mb-5 p-4"><Subheading title="실제 연결" extra={<span className="text-[11px] text-[#8A8176]">{channels.value.length}개</span>}/>{channels.value.length?<div className="grid gap-2">{channels.value.map((channel:any)=><div key={channel.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] px-3 py-2.5"><div className="min-w-0"><strong className="text-[12px] text-[#3A342D]">{channel.name}</strong><small className="ml-2 text-[11px] text-[#8A8176]">{channel.kind} · {channel.status}{channel.runtimeError?' · '+channel.runtimeError:''}</small>{probe[channel.id]&&<small className="ml-2 text-[11px] text-[#C96442]">{probe[channel.id]}</small>}</div><div className="flex items-center gap-2"><span className={'size-2 rounded-full '+(channel.status==='connected'?'bg-emerald-500':'bg-[#B8AFA2]')}/><Button size="sm" variant="ghost" onClick={()=>void diagnoseLive(channel.id)}>진단</Button></div></div>)}</div>:<p className="text-[12px] text-[#8A8176]">아직 연결된 채널이 없습니다. 아래 카탈로그에서 사용할 채널을 선택해 설정하세요.</p>}</Panel>
   <div className="mb-5 flex items-center gap-4 rounded-xl border border-[#EED9CC] bg-[#F7E8E1] p-5"><div className="grid size-12 shrink-0 place-items-center rounded-xl bg-[#F1DCCF] text-[#C96442]"><Layers3 size={22}/></div><div><strong>실제 연결과 카탈로그를 구분합니다.</strong><p><b>검증됨</b> = 실제 연결에 성공한 기록이 있음. <b>연결 코드 있음</b> = 코드는 있으나 아직 연결 성공 기록 없음. <b>연결 코드 없음</b> = 코드 자체가 없어 설정할 수 없음. 위쪽은 실제로 저장·실행 중인 연결, 아래는 연결 후보 목록입니다.</p></div></div>
-  {data.error&&<Notice message={data.error}/>}
+  {(data.error||catalog.error||channels.error)&&<Notice message={data.error||catalog.error||channels.error}/>}
   <div className="mb-5 flex flex-wrap items-center gap-3"><Search size={18}/><TextInput placeholder="모든 모델 · 메신저 · 도구 통합 검색" value={query} onChange={e=>setQuery(e.target.value)}/></div>
-  <div className="mb-6 flex flex-wrap items-center gap-2 border-b border-[#E7E0D5] pb-3">{families.map(f=>{const Icon=f.icon;return <Button key={f.id} variant={family===f.id?'primary':'ghost'} onClick={()=>setFamily(f.id)}><Icon size={16}/>{f.label}<span>{counts[f.id]||0}</span></Button>})}{(family==='all'||family==='channel')&&<Button variant={showPlanned?'secondary':'ghost'} onClick={()=>setShowPlanned(value=>!value)} className="ml-auto">{(showPlanned?'☑':'☐')+' 연결 코드 없는 항목 숨기기'}</Button>}</div>
+  <div className="mb-6 flex flex-wrap items-center gap-2 border-b border-[#E7E0D5] pb-3">{families.map(f=>{const Icon=f.icon;return <Button key={f.id} variant={family===f.id?'primary':'ghost'} onClick={()=>setFamily(f.id)}><Icon size={16}/>{f.label}<span>{counts[f.id]||0}</span></Button>})}{(family==='all'||family==='channel')&&<Button variant={showPlanned?'secondary':'ghost'} onClick={()=>setShowPlanned(value=>!value)} className="ml-auto">{(showPlanned?'☑':'☐')+' 미지원 채널 포함'}</Button>}</div>
   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">{rows.map(item=>{
    const fam=families.find(f=>f.id===item.namespace);
    const Icon=fam?.icon||Layers3;
@@ -140,12 +143,9 @@ export function CapabilitiesPage({navigate}:{navigate:(page:Page)=>void}){
    {error&&<Notice message={error}/>}
    {result&&<Panel className="rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-4 text-sm leading-6"><strong>실제 실행 결과</strong><pre>{JSON.stringify(result,null,2).slice(0,12000)}</pre></Panel>}
    <div className="mt-5 flex flex-wrap justify-end gap-2">
-    {details.namespace==='model'&&details.available&&<Action disabled={working} onClick={()=>invoke(details,'models')}><Activity size={16}/> 실제 모델 조회</Action>}
-    {details.namespace==='mcp'&&details.available&&<Action disabled={working} onClick={()=>invoke(details,'tools')}><Activity size={16}/> MCP 도구 연결 검사</Action>}
-    {details.namespace==='skill'&&<Action disabled={working} onClick={()=>invoke(details,details.available?'deactivate':'activate')}>{details.available?'스킬 비활성화':'스킬 활성화'}</Action>}
     {familesPage(details.namespace)&&!['channel','account'].includes(details.namespace)&&<Action variant="secondary" onClick={()=>{setDetails(null);navigate(familesPage(details.namespace)!)}}>설정 화면 열기 <ArrowRight size={16}/></Action>}
    </div>
   </aside></div>}
  </div>
 }
-function familesPage(kind:string):Page|null{return ({channel:'connections',model:'models',mcp:'extensions',skill:'extensions',account:'connections',tool:'extensions'} as Record<string,Page>)[kind]||null}
+function familesPage(kind:string):Page|null{return ({channel:'connections',model:'models',mcp:'extensions',skill:'extensions',account:'connections',builtin:'extensions'} as Record<string,Page>)[kind]||null}

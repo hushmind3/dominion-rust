@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useRef, useState} from 'react'
+import {useEffect, useId, useLayoutEffect, useMemo, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 import {Check, ChevronDown, LoaderCircle, Search, X} from 'lucide-react'
 import {useProviderModels} from '../hooks/useProviderModels'
@@ -29,6 +29,10 @@ export function ModelPicker({
 }: Props) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [active, setActive] = useState(-1)
+  const listId = useId()
+  const list = useRef<HTMLDivElement>(null)
+  const highlighted = useRef<HTMLButtonElement>(null)
   const [freeOnly, setFreeOnly] = useState(false)
   const ownCatalogue = useProviderModels(catalogue ? '' : providerId)
   const {value: models, loading, error} = catalogue ?? ownCatalogue
@@ -55,6 +59,15 @@ export function ModelPicker({
         (model.name || '').toLowerCase().includes(needle),
     )
   }, [models, query, freeOnly])
+
+  useEffect(() => setActive(-1), [query, freeOnly, providerId, visible])
+  useLayoutEffect(() => {
+    const scroll = list.current, option = highlighted.current
+    if (!scroll || !option) return
+    const bounds = scroll.getBoundingClientRect(), row = option.getBoundingClientRect()
+    if (row.top < bounds.top) scroll.scrollTop -= bounds.top - row.top
+    else if (row.bottom > bounds.bottom) scroll.scrollTop += row.bottom - bounds.bottom
+  }, [active])
 
   const choose = (id: string) => {
     onChange(id)
@@ -100,7 +113,23 @@ export function ModelPicker({
                 ref={search}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={visible}
+                aria-controls={listId}
+                aria-activedescendant={filtered[active] ? listId+'-'+active : undefined}
                 aria-label="모델 검색 또는 모델 ID 입력"
+                onKeyDown={event=>{
+                  if(event.nativeEvent.isComposing||loading||error||!filtered.length)return
+                  if(event.key==='ArrowDown'||event.key==='ArrowUp'){
+                    event.preventDefault()
+                    const next=event.key==='ArrowDown'?active+1:active<0?filtered.length-1:active-1
+                    setActive((next+filtered.length)%filtered.length)
+                  }else if(event.key==='Enter'){
+                    const selected=filtered[active]??filtered.find(item=>item.id===query.trim())
+                    if(selected){event.preventDefault();choose(selected.id)}
+                  }
+                }}
                 placeholder="모델 검색 또는 ID 입력"
                 className="min-w-0 flex-1 border-0 bg-transparent text-[12px] text-[#3A342D] outline-none placeholder:text-[#A79C8E]"
               />
@@ -116,7 +145,7 @@ export function ModelPicker({
               )}
             </div>
 
-            <div role="listbox" aria-label={ariaLabel} className="min-h-0 max-h-[min(58vh,320px)] overflow-y-auto overscroll-contain p-1">
+            <div ref={list} id={listId} role="listbox" aria-label={ariaLabel} className="min-h-0 max-h-[min(58vh,320px)] overflow-y-auto overscroll-contain p-1">
               {loading && (
                 <div className="flex items-center gap-2 px-3 py-4 text-[12px] text-[#8A8176]">
                   <LoaderCircle size={14} className="animate-spin" /> 모델 목록 불러오는 중
@@ -127,16 +156,18 @@ export function ModelPicker({
               )}
               {!loading &&
                 !error &&
-                filtered.map((model) => (
+                filtered.map((model, index) => (
                   <button
                     key={model.id}
                     type="button"
                     role="option"
+                    id={listId+'-'+index}
+                    ref={index===active?highlighted:undefined}
                     aria-selected={model.id === value}
                     onClick={() => choose(model.id)}
                     className={
                       'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] hover:bg-[#F7F2EA] ' +
-                      (model.id === value ? 'bg-[#FBF1EC] text-[#A94E30]' : 'text-[#3A342D]')
+                      (index===active||model.id === value ? 'bg-[#FBF1EC] text-[#A94E30]' : 'text-[#3A342D]')
                     }
                   >
                     <span className="min-w-0 flex-1 truncate">{model.id}</span>

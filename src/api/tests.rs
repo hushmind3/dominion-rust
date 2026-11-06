@@ -54,11 +54,14 @@ mod settings_tests {
         state
             .store
             .put("session", &json!({"id":"bound","roomId":"real-room"}));
-        let Json(created) = create_session(
+        let created = create_session(
             State(state.clone()),
             Json(json!({"id":"bound","roomId":"forged-room","title":"new chat"})),
         )
         .await;
+        assert_eq!(created.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(created.into_body(), 8192).await.unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_ne!(created["id"], "bound");
         assert!(created["roomId"].is_null());
         assert_eq!(

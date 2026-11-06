@@ -716,8 +716,9 @@ mod tests {
     #[test]
     fn template_substitution_never_changes_json_structure() {
         let mut value = json!({"1":{"inputs":{"text":"{{prompt}}","seconds":"{{duration}}"}}});
-        substitute(&mut value, "\"},evil:{", "15");
+        substitute(&mut value, &json!({"prompt":"\"},evil:{","duration":15}));
         assert_eq!(value["1"]["inputs"]["text"], "\"},evil:{");
+        assert_eq!(value["1"]["inputs"]["seconds"], 15);
         assert_eq!(value.as_object().unwrap().len(), 1);
     }
 }
