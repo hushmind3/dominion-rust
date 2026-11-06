@@ -664,10 +664,76 @@ fn compression_sweep_kernel(
     (archived, eligible)
 }
 
+/// Repair summaries created before scope-preserving compression existed.
+/// When the archived originals disagree about visibility, restore originals
+/// and retire the unsafe mixed summary instead of guessing a shared scope.
+pub fn repair_legacy_compressions(store: &Store) -> usize {
+    let mut repairs = 0usize;
+    for mut summary in store.all("memory") {
+        if summary["source"].as_str() != Some("compression")
+            || summary["status"].as_str() != Some("active")
+            || summary["scopeRepairVersion"].as_u64() == Some(1)
+        { continue; }
+        let Some(summary_id) = summary["id"].as_str().map(str::to_string) else {
+            continue;
+        };
+        let Some(ids) = summary["compressedFrom"].as_array() else { continue };
+        if ids.is_empty() { continue; }
+        let originals = ids.iter()
+            .filter_map(|id| id.as_str().and_then(|id| store.get("memory", id)))
+            .collect::<Vec<_>>();
+        let fields = ["scope", "partitionKey", "agentId", "sessionId",
+            "sourceAuthorKey", "type"];
+        let same_scope = originals.len() == ids.len()
+            && originals.iter().all(|record| {
+                record["compressedInto"].as_str() == Some(summary_id.as_str())
+                    && record["status"].as_str() == Some("archived")
+            })
+            && originals.first().is_some_and(|first| originals.iter().all(|record| {
+                fields.iter().all(|field| record[*field] == first[*field])
+            }));
+        if same_scope {
+            let first = &originals[0];
+            for field in fields {
+                summary[field] = first[field].clone();
+            }
+            summary["scopeRepairVersion"] = json!(1);
+            if store.put("memory", &summary).is_some() {
+                repairs += 1;
+            }
+        } else {
+            // A single summary cannot safely represent different disclosure
+            // scopes. Preserve the archived evidence and reactivate only
+            // originals actually linked to this summary.
+            for record in &originals {
+                let Some(id) = record["id"].as_str() else { continue };
+                if record["status"].as_str() == Some("archived")
+                    && record["compressedInto"].as_str() == Some(summary_id.as_str())
+                {
+                    store.patch_if("memory", id, "status", &json!("archived"), &json!({
+                        "status": "active",
+                        "lastUsedAt": chrono::Utc::now().to_rfc3339(),
+                        "restoredFromUnsafeCompression": summary_id,
+                    }));
+                }
+            }
+            summary["status"] = json!("archived");
+            summary["scopeRepairVersion"] = json!(1);
+            summary["archiveReason"] = json!("unsafe mixed-scope legacy compression");
+            if store.put("memory", &summary).is_some() {
+                repairs += 1;
+            }
+        }
+    }
+    repairs
+}
+
 /// Runs evidence-driven model-free maintenance independently for each bot.
 /// Only a new eligible evidence snapshot is scored. Repeated idle sweeps
 /// cannot inflate the UCB success/failure counters.
 pub fn learning_sweep(state: &crate::state::AppState) -> usize {
+    // Run once per legacy summary before any new forgetting/compression.
+    repair_legacy_compressions(&state.store);
     let owners = state.store.all("memory").into_iter()
         .filter(|record| record["status"].as_str() == Some("active"))
         .map(|record| maintenance_owner(&record).to_string())
