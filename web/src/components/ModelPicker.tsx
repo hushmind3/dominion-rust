@@ -1,9 +1,10 @@
 import {useEffect, useMemo, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 import {Check, ChevronDown, LoaderCircle, Search, X} from 'lucide-react'
-import {get} from '../api'
+import {useProviderModels} from '../hooks/useProviderModels'
+import {useAnchoredPanel} from '../hooks/useAnchoredPanel'
 
-type ModelOption = {id: string; name?: string; free?: boolean}
+type Catalogue = ReturnType<typeof useProviderModels>
 
 type Props = {
   providerId: string
@@ -12,10 +13,9 @@ type Props = {
   placeholder?: string
   className?: string
   disabled?: boolean
+  catalogue?: Catalogue
   ariaLabel?: string
 }
-
-type Position = {top?: number; bottom?: number; left: number; width: number}
 
 export function ModelPicker({
   providerId,
@@ -25,88 +25,25 @@ export function ModelPicker({
   className = '',
   disabled = false,
   ariaLabel = '모델 선택',
+  catalogue,
 }: Props) {
   const [open, setOpen] = useState(false)
-  const [models, setModels] = useState<ModelOption[]>([])
   const [query, setQuery] = useState('')
   const [freeOnly, setFreeOnly] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [position, setPosition] = useState<Position | null>(null)
-  const trigger = useRef<HTMLButtonElement>(null)
-  const panel = useRef<HTMLDivElement>(null)
+  const ownCatalogue = useProviderModels(catalogue ? '' : providerId)
+  const {value: models, loading, error} = catalogue ?? ownCatalogue
+  const visible = open && !!providerId && !disabled
+  const {trigger, panel, position} = useAnchoredPanel(visible, () => setOpen(false), 340, 'bottom', true)
   const search = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (!providerId) {
-      setModels([])
-      return
-    }
-    let live = true
-    setLoading(true)
-    setError('')
-    setModels([])
-    get<ModelOption[]>('/api/providers/' + providerId + '/models')
-      .then((items) => {
-        if (!live) return
-        setModels(items)
-        if (value && !items.some((item) => item.id === value)) onChange('')
-      })
-      .catch((reason) => {
-        if (!live) return
-        setError((reason as Error).message)
-        setModels([])
-      })
-      .finally(() => {
-        if (live) setLoading(false)
-      })
-    return () => {
-      live = false
-    }
-    // value/onChange are intentionally not dependencies: changing the selected
-    // model must not refetch the catalogue.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providerId])
-
+    if (visible && position) search.current?.focus({preventScroll: true})
+  }, [visible, Boolean(position)])
   useEffect(() => {
-    if (!open) return
-    const close = (event: MouseEvent) => {
-      if (
-        !panel.current?.contains(event.target as Node) &&
-        !trigger.current?.contains(event.target as Node)
-      ) {
-        setOpen(false)
-      }
-    }
-    const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    const place = () => {
-      const rect = trigger.current?.getBoundingClientRect()
-      if (!rect) return
-      const width = Math.max(rect.width, 340)
-      const left = Math.min(rect.left, window.innerWidth - width - 12)
-      const below = window.innerHeight - rect.bottom
-      setPosition(
-        below < 320 && rect.top > below
-          ? {bottom: window.innerHeight - rect.top + 4, left, width}
-          : {top: rect.bottom + 4, left, width},
-      )
-    }
-    place()
-    document.addEventListener('mousedown', close)
-    document.addEventListener('keydown', key)
-    window.addEventListener('resize', place)
-    window.addEventListener('scroll', place, true)
-    const focus = window.setTimeout(() => search.current?.focus(), 0)
-    return () => {
-      document.removeEventListener('mousedown', close)
-      document.removeEventListener('keydown', key)
-      window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', place, true)
-      window.clearTimeout(focus)
-    }
-  }, [open])
+    setOpen(false)
+    setQuery('')
+    trigger.current?.focus({preventScroll: true})
+  }, [providerId, disabled])
 
   const filtered = useMemo(() => {
     const source = freeOnly ? models.filter((model) => model.free) : models
@@ -123,6 +60,7 @@ export function ModelPicker({
     onChange(id)
     setOpen(false)
     setQuery('')
+    trigger.current?.focus({preventScroll: true})
   }
 
   return (
@@ -132,8 +70,8 @@ export function ModelPicker({
         type="button"
         disabled={disabled || !providerId}
         aria-label={ariaLabel}
-        aria-haspopup="listbox"
-        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-expanded={visible}
         onClick={() => setOpen((current) => !current)}
         className={
           'inline-flex min-w-0 items-center justify-between gap-2 rounded-lg border border-[#E1D9CC] bg-[#FFFDF9] px-2.5 py-1.5 text-left text-[12px] text-[#3A342D] hover:border-[#D3C8B8] disabled:cursor-not-allowed disabled:opacity-50 ' +
@@ -146,22 +84,15 @@ export function ModelPicker({
         <ChevronDown size={13} className="shrink-0 text-[#8A8176]" />
       </button>
 
-      {open &&
+      {visible &&
         position &&
         createPortal(
           <div
             ref={panel}
-            role="listbox"
+            role="dialog"
             aria-label={ariaLabel}
-            style={{
-              position: 'fixed',
-              top: position.top,
-              bottom: position.bottom,
-              left: position.left,
-              width: position.width,
-              zIndex: 120,
-            }}
-            className="overflow-hidden rounded-xl border border-[#DDD3C5] bg-white shadow-2xl"
+            style={position}
+            className="z-[120] flex flex-col overflow-hidden rounded-xl border border-[#DDD3C5] bg-white shadow-2xl"
           >
             <div className="flex items-center gap-2 border-b border-[#EFE9DF] px-3 py-2">
               <Search size={14} className="shrink-0 text-[#9C9388]" />
@@ -169,7 +100,8 @@ export function ModelPicker({
                 ref={search}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="모델 검색"
+                aria-label="모델 검색 또는 모델 ID 입력"
+                placeholder="모델 검색 또는 ID 입력"
                 className="min-w-0 flex-1 border-0 bg-transparent text-[12px] text-[#3A342D] outline-none placeholder:text-[#A79C8E]"
               />
               {query && (
@@ -184,14 +116,14 @@ export function ModelPicker({
               )}
             </div>
 
-            <div className="max-h-[min(58vh,320px)] overflow-y-auto p-1">
+            <div role="listbox" aria-label={ariaLabel} className="min-h-0 max-h-[min(58vh,320px)] overflow-y-auto overscroll-contain p-1">
               {loading && (
                 <div className="flex items-center gap-2 px-3 py-4 text-[12px] text-[#8A8176]">
                   <LoaderCircle size={14} className="animate-spin" /> 모델 목록 불러오는 중
                 </div>
               )}
               {!loading && error && (
-                <div className="px-3 py-4 text-[12px] text-rose-600">{error}</div>
+                <div className="px-3 py-4 text-[12px] text-rose-600">{error}<button type="button" className="ml-2 underline" onClick={()=>void (catalogue??ownCatalogue).reload()}>다시 불러오기</button></div>
               )}
               {!loading &&
                 !error &&
@@ -227,7 +159,15 @@ export function ModelPicker({
               )}
             </div>
 
-            <div className="flex items-center justify-between gap-2 border-t border-[#EFE9DF] px-3 py-1.5 text-[10px] text-[#9C9388]">
+            {!freeOnly && query.trim() && !models.some(model=>model.id===query.trim()) && (
+              <button type="button" disabled={new TextEncoder().encode(query.trim()).length>256}
+                className="shrink-0 truncate border-t border-[#EFE9DF] px-3 py-2 text-left text-[11px] font-semibold text-[#A94E30] hover:bg-[#F7F2EA] disabled:opacity-50"
+                title={query.trim()} onClick={()=>choose(query.trim())}>
+                이 모델 ID 사용 · {query.trim()}
+              </button>
+            )}
+
+            <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[#EFE9DF] px-3 py-1.5 text-[10px] text-[#9C9388]">
               <label className="flex cursor-pointer items-center gap-1.5">
                 <input
                   type="checkbox"

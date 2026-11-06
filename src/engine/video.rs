@@ -132,7 +132,29 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .chars()
         .take(90)
         .collect::<String>();
-    let input = json!({"brief":brief,"title":title,"engine":engine,"duration":duration,"aspectRatio":aspect,"config":cfg,"publish":false});
+    let fps = body["fps"].as_u64().unwrap_or(16);
+    let seed = body["seed"].as_i64().unwrap_or(-1);
+    let negative_prompt = body["negativePrompt"].as_str().unwrap_or("");
+    if !(1..=60).contains(&fps) || seed < -1 || negative_prompt.len() > 16_000 {
+        return Err("FPS, 시드, 네거티브 프롬프트 값을 확인하세요.".into());
+    }
+    let (width, height) = match aspect {
+        "16:9" => (640, 360),
+        "1:1" => (480, 480),
+        _ => (360, 640),
+    };
+    let seed = if seed == -1 {
+        // Freeze one seed for this job so a safe retry uses identical input.
+        i64::from(u32::from_be_bytes(uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap()))
+    } else {
+        seed
+    };
+    let input = json!({
+        "brief":brief, "title":title, "engine":engine, "duration":duration,
+        "aspectRatio":aspect, "config":cfg, "publish":false,
+        "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
+                  "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
+    });
     jobs::enqueue(state, "video", input)
         .map(|j| public_job(&j))
         .ok_or("영상 작업을 저장할 수 없습니다.".into())
@@ -320,15 +342,31 @@ async fn native(ctx: &JobContext, input: &Value, dir: &Path) -> Result<Value, St
         json!({"engine":"native","description":"Rust 자막 카드 영상 · 무음","duration":duration,"scenes":scenes.len()}),
     )
 }
-fn substitute(value: &mut Value, prompt: &str, duration: &str) {
+fn substitute(value: &mut Value, variables: &Value) {
     match value {
-        Value::String(s) => {
-            *s = s
-                .replace("{{prompt}}", prompt)
-                .replace("{{duration}}", duration)
+        Value::String(text) => {
+            if let Some(replacement) = text.strip_prefix("{{").and_then(|s| s.strip_suffix("}}"))
+                .and_then(|key| variables.get(key)) {
+                *value = replacement.clone();
+                return;
+            }
+            let mut expanded = String::new();
+            let mut rest = text.as_str();
+            while let Some((prefix, candidate)) = rest.split_once("{{") {
+                let Some((key, suffix)) = candidate.split_once("}}") else { break };
+                expanded.push_str(prefix);
+                match variables.get(key) {
+                    Some(Value::String(replacement)) => expanded.push_str(replacement),
+                    Some(replacement) => expanded.push_str(&replacement.to_string()),
+                    None => { expanded.push_str("{{"); expanded.push_str(key); expanded.push_str("}}"); }
+                }
+                rest = suffix;
+            }
+            expanded.push_str(rest);
+            *text = expanded;
         }
-        Value::Array(a) => a.iter_mut().for_each(|v| substitute(v, prompt, duration)),
-        Value::Object(m) => m.values_mut().for_each(|v| substitute(v, prompt, duration)),
+        Value::Array(items) => items.iter_mut().for_each(|item| substitute(item, variables)),
+        Value::Object(fields) => fields.values_mut().for_each(|item| substitute(item, variables)),
         _ => {}
     }
 }
@@ -347,11 +385,8 @@ async fn comfy(ctx: &JobContext, input: &Value, dir: &Path) -> Result<Value, Str
         .build()
         .map_err(|e| e.to_string())?;
     let mut workflow = cfg["comfyWorkflow"].clone();
-    substitute(
-        &mut workflow,
-        input["brief"].as_str().unwrap_or(""),
-        &input["duration"].to_string(),
-    );
+    let legacy = json!({"prompt":input["brief"],"duration":input["duration"]});
+    substitute(&mut workflow, input.get("render").unwrap_or(&legacy));
     ctx.checkpoint(json!({"phase":"submitting","progress":10,"videoState":{"inFlight":true}}))?;
     let response = client
         .post(format!("{base}/prompt"))
@@ -496,6 +531,7 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
 }
 pub fn enqueue_upload(state: &AppState, id: &str, body: &Value) -> Result<Value, String> {
     output_path(state, id)?;
+    let video = state.store.get("job", id).ok_or("영상이 없습니다.")?;
     if oauth::access_token(state, "youtube").is_none() {
         return Err("연결 메뉴에서 YouTube 업로드 계정을 먼저 연결하세요.".into());
     }
@@ -509,7 +545,23 @@ pub fn enqueue_upload(state: &AppState, id: &str, body: &Value) -> Result<Value,
     uuid.copy_from_slice(&digest[..16]);
     let upload_id = uuid::Uuid::from_bytes(uuid).to_string();
     let made_for_kids = body["madeForKids"].as_bool().unwrap_or(false);
-    let candidate = json!({"id":upload_id,"kind":"youtube_upload","status":"queued","queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),"input":{"videoJobId":id,"privacyStatus":privacy,"madeForKids":made_for_kids},"attempts":0,"stepIndex":0,"stepTotal":0,"events":[]});
+    let title = body["title"].as_str().or_else(|| video["input"]["title"].as_str())
+        .unwrap_or_default().trim();
+    let description = body["description"].as_str().or_else(|| video["input"]["brief"].as_str())
+        .unwrap_or_default();
+    let tags = body["tags"].as_str().unwrap_or("").split(',')
+        .map(str::trim).filter(|tag| !tag.is_empty()).collect::<Vec<_>>();
+    if title.is_empty() || title.chars().count() > 100 || description.len() > 5000
+        || tags.join(",").chars().count() > 500 {
+        return Err("YouTube 제목, 설명, 태그 길이를 확인하세요.".into());
+    }
+    let candidate = json!({
+        "id":upload_id,"kind":"youtube_upload","status":"queued",
+        "queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),
+        "input":{"videoJobId":id,"privacyStatus":privacy,"madeForKids":made_for_kids,
+                 "title":title,"description":description,"tags":tags},
+        "attempts":0,"stepIndex":0,"stepTotal":0,"events":[]
+    });
     let job = if let Some(inserted) = state.store.put_if_absent("job", &candidate) {
         state.bus.record("job", &inserted);
         state.store.audit(
@@ -562,7 +614,10 @@ pub async fn upload(ctx: &JobContext, job: &Value) -> Result<Value, String> {
         .build()
         .map_err(|e| e.to_string())?;
     progress(ctx, "authorizing", 5)?;
-    let response=client.post("https://www.googleapis.com/upload/youtube/v3/videos").query(&[("uploadType","resumable"),("part","snippet,status")]).bearer_auth(&token).header("X-Upload-Content-Length",bytes.len()).header("X-Upload-Content-Type","video/mp4").json(&json!({"snippet":{"title":video["input"]["title"],"description":video["input"]["brief"]},"status":{"privacyStatus":job["input"]["privacyStatus"],"selfDeclaredMadeForKids":job["input"]["madeForKids"].as_bool().unwrap_or(false)}})).timeout(Duration::from_secs(30)).send().await.map_err(|_|"YouTube 업로드 세션 연결 실패")?;
+    let title = job["input"]["title"].as_str().or_else(|| video["input"]["title"].as_str());
+    let description = job["input"]["description"].as_str().or_else(|| video["input"]["brief"].as_str());
+    let tags = job["input"]["tags"].as_array().cloned().unwrap_or_default();
+    let response=client.post("https://www.googleapis.com/upload/youtube/v3/videos").query(&[("uploadType","resumable"),("part","snippet,status")]).bearer_auth(&token).header("X-Upload-Content-Length",bytes.len()).header("X-Upload-Content-Type","video/mp4").json(&json!({"snippet":{"title":title,"description":description,"tags":tags},"status":{"privacyStatus":job["input"]["privacyStatus"],"selfDeclaredMadeForKids":job["input"]["madeForKids"].as_bool().unwrap_or(false)}})).timeout(Duration::from_secs(30)).send().await.map_err(|_|"YouTube 업로드 세션 연결 실패")?;
     if !response.status().is_success() {
         return Err(format!(
             "YouTube 업로드 세션 거부: HTTP {}",

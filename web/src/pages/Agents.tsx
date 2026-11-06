@@ -53,7 +53,7 @@ export function AgentsPage() {
   const agents = useRemote<Agent[]>("/api/agents", []),
     providers = useRemote<Provider[]>("/api/providers", []);
   const [edit, setEdit] = useState<Partial<Agent> | null>(null),
-    [error, setError] = useState("");
+    [error, setError] = useState(""), [saving, setSaving] = useState(false);
   const [showPersonaImport,setShowPersonaImport]=useState(false);
   const [bulk, setBulk] = useState(false),
     [selected, setSelected] = useState<string[]>([]),
@@ -61,16 +61,32 @@ export function AgentsPage() {
     [bulkModel, setBulkModel] = useState(""),
     [bulkBusy, setBulkBusy] = useState(false),
     [bulkNotice, setBulkNotice] = useState("");
+  const enabledProviders = providers.value.filter(p => p.enabled !== false);
+  const editProvider = enabledProviders.find(p => p.id === edit?.providerId);
+  const closeEditor = () => { if (!saving) { setEdit(null); setError(""); } };
   const save = async () => {
-    if (!edit?.name) return;
+    if (!edit?.name?.trim() || saving) return;
+    const model = edit.model?.trim() || "";
+    if (edit.providerId && (!editProvider || (!model && !editProvider.model))) {
+      setError("사용 가능한 API와 모델을 선택하거나, 모델을 채팅에서 선택하도록 설정하세요.");
+      return;
+    }
+    setSaving(true);
     setError("");
     try {
-      await post("/api/agents", edit);
+      await post("/api/agents", {
+        ...edit,
+        name: edit.name.trim(),
+        aliases: edit.aliases?.map(alias => alias.trim()).filter(Boolean),
+        model: edit.providerId ? model : "",
+      });
       setEdit(null);
       await agents.reload();
       refresh();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setSaving(false);
     }
   };
   const applyBulk = async () => {
@@ -98,23 +114,25 @@ export function AgentsPage() {
     <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
       <Headline
         eyebrow="AGENT STUDIO"
-        title="나만의 AI 팀."
-        description="에이전트를 필요한 만큼 만들고, 모델과 역할을 자유롭게 배치하세요."
+        title="에이전트"
+        description="자주 쓰는 역할과 지침을 저장하고, 사용할 모델을 연결하세요."
         actions={
           <>
-            <Action variant="secondary" onClick={()=>setShowPersonaImport(true)}><FolderInput size={16}/> 기존 페르소나 가져오기</Action>
+            <Action variant="secondary" onClick={()=>setShowPersonaImport(true)}><FolderInput size={16}/> 저장한 역할 가져오기</Action>
             <Action
               variant="secondary"
               onClick={() => {
                 setBulk((x) => !x);
-                setSelected(agents.value.map((x) => x.id));
+                setSelected([]);
+                setError("");
                 setBulkNotice("");
               }}
             >
-              <Settings2 size={16} /> 선택 모델 일괄 변경
+              <Settings2 size={16} /> 여러 에이전트 모델 변경
             </Action>
             <Action
-              onClick={() =>
+              onClick={() => {
+                setError("");
                 setEdit({
                   name: "새 에이전트",
                   description: "",
@@ -124,8 +142,8 @@ export function AgentsPage() {
                   providerId: "",
                   model: "",
                   color: accents[agents.value.length % accents.length],
-                })
-              }
+                });
+              }}
             >
               <Plus size={17} /> 에이전트 만들기
             </Action>
@@ -137,10 +155,9 @@ export function AgentsPage() {
           <BrainCircuit size={22} />
         </div>
         <div>
-          <strong>역할도, 모델도 자유롭게</strong>
+          <strong>모델은 나중에 정할 수 있어요</strong>
           <p>
-            각 에이전트는 독립된 페르소나와 모델 설정을 가지고
-            대화·회의·자동화에 참여합니다.
+            이름과 역할 지침부터 저장하세요. 모델을 지정하면 다음 채팅이나 그룹 대화에 적용됩니다.
           </p>
         </div>
       </div>
@@ -156,13 +173,12 @@ export function AgentsPage() {
             title="선택한 에이전트의 모델 변경"
             extra={
               <span className="text-[10px] font-bold uppercase tracking-widest text-[#9C9388]">
-                {selected.length} / {agents.value.length} SELECTED
+                {agents.value.length}명 중 {selected.length}명 선택
               </span>
             }
           />
           <p>
-            실제 등록된 에이전트만 대상으로 합니다. 각 프로필의 모델 연결만
-            변경하며 이미 실행 중인 응답은 중단하지 않습니다.
+            바꿀 에이전트를 카드에서 선택하세요. 변경한 모델은 다음 응답부터 사용합니다.
           </p>
           <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-3">
             <label>
@@ -180,7 +196,7 @@ export function AgentsPage() {
               />{" "}
               전체 선택
             </label>
-            <FormField label="모델 제공자">
+            <FormField label="연결한 API 또는 서버">
               <SelectInput
                 value={bulkProvider}
                 onChange={(e) => {
@@ -189,14 +205,14 @@ export function AgentsPage() {
                 }}
               >
                 <option value="">선택</option>
-                {providers.value.map((p) => (
+                {enabledProviders.map((p) => (
                   <option value={p.id} key={p.id}>
                     {p.name}
                   </option>
                 ))}
               </SelectInput>
             </FormField>
-            <FormField label="모델 ID">
+            <FormField label="바꿀 모델">
               <ModelPicker
                 providerId={bulkProvider}
                 value={bulkModel}
@@ -255,7 +271,8 @@ export function AgentsPage() {
                 <Button
                   size="icon"
                   variant="ghost"
-                  onClick={() => setEdit({ ...a })}
+                  aria-label={a.name + " 편집"}
+                  onClick={() => { setError(""); setEdit({ ...a }); }}
                 >
                   <Edit3 size={16} />
                 </Button>
@@ -265,8 +282,13 @@ export function AgentsPage() {
                     variant="ghost"
                     onClick={async () => {
                       if (confirm(a.name + " 에이전트를 삭제하시겠습니까?")) {
-                        await del("/api/agents/" + a.id);
-                        agents.reload();
+                        try {
+                          await del("/api/agents/" + encodeURIComponent(a.id));
+                          setSelected(previous => previous.filter(id => id !== a.id));
+                          await agents.reload();
+                        } catch (e) {
+                          setError((e as Error).message);
+                        }
                       }
                     }}
                   >
@@ -277,30 +299,31 @@ export function AgentsPage() {
             </div>
             <h3>{a.name}</h3>
             {a.role&&<span className="text-[11px] font-semibold text-[#9B8064]">{String(a.role)}</span>}
-            <p>{a.description || "사용자가 설정하는 범용 에이전트"}</p>
+            <p>{a.description || "설명 없음"}</p>
             <div className="my-2 h-px bg-[#F3EEE5]" />
             <div className="mt-auto flex flex-col gap-1 border-t border-[#EFE9DF] pt-3 text-xs text-[#7C7469]">
               <span>
                 <Sparkles size={15} />{" "}
                 {providers.value.find((p) => p.id === a.providerId)?.name ||
-                  "모델 미설정"}
+                  (a.providerId ? "연결 확인 필요" : "채팅에서 모델 선택")}
               </span>
-              <span>{a.model || "선택 필요"}</span>
+              {a.providerId&&<span>{a.model || enabledProviders.find(p=>p.id===a.providerId)?.model || "모델 선택 필요"}</span>}
+              <a href={"#/chat?agent="+encodeURIComponent(a.id)} className="mt-1 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline">이 에이전트와 채팅 <ArrowRight size={13}/></a>
             </div>
           </Panel>
         ))}
       </div>
-      {error && <Notice message={error} />}
+      {!edit && <Notice message={error || agents.error || providers.error} />}
       {showPersonaImport&&<PersonaImportDialog agents={agents.value} onClose={()=>setShowPersonaImport(false)} onImported={async(count)=>{await agents.reload();refresh();setBulkNotice(count+'개 페르소나와 아이콘을 가져왔습니다.')}}/>}
       {edit && (
-        <DialogBackdrop onDismiss={() => setEdit(null)}>
+        <DialogBackdrop onDismiss={closeEditor}>
           <DialogPanel size="wide">
             <div className="flex items-center justify-between border-b border-[#EFE9DF] p-5">
               <div>
-                <small>AGENT DESIGNER</small>
+                <small>역할과 모델 설정</small>
                 <h2>{edit.id ? "에이전트 편집" : "에이전트 만들기"}</h2>
               </div>
-              <Button size="icon" variant="ghost" onClick={() => setEdit(null)}>
+              <Button size="icon" variant="ghost" onClick={closeEditor} disabled={saving}>
                 <X size={19} />
               </Button>
             </div>
@@ -312,7 +335,7 @@ export function AgentsPage() {
                     onChange={(e) => setEdit({ ...edit, name: e.target.value })}
                   />
                 </FormField>
-                <FormField label="테마 색상">
+                <FormField label="아이콘 색상">
                   <TextInput
                     type="color"
                     className="h-10 w-full cursor-pointer rounded-xl border border-[#E7E0D5] bg-white p-1"
@@ -323,7 +346,7 @@ export function AgentsPage() {
                   />
                 </FormField>
               </div>
-              <FormField label="설명">
+              <FormField label="하는 일 (선택)">
                 <TextInput
                   value={edit.description || ""}
                   onChange={(e) =>
@@ -333,7 +356,7 @@ export function AgentsPage() {
                 />
               </FormField>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <FormField label="모델 제공자">
+                <FormField label="연결한 API 또는 서버">
                   <SelectInput
                     value={edit.providerId || ""}
                     onChange={(e) =>
@@ -344,28 +367,29 @@ export function AgentsPage() {
                       })
                     }
                   >
-                    <option value="">선택</option>
-                    {providers.value.map((p) => (
+                    <option value="">채팅에서 선택</option>
+                    {edit.providerId&&!editProvider&&<option value={edit.providerId} disabled>이전 연결을 사용할 수 없음</option>}
+                    {enabledProviders.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}
                       </option>
                     ))}
                   </SelectInput>
                 </FormField>
-                <FormField label="모델">
+                <FormField label="사용할 모델" hint={edit.providerId?"목록에 없으면 모델 ID를 입력할 수 있어요.":"에이전트 저장 후 채팅에서 모델을 고를 수 있어요."}>
                   <ModelPicker
-                    providerId={edit.providerId || ""}
+                    providerId={editProvider?.id || ""}
                     value={edit.model || ""}
                     onChange={(model) => setEdit({ ...edit, model })}
-                    placeholder="모델 검색 또는 선택"
+                    placeholder={editProvider?.model ? "저장된 기본 모델 사용" : editProvider ? "모델 선택" : "API 또는 서버 먼저 선택"}
                     className="w-full"
                     ariaLabel="에이전트 모델"
                   />
                 </FormField>
               </div>
               <FormField
-                label="호출 이름 · 별칭 (쉼표 구분)"
-                hint="메신저 회의실에서 이 이름으로 특정 에이전트를 지정할 수 있습니다."
+                label="그룹 대화에서 부를 이름 (선택)"
+                hint="여러 개는 쉼표로 나누세요. 그룹 대화에서 @이름으로 부를 수 있습니다."
               >
                 <TextInput
                   value={(edit.aliases || []).join(", ")}
@@ -415,7 +439,7 @@ export function AgentsPage() {
                   )}
                 </div>
               </FormField>
-              <FormField label="시스템 프롬프트">
+              <FormField label="역할 지침" hint="어떤 일을 맡기고 어떻게 답하게 할지 적으세요.">
                 <TextArea
                   className="min-h-28"
                   rows={6}
@@ -425,13 +449,14 @@ export function AgentsPage() {
                   }
                 />
               </FormField>
+              <Notice message={error}/>
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5">
-              <Action variant="secondary" onClick={() => setEdit(null)}>
+              <Action variant="secondary" onClick={closeEditor} disabled={saving}>
                 취소
               </Action>
-              <Action onClick={save}>
-                <Save size={16} /> 저장
+              <Action onClick={save} disabled={saving||!edit.name?.trim()}>
+                <Save size={16} /> {saving?"저장 중":"저장"}
               </Action>
             </div>
           </DialogPanel>
@@ -452,5 +477,5 @@ function PersonaImportDialog({agents,onClose,onImported}:{agents:Agent[];onClose
   try{const result=await post<{imported:number;skipped:number;errors:{sourceProfile:string;error:string}[]}>('/api/personas/import',{apply:true,profileIds:selected,...(refreshIdentity?{refreshIdentity:true}:{})});await onImported(result.imported);if(result.errors.length)setError(result.errors.map(item=>item.sourceProfile+': '+item.error).join(' · '));else onClose()}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
- return <DialogBackdrop onDismiss={()=>{if(!busy)onClose()}}><DialogPanel size="wide" aria-label="기존 페르소나 가져오기"><div className="flex items-center justify-between border-b border-[#EFE9DF] p-5"><div><small className="text-[10px] tracking-widest text-[#A2937F]">MY LOCAL PERSONAS</small><h2 className="mt-1 font-bold">내 페르소나와 아이콘 가져오기</h2></div><Button size="icon" variant="ghost" aria-label="닫기" disabled={busy} onClick={onClose}><X size={18}/></Button></div><div className="grid gap-4 p-5"><p className="text-[12px] text-[#8F7D65]">로컬에 보관한 내 인격 지침과 아이콘을 확인하고, DOMINION 에이전트로 가져옵니다. 모델 설정은 에이전트 화면에서 선택할 수 있습니다.</p>{loading?<div className="flex items-center justify-center gap-2 py-10 text-[#A2937F]"><LoaderCircle size={17} className="animate-spin"/> 페르소나를 확인하는 중</div>:<><div className="flex items-center justify-between text-[11px] text-[#9A866A]"><span>발견 {profiles.length}명 · 선택 {selected.length}명</span><button className="underline underline-offset-2" disabled={busy||!available.length} onClick={()=>setSelected(selected.length===available.length?[]:available.map(profile=>profile.sourceProfile))}>{selected.length===available.length?'선택 해제':'가능한 참가자 모두 선택'}</button></div><div className="grid max-h-[48vh] gap-3 overflow-auto sm:grid-cols-2">{profiles.map((profile,index)=>{const agent=agents.find(item=>item.id===profile.id);const enabled=profile.available&&(!profile.exists||refreshIdentity);const checked=selected.includes(profile.sourceProfile);return <div className={'rounded-xl border p-3 '+(checked?'border-[#D1B894] bg-[#FBF4E8]':'border-[#E7E0D5] bg-[#FFFCF7]')} key={profile.sourceProfile}><label className="flex cursor-pointer items-center gap-3"><input type="checkbox" className="accent-[#AA8B63]" checked={checked} disabled={busy||!enabled} onChange={()=>setSelected(previous=>checked?previous.filter(id=>id!==profile.sourceProfile):[...previous,profile.sourceProfile])}/><span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl text-[13px] font-semibold text-white" style={{background:agent?.color||accents[index%accents.length]}}>{(agent?.avatar||agent?.avatarUrl)?<img src={String(agent.avatar||agent.avatarUrl)} alt="" className="size-10 object-cover"/>:profile.name.slice(0,1)}</span><span className="min-w-0 flex-1"><strong className="block text-[12px] text-[#776249]">{profile.name}</strong><small className="block text-[10px] text-[#AC987A]">{profile.role||profile.description}</small></span>{profile.exists&&<span className="rounded bg-[#EDE8DE] px-1.5 py-0.5 text-[9px] text-[#9D8D74]">가져옴</span>}</label><div className="mt-3 flex gap-2 text-[9px] text-[#B2A087]"><span>{profile.hasAvatar?'아이콘 포함':'기본 아이콘'}</span><span>·</span><span>내 페르소나</span></div>{profile.personaPreview&&<details className="mt-2 text-[10px] text-[#9F896B]"><summary className="cursor-pointer">인격 지침 미리보기</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-[#F4EDE1] p-3 font-sans text-[10px] leading-6 text-[#A18C6E]">{profile.personaPreview}</pre></details>}{profile.error&&<p className="mt-2 text-[10px] text-rose-600">{profile.error}</p>}</div>})}</div>{!profiles.length&&<p className="py-7 text-center text-[12px] text-[#A2937F]">가져올 수 있는 로컬 페르소나가 없습니다.</p>}<label className="flex items-start gap-2 text-[11px] text-[#9A866A]"><input type="checkbox" className="mt-1 accent-[#AA8B63]" checked={refreshIdentity} disabled={busy} onChange={e=>{setRefreshIdentity(e.target.checked);if(!e.target.checked)setSelected(previous=>previous.filter(id=>!profiles.find(profile=>profile.sourceProfile===id)?.exists))}}/><span>기존 페르소나·아이콘도 원본에서 다시 읽기<small className="mt-1 block text-[10px] text-[#B3A187]">기존 에이전트의 모델과 제공자 설정은 유지됩니다.</small></span></label></>}<Notice message={error}/></div><div className="flex items-center justify-end gap-2 border-t border-[#EFE9DF] p-5"><Button variant="ghost" disabled={busy} onClick={onClose}>닫기</Button><Button variant="primary" disabled={loading||busy||!selected.length} onClick={()=>void apply()}>{busy?<LoaderCircle size={15} className="animate-spin"/>:<FolderInput size={15}/>} 선택한 {selected.length}명 가져오기</Button></div></DialogPanel></DialogBackdrop>
+ return <DialogBackdrop onDismiss={()=>{if(!busy)onClose()}}><DialogPanel size="wide" aria-label="저장한 역할 가져오기"><div className="flex items-center justify-between border-b border-[#EFE9DF] p-5"><div><small className="text-[10px] tracking-widest text-[#A2937F]">MY LOCAL PERSONAS</small><h2 className="mt-1 font-bold">내 페르소나와 아이콘 가져오기</h2></div><Button size="icon" variant="ghost" aria-label="닫기" disabled={busy} onClick={onClose}><X size={18}/></Button></div><div className="grid gap-4 p-5"><p className="text-[12px] text-[#8F7D65]">로컬에 보관한 내 인격 지침과 아이콘을 확인하고, DOMINION 에이전트로 가져옵니다. 모델 설정은 에이전트 화면에서 선택할 수 있습니다.</p>{loading?<div className="flex items-center justify-center gap-2 py-10 text-[#A2937F]"><LoaderCircle size={17} className="animate-spin"/> 페르소나를 확인하는 중</div>:<><div className="flex items-center justify-between text-[11px] text-[#9A866A]"><span>발견 {profiles.length}명 · 선택 {selected.length}명</span><button className="underline underline-offset-2" disabled={busy||!available.length} onClick={()=>setSelected(selected.length===available.length?[]:available.map(profile=>profile.sourceProfile))}>{selected.length===available.length?'선택 해제':'가능한 참가자 모두 선택'}</button></div><div className="grid max-h-[48vh] gap-3 overflow-auto sm:grid-cols-2">{profiles.map((profile,index)=>{const agent=agents.find(item=>item.id===profile.id);const enabled=profile.available&&(!profile.exists||refreshIdentity);const checked=selected.includes(profile.sourceProfile);return <div className={'rounded-xl border p-3 '+(checked?'border-[#D1B894] bg-[#FBF4E8]':'border-[#E7E0D5] bg-[#FFFCF7]')} key={profile.sourceProfile}><label className="flex cursor-pointer items-center gap-3"><input type="checkbox" className="accent-[#AA8B63]" checked={checked} disabled={busy||!enabled} onChange={()=>setSelected(previous=>checked?previous.filter(id=>id!==profile.sourceProfile):[...previous,profile.sourceProfile])}/><span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl text-[13px] font-semibold text-white" style={{background:agent?.color||accents[index%accents.length]}}>{(agent?.avatar||agent?.avatarUrl)?<img src={String(agent.avatar||agent.avatarUrl)} alt="" className="size-10 object-cover"/>:profile.name.slice(0,1)}</span><span className="min-w-0 flex-1"><strong className="block text-[12px] text-[#776249]">{profile.name}</strong><small className="block text-[10px] text-[#AC987A]">{profile.role||profile.description}</small></span>{profile.exists&&<span className="rounded bg-[#EDE8DE] px-1.5 py-0.5 text-[9px] text-[#9D8D74]">가져옴</span>}</label><div className="mt-3 flex gap-2 text-[9px] text-[#B2A087]"><span>{profile.hasAvatar?'아이콘 포함':'기본 아이콘'}</span><span>·</span><span>내 페르소나</span></div>{profile.personaPreview&&<details className="mt-2 text-[10px] text-[#9F896B]"><summary className="cursor-pointer">인격 지침 미리보기</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-[#F4EDE1] p-3 font-sans text-[10px] leading-6 text-[#A18C6E]">{profile.personaPreview}</pre></details>}{profile.error&&<p className="mt-2 text-[10px] text-rose-600">{profile.error}</p>}</div>})}</div>{!profiles.length&&<p className="py-7 text-center text-[12px] text-[#A2937F]">가져올 수 있는 로컬 페르소나가 없습니다.</p>}<label className="flex items-start gap-2 text-[11px] text-[#9A866A]"><input type="checkbox" className="mt-1 accent-[#AA8B63]" checked={refreshIdentity} disabled={busy} onChange={e=>{setRefreshIdentity(e.target.checked);if(!e.target.checked)setSelected(previous=>previous.filter(id=>!profiles.find(profile=>profile.sourceProfile===id)?.exists))}}/><span>기존 페르소나·아이콘도 원본에서 다시 읽기<small className="mt-1 block text-[10px] text-[#B3A187]">기존 에이전트의 모델과 제공자 설정은 유지됩니다.</small></span></label></>}<Notice message={error}/></div><div className="flex items-center justify-end gap-2 border-t border-[#EFE9DF] p-5"><Button variant="ghost" disabled={busy} onClick={onClose}>닫기</Button><Button variant="primary" disabled={loading||busy||!selected.length} onClick={()=>void apply()}>{busy?<LoaderCircle size={15} className="animate-spin"/>:<FolderInput size={15}/>} 선택한 {selected.length}명 가져오기</Button></div></DialogPanel></DialogBackdrop>
 }

@@ -32,17 +32,32 @@ pub async fn pick_folder() -> Response {
             return Json(json!({"path": path})).into_response();
         }
     }
+    pick_path(true).await
+}
+
+pub async fn pick_model() -> Response {
+    pick_path(false).await
+}
+
+async fn pick_path(directory: bool) -> Response {
     let command = if cfg!(target_os = "macos") {
-        vec!["osascript", "-e", "POSIX path of (choose folder)"]
+        let script = if directory {
+            "try\nreturn POSIX path of (choose folder)\non error number -128\nreturn \"\"\nend try"
+        } else {
+            "try\nreturn POSIX path of (choose file with prompt \"GGUF 파일 선택\")\non error number -128\nreturn \"\"\nend try"
+        };
+        vec!["/usr/bin/osascript", "-e", script]
     } else if cfg!(target_os = "windows") {
-        vec![
-            "powershell",
-            "-NoProfile",
-            "-Command",
-            "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; if($d.ShowDialog() -eq 'OK'){$d.SelectedPath}",
-        ]
-    } else {
+        let script = if directory {
+            "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; if($d.ShowDialog() -eq 'OK'){$d.SelectedPath}"
+        } else {
+            "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Filter='GGUF|*.gguf'; if($d.ShowDialog() -eq 'OK'){$d.FileName}"
+        };
+        vec!["powershell", "-NoProfile", "-STA", "-Command", script]
+    } else if directory {
         vec!["zenity", "--file-selection", "--directory"]
+    } else {
+        vec!["zenity", "--file-selection", "--file-filter=GGUF | *.gguf"]
     };
     let output = tokio::process::Command::new(command[0])
         .args(&command[1..])
@@ -52,12 +67,14 @@ pub async fn pick_folder() -> Response {
         Ok(output) if output.status.success() => {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if path.is_empty() {
-                (StatusCode::NO_CONTENT, Json(json!({"cancelled": true}))).into_response()
+                Json(json!({"cancelled": true})).into_response()
             } else {
                 Json(json!({"path": path})).into_response()
             }
         }
-        Ok(_) => (StatusCode::NO_CONTENT, Json(json!({"cancelled": true}))).into_response(),
+        Ok(output) if cfg!(all(unix, not(target_os = "macos"))) && output.status.code() == Some(1) =>
+            Json(json!({"cancelled": true})).into_response(),
+        Ok(_) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"파일 선택기를 실행하지 못했습니다."}))).into_response(),
         Err(error) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"error": format!("폴더 선택기를 실행할 수 없습니다: {error}")})),

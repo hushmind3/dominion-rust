@@ -50,16 +50,18 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
         .trim()
         .trim_end_matches('/')
         .to_string();
-    if name.is_empty() || base_url.is_empty() {
+    if base_url.is_empty() {
         return error(
             StatusCode::BAD_REQUEST,
-            "제공자 이름과 baseUrl 이 필요합니다.",
+            "서버 주소를 입력하세요.",
         );
     }
     let parsed = match reqwest::Url::parse(&base_url) {
         Ok(url) if matches!(url.scheme(), "http" | "https") => url,
         _ => return error(StatusCode::BAD_REQUEST, "HTTP(S) 주소만 허용됩니다."),
     };
+
+    let name = if name.is_empty() { parsed.host_str().unwrap_or("API").to_owned() } else { name };
 
     let id = body
         .get("id")
@@ -73,9 +75,11 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
         Some("anthropic") => "anthropic",
         _ => "openai",
     };
+    let existing = state.store.get("provider", &id);
     let model = body
         .get("model")
-        .and_then(|value| value.as_str())
+        .and_then(Value::as_str)
+        .or_else(|| existing.as_ref().and_then(|provider| provider["model"].as_str()))
         .unwrap_or("")
         .trim()
         .to_string();
@@ -88,11 +92,17 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
         .get("reflection")
         .or_else(|| body.get("learning"))
         .and_then(|value| value.as_bool())
-        .unwrap_or_else(|| base_url.contains("api.reflection.ai"));
-    if reflection && model.is_empty() {
+        .or_else(|| existing.as_ref().and_then(|provider| {
+            provider["reflection"].as_bool().or_else(|| provider["learning"].as_bool())
+        }))
+        .unwrap_or(false);
+    let review_model = body["reflectionModel"].as_str()
+        .or_else(|| existing.as_ref().and_then(|provider| provider["reflectionModel"].as_str()))
+        .unwrap_or(&model).trim();
+    if reflection && (review_model.is_empty() || review_model.len() > 256) {
         return error(
             StatusCode::BAD_REQUEST,
-            "회고 분석 모델로 사용하려면 모델 ID가 필요합니다.",
+            "실행 검토에 사용할 모델 ID를 입력하세요.",
         );
     }
 
@@ -104,26 +114,17 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
     record["reflection"] = json!(reflection);
     // Keep the legacy key in sync so existing readers keep working.
     record["learning"] = json!(reflection);
+    if reflection {
+        record["reflectionModel"] = json!(review_model);
+    } else if let Some(fields) = record.as_object_mut() {
+        fields.remove("reflectionModel");
+    }
     if model.is_empty() {
         if let Value::Object(ref mut map) = record {
             map.remove("model");
         }
     } else {
         record["model"] = json!(model);
-    }
-    // Only one provider can own the reflection route. Selecting a new one
-    // clears both the public and legacy flags on every other provider.
-    if reflection {
-        for mut other in state.store.all("provider") {
-            if other["id"].as_str() != Some(id.as_str())
-                && (other["reflection"].as_bool() == Some(true)
-                    || other["learning"].as_bool() == Some(true))
-            {
-                other["reflection"] = json!(false);
-                other["learning"] = json!(false);
-                state.store.put("provider", &other);
-            }
-        }
     }
     record["enabled"] = json!(body
         .get("enabled")
@@ -159,10 +160,25 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
         }
     }
 
-    let saved = state
-        .store
-        .put("provider", &record)
-        .unwrap_or_else(|| json!({ "id": id }));
+    let Some(saved) = state.store.put("provider", &record) else {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "API 연결을 저장할 수 없습니다.");
+    };
+    // Only one provider can own the reflection route. Selecting a new one
+    // clears both the public and legacy flags on every other provider.
+    if reflection {
+        for mut other in state.store.all("provider") {
+            if other["id"].as_str() != Some(id.as_str())
+                && (other["reflection"].as_bool() == Some(true)
+                    || other["learning"].as_bool() == Some(true))
+            {
+                other["reflection"] = json!(false);
+                other["learning"] = json!(false);
+                if let Some(saved) = state.store.put("provider", &other) {
+                    state.bus.record("provider", &saved);
+                }
+            }
+        }
+    }
     state
         .store
         .audit("provider.saved", json!({ "providerId": saved.get("id") }));
@@ -170,22 +186,25 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
     Json(public_provider(&state, saved)).into_response()
 }
 
-pub async fn delete_provider(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
-    state.store.remove("provider", &id);
+pub async fn delete_provider(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    if id == "dominion-native" {
+        return error(StatusCode::CONFLICT, "실행 중인 로컬 모델은 모델 관리에서 중지하세요.");
+    }
+    if state.store.get("provider", &id).is_none() {
+        return error(StatusCode::NOT_FOUND, "API 연결을 찾을 수 없습니다.");
+    }
+    if !state.store.remove("provider", &id) {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "API 연결을 해제할 수 없습니다.");
+    }
     state.store.remove_secret(&format!("provider:{id}"));
-    state
-        .bus
-        .emit(json!({ "type": "record", "kind": "provider", "removed": id }));
-    Json(json!({ "ok": true }))
+    state.bus.emit(json!({ "type": "record", "kind": "provider", "removed": id }));
+    Json(json!({ "ok": true })).into_response()
 }
 
-fn model_is_free(provider: &Value, kind: &str, base: &str, item: &Value, id: &str) -> bool {
+fn model_is_free(_provider: &Value, kind: &str, base: &str, item: &Value, id: &str) -> bool {
     // Local runtimes on their standard ports are free. A localhost shim that
     // proxies paid providers (for example port 4399) is not automatically free.
     if kind == "ollama" || base.contains(":11434") || base.contains(":1234") {
-        return true;
-    }
-    if provider["integration"].as_str() == Some("freellmapi") {
         return true;
     }
     if id.ends_with(":free") || id.contains(":free") {
@@ -255,65 +274,31 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
     }
     match request.send().await {
         Ok(response) if response.status().is_success() => {
-            let value: Value = response.json().await.unwrap_or_else(|_| json!({}));
-            let models: Vec<Value> = if kind == "anthropic" {
-                value["data"]
-                    .as_array()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|item| item.get("id").and_then(Value::as_str))
-                            .map(|id| {
-                                let item = value["data"].as_array().and_then(|all| all.iter()
-                                    .find(|item| item["id"] == id))
-                                    .unwrap_or(&Value::Null);
-                                json!({
-                                    "id": id,
-                                    "name": item["display_name"].as_str().unwrap_or(id),
-                                    "free": model_is_free(&provider, kind, &base, item, id),
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            } else if kind == "ollama" {
-                value["models"]
-                    .as_array()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|item| item.get("name"))
-                            .map(|name| json!({ "id": name, "name": name, "free": true }))
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            } else {
-                value["data"]
-                    .as_array()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|item| item.get("id").and_then(Value::as_str))
-                            .map(|id| {
-                                let item = value["data"].as_array().and_then(|all| all.iter()
-                                    .find(|item| item["id"] == id))
-                                    .unwrap_or(&Value::Null);
-                                json!({
-                                    "id": id,
-                                    "name": id,
-                                    "free": model_is_free(&provider, kind, &base, item, id),
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
+            let Ok(value) = response.json::<Value>().await else {
+                return error(StatusCode::BAD_GATEWAY, "서버가 모델 목록 JSON을 반환하지 않았습니다. 서버 주소를 확인하세요.");
             };
+            let Some(items) = value[if kind == "ollama" { "models" } else { "data" }].as_array() else {
+                return error(StatusCode::BAD_GATEWAY, "모델 목록 형식을 확인할 수 없습니다. 서버 주소와 API 방식을 확인하세요.");
+            };
+            let models: Vec<Value> = items.iter().filter_map(|item| {
+                let id = item[if kind == "ollama" { "name" } else { "id" }].as_str()?;
+                Some(json!({
+                    "id": id,
+                    "name": item["display_name"].as_str().unwrap_or(id),
+                    "free": model_is_free(&provider, kind, &base, item, id),
+                }))
+            }).collect();
             Json(json!(models)).into_response()
         }
-        Ok(response) => error(
-            StatusCode::BAD_GATEWAY,
-            &format!("모델 목록 HTTP {}", response.status()),
-        ),
+        Ok(response) => {
+            let status = response.status();
+            let hint = match status.as_u16() {
+                401 | 403 => "API 키와 모델 조회 권한을 확인하세요.",
+                404 | 405 => "서버 주소를 확인하세요. 모델 목록을 제공하지 않는 API는 모델 ID를 직접 입력할 수 있습니다.",
+                _ => "잠시 후 다시 조회하거나 API 서비스 상태를 확인하세요.",
+            };
+            error(StatusCode::BAD_GATEWAY, &format!("모델 목록 조회 실패 (HTTP {status}). {hint}"))
+        }
         Err(err) => error(StatusCode::BAD_GATEWAY, &err.to_string()),
     }
 }
@@ -325,13 +310,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn free_models_include_local_freellmapi_and_zero_pricing() {
+    fn free_models_require_local_runtime_or_pricing_evidence() {
         let local = json!({"id":"p","name":"local","baseUrl":"http://127.0.0.1:11434/v1"});
         assert!(model_is_free(&local, "openai", "http://127.0.0.1:11434/v1", &Value::Null, "x"));
         let shim = json!({"id":"p","name":"shim","baseUrl":"http://127.0.0.1:4399/v1"});
         assert!(!model_is_free(&shim, "openai", "http://127.0.0.1:4399/v1", &Value::Null, "paid/model"));
         let free_api = json!({"id":"p","name":"free","integration":"freellmapi"});
-        assert!(model_is_free(&free_api, "openai", "https://api.example/v1", &Value::Null, "x"));
+        assert!(!model_is_free(&free_api, "openai", "https://api.example/v1", &Value::Null, "x"));
         let free_suffix = json!({"id":"p","name":"openrouter"});
         assert!(model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &Value::Null, "meta/llama:free"));
         let zero = json!({"pricing":{"prompt":"0","completion":"0"}});

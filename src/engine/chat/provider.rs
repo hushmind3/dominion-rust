@@ -82,6 +82,8 @@ pub(super) fn select_provider(
             session
                 .get("providerId")
                 .and_then(|value| value.as_str())
+                .filter(|id| state.store.get("provider", id)
+                    .is_some_and(|provider| provider["enabled"] != false))
                 .map(str::to_string)
         });
 
@@ -156,7 +158,7 @@ pub(super) fn select_provider(
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| "gpt-4o-mini".into());
+        .ok_or("이 API에서 사용할 모델을 선택하거나 모델 ID를 입력하세요.")?;
 
     let route = crate::engine::gateway::route_from_provider(state, &provider, Some(&model))?;
     Ok(ProviderRef {
@@ -435,7 +437,7 @@ pub(super) async fn stream_completion(
     // compat model (also on later rounds of that same turn).
     let original_mode = request.provider_id.as_deref()
         .and_then(|id| state.store.get("provider", id))
-        .and_then(|item| crate::engine::gateway::route_from_provider(state, &item, None).ok())
+        .and_then(|item| crate::engine::gateway::route_from_provider(state, &item, request.model.as_deref()).ok())
         .map(|route| route.tool_mode)
         .unwrap_or_else(|| provider.tool_mode.clone());
     let mut failed = Vec::new();

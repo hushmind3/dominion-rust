@@ -1,3 +1,4 @@
+import {del,post} from '../../api'
 import {Action,Empty,Panel,StateTag,Subheading} from '../../components/UI'
 import {Button,TextInput} from '../../components/Primitives'
 import {ArrowRight,BookOpenText,Check,Plus,Search,Trash2} from 'lucide-react'
@@ -12,8 +13,6 @@ type Props={
 
 export function SkillsPanel(p:Props){
  const {repo,setRepo,repoBusy,importRepo,skills,addSkillTemplate,filteredSkills,skillCategories,skillCategory,setSkillCategory,skillQuery,setSkillQuery,setSkillEdit,setError,setMessage}=p
- const del=(url:string)=>fetch(url,{method:'DELETE'}).then(async r=>{if(!r.ok)throw Error('HTTP '+r.status);return r.json()})
- const post=(url:string,body:any)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(async r=>{if(!r.ok)throw Error('HTTP '+r.status);return r.json()})
  return (
   <>
   <>

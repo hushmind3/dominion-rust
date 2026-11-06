@@ -1,3 +1,4 @@
+import {useLayoutEffect,useRef} from 'react'
 import {Bot,BrainCircuit,ChevronRight,Command,FileDown,History,Layers3,ListTree,MessageSquare,Play,Search,Settings2,Shield,Square,Terminal,Workflow} from 'lucide-react'
 import {Button} from './Primitives'
 import commandDefinitions from '../../shared/commands.json'
@@ -7,7 +8,7 @@ export type SlashChoice={
  requiresArg?:boolean;submenu?:boolean;hint?:string
 }
 type Selectable={id:string;name:string}
-type Model={id:string;name:string}
+type Model={id:string;name?:string}
 const defs:SlashChoice[]=commandDefinitions
 export const slashCommands=defs
 export const normalizeSlashName=(text:string)=>text.trim().split(/\s+/)[0]?.slice(1).toLowerCase()||''
@@ -15,8 +16,8 @@ export function slashCandidates(text:string,agents:Selectable[],models:Model[]):
  if(!text.startsWith('/')||text.includes('\n'))return [];
  if(/^\/model\s/i.test(text)){
   const query=text.replace(/^\/model\s+/i,'').trim().toLocaleLowerCase()
-  return models.filter(m=>m.id.toLocaleLowerCase().includes(query)||m.name.toLocaleLowerCase().includes(query))
-   .slice(0,30).map(m=>({key:'model:'+m.id,command:'/model '+m.id,name:m.name,description:m.id,group:'모델 선택'}))
+  return models.filter(m=>m.id.toLocaleLowerCase().includes(query)||(m.name||'').toLocaleLowerCase().includes(query))
+   .slice(0,30).map(m=>({key:'model:'+m.id,command:'/model '+m.id,name:m.name||m.id,description:m.id,group:'모델 선택'}))
  }
  if(/^\/agent\s/i.test(text)){
   const query=text.replace(/^\/agent\s+/i,'').trim().toLocaleLowerCase()
@@ -35,8 +36,17 @@ const icons:Record<string,typeof Command>={
 }
 export function SlashMenu({items,active,onChoose}:{items:SlashChoice[];active:number;onChoose:(item:SlashChoice)=>void}){
  const groups=[...new Set(items.map(item=>item.group))]
- return <div role="listbox" aria-label="슬래시 명령어" id="dominion-slash-menu"
-  className="absolute bottom-full left-0 right-0 z-30 mb-3 max-h-[min(400px,60vh)] overflow-y-auto rounded-2xl border border-[#E7E0D5] bg-white p-2 shadow-[0_16px_60px_rgba(15,23,42,.2)]">
+ const list=useRef<HTMLDivElement>(null)
+ const selected=useRef<HTMLButtonElement>(null)
+ useLayoutEffect(()=>{
+  const panel=list.current, option=selected.current
+  if(!panel||!option)return
+  const bounds=panel.getBoundingClientRect(), row=option.getBoundingClientRect()
+  if(row.top<bounds.top)panel.scrollTop-=bounds.top-row.top
+  else if(row.bottom>bounds.bottom)panel.scrollTop+=row.bottom-bounds.bottom
+ },[active,items])
+ return <div ref={list} role="listbox" aria-label="슬래시 명령어" id="dominion-slash-menu"
+  className="absolute bottom-full left-0 right-0 z-30 mb-3 max-h-[min(400px,60dvh)] overflow-y-auto overscroll-contain rounded-2xl border border-[#E7E0D5] bg-white p-2 shadow-[0_16px_60px_rgba(15,23,42,.2)]">
   <div className="flex items-center gap-2 border-b border-[#EFE9DF] px-3 pb-2 pt-1 text-xs text-[#7C7469]">
    <Command size={15}/> 명령어 검색
    <span className="ml-auto text-[10px] text-[#9C9388]">↑↓ 이동 · Enter 선택 · Esc 닫기</span>
@@ -47,7 +57,7 @@ export function SlashMenu({items,active,onChoose}:{items:SlashChoice[];active:nu
    {items.map((item,index)=>{
     if(item.group!==group)return null
     const Icon=icons[item.key]|| (item.key.startsWith('model:')?BrainCircuit:Bot)
-    return <Button key={item.key} type="button" variant="ghost" role="option" aria-selected={active===index}
+    return <Button key={item.key} type="button" variant="ghost" role="option" ref={active===index?selected:undefined} aria-selected={active===index}
       onMouseDown={e=>e.preventDefault()} onClick={()=>onChoose(item)}
       className={'!flex !w-full !items-center !justify-start !gap-3 !rounded-lg !border-0 !px-3 !py-2 !text-left '+(active===index?'!bg-[#F7E8E1] !text-[#A94E30]':'!text-[#4A443C]')}>
       <span className={'grid size-8 shrink-0 place-items-center rounded-lg '+(active===index?'bg-[#F1DCCF]':'bg-[#F3EEE5]')}><Icon size={16}/></span>

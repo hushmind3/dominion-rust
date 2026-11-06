@@ -96,7 +96,10 @@ pub fn learning_route(state: &AppState) -> Option<(String, String)> {
         .and_then(|provider| {
             Some((
                 provider["id"].as_str()?.to_string(),
-                provider["model"].as_str()?.to_string(),
+                provider["reflectionModel"].as_str()
+                    .or_else(|| provider["model"].as_str())
+                    .filter(|model| !model.is_empty())?
+                    .to_string(),
             ))
         })
 }

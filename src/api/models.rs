@@ -57,13 +57,18 @@ pub async fn load(State(state): State<AppState>, Json(body): Json<Value>) -> Res
         .get("context")
         .and_then(|value| value.as_u64())
         .unwrap_or(4096);
+    let _change = models::RUNTIME_CHANGE.lock().await;
     match models::load(&state, id, context).await {
         Ok(result) => Json(result).into_response(),
-        Err(error) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))).into_response(),
+        Err(error) => {
+            models::mark_load_failure(&state, &error);
+            (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))).into_response()
+        }
     }
 }
 
 pub async fn unload(State(state): State<AppState>) -> Json<Value> {
+    let _change = models::RUNTIME_CHANGE.lock().await;
     Json(models::unload(&state))
 }
 
@@ -87,9 +92,24 @@ pub async fn import(State(state): State<AppState>, Json(body): Json<Value>) -> R
         .get("filePath")
         .and_then(|value| value.as_str())
         .unwrap_or("");
-    match models::import_local(&state, path) {
+    let state_for_import = state.clone();
+    let path = path.to_owned();
+    let reference = body["reference"].as_bool().unwrap_or(false);
+    let imported = tokio::task::spawn_blocking(move || {
+        if reference { models::register_local(&state_for_import, &path) }
+        else { models::import_local(&state_for_import, &path) }
+    }).await;
+    match imported.unwrap_or_else(|_| Err("모델을 가져올 수 없습니다.".into())) {
         Ok(item) => Json(item).into_response(),
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
+    }
+}
+
+pub async fn remove_installed(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let _change = models::RUNTIME_CHANGE.lock().await;
+    match models::remove_installed(&state, &id) {
+        Ok(()) => Json(json!({"ok":true})).into_response(),
+        Err(message) => super::response::error(StatusCode::BAD_REQUEST, &message),
     }
 }
 

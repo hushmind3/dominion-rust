@@ -36,9 +36,27 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
     let executable = video::ffmpeg(&state);
     let reachable = comfy_reachable(cfg["comfyUrl"].as_str().unwrap_or("")).await;
     let comfy = reachable && cfg["comfyWorkflow"].is_object();
-    Json(
-        json!({"config":cfg,"runtime":"rust","available":executable.is_some()||comfy,"native":{"available":executable.is_some()},"ffmpeg":{"available":executable.is_some(),"path":executable},"comfy":{"reachable":reachable,"available":comfy},"engines":[{"id":"native","name":"자막 카드 영상","available":executable.is_some(),"reason":if executable.is_some(){""}else{"FFmpeg 실행 파일 필요"}},{"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}}],"jobs":state.store.all("job").iter().filter(|j|matches!(j["kind"].as_str(),Some("video"|"youtube_upload"))).map(video::public_job).collect::<Vec<_>>(),"models":[],"modelsReady":false,"workflows":[],"installed":reachable}),
-    )
+    let workflows = workflows_from_config(&cfg);
+    let jobs = state.store.all("job").iter()
+        .filter(|job| job["kind"] == "video")
+        .map(video::public_job).collect::<Vec<_>>();
+    Json(json!({
+        "config": cfg,
+        "runtime": "rust",
+        "available": executable.is_some() || comfy,
+        "native": {"available": executable.is_some()},
+        "ffmpeg": {"available": executable.is_some(), "path": executable},
+        "comfy": {"reachable": reachable, "available": comfy},
+        "engines": [
+            {"id":"native","name":"자막 카드 영상","available":executable.is_some(),"reason":if executable.is_some(){""}else{"FFmpeg 실행 파일 필요"}},
+            {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}}
+        ],
+        "jobs": jobs,
+        "models": [],
+        "modelsReady": false,
+        "workflows": workflows,
+        "installed": reachable
+    }))
 }
 pub async fn get_config(State(state): State<AppState>) -> Json<Value> {
     Json(video::config(&state))
@@ -51,6 +69,7 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
         "aspectRatio",
         "comfyUrl",
         "comfyWorkflow",
+        "comfyWorkflowName",
         "workflowDir",
         "outputDir",
         "ffmpegPath",
@@ -74,7 +93,12 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
             );
         }
     }
-    if !cfg["comfyWorkflow"].is_null() && !cfg["comfyWorkflow"].is_object() {
+    if !cfg["comfyWorkflow"].is_null()
+        && !cfg["comfyWorkflow"].as_object().is_some_and(|nodes| {
+            !nodes.is_empty() && nodes.values().all(|node| {
+                node["class_type"].is_string() && node["inputs"].is_object()
+            })
+        }) {
         return error(
             StatusCode::BAD_REQUEST,
             "API 형식 워크플로 JSON 객체가 필요합니다.",
@@ -86,7 +110,10 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
             "워크플로는 1MiB 이하로 저장하세요.",
         );
     }
-    state.store.put("video_config", &cfg);
+    if state.store.put("video_config", &cfg).is_none() {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "영상 설정을 저장할 수 없습니다.");
+    }
+    state.bus.record("video_config", &json!({"id":"default"}));
     Json(video::config(&state)).into_response()
 }
 pub async fn list_jobs(State(state): State<AppState>) -> Json<Value> {
@@ -153,6 +180,44 @@ pub async fn outputs_handler(State(state): State<AppState>) -> Json<Value> {
 pub async fn locations(State(state): State<AppState>) -> Json<Value> {
     Json(json!({"outputs":[state.config.data_dir.join("video")],"comfy":[],"workflows":[]}))
 }
+fn workflows_from_config(cfg: &Value) -> Vec<Value> {
+    if !cfg["comfyWorkflow"].is_object() {
+        return Vec::new();
+    }
+    vec![json!({
+        "id": "default",
+        "name": cfg["comfyWorkflowName"].as_str().unwrap_or("ComfyUI"),
+        "bytes": cfg["comfyWorkflow"].to_string().len(),
+    })]
+}
+
+pub async fn workflows(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(workflows_from_config(&video::config(&state))))
+}
+
+pub async fn reveal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let path = match video::output_path(&state, &id) {
+        Ok(path) => path,
+        Err(message) => return error(StatusCode::NOT_FOUND, message),
+    };
+    #[cfg(target_os = "macos")]
+    let launched = tokio::process::Command::new("/usr/bin/open").arg("-R").arg(&path).status().await;
+    #[cfg(target_os = "windows")]
+    let launched = tokio::process::Command::new("explorer.exe")
+        .arg(path.parent().expect("output directory")).status().await;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let launched = tokio::process::Command::new("xdg-open")
+        .arg(path.parent().expect("output directory")).status().await;
+    #[cfg(not(any(unix, windows)))]
+    let launched: std::io::Result<std::process::ExitStatus> =
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+
+    match launched {
+        Ok(status) if status.success() => Json(json!({"opened":true})).into_response(),
+        _ => error(StatusCode::SERVICE_UNAVAILABLE, "영상 폴더를 열 수 없습니다."),
+    }
+}
+
 pub async fn empty_list() -> Json<Value> {
     Json(json!([]))
 }

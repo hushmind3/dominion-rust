@@ -1,5 +1,5 @@
 import { ContextMenu } from './components/ContextMenu'
-import {lazy,Suspense,useCallback,useEffect,useState} from 'react'
+import {lazy,Suspense,useCallback,useEffect,useLayoutEffect,useState} from 'react'
 import {get} from './api'
 import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
 const CapabilitiesPage=lazy(()=>import('./pages/Capabilities').then(module=>({default:module.CapabilitiesPage})))
@@ -19,11 +19,12 @@ function locationState(){
  const raw=window.location.hash.replace(/^#\/?/,'')
  const [name,query]=raw.split('?')
  const valid=navigation.some(group=>group.items.some(item=>item.id===name))
- return {page:(valid?name:'chat') as PageId,session:new URLSearchParams(query||'').get('session')||undefined}
+ const params=new URLSearchParams(query)
+ return {page:(valid?name:'chat') as PageId,session:params.get('session')||undefined,
+  agent:params.get('agent')||undefined,provider:params.get('provider')||undefined}
 }
 export default function App(){
- const [page,setPage]=useState<PageId>(()=>locationState().page)
- const [session,setSession]=useState<string|undefined>(()=>locationState().session)
+ const [{page,session,agent,provider},setRoute]=useState(locationState)
  const [sidebar,setSidebar]=useState(false)
  const [collapsed,setCollapsed]=useState(()=>{try{const saved=localStorage.getItem('dominion.nav.collapsed');return saved===null?window.innerWidth<1200:saved==='1'}catch{return false}})
  const [palette,setPalette]=useState(false)
@@ -39,19 +40,19 @@ export default function App(){
   }catch{setSidebar(open=>!open)}
  },[collapsed])
  const navigate=useCallback((target:PageId,sessionId?:string)=>{
-  setPage(target)
-  if(sessionId!==undefined)setSession(sessionId)
   const next='#/'+target+(sessionId?'?session='+encodeURIComponent(sessionId):'')
-  if(window.location.hash!==next)window.location.hash=next
+  if(window.location.hash!==next)window.history.pushState(null,'',next)
+  setRoute(locationState())
   setSidebar(false)
   setPalette(false)
-  window.scrollTo({top:0,behavior:'auto'})
  },[])
  useEffect(()=>{
-  const sync=()=>{const current=locationState();setPage(current.page);if(current.session)setSession(current.session);setSidebar(false);setPalette(false)}
+  const sync=()=>{setRoute(locationState());setSidebar(false);setPalette(false)}
   window.addEventListener('hashchange',sync)
-  return()=>window.removeEventListener('hashchange',sync)
+  window.addEventListener('popstate',sync)
+  return()=>{window.removeEventListener('hashchange',sync);window.removeEventListener('popstate',sync)}
  },[])
+ useLayoutEffect(()=>{window.scrollTo({top:0,behavior:'instant'})},[page])
  useEffect(()=>{
   let mounted=true
   const check=async()=>{
@@ -67,12 +68,16 @@ export default function App(){
   void check();void approvals()
   const poll=setInterval(()=>{void check()},12000)
   const stream=new EventSource('/api/events')
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined
   stream.onmessage=event=>{
    try{
     const item=JSON.parse(event.data)
     if(item.type==='room_event'){window.dispatchEvent(new CustomEvent('dominion-room-event',{detail:item}));return}
     if(['record','message','job_event','audit','approval','channel_status','goal_event','execution_event'].includes(item.type)){
-     window.dispatchEvent(new Event('dominion-refresh'))
+     refreshTimer ??= setTimeout(()=>{
+      refreshTimer=undefined
+      window.dispatchEvent(new Event('dominion-refresh'))
+     },100)
      if(item.type==='approval')void approvals()
      if(item.type==='job_event'||item.type==='goal_event'||item.type==='execution_event')void check()
     }
@@ -83,19 +88,19 @@ export default function App(){
    if(e.key==='Escape')setPalette(false)
   }
   window.addEventListener('keydown',shortcuts)
-  return()=>{mounted=false;clearInterval(poll);stream.close();window.removeEventListener('keydown',shortcuts)}
+  return()=>{mounted=false;clearInterval(poll);clearTimeout(refreshTimer);stream.close();window.removeEventListener('keydown',shortcuts)}
  },[])
- return <div className="min-h-screen bg-[#F6F3EC] font-sans text-[#24211D]">
+ return <div className="min-h-dvh bg-[#F6F3EC] font-sans text-[#24211D]">
    <ContextMenu />
   <WorkspaceSidebar page={page} open={sidebar} collapsed={collapsed} online={online} running={running} pending={pending} onNavigate={navigate} onClose={()=>setSidebar(false)}/>
-  <main className={'min-h-screen min-w-0 transition-[margin] duration-200 '+(collapsed?'ml-0':'ml-[216px] max-[519px]:ml-0')}>
+  <main className={'min-h-dvh min-w-0 transition-[margin] duration-200 '+(collapsed?'ml-0':'ml-[216px] max-[519px]:ml-0')}>
    <WorkspaceHeader page={page} online={online} collapsed={collapsed} onMenu={toggleNav} onSearch={()=>setPalette(true)}/>
    <div className={'min-w-0 page-'+page}>
     <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
     {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
     {page==='memory'&&<MemoryPage/>}
     {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
-    {page==='chat'&&<ChatPage sessionId={session} onSession={setSession} openModels={()=>navigate('models')}/>}
+    {page==='chat'&&<ChatPage sessionId={session} initialAgent={agent} initialProvider={provider} onSession={id=>{if(locationState().page==='chat')navigate('chat',id)}} openModels={()=>navigate('models')}/>}
     {page==='video'&&<VideoPage navigate={navigate}/>}
     {page==='models'&&<ModelHub/>}
     {page==='agents'&&<AgentsPage/>}

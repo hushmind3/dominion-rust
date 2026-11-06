@@ -109,10 +109,14 @@ pub async fn get_policy(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-pub async fn save_policy(State(state): State<AppState>, Json(body): Json<Value>) -> Json<Value> {
-    let mut record = body.clone();
+pub async fn save_policy(State(state): State<AppState>, Json(mut record): Json<Value>) -> Response {
+    if !record.is_object() {
+        return error(StatusCode::BAD_REQUEST, "권한 정책 JSON 객체가 필요합니다.");
+    }
     record["id"] = json!("default");
-    let saved = state.store.put("policy", &record).unwrap_or(record);
+    let Some(saved) = state.store.put("policy", &record) else {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "권한 정책을 저장하지 못했습니다.");
+    };
     state.bus.record("policy", &saved);
-    Json(saved)
+    Json(saved).into_response()
 }

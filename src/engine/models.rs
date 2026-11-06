@@ -8,6 +8,9 @@ use tokio::process::{Child, Command};
 const RUNTIME_PORT: u16 = 4319;
 const PROVIDER_ID: &str = "dominion-native";
 const MODEL_KIND: &str = "model_job";
+const EXTERNAL_KIND: &str = "external_model";
+pub static RUNTIME_CHANGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static DOWNLOAD_COMMIT: Mutex<()> = Mutex::new(());
 
 struct Runtime {
     child: Option<Child>,
@@ -89,6 +92,10 @@ pub fn installed(state: &AppState) -> Vec<Value> {
                     .map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()),
             }))
         })
+        .chain(state.store.all(EXTERNAL_KIND).into_iter().filter_map(|record| {
+            let path = Path::new(record["path"].as_str()?);
+            external_model(record["id"].as_str()?, path)
+        }))
         .chain(lmstudio_models())
         .collect()
 }
@@ -216,6 +223,63 @@ pub fn import_local(state: &AppState, file_path: &str) -> Result<Value, String> 
         .unwrap_or_else(|| json!({ "id": name })))
 }
 
+fn external_model(id: &str, path: &Path) -> Option<Value> {
+    let label = path.file_name()?.to_str()?;
+    let metadata = path.metadata().ok()?;
+    if !metadata.is_file() || !label.to_ascii_lowercase().ends_with(".gguf") {
+        return None;
+    }
+    Some(json!({
+        "id": format!("external:{id}"), "repo": label, "label": label,
+        "source": "external", "format": "gguf", "bytes": metadata.len(),
+        "externalPath": path, "installedAt": null
+    }))
+}
+
+pub fn register_local(state: &AppState, file_path: &str) -> Result<Value, String> {
+    let path = Path::new(file_path.trim()).canonicalize().map_err(|_| "파일을 찾을 수 없습니다.")?;
+    let previous = state.store.all(EXTERNAL_KIND).into_iter()
+        .find(|record| record["path"].as_str() == path.to_str());
+    let id = previous.as_ref().and_then(|record| record["id"].as_str()).map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let model = external_model(&id, &path).ok_or("읽을 수 있는 GGUF 파일을 선택하세요.")?;
+    state.store.put(EXTERNAL_KIND, &json!({"id":id,"path":path}))
+        .ok_or("모델 경로를 저장할 수 없습니다.")?;
+    state.bus.record(EXTERNAL_KIND, &json!({"id":id}));
+    Ok(model)
+}
+
+fn managed_model_path(state: &AppState, id: &str) -> Option<PathBuf> {
+    let root = models_dir(state).canonicalize().ok()?;
+    let relative = Path::new(id);
+    if relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+        return None;
+    }
+    let path = root.join(relative);
+    let metadata = path.symlink_metadata().ok()?;
+    if !metadata.is_file() || !path.canonicalize().ok()?.starts_with(&root)
+        || !path.extension()?.to_str()?.eq_ignore_ascii_case("gguf") {
+        return None;
+    }
+    Some(path)
+}
+
+pub fn remove_installed(state: &AppState, id: &str) -> Result<(), String> {
+    if runtime().lock().unwrap().id == id {
+        return Err("실행 중인 모델은 먼저 중지하세요.".into());
+    }
+    if let Some(record) = id.strip_prefix("external:") {
+        if !state.store.remove(EXTERNAL_KIND, record) {
+            return Err("등록된 모델을 찾을 수 없습니다.".into());
+        }
+    } else {
+        let path = managed_model_path(state, id).ok_or("DOMINION이 관리하는 모델 파일을 찾을 수 없습니다.")?;
+        std::fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    state.bus.record(EXTERNAL_KIND, &json!({"id":id}));
+    Ok(())
+}
+
 fn total_memory() -> u64 {
     // Cheapest portable-enough source; unknown stays 0 rather than guessing.
     #[cfg(target_os = "macos")]
@@ -250,7 +314,7 @@ fn total_memory() -> u64 {
     0
 }
 
-pub fn runtime_snapshot(_state: &AppState) -> Value {
+pub fn runtime_snapshot(state: &AppState) -> Value {
     let mut guard = runtime().lock().unwrap();
     if let Some(child) = guard.child.as_mut() {
         match child.try_wait() {
@@ -273,6 +337,7 @@ pub fn runtime_snapshot(_state: &AppState) -> Value {
         "status": guard.status,
         "id": guard.id,
         "name": guard.name,
+        "model": state.store.get("provider", PROVIDER_ID).and_then(|provider| provider["model"].as_str().map(str::to_owned)),
         "engine": if guard.engine.is_empty() { "none" } else { guard.engine.as_str() },
         "backend": guard.backend,
         "port": RUNTIME_PORT,
@@ -296,18 +361,15 @@ pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, Str
     if let Some(key) = id.strip_prefix("lms:") {
         return load_lmstudio(state, id, key, context).await;
     }
-    let dir = models_dir(state);
-    let candidate = dir.join(id);
-    let resolved = if candidate.is_file() {
-        candidate
+    let resolved = if let Some(record) = id.strip_prefix("external:") {
+        state.store.get(EXTERNAL_KIND, record)
+            .and_then(|value| value["path"].as_str().map(PathBuf::from))
+            .filter(|path| external_model(record, path).is_some())
     } else {
-        installed(state)
-            .into_iter()
-            .find(|item| item.get("id").and_then(|value| value.as_str()) == Some(id))
-            .map(|_| dir.join(id))
-            .filter(|path| path.is_file())
-            .ok_or_else(|| format!("설치된 모델을 찾을 수 없습니다: {id}"))?
-    };
+        managed_model_path(state, id)
+    }.ok_or_else(|| format!("설치된 모델을 찾을 수 없습니다: {id}"))?;
+    let llama_server = llama_server_bin()
+        .ok_or("llama-server를 찾을 수 없습니다. llama.cpp를 설치하거나 PATH를 확인하세요.")?;
 
     unload(state);
     {
@@ -325,8 +387,6 @@ pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, Str
         guard.logs.clear();
     }
 
-    let llama_server = llama_server_bin()
-        .ok_or("llama-server를 찾을 수 없습니다. llama.cpp를 설치하거나 PATH를 확인하세요.")?;
     let mut command = Command::new(llama_server);
     command.args([
         "-m",
@@ -380,17 +440,17 @@ pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, Str
     for _ in 0..120 {
         tokio::time::sleep(Duration::from_millis(500)).await;
         if let Ok(response) = client
-            .get(format!("http://127.0.0.1:{RUNTIME_PORT}/health"))
+            .get(format!("http://127.0.0.1:{RUNTIME_PORT}/v1/models"))
             .timeout(Duration::from_secs(2))
             .send()
             .await
         {
-            if response.status().is_success() {
-                {
-                    let mut guard = runtime().lock().unwrap();
-                    guard.status = "ready".into();
-                }
-                state.store.put(
+            if response.status().is_success()
+                && response.json::<Value>().await.is_ok_and(|data| {
+                    data["data"].as_array().is_some_and(|models| models.iter().any(|model| model["id"] == id))
+                })
+            {
+                let saved = state.store.put(
                     "provider",
                     &json!({
                         "id": PROVIDER_ID,
@@ -400,11 +460,14 @@ pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, Str
                         "local": true,
                         "enabled": true,
                         "model": id,
+                        "contextTokens": context.clamp(512, 32768),
                         "description": "llama.cpp runtime managed by the Rust engine",
                     }),
                 );
-                let model = id.to_string();
-                return Ok(json!({ "status": "ready", "id": model, "name": model }));
+                let saved = saved.ok_or("모델 제공자를 저장할 수 없습니다.")?;
+                runtime().lock().unwrap().status = "ready".into();
+                state.bus.record("provider", &saved);
+                return Ok(runtime_snapshot(state));
             }
         }
         let exited = runtime()
@@ -447,7 +510,7 @@ async fn load_lmstudio(
         guard.name = key.to_string();
         guard.engine = "MLX (LM Studio)".into();
         guard.backend = "lmstudio".into();
-        guard.model_key = key.to_string();
+        guard.model_key.clear();
         guard.error.clear();
         guard.logs.clear();
     }
@@ -473,37 +536,31 @@ async fn load_lmstudio(
         }
     }
 
-    let already_loaded = std::process::Command::new(&lms)
-        .args(["ps", "--json"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
+    let running_models = Command::new(&lms)
+        .args(["ps", "--json"]).output().await
+        .ok().filter(|output| output.status.success())
         .and_then(|output| serde_json::from_slice::<Vec<Value>>(&output.stdout).ok())
-        .is_some_and(|items| {
-            items.iter().any(|item| {
-                item["modelKey"].as_str() == Some(key)
-                    || item["identifier"].as_str() == Some(key)
-            })
-        });
-    if !already_loaded {
-        let output = std::process::Command::new(&lms)
-            .args([
-                "load",
-                key,
-                "--gpu",
-                "max",
-                "--context-length",
-                &context.clamp(512, 32768).to_string(),
-            ])
-            .output()
-            .map_err(|error| format!("LM Studio 모델 로드 실패: {error}"))?;
-        if !output.status.success() {
-            let mut guard = runtime().lock().unwrap();
-            guard.status = "error".into();
-            guard.error = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(guard.error.clone());
+        .unwrap_or_default();
+    let served = match running_models.iter().find_map(|item| {
+        (item["modelKey"].as_str() == Some(key))
+            .then(|| item["identifier"].as_str())
+            .flatten()
+    }) {
+        Some(identifier) => identifier.to_owned(),
+        None => {
+            let identifier = format!("dominion-{}", uuid::Uuid::new_v4());
+            runtime().lock().unwrap().model_key = identifier.clone();
+            let output = Command::new(&lms)
+                .args(["load", key, "--identifier", &identifier, "--gpu", "max",
+                       "--context-length", &context.clamp(512, 32768).to_string(), "--yes"])
+                .output().await
+                .map_err(|error| format!("LM Studio 모델 로드 실패: {error}"))?;
+            if !output.status.success() {
+                return Err(format!("LM Studio 모델 로드 실패: {}", String::from_utf8_lossy(&output.stderr).trim()));
+            }
+            identifier
         }
-    }
+    };
 
     let client = reqwest::Client::new();
     for _ in 0..240 {
@@ -516,18 +573,12 @@ async fn load_lmstudio(
         {
             if response.status().is_success() {
                 let value: Value = response.json().await.unwrap_or_else(|_| json!({}));
-                let served = value["data"]
-                    .as_array()
-                    .and_then(|items| {
-                        items.iter().find(|item| item["id"] == key).or_else(|| items.first())
-                    })
-                    .and_then(|item| item["id"].as_str())
-                    .unwrap_or(key);
-                {
-                    let mut guard = runtime().lock().unwrap();
-                    guard.status = "ready".into();
+                if !value["data"].as_array().is_some_and(|items| {
+                    items.iter().any(|item| item["id"].as_str() == Some(served.as_str()))
+                }) {
+                    continue;
                 }
-                state.store.put(
+                let saved = state.store.put(
                     "provider",
                     &json!({
                         "id": PROVIDER_ID,
@@ -540,19 +591,14 @@ async fn load_lmstudio(
                         "description": "LM Studio MLX runtime managed by the Rust engine",
                     }),
                 );
-                return Ok(json!({
-                    "status": "ready",
-                    "id": id,
-                    "name": served,
-                    "engine": "MLX (LM Studio)",
-                }));
+                let saved = saved.ok_or("모델 제공자를 저장할 수 없습니다.")?;
+                runtime().lock().unwrap().status = "ready".into();
+                state.bus.record("provider", &saved);
+                return Ok(runtime_snapshot(state));
             }
         }
     }
-    let mut guard = runtime().lock().unwrap();
-    guard.status = "error".into();
-    guard.error = "MLX 모델 로딩 시간이 초과되었습니다.".into();
-    Err(guard.error.clone())
+    Err("요청한 LM Studio 모델이 API 목록에서 확인되지 않았습니다.".into())
 }
 
 fn push_log(line: String) {
@@ -561,6 +607,15 @@ fn push_log(line: String) {
     if guard.logs.len() > 200 {
         let excess = guard.logs.len() - 200;
         guard.logs.drain(0..excess);
+    }
+}
+
+pub fn mark_load_failure(state: &AppState, message: &str) {
+    if runtime().lock().unwrap().status == "loading" {
+        unload(state);
+        let mut guard = runtime().lock().unwrap();
+        guard.status = "error".into();
+        guard.error = message.into();
     }
 }
 
@@ -720,6 +775,9 @@ pub fn start_download(state: AppState, repo: String, option: String) -> Result<V
         return Err("repo 와 optionId 가 필요합니다.".into());
     }
     let file = option.rsplit('/').next().unwrap_or(&option).to_string();
+    if !file.to_ascii_lowercase().ends_with(".gguf") || file.contains(['\\', ':', '?', '#']) {
+        return Err("다운로드할 GGUF 파일을 확인하세요.".into());
+    }
     let job = state.store.put(
         MODEL_KIND,
         &json!({
@@ -755,19 +813,12 @@ async fn download_worker(state: AppState, job_id: String, repo: String, option: 
     let _ = std::fs::create_dir_all(&dir);
     let file = option.rsplit('/').next().unwrap_or(&option).to_string();
     let target = dir.join(&file);
-    let partial = dir.join(format!("{file}.part"));
+    let partial = dir.join(format!(".{job_id}.part"));
     let url = format!("https://huggingface.co/{repo}/resolve/main/{option}?download=true");
 
     let patch = |state: &AppState, patch: Value| {
-        if let Some(mut job) = state.store.get(MODEL_KIND, &job_id) {
-            if let (Value::Object(target), Value::Object(source)) = (&mut job, patch) {
-                for (key, value) in source {
-                    target.insert(key, value);
-                }
-            }
-            if let Some(saved) = state.store.put(MODEL_KIND, &job) {
-                state.bus.record("model_job", &saved);
-            }
+        if let Some(saved) = state.store.patch_if(MODEL_KIND, &job_id, "status", &json!("downloading"), &patch) {
+            state.bus.record("model_job", &saved);
         }
     };
 
@@ -817,6 +868,7 @@ async fn download_worker(state: AppState, job_id: String, repo: String, option: 
             .map(|status| status == "cancelled")
             .unwrap_or(false);
         if cancelled {
+            drop(file_handle);
             let _ = tokio::fs::remove_file(&partial).await;
             return;
         }
@@ -825,6 +877,7 @@ async fn download_worker(state: AppState, job_id: String, repo: String, option: 
                 &state,
                 json!({ "status": "failed", "error": "스트림 오류" }),
             );
+            drop(file_handle);
             let _ = tokio::fs::remove_file(&partial).await;
             return;
         };
@@ -833,6 +886,8 @@ async fn download_worker(state: AppState, job_id: String, repo: String, option: 
                 &state,
                 json!({ "status": "failed", "error": error.to_string() }),
             );
+            drop(file_handle);
+            let _ = tokio::fs::remove_file(&partial).await;
             return;
         }
         downloaded += chunk.len() as u64;
@@ -840,18 +895,24 @@ async fn download_worker(state: AppState, job_id: String, repo: String, option: 
             patch(&state, json!({ "downloaded": downloaded }));
         }
     }
-    let _ = file_handle.flush().await;
-    if let Err(error) = tokio::fs::rename(&partial, &target).await {
-        patch(
-            &state,
-            json!({ "status": "failed", "error": error.to_string() }),
-        );
+    let flushed = file_handle.flush().await;
+    drop(file_handle);
+    let _commit = DOWNLOAD_COMMIT.lock().unwrap();
+    if state.store.get(MODEL_KIND, &job_id).is_none_or(|job| job["status"] != "downloading") {
+        let _ = std::fs::remove_file(&partial);
+        return;
+    }
+    let published = flushed.and_then(|()| std::fs::hard_link(&partial, &target));
+    let _ = std::fs::remove_file(&partial);
+    if let Err(error) = published {
+        patch(&state, json!({ "status": "failed", "error": error.to_string() }));
         return;
     }
     patch(
         &state,
         json!({
             "status": "completed",
+            "installedId": file,
             "downloaded": downloaded,
             "total": if total == 0 { downloaded } else { total },
             "finishedAt": chrono::Utc::now().to_rfc3339(),
@@ -864,12 +925,13 @@ async fn download_worker(state: AppState, job_id: String, repo: String, option: 
 }
 
 pub fn cancel_job(state: &AppState, id: &str) -> bool {
-    let Some(mut job) = state.store.get(MODEL_KIND, id) else {
-        return false;
-    };
-    job["status"] = json!("cancelled");
-    job["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
-    state.store.put(MODEL_KIND, &job).is_some()
+    let _commit = DOWNLOAD_COMMIT.lock().unwrap();
+    let Some(saved) = state.store.patch_if(
+        MODEL_KIND, id, "status", &json!("downloading"),
+        &json!({"status":"cancelled","finishedAt":chrono::Utc::now().to_rfc3339()}),
+    ) else { return false };
+    state.bus.record("model_job", &saved);
+    true
 }
 
 #[cfg(test)]

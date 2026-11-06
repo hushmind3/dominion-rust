@@ -607,7 +607,7 @@ async fn run_turn_body(
             metrics.lock().unwrap().model_calls += 1;
         }
     }
-    if subtask_count > 1 {
+    if subtask_count > 1 && acceptance.is_some() && request.tools_enabled && request.tools_execution_enabled {
         let subtasks = decomposition["subtasks"]
             .as_array()
             .into_iter()

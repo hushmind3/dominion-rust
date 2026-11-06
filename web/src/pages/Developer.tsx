@@ -48,7 +48,7 @@ export function DeveloperPage(){
   try{await post('/api/dev/config',{sourceDir,repoUrl,branch});await status.reload();setMessage('소스 작업공간 설정을 저장했습니다.')}
   catch(e){setError((e as Error).message)}
  }
- const pickSource=async()=>{try{const picked=await (window as any).dominionDesktop?.pickDirectory?.();if(picked)setSourceDir(picked)}catch(e){setError((e as Error).message)}}
+ const pickSource=async()=>{try{const {path}=await post<{path?:string}>('/api/system/pick-folder',{});if(path)setSourceDir(path)}catch(e){setError((e as Error).message)}}
  const preview=async(action:'start'|'stop')=>{
   setError('');setMessage('')
   try{const result=await post<any>(`/api/dev/preview/${action}`,{});await status.reload();if(action==='start'&&result.status==='running')setMessage('개발 미리보기가 시작되었습니다: '+result.url);else setMessage('개발 미리보기를 중지했습니다.')}

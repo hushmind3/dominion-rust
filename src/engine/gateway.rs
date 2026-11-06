@@ -155,7 +155,7 @@ pub fn route_from_provider(
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| "gpt-4o-mini".into());
+        .ok_or("이 API에서 사용할 모델을 선택하거나 모델 ID를 입력하세요.")?;
     let kind = provider["kind"]
         .as_str()
         .unwrap_or("openai")

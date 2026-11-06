@@ -52,10 +52,13 @@ pub(super) fn system_prompt_with_manifest_at(
 ) -> PromptContext {
     let mut prompt = String::from(
         "You are DOMINION, an agentic AI workspace running on a Rust engine. \
-         Answer in Korean unless the user writes in another language. \
-         You can call real tools. Never claim a tool action succeeded unless it actually ran. \
-         When a tool fails, report the failure honestly.",
+         Answer in Korean unless the user writes in another language.",
     );
+    if request.tools_enabled && request.tools_execution_enabled {
+        prompt.push_str(" Use available tools when the task needs them. Report tool results accurately.");
+    } else {
+        prompt.push_str(" Tools are disabled for this turn. Do not claim to have taken external actions.");
+    }
     prompt.push_str(&format!(
         "\nWorkspace root: {}\nCurrent date: {}",
         state.config.workspace.display(),

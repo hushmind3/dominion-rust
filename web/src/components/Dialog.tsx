@@ -1,13 +1,34 @@
-import {useEffect,type HTMLAttributes,type ReactNode} from 'react'
+import {useLayoutEffect,useRef,type HTMLAttributes,type ReactNode} from 'react'
+
+const dialogs: symbol[] = []
+let previousOverflow = ''
 
 export function DialogBackdrop({children,onDismiss,...props}:HTMLAttributes<HTMLDivElement>&{
  children:ReactNode;onDismiss:()=>void
 }){
- useEffect(()=>{
-  const onKeyDown=(event:KeyboardEvent)=>{if(event.key==='Escape')onDismiss()};
-  document.addEventListener('keydown',onKeyDown);
-  return()=>document.removeEventListener('keydown',onKeyDown);
- },[onDismiss]);
+ const dismiss = useRef(onDismiss)
+ dismiss.current = onDismiss
+ useLayoutEffect(() => {
+  const id = Symbol()
+  const root = document.documentElement
+  if (!dialogs.length) {
+   previousOverflow = root.style.overflow
+   root.style.overflow = 'hidden'
+  }
+  dialogs.push(id)
+  const origin = document.activeElement
+  const onKeyDown = (event: KeyboardEvent) => {
+   if (dialogs.at(-1) === id && event.key === 'Escape' && !event.isComposing) dismiss.current()
+  }
+  document.addEventListener('keydown', onKeyDown)
+  return () => {
+   document.removeEventListener('keydown', onKeyDown)
+   const top = dialogs.at(-1) === id
+   dialogs.splice(dialogs.indexOf(id), 1)
+   if (!dialogs.length) root.style.overflow = previousOverflow
+   if (top && origin instanceof HTMLElement && origin.isConnected) origin.focus({preventScroll: true})
+  }
+ }, [])
  return <div {...props} className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-[2px]"
   onMouseDown={event=>{if(event.target===event.currentTarget)onDismiss()}}>{children}</div>
 }
@@ -15,7 +36,7 @@ export function DialogPanel({children,size='default',className='',...props}:HTML
  children:ReactNode;size?:'default'|'wide'
 }){
  return <div role="dialog" aria-modal="true" aria-label={props['aria-label']||'설정 창'} {...props}
-  className={['relative max-h-[90vh] w-full overflow-y-auto rounded-2xl border border-[#E7E0D5] bg-white shadow-2xl',
+  className={['relative max-h-[90dvh] w-full overflow-y-auto overscroll-contain rounded-2xl border border-[#E7E0D5] bg-white shadow-2xl',
    size==='wide'?'max-w-3xl':'max-w-xl',className].join(' ')}>{children}</div>
 }
 export function DialogHeader({children}: {children:ReactNode}){

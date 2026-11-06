@@ -8,16 +8,15 @@ pub async fn list_sessions(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.store.all("session")))
 }
 
-pub async fn create_session(State(state): State<AppState>, Json(body): Json<Value>) -> Json<Value> {
+pub async fn create_session(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     // New private chats cannot overwrite a bound room/external transcript.
     let record = json!({"id":uuid::Uuid::new_v4().to_string(),"title":body["title"].as_str().filter(|title|!title.trim().is_empty()).unwrap_or("새 대화").chars().take(200).collect::<String>(),
         "agentId":body["agentId"].as_str(),"providerId":body["providerId"].as_str(),"model":body["model"].as_str(),"archived":false});
-    let saved = state
-        .store
-        .put_if_absent("session", &record)
-        .unwrap_or_else(|| json!({}));
+    let Some(saved) = state.store.put_if_absent("session", &record) else {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "세션을 저장할 수 없습니다.");
+    };
     state.bus.record("session", &saved);
-    Json(saved)
+    Json(saved).into_response()
 }
 
 pub async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
