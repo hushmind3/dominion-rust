@@ -197,8 +197,13 @@ pub(super) fn apply_reasoning_options(
             }
         }
     } else {
+        // Ollama and Qwen templates expose thinking through enable_thinking.
+        // Sending OpenAI's reasoning_effort to those endpoints makes Ollama
+        // reject non-thinking models with "does not support thinking".
         if let Some(effort) = effort {
-            body["reasoning_effort"] = json!(effort);
+            if !matches!(protocol, "chat_template" | "qwen") {
+                body["reasoning_effort"] = json!(effort);
+            }
         }
         if let Some(thinking) = thinking.or_else(|| (effort == Some("none")).then_some(false)) {
             match protocol {
@@ -739,6 +744,35 @@ async fn stream_completion_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_chat_template_never_receives_openai_reasoning_effort() {
+        let mut body = json!({"model":"llama3.2:3b"});
+        apply_reasoning_options(
+            &mut body,
+            "chat_template",
+            Some(false),
+            Some("low"),
+        );
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "Ollama rejects reasoning_effort on non-thinking models: {body}"
+        );
+        assert_eq!(
+            body["chat_template_kwargs"]["enable_thinking"],
+            false,
+            "{body}"
+        );
+
+        let mut qwen = json!({"model":"qwen3:4b"});
+        apply_reasoning_options(&mut qwen, "qwen", Some(true), Some("high"));
+        assert!(qwen.get("reasoning_effort").is_none(), "{qwen}");
+        assert_eq!(qwen["enable_thinking"], true, "{qwen}");
+
+        let mut api = json!({"model":"reasoning-model"});
+        apply_reasoning_options(&mut api, "openai", Some(true), Some("high"));
+        assert_eq!(api["reasoning_effort"], "high", "{api}");
+    }
 
     #[test]
     fn each_provider_receives_its_own_tool_window_from_full_evidence() {
