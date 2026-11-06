@@ -180,7 +180,9 @@ pub async fn delete_provider(State(state): State<AppState>, Path(id): Path<Strin
 }
 
 fn model_is_free(provider: &Value, kind: &str, base: &str, item: &Value, id: &str) -> bool {
-    if kind == "ollama" || base.contains("127.0.0.1") || base.contains("localhost") {
+    // Local runtimes on their standard ports are free. A localhost shim that
+    // proxies paid providers (for example port 4399) is not automatically free.
+    if kind == "ollama" || base.contains(":11434") || base.contains(":1234") {
         return true;
     }
     if provider["integration"].as_str() == Some("freellmapi") {
@@ -204,7 +206,7 @@ fn model_is_free(provider: &Value, kind: &str, base: &str, item: &Value, id: &st
                     .and_then(|text| text.parse::<f64>().ok())
                     .or_else(|| value.as_f64())
             })
-            .is_none_or(|value| value == 0.0)
+            .is_some_and(|value| value == 0.0)
     };
     zero("prompt") && zero("completion")
 }
@@ -326,6 +328,8 @@ mod tests {
     fn free_models_include_local_freellmapi_and_zero_pricing() {
         let local = json!({"id":"p","name":"local","baseUrl":"http://127.0.0.1:11434/v1"});
         assert!(model_is_free(&local, "openai", "http://127.0.0.1:11434/v1", &Value::Null, "x"));
+        let shim = json!({"id":"p","name":"shim","baseUrl":"http://127.0.0.1:4399/v1"});
+        assert!(!model_is_free(&shim, "openai", "http://127.0.0.1:4399/v1", &Value::Null, "paid/model"));
         let free_api = json!({"id":"p","name":"free","integration":"freellmapi"});
         assert!(model_is_free(&free_api, "openai", "https://api.example/v1", &Value::Null, "x"));
         let free_suffix = json!({"id":"p","name":"openrouter"});
