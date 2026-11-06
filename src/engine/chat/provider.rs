@@ -212,7 +212,141 @@ pub(super) fn apply_reasoning_options(
     }
 }
 
+/// Retry transient provider/stream failures only before any content was
+/// published to the client. Replaying a partially streamed answer could repeat
+/// visible text, reasoning, or a tool request, so that case always stops.
+fn transient_provider_error(error: &str) -> bool {
+    error.contains(" 연결 실패:")
+        || error.contains("스트림 오류:")
+        || error.contains("모델 스트림이 완료 신호 없이 종료")
+        || error.contains("(HTTP 408")
+        || error.contains("(HTTP 429")
+        || error.contains("(HTTP 5")
+}
+
+fn fallback_candidates(
+    state: &AppState,
+    primary: &ProviderRef,
+    request: &TurnRequest,
+    messages: &[Value],
+) -> Vec<ProviderRef> {
+    let approx_chars: usize = messages.iter()
+        .filter_map(|item| item["content"].as_str())
+        .map(str::chars)
+        .map(Iterator::count)
+        .sum();
+    crate::engine::gateway::ordered_alternatives(state, &primary.id)
+        .into_iter()
+        .filter(|route| route.tool_mode == primary.tool_mode)
+        .filter(|route| {
+            route.context_tokens.is_none_or(|tokens| {
+                approx_chars <= (tokens as usize).saturating_mul(4)
+            })
+        })
+        .filter(|route| {
+            if request.attachment_ids.is_empty() {
+                return true;
+            }
+            // Never silently send an image turn to a text-only route.
+            state.store.get("provider", &route.id).is_some_and(|item| {
+                item["capabilities"]["vision"] == true
+                    || item["capabilities"]["images"] == true
+            })
+        })
+        .take(3)
+        .map(|route| ProviderRef {
+            id: route.id,
+            name: route.name,
+            base_url: route.base_url,
+            api_key: route.api_key,
+            model: route.model,
+            tool_mode: route.tool_mode,
+            reasoning_protocol: route.reasoning_protocol,
+            local: route.local,
+            context_tokens: route.context_tokens,
+            max_output_tokens: route.max_output_tokens,
+        })
+        .collect()
+}
+
+/// Returns the completed response and the route which actually generated it.
+/// A private relay preserves streaming to the user while detecting whether any
+/// output was emitted before a provider failed.
 pub(super) async fn stream_completion(
+    state: &AppState,
+    client: &reqwest::Client,
+    provider: &ProviderRef,
+    messages: &[Value],
+    tools: &[Value],
+    request: &TurnRequest,
+    session_id: &str,
+    tx: &UnboundedSender<Value>,
+) -> Result<(Completion, ProviderRef), String> {
+    let mut candidates = vec![provider.clone()];
+    candidates.extend(fallback_candidates(state, provider, request, messages));
+    let mut failed = Vec::new();
+
+    for candidate in candidates {
+        if state.is_cancelled(session_id) {
+            return Err("실행이 중단되었습니다.".into());
+        }
+        let (relay, mut relay_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (result, exposed) = {
+            let attempt = stream_completion_once(
+                state, client, &candidate, messages, tools, request, session_id, &relay,
+            );
+            tokio::pin!(attempt);
+            let mut exposed = false;
+            let result = loop {
+                tokio::select! {
+                    biased;
+                    event = relay_rx.recv() => {
+                        if let Some(event) = event {
+                            exposed = true;
+                            let _ = tx.send(event);
+                        }
+                    }
+                    complete = &mut attempt => break complete,
+                }
+            };
+            // The model may finish and enqueue its last delta in the same tick.
+            // Forward those deltas before deciding whether replay is safe.
+            while let Ok(event) = relay_rx.try_recv() {
+                exposed = true;
+                let _ = tx.send(event);
+            }
+            (result, exposed)
+        };
+        match result {
+            Ok(completion) => {
+                if candidate.id != provider.id {
+                    state.store.audit("chat.provider_failover", json!({
+                        "sessionId":session_id, "from":provider.id, "to":candidate.id,
+                        "model":candidate.model, "previousFailures":failed,
+                    }));
+                    let _ = tx.send(json!({
+                        "type":"provider_failover",
+                        "from":provider.id, "to":candidate.id,
+                        "model":candidate.model,
+                    }));
+                }
+                return Ok((completion, candidate));
+            }
+            Err(error) => {
+                // No replay after partial visible content or a policy/cancel
+                // error. The next provider is only allowed to retry a clean
+                // transient failure with zero externally observed output.
+                if exposed || !transient_provider_error(&error) || state.is_cancelled(session_id) {
+                    return Err(error);
+                }
+                failed.push(json!({"providerId":candidate.id,"error":error}));
+            }
+        }
+    }
+    Err(format!("사용 가능한 제공자가 모두 실패했습니다: {}", json!(failed)))
+}
+
+async fn stream_completion_once(
     state: &AppState,
     client: &reqwest::Client,
     provider: &ProviderRef,
@@ -447,6 +581,70 @@ pub(super) async fn stream_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_transient_failures_are_replayed() {
+        assert!(transient_provider_error("remote 연결 실패: refused"));
+        assert!(transient_provider_error("remote 호출 실패 (HTTP 503 Service Unavailable):"));
+        assert!(transient_provider_error("모델 스트림이 완료 신호 없이 종료되었습니다."));
+        assert!(!transient_provider_error("모델 응답이 콘텐츠 필터로 중단되었습니다."));
+        assert!(!transient_provider_error("실행이 중단되었습니다."));
+        assert!(!transient_provider_error("remote 호출 실패 (HTTP 400 Bad Request):"));
+    }
+
+    #[tokio::test]
+    async fn transient_failure_uses_alternative_without_repeating_visible_output() {
+        use axum::{routing::post, response::IntoResponse, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route("/chat/completions", post(|| async {
+            let events = format!(
+                "data: {}\n\ndata: [DONE]\n\n",
+                json!({"choices":[{"delta":{"content":"대체 모델 정상 응답"}}]})
+            );
+            ([(axum::http::header::CONTENT_TYPE, "text/event-stream")], events).into_response()
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let root = std::env::temp_dir().join(format!("dominion-failover-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config = crate::config::Config {
+            port:0, data_dir:root.clone(), web_dir:root.join("web"), workspace:root.clone(),
+        };
+        let state = AppState::new(config, crate::db::Store::open(&root.join("db.sqlite")).unwrap(),
+            crate::vault::Vault::open(&root.join("keys.json")));
+        state.store.put("session", &json!({"id":"session-failover"}));
+        state.store.put("provider", &json!({
+            "id":"primary","baseUrl":"http://127.0.0.1:1","model":"broken",
+            "toolMode":"native","enabled":true,
+        }));
+        state.store.put("provider", &json!({
+            "id":"alternative","baseUrl":format!("http://{address}"),"model":"working",
+            "toolMode":"native","enabled":true,
+        }));
+        let request = TurnRequest::from_value(&json!({
+            "input":"응답해","sessionId":"session-failover","providerId":"primary","autoLearning":false,
+        })).unwrap();
+        let primary = select_provider(&state, &request, &state.store.get("session","session-failover").unwrap()).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (answer, selected) = tokio::time::timeout(std::time::Duration::from_secs(5),
+            stream_completion(
+                &state, &reqwest::Client::new(), &primary,
+                &[json!({"role":"user","content":"응답해"})], &[],
+                &request, "session-failover", &tx,
+            )
+        ).await.unwrap().unwrap();
+        assert_eq!(selected.id, "alternative");
+        assert_eq!(answer.content, "대체 모델 정상 응답");
+        let mut output = String::new();
+        while let Ok(event) = rx.try_recv() {
+            if event["type"] == "text" {
+                output.push_str(event["text"].as_str().unwrap_or(""));
+            }
+        }
+        assert_eq!(output, "대체 모델 정상 응답");
+        server.abort();
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn hides_text_tool_calls_across_split_deltas() {
