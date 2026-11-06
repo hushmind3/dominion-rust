@@ -42,6 +42,7 @@ pub mod policy_patch;
 pub mod preflight_fixture;
 pub mod principle;
 pub mod rooms;
+pub mod room_knowledge;
 pub mod run_state;
 pub mod scheduler;
 pub mod skills;

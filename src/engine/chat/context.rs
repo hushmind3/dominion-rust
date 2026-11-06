@@ -254,11 +254,26 @@ fn context_block_with_manifest(
             state, &scope, query, execution_id,
         );
     items.append(&mut experience_items);
+    let room_knowledge = state
+        .store
+        .get("session", session_id)
+        .and_then(|session| session["roomId"].as_str().map(str::to_string))
+        .and_then(|room_id| {
+            crate::engine::room_knowledge::context_block(state, &room_id).map(|block| (room_id, block))
+        });
+    if let Some((room_id, block)) = &room_knowledge {
+        items.push(json!({
+            "kind": "room_knowledge",
+            "roomId": room_id,
+            "digest": crate::engine::memory::stable_id(&[block]),
+        }));
+    }
     if memories.is_none()
         && skills.is_empty()
         && reliability.is_empty()
         && adopted.is_none()
         && experience.is_none()
+        && room_knowledge.is_none()
     {
         return None;
     }
@@ -282,6 +297,10 @@ fn context_block_with_manifest(
     if let Some(experience) = experience {
         block.push_str("\n\n");
         block.push_str(&experience);
+    }
+    if let Some((_, room_knowledge)) = &room_knowledge {
+        block.push_str("\n\n");
+        block.push_str(room_knowledge);
     }
     let watermark = crate::engine::memory::stable_id(&[
         scope.partition_key.as_str(),

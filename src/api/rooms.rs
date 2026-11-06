@@ -224,6 +224,31 @@ pub async fn messages(State(state): State<AppState>, Path(id): Path<String>) -> 
     })())
 }
 
+pub async fn knowledge(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    response((|| {
+        room(&state, &id)?;
+        Ok(json!(crate::engine::room_knowledge::list(&state, &id)))
+    })())
+}
+
+pub async fn learn(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    response((|| {
+        room(&state, &id)?;
+        let session = rooms::ensure_room_session(&state, &id).map_err(bad)?;
+        let session_id = session["id"]
+            .as_str()
+            .ok_or_else(|| failed("회의실 세션 ID가 없습니다."))?;
+        let through = state
+            .store
+            .messages(session_id)
+            .last()
+            .and_then(|message| message["id"].as_str().map(str::to_string))
+            .ok_or_else(|| bad("학습할 대화가 없습니다."))?;
+        crate::engine::room_knowledge::enqueue(&state, &id, session_id, &through)
+            .ok_or_else(|| failed("방 학습 작업을 등록할 수 없습니다."))
+    })())
+}
+
 fn submit(state: &AppState, id: &str, body: &Value) -> ApiResult {
     submit_internal(state, id, body, None, true)
 }

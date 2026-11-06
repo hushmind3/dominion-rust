@@ -662,6 +662,32 @@ fn finish(
     );
     context.state.store.audit("room.exchange_finished",json!({"roomId":room_id,"sessionId":session_id,"turns":outputs.len(),"status":status,"reason":reason}));
     context.emit(json!({"type":"room_finished","roomId":room_id,"sessionId":session_id,"status":status,"reason":reason}));
+    // One completed exchange is one learning unit. The job is content-
+    // addressed by its last message, so retries and duplicate completion do
+    // not create duplicate knowledge.
+    if status == "completed" && !outputs.is_empty() {
+        let learning_enabled = context
+            .state
+            .store
+            .get("room", room_id)
+            .is_some_and(|room| room["autoLearning"].as_bool() != Some(false));
+        if learning_enabled {
+            if let Some(through) = context
+                .state
+                .store
+                .messages(session_id)
+                .last()
+                .and_then(|message| message["id"].as_str().map(str::to_string))
+            {
+                crate::engine::room_knowledge::enqueue(
+                    &context.state,
+                    room_id,
+                    session_id,
+                    &through,
+                );
+            }
+        }
+    }
     json!({"roomId":room_id,"sessionId":session_id,"turns":outputs.len(),"status":status,"outputs":outputs,"pauseReason":reason,"yieldedToMessageId":yielded})
 }
 fn route_peers(

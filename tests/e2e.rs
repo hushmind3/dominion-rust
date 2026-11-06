@@ -391,6 +391,223 @@ fn a_room_greeting_reaches_the_whole_discussion_room() {
 }
 
 #[test]
+fn room_debate_knowledge_is_recalled_by_a_different_model_with_provenance() {
+    let _serial = serial();
+    let (port, requests) = scripted_provider(|request| {
+        let system = request["messages"][0]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        if request["stream"].as_bool() != Some(true) {
+            if !system.contains("extract durable knowledge") {
+                return vec![json!({"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]})];
+            }
+            let prompt = request["messages"]
+                .as_array()
+                .and_then(|messages| messages.last())
+                .and_then(|message| message["content"].as_str())
+                .unwrap_or("");
+            let parsed: Value = serde_json::from_str(prompt).unwrap_or_else(|_| json!({}));
+            let messages = parsed["messages"].as_array().cloned().unwrap_or_default();
+            let find = |needle: &str| {
+                messages.iter().find(|message| {
+                    message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains(needle))
+                })
+            };
+            let claim = find("배포는 X");
+            let correction = find("배포는 Y");
+            let (Some(claim), Some(correction)) = (claim, correction) else {
+                return vec![json!({"choices":[{"delta":{"content":"{\"knowledge\":[]}"},"finish_reason":"stop"}]})];
+            };
+            let claim_id = claim["messageId"].as_str().unwrap_or("");
+            let correction_id = correction["messageId"].as_str().unwrap_or("");
+            let claim_text = claim["content"].as_str().unwrap_or("");
+            let correction_text = correction["content"].as_str().unwrap_or("");
+            let knowledge = json!({"knowledge":[
+                {
+                    "type":"conclusion","topicKey":"deploy-method",
+                    "text":"배포는 X 방식","sourceMessageIds":[claim_id],
+                    "evidenceQuotes":[claim_text],"confidence":0.5,
+                    "verification":"debate"
+                },
+                {
+                    "type":"correction","topicKey":"deploy-method",
+                    "text":"배포는 Y 방식","sourceMessageIds":[correction_id],
+                    "evidenceQuotes":[correction_text],"correctsMessageIds":[claim_id],
+                    "confidence":0.9,"verification":"debate"
+                }
+            ]});
+            return vec![json!({"choices":[{"delta":{"content":knowledge.to_string()},"finish_reason":"stop"}]})];
+        }
+        let model = request["model"].as_str().unwrap_or("");
+        let reply = if model.contains("model-b") {
+            "정정: X는 실패했다. 배포는 Y 방식으로 해야 한다."
+        } else if model.contains("model-d") {
+            "Y 방식입니다."
+        } else {
+            "배포는 X 방식으로 하자."
+        };
+        vec![json!({"choices":[{"delta":{"content":reply},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let provider = app.get("/api/providers")[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    app.post(
+        "/api/providers",
+        &json!({
+            "name":"learner",
+            "baseUrl":format!("http://127.0.0.1:{port}/v1"),
+            "model":"mock",
+            "reflection":true,
+            "reflectionModel":"mock",
+            "enabled":true,
+            "toolMode":"native"
+        }),
+    );
+    let agent_a = app.post(
+        "/api/agents",
+        &json!({"name":"A","systemPrompt":"A","providerId":provider,"model":"model-a"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent_b = app.post(
+        "/api/agents",
+        &json!({"name":"B","systemPrompt":"B","providerId":provider,"model":"model-b"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let room = app.post(
+        "/api/rooms",
+        &json!({
+            "name":"knowledge-room","agentIds":[agent_a,agent_b],
+            "routingMode":"discussion","rounds":1,"maxTurns":3,
+            "toolsEnabled":false,"autoLearning":true
+        }),
+    );
+    let room_id = room["id"].as_str().unwrap().to_string();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let first = app.post(
+        &format!("/api/rooms/{room_id}/messages"),
+        &json!({"input":"배포 방식을 정하자","clientMessageId":"owner-knowledge-001"}),
+    );
+    let job_id = first["jobId"].as_str().unwrap().to_string();
+    loop {
+        let job = app.get(&format!("/api/jobs/{job_id}"));
+        if matches!(job["status"].as_str(), Some("completed" | "failed")) {
+            assert_eq!(job["status"], "completed", "{job}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{job}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The completed exchange is learned as one room-level unit.
+    loop {
+        let jobs = app.get("/api/jobs");
+        let learn = jobs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|job| {
+                job["kind"] == "learn"
+                    && job["input"]["roomLearning"] == true
+                    && job["input"]["roomId"].as_str() == Some(room_id.as_str())
+            });
+        if let Some(job) = learn {
+            if matches!(job["status"].as_str(), Some("completed" | "failed")) {
+                assert_eq!(job["status"], "completed", "{job}");
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "room learning did not finish: {jobs}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let knowledge = app.get(&format!("/api/rooms/{room_id}/knowledge"));
+    let items = knowledge.as_array().unwrap();
+    let correction = items
+        .iter()
+        .find(|item| item["type"] == "correction")
+        .expect("correction");
+    assert_eq!(correction["status"], "active", "{correction}");
+    assert!(correction["text"].as_str().unwrap_or("").contains("Y"));
+    let sources = correction["sources"].as_array().unwrap();
+    assert!(sources.iter().any(|source| source["model"] == "model-b"), "{sources:?}");
+    let claim = items
+        .iter()
+        .find(|item| item["type"] == "claim")
+        .expect("single-agent conclusion demoted to claim");
+    assert_eq!(claim["status"], "superseded", "{claim}");
+
+    // A new model joins the same room. It must see the correction and its
+    // provenance even though it never spoke in the original debate.
+    let agent_d = app.post(
+        "/api/agents",
+        &json!({"name":"D","systemPrompt":"D","providerId":provider,"model":"model-d"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    app.post(
+        &format!("/api/rooms/{room_id}"),
+        &json!({
+            "name":"knowledge-room",
+            "agentIds":[agent_a,agent_b,agent_d],
+            "routingMode":"discussion",
+            "rounds":1,
+            "maxTurns":6,
+            "toolsEnabled":false,
+            "autoLearning":true
+        }),
+    );
+    let second = app.post(
+        &format!("/api/rooms/{room_id}/messages"),
+        &json!({"input":"우리가 정한 배포 방식은?","clientMessageId":"owner-knowledge-002"}),
+    );
+    let second_job = second["jobId"].as_str().unwrap().to_string();
+    let second_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let job = app.get(&format!("/api/jobs/{second_job}"));
+        if matches!(job["status"].as_str(), Some("completed" | "failed")) {
+            assert_eq!(job["status"], "completed", "{job}");
+            break;
+        }
+        assert!(Instant::now() < second_deadline, "{job}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let captured = requests.lock().unwrap();
+    let d_prompt = captured
+        .iter()
+        .filter(|request| request["model"].as_str() == Some("model-d"))
+        .filter_map(|request| {
+            let messages = request["messages"].as_array()?;
+            let has_owner = messages.iter().any(|message| {
+                message["role"] == "user"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains("우리가 정한 배포 방식"))
+            });
+            has_owner.then(|| {
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "system")
+                    .and_then(|message| message["content"].as_str())
+                    .unwrap_or("")
+                    .to_string()
+            })
+        })
+        .next()
+        .expect("model D turn");
+    assert!(d_prompt.contains("Shared room knowledge"), "{d_prompt}");
+    assert!(d_prompt.contains("배포는 Y 방식"), "{d_prompt}");
+    assert!(d_prompt.contains("model-b"), "{d_prompt}");
+}
+
+#[test]
 fn persistent_room_http_flow_keeps_owner_once_and_shares_peer_context() {
     let _serial = serial();
     let (port, requests) = scripted_provider(|request| {

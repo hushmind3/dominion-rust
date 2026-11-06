@@ -239,6 +239,9 @@ fn enqueue_for_agent_through_mode(
 pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let state = &context.state;
     let input = job.get("input").cloned().unwrap_or_else(|| json!({}));
+    if input["roomLearning"].as_bool() == Some(true) {
+        return crate::engine::room_knowledge::run(context, job).await;
+    }
     let session_id = input["sessionId"]
         .as_str()
         .filter(|id| !id.is_empty())
