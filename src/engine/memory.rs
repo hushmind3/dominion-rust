@@ -252,6 +252,52 @@ pub fn retrieve(store: &Store, scope: &MemoryScope, query: &str, limit: usize) -
 fn retrieve_ranked(
     store: &Store, scope: &MemoryScope, query: &str, limit: usize, algorithm: &Value,
 ) -> Vec<Value> {
+    let rerank = active_kernel(store, "memory.rerank");
+    retrieve_ranked_with_rerank(store, scope, query, limit, algorithm, &rerank)
+}
+
+fn bm25_scores(
+    query_terms: &BTreeSet<String>,
+    documents: &[BTreeSet<String>],
+    k1: f64,
+    b: f64,
+) -> Vec<f64> {
+    let count = documents.len().max(1) as f64;
+    let average = documents
+        .iter()
+        .map(|document| document.len() as f64)
+        .sum::<f64>()
+        / count;
+    query_terms
+        .iter()
+        .map(|term| {
+            let df = documents
+                .iter()
+                .filter(|document| document.contains(term))
+                .count() as f64;
+            let idf = (1.0 + (count - df + 0.5) / (df + 0.5)).ln();
+            documents
+                .iter()
+                .map(|document| {
+                    let tf = if document.contains(term) { 1.0 } else { 0.0 };
+                    let length = document.len() as f64;
+                    let norm = k1 * (1.0 - b + b * length / average.max(1.0));
+                    idf * tf * (k1 + 1.0) / (tf + norm)
+                })
+                .collect::<Vec<_>>()
+        })
+        .fold(vec![0.0; documents.len()], |mut total, scores| {
+            for (index, score) in scores.into_iter().enumerate() {
+                total[index] += score;
+            }
+            total
+        })
+}
+
+fn retrieve_ranked_with_rerank(
+    store: &Store, scope: &MemoryScope, query: &str, limit: usize,
+    algorithm: &Value, rerank: &Value,
+) -> Vec<Value> {
     let query_terms = terms(query);
     let compact_query = normalize(query);
     let mut records = store.all("memory");
@@ -268,10 +314,30 @@ fn retrieve_ranked(
             )
             .then_with(|| b["id"].as_str().cmp(&a["id"].as_str()))
     });
+    let rerank_strategy = rerank["implementation"]
+        .as_str()
+        .or_else(|| rerank["variant"].as_str())
+        .unwrap_or("none");
+    // Keep corpus indices aligned with the record iteration below.
+    let corpus = records
+        .iter()
+        .map(|record| terms(record["text"].as_str().unwrap_or("")))
+        .collect::<Vec<_>>();
+    let bm25 = if rerank_strategy.starts_with("bm25") {
+        Some(bm25_scores(
+            &query_terms,
+            &corpus,
+            rerank["parameters"]["k1"].as_f64().unwrap_or(1.2),
+            rerank["parameters"]["b"].as_f64().unwrap_or(0.75),
+        ))
+    } else {
+        None
+    };
     let mut fact_keys = HashSet::new();
     let mut scored = records
         .into_iter()
-        .filter_map(|record| {
+        .enumerate()
+        .filter_map(|(record_index, record)| {
             if !visible(&record, scope) {
                 return None;
             }
@@ -313,7 +379,15 @@ fn retrieve_ranked(
                 .or_else(|| algorithm["variant"].as_str())
                 .unwrap_or("recency-uses");
             let bonus = importance_bonus(&record, importance_strategy, algorithm);
-            let score = if always {
+            let score = if let Some(scores) = &bm25 {
+                let lexical = scores.get(record_index).copied().unwrap_or(0.0);
+                if rerank_strategy == "bm25-importance" {
+                    lexical * 2.0 + if phrase { 4.0 } else { 0.0 }
+                        + importance + bonus
+                } else {
+                    lexical * 2.0 + if phrase { 4.0 } else { 0.0 }
+                }
+            } else if always {
                 1.0 + importance + bonus
             } else {
                 relevance * 10.0 + if phrase { 4.0 } else { 0.0 } + importance + bonus
@@ -607,7 +681,13 @@ pub fn context_block_with_manifest_at(
     let algorithm = crate::engine::algorithms::choose_for_agent(
         state, "memory.importance", scope.agent_id.as_deref(), None,
     ).unwrap_or_else(|| active_kernel(&state.store, "memory.importance"));
-    let memories = retrieve_ranked(&state.store, scope, query, 6, &algorithm);
+    let rerank = crate::engine::algorithms::choose_for_agent(
+        state, "memory.rerank", scope.agent_id.as_deref(), execution_id,
+    )
+    .unwrap_or_else(|| active_kernel(&state.store, "memory.rerank"));
+    let memories = retrieve_ranked_with_rerank(
+        &state.store, scope, query, 6, &algorithm, &rerank,
+    );
     if let (Some(execution_id), Some(success)) = (
         execution_id,
         importance_rank_quality(&state.store, scope, query, &memories),
@@ -1504,6 +1584,39 @@ mod per_agent_memory_learning_tests {
                 && record["kind"] == "memory.forgetting").unwrap();
         assert_eq!(stat["uses"],1);
         assert_eq!(stat["failures"],1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bm25_rerank_scores_documents_by_term_evidence() {
+        let mut apple = BTreeSet::new();
+        apple.insert("apple".to_string());
+        let mut banana = BTreeSet::new();
+        banana.insert("banana".to_string());
+        let mut query = BTreeSet::new();
+        query.insert("apple".to_string());
+        let scores = bm25_scores(&query, &[apple, banana], 1.2, 0.75);
+        assert!(scores[0] > scores[1], "{scores:?}");
+
+        let (state, dir) = state();
+        let db = state.store.clone();
+        let scope = MemoryScope::for_session(&db, "s", Some("a"));
+        db.put("algorithm", &json!({
+            "id":"rerank-bm25","kind":"memory.rerank","implementation":"bm25",
+            "variant":"bm25","status":"active","parameters":{"k1":1.2,"b":0.75}
+        }));
+        db.put("memory", &json!({
+            "id":"apple-note","text":"apple deployment note","type":"lesson",
+            "importance":0.5,"scope":"agent","agentId":"a",
+            "partitionKey":scope.partition_key,"status":"active"
+        }));
+        db.put("memory", &json!({
+            "id":"banana-note","text":"banana deployment note","type":"lesson",
+            "importance":0.5,"scope":"agent","agentId":"a",
+            "partitionKey":scope.partition_key,"status":"active"
+        }));
+        let ranked = retrieve(&db, &scope, "apple", 5);
+        assert_eq!(ranked[0]["id"], "apple-note", "{ranked:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
