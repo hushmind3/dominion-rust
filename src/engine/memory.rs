@@ -1356,3 +1356,133 @@ mod memory_algorithm_tests {
         assert_eq!(db.get("memory", "new-low").unwrap()["status"], "active");
     }
 }
+
+#[cfg(test)]
+mod per_agent_memory_learning_tests {
+    use super::*;
+    use crate::{config::Config, state::AppState, vault::Vault};
+
+    fn state() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir()
+            .join(format!("dominion-memory-learn-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0, data_dir: dir.clone(),
+            web_dir: dir.join("web"), workspace: dir.clone(),
+        };
+        let store = Store::open(&config.db_path()).unwrap();
+        let vault = Vault::open(&config.key_path());
+        (AppState::new(config, store, vault), dir)
+    }
+
+    fn only_kernel(state: &AppState, kind: &str, implementation: &str) {
+        crate::engine::algorithms::seed(state);
+        for mut item in state.store.all("algorithm") {
+            if item["kind"].as_str() != Some(kind) { continue; }
+            item["status"] = json!(if item["implementation"].as_str()
+                == Some(implementation) { "active" } else { "disabled" });
+            state.store.put("algorithm", &item);
+        }
+    }
+
+    #[test]
+    fn importance_is_chosen_per_agent_and_graded_independently_from_task_outcome() {
+        let (state, dir) = state();
+        state.store.put("session", &json!({"id":"s","agentId":"agent-a"}));
+        only_kernel(&state, "memory.importance", "evidence-weighted");
+        let scope = MemoryScope::for_session(&state.store, "s", Some("agent-a"));
+        state.store.put("memory", &json!({
+            "id":"evidence-memory","text":"배포 전 파일을 검증한다",
+            "type":"lesson","status":"active","importance":0.7,
+            "scope":"agent","agentId":"agent-a","partitionKey":scope.partition_key,
+            "sourceMessageIds":["m1","m2"],"evidenceMessageIds":["m1","m2"]
+        }));
+        let (_context, manifest) = context_block_with_manifest_at(
+            &state, &scope, "파일 검증", Some("run-importance"),
+        );
+        assert_eq!(manifest.len(), 1);
+        let usage_id = format!("algorithm-usage-{}",
+            stable_id(&["run-importance", "memory.importance"]));
+        let usage = state.store.get("algorithm_usage", &usage_id).unwrap();
+        assert_eq!(usage["agentId"], "agent-a");
+        assert_eq!(usage["signal"]["successes"], 1);
+        // An intentionally failed task cannot override this independent signal.
+        crate::engine::algorithms::finalize_execution(
+            &state, &json!({"id":"run-importance","taskOutcome":"failed"}),
+        );
+        let stats = state.store.all("algorithm_stat");
+        let stat = stats.iter().find(|item| item["agentId"] == "agent-a"
+            && item["kind"] == "memory.importance").unwrap();
+        assert_eq!(stat["successes"], 1);
+        assert_eq!(stat["failures"], 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn offline_forgetting_and_compaction_learn_separately_for_each_bot() {
+        let (state, dir) = state();
+        only_kernel(&state, "memory.forgetting", "decay");
+        only_kernel(&state, "memory.compaction", "exact");
+        for agent in ["agent-a", "agent-b"] {
+            state.store.put("memory", &json!({
+                "id":format!("old-{agent}"), "agentId":agent, "partitionKey":"local",
+                "scope":"agent", "type":"fact", "text":format!("old {agent}"),
+                "importance":0.1, "status":"active",
+                "createdAt":"2020-01-01T00:00:00Z"
+            }));
+        }
+        for (id, importance) in [("copy-low",0.2),("copy-high",0.9)] {
+            state.store.put("memory", &json!({
+                "id":id,"agentId":"agent-a","partitionKey":"local",
+                "scope":"agent","sessionId":"s","type":"lesson",
+                "text":"같은 교훈 원문","importance":importance,"status":"active",
+                "createdAt":chrono::Utc::now().to_rfc3339()
+            }));
+        }
+        state.store.put("memory", &json!({
+            "id":"protected","agentId":"agent-a","partitionKey":"local",
+            "scope":"agent","type":"preference","text":"소중한 선호",
+            "importance":0.1,"status":"active",
+            "createdAt":"2020-01-01T00:00:00Z"
+        }));
+        assert_eq!(learning_sweep(&state), 3);
+        assert_eq!(learning_sweep(&state), 0, "no idle UCB score inflation");
+        assert_eq!(state.store.get("memory","old-agent-a").unwrap()["status"], "archived");
+        assert_eq!(state.store.get("memory","old-agent-b").unwrap()["status"], "archived");
+        assert_eq!(state.store.get("memory","protected").unwrap()["status"], "active");
+        assert_eq!(state.store.get("memory","copy-low").unwrap()["status"], "archived");
+        assert_eq!(state.store.get("memory","copy-high").unwrap()["status"], "active");
+        let stats = state.store.all("algorithm_stat");
+        for (agent,kind) in [
+            ("agent-a","memory.forgetting"),("agent-b","memory.forgetting"),
+            ("agent-a","memory.compaction")
+        ] {
+            let stat=stats.iter().find(|stat| stat["agentId"] == agent
+                && stat["kind"] == kind).expect("missing bot-specific UCB stat");
+            assert_eq!(stat["uses"],1);
+            assert_eq!(stat["successes"],1);
+        }
+        assert!(state.store.all("memory_maintenance_observation").len() >= 3);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn never_policy_is_evaluated_once_per_unchanged_evidence_snapshot() {
+        let (state, dir) = state();
+        only_kernel(&state, "memory.forgetting", "never");
+        state.store.put("memory", &json!({
+            "id":"old-one","agentId":"bot","scope":"agent","partitionKey":"local",
+            "text":"stale fact","type":"fact","importance":0.1,
+            "status":"active","createdAt":"2020-01-01T00:00:00Z"
+        }));
+        assert_eq!(learning_sweep(&state),1);
+        assert_eq!(learning_sweep(&state),0);
+        assert_eq!(state.store.get("memory","old-one").unwrap()["status"],"active");
+        let stat=state.store.all("algorithm_stat").into_iter()
+            .find(|record| record["agentId"] == "bot"
+                && record["kind"] == "memory.forgetting").unwrap();
+        assert_eq!(stat["uses"],1);
+        assert_eq!(stat["failures"],1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
