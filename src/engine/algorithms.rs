@@ -403,6 +403,13 @@ pub fn builtins() -> Vec<Value> {
             json!({"failureBoost": 4.0}),
         ),
         builtin(
+            "memory.retrieval",
+            "balanced",
+            "balanced",
+            "한국어 띄어쓰기 차이와 문서 희소도를 반영하는 모델 없는 경험 검색 재정렬.",
+            json!({"failureBoost": 2.0}),
+        ),
+        builtin(
             "learning.counterexample",
             "narrow",
             "narrow",
