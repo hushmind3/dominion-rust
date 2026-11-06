@@ -575,9 +575,14 @@ fn importance_rank_quality(
         { 0.25 } else { 0.0 };
         coverage * 3.0 + specificity + phrase + standing
     };
-    let mut ideal = store.all("memory").into_iter()
-        .filter(|record| visible(record, scope))
-        .map(|record| grade(&record))
+    // Use the same visibility, scoped fact-key deduplication and relevance
+    // admission as real retrieval. Historical superseded keyed facts must not
+    // inflate the ideal ranking's score.
+    let reference = retrieve_ranked(
+        store, scope, query, 20, &json!({"implementation":"fixed"}),
+    );
+    let mut ideal = reference.iter()
+        .map(grade)
         .filter(|value| *value > 0.0)
         .collect::<Vec<_>>();
     if ideal.is_empty() { return None; }
