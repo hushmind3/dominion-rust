@@ -273,7 +273,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             input["model"].as_str().unwrap_or("").to_string(),
         )
     });
-    let (raw, reflection_provider, reflection_model) = llm::complete_with_fallback(
+    let completion = llm::complete_with_fallback(
         state,
         &preferred_provider,
         &preferred_model,
@@ -283,11 +283,43 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             serde_json::to_string(&operations).unwrap_or_default()
         ),
     )
-    .await?;
-    let start = raw.find('{').ok_or("반성 모델이 JSON을 반환하지 않았습니다.")?;
-    let end = raw.rfind('}').ok_or("반성 JSON이 완전하지 않습니다.")?;
-    let value: Value = serde_json::from_str(&raw[start..=end])
-        .map_err(|_| "반성 JSON을 해석할 수 없습니다.")?;
+    .await;
+    let (reflection_provider, reflection_model, value) = match completion {
+        Ok((raw, provider, model)) => {
+            let start = raw
+                .find('{')
+                .ok_or("반성 모델이 JSON을 반환하지 않았습니다.")?;
+            let end = raw.rfind('}').ok_or("반성 JSON이 완전하지 않습니다.")?;
+            let value: Value = serde_json::from_str(&raw[start..=end])
+                .map_err(|_| "반성 JSON을 해석할 수 없습니다.")?;
+            (provider, model, value)
+        }
+        Err(_) => {
+            // The reflection model is optional. The correction text and the
+            // real failed tool records are enough for a durable lesson.
+            let mut failed_tools = operations
+                .iter()
+                .filter(|operation| operation["status"].as_str() == Some("failed"))
+                .filter_map(|operation| operation["tool"].as_str().map(str::to_string))
+                .collect::<Vec<_>>();
+            failed_tools.sort();
+            failed_tools.dedup();
+            (
+                "deterministic".to_string(),
+                "none".to_string(),
+                json!({
+                    "rootCause": correction_class["kind"],
+                    "expected": "the owner instruction to be followed",
+                    "actual": correction_text,
+                    "lesson": correction_text,
+                    "avoid": failed_tools.join(", "),
+                    "strategy": Value::Null,
+                    "skill": Value::Null,
+                    "memory": {"text": correction_text},
+                }),
+            )
+        }
+    };
 
     let lesson = value["lesson"].as_str().unwrap_or("").trim().to_string();
     let avoid = value["avoid"].as_str().unwrap_or("").trim().to_string();
