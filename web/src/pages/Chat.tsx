@@ -2,7 +2,7 @@ import {createPortal} from 'react-dom'
 import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
 import {FormEvent,useEffect,useRef,useState,type KeyboardEvent} from 'react'
 import {ArrowRight,ArrowUp,BrainCircuit,Check,ChevronDown,ChevronRight,CircleHelp,Clock3,Code2,Command,Compass,Copy,Cpu,CornerDownLeft,HardDrive,List,LoaderCircle,MessageCircle,MoreHorizontal,Plus,Power,RefreshCw,ShieldAlert,ShieldCheck,SlidersHorizontal,Sparkles,TerminalSquare,Trash2,X} from 'lucide-react'
-import {Agent,Approval,ChatMessage,ChatSession,Provider,get,post,resolveApproval,streamChat} from '../api'
+import {Agent,Approval,ChatMessage,ChatSession,Provider,get,post,resolveApproval,streamChat,koreanReasoningEnabled,koreanReasoningKey} from '../api'
 import {Action,Empty,Notice,StateTag,refresh,useRemote} from '../components/UI'
 import {SlashMenu,slashCandidates,slashCommands,type SlashChoice} from '../components/SlashMenu'
 import {ModelPicker} from '../components/ModelPicker'
@@ -26,7 +26,7 @@ const formatBytes=(bytes:number)=>{
  const gb=Number(bytes||0)/1024/1024/1024
  return gb>=1?gb.toFixed(1)+' GB':Math.max(0,Math.round(Number(bytes||0)/1024/1024))+' MB'
 }
-export function ChatPage({sessionId,initialAgent,initialProvider,onSession,openModels}:{sessionId?:string;initialAgent?:string;initialProvider?:string;onSession:(x:string|undefined)=>void;openModels:()=>void}){
+export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,onSession,openModels}:{sessionId?:string;initialAgent?:string;initialProvider?:string;initialModel?:string;onSession:(x:string|undefined)=>void;openModels:()=>void}){
  const sessions=useRemote<ChatSession[]>('/api/sessions',[]);
  const agents=useRemote<Agent[]>('/api/agents',[]);
  const providers=useRemote<Provider[]>('/api/providers',[]);
@@ -42,7 +42,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,onSession,openM
  const agentId=(agentChoice?.scope===current?agentChoice?.id:undefined)??selectedSession?.agentId??(!current?initialAgent:undefined)??defaultAgent?.id??'';
  const activeAgent=agents.value.find(agent=>agent.id===agentId);
  const manual=override&&override.scope===current?override:
-  !current&&initialProvider?{providerId:initialProvider,model:''}:undefined;
+  !current&&initialProvider?{providerId:initialProvider,model:initialModel??''}:undefined;
  const enabledProviders=providers.value.filter(provider=>provider.enabled!==false);
  const sessionProvider=enabledProviders.find(provider=>provider.id===selectedSession?.providerId);
  const providerId=manual?.providerId??(activeAgent?.providerId||sessionProvider?.id||enabledProviders[0]?.id||'');
@@ -52,7 +52,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,onSession,openM
  const catalogue=useProviderModels(providerId);
  const {value:models,error:modelError}=catalogue;
  const setRoute=(providerId:string,model:string)=>setOverride({scope:current,providerId,model});
- useEffect(()=>{if(!current){setOverride(undefined);setAgentChoice(undefined)}},[initialAgent,initialProvider]);
+ useEffect(()=>{if(!current){setOverride(undefined);setAgentChoice(undefined)}},[initialAgent,initialProvider,initialModel]);
  const [turnSession,setTurnSession]=useState<string>();
  const [savedMessageId,setSavedMessageId]=useState<string>();
  const [approvalBusy,setApprovalBusy]=useState(false);
@@ -61,7 +61,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,onSession,openM
  const job=useJob<LearningJob>(learningJob?'/api/jobs/'+encodeURIComponent(learningJob.id):null);
  const approval=(liveApproval?.sessionId===current?liveApproval:null)||
   approvals.value.find(item=>item.sessionId===current&&item.status==='pending');
- const [error,setError]=useState(''),[busy,setBusy]=useState(false),[live,setLive]=useState(''),[thought,setThought]=useState(''),[thinking,setThinking]=useState(false),[reasoningKo,setReasoningKo]=useState(()=>{try{return localStorage.getItem('dominion.chat.reasoningKo')!=='0'}catch{return true}}),[showReasoning,setShowReasoning]=useState(true),[showSettings,setShowSettings]=useState(false),[toolsEnabled,setToolsEnabled]=useState(true),[thinkingEnabled,setThinkingEnabled]=useState(true),[reasoningEffort,setReasoningEffort]=useState(''),[autoLearn,setAutoLearn]=useState(true),[showHistory,setShowHistory]=useState(()=>{try{if(window.innerWidth<768)return false;return localStorage.getItem('dominion.chat.sidebar')!=='0'}catch{return true}}),[toolStatus,setToolStatus]=useState('');
+ const [error,setError]=useState(''),[busy,setBusy]=useState(false),[live,setLive]=useState(''),[thought,setThought]=useState(''),[thinking,setThinking]=useState(false),[reasoningKo,setReasoningKo]=useState(koreanReasoningEnabled),[showReasoning,setShowReasoning]=useState(true),[showSettings,setShowSettings]=useState(false),[toolsEnabled,setToolsEnabled]=useState(true),[thinkingEnabled,setThinkingEnabled]=useState(true),[reasoningEffort,setReasoningEffort]=useState(''),[autoLearn,setAutoLearn]=useState(true),[showHistory,setShowHistory]=useState(()=>{try{if(window.innerWidth<768)return false;return localStorage.getItem('dominion.chat.sidebar')!=='0'}catch{return true}}),[toolStatus,setToolStatus]=useState('');
  const [permissionMode,setPermissionMode]=useState<PermissionMode>('request'),[permissionOpen,setPermissionOpen]=useState(false),[permissionBusy,setPermissionBusy]=useState(false);
  const [modelMenu,setModelMenu]=useState(false),[installed,setInstalled]=useState<InstalledModel[]>([]),[modelsLoading,setModelsLoading]=useState(false),[runtime,setRuntime]=useState<Runtime>({status:'idle'}),[modelBusy,setModelBusy]=useState(''),[unloading,setUnloading]=useState(false),[learning,setLearning]=useState(false),[menuError,setMenuError]=useState('');
  const [slashOpen,setSlashOpen]=useState(false),[slashActive,setSlashActive]=useState(0),[commandInfo,setCommandInfo]=useState('');
@@ -81,7 +81,17 @@ export function ChatPage({sessionId,initialAgent,initialProvider,onSession,openM
  useEffect(()=>{get<{autoApprove?:string[];autoApproveAll?:boolean}>('/api/policy').then(p=>{
   setPermissionMode(p.autoApproveAll?'full':(p.autoApprove||[]).includes('workspace_write')?'workspace':'request')
  }).catch(()=>{})},[]);
- useEffect(()=>{get<Runtime>('/api/model-library/runtime').then(setRuntime).catch(()=>{})},[]);
+ useEffect(()=>{
+  const controller=new AbortController();
+  let timer:ReturnType<typeof setTimeout>;
+  const check=async()=>{
+   try{const state=await get<Runtime>('/api/model-library/runtime',controller.signal);if(!controller.signal.aborted)setRuntime(state)}
+   catch{if(!controller.signal.aborted)setRuntime({status:'unknown'})}
+   if(!controller.signal.aborted&&providerId==='dominion-native')timer=setTimeout(check,4000)
+  };
+  void check();
+  return()=>{controller.abort();clearTimeout(timer)};
+ },[providerId]);
  const changePermission=async(mode:PermissionMode)=>{
   if(permissionBusy)return
   if(mode==='full'&&!window.confirm('전체 액세스를 켜면 모델이 승인 없이 파일을 수정하고 명령을 실행합니다. 계속할까요?'))return
@@ -326,6 +336,18 @@ export function ChatPage({sessionId,initialAgent,initialProvider,onSession,openM
   }
   if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void send();}
  };
+ const modelState=(()=>{
+  if(busy&&viewingTurn)return {label:'응답 처리 중',confirmed:false};
+  if(!providerId||!model)return {label:'모델 선택 필요',confirmed:false};
+  if(!selectedProvider)return {label:'API 연결 없음',confirmed:false};
+  if(providerId==='dominion-native'){
+   if(runtime.status==='ready'&&runtime.model===model&&!modelError&&models.some(item=>item.id===model))return {label:'로컬 모델 실행 중',confirmed:true};
+   return {label:runtime.status==='error'?'로컬 실행 오류':'로컬 모델 상태 미확인',confirmed:false};
+  }
+  if(catalogue.loading)return {label:'모델 목록 확인 중',confirmed:false};
+  if(modelError)return {label:'모델 목록 조회 실패',confirmed:false};
+  return {label:models.some(item=>item.id===model)?'목록에서 확인됨':'모델 ID 등록됨',confirmed:false};
+ })();
  const activePermission=permissionCopy[permissionMode];
  return <div className={'relative grid h-[calc(100dvh-64px)] min-h-0 grid-cols-1 grid-rows-[minmax(0,1fr)] bg-[#F6F3EC] '+(showHistory?'md:grid-cols-[232px_minmax(0,1fr)]':'')}>
   {showHistory&&<Button type="button" aria-label="대화 목록 닫기" className="absolute inset-0 z-20 !h-auto !w-auto cursor-default !rounded-none !border-0 !bg-slate-900/30 md:hidden" onClick={()=>setShowHistory(false)}/>}
@@ -360,7 +382,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,onSession,openM
      </div>
     </div>
     <div className="flex shrink-0 items-center gap-1">
-     <span className={"hidden items-center gap-2 text-[10px] font-bold uppercase tracking-wider sm:inline-flex "+(model&&!modelError?"text-emerald-700":"text-[#9C9388]")}><i className={'size-1.5 rounded-full '+(model&&!modelError?'bg-emerald-500':'bg-slate-300')}/>{model&&!modelError?(selectedProvider?.local?"LOCAL ENGINE":"CLOUD / API"):"MODEL NOT READY"}</span>
+     <span role="status" className={'hidden items-center gap-2 text-[11px] font-semibold sm:inline-flex '+(modelState.confirmed?'text-emerald-700':'text-[#7C7469]')}><i className={'size-1.5 rounded-full '+(modelState.confirmed?'bg-emerald-500':'bg-slate-400')}/>{modelState.label}</span>
      
      <Button size="icon" variant="ghost" title="모델 관리" onClick={openModels}><Cpu size={18}/></Button>
     </div>
@@ -388,7 +410,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,onSession,openM
        <SelectInput aria-label="에이전트" value={agentId} onChange={e=>chooseAgent(e.target.value)} className="!h-7 !w-auto !max-w-[140px] !border-0 !bg-transparent !py-1 !pl-1.5 !pr-6 !text-[11px] !font-semibold !text-[#5C544A]">{agents.value.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput>
        <div className="relative">
         <Button type="button" variant="ghost" ref={settingsPanel.trigger} onClick={()=>{setShowSettings(x=>!x);setPermissionOpen(false);setModelMenu(false)}} className="inline-flex !h-7 items-center gap-1.5 !rounded-md !border-0 !px-2 !py-0 text-[11px] font-medium text-[#7C7469] hover:bg-[#F3EEE5]" title="대화 설정" aria-expanded={showSettings}><SlidersHorizontal size={13}/><span className="hidden sm:inline">대화 설정</span></Button>
-        {showSettings&&settingsPanel.position&&createPortal(<div ref={settingsPanel.panel} style={settingsPanel.position} className="z-[80] max-w-full overflow-y-auto overscroll-contain rounded-xl border border-[#E7E0D5] bg-white p-2 shadow-xl"><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span className="inline-flex items-center gap-1.5"><BrainCircuit size={13}/> 추론 과정 표시</span><TextInput type="checkbox" checked={showReasoning} onChange={e=>setShowReasoning(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>한국어 추론 요청</span><TextInput type="checkbox" checked={reasoningKo} onChange={e=>{const enabled=e.target.checked;setReasoningKo(enabled);try{localStorage.setItem('dominion.chat.reasoningKo',enabled?'1':'0')}catch{}}}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>모델 추론 사용</span><TextInput type="checkbox" checked={thinkingEnabled} onChange={e=>setThinkingEnabled(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>도구 사용</span><TextInput type="checkbox" checked={toolsEnabled} onChange={e=>setToolsEnabled(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>자동 학습 <small className="text-[10px] text-[#9C9388]">매 대화 후 기억 추출</small></span><TextInput type="checkbox" checked={autoLearn} onChange={e=>setAutoLearn(e.target.checked)}/></label><Button type="button" variant="ghost" disabled={!current||Boolean(selectedSession?.roomId)||learning||busy} onClick={()=>void learnSession()} className="mt-1 flex w-full !justify-start gap-2 !border-0 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1] disabled:opacity-40"><BrainCircuit size={13}/>{learning?'학습 중…':'지금 학습 실행'}</Button></div>,document.body)}
+        {showSettings&&settingsPanel.position&&createPortal(<div ref={settingsPanel.panel} style={settingsPanel.position} className="z-[80] max-w-full overflow-y-auto overscroll-contain rounded-xl border border-[#E7E0D5] bg-white p-2 shadow-xl"><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span className="inline-flex items-center gap-1.5"><BrainCircuit size={13}/> 추론 과정 표시</span><TextInput type="checkbox" checked={showReasoning} onChange={e=>setShowReasoning(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>한국어 추론 요청</span><TextInput type="checkbox" checked={reasoningKo} onChange={e=>{const enabled=e.target.checked;setReasoningKo(enabled);try{localStorage.setItem(koreanReasoningKey,enabled?'1':'0')}catch{}}}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>모델 추론 사용</span><TextInput type="checkbox" checked={thinkingEnabled} onChange={e=>setThinkingEnabled(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>도구 사용</span><TextInput type="checkbox" checked={toolsEnabled} onChange={e=>setToolsEnabled(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>자동 학습 <small className="text-[10px] text-[#9C9388]">매 대화 후 기억 추출</small></span><TextInput type="checkbox" checked={autoLearn} onChange={e=>setAutoLearn(e.target.checked)}/></label><Button type="button" variant="ghost" disabled={!current||Boolean(selectedSession?.roomId)||learning||busy} onClick={()=>void learnSession()} className="mt-1 flex w-full !justify-start gap-2 !border-0 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1] disabled:opacity-40"><BrainCircuit size={13}/>{learning?'학습 중…':'지금 학습 실행'}</Button></div>,document.body)}
        </div>
       </div>
       <div className="ml-auto flex items-center gap-2">

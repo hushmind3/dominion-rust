@@ -21,8 +21,8 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  ]
  const shortcuts=[
   {title:'채팅 시작',desc:'연결된 모델과 대화',icon:MessageSquare,page:'chat' as const},
-  {title:'로컬 모델 가져오기',desc:'GGUF · MLX 등록 및 실행',icon:Cpu,page:'models' as const},
-  {title:'자율 작업 실행',desc:'여러 단계의 도구 작업',icon:Play,page:'workflows' as const},
+  {title:'로컬 모델 가져오기',desc:'GGUF 등록과 로컬 모델 실행',icon:Cpu,page:'models' as const},
+  {title:'반복 작업 열기',desc:'저장된 워크플로 실행',icon:Play,page:'workflows' as const},
   {title:'에이전트 관리',desc:'역할과 실행 모델 설정',icon:Bot,page:'agents' as const}
  ]
  return <PageContainer className="!max-w-[1200px] !py-5">

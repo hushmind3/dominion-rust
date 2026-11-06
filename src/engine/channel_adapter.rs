@@ -181,13 +181,14 @@ pub async fn send(state: &AppState, config: &Value, content: &str) -> Result<Str
         }
         "zulip" => {
             let site = text(config, "site").trim_end_matches('/').to_string();
+            let topic = text(config, "topic");
             let response = client()
                 .post(format!("{site}/api/v1/messages"))
                 .basic_auth(text(config, "email"), Some(token))
                 .json(&json!({
                     "type": "stream",
                     "to": text(config, "channelId"),
-                    "topic": text(config, "topic"),
+                    "topic": if topic.is_empty() { "DOMINION" } else { &topic },
                     "content": content.chars().take(9000).collect::<String>(),
                 }))
                 .send()

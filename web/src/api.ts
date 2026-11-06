@@ -5,6 +5,10 @@ export type ChatMessage = {id:string;session_id:string;role:string;content:strin
 export type ChatSession = RecordItem & {title:string;agentId:string;providerId?:string;model?:string;roomId?:string}
 export type Room = RecordItem & {name:string;agentIds:string[];rounds:number;maxTurns?:number;sessionId?:string}
 export type StreamEvent = {type:string;[key:string]:any}
+export const koreanReasoningKey='dominion.chat.reasoningKo'
+export function koreanReasoningEnabled(){
+ try{return localStorage.getItem(koreanReasoningKey)!=='0'}catch{return true}
+}
 let authToken = ''
 export function setAuthToken(value: string) { authToken = value.trim() }
 

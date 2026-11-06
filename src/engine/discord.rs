@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const API: &str = "https://discord.com/api/v10";
-const MAX_PARTICIPANTS: usize = 9;
+pub const MAX_PARTICIPANTS: usize = 9;
 const MAX_BACKLOG: usize = 2000;
 const MAX_BOT_REPLIES_PER_MINUTE: usize = 2;
 

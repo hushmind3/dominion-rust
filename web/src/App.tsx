@@ -22,10 +22,11 @@ function locationState(){
  const valid=navigation.some(group=>group.items.some(item=>item.id===name))
  const params=new URLSearchParams(query)
  return {page:(valid?name:'chat') as PageId,session:params.get('session')||undefined,
-  agent:params.get('agent')||undefined,provider:params.get('provider')||undefined}
+  agent:params.get('agent')||undefined,provider:params.get('provider')||undefined,model:params.get('model')||undefined}
 }
 export default function App(){
- const [{page,session,agent,provider},setRoute]=useState(locationState)
+ const [{page,session,agent,provider,model},setRoute]=useState(locationState)
+ const [chatDraft,setChatDraft]=useState(0)
  const [sidebar,setSidebar]=useState(false)
  const [collapsed,setCollapsed]=useState(()=>{try{const saved=localStorage.getItem('dominion.nav.collapsed');return saved===null?window.innerWidth<1200:saved==='1'}catch{return false}})
  const [palette,setPalette]=useState(false)
@@ -93,7 +94,7 @@ export default function App(){
  },[])
  return <div className="min-h-dvh bg-[#F6F3EC] font-sans text-[#24211D]">
    <ContextMenu />
-  <WorkspaceSidebar page={page} open={sidebar} collapsed={collapsed} online={online} running={running} pending={pending} onNavigate={navigate} onClose={()=>setSidebar(false)}/>
+  <WorkspaceSidebar page={page} open={sidebar} collapsed={collapsed} online={online} running={running} pending={pending} onNavigate={navigate} onNewChat={()=>{setChatDraft(value=>value+1);navigate('chat')}} onClose={()=>setSidebar(false)}/>
   <main className={'min-h-dvh min-w-0 transition-[margin] duration-200 '+(collapsed?'ml-0':'ml-[216px] max-[519px]:ml-0')}>
    <WorkspaceHeader page={page} online={online} collapsed={collapsed} onMenu={toggleNav} onSearch={()=>setPalette(true)}/>
    <div className={'min-w-0 page-'+page}>
@@ -102,7 +103,7 @@ export default function App(){
     {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
     {page==='memory'&&<MemoryPage/>}
     {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
-    {page==='chat'&&<ChatPage sessionId={session} initialAgent={agent} initialProvider={provider} onSession={id=>{if(locationState().page==='chat')navigate('chat',id)}} openModels={()=>navigate('models')}/>}
+    {page==='chat'&&<ChatPage key={chatDraft} sessionId={session} initialAgent={agent} initialProvider={provider} initialModel={model} onSession={id=>{if(locationState().page==='chat')navigate('chat',id)}} openModels={()=>navigate('models')}/>}
     {page==='video'&&<VideoPage navigate={navigate}/>}
     {page==='models'&&<ModelHub/>}
     {page==='agents'&&<AgentsPage/>}

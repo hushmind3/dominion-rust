@@ -7,7 +7,7 @@ type Option={id:string;format:'gguf'|'mlx';label:string;quantization:string;byte
 type Detail=Catalog&{revision:string;license:string;architecture:string;options:Option[];readme:string}
 type Installed={id:string;repo:string;optionId?:string;source?:string;externalPath?:string;format:'gguf'|'mlx';label:string;bytes:number;installedAt:string}
 type Job={id:string;repo:string;optionId:string;status:string;downloaded:number;total:number;current:string;error:string;installedId?:string}
-type Runtime={status:string;id?:string;repo?:string;engine?:string;name?:string;error?:string;setup?:{status:string;backend:string;downloaded:number;total:number;tag:string;file?:string;error:string};capabilities?:{gguf:{available:boolean;backend?:string;installable?:boolean};mlx:{available:boolean};memory:{total:number;free:number;platform?:string;arch?:string};gpu?:{kind:string;free:number}|null}}
+type Runtime={status:string;id?:string;repo?:string;engine?:string;name?:string;model?:string;error?:string;setup?:{status:string;backend:string;downloaded:number;total:number;tag:string;file?:string;error:string};capabilities?:{gguf:{available:boolean;backend?:string;installable?:boolean};mlx:{available:boolean};memory:{total:number;free:number;platform?:string;arch?:string};gpu?:{kind:string;free:number}|null}}
 const fmt=(v=0)=>v>=1073741824?(v/1073741824).toFixed(1)+' GB':v>=1048576?(v/1048576).toFixed(0)+' MB':v>=1024?(v/1024).toFixed(0)+' KB':String(v)+' B'
 const shorten=(v:string,n=45)=>v.length>n?v.slice(0,n-3)+'…':v
 const compactNumber=(v=0)=>v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(1)+'K':String(v)
@@ -33,7 +33,7 @@ export function ModelExplorer(){
  const [picking,setPicking]=useState(false)
  const detailScroll=useRef<HTMLDivElement>(null)
  const catalogueScroll=useRef<HTMLDivElement>(null)
- const native='__DOMINION_NATIVE__' in window
+ const localPicker=['127.0.0.1','localhost','[::1]'].includes(window.location.hostname)
  const unsupported='현재 Rust 모델 라이브러리에서 지원하지 않습니다.'
  const [context,setContext]=useState(4096)
  const refresh=useCallback(async()=>{
@@ -97,7 +97,7 @@ export function ModelExplorer(){
   setLocalPath('');setView('installed');return result
  })
  const chooseLocal=async()=>{
-  if(picking||!native)return;
+  if(picking||!localPicker)return;
   setPicking(true);setError('');
   try{const {path}=await post<{path?:string}>('/api/model-library/pick-file',{});if(path)setLocalPath(path)}
   catch(e){setError((e as Error).message)}finally{setPicking(false)}
@@ -117,7 +117,7 @@ export function ModelExplorer(){
   {error&&<div role="alert" className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700"><CircleAlert size={15}/><span className="flex-1">{error}</span><button aria-label="닫기" onClick={()=>setError('')}><X size={14}/></button></div>}
   {runtime.status==='ready'&&<div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-100 bg-[#f2fbf7] px-4 py-3">
    <span className="flex min-w-0 items-center gap-2 text-[12px]"><Check size={16} className="text-emerald-600"/><strong className="truncate">{runtime.name||runtime.repo}</strong><span className="text-emerald-700">실행 중</span></span>
-   <div className="flex gap-2"><button type="button" className={btn} onClick={()=>{window.location.hash='#/chat'}}><ArrowRight size={14}/> 채팅으로 이동</button><button type="button" className={btn} onClick={()=>void unload()} disabled={Boolean(working)}><Square size={13}/> 중지</button></div>
+   <div className="flex gap-2"><button type="button" className={btn} disabled={!runtime.model} onClick={()=>{if(runtime.model)window.location.hash='#/chat?'+new URLSearchParams({provider:'dominion-native',model:runtime.model})}}><ArrowRight size={14}/> 채팅으로 이동</button><button type="button" className={btn} onClick={()=>void unload()} disabled={Boolean(working)}><Square size={13}/> 중지</button></div>
   </div>}
   {view==='installed'&&<div className="p-4">
    <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-[13px] font-bold">실행할 수 있는 모델</h3><button type="button" className={btn} onClick={()=>setView('import')}><FolderOpen size={14}/> 기존 파일 가져오기</button></div>
@@ -127,15 +127,14 @@ export function ModelExplorer(){
     <div className="flex items-center gap-1.5">{runtime.status==='ready'&&runtime.id===m.id?<span className="mr-1 rounded bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700">사용 중</span>:<button type="button" className={btn+' !border-[#C96442] !bg-[#C96442] !text-white hover:!bg-[#A94E30]'} disabled={Boolean(working)||runtime.status==='loading'} onClick={()=>void load(m.id)}><Play size={13}/>{working==='load'+m.id?'로딩 중':'실행'}</button>}
      <button type="button" className="rounded-md p-2 text-[#9ca5b3] hover:bg-rose-50 hover:text-rose-600" aria-label={'모델 삭제 '+m.repo} disabled={Boolean(working)||m.source==='lmstudio'||(runtime.id===m.id&&runtime.status==='ready')} title={m.source==='lmstudio'?unsupported:undefined} onClick={()=>void remove(m)}><Trash2 size={14}/></button>
     </div>
-   </div>)}</div>:<div className="flex min-h-48 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-[#dfe4ed] bg-[#fafbfc] px-4 py-7 text-center"><HardDrive size={25} className="text-[#a1adbc]"/><strong className="text-[13px]">등록된 모델이 없습니다</strong><p className="text-[11px] text-[#8290a1]">이미 가지고 있는 GGUF·MLX 파일을 불러오거나 새로 다운로드하세요.</p><div className="flex gap-2"><button type="button" className={btn} onClick={()=>setView('import')}>기존 GGUF 연결</button><button type="button" className={btn} onClick={()=>setView('search')}>모델 다운로드</button></div></div>}
+   </div>)}</div>:<div className="flex min-h-48 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-[#dfe4ed] bg-[#fafbfc] px-4 py-7 text-center"><HardDrive size={25} className="text-[#a1adbc]"/><strong className="text-[13px]">등록된 모델이 없습니다</strong><p className="text-[11px] text-[#8290a1]">GGUF 파일을 연결하거나 새로 다운로드하세요. LM Studio의 모델은 설치 목록에서 불러옵니다.</p><div className="flex gap-2"><button type="button" className={btn} onClick={()=>setView('import')}>기존 GGUF 연결</button><button type="button" className={btn} onClick={()=>setView('search')}>모델 다운로드</button></div></div>}
   </div>}
   {view==='import'&&<div className="max-w-3xl p-4">
    <h3 className="text-[13px] font-bold">이미 있는 GGUF 파일 연결</h3>
    <p className="mt-1 text-[11px] text-[#7b8898]">GGUF 파일을 선택하면 원본 위치에서 실행합니다.</p>
-   <div className="mt-4 flex flex-wrap items-center gap-2"><button type="button" className={btn+' !border-[#8da2e7] !bg-[#edf1ff] !text-[#3857bb]'}>GGUF</button><button type="button" disabled title={unsupported} className={btn}>MLX</button></div>
    <label className="mt-4 block text-[11px] font-medium text-[#526074]">GGUF 파일 경로</label>
-   <div className="mt-1.5 flex flex-col gap-2 sm:flex-row"><TextInput className="!flex-1" value={localPath} onChange={e=>setLocalPath(e.target.value)} placeholder="/models/model.gguf"/><button type="button" className={btn} disabled={!native||picking} onClick={()=>void chooseLocal()}><FolderOpen size={14}/> 파일 선택</button></div>
-   <p className="mt-2 text-[11px] text-[#8b97a7]">브라우저에서 접속했다면 DOMINION 서버가 실행 중인 컴퓨터의 파일 경로를 입력하세요.</p>
+   <div className="mt-1.5 flex flex-col gap-2 sm:flex-row"><TextInput className="!flex-1" value={localPath} onChange={e=>setLocalPath(e.target.value)} placeholder="/models/model.gguf"/><button type="button" className={btn} disabled={!localPicker||picking} onClick={()=>void chooseLocal()}><FolderOpen size={14}/> 파일 선택</button></div>
+   <p className="mt-2 text-[11px] text-[#8b97a7]">{localPicker?'파일 선택창은 DOMINION 서버가 실행 중인 컴퓨터에서 열립니다.':'DOMINION 서버가 실행 중인 컴퓨터의 파일 경로를 입력하세요.'}</p>
    <button type="button" disabled={!localPath.trim()||Boolean(working)} onClick={()=>void importLocal()} className="mt-5 flex h-9 items-center gap-2 rounded-lg bg-[#C96442] px-4 text-[12px] font-semibold text-white hover:bg-[#A94E30] disabled:opacity-40">{working==='import'?<LoaderCircle className="animate-spin" size={15}/>:<Check size={15}/>}모델 등록</button>
   </div>}
   {view==='search'&&<div className="grid min-h-[560px] grid-cols-1 lg:grid-cols-[400px_minmax(0,1fr)]">
@@ -157,7 +156,7 @@ export function ModelExplorer(){
      <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="break-all text-[20px] font-bold tracking-[-.02em] text-[#24211D]">{detail.name||detail.id}</h3><div className="mt-1 break-all text-[11px] text-[#8A8176]">{detail.id}</div><div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[#7C7469]"><span>↓ {compactNumber(detail.downloads)}</span><span>♡ {compactNumber(detail.likes)}</span><span>{detail.architecture||'언어 모델'}</span>{detail.license&&<span>{detail.license}</span>}<span>{detail.options.length}개 배포 형식</span></div></div><a href={'https://huggingface.co/'+detail.id} target="_blank" rel="noreferrer" aria-label="Hugging Face에서 보기" className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-[11px] font-semibold text-[#C96442] hover:bg-[#F7E8E1]">Hugging Face <ExternalLink size={14}/></a></div>
      <div className="mt-5 text-[13px] font-semibold text-[#3A342D]">다운로드할 파일 선택</div>
      <div className="mt-2 max-h-56 overflow-auto rounded-xl border border-[#E7E0D5]">{detail.options.filter(o=>format==='all'||o.format===format).map(o=><button type="button" key={o.id} onClick={()=>setVariant(o.id)} className={'flex w-full items-center gap-3 border-b border-[#EFE9DF] px-3.5 py-3.5 text-left last:border-0 '+(variant===o.id?'bg-[#F7E8E1]':'hover:bg-[#FAF7F1]')}><span className="rounded bg-[#F3EEE5] px-2 py-1 text-[10px] font-semibold text-[#7C7469]">{o.format.toUpperCase()}</span><span className="min-w-0 flex-1 text-[13px] font-semibold text-[#3A342D]">{o.label}<span className="ml-2 text-[10px] font-normal text-[#8A8176]">{o.quantization&&o.quantization!==o.label?o.quantization:''}{o.shards>1?' · '+o.shards+'개 파일':''}</span></span><span className="text-[12px] text-[#5C544A]">{fmt(o.bytes)}</span>{variant===o.id&&<Check size={15} className="text-[#C96442]"/>}</button>)}</div>
-     {!detail.options.length&&<p className="mt-3 text-[12px] text-amber-700">이 저장소에는 지원되는 GGUF·MLX 모델 파일이 없습니다.</p>}
+     {!detail.options.length&&<p className="mt-3 text-[12px] text-amber-700">이 저장소에는 다운로드할 GGUF 모델 파일이 없습니다.</p>}
      {option&&<div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl bg-[#FAF7F1] p-3">
       <span className="text-[12px] text-[#5C544A]">다운로드 용량 <strong>{fmt(option.bytes)}</strong></span>
       {existing?<button type="button" className={btn} onClick={()=>{setView('installed')}}><Check size={14}/> 설치됨 · 내 모델 보기</button>:

@@ -288,6 +288,11 @@ pub(crate) fn submit_internal(
     {
         return Err(bad("모델 이름이 너무 깁니다."));
     }
+    if !body["reasoningLanguage"].is_null()
+        && !matches!(body["reasoningLanguage"].as_str(), Some("ko" | "default"))
+    {
+        return Err(bad("추론 언어는 ko 또는 default여야 합니다."));
+    }
     let nonce = if let Some(value) = body.get("clientMessageId") {
         let nonce = value
             .as_str()
@@ -309,7 +314,7 @@ pub(crate) fn submit_internal(
                     .as_array()
                     .cloned()
                     .unwrap_or_default()
-            || ["thinking", "reasoningEffort", "providerId", "model"]
+            || ["thinking", "reasoningEffort", "reasoningLanguage", "providerId", "model"]
                 .iter()
                 .any(|key| existing["input"][*key] != body[*key])
         {
@@ -334,7 +339,7 @@ pub(crate) fn submit_internal(
         "queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),
         "sessionId":session_id,"input":{"roomId":id,"sessionId":session_id,"messageId":nonce,"sourceMessageId":nonce,"input":text,
             "agentIds":speakers,"requestedAgentIds":body["agentIds"],"explicitAgentIds":body.get("agentIds").is_some(),"routingMode":config["routingMode"],"generation":generation,"roomSnapshot":config,
-            "attachmentIds":attachment_ids,"thinking":body["thinking"],"reasoningEffort":body["reasoningEffort"],"providerId":body["providerId"],"model":body["model"]}});
+            "attachmentIds":attachment_ids,"reasoningLanguage":body["reasoningLanguage"],"thinking":body["thinking"],"reasoningEffort":body["reasoningEffort"],"providerId":body["providerId"],"model":body["model"]}});
     let (saved_message, saved_job) = state
         .store
         .write_message_with_record(&message, "job", &job)

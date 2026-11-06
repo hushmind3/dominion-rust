@@ -51,9 +51,8 @@ impl MemoryScope {
     }
 }
 
-/// A legacy learned memory has no reliable partition and stays in its original
-/// session. Explicit user-created shared records remain shared in the local UI.
-pub fn visible(record: &Value, scope: &MemoryScope) -> bool {
+/// Checks lifecycle and expiry before matching an execution scope.
+pub fn retrieval_eligible(record: &Value) -> bool {
     if matches!(
         record["status"].as_str(),
         Some("superseded" | "deleted" | "draft" | "archived")
@@ -66,6 +65,15 @@ pub fn visible(record: &Value, scope: &MemoryScope) -> bool {
             Ok(at) if at > chrono::Utc::now() => {}
             _ => return false,
         }
+    }
+    true
+}
+
+/// Legacy learned records stay in their original local session. Explicit
+/// shared records can also be enabled for rooms or external channels.
+pub fn visible(record: &Value, scope: &MemoryScope) -> bool {
+    if !retrieval_eligible(record) {
+        return false;
     }
     // A global lesson is intentionally shared across chat, rooms and channels.
     if record["scope"].as_str() == Some("global") {

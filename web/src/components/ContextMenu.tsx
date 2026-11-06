@@ -1,4 +1,7 @@
-import { useEffect, useState } from "react";
+import {request} from '../api'
+import {Button} from './Primitives'
+import {DialogBackdrop,DialogPanel} from './Dialog'
+import { useEffect, useRef, useState } from "react";
 
 type Ctx = {
   x: number;
@@ -17,15 +20,41 @@ const isDesktopHost = () =>
 
 export function ContextMenu() {
   const [ctx, setCtx] = useState<Ctx | null>(null);
+  const [translation, setTranslation] = useState<{pending:boolean;text?:string;error?:string} | null>(null);
+  const translateRequest = useRef<AbortController | null>(null);
+  const closeTranslation = () => {
+    translateRequest.current?.abort();
+    setTranslation(null);
+  };
+  const translate = async (text: string) => {
+    setCtx(null);
+    translateRequest.current?.abort();
+    const controller = new AbortController();
+    translateRequest.current = controller;
+    setTranslation({pending:true});
+    try {
+      const result = await request<{text:string}>('/api/translate',{
+        method:'POST',body:JSON.stringify({text,target:'ko'}),signal:controller.signal,
+      });
+      if (!controller.signal.aborted) setTranslation({pending:false,text:result.text});
+    } catch (error) {
+      if (!controller.signal.aborted) setTranslation({pending:false,error:(error as Error).message});
+    }
+  };
 
   useEffect(() => {
-    if (!isDesktopHost()) return;
     const onContext = (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
       if (!target) return;
+      const field = target.closest('input, textarea') as HTMLInputElement | HTMLTextAreaElement | null;
+      const fieldSelection = field && field.selectionStart !== null && field.selectionEnd !== null
+        ? field.value.slice(field.selectionStart,field.selectionEnd) : '';
+      const selection = (fieldSelection || String(window.getSelection?.() || '')).trim();
+      // Never offer to send a selection from a password field.
+      if (field instanceof HTMLInputElement && field.type === 'password') return;
+      if (!selection && !isDesktopHost()) return;
       event.preventDefault();
       const editable = Boolean(target.closest("input, textarea, [contenteditable='true']"));
-      const selection = String(window.getSelection?.() || "").trim();
       const anchor = target.closest("a") as HTMLAnchorElement | null;
       const pre = target.closest("pre") as HTMLElement | null;
       const msg = target.closest("[data-message]") as HTMLElement | null;
@@ -54,6 +83,11 @@ export function ContextMenu() {
     };
   }, []);
 
+  if (translation) return <DialogBackdrop onDismiss={closeTranslation}><DialogPanel aria-label="선택한 텍스트 번역" className="p-4">
+    <header className="mb-3 flex items-center justify-between gap-3"><strong>한국어 번역</strong><Button onClick={closeTranslation}>닫기</Button></header>
+    <p className="mb-2 text-xs text-[#7C7469]">선택한 텍스트는 서버를 거쳐 Google 번역으로 전달됩니다.</p>
+    {translation.pending?<p role="status">번역 중…</p>:translation.error?<p role="alert">{translation.error}</p>:<p className="whitespace-pre-wrap">{translation.text}</p>}
+  </DialogPanel></DialogBackdrop>;
   if (!ctx) return null;
 
   const write = async (value: string) => {
@@ -116,8 +150,7 @@ export function ContextMenu() {
     rows.push({ label: "복사", run: () => void write(ctx.text) });
     rows.push({
       label: "선택한 텍스트 번역",
-      run: () =>
-        open("https://translate.google.com/?sl=auto&tl=ko&text=" + encodeURIComponent(ctx.text.slice(0, 1800))),
+      run: () => void translate(ctx.text),
     });
     rows.push({
       label: "검색",
@@ -144,8 +177,8 @@ export function ContextMenu() {
     <div
       className="fixed z-[9999] min-w-[190px] rounded-xl border border-[#E7E0D5] bg-white p-1 text-[#3A342D] shadow-xl"
       style={{
-        left: Math.min(ctx.x, window.innerWidth - 210),
-        top: Math.min(ctx.y, window.innerHeight - height - 8),
+        left: Math.max(0, Math.min(ctx.x, window.innerWidth - 210)),
+        top: Math.max(0, Math.min(ctx.y, window.innerHeight - height - 8)),
       }}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}

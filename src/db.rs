@@ -28,6 +28,14 @@ fn upsert_tx(
     Ok(())
 }
 
+fn upsert_secret(conn: &Connection, name: &str, sealed: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "INSERT INTO secrets(name, value) VALUES(?1, ?2)
+         ON CONFLICT(name) DO UPDATE SET value=excluded.value, updated_at=datetime('now')",
+        params![name, sealed],
+    )
+}
+
 /// Merges a computed improvement update into the record currently stored in
 /// the finalization transaction. Observation counters are applied as deltas so
 /// two attempts finishing concurrently cannot lose an increment.
@@ -273,6 +281,22 @@ impl Store {
             .ok()?;
         }
         self.get(kind, &id)
+    }
+
+    pub fn save_channel(&self, value: &Value, secret: Option<(&str, &str)>) -> Option<Value> {
+        let mut conn = self.conn.lock().ok()?;
+        let tx = conn.transaction().ok()?;
+        upsert_tx(&tx, "channel", value).ok()?;
+        if let Some((name, sealed)) = secret {
+            upsert_secret(&tx, name, sealed).ok()?;
+        }
+        let saved = tx.query_row(
+            "SELECT data, id, created_at, updated_at FROM records WHERE kind='channel' AND id=?1",
+            params![value["id"].as_str()?],
+            record_from_row,
+        ).ok()?;
+        tx.commit().ok()?;
+        Some(saved)
     }
 
     /// Writes several records in one SQLite transaction. Any failure rolls
@@ -973,11 +997,7 @@ impl Store {
 
     pub fn set_secret(&self, name: &str, sealed: &str) {
         let conn = self.conn.lock().unwrap();
-        let _ = conn.execute(
-            "INSERT INTO secrets(name, value) VALUES(?1, ?2)
-             ON CONFLICT(name) DO UPDATE SET value=excluded.value, updated_at=datetime('now')",
-            params![name, sealed],
-        );
+        let _ = upsert_secret(&conn, name, sealed);
     }
 
     pub fn get_secret(&self, name: &str) -> Option<String> {

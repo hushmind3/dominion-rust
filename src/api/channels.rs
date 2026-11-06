@@ -16,6 +16,35 @@ fn manifests() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/channels")
 }
 
+/// Field contract for outbound adapters. The runtime owns required destination
+/// keys, and the catalog and persistence use the same list.
+fn outbound_fields(kind: &str, manifest: &Value) -> Vec<Value> {
+    let label = |key| match (kind, key) {
+        ("zulip", "channelId") => "전송할 스트림 이름 또는 ID",
+        (_, "channelId") => "전송할 채널 또는 방 ID",
+        (_, "chatId") => "받는 사람 ID 또는 전화번호",
+        _ => key,
+    };
+    let required = crate::engine::channel_adapter::required_fields(kind);
+    let mut fields = vec![json!({
+        "key":"token", "type":"secret",
+        "label": if kind == "zulip" { "Zulip API 키" } else if kind == "signal" { "브리지 토큰" } else { "액세스 토큰" },
+        "required":kind != "signal"
+    })];
+    for &key in required {
+        let field = manifest["fields"].as_array().and_then(|fields| {
+            fields.iter().find(|field| field["key"] == key)
+        });
+        let mut field = field.cloned().unwrap_or_else(|| json!({"key":key,"label":label(key),"type":"text"}));
+        field["required"] = json!(true);
+        fields.push(field);
+    }
+    if kind == "zulip" {
+        fields.push(json!({"key":"topic","label":"전송할 주제","type":"text","placeholder":"DOMINION"}));
+    }
+    fields
+}
+
 pub fn catalog() -> Vec<Value> {
     let mut entries = Vec::new();
     let Ok(dirs) = std::fs::read_dir(manifests()) else {
@@ -44,6 +73,25 @@ pub fn catalog() -> Vec<Value> {
             .and_then(|mode| mode.as_str())
             .map(|mode| mode == "webhook")
             .unwrap_or(false));
+        let kind = value["id"].as_str().unwrap_or_default().to_owned();
+        if crate::engine::channel_adapter::supports(&kind) {
+            value["fields"] = json!(outbound_fields(&kind, &value));
+            value["mode"] = json!("outbound");
+            value["description"] = json!("DOMINION 회의실 메시지를 지정한 대상으로 보냅니다.");
+            value["features"] = json!(["메시지 보내기"]);
+            value["instructions"] = json!(["전송할 대상과 DOMINION 회의실을 선택하세요."]);
+            value["requiresPublicUrl"] = json!(false);
+            value["requiresRoom"] = json!(true);
+        }
+        if kind == "telegram" {
+            value["requiresRoom"] = json!(true);
+            if let Some(fields) = value["fields"].as_array_mut() {
+                fields.retain(|field| field["key"] != "roomId");
+            }
+        }
+        if kind == "discord" {
+            value["maxRoomParticipants"] = json!(crate::engine::discord::MAX_PARTICIPANTS);
+        }
         entries.push(value);
     }
     entries.sort_by(|a, b| {
@@ -221,13 +269,44 @@ mod tests {
         let record = state.store.get("channel", "slack-check").unwrap();
         assert_eq!(record["driver"], "dominion-slack");
         assert_eq!(record["kind"], "slack");
+        assert!(record.get("token").is_none());
+        let secret = crate::engine::discord::token_name("slack-check");
+        assert_eq!(state.read_secret(&secret).as_deref(), Some("xoxb-test"));
+        let updated = save_config(
+            &state,
+            Some("slack-check"),
+            json!({"channelId":"C2","token":""}),
+        );
+        assert_eq!(updated.status(), StatusCode::OK);
+        assert_eq!(state.read_secret(&secret).as_deref(), Some("xoxb-test"));
         let missing = save_config(
             &state,
             Some("slack-bad"),
             json!({"kind":"slack","name":"bad","enabled":false,"token":"xoxb-test"}),
         );
         assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+        assert!(!state.store.has_secret(&crate::engine::discord::token_name("slack-bad")));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn outbound_catalog_advertises_the_runtime_destination_and_secret_contract() {
+        let catalog = catalog();
+        for &kind in crate::engine::channel_adapter::SUPPORTED {
+            let channel = catalog.iter().find(|entry| entry["id"] == kind).unwrap();
+            assert_eq!(channel["mode"], "outbound");
+            assert_eq!(channel["requiresRoom"], true);
+            let fields = channel["fields"].as_array().unwrap();
+            let public_required = fields.iter().filter(|field| field["type"] != "secret" && field["required"] == true)
+                .map(|field| {
+                    field["key"].as_str().unwrap()
+                }).collect::<Vec<_>>();
+            assert_eq!(public_required, crate::engine::channel_adapter::required_fields(kind));
+            let secrets = fields.iter().filter(|field| field["type"] == "secret").collect::<Vec<_>>();
+            assert_eq!(secrets.len(), 1);
+            assert_eq!(secrets[0]["key"], "token");
+            assert_eq!(secrets[0]["required"], kind != "signal");
+        }
     }
 
     #[test]
@@ -307,25 +386,29 @@ pub fn public_channel(state: &AppState, record: &Value) -> Value {
         .and_then(Value::as_str)
         .map(|s| !s.is_empty())
         .unwrap_or(false);
-    let required = if record["kind"] == "telegram" {
+    let kind = record["kind"].as_str().unwrap_or_default();
+    let outbound = crate::engine::channel_adapter::supports(kind);
+    let required = if kind == "telegram" {
         vec!["chatId", "roomId"]
-    } else if let Some(kind) = record["kind"].as_str()
-        .filter(|kind| crate::engine::channel_adapter::supports(kind))
-    {
-        crate::engine::channel_adapter::required_fields(kind)
-            .iter()
-            .copied()
-            .chain(std::iter::once("roomId"))
-            .collect()
+    } else if outbound {
+        crate::engine::channel_adapter::required_fields(kind).iter().copied()
+            .chain(std::iter::once("roomId")).collect()
     } else {
         vec!["guildId", "channelId"]
     };
-    let missing = required
-        .into_iter()
-        .filter(|k| crate::engine::discord::text(record, k).is_empty())
+    if outbound {
+        for key in crate::engine::channel_adapter::required_fields(kind).iter().copied()
+            .chain((kind == "zulip").then_some("topic"))
+        {
+            if let Some(value) = record.get(key) { public[key] = value.clone(); }
+        }
+    }
+    let mut missing = required.into_iter()
+        .filter(|key| crate::engine::discord::text(record, key).is_empty())
         .collect::<Vec<_>>();
+    if kind != "signal" && !present { missing.push("token"); }
     public["credentialsPresent"] = json!({"token":present});
-    public["configured"] = json!(present && missing.is_empty());
+    public["configured"] = json!(missing.is_empty());
     public["missing"] = json!(missing);
     let outbox = state
         .store
@@ -347,6 +430,8 @@ pub fn public_channel(state: &AppState, record: &Value) -> Value {
     }) {
         public["status"] = json!("not_started");
         public["runtimeError"] = json!("Rust 연결 설정에서 저장·활성화가 필요합니다.");
+    } else if outbound {
+        public["status"] = json!(if public["configured"] != true { "not_started" } else if record["syncRoomMessages"] == true { "outbound_ready" } else { "sync_disabled" });
     }
     public
 }
@@ -396,6 +481,14 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
     }
     let existing = state.store.get("channel", &id);
     let mut config = json!({"id":id,"kind":"discord","agentId":"general","enabled":false,"mentionOnly":true,"replyMentionBots":false,"toolsEnabled":false,"syncRoomMessages":false,"roomPolicy":"all_or_named"});
+    let kind = body["kind"].as_str().or_else(|| existing.as_ref().and_then(|record| record["kind"].as_str())).unwrap_or("discord");
+    let outbound = crate::engine::channel_adapter::supports(kind);
+    if !outbound && !matches!(kind, "discord" | "telegram") {
+        return error(StatusCode::BAD_REQUEST, "지원하지 않는 채널입니다.");
+    }
+    if existing.as_ref().is_some_and(|record| record["kind"] != kind) {
+        return error(StatusCode::BAD_REQUEST, "다른 메신저는 새 연결로 등록하세요.");
+    }
     for key in [
         "name",
         "kind",
@@ -414,19 +507,10 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
         "allowedBotIds",
         "replyMentionBots",
         "toolsEnabled",
-        "homeserver",
-        "userId",
-        "phoneNumberId",
-        "graphVersion",
-        "site",
-        "email",
-        "baseUrl",
-        "phoneNumber",
-        "bridgeUrl",
         "topic",
         "apiBase",
         "graphBase",
-    ] {
+    ].into_iter().chain(crate::engine::channel_adapter::required_fields(kind).iter().copied()) {
         if let Some(value) = body
             .get(key)
             .or_else(|| existing.as_ref().and_then(|v| v.get(key)))
@@ -479,6 +563,9 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
         }
     );
     let kind = config["kind"].as_str().unwrap_or("");
+    if outbound && config["enabled"] == true && crate::engine::discord::text(&config, "roomId").is_empty() {
+        return error(StatusCode::BAD_REQUEST, "메시지를 보낼 DOMINION 회의실을 선택하세요.");
+    }
     let validation = if kind == "telegram" {
         crate::engine::telegram::validate(state, &config)
     } else if crate::engine::channel_adapter::supports(kind) {
@@ -501,7 +588,14 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
                 .filter(|s| !s.is_empty())
         });
     let secret_name = crate::engine::discord::token_name(&id);
-    if token.is_none() && !state.store.has_secret(&secret_name) {
+    let has_secret = state.store.has_secret(&secret_name);
+    let token = token.or_else(|| {
+        if has_secret {
+            return None;
+        }
+        existing.as_ref()?.get("token")?.as_str().filter(|value| !value.is_empty())
+    });
+    if kind != "signal" && token.is_none() && !has_secret {
         return error(StatusCode::BAD_REQUEST, "채널 토큰을 입력하세요.");
     }
     if let Some(token) = token {
@@ -511,7 +605,6 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
                 "Bot Token 형식이 올바르지 않습니다.",
             );
         }
-        state.save_secret(&secret_name, token);
     }
     if !crate::engine::discord::text(&config, "roomId").is_empty() {
         match crate::engine::rooms::ensure_room_session(
@@ -529,7 +622,14 @@ fn save_config(state: &AppState, path_id: Option<&str>, body: Value) -> Response
             Err(message) => return error(StatusCode::BAD_REQUEST, message),
         }
     }
-    match state.store.put("channel", &config) {
+    let sealed = token.map(|token| state.vault.seal(token));
+    if sealed.as_ref().is_some_and(String::is_empty) {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "채널 토큰을 암호화하지 못했습니다.");
+    }
+    match state.store.save_channel(
+        &config,
+        sealed.as_deref().map(|value| (secret_name.as_str(), value)),
+    ) {
         Some(record) => {
             let public = public_channel(state, &record);
             state.bus.record("channel", &public);

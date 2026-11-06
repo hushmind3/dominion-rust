@@ -58,7 +58,16 @@ fn id_from_uri(uri: &axum::http::Uri) -> Option<String> {
 
 pub async fn list(State(state): State<AppState>, OriginalUri(uri): OriginalUri) -> Json<Value> {
     let kind = kind_from_uri(&uri);
-    Json(json!(state.store.all(&kind)))
+    let mut records = state.store.all(&kind);
+    if kind == "memory" {
+        for record in &mut records {
+            let eligible = crate::engine::memory::retrieval_eligible(record);
+            if let Some(fields) = record.as_object_mut() {
+                fields.insert("retrievalEligible".into(), json!(eligible));
+            }
+        }
+    }
+    Json(json!(records))
 }
 
 pub async fn save(
