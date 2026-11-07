@@ -23,6 +23,7 @@ const providerPresets:ProviderPreset[]=[
  {name:'xAI',baseUrl:'https://api.x.ai/v1',kind:'openai',local:false},
  {name:'z.ai',baseUrl:'https://api.z.ai/api/paas/v4',kind:'openai',local:false},
  {name:'OVHcloud (무료)',baseUrl:'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1',kind:'openai',local:false,free:true},
+ {name:'Cloudflare Workers AI',baseUrl:'https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1',kind:'openai',local:false},
  {name:'Together',baseUrl:'https://api.together.xyz/v1',kind:'openai',local:false},
  {name:'Perplexity',baseUrl:'https://api.perplexity.ai',kind:'openai',local:false},
  {name:'Reflection',baseUrl:'https://api.reflection.ai/openai/v1',kind:'openai',local:false},
