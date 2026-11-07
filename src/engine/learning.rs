@@ -395,6 +395,17 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if let Some(saved) = state.store.put("learning_feedback", &feedback) {
             state.bus.emit(saved);
         }
+        if let Some(room_id) = state
+            .store
+            .get("session", session_id)
+            .and_then(|session| session["roomId"].as_str().map(str::to_string))
+        {
+            state.bus.emit(json!({
+                "type": "room_event", "roomId": room_id, "sessionId": session_id,
+                "agentId": scope.agent_id, "turnId": "learning",
+                "event": {"type": "learning", "memories": result["memories"], "skill": result["skill"]}
+            }));
+        }
         context.patch(json!({"result":result}));
         return Ok(result);
     }
@@ -446,6 +457,17 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "jobId":context.job_id,"at":chrono::Utc::now().to_rfc3339(),"effect":"future scoped context and draft procedures; no model weight update"});
     if let Some(saved) = state.store.put("learning_feedback", &feedback) {
         state.bus.emit(saved);
+    }
+    if let Some(room_id) = state
+        .store
+        .get("session", session_id)
+        .and_then(|session| session["roomId"].as_str().map(str::to_string))
+    {
+        state.bus.emit(json!({
+            "type": "room_event", "roomId": room_id, "sessionId": session_id,
+            "agentId": scope.agent_id, "turnId": "learning",
+            "event": {"type": "learning", "memories": result["memories"], "skill": result["skill"]}
+        }));
     }
     context.patch(json!({"result":result}));
     let included_end = all

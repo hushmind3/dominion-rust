@@ -13,14 +13,14 @@ const MAX_ROOM_PARTICIPANTS=32
 
 type RoutingMode='discussion'|'round_robin'|'mentioned'
 type RoomConfig={id:string;name:string;topic?:string;description?:string;ownerName?:string;agentIds:string[];routingMode?:RoutingMode;rounds?:number;maxTurns?:number;toolsEnabled?:boolean;autoLearning?:boolean;autoModels?:boolean;sessionId?:string;status?:string;activeAgentId?:string;pauseReason?:string;updatedAt?:string}
-type RoomDraft={id?:string;name:string;topic:string;ownerName:string;agentIds:string[];routingMode:RoutingMode;rounds:number;maxTurns:number;toolsEnabled:boolean;autoLearning:boolean;autoModels:boolean}
+type RoomDraft={id?:string;name:string;topic:string;ownerName:string;agentIds:string[];routingMode:RoutingMode;rounds:number;maxTurns:number;autoModels:boolean;toolsEnabled:boolean;autoLearning:boolean}
 type Job={id:string;kind:string;status:string;stepIndex?:number;stepTotal?:number;error?:string;createdAt?:string;input?:{roomId?:string;sessionId?:string};result?:{memories?:number;status?:string};roomState?:{activeAgentId?:string;inFlight?:boolean}}
 type Execution={id:string;status:string;agentId?:string;sessionId?:string;toolCalls?:number;tokens?:number;reason?:string}
 type Operation={id:string;runId?:string;tool?:string;toolName?:string;name?:string;status?:string;result?:unknown;error?:string;arguments?:unknown}
 type Approval={id:string;tool:string;args?:unknown;status:string}
 type FeedState={room?:RoomConfig;sessionId?:string;jobs:Job[];executions:Execution[];learningJobs:Job[];operations:Operation[];approvals:Approval[];activeAgentId?:string;status?:string;queueDepth?:number}
 type LiveDraft={turnId:string;agentId:string;text:string;reasoning:string;tool:string;error:string;done:boolean;messageId?:string}
-type RoomEvent={roomId:string;agentId:string;turnId?:string;event:{type:string;text?:string;name?:string;message?:string;messageId?:string;terminal?:boolean}}
+type RoomEvent={roomId:string;agentId:string;turnId?:string;event:{type:string;text?:string;name?:string;message?:string;messageId?:string;terminal?:boolean;memories?:number;skill?:boolean;inserted?:number;updated?:number;promoted?:number}}
 const emptyLive=(turnId:string,agentId:string):LiveDraft=>({turnId,agentId,text:'',reasoning:'',tool:'',error:'',done:false})
 const initialFeed=():FeedState=>({jobs:[],executions:[],learningJobs:[],operations:[],approvals:[]})
 const labels:Record<string,LocaleKey>={queued:'rooms.st.waiting',running:'rooms.st.running',completed:'rooms.st.completed',idle:'rooms.st.idle',paused:'rooms.st.stopped',stopped:'rooms.st.stopped',cancelled:'rooms.st.stopped',failed:'rooms.st.failed',needs_review:'rooms.st.needsReview',interrupted:'rooms.st.interrupted'}
@@ -28,7 +28,7 @@ const modes:Record<RoutingMode,{label:LocaleKey;description:LocaleKey}>={discuss
 const palette=['#668373','#9A745F','#6D7FA4','#967AA0','#B18C47','#6C9297','#AB7180','#7A8456','#8B7B69']
 const active=(status?:string)=>status==='queued'||status==='running'
 const stamp=(value?:string)=>{if(!value)return '';const normalized=value.includes('T')?value:value.replace(' ','T')+'Z';const date=new Date(normalized);return Number.isNaN(date.getTime())?'':date.toLocaleTimeString(getLocale()==='en'?'en-US':'ko-KR',{hour:'2-digit',minute:'2-digit'})}
-const draftOf=(room?:RoomConfig):RoomDraft=>({id:room?.id,name:room?.name||'',topic:room?.topic||room?.description||'',ownerName:room?.ownerName||t('rooms.me'),agentIds:room?.agentIds||[],routingMode:room?.routingMode||'discussion',rounds:room?.rounds||1,maxTurns:room?.maxTurns||12,toolsEnabled:room?.toolsEnabled===true,autoLearning:room?.autoLearning!==false,autoModels:room?.autoModels!==false})
+const draftOf=(room?:RoomConfig):RoomDraft=>({id:room?.id,name:room?.name||'',topic:room?.topic||room?.description||'',ownerName:room?.ownerName||t('rooms.me'),agentIds:room?.agentIds||[],routingMode:room?.routingMode||'discussion',rounds:room?.rounds||1,maxTurns:room?.maxTurns??0,toolsEnabled:room?.toolsEnabled===true,autoLearning:room?.autoLearning!==false,autoModels:room?.autoModels!==false})
 const agentColor=(agent?:Agent,index=0)=>/^#[0-9a-f]{3,8}$/i.test(agent?.color||'')?agent!.color!:palette[index%palette.length]
 
 function Avatar({agent,name,owner=false,size='normal',index=0}:{agent?:Agent;name?:string;owner?:boolean;size?:'small'|'normal';index?:number}){
@@ -79,7 +79,7 @@ function RoomSettings({value,onChange,agents,disabled=false}:{value:RoomDraft;on
   <div className="room-roster-heading"><strong>{t('rooms.roster')}</strong><span>{t('rooms.rosterCount',{count:value.agentIds.length,max:MAX_ROOM_PARTICIPANTS})}</span></div>
   <div className="room-roster-options">{agents.map((agent,index)=>{const checked=value.agentIds.includes(agent.id);const unavailable=disabled||(!checked&&value.agentIds.length>=MAX_ROOM_PARTICIPANTS);return <label key={agent.id} className={'room-roster-option '+(checked?'checked':'')}><input type="checkbox" checked={checked} disabled={unavailable} onChange={()=>toggle(agent.id)}/><Avatar agent={agent} size="small" index={index}/><span><strong>{agent.name}</strong><small>{agent.model||t('rooms.defaultModel')}</small></span>{checked&&<Check size={14}/>}</label>})}{!agents.length&&<p className="room-note">{t('rooms.noAgents')}</p>}</div>
   <FormField label={t('rooms.mode')}><SelectInput value={value.routingMode} onChange={e=>onChange({...value,routingMode:e.target.value as RoutingMode})} disabled={disabled}>{Object.entries(modes).map(([key,item])=><option key={key} value={key}>{t(item.label)}</option>)}</SelectInput><small className="room-note">{t(modes[value.routingMode].description)}</small></FormField>
-  <div className="room-settings-numbers"><FormField label={t('rooms.rounds')}><SelectInput value={value.rounds} onChange={e=>onChange({...value,rounds:Number(e.target.value)})} disabled={disabled||value.routingMode==='round_robin'}>{[1,2,3,4].map(n=><option value={n} key={n}>{t('rooms.roundCount',{count:n})}</option>)}</SelectInput></FormField><FormField label={t('rooms.maxTurns')}><TextInput type="number" min={1} max={60} value={value.maxTurns} onChange={e=>onChange({...value,maxTurns:Math.min(60,Math.max(1,Number(e.target.value)||1))})} disabled={disabled}/></FormField></div>
+  <div className="room-settings-numbers"><FormField label={t('rooms.rounds')}><SelectInput value={value.rounds} onChange={e=>onChange({...value,rounds:Number(e.target.value)})} disabled={disabled||value.routingMode==='round_robin'}>{[1,2,3,5,10].map(n=><option value={n} key={n}>{t('rooms.roundCount',{count:n})}</option>)}</SelectInput></FormField><FormField label={t('rooms.maxTurns')} hint={t('rooms.maxTurnsHint')}><TextInput type="number" min={0} max={200} value={value.maxTurns} onChange={e=>onChange({...value,maxTurns:Math.min(200,Math.max(0,Number(e.target.value)||0))})} disabled={disabled}/></FormField></div>
   <label className="room-setting-check"><input type="checkbox" checked={value.autoLearning} onChange={e=>onChange({...value,autoLearning:e.target.checked})} disabled={disabled}/><span><strong>{t('rooms.autoLearn')}</strong><small>{t('rooms.autoLearnDesc')}</small></span></label>
   <label className="room-setting-check"><input type="checkbox" checked={value.autoModels} onChange={e=>onChange({...value,autoModels:e.target.checked})} disabled={disabled}/><span><strong>{t('rooms.autoModels')}</strong><small>{t('rooms.autoModelsDesc')}</small></span></label>
   <label className="room-setting-check"><input type="checkbox" checked={value.toolsEnabled} onChange={e=>onChange({...value,toolsEnabled:e.target.checked})} disabled={disabled}/><span><strong>{t('rooms.tools')}</strong><small>{t('rooms.toolsDesc')}</small></span></label>
@@ -94,6 +94,7 @@ function RoomConversation({room,agents,openList,showList,openSession,onSaved,onR
  const [inspector,setInspector]=useState(()=>window.innerWidth>=1450),[draft,setDraft]=useState<RoomDraft>(()=>draftOf(room)),[dirty,setDirty]=useState(false),[saving,setSaving]=useState(false),[saved,setSaved]=useState(false)
  const [knowledgeOpen,setKnowledgeOpen]=useState(false),[knowledge,setKnowledge]=useState<any[]>([]),[knowledgeBusy,setKnowledgeBusy]=useState(false),[knowledgeNotice,setKnowledgeNotice]=useState('')
  const [approvalBusy,setApprovalBusy]=useState('')
+ const [learningNotice,setLearningNotice]=useState('')
  const [showActivity,setShowActivity]=useState(false),[live,setLive]=useState<LiveDraft|null>(null),[moreBelow,setMoreBelow]=useState(false)
  const inputRef=useRef<HTMLTextAreaElement>(null),approvalRef=useRef<HTMLDivElement>(null),requestInFlight=useRef(false),reloadRequested=useRef(false),dataVersion=useRef(0),mounted=useRef(true),sendAttempt=useRef<{input:string;targets:string[];id:string;reasoningLanguage:'ko'|'default'}|null>(null)
  const activeTurnId=useRef<string|null>(null),retiredTurnIds=useRef(new Set<string>()),terminalTurnIds=useRef(new Set<string>())
@@ -152,6 +153,19 @@ function RoomConversation({room,agents,openList,showList,openSession,onSaved,onR
      if(base.done)return base
      return {...base,text:item.type==='text'?base.text+(item.text||''):base.text,reasoning:item.type==='reasoning'?base.reasoning+(item.text||''):base.reasoning,tool:item.type==='tool_start'?(item.name||t('rooms.toolFallback')):['tool_end','tool_error'].includes(item.type)?'':base.tool}
     })
+   }
+   if(item.type==='learning'){
+    setLearningNotice(t('rooms.event.memory',{count:Number(item.memories||0)}))
+    window.setTimeout(()=>setLearningNotice(''),5000)
+    return
+   }
+   if(item.type==='knowledge'){
+    const gained=Number(item.inserted||0)+Number(item.updated||0)
+    if(gained>0){
+     setLearningNotice(t('rooms.event.knowledge',{count:gained}))
+     window.setTimeout(()=>setLearningNotice(''),5000)
+    }
+    return
    }
    if(item.type==='error'){
     terminalTurnIds.current.add(turnId)
@@ -212,7 +226,7 @@ function RoomConversation({room,agents,openList,showList,openSession,onSaved,onR
      <div className="room-composer-bottom"><span><AtSign size={14}/>{targets.length?t('rooms.responders',{count:targets.length}):mode==='mentioned'?t('rooms.pickResponders'):t('rooms.autoResponders')}</span><div>{running&&<Button size="sm" variant="ghost" className="room-stop" disabled={stopping} onClick={()=>void stop()}><Square size={12} fill="currentColor"/>{stopping?t('rooms.stopping'):t('rooms.stop')}</Button>}<Button type="submit" variant="primary" size="icon" className="room-send" aria-label={t('rooms.sendAria')} disabled={sending||!input.trim()||!current.agentIds.length}>{sending?<LoaderCircle size={18} className="animate-spin"/>:<ArrowUp size={19}/>}</Button></div></div>
     </form>
     <div className="room-mention-options" aria-label={t('rooms.mentionOptions')}>{roster.map((agent,index)=><button key={agent.id} className={'room-mention-chip '+(targets.includes(agent.id)?'is-selected':'')} aria-pressed={targets.includes(agent.id)} onClick={()=>mention(agent)} title={t('rooms.mentionTitle',{name:agent.name})}><span style={{backgroundColor:agentColor(agent,index)}}/>@{agent.name}{targets.includes(agent.id)&&<Check size={11}/>}</button>)}</div>
-    <div className="room-composer-foot"><span>{running?t('rooms.continuesNotice'):t('rooms.enterHint')}</span><div>{learningActive>0&&<span><LoaderCircle size={11} className="animate-spin"/>{t('rooms.learning')} {learningActive}</span>}{memoryCount>0&&<span title={t('rooms.memoryTitle')}><BookOpenText size={11}/>{t('rooms.memory',{count:memoryCount})}</span>}<button onClick={()=>setShowActivity(v=>!v)} aria-expanded={showActivity}><Activity size={12}/>{t('rooms.activity')}{feed.jobs.length>0&&' '+feed.jobs.length}</button></div></div>
+    <div className="room-composer-foot"><span>{running?t('rooms.continuesNotice'):t('rooms.enterHint')}</span><div>{learningNotice&&<span className="rounded bg-[#F7E8E1] px-1.5 py-0.5 font-semibold text-[#A94E30]">✦ {learningNotice}</span>}{learningActive>0&&<span><LoaderCircle size={11} className="animate-spin"/>{t('rooms.learning')} {learningActive}</span>}{memoryCount>0&&<span title={t('rooms.memoryTitle')}><BookOpenText size={11}/>{t('rooms.memory',{count:memoryCount})}</span>}<button onClick={()=>setShowActivity(v=>!v)} aria-expanded={showActivity}><Activity size={12}/>{t('rooms.activity')}{feed.jobs.length>0&&' '+feed.jobs.length}</button></div></div>
    </div>
    {showActivity&&<RoomActivity jobs={feed.jobs} executions={feed.executions} learningJobs={feed.learningJobs} recordedOperations={feed.operations} sessionId={sessionId} openSession={openSession} onClose={()=>setShowActivity(false)}/>}
   </section>

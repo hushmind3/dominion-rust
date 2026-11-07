@@ -241,7 +241,7 @@ fn apply_extraction(
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let (mut inserted, mut updated, mut superseded, mut rejected) = (0, 0, 0, 0);
+    let (mut inserted, mut updated, mut superseded, mut rejected, mut promoted) = (0, 0, 0, 0, 0);
     for candidate in candidates.into_iter().take(MAX_ITEMS) {
         let kind = candidate["type"].as_str().unwrap_or("").trim();
         if !matches!(kind, "claim" | "hypothesis" | "conclusion" | "correction") {
@@ -400,7 +400,9 @@ fn apply_extraction(
             }
             if let Some(saved) = state.store.put("room_knowledge", &existing) {
                 state.bus.record("room_knowledge", &saved);
-                promote_global(state, &saved);
+                if promote_global(state, &saved) {
+                    promoted += 1;
+                }
                 updated += 1;
             }
             continue;
@@ -426,7 +428,9 @@ fn apply_extraction(
         });
         if let Some(saved) = state.store.put("room_knowledge", &record) {
             state.bus.record("room_knowledge", &saved);
-            promote_global(state, &saved);
+            if promote_global(state, &saved) {
+                promoted += 1;
+            }
             inserted += 1;
         }
     }
@@ -435,27 +439,28 @@ fn apply_extraction(
         "updated": updated,
         "superseded": superseded,
         "rejected": rejected,
+        "promoted": promoted,
     }))
 }
 
 /// Validated room conclusions become global, model-agnostic assets. They are
 /// still provenance-linked to the room but are no longer limited to it; chat
 /// and other rooms retrieve them through the experience context.
-fn promote_global(state: &AppState, knowledge: &Value) {
+fn promote_global(state: &AppState, knowledge: &Value) -> bool {
     if knowledge["status"].as_str() != Some("active") {
-        return;
+        return false;
     }
     if !matches!(
         knowledge["verification"].as_str(),
         Some("owner_confirmed" | "tool_evidence")
     ) {
-        return;
+        return false;
     }
     if !matches!(knowledge["type"].as_str(), Some("conclusion" | "correction")) {
-        return;
+        return false;
     }
     let Some(text) = knowledge["text"].as_str().filter(|text| !text.trim().is_empty()) else {
-        return;
+        return false;
     };
     let id = format!(
         "room-global-{}",
@@ -533,6 +538,9 @@ fn promote_global(state: &AppState, knowledge: &Value) {
             "room_knowledge.promoted",
             json!({"id": saved["id"], "knowledgeId": knowledge["id"], "roomId": knowledge["roomId"]}),
         );
+        true
+    } else {
+        false
     }
 }
 
@@ -669,6 +677,21 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         )
     })?;
     let report = apply_extraction(state, room_id, session_id, &batch, &extracted)?;
+    if report["inserted"].as_u64().unwrap_or(0) + report["updated"].as_u64().unwrap_or(0) > 0 {
+        state.bus.emit(json!({
+            "type": "room_event",
+            "roomId": room_id,
+            "sessionId": session_id,
+            "agentId": Value::Null,
+            "turnId": "learning",
+            "event": {
+                "type": "knowledge",
+                "inserted": report["inserted"],
+                "updated": report["updated"],
+                "promoted": report["promoted"],
+            }
+        }));
+    }
     let last_id = batch
         .last()
         .and_then(|message| message["id"].as_str())

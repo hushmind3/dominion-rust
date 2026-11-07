@@ -148,13 +148,21 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
     if !matches!(routing.as_str(), "discussion" | "round_robin" | "mentioned") {
         return Err(bad("지원하지 않는 발언 방식입니다."));
     }
+    let max_turns = body
+        .get("maxTurns")
+        .and_then(Value::as_i64)
+        .or_else(|| previous.get("maxTurns").and_then(Value::as_i64))
+        .unwrap_or(0);
+    if !(0..=200).contains(&max_turns) {
+        return Err(bad("총 AI 발언 상한은 0~200 사이여야 합니다."));
+    }
     Ok(json!({
         "id":id,"name":name,"agentIds":agent_ids,"routingMode":routing,
         "description":text_field(body,previous,"description","",4000)?,
         "topic":text_field(body,previous,"topic","",16000)?,
         "ownerName":text_field(body,previous,"ownerName","나",100)?,
-        "rounds":number_field(body,previous,"rounds",1,4)?,
-        "maxTurns":number_field(body,previous,"maxTurns",12,60)?,
+        "rounds":number_field(body,previous,"rounds",1,10)?,
+        "maxTurns":max_turns,
         "toolsEnabled":bool_field(body,previous,"toolsEnabled",false)?,
         "autoLearning":bool_field(body,previous,"autoLearning",true)?,
         "autoModels":bool_field(body,previous,"autoModels",true)?,
@@ -602,7 +610,7 @@ mod tests {
         .is_err());
         assert!(save_room(&state, Some("room-one"), &json!({"agentIds":["missing"]})).is_err());
         assert!(save_room(&state, Some("room-one"), &json!({"activeAgentId":"a8"})).is_err());
-        assert!(save_room(&state, Some("room-one"), &json!({"maxTurns":61})).is_err());
+        assert!(save_room(&state, Some("room-one"), &json!({"maxTurns":201})).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
     #[test]
