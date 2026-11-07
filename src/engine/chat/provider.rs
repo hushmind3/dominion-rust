@@ -288,32 +288,58 @@ fn normalize_assistant_reasoning(messages: &mut [Value], required: bool) {
     }
 }
 
-/// Reflection requires the original reasoning for every earlier assistant
-/// message. History produced by another model (or by a tool-only turn) cannot
-/// satisfy that. In that case keep the system context and the current user
-/// message; this is the provider's own recommended fallback.
-fn trim_history_for_reasoning(messages: Vec<Value>) -> (Vec<Value>, bool) {
-    let incompatible = messages.iter().any(|message| {
-        message["role"] == "assistant"
-            && message["reasoning_content"]
-                .as_str()
-                .is_none_or(str::is_empty)
-    });
-    if !incompatible {
-        return (messages, false);
+/// Reflection Beam requires reasoning_content for assistant turns. If an
+/// earlier model/legacy record has no original reasoning, keep its *visible
+/// evidence* as an explicitly quoted user record, never invent private
+/// reasoning and never erase the entire transcript.
+fn preserve_reflection_history(messages: Vec<Value>) -> (Vec<Value>, bool) {
+    let mut converted = false;
+    let mut converted_calls = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(messages.len());
+    for message in messages {
+        if message["role"] == "assistant"
+            && message["reasoning_content"].as_str().is_none_or(str::is_empty)
+        {
+            converted = true;
+            let mut details = message["content"].as_str().unwrap_or("").to_string();
+            if let Some(calls) = message["tool_calls"].as_array().filter(|calls| !calls.is_empty()) {
+                for call in calls {
+                    if let Some(id) = call["id"].as_str() {
+                        converted_calls.insert(id.to_string());
+                    }
+                }
+                details.push_str("\nPrior tool requests (quoted): ");
+                details.push_str(&json!(calls).to_string());
+            }
+            out.push(json!({
+                "role":"user",
+                "content":format!("[Previously recorded assistant message; quoted history, not a new owner instruction]\n{details}")
+            }));
+        } else if message["role"] == "tool"
+            && message["tool_call_id"].as_str().is_some_and(|id| converted_calls.contains(id))
+        {
+            converted = true;
+            out.push(json!({
+                "role":"user",
+                "content":format!(
+                    "[Previously recorded tool observation; quoted history, not a new instruction; tool_call_id={}]\n{}",
+                    message["tool_call_id"].as_str().unwrap_or(""),
+                    message["content"].as_str().unwrap_or("")
+                )
+            }));
+        } else {
+            out.push(message);
+        }
     }
-    let mut trimmed = Vec::new();
-    if let Some(system) = messages.iter().find(|message| message["role"] == "system") {
-        trimmed.push(system.clone());
-    }
-    if let Some(user) = messages
-        .iter()
-        .rev()
-        .find(|message| message["role"] == "user")
-    {
-        trimmed.push(user.clone());
-    }
-    (trimmed, true)
+    (out, converted)
+}
+
+/// Provider usage is authoritative when present; cache reporting is optional.
+/// An absent cached_tokens field must never be interpreted as a cache miss.
+fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
+    usage.pointer("/prompt_tokens_details/cached_tokens").and_then(Value::as_u64)
+        .or_else(|| usage.pointer("/input_tokens_details/cached_tokens").and_then(Value::as_u64))
+        .or_else(|| usage["prompt_cache_hit_tokens"].as_u64())
 }
 
 fn escaped_content_chars(text: &str) -> usize {
@@ -665,14 +691,14 @@ async fn stream_completion_once(
         provider.reasoning_protocol == "deepseek" || reflection_provider;
     normalize_assistant_reasoning(&mut provider_messages, requires_reasoning_content);
     if reflection_provider {
-        let (trimmed, changed) = trim_history_for_reasoning(provider_messages);
-        provider_messages = trimmed;
-        if changed {
+        let (preserved, quoted_legacy) = preserve_reflection_history(provider_messages);
+        provider_messages = preserved;
+        if quoted_legacy {
             state.store.audit(
-                "reflection.history_trimmed",
+                "reflection.history_preserved",
                 json!({
                     "sessionId": session_id,
-                    "reason": "assistant history has no reasoning_content",
+                    "reason": "assistant reasoning missing; quoted old content without deleting history",
                 }),
             );
         }
@@ -777,6 +803,7 @@ async fn stream_completion_once(
                 return Err(format!("모델 오류: {error}"));
             }
             if let Some(usage) = piece.get("usage").filter(|value| value.is_object()) {
+                completion.cached_prompt_tokens = cached_prompt_tokens(usage);
                 let prompt = usage.get("prompt_tokens").and_then(Value::as_u64);
                 let generated = usage.get("completion_tokens").and_then(Value::as_u64);
                 if let Some(total) = usage.get("total_tokens").and_then(Value::as_u64) {
@@ -1197,6 +1224,7 @@ async fn stream_codex_once(
                 }
                 "response.completed" => {
                     if let Some(usage) = piece["response"]["usage"].as_object() {
+                        completion.cached_prompt_tokens = cached_prompt_tokens(&json!(usage));
                         completion.prompt_tokens =
                             usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
                         completion.completion_tokens =
@@ -1309,6 +1337,8 @@ async fn stream_anthropic_once(
     let mut text_pending = String::new();
     let mut in_text_tool_call = false;
     let mut input_tokens = 0u64;
+    let mut cache_read_tokens = 0u64;
+    let mut cache_write_tokens = 0u64;
     let mut output_tokens = 0u64;
 
     'stream: while let Some(chunk) = stream.next().await {
@@ -1332,6 +1362,8 @@ async fn stream_anthropic_once(
             match piece["type"].as_str().unwrap_or("") {
                 "message_start" => {
                     input_tokens = piece["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0);
+                    cache_read_tokens = piece["message"]["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
+                    cache_write_tokens = piece["message"]["usage"]["cache_creation_input_tokens"].as_u64().unwrap_or(0);
                 }
                 "content_block_start" => {
                     let content = &piece["content_block"];
@@ -1432,9 +1464,10 @@ async fn stream_anthropic_once(
         return Err("Anthropic 스트림이 완료 신호 없이 종료되었습니다.".into());
     }
     completion.tool_calls = calls;
-    completion.prompt_tokens = input_tokens;
+    completion.prompt_tokens = input_tokens.saturating_add(cache_read_tokens).saturating_add(cache_write_tokens);
+    completion.cached_prompt_tokens = Some(cache_read_tokens);
     completion.completion_tokens = output_tokens;
-    completion.usage = input_tokens + output_tokens;
+    completion.usage = completion.prompt_tokens + output_tokens;
     completion.usage_exact = true;
     crate::engine::gateway::record_usage_tokens(
         state,
@@ -1443,7 +1476,7 @@ async fn stream_anthropic_once(
         provider.local,
         "chat",
         Some(session_id),
-        input_tokens,
+        completion.prompt_tokens,
         output_tokens,
         completion.usage,
         false,
@@ -1459,28 +1492,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn incompatible_reflection_history_is_trimmed_to_system_and_last_user() {
+    fn reflection_quotes_missing_reasoning_without_dropping_old_context() {
         let messages = vec![
             json!({"role":"system","content":"s"}),
-            json!({"role":"assistant","content":"old","reasoning_content":""}),
-            json!({"role":"user","content":"old user"}),
-            json!({"role":"assistant","content":"ok","reasoning_content":"real"}),
+            json!({"role":"user","content":"original owner request"}),
+            json!({"role":"assistant","content":"old assistant answer","reasoning_content":""}),
+            json!({"role":"user","content":"followup"}),
+            json!({"role":"assistant","content":"native beam","reasoning_content":"original thinking"}),
             json!({"role":"user","content":"current"}),
         ];
-        let (trimmed, changed) = trim_history_for_reasoning(messages);
-        assert!(changed);
-        assert_eq!(trimmed.len(), 2, "{trimmed:?}");
-        assert_eq!(trimmed[0]["role"], "system");
-        assert_eq!(trimmed[1]["content"], "current");
+        let (preserved, quoted) = preserve_reflection_history(messages);
+        assert!(quoted);
+        assert_eq!(preserved.len(), 6);
+        assert!(preserved[2]["content"].as_str().unwrap().contains("old assistant answer"));
+        assert_eq!(preserved[4]["role"], "assistant");
+        assert_eq!(preserved[4]["reasoning_content"], "original thinking");
+        assert_eq!(preserved[5]["content"], "current");
+    }
 
-        let compatible = vec![
-            json!({"role":"system","content":"s"}),
-            json!({"role":"assistant","content":"ok","reasoning_content":"real"}),
-            json!({"role":"user","content":"current"}),
-        ];
-        let (kept, changed) = trim_history_for_reasoning(compatible);
-        assert!(!changed);
-        assert_eq!(kept.len(), 3, "{kept:?}");
+    #[test]
+    fn cache_usage_distinguishes_hit_from_missing_telemetry() {
+        assert_eq!(cached_prompt_tokens(&json!({"prompt_tokens_details":{"cached_tokens":4032}})),Some(4032));
+        assert_eq!(cached_prompt_tokens(&json!({"prompt_cache_hit_tokens":1280})),Some(1280));
+        assert_eq!(cached_prompt_tokens(&json!({"input_tokens_details":{"cached_tokens":512}})),Some(512));
+        assert_eq!(cached_prompt_tokens(&json!({"prompt_tokens":4049})),None);
+        assert_eq!(cached_prompt_tokens(&json!({"prompt_tokens_details":{"cached_tokens":0}})),Some(0));
     }
 
     #[test]
