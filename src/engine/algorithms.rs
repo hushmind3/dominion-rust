@@ -1571,8 +1571,13 @@ pub fn activate(state: &AppState, id: &str) -> Result<Value, String> {
 pub fn disable(state: &AppState, id: &str) -> Option<Value> {
     let mut algorithm = state.store.get("algorithm", id)?;
     algorithm["status"] = json!("disabled");
+    algorithm["disabledAt"] = json!(chrono::Utc::now().to_rfc3339());
     let saved = state.store.put("algorithm", &algorithm)?;
     state.bus.record("algorithm", &saved);
+    state.store.audit(
+        "algorithm.disabled",
+        json!({"id": id, "kind": algorithm["kind"], "revision": algorithm["revision"]}),
+    );
     Some(saved)
 }
 

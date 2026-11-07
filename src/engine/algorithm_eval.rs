@@ -344,28 +344,91 @@ fn dimension(kind: &str, label: &str, metric: &str, rows: &[Value], baseline: &s
     })
 }
 
-/// Runs every deterministic evaluation and returns the comparison table.
-/// This function never calls a model and never activates a kernel.
-pub fn run(_state: &AppState) -> Value {
-    let dimensions = vec![
+/// Runs every deterministic evaluation, records the result and states whether
+/// each winner should be promoted. It never calls a model and never activates
+/// a kernel; activation stays an explicit user action.
+pub fn run(state: &AppState) -> Value {
+    let active_by_kind = state
+        .store
+        .all("algorithm")
+        .into_iter()
+        .filter(|record| record["status"].as_str() == Some("active"))
+        .filter_map(|record| {
+            record["kind"]
+                .as_str()
+                .map(|kind| (kind.to_string(), record["implementation"].as_str().unwrap_or("").to_string()))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut dimensions = vec![
         memory_rerank(),
         memory_importance(),
         decomposition(),
         multiagent_conflict(),
     ];
+    for dimension in dimensions.iter_mut() {
+        let kind = dimension["kind"].as_str().unwrap_or("").to_string();
+        let baseline = dimension["baseline"].as_str().unwrap_or("").to_string();
+        let winner = dimension["winner"].as_str().unwrap_or("").to_string();
+        let improvement = dimension["improvement"].as_f64().unwrap_or(0.0);
+        let active = active_by_kind.get(&kind).cloned().unwrap_or_else(|| baseline.clone());
+        let recommendation = if improvement > 0.0 && winner != active {
+            "promote"
+        } else if improvement > 0.0 && winner == active {
+            "already_active"
+        } else {
+            "keep"
+        };
+        dimension["active"] = json!(active);
+        dimension["recommendation"] = json!(recommendation);
+    }
     let improved = dimensions
         .iter()
         .filter(|dimension| dimension["improvement"].as_f64().unwrap_or(0.0) > 0.0)
         .count();
-    json!({
+    let record_id = format!("algorithm-eval-{}", uuid::Uuid::new_v4());
+    let generated_at = chrono::Utc::now().to_rfc3339();
+    let report = json!({
+        "id": record_id,
         "version": EVAL_VERSION,
-        "generatedAt": chrono::Utc::now().to_rfc3339(),
+        "generatedAt": generated_at,
         "deterministic": true,
         "modelCalls": 0,
+        "active": active_by_kind,
         "dimensions": dimensions,
         "improvedDimensions": improved,
         "totalDimensions": 4,
-    })
+    });
+    if let Some(saved) = state.store.put("algorithm_eval", &report) {
+        state.bus.record("algorithm_eval", &saved);
+        state.store.audit(
+            "algorithm.evaluated",
+            json!({
+                "id": record_id,
+                "improvedDimensions": improved,
+                "promotions": report["dimensions"]
+                    .as_array()
+                    .map(|rows| rows.iter()
+                        .filter(|row| row["recommendation"] == "promote")
+                        .map(|row| json!({"kind":row["kind"],"winner":row["winner"],"active":row["active"]}))
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            }),
+        );
+    }
+    report
+}
+
+/// Most recent evaluations, newest first, for the experiment/promotion view.
+pub fn history(state: &AppState, limit: usize) -> Vec<Value> {
+    let mut records = state.store.all("algorithm_eval");
+    records.sort_by(|a, b| {
+        b["generatedAt"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(a["generatedAt"].as_str().unwrap_or(""))
+    });
+    records.truncate(limit.clamp(1, 100));
+    records
 }
 
 #[cfg(test)]
@@ -424,6 +487,14 @@ mod tests {
                 > importance["baselineValue"].as_f64().unwrap(),
             "{importance}"
         );
+        assert_eq!(importance["recommendation"], "promote");
+        assert!(["promote", "keep", "already_active"]
+            .contains(&decomposition["recommendation"].as_str().unwrap_or("")));
+        assert!(report["id"].as_str().is_some());
+        assert_eq!(state.store.count("algorithm_eval"), 1);
+        let history = history(&state, 20);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["id"], report["id"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

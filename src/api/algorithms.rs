@@ -44,3 +44,9 @@ pub async fn generate(State(state): State<AppState>, Json(body): Json<Value>) ->
 pub async fn evaluate(State(state): State<AppState>) -> Json<Value> {
     Json(crate::engine::algorithm_eval::run(&state))
 }
+
+pub async fn evaluations(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "items": crate::engine::algorithm_eval::history(&state, 20),
+    }))
+}
