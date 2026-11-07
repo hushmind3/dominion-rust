@@ -309,6 +309,8 @@ const ko = {
   'models.apiTitle': '모델 API 연결',
   'models.apiDesc': '쓰려는 서비스에 연결하세요. 모델은 연결한 뒤 채팅이나 에이전트에서 고르면 됩니다.',
   'models.direct': '직접 입력',
+  'models.freeProvider': '무료',
+  'models.freeNote': 'API 키 없이 호출하는 무료 엔드포인트입니다. 요청 제한이 있을 수 있습니다.',
   'models.needKey': 'API 키 필요',
   'models.integrationKey': '통합 키 필요',
   'models.off': '꺼짐',

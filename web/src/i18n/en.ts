@@ -310,6 +310,8 @@ const en: Record<LocaleKey, string> = {
   'models.apiTitle': 'Model API connections',
   'models.apiDesc': 'Connect the service you want to use. Then select its model in chat or an agent.',
   'models.direct': 'Manual entry',
+  'models.freeProvider': 'Free',
+  'models.freeNote': 'A free endpoint called without an API key. Requests may be rate-limited.',
   'models.needKey': 'API key required',
   'models.integrationKey': 'Integration key required',
   'models.off': 'Off',
