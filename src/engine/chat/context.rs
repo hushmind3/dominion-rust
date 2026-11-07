@@ -370,6 +370,16 @@ pub(super) fn history(
     render_history(state, session_id, agent_id, &all[start..], prefix)
 }
 
+// Preserve provider reasoning in the *internal* history for protocols such
+// as Reflection Beam. Non-reasoning providers drop it at their wire adapter.
+// These are model-provided bytes already stored with the original message;
+// no summarization or extra model call is involved.
+fn stored_reasoning(message: &Value) -> Option<&str> {
+    message["reasoning"].as_str()
+        .filter(|text| !text.is_empty())
+        .or_else(|| message["metadata"]["providerReasoning"].as_str().filter(|text| !text.is_empty()))
+}
+
 pub(super) fn render_history(
     state: &AppState,
     session_id: &str,
@@ -444,7 +454,11 @@ pub(super) fn render_history(
                         call["id"].as_str().is_some() && call["id"] == result["tool_call_id"]
                     });
                 if valid {
-                    out.push(json!({"role":"assistant","content":content,"tool_calls":calls}));
+                    let mut assistant = json!({"role":"assistant","content":content,"tool_calls":calls});
+                    if let Some(reasoning) = stored_reasoning(message) {
+                        assistant["reasoning_content"] = json!(reasoning);
+                    }
+                    out.push(assistant);
                     out.extend(results.iter().map(|row| {
                         let content = row["content"].as_str().unwrap_or("");
                         let content = if is_room && content.chars().count() > 2_000 {
@@ -463,7 +477,11 @@ pub(super) fn render_history(
                     out.push(json!({"role":"assistant","content":format!("{content}\n[이전 도구 실행이 중단되어 결과를 확인할 수 없습니다.]")}));
                 }
             } else if !content.trim().is_empty() {
-                out.push(json!({"role":"assistant","content":content}));
+                let mut assistant = json!({"role":"assistant","content":content});
+                if let Some(reasoning) = stored_reasoning(message) {
+                    assistant["reasoning_content"] = json!(reasoning);
+                }
+                out.push(assistant);
             }
         } else if role == "user"
             && (!content.trim().is_empty()
@@ -542,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn room_history_never_resends_previous_reasoning() {
+    fn room_history_preserves_stored_reasoning_for_provider_specific_replay() {
         let (state, dir) = state();
         state
             .store
@@ -567,10 +585,9 @@ mod tests {
         }));
         let history = history(&state, "room:t", Some("a1"), None);
         let serialized = serde_json::to_string(&history).unwrap();
-        assert!(!serialized.contains("SECRET-REASONING-TEXT"));
-        assert!(history
-            .iter()
-            .all(|message| message.get("reasoning_content").is_none()));
+        assert!(serialized.contains("SECRET-REASONING-TEXT"));
+        assert!(history.iter().any(|message| message["role"] == "assistant"
+            && message["reasoning_content"] == "SECRET-REASONING-TEXT"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }
