@@ -453,10 +453,12 @@ pub fn enqueue(
     )
 }
 
+/// Take the oldest unprocessed messages first. Processing newest-first would
+/// advance the checkpoint past the older backlog and drop it permanently.
 fn select_batch(messages: &[Value]) -> Vec<Value> {
     let mut selected = Vec::new();
     let mut chars = 0usize;
-    for message in messages.iter().rev() {
+    for message in messages {
         if selected.len() >= MAX_MESSAGES {
             break;
         }
@@ -470,7 +472,6 @@ fn select_batch(messages: &[Value]) -> Vec<Value> {
         chars += size;
         selected.push(message.clone());
     }
-    selected.reverse();
     selected
 }
 
@@ -574,6 +575,26 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             }),
         )
         .ok_or("방 학습 체크포인트를 저장할 수 없습니다.")?;
+    // More messages were waiting than one batch can hold. Queue the next
+    // window with a checkpoint-specific id so no transcript segment is lost.
+    if last_id != through {
+        let id = format!(
+            "room-learn-{}",
+            memory::stable_id(&[room_id, session_id, through, &last_id])
+        );
+        jobs::enqueue_once(
+            state,
+            &id,
+            "learn",
+            json!({
+                "sessionId": session_id,
+                "roomId": room_id,
+                "throughMessageId": through,
+                "semantic": true,
+                "roomLearning": true,
+            }),
+        );
+    }
     state
         .store
         .put(
@@ -717,6 +738,34 @@ mod tests {
             "content": content,
             "metadata": {"authorKind": if role == "user" { "owner" } else { "agent" }},
         })
+    }
+
+    #[test]
+    fn batch_starts_with_the_oldest_unprocessed_messages() {
+        let messages = (0..120)
+            .map(|index| {
+                json!({
+                    "id": format!("m{index}"),
+                    "content": format!("message {index}"),
+                })
+            })
+            .collect::<Vec<_>>();
+        let batch = select_batch(&messages);
+        assert_eq!(batch.len(), MAX_MESSAGES);
+        assert_eq!(batch.first().unwrap()["id"], "m0");
+        assert_eq!(batch.last().unwrap()["id"], "m79");
+    }
+
+    #[test]
+    fn batch_respects_the_prompt_budget() {
+        let long = "x".repeat(MAX_CONTENT_CHARS);
+        let messages = (0..30)
+            .map(|index| json!({"id": format!("m{index}"), "content": long}))
+            .collect::<Vec<_>>();
+        let batch = select_batch(&messages);
+        let per_message = MAX_CONTENT_CHARS + 128;
+        assert_eq!(batch.len(), MAX_PROMPT_CHARS / per_message);
+        assert_eq!(batch.first().unwrap()["id"], "m0");
     }
 
     #[test]
