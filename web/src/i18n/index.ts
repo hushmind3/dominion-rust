@@ -26,6 +26,12 @@ export function setLocale(next: Locale) {
 export function useLocale(): Locale {
   return useSyncExternalStore(subscribe, getLocale, getLocale)
 }
+export function formatDateTime(value?: string | number | Date | null, options?: Intl.DateTimeFormatOptions): string {
+  if (value === undefined || value === null || value === '') return ''
+  const date = value instanceof Date ? value : new Date(value)
+  if (!Number.isFinite(date.getTime())) return ''
+  return date.toLocaleString(locale === 'en' ? 'en-US' : 'ko-KR', options)
+}
 export function t(key: LocaleKey, vars?: Record<string, string | number>): string {
   const pack = packs[locale] || ko
   let text = pack[key] ?? ko[key] ?? key

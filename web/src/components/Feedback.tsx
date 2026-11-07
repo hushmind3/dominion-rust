@@ -1,8 +1,9 @@
 import {CheckCircle2,Info,TriangleAlert,X} from 'lucide-react'
 import type {ReactNode} from 'react'
+import {t} from '../i18n'
 
 export function Skeleton({lines=3}:{lines?:number}){
- return <div role="status" aria-label="불러오는 중" className="animate-pulse space-y-3 p-3">
+ return <div role="status" aria-label={t('common.loading')} className="animate-pulse space-y-3 p-3">
   {Array.from({length:Math.max(1,Math.min(8,lines))},(_,i)=>
    <div key={i} className={'h-3 rounded-full bg-[#E9E2D7] '+(i===lines-1?'w-2/3':'w-full')}/>)}
  </div>

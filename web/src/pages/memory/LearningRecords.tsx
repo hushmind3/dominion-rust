@@ -1,3 +1,4 @@
+import {formatDateTime} from '../../i18n'
 import {useState} from 'react'
 import {Button} from '../../components/Primitives'
 import {Notice,useRemote} from '../../components/UI'
@@ -24,7 +25,7 @@ const rate=(successes:any,uses:any)=>{
 }
 const when=(value:any)=>{
  const text=str(value)
- return text&&Number.isFinite(Date.parse(text))?new Date(text).toLocaleString('ko-KR'):text
+ return text&&Number.isFinite(Date.parse(text))?formatDateTime(text):text
 }
 const fallback=(rec:Rec,index:number):Row=>({
  key:str(rec.id)||String(index),

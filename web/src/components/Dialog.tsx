@@ -1,4 +1,5 @@
 import {useLayoutEffect,useRef,type HTMLAttributes,type ReactNode} from 'react'
+import {t} from '../i18n'
 
 const dialogs: symbol[] = []
 let previousOverflow = ''
@@ -35,7 +36,7 @@ export function DialogBackdrop({children,onDismiss,...props}:HTMLAttributes<HTML
 export function DialogPanel({children,size='default',className='',...props}:HTMLAttributes<HTMLDivElement>&{
  children:ReactNode;size?:'default'|'wide'
 }){
- return <div role="dialog" aria-modal="true" aria-label={props['aria-label']||'설정 창'} {...props}
+ return <div role="dialog" aria-modal="true" aria-label={props['aria-label']||t('common.settingsWindow')} {...props}
   className={['relative max-h-[90dvh] w-full overflow-y-auto overscroll-contain rounded-2xl border border-[#E7E0D5] bg-white shadow-2xl',
    size==='wide'?'max-w-3xl':'max-w-xl',className].join(' ')}>{children}</div>
 }

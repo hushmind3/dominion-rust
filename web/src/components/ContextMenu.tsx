@@ -2,6 +2,7 @@ import {request} from '../api'
 import {Button} from './Primitives'
 import {DialogBackdrop,DialogPanel} from './Dialog'
 import { useEffect, useRef, useState } from "react";
+import { t, useLocale } from '../i18n';
 
 type Ctx = {
   x: number;
@@ -19,6 +20,7 @@ const isDesktopHost = () =>
   Boolean((window as any).__TAURI_INTERNALS__ || (window as any).dominionDesktop);
 
 export function ContextMenu() {
+  useLocale();
   const [ctx, setCtx] = useState<Ctx | null>(null);
   const [translation, setTranslation] = useState<{pending:boolean;text?:string;error?:string} | null>(null);
   const translateRequest = useRef<AbortController | null>(null);
@@ -83,10 +85,10 @@ export function ContextMenu() {
     };
   }, []);
 
-  if (translation) return <DialogBackdrop onDismiss={closeTranslation}><DialogPanel aria-label="선택한 텍스트 번역" className="p-4">
-    <header className="mb-3 flex items-center justify-between gap-3"><strong>한국어 번역</strong><Button onClick={closeTranslation}>닫기</Button></header>
-    <p className="mb-2 text-xs text-[#7C7469]">선택한 텍스트는 서버를 거쳐 Google 번역으로 전달됩니다.</p>
-    {translation.pending?<p role="status">번역 중…</p>:translation.error?<p role="alert">{translation.error}</p>:<p className="whitespace-pre-wrap">{translation.text}</p>}
+  if (translation) return <DialogBackdrop onDismiss={closeTranslation}><DialogPanel aria-label={t('ctx.translateTitle')} className="p-4">
+    <header className="mb-3 flex items-center justify-between gap-3"><strong>{t('ctx.translate')}</strong><Button onClick={closeTranslation}>{t('ctx.close')}</Button></header>
+    <p className="mb-2 text-xs text-[#7C7469]">{t('ctx.privacy')}</p>
+    {translation.pending?<p role="status">{t('ctx.pending')}</p>:translation.error?<p role="alert">{translation.error}</p>:<p className="whitespace-pre-wrap">{translation.text}</p>}
   </DialogPanel></DialogBackdrop>;
   if (!ctx) return null;
 
@@ -131,43 +133,43 @@ export function ContextMenu() {
   const rows: Item[] = [];
 
   if (window.history.length > 1) {
-    rows.push({ label: "뒤로", run: () => { history.back(); setCtx(null); } });
-    rows.push({ label: "앞으로", run: () => { history.forward(); setCtx(null); } });
+    rows.push({ label: t('ctx.back'), run: () => { history.back(); setCtx(null); } });
+    rows.push({ label: t('ctx.forward'), run: () => { history.forward(); setCtx(null); } });
     rows.push("sep");
   }
-  rows.push({ label: "새로고침", run: () => window.location.reload() });
+  rows.push({ label: t('ctx.reload'), run: () => window.location.reload() });
   rows.push("sep");
 
   if (ctx.editable) {
-    rows.push({ label: "잘라내기", run: () => { document.execCommand("cut"); setCtx(null); } });
-    rows.push({ label: "복사", run: () => { document.execCommand("copy"); setCtx(null); } });
-    rows.push({ label: "붙여넣기", run: () => void paste() });
-    rows.push({ label: "전체 선택", run: () => { document.execCommand("selectAll"); setCtx(null); } });
+    rows.push({ label: t('ctx.cut'), run: () => { document.execCommand("cut"); setCtx(null); } });
+    rows.push({ label: t('ctx.copy'), run: () => { document.execCommand("copy"); setCtx(null); } });
+    rows.push({ label: t('ctx.paste'), run: () => void paste() });
+    rows.push({ label: t('ctx.selectAll'), run: () => { document.execCommand("selectAll"); setCtx(null); } });
     rows.push("sep");
   }
 
   if (ctx.text) {
-    rows.push({ label: "복사", run: () => void write(ctx.text) });
+    rows.push({ label: t('ctx.copy'), run: () => void write(ctx.text) });
     rows.push({
-      label: "선택한 텍스트 번역",
+      label: t('ctx.translateTitle'),
       run: () => void translate(ctx.text),
     });
     rows.push({
-      label: "검색",
+      label: t('ctx.search'),
       run: () => open("https://www.google.com/search?q=" + encodeURIComponent(ctx.text.slice(0, 400))),
     });
     rows.push("sep");
   }
 
-  if (ctx.code) rows.push({ label: "코드 복사", run: () => void write(ctx.code) });
-  if (ctx.message) rows.push({ label: "메시지 전체 복사", run: () => void write(ctx.message) });
+  if (ctx.code) rows.push({ label: t('ctx.copyCode'), run: () => void write(ctx.code) });
+  if (ctx.message) rows.push({ label: t('ctx.copyMessage'), run: () => void write(ctx.message) });
   if (ctx.link) {
-    rows.push({ label: "링크 열기", run: () => open(ctx.link) });
-    rows.push({ label: "링크 주소 복사", run: () => void write(ctx.link) });
+    rows.push({ label: t('ctx.openLink'), run: () => open(ctx.link) });
+    rows.push({ label: t('ctx.copyLink'), run: () => void write(ctx.link) });
   }
 
   rows.push("sep");
-  rows.push({ label: "인쇄", run: () => { window.print(); setCtx(null); } });
+  rows.push({ label: t('ctx.print'), run: () => { window.print(); setCtx(null); } });
 
   const item =
     "block w-full whitespace-nowrap rounded-md px-3 py-1.5 text-left text-[12px] text-[#3A342D] hover:bg-[#F7F2EA]";

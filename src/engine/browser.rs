@@ -340,7 +340,7 @@ async fn type_text(ws_url: &str, index: u64, text: &str) -> Result<Value, String
     let script = element_script(
         index,
         &format!(
-            "el.scrollIntoView({{ block: 'center', inline: 'center' }}); el.focus(); const text = {literal}; if (el.isContentEditable) {{ el.innerText = text; }} else {{ const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set; if (setter) setter.call(el, text); else el.value = text; }} el.dispatchEvent(new Event('input', {{ bubbles: true }})); el.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, value: (el.value || el.innerText || '').slice(0, 200) }};"
+            "el.scrollIntoView({{ block: 'center', inline: 'center' }}); el.focus(); const text = {literal}; if (el.isContentEditable) {{ el.innerText = text; }} else {{ const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype; const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set; if (setter) setter.call(el, text); else el.value = text; }} el.dispatchEvent(new Event('input', {{ bubbles: true }})); el.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, value: (el.value || el.innerText || '').slice(0, 200) }};"
         ),
     );
     let value = evaluate(ws_url, &script).await?;
