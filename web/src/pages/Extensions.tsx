@@ -617,7 +617,7 @@ export function ExtensionsPage() {
   return (
     <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
       <Headline
-        eyebrow="CAPABILITY MARKETPLACE"
+        eyebrow={t('ui.eyebrow.marketplace')}
         title={t('ext.title')}
         description={t('ext.description')}
         actions={
@@ -1251,7 +1251,7 @@ export function ExtensionsPage() {
           <DialogPanel size="wide">
             <div className="flex items-center justify-between border-b border-[#EFE9DF] p-5">
               <div>
-                <small>MCP CONNECTION</small>
+                <small>{t('ui.label.mcpConnection')}</small>
                 <h2>{t('ext.register')}</h2>
               </div>
               <Button size="icon" variant="ghost" onClick={() => setEdit(null)}>
@@ -1334,7 +1334,7 @@ export function ExtensionsPage() {
           <DialogPanel size="wide">
             <div className="flex items-center justify-between border-b border-[#EFE9DF] p-5">
               <div>
-                <small>SKILL EDITOR</small>
+                <small>{t('ui.label.skillEditor')}</small>
                 <h2>{t('ext.skillWrite')}</h2>
               </div>
               <Button

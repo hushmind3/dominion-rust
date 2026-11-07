@@ -34,7 +34,7 @@ export function CapabilitiesPage({navigate}:{navigate:(page:Page)=>void}){
   try{await Promise.all([data.reload(),catalog.reload()])}finally{setRefreshing(false)}
  }
  return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
-  <Headline eyebrow="CAPABILITY CATALOG" title={t('cap.title')} description={t('cap.description')} actions={<Button variant="secondary" disabled={refreshing} onClick={()=>void reload()}><RefreshCw size={16}/> {t('cap.refresh')}</Button>}/>
+  <Headline eyebrow={t('ui.eyebrow.capabilities')} title={t('cap.title')} description={t('cap.description')} actions={<Button variant="secondary" disabled={refreshing} onClick={()=>void reload()}><RefreshCw size={16}/> {t('cap.refresh')}</Button>}/>
   <Notice message={data.error||catalog.error}/>
   <div className="mb-4 flex items-center gap-2"><Search size={16}/><TextInput aria-label={t('cap.searchAria')} value={query} onChange={event=>setQuery(event.target.value)} placeholder={t('cap.searchPlaceholder')}/></div>
   <div className="mb-5 flex flex-wrap items-center gap-2 border-b border-[#E7E0D5] pb-3">

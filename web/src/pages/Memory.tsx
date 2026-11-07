@@ -60,7 +60,7 @@ export function MemoryPage(){
   try{await del('/api/memories/'+encodeURIComponent(id));await memories.reload()}catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
  return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
-  <Headline eyebrow="MEMORY LIBRARY" title={t('memory.title')} description={t('memory.description')}/>
+  <Headline eyebrow={t('ui.eyebrow.memory')} title={t('memory.title')} description={t('memory.description')}/>
   <Notice message={error||memories.error||agents.error}/>
   {notice&&<div role="status" className="my-3 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"><Check size={16}/>{notice}</div>}
   <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">

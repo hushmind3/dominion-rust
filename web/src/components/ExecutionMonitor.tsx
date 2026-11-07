@@ -3,7 +3,7 @@ import {Activity,Clock3,Play,RefreshCw,Square,Terminal} from 'lucide-react'
 import {post} from '../api'
 import {Button,SelectInput,TextArea} from './Primitives'
 import {Panel,useRemote} from './UI'
-import {t,useLocale,type LocaleKey} from '../i18n'
+import {t,useLocale,jobKindLabel,type LocaleKey} from '../i18n'
 import {translateError} from '../i18n/errors'
 
 type Execution={

@@ -1,3 +1,4 @@
+import {t, useLocale} from '../../i18n'
 import {useRemote,Notice,Panel,Subheading} from '../../components/UI'
 
 type Growth={
@@ -19,6 +20,7 @@ const percent=(value:any)=>`${Math.round(number(value)*100)}%`
 const label=(value:any,fallback='기록 없음')=>typeof value==='string'&&value?value:fallback
 
 export function GrowthDashboard(){
+ useLocale()
  const synergy=useRemote<Synergy>('/api/synergy',{agents:[],sharedMethods:[],algorithmStats:[]})
  const usage=useRemote<Usage>('/api/model-usage',{groups:[]})
  const transfer=useRemote<Transfer>('/api/transfer',{principles:[],rules:[],usages:[],learningCases:[]})
@@ -43,7 +45,7 @@ export function GrowthDashboard(){
   </div>
 
   <Panel className="min-w-0 p-4">
-   <Subheading title="관측된 성장" extra={<span className="text-[10px] text-[#9C9388]">VERIFIED RUNS</span>}/>
+   <Subheading title="관측된 성장" extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.verifiedRuns')}</span>}/>
    {!agents.length?<p className="text-sm text-[#7C7469]">아직 검증된 실행 기록이 없습니다.</p>:<div className="grid gap-2">{agents.slice(0,10).map(agent=>{
     const growth=agent.growth||{}
     const failures=Object.entries(growth.toolFailures||{}).sort((a,b)=>number(b[1])-number(a[1])).slice(0,3)
@@ -57,12 +59,12 @@ export function GrowthDashboard(){
   </Panel>
 
   <Panel className="min-w-0 p-4">
-   <Subheading title="모델 사용량" extra={<span className="text-[10px] text-[#9C9388]">API · LOCAL</span>}/>
+   <Subheading title="모델 사용량" extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.apiLocal')}</span>}/>
    {!groups.length?<p className="text-sm text-[#7C7469]">아직 모델 호출 기록이 없습니다.</p>:<div className="grid gap-1 text-[11px]">{groups.map((group,index)=><div className="grid grid-cols-[1fr_auto_auto] gap-2 rounded-lg border border-[#EFE9DF] px-3 py-2" key={index}><span className="break-all font-semibold text-[#4A443C]">{label(group.model,'모델 미기록')}</span><span className="text-[#7C7469]">{label(group.purpose,'기타')} · {number(group.calls)}회</span><span className="text-[#7C7469]">{number(group.totalTokens).toLocaleString()} 토큰</span></div>)}</div>}
   </Panel>
 
   <Panel className="min-w-0 p-4">
-   <Subheading title="모델 간 전이" extra={<span className="text-[10px] text-[#9C9388]">PROVENANCE</span>}/>
+   <Subheading title="모델 간 전이" extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.provenance')}</span>}/>
    {!principles.length&&!rules.length?<p className="text-sm text-[#7C7469]">아직 일반화된 원리나 공유 규칙이 없습니다. 검증된 실패 복구가 쌓이면 생성됩니다.</p>:<div className="grid gap-2">
     {principles.slice(0,6).map(principle=><div className="rounded-lg border border-[#EFE9DF] p-3" key={principle.id}>
      <div className="flex flex-wrap gap-2 text-[11px]"><strong>{label(principle.kind,'원리')}</strong><span className="text-[#7C7469]">{label(principle.status)} · 신뢰 {percent(principle.confidence)}</span><span className="ml-auto rounded bg-[#F7E8E1] px-1.5 py-0.5 text-[10px] text-[#A94E30]">사례 {number((principle.supportingCases||[]).length)}</span></div>
@@ -78,7 +80,7 @@ export function GrowthDashboard(){
   </Panel>
 
   <Panel className="min-w-0 p-4">
-   <Subheading title="실험과 승격" extra={<span className="text-[10px] text-[#9C9388]">EVIDENCE GATE</span>}/>
+   <Subheading title="실험과 승격" extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.evidenceGate')}</span>}/>
    <div className="grid gap-1 text-[11px]">
     {policies.value.slice(0,6).map(policy=><div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#EFE9DF] px-3 py-2" key={policy.id}><strong>{label(policy.slot,'정책')}</strong><span className="text-[#7C7469]">{label(policy.name)}</span><span className="ml-auto">{label(policy.status)} · {label(policy.evidenceGrade,'E0')}</span></div>)}
     {experiments.value.slice(0,6).map(experiment=><div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#EFE9DF] px-3 py-2" key={experiment.id}><strong>실험</strong><span className="text-[#7C7469]">{label(experiment.fixture,'fixture 없음')} · {label(experiment.strategyId)}</span><span className="ml-auto">{label(experiment.status)}{experiment.error?' · '+experiment.error:''}</span></div>)}
