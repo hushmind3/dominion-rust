@@ -4,6 +4,7 @@ import {post} from '../api'
 import {Button,SelectInput,TextArea} from './Primitives'
 import {Panel,useRemote} from './UI'
 import {t,useLocale,type LocaleKey} from '../i18n'
+import {translateError} from '../i18n/errors'
 
 type Execution={
  id:string;sessionId:string;agentId?:string;providerId:string;model:string;
@@ -89,12 +90,12 @@ export function ExecutionMonitor(){
       <div><strong className="block text-lg">{current.tokens||0}</strong><small className="text-[10px]">{t('em.tokens')}</small></div>
      </div>
      <p className="mt-3 flex items-center gap-2 text-xs text-[#7C7469]"><Clock3 size={13}/>{current.startedAt?.replace('T',' ').slice(0,19)} UTC</p>
-     {current.reason&&<p role="alert" className="mt-2 break-words rounded-lg bg-amber-50 p-3 text-xs text-amber-800">{current.reason}</p>}
+     {current.reason&&<p role="alert" className="mt-2 break-words rounded-lg bg-amber-50 p-3 text-xs text-amber-800">{translateError(current.reason)}</p>}
      {active(current.status)&&<Button variant="danger" disabled={busy} onClick={()=>void cancel()}><Square size={14}/> {t('em.cancel')}</Button>}
      <ToolHistory key={current.id} id={current.id}/>
     </>:<p className="text-sm text-[#7C7469]">{t('em.idle')}</p>}
    </div>
   </div>
-  {error&&<p role="alert" className="px-5 pb-4 text-xs text-rose-600">{error}</p>}
+  {error&&<p role="alert" className="px-5 pb-4 text-xs text-rose-600">{translateError(error)}</p>}
  </Panel>
 }

@@ -1,3 +1,6 @@
+import {t} from './i18n'
+import {translateError} from './i18n/errors'
+
 export type RecordItem = {id:string;name?:string;createdAt?:string;updatedAt?:string;[key:string]:any}
 export type Provider = RecordItem & {name:string;baseUrl:string;kind:string;enabled:boolean;hasKey?:boolean;model?:string;learning?:boolean;reflection?:boolean;reflectionModel?:string}
 export type Agent = RecordItem & {name:string;description?:string;systemPrompt:string;providerId:string;model:string;color?:string;aliases?:string[];avatarUrl?:string;personaSource?:string;sourceProfile?:string;role?:string}
@@ -37,7 +40,7 @@ async function readJson(res: Response) {
 export async function request<T = any>(url: string, init?: RequestInit): Promise<T> {
  const res = await apiFetch(url, init)
  const data = await readJson(res)
- if (!res.ok) throw new ApiError(res.status, data?.error || 'HTTP ' + res.status)
+ if (!res.ok) throw new ApiError(res.status, translateError(data?.error || 'HTTP ' + res.status))
  return data as T
 }
 
@@ -50,7 +53,7 @@ export type ModelOption = {id: string; name?: string; free?: boolean}
 export type Approval = {id: string; tool: string; args: unknown; status: string; sessionId: string}
 export async function resolveApproval(id: string, allow: boolean) {
  const result = await post<{resolved: boolean; error?: string}>('/api/approvals', {id, allow})
- if (!result.resolved) throw Error(result.error || '진행 중인 승인 요청이 아닙니다. 실행 상태를 확인하세요.')
+ if (!result.resolved) throw Error(result.error ? translateError(result.error) : t('chat.approvalGone'))
 }
 
 export async function openOAuth(id: string) {
@@ -60,7 +63,7 @@ export async function openOAuth(id: string) {
   return
  }
  const popup = window.open('', 'dominion_oauth', 'width=650,height=780')
- if (!popup) throw Error('팝업이 차단되었습니다. 팝업 허용 후 다시 시도하세요.')
+ if (!popup) throw Error(t('oauth.popupBlocked'))
  try {
   const {url} = await get<{url: string}>(path + '/start')
   popup.location.replace(url)
@@ -78,7 +81,7 @@ export type ChatRequest = {
 
 export async function streamChat(data: ChatRequest, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
  const res = await apiFetch('/api/chat', {method: 'POST', body: JSON.stringify(data), signal})
- if (!res.ok) throw new ApiError(res.status, (await readJson(res))?.error || 'HTTP ' + res.status)
+ if (!res.ok) throw new ApiError(res.status, translateError((await readJson(res))?.error || 'HTTP ' + res.status))
  if (!res.body || !res.headers.get('Content-Type')?.startsWith('text/event-stream')) {
   throw Error('No streaming response')
  }
@@ -87,7 +90,7 @@ export async function streamChat(data: ChatRequest, onEvent: (e: StreamEvent) =>
  try {
   while (true) {
    const {done, value} = await reader.read()
-   if (done) throw Error('응답 스트림이 완료 신호 전에 끊겼습니다.')
+   if (done) throw Error(t('chat.streamInterrupted'))
    buffer += value
    let boundary: RegExpExecArray | null
    while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
