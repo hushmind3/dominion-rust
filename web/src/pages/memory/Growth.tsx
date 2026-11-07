@@ -1,4 +1,5 @@
-import {t, useLocale} from '../../i18n'
+import {t, useLocale, formatDateTime} from '../../i18n'
+import {statusLabel} from '../../components/StatusPill'
 import {useRemote,Notice,Panel,Subheading} from '../../components/UI'
 
 type Growth={
@@ -17,7 +18,7 @@ type Policy={id?:string;slot?:string;name?:string;status?:string;evidenceGrade?:
 type Experiment={id?:string;status?:string;fixture?:string;strategyId?:string;prompt?:string;error?:string}
 const number=(value:any)=>typeof value==='number'?value:0
 const percent=(value:any)=>`${Math.round(number(value)*100)}%`
-const label=(value:any,fallback='기록 없음')=>typeof value==='string'&&value?value:fallback
+const label=(value:any,fallback=t('growth.none'))=>typeof value==='string'&&value?value:fallback
 
 export function GrowthDashboard(){
  useLocale()
@@ -27,9 +28,12 @@ export function GrowthDashboard(){
  const policies=useRemote<Policy[]>('/api/policies',[])
  const searches=useRemote<any[]>('/api/policy-searches',[])
  const experiments=useRemote<Experiment[]>('/api/experiment-requests',[])
+ const evaluations=useRemote<{items?:any[]}>('/api/algorithms/evaluations',{items:[]})
+ const latestEval=(evaluations.value.items||[])[0]
  const agents=(synergy.value.agents||[]).filter(agent=>number(agent.growth?.runs)>0).sort((a,b)=>number(b.growth?.runs)-number(a.growth?.runs))
  const rated=agents.reduce((sum,agent)=>sum+number(agent.growth?.ratedRuns),0)
  const principles=transfer.value.principles||[]
+ const usages=transfer.value.usages||[]
  const rules=transfer.value.rules||[]
  const activePrinciples=principles.filter(item=>item.status==='active').length
  const calls=number(usage.value.calls)
@@ -38,53 +42,65 @@ export function GrowthDashboard(){
  return <div className="mt-3 grid gap-4">
   <Notice message={synergy.error||usage.error||transfer.error||policies.error||searches.error||experiments.error}/>
   <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-   <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">검증된 실행</small><strong className="block text-lg">{rated}</strong></div>
-   <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">활성 원리</small><strong className="block text-lg">{activePrinciples}</strong></div>
-   <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">공유 규칙</small><strong className="block text-lg">{rules.length}</strong></div>
-   <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">모델 호출</small><strong className="block text-lg">{calls}</strong><small className="text-[10px] text-[#9C9388]">{tokens.toLocaleString()} 토큰</small></div>
+   <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">{t('growth.verifiedRuns')}</small><strong className="block text-lg">{rated}</strong></div>
+   <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">{t('growth.activePrinciples')}</small><strong className="block text-lg">{activePrinciples}</strong></div>
+   <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">{t('growth.sharedRules')}</small><strong className="block text-lg">{rules.length}</strong></div>
+   <div className="rounded-xl border border-[#EFE9DF] bg-white p-3"><small className="text-[10px] font-semibold text-[#8A8176]">{t('growth.modelCalls')}</small><strong className="block text-lg">{calls}</strong><small className="text-[10px] text-[#9C9388]">{tokens.toLocaleString()} {t('growth.tokens')}</small></div>
   </div>
 
   <Panel className="min-w-0 p-4">
-   <Subheading title="관측된 성장" extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.verifiedRuns')}</span>}/>
-   {!agents.length?<p className="text-sm text-[#7C7469]">아직 검증된 실행 기록이 없습니다.</p>:<div className="grid gap-2">{agents.slice(0,10).map(agent=>{
+   <Subheading title={t('growth.observedGrowth')} extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.verifiedRuns')}</span>}/>
+   {!agents.length?<p className="text-sm text-[#7C7469]">{t('growth.noRuns')}</p>:<div className="grid gap-2">{agents.slice(0,10).map(agent=>{
     const growth=agent.growth||{}
     const failures=Object.entries(growth.toolFailures||{}).sort((a,b)=>number(b[1])-number(a[1])).slice(0,3)
     const guidance=(growth.guidance||[])[0]
     return <div className="rounded-lg border border-[#EFE9DF] p-3" key={agent.id}>
-     <div className="flex flex-wrap items-center gap-2"><strong className="text-sm">{label(agent.name,agent.id)}</strong><span className="text-[11px] text-[#7C7469]">{number(growth.runs)}회 실행 · 검증 {number(growth.ratedRuns)}회</span><span className="ml-auto rounded bg-[#F7E8E1] px-1.5 py-0.5 text-[10px] font-semibold text-[#A94E30]">{percent(growth.successRate)}</span></div>
-     {failures.length>0&&<p className="mt-1 text-[11px] text-[#8A8176]">실패 도구: {failures.map(([tool,count])=>`${tool} ${number(count)}회`).join(' · ')}</p>}
-     {guidance?.text&&<p className="mt-1 text-[11px] text-[#5C544A]">지침: {guidance.text}</p>}
+     <div className="flex flex-wrap items-center gap-2"><strong className="text-sm">{label(agent.name,agent.id)}</strong><span className="text-[11px] text-[#7C7469]">{t('growth.runMeta',{runs:number(growth.runs),rated:number(growth.ratedRuns)})}</span><span className="ml-auto rounded bg-[#F7E8E1] px-1.5 py-0.5 text-[10px] font-semibold text-[#A94E30]">{percent(growth.successRate)}</span></div>
+     {failures.length>0&&<p className="mt-1 text-[11px] text-[#8A8176]">{t('growth.failedTools',{tools:failures.map(([tool,count])=>`${tool} ${number(count)}`).join(' · ')})}</p>}
+     {guidance?.text&&<p className="mt-1 text-[11px] text-[#5C544A]">{t('growth.guidance',{text:guidance.text})}</p>}
     </div>
    })}</div>}
   </Panel>
 
   <Panel className="min-w-0 p-4">
-   <Subheading title="모델 사용량" extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.apiLocal')}</span>}/>
-   {!groups.length?<p className="text-sm text-[#7C7469]">아직 모델 호출 기록이 없습니다.</p>:<div className="grid gap-1 text-[11px]">{groups.map((group,index)=><div className="grid grid-cols-[1fr_auto_auto] gap-2 rounded-lg border border-[#EFE9DF] px-3 py-2" key={index}><span className="break-all font-semibold text-[#4A443C]">{label(group.model,'모델 미기록')}</span><span className="text-[#7C7469]">{label(group.purpose,'기타')} · {number(group.calls)}회</span><span className="text-[#7C7469]">{number(group.totalTokens).toLocaleString()} 토큰</span></div>)}</div>}
+   <Subheading title={t('growth.modelUsage')} extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.apiLocal')}</span>}/>
+   {!groups.length?<p className="text-sm text-[#7C7469]">{t('growth.noCalls')}</p>:<div className="grid gap-1 text-[11px]">{groups.map((group,index)=><div className="grid grid-cols-[1fr_auto_auto] gap-2 rounded-lg border border-[#EFE9DF] px-3 py-2" key={index}><span className="break-all font-semibold text-[#4A443C]">{label(group.model,t('growth.modelUnknown'))}</span><span className="text-[#7C7469]">{label(group.purpose,t('growth.purposeOther'))} · {t('growth.calls',{count:number(group.calls)})}</span><span className="text-[#7C7469]">{number(group.totalTokens).toLocaleString()} {t('growth.tokens')}</span></div>)}</div>}
   </Panel>
 
   <Panel className="min-w-0 p-4">
-   <Subheading title="모델 간 전이" extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.provenance')}</span>}/>
-   {!principles.length&&!rules.length?<p className="text-sm text-[#7C7469]">아직 일반화된 원리나 공유 규칙이 없습니다. 검증된 실패 복구가 쌓이면 생성됩니다.</p>:<div className="grid gap-2">
+   <Subheading title={t('growth.transfer')} extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.provenance')}</span>}/>
+   {!principles.length&&!rules.length?<p className="text-sm text-[#7C7469]">{t('growth.noPrinciples')}</p>:<div className="grid gap-2">
     {principles.slice(0,6).map(principle=><div className="rounded-lg border border-[#EFE9DF] p-3" key={principle.id}>
-     <div className="flex flex-wrap gap-2 text-[11px]"><strong>{label(principle.kind,'원리')}</strong><span className="text-[#7C7469]">{label(principle.status)} · 신뢰 {percent(principle.confidence)}</span><span className="ml-auto rounded bg-[#F7E8E1] px-1.5 py-0.5 text-[10px] text-[#A94E30]">사례 {number((principle.supportingCases||[]).length)}</span></div>
+     <div className="flex flex-wrap gap-2 text-[11px]"><strong>{label(principle.kind,t('growth.principle'))}</strong><span className="text-[#7C7469]">{label(principle.status)} · {t('growth.confidence',{value:percent(principle.confidence)})}</span><span className="ml-auto rounded bg-[#F7E8E1] px-1.5 py-0.5 text-[10px] text-[#A94E30]">{t('growth.cases',{count:number((principle.supportingCases||[]).length)})}</span></div>
      <p className="mt-1 text-[12px] text-[#4A443C]">{label(principle.principle)}</p>
-     <p className="mt-1 text-[10px] text-[#8A8176]">기여 모델 {(principle.supportingModels||[]).join(', ')||'기록 없음'} · 에이전트 {(principle.supportingAgents||[]).length}명 · 반례 {number((principle.counterexamples||[]).length)}</p>
+     <p className="mt-1 text-[10px] text-[#8A8176]">{t('growth.contributors',{models:(principle.supportingModels||[]).join(', ')||t('growth.none')})} · {t('growth.agentsCount',{count:(principle.supportingAgents||[]).length})} · {t('growth.counterexamples',{count:number((principle.counterexamples||[]).length)})}</p>
     </div>)}
     {rules.slice(0,6).map(rule=><div className="rounded-lg border border-[#EFE9DF] p-3" key={rule.id}>
-     <div className="flex flex-wrap gap-2 text-[11px]"><strong>조건부 방법</strong><span className="text-[#7C7469]">{label(rule.status)} · 신뢰 {percent(rule.confidence)}</span><span className="ml-auto text-[10px] text-[#A94E30]">사례 {number((rule.supportingCases||[]).length)}</span></div>
-     <p className="mt-1 text-[12px] text-[#4A443C]">{label(rule.trigger)} → {label(rule.intervention?.tool,'도구')}</p>
-     <p className="mt-1 text-[10px] text-[#8A8176]">기여 에이전트 {(rule.supportingAgents||[]).length}명 · 반례 {number((rule.counterexamples||[]).length)}</p>
+     <div className="flex flex-wrap gap-2 text-[11px]"><strong>{t('growth.conditional')}</strong><span className="text-[#7C7469]">{label(rule.status)} · {t('growth.confidence',{value:percent(rule.confidence)})}</span><span className="ml-auto text-[10px] text-[#A94E30]">{t('growth.cases',{count:number((rule.supportingCases||[]).length)})}</span></div>
+     <p className="mt-1 text-[12px] text-[#4A443C]">{label(rule.trigger)} → {label(rule.intervention?.tool,t('growth.tool'))}</p>
+     <p className="mt-1 text-[10px] text-[#8A8176]">{t('growth.agentsCount',{count:(rule.supportingAgents||[]).length})} · {t('growth.counterexamples',{count:number((rule.counterexamples||[]).length)})}</p>
     </div>)}
    </div>}
   </Panel>
 
   <Panel className="min-w-0 p-4">
-   <Subheading title="실험과 승격" extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.evidenceGate')}</span>}/>
+   <Subheading title={t('growth.usageLog')} extra={<span className="text-[10px] text-[#9C9388]">{usages.length}</span>}/>
+   {!usages.length?<p className="text-sm text-[#7C7469]">{t('growth.none')}</p>:<div className="grid gap-1">{usages.slice(0,8).map((usage:any)=><div className="rounded-lg border border-[#EFE9DF] px-3 py-2 text-[11px]" key={usage.id}>
+    <div className="flex flex-wrap items-center gap-2"><strong className="min-w-0 flex-1 truncate">{label(usage.principle,t('growth.principle'))}</strong><span className="rounded bg-[#F7E8E1] px-1.5 py-0.5 text-[10px] text-[#A94E30]">{statusLabel(usage.outcome||usage.status)||t('growth.none')}</span></div>
+    <p className="mt-1 text-[10px] text-[#8A8176]">{t('growth.usageReused',{model:label(usage.model,t('growth.modelUnknown'))})} · {t('growth.usageContributed',{models:(usage.contributingModels||[]).join(', ')||t('growth.none')})} · {t('growth.usageAgent',{agent:label(usage.agentId,t('growth.none'))})}</p>
+    <p className="text-[10px] text-[#9C9388]">{formatDateTime(usage.execution?.startedAt||usage.createdAt)}</p>
+   </div>)}</div>}
+  </Panel>
+
+  <Panel className="min-w-0 p-4">
+   <Subheading title={t('growth.experiments')} extra={<span className="text-[10px] text-[#9C9388]">{t('ui.label.evidenceGate')}</span>}/>
    <div className="grid gap-1 text-[11px]">
-    {policies.value.slice(0,6).map(policy=><div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#EFE9DF] px-3 py-2" key={policy.id}><strong>{label(policy.slot,'정책')}</strong><span className="text-[#7C7469]">{label(policy.name)}</span><span className="ml-auto">{label(policy.status)} · {label(policy.evidenceGrade,'E0')}</span></div>)}
-    {experiments.value.slice(0,6).map(experiment=><div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#EFE9DF] px-3 py-2" key={experiment.id}><strong>실험</strong><span className="text-[#7C7469]">{label(experiment.fixture,'fixture 없음')} · {label(experiment.strategyId)}</span><span className="ml-auto">{label(experiment.status)}{experiment.error?' · '+experiment.error:''}</span></div>)}
-    <div className="text-[10px] text-[#9C9388]">정책 탐색 {searches.value.length}건 · 실험 요청 {experiments.value.length}건</div>
+    {policies.value.slice(0,6).map(policy=><div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#EFE9DF] px-3 py-2" key={policy.id}><strong>{label(policy.slot,t('growth.policy'))}</strong><span className="text-[#7C7469]">{label(policy.name)}</span><span className="ml-auto">{label(policy.status)} · {label(policy.evidenceGrade,'E0')}</span></div>)}
+    {experiments.value.slice(0,6).map(experiment=><div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#EFE9DF] px-3 py-2" key={experiment.id}><strong>{t('growth.experiment')}</strong><span className="text-[#7C7469]">{label(experiment.fixture,t('growth.noFixture'))} · {label(experiment.strategyId)}</span><span className="ml-auto">{label(experiment.status)}{experiment.error?' · '+experiment.error:''}</span></div>)}
+    <div className="text-[10px] text-[#9C9388]">{t('growth.policySearches',{searches:searches.value.length,experiments:experiments.value.length})}</div>
+    <div className="mt-2 border-t border-[#EFE9DF] pt-2"><div className="flex items-center justify-between"><strong className="text-[11px]">{t('growth.evalTitle')}</strong><span className="text-[10px] text-[#9C9388]">{latestEval?formatDateTime(latestEval.generatedAt):''}</span></div>
+     {!latestEval?<p className="mt-1 text-[10px] text-[#9C9388]">{t('growth.evalNone')}</p>:<div className="mt-1 grid gap-1">{((latestEval.dimensions||[]) as any[]).map((dimension:any)=><div className="flex flex-wrap items-center gap-2 text-[10px]" key={dimension.kind}><span className="font-semibold text-[#4A443C]">{dimension.kind}</span><span className="text-[#7C7469]">{t('growth.evalLine',{kind:dimension.kind,active:dimension.active||dimension.baseline,winner:dimension.winner,recommendation:t(('growth.recommend.'+(dimension.recommendation||'keep')) as any)})}</span></div>)}</div>}
+    </div>
    </div>
   </Panel>
  </div>
