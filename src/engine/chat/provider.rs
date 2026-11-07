@@ -89,12 +89,27 @@ pub(super) fn select_provider(
 
     let provider = match provider_id {
         Some(id) => state.store.get("provider", &id),
-        None => state.store.all("provider").into_iter().find(|provider| {
-            provider
-                .get("enabled")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(true)
-        }),
+        None => {
+            // Auto mode: no explicit provider/agent/session selection. Pick a
+            // deterministic tier from the request instead of the first record.
+            let messages = session["id"]
+                .as_str()
+                .map(|id| state.store.messages(id).len())
+                .unwrap_or(0);
+            let complexity = crate::engine::router::classify(
+                &request.input,
+                request.attachment_ids.len(),
+                messages,
+            );
+            crate::engine::router::select_provider(state, complexity).or_else(|| {
+                state.store.all("provider").into_iter().find(|provider| {
+                    provider
+                        .get("enabled")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(true)
+                })
+            })
+        }
     };
 
     let Some(provider) = provider else {
