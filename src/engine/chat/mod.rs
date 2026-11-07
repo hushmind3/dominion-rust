@@ -159,6 +159,7 @@ struct ProviderRef {
     local: bool,
     context_tokens: Option<u64>,
     max_output_tokens: Option<u64>,
+    requests_per_minute: Option<u64>,
 }
 
 // SSE entry point used by `POST /api/chat`.

@@ -930,6 +930,14 @@ async fn run_turn_body(
                 execution["failoverAt"] = json!(chrono::Utc::now().to_rfc3339());
                 state.store.put("execution", &execution).ok_or("대체 모델을 실행 기록에 저장할 수 없습니다.")?;
             }
+            if let Some(agent_id) = request.agent_id.as_deref() {
+                crate::engine::router::rotate_agent_route(
+                    state,
+                    agent_id,
+                    &provider.id,
+                    &provider.model,
+                );
+            }
             provider = selected_provider;
         }
 

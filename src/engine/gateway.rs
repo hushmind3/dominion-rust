@@ -30,6 +30,7 @@ pub struct Route {
     pub disable_thinking: bool,
     pub context_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
+    pub requests_per_minute: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -186,6 +187,9 @@ pub fn route_from_provider(
         disable_thinking: disable_thinking(provider, local),
         context_tokens,
         max_output_tokens,
+        requests_per_minute: provider["requestsPerMinute"]
+            .as_u64()
+            .filter(|value| *value > 0),
         id,
         base_url,
         api_key,
@@ -251,6 +255,59 @@ fn semaphores() -> &'static Mutex<HashMap<String, Arc<Semaphore>>> {
 /// Local model servers usually serve one generation at a time; cloud providers
 /// get a small bound so a burst cannot exhaust sockets. The permit is held for
 /// the whole response body, including SSE streams.
+#[derive(Default)]
+struct LimitWindow {
+    stamps: std::collections::VecDeque<std::time::Instant>,
+    blocked_until: Option<std::time::Instant>,
+}
+
+fn rate_limits() -> &'static Mutex<HashMap<String, LimitWindow>> {
+    static LIMITS: OnceLock<Mutex<HashMap<String, LimitWindow>>> = OnceLock::new();
+    LIMITS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Reserve one generation slot for routes with a documented anonymous limit.
+/// OVHcloud allows two requests per minute per model and IP. A 429 from any
+/// provider also sets a short cooldown so a retry loop cannot hammer it.
+pub fn reserve_generation(
+    base_url: &str,
+    model: &str,
+    requests_per_minute: Option<u64>,
+) -> Result<(), String> {
+    let key = format!("{base_url}|{model}");
+    let now = std::time::Instant::now();
+    let mut limits = rate_limits().lock().unwrap();
+    let window = limits.entry(key).or_default();
+    if window.blocked_until.is_some_and(|until| until > now) {
+        return Err("무료 제공자 호출 제한에 걸렸습니다. 잠시 후 다시 시도하거나 다른 모델을 사용하세요.".into());
+    }
+    // No built-in per-host limit: the provider record owns the value so any
+    // free or metered service can be configured without a code change.
+    let Some(limit) = requests_per_minute.filter(|value| *value > 0) else {
+        return Ok(());
+    };
+    while window
+        .stamps
+        .front()
+        .is_some_and(|stamp| now.duration_since(*stamp).as_secs() >= 60)
+    {
+        window.stamps.pop_front();
+    }
+    if window.stamps.len() as u64 >= limit {
+        return Err("무료 제공자 호출 한도(분당 2회)에 도달했습니다. 잠시 후 다시 시도하거나 다른 모델을 사용하세요.".into());
+    }
+    window.stamps.push_back(now);
+    Ok(())
+}
+
+pub fn mark_rate_limited(base_url: &str, model: &str) {
+    let key = format!("{base_url}|{model}");
+    let until = std::time::Instant::now() + Duration::from_secs(60);
+    if let Ok(mut limits) = rate_limits().lock() {
+        limits.entry(key).or_default().blocked_until = Some(until);
+    }
+}
+
 pub async fn acquire(base_url: &str, local: bool) -> OwnedSemaphorePermit {
     let capacity = if local { 1 } else { 4 };
     let semaphore = {
@@ -310,6 +367,11 @@ pub async fn send(
     body: &Value,
     timeout: Duration,
 ) -> Result<GatewayResponse, String> {
+    reserve_generation(
+        &route.base_url,
+        &route.model,
+        route.requests_per_minute,
+    )?;
     let permit = acquire(&route.base_url, route.local).await;
     let mut last_error = String::new();
     for attempt in 0..2 {
@@ -322,6 +384,9 @@ pub async fn send(
             .await
         {
             Ok(response) => {
+                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    mark_rate_limited(&route.base_url, &route.model);
+                }
                 verify_benchmark_route(&response)?;
                 return Ok(GatewayResponse { response, _permit: permit });
             }
@@ -430,6 +495,20 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         AppState::new(config, store, vault)
+    }
+
+    #[test]
+    fn ovh_anonymous_limit_is_two_per_model_and_cooldowns_on_429() {
+        let base = "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1";
+        let model = "Qwen3.8-27B-test";
+        assert!(reserve_generation(base, model, Some(2)).is_ok());
+        assert!(reserve_generation(base, model, Some(2)).is_ok());
+        assert!(reserve_generation(base, model, Some(2)).is_err());
+        assert!(reserve_generation(base, "Qwen3.6-27B-test", Some(2)).is_ok());
+        mark_rate_limited(base, "Qwen3.6-27B-test");
+        assert!(reserve_generation(base, "Qwen3.6-27B-test", Some(2)).is_err());
+        // Keyed routes are not subject to the anonymous limit.
+        assert!(reserve_generation(base, "Qwen3.8-27B-test", None).is_ok());
     }
 
     #[test]

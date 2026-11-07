@@ -187,6 +187,7 @@ pub(super) fn select_provider(
         local: route.local,
         context_tokens: route.context_tokens,
         max_output_tokens: route.max_output_tokens,
+        requests_per_minute: route.requests_per_minute,
     })
 }
 
@@ -425,6 +426,7 @@ async fn fallback_candidates(
             local: route.local,
             context_tokens: route.context_tokens,
             max_output_tokens: route.max_output_tokens,
+            requests_per_minute: route.requests_per_minute,
         })
         .collect()
 }
@@ -631,6 +633,11 @@ async fn stream_completion_once(
 
     // The same admission slot is shared with helper (non-streaming) calls, so
     // one local model instance is never asked to run two generations at once.
+    crate::engine::gateway::reserve_generation(
+        &provider.base_url,
+        &provider.model,
+        provider.requests_per_minute,
+    )?;
     let _permit = crate::engine::gateway::acquire(&provider.base_url, provider.local).await;
     let response = crate::engine::gateway::benchmark_request(
         client.post(format!("{}/chat/completions", provider.base_url)),
@@ -646,6 +653,9 @@ async fn stream_completion_once(
 
     if !response.status().is_success() {
         let status = response.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            crate::engine::gateway::mark_rate_limited(&provider.base_url, &provider.model);
+        }
         let text = response.text().await.unwrap_or_default();
         return Err(format!(
             "{} 호출 실패 (HTTP {status}): {}",
@@ -1215,6 +1225,7 @@ mod tests {
             api_key:String::new(), model:"small".into(), tool_mode:"compat".into(),
             reasoning_protocol:String::new(), local:true,
             context_tokens:Some(4096), max_output_tokens:Some(512),
+            requests_per_minute: None,
         };
         let original = vec![
             json!({"role":"system","content":"working context"}),
@@ -1480,6 +1491,7 @@ mod tests {
             model: "claude-test".into(), tool_mode: "native".into(),
             reasoning_protocol: "anthropic".into(), local: false,
             context_tokens: None, max_output_tokens: Some(4096),
+            requests_per_minute: None,
         };
         let request = TurnRequest::from_value(&json!({
             "input":"안녕","sessionId":"s","autoLearning":false

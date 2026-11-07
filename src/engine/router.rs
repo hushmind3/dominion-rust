@@ -7,7 +7,7 @@
 
 use crate::engine::gateway;
 use crate::state::AppState;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Complexity {
@@ -102,6 +102,32 @@ pub fn select_provider(state: &AppState, complexity: Complexity) -> Option<Value
     candidates.into_iter().next()
 }
 
+/// Persist a successful fallback route onto the agent, so the next turn does
+/// not retry a rate-limited/dead model and the group rotates naturally.
+pub fn rotate_agent_route(
+    state: &AppState,
+    agent_id: &str,
+    provider_id: &str,
+    model: &str,
+) -> Option<Value> {
+    let mut agent = state.store.get("agent", agent_id)?;
+    if agent["providerId"].as_str() == Some(provider_id)
+        && agent["model"].as_str() == Some(model)
+    {
+        return None;
+    }
+    agent["providerId"] = json!(provider_id);
+    agent["model"] = json!(model);
+    agent["routeRotatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    let saved = state.store.put("agent", &agent)?;
+    state.bus.record("agent", &saved);
+    state.store.audit(
+        "agent.route_rotated",
+        json!({"agentId": agent_id, "providerId": provider_id, "model": model}),
+    );
+    Some(saved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +160,20 @@ mod tests {
         );
         assert_eq!(classify("첨부한 로그를 봐줘", 1, 2), Complexity::Deep);
         assert_eq!(classify("오늘 있었던 일을 조금 길게 정리해 주세요. 어떤 상황이었는지, 누가 있었는지, 다음에는 어떻게 했으면 하는지까지 순서대로 적어 주시면 좋겠습니다. 너무 딱딱하지 않게 편한 말투로 부탁드립니다.", 0, 2), Complexity::Standard);
+    }
+
+    #[test]
+    fn successful_fallback_rotates_the_agent_route_once() {
+        let (state, dir) = state();
+        state.store.put(
+            "agent",
+            &json!({"id":"a","name":"A","providerId":"old","model":"old-model"}),
+        );
+        let saved = rotate_agent_route(&state, "a", "new", "new-model").unwrap();
+        assert_eq!(saved["providerId"], "new");
+        assert_eq!(saved["model"], "new-model");
+        assert!(rotate_agent_route(&state, "a", "new", "new-model").is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
