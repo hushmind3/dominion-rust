@@ -737,7 +737,7 @@ async fn stream_completion_once(
         }
         if matches!(status.as_u16(), 401 | 403) && provider.base_url.contains("cloudflare") {
             return Err(format!(
-                "{} 키가 거부되었습니다. Workers AI 권한이 있는 Cloudflare API 토큰(40자)인지 확인하세요.",
+                "{} 키가 거부되었습니다. Workers AI 권한이 있는 Cloudflare API 토큰인지 확인하세요.",
                 provider.name
             ));
         }
@@ -1119,9 +1119,16 @@ async fn stream_codex_once(
     {
         body["reasoning"] = json!({"effort": effort});
     }
+    let access = crate::engine::codex_oauth::fresh_access(
+        state,
+        client,
+        &provider.id,
+        &provider.api_key,
+    )
+    .await?;
     let response = client
         .post(format!("{}/responses", provider.base_url.trim_end_matches('/')))
-        .header("Authorization", format!("Bearer {}", provider.api_key))
+        .header("Authorization", format!("Bearer {access}"))
         .header("chatgpt-account-id", account_id)
         .header("OpenAI-Beta", "responses=experimental")
         .header("originator", "codex_cli_rs")

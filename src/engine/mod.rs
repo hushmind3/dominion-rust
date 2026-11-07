@@ -36,6 +36,7 @@ pub mod mcp;
 pub mod maintenance;
 pub mod memory;
 pub mod models;
+pub mod codex_oauth;
 pub mod oauth;
 pub mod personas;
 pub mod plan_quality;

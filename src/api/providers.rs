@@ -1,7 +1,9 @@
-use crate::state::AppState;
+use crate::{engine::codex_oauth, state::AppState};
 use axum::{extract::{Path,State},http::StatusCode,response::{IntoResponse,Response},Json};
 use serde_json::{json,Value};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use super::response::error;
 
 fn home_file(relative: &str) -> Option<std::path::PathBuf> {
@@ -42,6 +44,90 @@ fn codex_model() -> String {
         }
     }
     "gpt-6.1-sol".to_string()
+}
+
+/// Public provider catalog backed by models.dev. The cache keeps the Models
+/// tab usable offline and avoids hammering the upstream on every visit.
+pub async fn provider_catalog(State(state): State<AppState>) -> Json<Value> {
+    let cached = state.store.get("provider_catalog", "models.dev");
+    if let Some(cached) = &cached {
+        let fresh = cached["fetchedAt"]
+            .as_str()
+            .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+            .is_some_and(|time| {
+                (chrono::Utc::now() - time.with_timezone(&chrono::Utc)).num_seconds() < 86_400
+            });
+        if fresh {
+            return Json(json!({
+                "providers":cached["providers"],
+                "cached":true
+            }));
+        }
+    }
+    let client = match reqwest::Client::builder().timeout(Duration::from_secs(20)).build() {
+        Ok(client) => client,
+        Err(error) => return Json(json!({"providers":[],"error":error.to_string()})),
+    };
+    let fetched = async {
+        let response = client
+            .get("https://models.dev/api.json")
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("HTTP {}", response.status()));
+        }
+        response
+            .json::<Value>()
+            .await
+            .map_err(|_| "카탈로그 JSON 형식을 읽을 수 없습니다.".to_string())
+    }
+    .await;
+    let data = match fetched {
+        Ok(data) => data,
+        Err(error) => {
+            if let Some(cached) = cached {
+                return Json(json!({
+                    "providers":cached["providers"],
+                    "cached":true,
+                    "error":format!("최신 카탈로그를 가져오지 못했습니다: {error}")
+                }));
+            }
+            return Json(json!({"providers":[],"error":format!("공개 카탈로그를 가져오지 못했습니다: {error}")}));
+        }
+    };
+    let mut providers = Vec::new();
+    for (id, item) in data.as_object().into_iter().flatten() {
+        let Some(api) = item["api"].as_str().filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let models = item["models"].as_object().map(|models| models.len()).unwrap_or(0);
+        if models == 0 {
+            continue;
+        }
+        providers.push(json!({
+            "id":id,
+            "name":item["name"].as_str().unwrap_or(id),
+            "api":api,
+            "models":models,
+            "env":item["env"],
+            "doc":item["doc"],
+        }));
+    }
+    providers.sort_by(|a, b| {
+        a["name"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["name"].as_str().unwrap_or(""))
+    });
+    providers.truncate(300);
+    let record = json!({
+        "id":"models.dev",
+        "fetchedAt":chrono::Utc::now().to_rfc3339(),
+        "providers":providers
+    });
+    state.store.put("provider_catalog", &record);
+    Json(json!({"providers":record["providers"],"cached":false}))
 }
 
 pub async fn cli_credentials() -> Json<Value> {
@@ -97,12 +183,19 @@ pub async fn import_cli_credential(State(state): State<AppState>, Json(body): Js
         Ok(value) => value,
         Err(message) => return error(StatusCode::BAD_REQUEST, &message),
     };
-    let tokens = &auth["tokens"];
-    let access = tokens["access_token"].as_str().unwrap_or_default().to_string();
-    let account = tokens["account_id"].as_str().unwrap_or_default().to_string();
+    match save_codex_provider(&state, &auth["tokens"], true) {
+        Ok(saved) => Json(public_provider(&state, saved)).into_response(),
+        Err(message) => error(StatusCode::BAD_REQUEST, &message),
+    }
+}
+
+fn save_codex_provider(state: &AppState, tokens: &Value, shared: bool) -> Result<Value, String> {
     let id = "codex-oauth";
+    let account = codex_oauth::account_id(tokens)
+        .ok_or("Codex 계정 ID를 찾을 수 없습니다. 다시 로그인하세요.")?;
+    codex_oauth::save_tokens(state, id, tokens, shared)?;
     let previous = state.store.get("provider", id).unwrap_or(Value::Null);
-    let mut record = json!({
+    let record = json!({
         "id":id,
         "name":"Codex (ChatGPT OAuth)",
         "baseUrl":"https://chatgpt.com/backend-api/codex",
@@ -117,25 +210,156 @@ pub async fn import_cli_credential(State(state): State<AppState>, Json(body): Js
         "learning":previous["learning"].as_bool().unwrap_or(false),
         "requestsPerMinute":0
     });
-    if let Some(flags) = record.as_object_mut() {
-        flags.remove("apiKey");
-    }
-    state.save_secret(&format!("provider:{id}"), &access);
-    state.save_secret(
-        &format!("provider:{id}:oauth"),
-        &json!({
-            "refreshToken":tokens["refresh_token"],
-            "clientId":tokens["oauth_provenance"]["client_id"],
-            "lastRefresh":auth["last_refresh"],
-        })
-        .to_string(),
-    );
-    let Some(saved) = state.store.put("provider", &record) else {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "Codex 연결을 저장할 수 없습니다.");
-    };
-    state.store.audit("provider.saved", json!({"providerId":id,"source":"codex-oauth"}));
+    let saved = state
+        .store
+        .put("provider", &record)
+        .ok_or("Codex 연결을 저장할 수 없습니다.")?;
+    state
+        .store
+        .audit("provider.saved", json!({"providerId":id,"source":"codex-oauth"}));
     state.bus.record("provider", &saved);
-    Json(public_provider(&state, saved)).into_response()
+    Ok(saved)
+}
+
+fn login_page(title: &str, message: &str, ok: bool) -> String {
+    let color = if ok { "#4F6F52" } else { "#9A5B48" };
+    format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>{title}</title>         <body style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#FAF7F1;color:#3A342D;display:grid;place-items:center;height:100vh;margin:0\">         <div style=\"background:#FFFDF9;border:1px solid #E7E0D5;border-radius:18px;padding:32px 40px;text-align:center;max-width:520px\">         <h1 style=\"font-size:18px;color:{color};margin:0 0 10px\">{title}</h1>         <p style=\"font-size:13px;line-height:1.7;color:#7C7469;margin:0\">{message}</p>         <p style=\"font-size:12px;color:#A79C8E;margin-top:18px\">이 창을 닫고 DOMINION으로 돌아가세요.</p></div></body>"
+    )
+}
+
+async fn codex_callback_task(state: AppState, listener: TcpListener) -> Result<String, String> {
+    let accepted = tokio::time::timeout(Duration::from_secs(300), listener.accept())
+        .await
+        .map_err(|_| "Codex 로그인 시간이 초과되었습니다.")?
+        .map_err(|error| format!("Codex 콜백 연결 실패: {error}"))?;
+    let (mut socket, _) = accepted;
+    let mut buffer = [0u8; 16384];
+    let read = tokio::time::timeout(Duration::from_secs(10), socket.read(&mut buffer))
+        .await
+        .map_err(|_| "Codex 콜백 요청 시간이 초과되었습니다.")?
+        .map_err(|error| format!("Codex 콜백 읽기 실패: {error}"))?;
+    let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+    let path = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/");
+    let url = reqwest::Url::parse(&format!("http://localhost:1455{path}"))
+        .map_err(|_| "Codex 콜백 주소를 읽을 수 없습니다.")?;
+    let params: std::collections::HashMap<String, String> = url
+        .query_pairs()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+    let pending = state
+        .store
+        .get("codex_login", "codex")
+        .unwrap_or_else(|| json!({"id":"codex"}));
+    let code = params.get("code").cloned().unwrap_or_default();
+    let returned_state = params.get("state").cloned().unwrap_or_default();
+    let result = if code.is_empty() {
+        Err("Codex 로그인 콜백에 code가 없습니다.".to_string())
+    } else if returned_state != pending["state"].as_str().unwrap_or("") {
+        Err("Codex 로그인 state가 일치하지 않습니다. 다시 시도하세요.".to_string())
+    } else {
+        let client = reqwest::Client::new();
+        codex_oauth::exchange_code(
+            &client,
+            &code,
+            pending["verifier"].as_str().unwrap_or(""),
+        )
+        .await
+        .and_then(|tokens| {
+            let account = codex_oauth::account_id(&tokens)
+                .ok_or("Codex 계정 ID를 찾을 수 없습니다.")?;
+            save_codex_provider(&state, &tokens, false)?;
+            Ok(account)
+        })
+    };
+    match &result {
+        Ok(_) => {
+            let body = login_page(
+                "Codex 로그인 완료",
+                "ChatGPT 계정이 DOMINION에 연결되었습니다.",
+                true,
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        }
+        Err(message) => {
+            let body = login_page("Codex 로그인 실패", message, false);
+            let response = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        }
+    }
+    let _ = socket.shutdown().await;
+    result
+}
+
+pub async fn codex_login_start(State(state): State<AppState>) -> Response {
+    let listener = match TcpListener::bind(("127.0.0.1", 1455)).await {
+        Ok(listener) => listener,
+        Err(issue) => {
+            return error(
+                StatusCode::CONFLICT,
+                &format!("Codex 로그인 콜백 포트(1455)를 열 수 없습니다. Codex 로그인 창을 닫고 다시 시도하세요. ({issue})"),
+            )
+        }
+    };
+    let (verifier, challenge) = codex_oauth::pkce();
+    let state_token = codex_oauth::new_state();
+    let url = codex_oauth::authorize_url(&challenge, &state_token);
+    state.store.put(
+        "codex_login",
+        &json!({
+            "id":"codex","status":"pending","state":state_token,"verifier":verifier,
+            "createdAt":chrono::Utc::now().to_rfc3339()
+        }),
+    );
+    let task_state = state.clone();
+    tokio::spawn(async move {
+        let result = codex_callback_task(task_state.clone(), listener).await;
+        let mut record = task_state
+            .store
+            .get("codex_login", "codex")
+            .unwrap_or_else(|| json!({"id":"codex"}));
+        match result {
+            Ok(account) => {
+                record["status"] = json!("success");
+                record["accountId"] = json!(account);
+                record["message"] = json!("Codex 로그인 완료");
+            }
+            Err(message) => {
+                record["status"] = json!("error");
+                record["message"] = json!(message);
+            }
+        }
+        record["verifier"] = Value::Null;
+        record["state"] = Value::Null;
+        task_state.store.put("codex_login", &record);
+    });
+    Json(json!({"status":"pending","url":url})).into_response()
+}
+
+pub async fn codex_login_status(State(state): State<AppState>) -> Json<Value> {
+    let record = state
+        .store
+        .get("codex_login", "codex")
+        .unwrap_or_else(|| json!({"status":"idle"}));
+    Json(json!({
+        "status":record["status"],
+        "message":record["message"],
+        "accountId":record["accountId"],
+        "providerId":if record["status"] == "success" { json!("codex-oauth") } else { Value::Null },
+    }))
 }
 
 fn needs_account_discovery(provider: &Value) -> bool {
@@ -475,6 +699,14 @@ pub async fn test_provider(
     }
     let base = crate::engine::gateway::resolved_base_url(&provider);
     let kind = provider["kind"].as_str().unwrap_or("openai");
+    let key = if kind == "codex" {
+        let client = reqwest::Client::new();
+        codex_oauth::fresh_access(&state, &client, &id, key)
+            .await
+            .unwrap_or_else(|_| key.to_string())
+    } else {
+        key.to_string()
+    };
     let model = body["model"]
         .as_str()
         .filter(|value| !value.is_empty())
@@ -539,7 +771,7 @@ pub async fn test_provider(
     } else if kind == "anthropic" {
         client
             .get(format!("{base}/models"))
-            .header("x-api-key", key)
+            .header("x-api-key", key.as_str())
             .header("anthropic-version", "2023-06-01")
     } else {
         client
@@ -561,9 +793,9 @@ pub async fn test_provider(
             let detail = text.chars().take(300).collect::<String>();
             let overloaded = detail.contains("1305")
                 || detail.to_ascii_lowercase().contains("temporarily overloaded");
-            let cloudflare_key_shape = cloudflare && key.len() != 40;
+            let cloudflare_key_shape = cloudflare && key.len() != 40 && !key.starts_with("cfk_");
             let message = if cloudflare_key_shape {
-                "Cloudflare API 토큰은 40자입니다. 저장된 값의 길이가 다릅니다. 다른 서비스 키를 붙여넣지 않았는지 확인하세요."
+                "Cloudflare API 토큰 형식이 아닙니다. 40자 토큰 또는 cfk_ 토큰을 붙여넣으세요."
             } else if overloaded {
                 "제공자가 혼잡합니다(1305). 다른 무료 모델을 선택하거나 잠시 후 다시 시도하세요."
             } else {
