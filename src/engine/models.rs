@@ -885,6 +885,27 @@ fn managed_model_path(state: &AppState, id: &str) -> Option<PathBuf> {
     Some(path)
 }
 
+/// Resolve a repository id below a models root without allowing traversal.
+/// Lexical `starts_with` is not enough: `root/a/../../b` still starts with
+/// `root` component-wise. Canonicalize and re-check the final directory, and
+/// reject symlinks that escape the root.
+fn managed_model_dir(root: &Path, repo: &str) -> Option<PathBuf> {
+    let root = root.canonicalize().ok()?;
+    let relative = Path::new(repo);
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let path = root.join(relative).canonicalize().ok()?;
+    if path == root || !path.starts_with(&root) || !path.is_dir() {
+        return None;
+    }
+    Some(path)
+}
+
 pub fn remove_installed(state: &AppState, id: &str) -> Result<(), String> {
     if runtime().lock().unwrap().id == id {
         return Err("실행 중인 모델은 먼저 중지하세요.".into());
@@ -895,10 +916,8 @@ pub fn remove_installed(state: &AppState, id: &str) -> Result<(), String> {
         }
     } else if let Some(repo) = id.strip_prefix("mlx:") {
         let root = mlx_models_root().ok_or("LM Studio 모델 경로를 찾을 수 없습니다.")?;
-        let path = root.join(repo);
-        if !path.starts_with(&root) || !path.is_dir() {
-            return Err("다운로드한 MLX 모델을 찾을 수 없습니다.".into());
-        }
+        let path = managed_model_dir(&root, repo)
+            .ok_or("다운로드한 MLX 모델을 찾을 수 없습니다.")?;
         std::fs::remove_dir_all(path).map_err(|error| error.to_string())?;
     } else {
         let path = managed_model_path(state, id).ok_or("DOMINION이 관리하는 모델 파일을 찾을 수 없습니다.")?;
@@ -1816,6 +1835,26 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         (AppState::new(config, store, vault), dir)
+    }
+
+    #[test]
+    fn managed_model_dir_rejects_traversal_and_escapes() {
+        let dir = std::env::temp_dir().join(format!("dominion-model-dir-{}", uuid::Uuid::new_v4()));
+        let root = dir.join("models");
+        std::fs::create_dir_all(root.join("owner/repo")).unwrap();
+        std::fs::create_dir_all(dir.join("outside")).unwrap();
+        assert!(managed_model_dir(&root, "owner/repo").is_some());
+        assert!(managed_model_dir(&root, "../outside").is_none());
+        assert!(managed_model_dir(&root, "owner/../../outside").is_none());
+        assert!(managed_model_dir(&root, "").is_none());
+        assert!(managed_model_dir(&root, ".").is_none());
+        #[cfg(unix)]
+        {
+            let link = root.join("escape");
+            std::os::unix::fs::symlink(dir.join("outside"), &link).unwrap();
+            assert!(managed_model_dir(&root, "escape").is_none());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
