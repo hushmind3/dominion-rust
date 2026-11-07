@@ -325,7 +325,7 @@ async fn run_locked(
     if initial.iter().any(|id| !roster.contains(id)) {
         return Err("실행 체크포인트의 응답자가 대화방 참가자가 아닙니다.".into());
     }
-    let rounds = room["rounds"].as_i64().unwrap_or(1).clamp(1, 10) as usize;
+    let rounds = room["rounds"].as_i64().unwrap_or(3).clamp(1, 10) as usize;
     // rounds is the primary control: one round means every participant
     // speaks once. maxTurns > 0 is an explicit total cap; 0 means automatic.
     let budget = existing["turnBudget"]
