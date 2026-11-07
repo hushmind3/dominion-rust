@@ -58,6 +58,20 @@ async fn serve(mut config: Config, open_browser: bool, parent_bound: bool) -> Re
     let vault = Vault::open(&config.key_path());
     let state = AppState::new(config.clone(), store, vault);
     migrations::run(&state)?;
+    // OAuth polls live in memory; a restart cannot complete an in-flight
+    // login, so do not leave a stale device code visible in the UI.
+    if let Some(mut login) = state.store.get("codex_login", "codex") {
+        if matches!(
+            login["status"].as_str(),
+            Some("pending" | "device_pending")
+        ) {
+            login["status"] = serde_json::json!("error");
+            login["message"] = serde_json::json!(
+                "서버가 재시작되어 로그인을 다시 시작해야 합니다."
+            );
+            state.store.put("codex_login", &login);
+        }
+    }
     engine::jobs::recover(&state);
     engine::wake::recover(&state);
     engine::improve::recover_finalizations(&state);

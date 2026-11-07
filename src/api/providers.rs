@@ -349,6 +349,217 @@ pub async fn codex_login_start(State(state): State<AppState>) -> Response {
     Json(json!({"status":"pending","url":url})).into_response()
 }
 
+fn set_codex_login_status(state: &AppState, status: &str, message: &str, account: Option<&str>) {
+    let mut record = state
+        .store
+        .get("codex_login", "codex")
+        .unwrap_or_else(|| json!({"id":"codex"}));
+    record["status"] = json!(status);
+    record["message"] = json!(message);
+    if let Some(account) = account {
+        record["accountId"] = json!(account);
+    }
+    state.store.put("codex_login", &record);
+}
+
+async fn codex_device_poll(
+    state: AppState,
+    client: reqwest::Client,
+    device_auth_id: String,
+    user_code: String,
+    interval: u64,
+) {
+    let expected = device_auth_id.clone();
+    let is_current = |state: &AppState| {
+        state
+            .store
+            .get("codex_login", "codex")
+            .and_then(|record| record["deviceAuthId"].as_str().map(str::to_string))
+            .as_deref()
+            == Some(expected.as_str())
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(900);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            if !is_current(&state) {
+                return;
+            }
+            set_codex_login_status(
+                &state,
+                "error",
+                "기기 코드 로그인 시간이 초과되었습니다. 다시 시도하세요.",
+                None,
+            );
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(interval.clamp(1, 30))).await;
+        let response = client
+            .post("https://auth.openai.com/api/accounts/deviceauth/token")
+            .json(&json!({
+                "device_auth_id":device_auth_id,
+                "user_code":user_code,
+            }))
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(issue) => {
+                set_codex_login_status(
+                    &state,
+                    "error",
+                    &format!("기기 코드 확인 실패: {issue}"),
+                    None,
+                );
+                return;
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
+            let Ok(data) = response.json::<Value>().await else {
+                if !is_current(&state) {
+                    return;
+                }
+                set_codex_login_status(
+                    &state,
+                    "error",
+                    "기기 코드 응답 형식을 읽을 수 없습니다.",
+                    None,
+                );
+                return;
+            };
+            let code = data["authorization_code"].as_str().unwrap_or("");
+            let verifier = data["code_verifier"].as_str().unwrap_or("");
+            if code.is_empty() || verifier.is_empty() {
+                if !is_current(&state) {
+                    return;
+                }
+                set_codex_login_status(
+                    &state,
+                    "error",
+                    "기기 코드 응답에 교환 정보가 없습니다.",
+                    None,
+                );
+                return;
+            }
+            if !is_current(&state) {
+                return;
+            }
+            match codex_oauth::exchange_device_code(&client, code, verifier).await {
+                Ok(tokens) => match save_codex_provider(&state, &tokens, false) {
+                    Ok(saved) => {
+                        set_codex_login_status(
+                            &state,
+                            "success",
+                            "Codex 기기 코드 로그인 완료",
+                            saved["accountId"].as_str(),
+                        );
+                    }
+                    Err(message) => {
+                        set_codex_login_status(&state, "error", &message, None);
+                    }
+                },
+                Err(message) => {
+                    set_codex_login_status(&state, "error", &message, None);
+                }
+            }
+            return;
+        }
+        if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND {
+            continue;
+        }
+        if !is_current(&state) {
+            return;
+        }
+        set_codex_login_status(
+            &state,
+            "error",
+            &format!("기기 코드 인증 실패 (HTTP {status})."),
+            None,
+        );
+        return;
+    }
+}
+
+pub async fn codex_device_start(State(state): State<AppState>) -> Response {
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://auth.openai.com/api/accounts/deviceauth/usercode")
+        .json(&json!({"client_id":codex_oauth::CLIENT_ID}))
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(issue) => {
+            return error(
+                StatusCode::BAD_GATEWAY,
+                &format!("Codex 기기 코드 요청 실패: {issue}"),
+            )
+        }
+    };
+    if !response.status().is_success() {
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "ChatGPT 보안 설정에서 기기 코드 로그인이 꺼져 있습니다. ChatGPT 설정 → 보안 → 기기 코드 로그인을 켠 뒤 다시 시도하세요.",
+            );
+        }
+        let text = response.text().await.unwrap_or_default();
+        return error(
+            StatusCode::BAD_GATEWAY,
+            &format!(
+                "Codex 기기 코드 요청 실패 (HTTP {status}): {}",
+                text.chars().take(300).collect::<String>()
+            ),
+        );
+    }
+    let Ok(data) = response.json::<Value>().await else {
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "Codex 기기 코드 응답 형식을 읽을 수 없습니다.",
+        );
+    };
+    let device_auth_id = data["device_auth_id"].as_str().unwrap_or("").to_string();
+    let user_code = data["user_code"].as_str().unwrap_or("").to_string();
+    if device_auth_id.is_empty() || user_code.is_empty() {
+        return error(StatusCode::BAD_GATEWAY, "Codex 기기 코드가 비어 있습니다.");
+    }
+    let interval = data["interval"]
+        .as_u64()
+        .or_else(|| {
+            data["interval"]
+                .as_str()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+        })
+        .unwrap_or(5)
+        .clamp(1, 30);
+    let verification_url = "https://auth.openai.com/codex/device";
+    state.store.put(
+        "codex_login",
+        &json!({
+            "id":"codex","status":"device_pending","userCode":user_code,
+            "verificationUrl":verification_url,"interval":interval,
+            "deviceAuthId":device_auth_id,
+            "createdAt":chrono::Utc::now().to_rfc3339()
+        }),
+    );
+    let task_state = state.clone();
+    let task_device = device_auth_id;
+    let task_code = user_code.clone();
+    tokio::spawn(async move {
+        codex_device_poll(task_state, client, task_device, task_code, interval).await;
+    });
+    Json(json!({
+        "status":"device_pending",
+        "user_code":user_code,
+        "verification_url":verification_url,
+        "interval":interval,
+    }))
+    .into_response()
+}
+
 pub async fn codex_login_status(State(state): State<AppState>) -> Json<Value> {
     let record = state
         .store
@@ -358,6 +569,8 @@ pub async fn codex_login_status(State(state): State<AppState>) -> Json<Value> {
         "status":record["status"],
         "message":record["message"],
         "accountId":record["accountId"],
+        "userCode":record["userCode"],
+        "verificationUrl":record["verificationUrl"],
         "providerId":if record["status"] == "success" { json!("codex-oauth") } else { Value::Null },
     }))
 }

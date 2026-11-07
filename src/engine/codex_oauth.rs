@@ -77,6 +77,38 @@ pub async fn exchange_code(
         .map_err(|_| "Codex 토큰 응답 형식을 읽을 수 없습니다.".into())
 }
 
+pub async fn exchange_device_code(
+    client: &reqwest::Client,
+    code: &str,
+    verifier: &str,
+) -> Result<Value, String> {
+    let response = client
+        .post(TOKEN)
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", "https://auth.openai.com/deviceauth/callback"),
+            ("client_id", CLIENT_ID),
+            ("code_verifier", verifier),
+        ])
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|error| format!("Codex 기기 코드 교환 실패: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Codex 기기 코드 교환 실패 (HTTP {status}): {}",
+            text.chars().take(300).collect::<String>()
+        ));
+    }
+    response
+        .json::<Value>()
+        .await
+        .map_err(|_| "Codex 기기 코드 응답 형식을 읽을 수 없습니다.".into())
+}
+
 pub async fn refresh(
     client: &reqwest::Client,
     refresh_token: &str,

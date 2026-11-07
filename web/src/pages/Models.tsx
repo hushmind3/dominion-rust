@@ -69,7 +69,7 @@ export function ModelHub(){
  const [edit,setEdit]=useState<Provider|null>(null)
  const [tab,setTab]=useState<Tab>('providers'),[category,setCategory]=useState<'all'|PresetCategory>('all'),[query,setQuery]=useState('')
  const catalog=useRemote<CatalogResponse>(tab==='catalog'?'/api/providers/catalog':null,{providers:[]})
- const [loginPending,setLoginPending]=useState(false),[loginUrl,setLoginUrl]=useState(''),[loginMessage,setLoginMessage]=useState('')
+ const [loginPending,setLoginPending]=useState(false),[loginUrl,setLoginUrl]=useState(''),[loginMessage,setLoginMessage]=useState(''),[deviceCode,setDeviceCode]=useState<{userCode:string;verificationUrl:string}|null>(null)
  const [oauthBusy,setOauthBusy]=useState('')
  const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
  const probe=async(p:Provider)=>{
@@ -119,6 +119,16 @@ export function ModelHub(){
    setSavedId('');setRemovedName(edit.name);setApiKey('');setModal(false);refresh()
   }catch(e){setError((e as Error).message)}finally{setSaving(false)}
  }
+ const startCodexDevice=async()=>{
+  if(oauthBusy)return
+  setOauthBusy('codex-device');setLoginMessage('');setLoginUrl('');setDeviceCode(null)
+  try{
+   const started=await post<{user_code:string;verification_url:string}>('/api/providers/codex/device',{})
+   setDeviceCode({userCode:started.user_code,verificationUrl:started.verification_url})
+   window.open(started.verification_url,'_blank','noopener')
+   setLoginPending(true)
+  }catch(e){setOauthBusy('');setError((e as Error).message)}
+ }
  const startCodexLogin=async()=>{
   if(oauthBusy)return
   setOauthBusy('codex-login');setLoginMessage('');setLoginUrl('')
@@ -130,6 +140,16 @@ export function ModelHub(){
   }catch(e){setOauthBusy('');setError((e as Error).message)}
  }
  useEffect(()=>{
+  if(tab!=='oauth')return
+  let alive=true
+  get<{status:string;userCode?:string;verificationUrl?:string}>('/api/providers/codex/login/status').then(status=>{
+   if(!alive||status.status!=='device_pending'||!status.userCode||!status.verificationUrl)return
+   setDeviceCode({userCode:status.userCode,verificationUrl:status.verificationUrl})
+   setLoginPending(true);setOauthBusy('codex-device')
+  }).catch(()=>{})
+  return()=>{alive=false}
+ },[tab])
+ useEffect(()=>{
   if(!loginPending)return
   let alive=true
   const timer=setInterval(async()=>{
@@ -137,10 +157,10 @@ export function ModelHub(){
     const status=await get<{status:string;message?:string}>('/api/providers/codex/login/status')
     if(!alive)return
     if(status.status==='success'){
-     setLoginPending(false);setOauthBusy('');setLoginMessage(status.message||t('models.oauth.loginSuccess'))
+     setLoginPending(false);setOauthBusy('');setDeviceCode(null);setLoginMessage(status.message||t('models.oauth.loginSuccess'))
      await providers.reload();setSavedId('codex-oauth');setTab('providers');refresh()
     }else if(status.status==='error'){
-     setLoginPending(false);setOauthBusy('');setError(status.message||t('models.oauth.loginFailed'))
+     setLoginPending(false);setOauthBusy('');setDeviceCode(null);setError(status.message||t('models.oauth.loginFailed'))
     }
    }catch{}
   },1500)
@@ -198,12 +218,13 @@ export function ModelHub(){
   {tab==='oauth'&&<section className="rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9] p-5 shadow-[0_1px_2px_rgba(36,33,29,.04)]">
    <div className="mb-4"><h2 className="m-0 text-[16px] font-bold text-[#24211D]">{t('models.oauth.title')}</h2><p className="mt-1 text-[12px] text-[#7C7469]">{t('models.oauth.desc')}</p></div>
    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">{cli.value.map(item=><div key={item.id} className="rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-4">
-    <div className="flex items-start justify-between gap-3"><div className="min-w-0"><strong className="block text-[13px] text-[#3A342D]">{item.name}</strong><small className={'mt-1 inline-flex items-center gap-1 text-[11px] '+(item.available?'text-emerald-700':'text-[#9C9388]')}><UserRound size={12}/>{item.available?t('models.oauth.available'):t('models.oauth.unavailable')}</small></div><div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">{item.id==='codex'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexLogin()}>{oauthBusy==='codex-login'?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {oauthBusy==='codex-login'?t('models.oauth.loggingIn'):t('models.oauth.login')}</Button>}{item.supported&&item.available?<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}>{oauthBusy===item.id?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {oauthBusy===item.id?t('models.oauth.importing'):t('models.oauth.importExisting')}</Button>:!item.available?<span className="rounded bg-[#EFE9DF] px-2 py-1 text-[10px] font-semibold text-[#8A8176]">{item.supported?t('models.oauth.unavailable'):t('models.oauth.coming')}</span>:null}</div></div>
+    <div className="flex items-start justify-between gap-3"><div className="min-w-0"><strong className="block text-[13px] text-[#3A342D]">{item.name}</strong><small className={'mt-1 inline-flex items-center gap-1 text-[11px] '+(item.available?'text-emerald-700':'text-[#9C9388]')}><UserRound size={12}/>{item.available?t('models.oauth.available'):t('models.oauth.unavailable')}</small></div><div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">{item.id==='codex'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexDevice()}>{oauthBusy==='codex-device'?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {oauthBusy==='codex-device'?t('models.oauth.loggingIn'):t('models.oauth.deviceLogin')}</Button>}{item.id==='codex'&&<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexLogin()}>{oauthBusy==='codex-login'?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {t('models.oauth.browserLogin')}</Button>}{item.supported&&item.available?<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}>{oauthBusy===item.id?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {oauthBusy===item.id?t('models.oauth.importing'):t('models.oauth.importExisting')}</Button>:!item.available?<span className="rounded bg-[#EFE9DF] px-2 py-1 text-[10px] font-semibold text-[#8A8176]">{item.supported?t('models.oauth.unavailable'):t('models.oauth.coming')}</span>:null}</div></div>
     {item.accountId&&<div className="mt-3 break-all rounded-lg bg-white px-2.5 py-2 text-[10px] text-[#8A8176]">{t('models.oauth.account')} · {item.accountId}</div>}
     {item.model&&<div className="mt-1.5 text-[11px] text-[#8A8176]">{t('models.defaultModel')} · {item.model}</div>}
     <p className="mt-2 text-[11px] leading-5 text-[#9C9388]">{item.hint}</p>
    </div>)}</div>
-   {loginPending&&<p className="mt-3 rounded-xl border border-[#E7E0DF] bg-[#F7F1E6] px-3 py-2 text-[11px] text-[#7C7469]">{t('models.oauth.loginHint')}{loginUrl&&<> · <a className="font-semibold text-[#C96442] hover:underline" href={loginUrl} target="_blank" rel="noreferrer">{t('models.oauth.openBrowser')}</a></>}</p>}
+   {deviceCode&&<div className="mt-3 rounded-xl border border-[#E7D9C8] bg-[#FFF9F0] px-4 py-3"><div className="text-[11px] text-[#8A775F]">{t('models.oauth.deviceHint')}</div><div className="my-2 font-mono text-[26px] font-bold tracking-[.18em] text-[#A94E30]">{deviceCode.userCode}</div><a className="text-[11px] font-semibold text-[#C96442] hover:underline" href={deviceCode.verificationUrl} target="_blank" rel="noreferrer">{t('models.oauth.openDevice')}</a></div>}
+   {loginPending&&!deviceCode&&<p className="mt-3 rounded-xl border border-[#E7E0DF] bg-[#F7F1E6] px-3 py-2 text-[11px] text-[#7C7469]">{t('models.oauth.loginHint')}{loginUrl&&<> · <a className="font-semibold text-[#C96442] hover:underline" href={loginUrl} target="_blank" rel="noreferrer">{t('models.oauth.openBrowser')}</a></>}</p>}
    {loginMessage&&<p className="mt-3 rounded-xl border border-[#CFE0CF] bg-[#F4FAF3] px-3 py-2 text-[11px] text-[#4F6F52]">{loginMessage}</p>}
   </section>}
 
