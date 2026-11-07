@@ -1090,6 +1090,7 @@ const en: Record<LocaleKey, string> = {
   'rooms.modelsHint': 'You can pick models from several providers.',
   'rooms.autoModels': 'Rotate participant models',
   'rooms.autoModelsDesc': 'Rotate models across turns to spread provider rate limits.',
+  'rooms.selfReview': 'Self-improvement',
   'rooms.autoLearn': 'Extract memory candidates after the chat',
   'rooms.autoLearnDesc': 'Only grounded statements become per-agent memories.',
   'rooms.tools': 'Allow tools in this room',

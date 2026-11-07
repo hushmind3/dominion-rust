@@ -692,6 +692,19 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             }
         }));
     }
+    crate::engine::learning::record_review(
+        state,
+        session_id,
+        None,
+        "knowledge",
+        0,
+        false,
+        Some((
+            report["inserted"].as_u64().unwrap_or(0),
+            report["updated"].as_u64().unwrap_or(0),
+            report["promoted"].as_u64().unwrap_or(0),
+        )),
+    );
     let last_id = batch
         .last()
         .and_then(|message| message["id"].as_str())

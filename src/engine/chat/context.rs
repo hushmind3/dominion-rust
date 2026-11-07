@@ -318,6 +318,9 @@ pub(super) fn history(
     byte_budget: Option<usize>,
 ) -> Vec<Value> {
     let mut all = state.store.messages(session_id);
+    // Self-improvement notices are for humans and bridged channels, never
+    // model context or learning evidence.
+    all.retain(|message| message["metadata"]["kind"] != "learning_report");
     let session = state
         .store
         .get("session", session_id)

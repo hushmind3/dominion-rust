@@ -21,6 +21,98 @@ fn effective_agent(state: &AppState, session_id: &str) -> Option<String> {
         })
 }
 
+/// Posts a visible self-improvement report into the conversation. This is a
+/// durable transcript entry, not just a toast, so chat, rooms and bridged
+/// channels (Telegram/Discord) all show the same event.
+pub(crate) fn record_review(
+    state: &AppState,
+    session_id: &str,
+    agent_id: Option<&str>,
+    source: &str,
+    memories: u64,
+    skill: bool,
+    knowledge: Option<(u64, u64, u64)>,
+) -> Option<Value> {
+    let content = if let Some((inserted, updated, promoted)) = knowledge {
+        if inserted + updated + promoted == 0 {
+            return None;
+        }
+        let mut text = format!("💾 자기 개선 리뷰: 공유 지식 업데이트됨 (+{inserted}");
+        if updated > 0 {
+            text.push_str(&format!(" · 갱신 {updated}"));
+        }
+        if promoted > 0 {
+            text.push_str(&format!(" · 경험 원칙 +{promoted}"));
+        }
+        text.push(')');
+        text
+    } else {
+        if memories == 0 && !skill {
+            return None;
+        }
+        let mut text = format!("💾 자기 개선 리뷰: 메모리 업데이트됨 (기억 +{memories}");
+        if skill {
+            text.push_str(" · 스킬 갱신");
+        }
+        text.push(')');
+        text
+    };
+    // A room can run one learning job per participant. Debounce the visible
+    // report so nine agents finishing together do not post nine notices.
+    let state_id = format!(
+        "learning-review-{}",
+        memory::stable_id(&[session_id, source])
+    );
+    let now = chrono::Utc::now();
+    if let Some(previous) = state
+        .store
+        .get("learning_review_state", &state_id)
+        .and_then(|value| {
+            value["at"]
+                .as_str()
+                .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+        })
+    {
+        if (now - previous.with_timezone(&chrono::Utc)).num_seconds() < 45 {
+            return None;
+        }
+    }
+    state.store.put(
+        "learning_review_state",
+        &json!({
+            "id":state_id,"sessionId":session_id,"source":source,
+            "at":now.to_rfc3339(),
+        }),
+    );
+    let author = agent_id.map(str::to_string).or_else(|| {
+        let session = state.store.get("session", session_id)?;
+        let room = state.store.get("room", session["roomId"].as_str()?)?;
+        room["agentIds"]
+            .as_array()?
+            .first()?
+            .as_str()
+            .map(str::to_string)
+    });
+    let saved = state.store.write_message(&json!({
+        "session_id":session_id,
+        "role":"assistant",
+        "agent_id":author,
+        "content":content,
+        "metadata":{
+            "authorKind":"system",
+            "kind":"learning_report",
+            "source":source,
+            "memories":memories,
+            "skill":skill,
+            "knowledge":knowledge.map(|(inserted,updated,promoted)| json!({
+                "inserted":inserted,"updated":updated,"promoted":promoted
+            })),
+        },
+    }))?;
+    state.bus.message(&saved);
+    Some(saved)
+}
+
 /// Deterministic and semantic learning advance independently. Sharing one
 /// checkpoint let automatic model-free learning suppress a later semantic
 /// extraction for the same message.
@@ -395,6 +487,15 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if let Some(saved) = state.store.put("learning_feedback", &feedback) {
             state.bus.emit(saved);
         }
+        let _ = record_review(
+            state,
+            session_id,
+            scope.agent_id.as_deref(),
+            "memory",
+            result["memories"].as_u64().unwrap_or(0),
+            result["skill"].as_bool().unwrap_or(false),
+            None,
+        );
         if let Some(room_id) = state
             .store
             .get("session", session_id)
@@ -458,6 +559,15 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     if let Some(saved) = state.store.put("learning_feedback", &feedback) {
         state.bus.emit(saved);
     }
+    let _ = record_review(
+        state,
+        session_id,
+        scope.agent_id.as_deref(),
+        "memory",
+        result["memories"].as_u64().unwrap_or(0),
+        result["skill"].as_bool().unwrap_or(false),
+        None,
+    );
     if let Some(room_id) = state
         .store
         .get("session", session_id)
@@ -880,6 +990,19 @@ mod tests {
             .skill
             .is_none());
     }
+    #[test]
+    fn self_improvement_review_is_visible_and_deduplicated() {
+        let (state, dir) = state();
+        let first = record_review(&state, "s", Some("a"), "memory", 2, false, None)
+            .expect("review message");
+        assert_eq!(first["metadata"]["kind"], "learning_report");
+        assert_eq!(first["metadata"]["authorKind"], "system");
+        assert!(first["content"].as_str().unwrap_or("").contains("메모리"));
+        assert!(record_review(&state, "s", Some("a"), "memory", 3, false, None).is_none());
+        assert_eq!(state.store.messages("s").len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn parses_strategies_tool_policies_and_harness_proposal() {
         let learning = parse_learning(
