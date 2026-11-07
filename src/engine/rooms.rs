@@ -5,7 +5,15 @@ use serde_json::{json, Value};
 use std::collections::{HashSet, VecDeque};
 
 const MAX_PARTICIPANTS: usize = 32;
-const MAX_TURNS: usize = 200;
+/// Safety ceiling only. The room's own rounds/maxTurns decide the budget;
+/// operators can raise this without a code change.
+fn max_turns_ceiling() -> usize {
+    std::env::var("DOMINION_MAX_ROOM_TURNS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(100_000)
+}
 
 /// One durable transcript belongs to each room. It is shared by the owner and
 /// every participant; changing the selected speaker never changes this binding.
@@ -325,7 +333,7 @@ async fn run_locked(
     if initial.iter().any(|id| !roster.contains(id)) {
         return Err("실행 체크포인트의 응답자가 대화방 참가자가 아닙니다.".into());
     }
-    let rounds = room["rounds"].as_i64().unwrap_or(3).clamp(1, 10) as usize;
+    let rounds = room["rounds"].as_i64().unwrap_or(3).clamp(1, max_turns_ceiling() as i64) as usize;
     // rounds is the primary control: one round means every participant
     // speaks once. maxTurns > 0 is an explicit total cap; 0 means automatic.
     let budget = existing["turnBudget"]
@@ -338,7 +346,7 @@ async fn run_locked(
                 .map(|value| value as usize)
                 .unwrap_or(roster.len() * rounds)
         })
-        .clamp(1, MAX_TURNS);
+        .clamp(1, max_turns_ceiling());
     let conflict_strategy =
         crate::engine::algorithms::variant_for_agent(state, "multiagent.conflict", None);
     let mut conflict_resolution = existing
