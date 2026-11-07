@@ -232,7 +232,8 @@ fn enqueue_for_agent_through_mode(
             session_id,
             &scope.partition_key,
             agent_id.unwrap_or("default"),
-            through.as_str()
+            through.as_str(),
+            if semantic { "semantic" } else { "deterministic" },
         ])
     );
     jobs::enqueue_once(state, &id, "learn", input)
@@ -959,6 +960,31 @@ mod tests {
             }),
         );
         assert!(enqueue_semantic(&state, "s", "", "").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn completed_deterministic_job_does_not_block_semantic_enqueue() {
+        let (state, dir) = state();
+        state.store.put("agent", &json!({"id":"a"}));
+        state.store.put(
+            "session",
+            &json!({"id":"s","agentId":"a","providerId":"provider-a","model":"m"}),
+        );
+        state.store.write_message(
+            &json!({"id":"u1","session_id":"s","role":"user","content":"기억해"}),
+        );
+        let first = enqueue(&state, "s", "", "").unwrap();
+        state.store.patch_if(
+            "job",
+            first["id"].as_str().unwrap(),
+            "status",
+            &json!("queued"),
+            &json!({"status":"completed","finishedAt":chrono::Utc::now().to_rfc3339()}),
+        );
+        let semantic = enqueue_semantic(&state, "s", "", "").expect("semantic job");
+        assert_eq!(semantic["input"]["semantic"], true);
+        assert_ne!(first["id"], semantic["id"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

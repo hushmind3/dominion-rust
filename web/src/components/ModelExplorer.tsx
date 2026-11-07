@@ -62,7 +62,7 @@ export function ModelExplorer(){
   const timer=setTimeout(async()=>{
    setLoading(true)
    try{
-    const data=await get<Catalog[]>('/api/model-library/catalog?'+new URLSearchParams({q,limit:String(limit),format:format==='mlx'?'mlx':'gguf'}),controller.signal)
+    const data=await get<Catalog[]>('/api/model-library/catalog?'+new URLSearchParams({q,limit:String(limit),format}),controller.signal)
     if(!controller.signal.aborted){setCatalog(data);setSelected(s=>data.some(m=>m.id===s)?s:'');setError('')}
    }catch(e){if(!controller.signal.aborted)setError((e as Error).message)}
    finally{if(!controller.signal.aborted)setLoading(false)}

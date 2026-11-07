@@ -11,6 +11,20 @@ const MODEL_KIND: &str = "model_job";
 const EXTERNAL_KIND: &str = "external_model";
 pub static RUNTIME_CHANGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static DOWNLOAD_COMMIT: Mutex<()> = Mutex::new(());
+static ACTIVE_DOWNLOADS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+
+fn active_downloads() -> &'static Mutex<std::collections::HashSet<String>> {
+    ACTIVE_DOWNLOADS.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+struct DownloadGuard(String);
+impl Drop for DownloadGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active) = active_downloads().lock() {
+            active.remove(&self.0);
+        }
+    }
+}
 
 struct Runtime {
     child: Option<Child>,
@@ -272,7 +286,7 @@ fn local_mlx_models(state: &AppState) -> Vec<Value> {
 
 fn mlx_model_from_dir(dir: &Path, root: &Path) -> Option<Value> {
             let config = dir.join("config.json");
-            if !config.is_file() {
+            if !config.is_file() || !mlx_dir_complete(&dir) {
                 return None;
             }
             let mut bytes = 0u64;
@@ -443,10 +457,31 @@ fn mlx_installable(state: &AppState) -> bool {
 }
 
 /// Resolve a downloaded MLX repository below the managed models root.
+fn mlx_dir_complete(dir: &Path) -> bool {
+    if !dir.join("config.json").is_file() {
+        return false;
+    }
+    let mut has_weights = false;
+    let mut has_tokenizer = dir.join("tokenizer.json").is_file()
+        || dir.join("tokenizer_config.json").is_file()
+        || dir.join("tokenizer.model").is_file();
+    for entry in std::fs::read_dir(dir).ok().into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if name.ends_with(".safetensors") {
+            has_weights = true;
+        }
+        if name == "tokenizer.json" || name == "tokenizer_config.json" || name == "tokenizer.model" {
+            has_tokenizer = true;
+        }
+    }
+    has_weights && has_tokenizer
+}
+
 fn mlx_model_dir(state: &AppState, repo: &str) -> Option<PathBuf> {
     mlx_search_roots(state)
         .iter()
         .find_map(|root| managed_model_dir(root, repo))
+        .filter(|dir| mlx_dir_complete(dir))
 }
 
 fn mlx_runtime_snapshot(state: &AppState) -> Value {
@@ -1410,6 +1445,9 @@ async fn load_mlx_from_dir(
 ) -> Result<Value, String> {
     let python = mlx_runtime_python(state)
         .ok_or("MLX 실행기가 설치되지 않았습니다. 모델 관리의 실행기 탭에서 설치하세요.")?;
+    if !mlx_dir_complete(dir) {
+        return Err("MLX 모델 파일이 완전하지 않습니다. config.json, safetensors, tokenizer 파일을 확인하세요.".into());
+    }
     unload(state);
     {
         let mut guard = runtime().lock().unwrap();
@@ -1827,6 +1865,33 @@ pub fn unload(state: &AppState) -> Value {
 
 /// Hugging Face search, mapped to the shape the model explorer expects.
 pub async fn catalog(query: &str, limit: usize, format: &str) -> Result<Vec<Value>, String> {
+    if format == "all" {
+        let limit = limit.clamp(1, 100);
+        let (gguf, mlx) = tokio::join!(
+            catalog_filtered(query, limit, "gguf"),
+            catalog_filtered(query, limit, "mlx")
+        );
+        let mut items = gguf.unwrap_or_default();
+        items.extend(mlx.unwrap_or_default());
+        let mut seen = std::collections::HashSet::new();
+        items.retain(|item| {
+            item["id"]
+                .as_str()
+                .is_some_and(|id| seen.insert(id.to_string()))
+        });
+        items.sort_by(|a, b| {
+            b["downloads"]
+                .as_u64()
+                .unwrap_or(0)
+                .cmp(&a["downloads"].as_u64().unwrap_or(0))
+        });
+        items.truncate(limit);
+        return Ok(items);
+    }
+    catalog_filtered(query, limit, format).await
+}
+
+async fn catalog_filtered(query: &str, limit: usize, format: &str) -> Result<Vec<Value>, String> {
     let mut url = reqwest::Url::parse("https://huggingface.co/api/models")
         .map_err(|error| error.to_string())?;
     {
@@ -2078,6 +2143,14 @@ fn declared_total(files: &[Value]) -> u64 {
 
 async fn download_worker(state: AppState, job_id: String) {
     use futures_util::StreamExt;
+    if !active_downloads()
+        .lock()
+        .map(|mut active| active.insert(job_id.clone()))
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let _download_guard = DownloadGuard(job_id.clone());
     use tokio::io::AsyncWriteExt;
 
     let Some(job) = state.store.get(MODEL_KIND, &job_id) else {
@@ -2117,13 +2190,18 @@ async fn download_worker(state: AppState, job_id: String) {
         }
         if target.is_file() {
             let size = std::fs::metadata(&target).map(|meta| meta.len()).unwrap_or(0);
-            files[index]["downloaded"] = json!(size);
-            patch_download(
-                &state,
-                &job_id,
-                json!({"files": files, "downloaded": downloaded_total(&files), "total": declared_total(&files), "current": path}),
-            );
-            continue;
+            let expected = files[index]["total"].as_u64().unwrap_or(0);
+            if expected > 0 && size != expected {
+                let _ = std::fs::remove_file(&target);
+            } else {
+                files[index]["downloaded"] = json!(size);
+                patch_download(
+                    &state,
+                    &job_id,
+                    json!({"files": files, "downloaded": downloaded_total(&files), "total": declared_total(&files), "current": path}),
+                );
+                continue;
+            }
         }
         let partial = PathBuf::from(format!("{}.part", target.display()));
         let existing = std::fs::metadata(&partial).map(|meta| meta.len()).unwrap_or(0);
@@ -2144,9 +2222,19 @@ async fn download_worker(state: AppState, job_id: String) {
             }
         };
         if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && existing > 0 {
-            let _ = tokio::fs::rename(&partial, &target).await;
-            files[index]["downloaded"] = json!(existing);
-            continue;
+            let expected = files[index]["total"].as_u64().unwrap_or(0);
+            if expected > 0 && existing == expected {
+                let _ = tokio::fs::rename(&partial, &target).await;
+                files[index]["downloaded"] = json!(existing);
+                continue;
+            }
+            let _ = tokio::fs::remove_file(&partial).await;
+            patch_download(
+                &state,
+                &job_id,
+                json!({"status": "failed", "error": "부분 파일 크기가 원격 파일과 맞지 않습니다. 다시 다운로드하세요."}),
+            );
+            return;
         }
         if !response.status().is_success() {
             patch_download(
@@ -2223,6 +2311,14 @@ async fn download_worker(state: AppState, job_id: String) {
         if job_status(&state, &job_id) != "downloading" {
             return;
         }
+        if declared > 0 && downloaded != declared {
+            patch_download(
+                &state,
+                &job_id,
+                json!({"status": "failed", "error": format!("다운로드 크기 불일치: {downloaded}/{declared} 바이트. 재개하면 이어받습니다.")}),
+            );
+            return;
+        }
         let _commit = DOWNLOAD_COMMIT.lock().unwrap();
         if target.exists() {
             let _ = std::fs::remove_file(&target);
@@ -2294,6 +2390,13 @@ pub fn resume_job(state: &AppState, id: &str) -> Option<Value> {
     let job = state.store.get(MODEL_KIND, id)?;
     let status = job["status"].as_str().unwrap_or("");
     if !matches!(status, "paused" | "failed" | "cancelled") {
+        return None;
+    }
+    if active_downloads()
+        .lock()
+        .map(|active| active.contains(id))
+        .unwrap_or(false)
+    {
         return None;
     }
     let saved = state.store.patch_if(

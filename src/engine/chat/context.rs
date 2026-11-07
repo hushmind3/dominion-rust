@@ -259,7 +259,7 @@ fn context_block_with_manifest(
         .get("session", session_id)
         .and_then(|session| session["roomId"].as_str().map(str::to_string))
         .and_then(|room_id| {
-            crate::engine::room_knowledge::context_block(state, &room_id).map(|block| (room_id, block))
+            crate::engine::room_knowledge::context_block(state, &room_id, query).map(|block| (room_id, block))
         });
     if let Some((room_id, block)) = &room_knowledge {
         items.push(json!({

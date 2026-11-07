@@ -50,6 +50,12 @@ fn normalize_quote(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// A question or request is not owner confirmation of the extracted claim.
+fn is_question(text: &str) -> bool {
+    let trimmed = text.trim_end_matches(|c: char| c.is_whitespace());
+    trimmed.ends_with('?') || trimmed.ends_with('？')
+}
+
 fn contains_quote(content: &str, quote: &str) -> bool {
     let quote = normalize_quote(quote);
     !quote.is_empty() && normalize_quote(content).contains(&quote)
@@ -302,7 +308,13 @@ fn apply_extraction(
             .filter_map(|value| value.as_str().map(str::to_string))
             .filter(|id| by_id.contains_key(id))
             .collect::<BTreeSet<_>>();
-        let owner_confirmed = sources.iter().any(|source| source["role"] == "user");
+        let owner_confirmed = sources.iter().any(|source| {
+            source["role"] == "user"
+                && source["quote"]
+                    .as_str()
+                    .map(|quote| !is_question(quote))
+                    .unwrap_or(false)
+        });
         let tool_confirmed = has_tool_evidence(&sources);
         let mut kind = kind.to_string();
         let (verification, authority) = if owner_confirmed {
@@ -562,6 +574,14 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .and_then(|message| message["id"].as_str())
         .unwrap_or(through)
         .to_string();
+    let processed_end = all
+        .iter()
+        .position(|message| message["id"].as_str() == Some(last_id.as_str()))
+        .map(|index| index + 1)
+        .unwrap_or(end);
+    let processed_messages = processed_end.saturating_sub(start);
+    let remaining_messages = end.saturating_sub(processed_end);
+    let partial = remaining_messages > 0;
     state
         .store
         .put(
@@ -603,8 +623,12 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 "id": state_id(room_id),
                 "roomId": room_id,
                 "sessionId": session_id,
-                "status": "processed",
+                "status": if partial { "partial" } else { "processed" },
                 "throughMessageId": last_id,
+                "targetMessageId": through,
+                "processedMessages": processed_messages,
+                "remainingMessages": remaining_messages,
+                "progress": processed_messages as f64 / (processed_messages + remaining_messages).max(1) as f64,
                 "providerId": used_provider,
                 "model": used_model,
                 "report": report,
@@ -633,6 +657,33 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
 
 /// Knowledge visible to every participant of a room, regardless of which
 /// model or agent created it.
+fn relevance(record: &Value, query: &str) -> f64 {
+    let text = format!(
+        "{} {} {}",
+        record["text"].as_str().unwrap_or(""),
+        record["topicKey"].as_str().unwrap_or(""),
+        record["type"].as_str().unwrap_or("")
+    )
+    .to_lowercase();
+    query
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && !('\u{ac00}'..='\u{d7a3}').contains(&c))
+        .filter(|token| token.chars().count() >= 2)
+        .map(|token| {
+            if text.contains(token) {
+                1.0
+            } else {
+                let prefix = token.chars().take(2).collect::<String>();
+                if prefix.chars().count() == 2 && text.contains(&prefix) {
+                    0.5
+                } else {
+                    0.0
+                }
+            }
+        })
+        .sum()
+}
+
 pub fn list(state: &AppState, room_id: &str) -> Vec<Value> {
     let mut items = state
         .store
@@ -660,12 +711,39 @@ pub fn list(state: &AppState, room_id: &str) -> Vec<Value> {
 
 /// Prompt block for the room's shared knowledge. The model/provider is shown
 /// as provenance only; there is deliberately no per-model selection here.
-pub fn context_block(state: &AppState, room_id: &str) -> Option<String> {
-    let items = list(state, room_id)
+pub fn context_block(state: &AppState, room_id: &str, query: &str) -> Option<String> {
+    let mut active = list(state, room_id)
         .into_iter()
         .filter(|record| record["status"].as_str() == Some("active"))
-        .take(6)
         .collect::<Vec<_>>();
+    if !query.trim().is_empty() {
+        active.sort_by(|a, b| {
+            relevance(b, query)
+                .partial_cmp(&relevance(a, query))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    rank(a["type"].as_str().unwrap_or(""))
+                        .cmp(&rank(b["type"].as_str().unwrap_or("")))
+                })
+                .then_with(|| {
+                    b["updatedAt"]
+                        .as_str()
+                        .unwrap_or("")
+                        .cmp(a["updatedAt"].as_str().unwrap_or(""))
+                })
+        });
+        if active
+            .first()
+            .map(|record| relevance(record, query) <= 0.0)
+            .unwrap_or(false)
+        {
+            active = list(state, room_id)
+                .into_iter()
+                .filter(|record| record["status"].as_str() == Some("active"))
+                .collect();
+        }
+    }
+    let items = active.into_iter().take(6).collect::<Vec<_>>();
     if items.is_empty() {
         return None;
     }
@@ -769,6 +847,22 @@ mod tests {
     }
 
     #[test]
+    fn questions_do_not_count_as_owner_confirmation() {
+        assert!(is_question("이 방식이 맞아?"));
+        assert!(is_question("정말？ "));
+        assert!(!is_question("이 방식이 맞습니다."));
+        assert!(!is_question("좋아, 그걸로 확정해"));
+    }
+
+    #[test]
+    fn relevance_prefers_the_question_topic() {
+        let corpus = json!({"text":"database rollback runbook","topicKey":"database","type":"conclusion"});
+        let other = json!({"text":"캐시 만료 정책","topicKey":"cache","type":"claim"});
+        assert!(relevance(&corpus, "database rollback") > relevance(&other, "database rollback"));
+        assert!(relevance(&other, "캐시 정책") > relevance(&corpus, "캐시 정책"));
+    }
+
+    #[test]
     fn extraction_keeps_provenance_and_supersedes_a_correction_once() {
         let (state, dir) = state();
         state.store.put("agent", &json!({"id":"a","name":"A"}));
@@ -825,7 +919,7 @@ mod tests {
         let sources = correction["sources"].as_array().unwrap();
         assert!(sources.iter().any(|source| source["agentName"] == "B"));
         assert!(sources.iter().any(|source| source["messageId"] == "m3"));
-        let block = context_block(&state, "r1").unwrap();
+        let block = context_block(&state, "r1", "").unwrap();
         assert!(block.contains("배포는 Y 방식"), "{block}");
         assert!(block.contains("owner_confirmed"), "{block}");
         assert!(block.contains("B/"), "{block}");
@@ -870,10 +964,10 @@ mod tests {
                 "updatedAt":"2026-01-01T00:00:00Z"
             }),
         );
-        let block = context_block(&state, "r1").unwrap();
+        let block = context_block(&state, "r1", "").unwrap();
         assert!(block.contains("공유 결론"), "{block}");
         assert!(block.contains("local-4b"), "{block}");
-        assert!(context_block(&state, "r2").is_none());
+        assert!(context_block(&state, "r2", "").is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 }
