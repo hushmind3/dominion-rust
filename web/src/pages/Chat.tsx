@@ -305,12 +305,12 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     if(event.type==='approval'){setLiveApproval({id:event.id,tool:event.tool,args:event.args,sessionId:id!,status:'pending'});void approvals.reload();}
     if(event.type==='tool_start'){setLiveApproval(null);setToolStatus(t('chat.tool.running',{name:event.name}));}
     if(event.type==='tool_end')setToolStatus(t('chat.tool.done',{name:event.name}));
-    if(event.type==='tool_error')setToolStatus(t('chat.tool.error',{error:event.error}));
+    if(event.type==='tool_error')setToolStatus(t('chat.tool.error',{error:translateError(event.error)}));
     if(event.type==='goal_progress')setToolStatus(t('chat.tool.goal',{event:event.event,status:event.status}));
     if(event.type==='error')throw Error(event.message);
    },controller.signal);
   }catch(e){
-   if(!controller.signal.aborted&&view.current===id)setError((e as Error).message);
+   if(!controller.signal.aborted&&view.current===id)setError(translateError((e as Error).message));
   }finally{
    stream.current=null;
    if(!controller.signal.aborted){
