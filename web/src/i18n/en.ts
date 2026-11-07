@@ -1104,6 +1104,7 @@ const en: Record<LocaleKey, string> = {
   'models.dlg.reflectionHint': 'Used to analyze results and failure causes. Saving replaces the previous reflection connection.',
   'models.dlg.modelIdPlaceholder': 'Enter model ID',
   'models.dlg.settingsAria': '{name} settings',
+  'models.ui.gated': 'gated',
   'models.ui.clearSearch': 'Clear search',
   'models.ui.sizeMax': 'Up to {n}B',
   'models.ui.shardFiles': '{count} files',

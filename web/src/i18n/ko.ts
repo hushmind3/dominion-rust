@@ -1103,6 +1103,7 @@ const ko = {
   'models.dlg.reflectionHint': '실행 결과와 실패 원인을 분석할 때 사용합니다. 이 설정을 저장하면 기존 검토 연결을 대신합니다.',
   'models.dlg.modelIdPlaceholder': '모델 ID 입력',
   'models.dlg.settingsAria': '{name} 설정',
+  'models.ui.gated': '승인 필요',
   'models.ui.clearSearch': '검색어 지우기',
   'models.ui.sizeMax': '{n}B 이하',
   'models.ui.shardFiles': '{count}개 파일',
