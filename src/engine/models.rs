@@ -74,18 +74,34 @@ fn safe_relative(path: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-fn mlx_models_root() -> Option<PathBuf> {
+fn mlx_models_root(state: &AppState) -> PathBuf {
+    models_dir(state).join("mlx")
+}
+
+fn legacy_mlx_models_root() -> Option<PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()?;
-    Some(PathBuf::from(home).join(".lmstudio/models"))
+    let path = PathBuf::from(home).join(".lmstudio/models");
+    path.is_dir().then_some(path)
+}
+
+/// New downloads stay in DOMINION's data directory. Models downloaded by
+/// older builds from the LM Studio models folder remain readable without
+/// duplicating multi-gigabyte files.
+fn mlx_search_roots(state: &AppState) -> Vec<PathBuf> {
+    let mut roots = vec![mlx_models_root(state)];
+    if let Some(legacy) = legacy_mlx_models_root() {
+        if !roots.contains(&legacy) {
+            roots.push(legacy);
+        }
+    }
+    roots
 }
 
 fn target_root(state: &AppState, format: &str, repo: &str) -> PathBuf {
     if format == "mlx" {
-        mlx_models_root()
-            .unwrap_or_else(|| models_dir(state).join("mlx"))
-            .join(repo)
+        mlx_models_root(state).join(repo)
     } else {
         models_dir(state).join(repo.replace('/', "--"))
     }
@@ -226,7 +242,7 @@ pub fn installed(state: &AppState) -> Vec<Value> {
             external_model(record["id"].as_str()?, path)
         }))
         .chain(lms)
-        .chain(local_mlx_models().into_iter().filter(|model| {
+        .chain(local_mlx_models(state).into_iter().filter(|model| {
             model["repo"]
                 .as_str()
                 .is_some_and(|repo| !indexed.contains(repo))
@@ -237,15 +253,24 @@ pub fn installed(state: &AppState) -> Vec<Value> {
 /// MLX repositories downloaded directly from Hugging Face. LM Studio indexes
 /// them from its own model directory; until it does, they are still visible in
 /// the library so the download is not silently lost.
-fn local_mlx_models() -> Vec<Value> {
-    let Some(root) = mlx_models_root() else {
-        return Vec::new();
-    };
-    let mut found = Vec::new();
-    walk_dirs(&root, 0, &mut found);
-    found
-        .into_iter()
-        .filter_map(|dir| {
+fn local_mlx_models(state: &AppState) -> Vec<Value> {
+    let mut models = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for root in mlx_search_roots(state) {
+        let mut found = Vec::new();
+        walk_dirs(&root, 0, &mut found);
+        for model in found.into_iter().filter_map(|dir| mlx_model_from_dir(&dir, &root)) {
+            if let Some(repo) = model["repo"].as_str() {
+                if seen.insert(repo.to_string()) {
+                    models.push(model);
+                }
+            }
+        }
+    }
+    models
+}
+
+fn mlx_model_from_dir(dir: &Path, root: &Path) -> Option<Value> {
             let config = dir.join("config.json");
             if !config.is_file() {
                 return None;
@@ -263,7 +288,7 @@ fn local_mlx_models() -> Vec<Value> {
                 return None;
             }
             let repo = dir
-                .strip_prefix(&root)
+                .strip_prefix(root)
                 .ok()?
                 .to_string_lossy()
                 .to_string();
@@ -276,11 +301,9 @@ fn local_mlx_models() -> Vec<Value> {
                 "label": repo.rsplit('/').next().unwrap_or(&repo),
                 "bytes": bytes,
                 "sizeLabel": format_bytes(bytes),
-                "engine": "MLX (LM Studio 인식 대기)",
+                "engine": "MLX (DOMINION runtime)",
                 "installedAt": Value::Null,
             }))
-        })
-        .collect()
 }
 
 fn walk_dirs(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
@@ -421,8 +444,9 @@ fn mlx_installable(state: &AppState) -> bool {
 
 /// Resolve a downloaded MLX repository below the managed models root.
 fn mlx_model_dir(state: &AppState, repo: &str) -> Option<PathBuf> {
-    let root = mlx_models_root().unwrap_or_else(|| models_dir(state).join("mlx"));
-    managed_model_dir(&root, repo)
+    mlx_search_roots(state)
+        .iter()
+        .find_map(|root| managed_model_dir(root, repo))
 }
 
 fn mlx_runtime_snapshot(state: &AppState) -> Value {
@@ -1094,8 +1118,7 @@ pub fn remove_installed(state: &AppState, id: &str) -> Result<(), String> {
             return Err("등록된 모델을 찾을 수 없습니다.".into());
         }
     } else if let Some(repo) = id.strip_prefix("mlx:") {
-        let root = mlx_models_root().ok_or("LM Studio 모델 경로를 찾을 수 없습니다.")?;
-        let path = managed_model_dir(&root, repo)
+        let path = mlx_model_dir(state, repo)
             .ok_or("다운로드한 MLX 모델을 찾을 수 없습니다.")?;
         std::fs::remove_dir_all(path).map_err(|error| error.to_string())?;
     } else {
@@ -2244,7 +2267,7 @@ mod tests {
         );
         assert_eq!(
             target_root(&state, "mlx", "owner/model"),
-            mlx_models_root().unwrap().join("owner/model")
+            mlx_models_root(&state).join("owner/model")
         );
         let _ = std::fs::remove_dir_all(dir);
     }
