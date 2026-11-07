@@ -45,3 +45,9 @@ export function jobKindLabel(kind?: string): string {
   if (!kind) return ''
   return jobKinds.has(kind) ? t(('jobk.' + kind) as LocaleKey) : kind
 }
+
+const auditEvents = new Set(['model.usage','job.completed','job.queued','job.failed','learning.completed','reflection.history_trimmed','provider.saved','room.owner_message','room.exchange_finished','room.knowledge_learned','model.downloaded','algorithm.activated','algorithm.statistics_rebuilt','mcp.list_failed','migration.algorithm_stat_rebuild','backup.created','backup.encrypted','workflow.completed','goal.finished','execution.started','execution.finished'])
+export function auditEventLabel(event?: string): string {
+  if (!event) return ''
+  return auditEvents.has(event) ? t(('evt.' + event) as LocaleKey) : event
+}
