@@ -1,5 +1,5 @@
 import {useRef,useState} from 'react'
-import {ArrowRight,Check,Cloud,HardDrive,Plus,RefreshCw,Settings2,X} from 'lucide-react'
+import {ArrowRight,Check,Cloud,HardDrive,Plus,RefreshCw,Settings2,ShieldCheck,X} from 'lucide-react'
 import {Provider,del,get,post} from '../api'
 import {Button,TextInput,SelectInput} from '../components/Primitives'
 import {FormField,Notice,refresh,useRemote} from '../components/UI'
@@ -42,15 +42,26 @@ export function ModelHub(){
  const providerList=useRef<HTMLDetailsElement>(null)
  const [modal,setModal]=useState(false),[presetMode,setPresetMode]=useState(false)
  const [edit,setEdit]=useState<Provider|null>(null)
- const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState('')
+ const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
  const probe=async(p:Provider)=>{
   setCounts(old=>({...old,[p.id]:{list:[],busy:true}}))
   try{const list=await get<{id:string}[]>('/api/providers/'+p.id+'/models');setCounts(old=>({...old,[p.id]:{list:list.map(m=>m.id)}}))}
   catch(e){setCounts(old=>({...old,[p.id]:{list:[],error:(e as Error).message}}))}
  }
- const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setError('');setModal(true)}
- const openPreset=(preset:ProviderPreset)=>{setEdit(null);setIntegration(preset.integration);setFreePreset(Boolean(preset.free));setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId('');setReflection(false);setRpm(preset.requestsPerMinute?String(preset.requestsPerMinute):'');setError('');setModal(true)}
+ const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setAccountId(p?.accountId||'');setTestResult(null);setError('');setModal(true)}
+ const openPreset=(preset:ProviderPreset)=>{setEdit(null);setIntegration(preset.integration);setFreePreset(Boolean(preset.free));setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId('');setReflection(false);setRpm(preset.requestsPerMinute?String(preset.requestsPerMinute):'');setAccountId('');setTestResult(null);setError('');setModal(true)}
  const needsNewKey=presetMode&&!freePreset&&(!local||integration==='freellmapi')
+ const testConnection=async()=>{
+  if(testBusy||!baseUrl.trim())return
+  setTestBusy(true);setTestResult(null)
+  try{
+   const result=await post<{ok:boolean;message?:string;status?:number}>(`/api/providers/${edit?.id||'new'}/test`,{
+    baseUrl:baseUrl.trim(),kind,integration,accountId:accountId.trim()||undefined,apiKey:apiKey.trim()||undefined,model:edit?.model,
+   })
+   setTestResult(result.ok?{ok:true,message:t('models.testOk')}:{ok:false,message:(result.message||t('models.testFail'))+(result.status?` (HTTP ${result.status})`:'')})
+  }catch(e){setTestResult({ok:false,message:(e as Error).message})}
+  finally{setTestBusy(false)}
+ }
  const close=()=>{if(!saving)setModal(false)}
  const save=async()=>{
   if(saving||!baseUrl.trim()||(needsNewKey&&!apiKey.trim()))return
@@ -58,7 +69,7 @@ export function ModelHub(){
   setSaving(true);setError('')
   try{
    const saved=await post<Provider>('/api/providers',{
-    ...edit,name:name.trim(),baseUrl:baseUrl.trim(),kind,apiKey:apiKey.trim()||undefined,local,integration,requestsPerMinute:Number(rpm)||0,
+    ...edit,name:name.trim(),baseUrl:baseUrl.trim(),kind,apiKey:apiKey.trim()||undefined,local,integration,accountId:accountId.trim()||undefined,requestsPerMinute:Number(rpm)||0,
     toolMode:edit?.kind===kind?edit.toolMode:undefined,
     enabled:edit?.enabled??true,model:edit?.model,reflection,reflectionModel:reflection?modelId.trim():undefined,
    })
@@ -101,10 +112,12 @@ export function ModelHub(){
       {integration!=='freellmapi'&&<div className="mt-1 break-all text-[11px] text-[#8A8176]">{baseUrl}</div>}
      </div>
      {integration==='freellmapi'&&<FormField label={t('models.dlg.freeServer')}><TextInput value={baseUrl} onChange={e=>setBaseUrl(e.target.value)}/></FormField>}
+     {baseUrl.includes('ACCOUNT_ID')&&<FormField label={t('models.dlg.accountId')} hint={t('models.dlg.accountIdHint')}><TextInput value={accountId} onChange={e=>setAccountId(e.target.value)} placeholder="a1b2c3d4e5f6..."/></FormField>}
      {freePreset?<p className="text-[11px] leading-5 text-[#8A8176]">{t('models.freeNote')}</p>:<FormField label={integration==='freellmapi'?t('models.dlg.integrationKey'):local?t('models.dlg.apiKeyOptional'):t('models.dlg.apiKey')} hint={integration==='freellmapi'?t('models.dlg.integrationHint'):undefined}><TextInput autoFocus type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={t('models.dlg.pasteKey')}/></FormField>}
     </>:<>
      <FormField label={t('models.dlg.connectionName')} hint={t('models.dlg.connectionNameHint')}><TextInput value={name} onChange={e=>setName(e.target.value)} placeholder={t('models.dlg.connectionNamePlaceholder')}/></FormField>
      <FormField label={t('models.dlg.serverUrl')}><TextInput value={baseUrl} onChange={e=>setBaseUrl(e.target.value)} placeholder="http://127.0.0.1:1234/v1"/></FormField>
+     {baseUrl.includes('ACCOUNT_ID')&&<FormField label={t('models.dlg.accountId')} hint={t('models.dlg.accountIdHint')}><TextInput value={accountId} onChange={e=>setAccountId(e.target.value)} placeholder="a1b2c3d4e5f6..."/></FormField>}
      <FormField label={t('models.dlg.apiMode')}><SelectInput value={kind} onChange={e=>setKind(e.target.value)}><option value="openai">{t('models.dlg.openaiCompat')}</option><option value="anthropic">Anthropic</option><option value="ollama">Ollama</option></SelectInput></FormField>
      <FormField label={t('models.dlg.apiKey')}><TextInput type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={edit?.hasKey?t('models.dlg.keepKey'):t('models.dlg.keyIfNeeded')}/></FormField>
      <label className="flex items-center gap-2 text-[12px]"><TextInput type="checkbox" checked={local} onChange={e=>setLocal(e.target.checked)}/> {t('models.dlg.localServer')}</label>
@@ -120,8 +133,9 @@ export function ModelHub(){
     </>}
     <FormField label={t('models.dlg.rpm')} hint={t('models.dlg.rpmHint')}><TextInput type="number" min={0} max={10000} value={rpm} onChange={e=>setRpm(e.target.value)} placeholder="0"/></FormField>
     {error&&<Notice message={error}/>}
+    {testResult&&<div className={'rounded-xl border px-3 py-2 text-[12px] '+(testResult.ok?'border-[#CFE0CF] bg-[#F4FAF3] text-[#4F6F52]':'border-[#EAD3CB] bg-[#FFF4F0] text-[#9A5B48]')}>{testResult.message}</div>}
    </div>
-   <div className="flex justify-end gap-2 border-t border-[#EFE9DF] p-4">{edit&&edit.id!=='dominion-native'&&<Button variant="danger" className="mr-auto" disabled={saving} onClick={()=>void disconnect()}>{t('models.disconnect')}</Button>}<Button onClick={close} disabled={saving}>{t('models.cancel')}</Button><Button variant="primary" disabled={saving||!baseUrl.trim()||(needsNewKey&&!apiKey.trim())} onClick={()=>void save()}><Check size={14}/> {saving?t('models.saving'):t('models.save')}</Button></div>
+   <div className="flex justify-end gap-2 border-t border-[#EFE9DF] p-4">{edit&&edit.id!=='dominion-native'&&<Button variant="danger" className="mr-auto" disabled={saving} onClick={()=>void disconnect()}>{t('models.disconnect')}</Button>}<Button variant="ghost" disabled={saving||testBusy||!baseUrl.trim()} onClick={()=>void testConnection()}>{testBusy?<RefreshCw size={14} className="animate-spin"/>:<ShieldCheck size={14}/>} {testBusy?t('models.testing'):t('models.test')}</Button><Button onClick={close} disabled={saving}>{t('models.cancel')}</Button><Button variant="primary" disabled={saving||!baseUrl.trim()||(needsNewKey&&!apiKey.trim())} onClick={()=>void save()}><Check size={14}/> {saving?t('models.saving'):t('models.save')}</Button></div>
   </DialogPanel></DialogBackdrop>}
  </div>
 }

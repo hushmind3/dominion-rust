@@ -136,6 +136,22 @@ fn default_reasoning_protocol(provider: &Value, kind: &str, model: &str, id: &st
         })
 }
 
+/// Resolves placeholders in a provider URL. Cloudflare (and similar APIs)
+/// put the account in the path, so the owner supplies `accountId` once and
+/// every route/model call fills it in.
+pub fn resolved_base_url(provider: &Value) -> String {
+    let raw = provider["baseUrl"].as_str().unwrap_or("");
+    let account = provider["accountId"].as_str().unwrap_or("").trim();
+    if account.is_empty() {
+        raw.trim_end_matches('/').to_string()
+    } else {
+        raw.replace("ACCOUNT_ID", account)
+            .replace("{accountId}", account)
+            .trim_end_matches('/')
+            .to_string()
+    }
+}
+
 /// Builds a route from a provider record. Disabled providers and providers
 /// without a base URL are rejected here for every caller.
 pub fn route_from_provider(
@@ -153,11 +169,7 @@ pub fn route_from_provider(
     if id.is_empty() {
         return Err("제공자 id 가 없습니다.".into());
     }
-    let base_url = provider["baseUrl"]
-        .as_str()
-        .unwrap_or("")
-        .trim_end_matches('/')
-        .to_string();
+    let base_url = resolved_base_url(provider);
     if base_url.is_empty() {
         return Err("제공자에 baseUrl 이 없습니다.".into());
     }

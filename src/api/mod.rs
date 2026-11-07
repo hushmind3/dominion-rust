@@ -141,6 +141,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::delete(providers::delete_provider),
         )
         .route("/api/providers/:id/models", get(providers::provider_models))
+        .route("/api/providers/:id/test", post(providers::test_provider))
         .route("/api/gateways/freellmapi", get(gateways::freellmapi))
         .route("/api/providers/:id/gateway", get(gateways::inspect))
         // agents

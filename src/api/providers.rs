@@ -4,13 +4,60 @@ use serde_json::{json,Value};
 use std::time::Duration;
 use super::response::error;
 
+fn needs_account_discovery(provider: &Value) -> bool {
+    provider["accountId"].as_str().unwrap_or("").trim().is_empty()
+        && provider["baseUrl"].as_str().is_some_and(|url| {
+            url.contains("ACCOUNT_ID") || url.contains("{accountId}")
+        })
+}
+
+/// Cloudflare lets a token list every account it can see, so the owner never
+/// has to hunt for the account ID by hand. Any other provider with a
+/// placeholder URL is left untouched.
+async fn discover_cloudflare_account(api_key: &str) -> Option<String> {
+    if api_key.is_empty() {
+        return None;
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .ok()?;
+    let response = client
+        .get("https://api.cloudflare.com/client/v4/accounts")
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let value: Value = response.json().await.ok()?;
+    value["result"].as_array()?.iter()
+        .find_map(|account| account["id"].as_str().map(str::to_string))
+}
+
+async fn fill_missing_account(state: &AppState, provider: &Value) -> Option<String> {
+    if !needs_account_discovery(provider) {
+        return None;
+    }
+    let id = provider["id"].as_str()?;
+    let key = state.read_secret(&format!("provider:{id}"))?;
+    discover_cloudflare_account(&key).await
+}
+
 pub async fn list_providers(State(state): State<AppState>) -> Json<Value> {
-    let items = state
-        .store
-        .all("provider")
-        .into_iter()
-        .map(|provider| public_provider(&state, provider))
-        .collect::<Vec<_>>();
+    let mut items = Vec::new();
+    for mut provider in state.store.all("provider") {
+        // Lazily fill `ACCOUNT_ID` from the key the owner already saved, then
+        // persist it so chat/model routes use the real URL.
+        if let Some(account) = fill_missing_account(&state, &provider).await {
+            provider["accountId"] = json!(account);
+            if let Some(saved) = state.store.put("provider", &provider) {
+                state.bus.record("provider", &saved);
+            }
+        }
+        items.push(public_provider(&state, provider));
+    }
     Json(json!(items))
 }
 
@@ -106,6 +153,9 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
         );
     }
 
+    if body.get("accountId").and_then(Value::as_str).is_some_and(|value| value.len() > 128) {
+        return error(StatusCode::BAD_REQUEST, "Account ID가 너무 깁니다.");
+    }
     let mut record = body.clone();
     record["id"] = json!(id);
     record["name"] = json!(name);
@@ -150,6 +200,7 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
         map.remove("hasKey");
     }
 
+    let mut fresh_key: Option<String> = None;
     if let Some(api_key) = body.get("apiKey").and_then(|value| value.as_str()) {
         if api_key.starts_with("••") {
             // Masked placeholder sent back by the UI: keep the stored secret.
@@ -157,6 +208,18 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
             state.store.remove_secret(&format!("provider:{id}"));
         } else {
             state.save_secret(&format!("provider:{id}"), api_key);
+            fresh_key = Some(api_key.to_string());
+        }
+    }
+    // Save the account ID immediately when the key can reveal it, so the next
+    // model list or chat does not need a second trip to the provider.
+    if needs_account_discovery(&record) {
+        let key = fresh_key
+            .clone()
+            .or_else(|| state.read_secret(&format!("provider:{id}")))
+            .unwrap_or_default();
+        if let Some(account) = discover_cloudflare_account(&key).await {
+            record["accountId"] = json!(account);
         }
     }
 
@@ -230,23 +293,140 @@ fn model_is_free(_provider: &Value, kind: &str, base: &str, item: &Value, id: &s
     zero("prompt") && zero("completion")
 }
 
+/// Verifies a provider without saving anything. The UI can test the key the
+/// owner just typed, so an invalid token is reported immediately instead of
+/// silently failing later during a room conversation.
+pub async fn test_provider(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    // `new` (or any unsaved id) tests the draft in the dialog. Stored
+    // providers are tested against their saved record plus the typed fields.
+    let mut provider = state
+        .store
+        .get("provider", &id)
+        .unwrap_or_else(|| json!({"id":id,"enabled":true}));
+    for field in ["baseUrl", "accountId", "kind", "integration"] {
+        if let Some(value) = body.get(field).and_then(Value::as_str) {
+            provider[field] = json!(value);
+        }
+    }
+    let key = body
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && !value.starts_with("••"))
+        .map(str::to_string)
+        .or_else(|| state.read_secret(&format!("provider:{id}")))
+        .unwrap_or_default();
+    if key.is_empty() {
+        return Json(json!({"ok":false,"message":"API 키가 저장되어 있지 않습니다."})).into_response();
+    }
+    let key = key.trim();
+    let base = crate::engine::gateway::resolved_base_url(&provider);
+    if base.contains("ACCOUNT_ID") || base.contains("{accountId}") {
+        if let Some(account) = discover_cloudflare_account(key).await {
+            provider["accountId"] = json!(account);
+        }
+    }
+    let base = crate::engine::gateway::resolved_base_url(&provider);
+    let kind = provider["kind"].as_str().unwrap_or("openai");
+    let model = body["model"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .or_else(|| provider["model"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let cloudflare = base.contains("/client/v4/accounts/") && base.contains("/ai/v1");
+    let client = match reqwest::Client::builder().timeout(Duration::from_secs(20)).build() {
+        Ok(client) => client,
+        Err(err) => return error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+    };
+    let request = if cloudflare {
+        let cloudflare_model = if model.is_empty() {
+            "@cf/meta/llama-3.1-8b-instruct".to_string()
+        } else {
+            model.clone()
+        };
+        client
+            .post(format!("{base}/chat/completions"))
+            .header("Authorization", format!("Bearer {key}"))
+            .json(&json!({
+                "model":cloudflare_model,
+                "messages":[{"role":"user","content":"ping"}],
+                "max_tokens":4,
+                "stream":false
+            }))
+    } else if kind == "ollama" {
+        client
+            .get(format!("{}/models", base.trim_end_matches("/v1").trim_end_matches('/')))
+            .header("Authorization", format!("Bearer {key}"))
+    } else if kind == "openai" && !model.is_empty() {
+        client
+            .post(format!("{base}/chat/completions"))
+            .header("Authorization", format!("Bearer {key}"))
+            .json(&json!({
+                "model":model,
+                "messages":[{"role":"user","content":"ping"}],
+                "max_tokens":4,
+                "stream":false
+            }))
+    } else if kind == "anthropic" {
+        client
+            .get(format!("{base}/models"))
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01")
+    } else {
+        client
+            .get(format!("{base}/models"))
+            .header("Authorization", format!("Bearer {key}"))
+    };
+    match request.send().await {
+        Ok(response) if response.status().is_success() => {
+            Json(json!({"ok":true,"status":response.status().as_u16(),"accountId":provider["accountId"]})).into_response()
+        }
+        Ok(response) => {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            let detail = text.chars().take(300).collect::<String>();
+            let message = match status.as_u16() {
+                401 | 403 => "키가 거부되었습니다. API 토큰 권한과 계정을 확인하세요.",
+                404 | 405 => "주소는 응답했지만 이 경로를 지원하지 않습니다. 서버 주소를 확인하세요.",
+                429 => "호출 한도에 걸렸습니다. 잠시 후 다시 시도하세요.",
+                _ => "연결 테스트에 실패했습니다.",
+            };
+            Json(json!({"ok":false,"status":status.as_u16(),"message":message,"detail":detail})).into_response()
+        }
+        Err(err) => Json(json!({"ok":false,"message":format!("연결할 수 없습니다: {err}")})).into_response(),
+    }
+}
+
 pub async fn provider_models(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let Some(provider) = state.store.get("provider", &id) else {
+    let Some(mut provider) = state.store.get("provider", &id) else {
         return error(StatusCode::NOT_FOUND, "제공자를 찾을 수 없습니다.");
     };
-    let base = provider
-        .get("baseUrl")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .trim_end_matches('/')
-        .to_string();
-    let kind = provider
-        .get("kind")
-        .and_then(|value| value.as_str())
-        .unwrap_or("openai");
+    let key = state.read_secret(&format!("provider:{id}")).unwrap_or_default();
+    if needs_account_discovery(&provider) {
+        if let Some(account) = discover_cloudflare_account(&key).await {
+            provider["accountId"] = json!(account);
+            if let Some(saved) = state.store.put("provider", &provider) {
+                state.bus.record("provider", &saved);
+            }
+        }
+    }
+    let base = crate::engine::gateway::resolved_base_url(&provider);
+    let kind = provider.get("kind").and_then(|value| value.as_str()).unwrap_or("openai");
+    // Cloudflare's OpenAI-compatible surface has no /models route. Its native
+    // model search returns the catalogue instead.
+    let cloudflare = base.contains("/client/v4/accounts/") && base.contains("/ai/v1");
     let url = if kind == "ollama" {
         let native = base.trim_end_matches("/v1").trim_end_matches('/');
         format!("{native}/api/tags")
+    } else if cloudflare {
+        format!(
+            "{}/ai/models/search?per_page=100",
+            base.trim_end_matches("/ai/v1").trim_end_matches('/')
+        )
     } else if kind == "anthropic" {
         format!("{base}/models")
     } else {
@@ -259,9 +439,6 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
             }
         )
     };
-    let key = state
-        .read_secret(&format!("provider:{id}"))
-        .unwrap_or_default();
 
     let client = reqwest::Client::new();
     let mut request = client.get(&url).timeout(Duration::from_secs(12));
@@ -277,11 +454,22 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
             let Ok(value) = response.json::<Value>().await else {
                 return error(StatusCode::BAD_GATEWAY, "서버가 모델 목록 JSON을 반환하지 않았습니다. 서버 주소를 확인하세요.");
             };
-            let Some(items) = value[if kind == "ollama" { "models" } else { "data" }].as_array() else {
+            let key_name = if kind == "ollama" {
+                "models"
+            } else if cloudflare {
+                "result"
+            } else {
+                "data"
+            };
+            let Some(items) = value[key_name].as_array() else {
                 return error(StatusCode::BAD_GATEWAY, "모델 목록 형식을 확인할 수 없습니다. 서버 주소와 API 방식을 확인하세요.");
             };
             let models: Vec<Value> = items.iter().filter_map(|item| {
-                let id = item[if kind == "ollama" { "name" } else { "id" }].as_str()?;
+                let id = if kind == "ollama" || cloudflare {
+                    item["name"].as_str().or_else(|| item["id"].as_str())?
+                } else {
+                    item["id"].as_str()?
+                };
                 Some(json!({
                     "id": id,
                     "name": item["display_name"].as_str().unwrap_or(id),
@@ -303,11 +491,22 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn account_placeholder_is_detected_only_when_unfilled() {
+        assert!(needs_account_discovery(&json!({
+            "baseUrl":"https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1"
+        })));
+        assert!(!needs_account_discovery(&json!({
+            "baseUrl":"https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1",
+            "accountId":"abc123"
+        })));
+        assert!(!needs_account_discovery(&json!({"baseUrl":"https://api.example.com/v1"})));
+    }
 
     #[test]
     fn free_models_require_local_runtime_or_pricing_evidence() {

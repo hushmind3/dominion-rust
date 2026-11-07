@@ -148,6 +148,42 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
     if !matches!(routing.as_str(), "discussion" | "round_robin" | "mentioned") {
         return Err(bad("지원하지 않는 발언 방식입니다."));
     }
+    // Owner-picked model pool. FreeLLMAPI exposes dozens of models; the owner
+    // checks the ones they trust once and every turn rotates inside that list.
+    let models_source = body
+        .get("models")
+        .or_else(|| previous.get("models"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if models_source.len() > 64 {
+        return Err(bad("방 모델은 최대 64개까지 선택할 수 있습니다."));
+    }
+    let mut models = Vec::new();
+    let mut seen_models = HashSet::new();
+    for entry in &models_source {
+        let provider_id = entry
+            .get("providerId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| bad("방 모델에 providerId가 필요합니다."))?;
+        let model = entry
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.len() <= 200)
+            .ok_or_else(|| bad("방 모델에 model 이름이 필요합니다."))?;
+        let provider = state
+            .store
+            .get("provider", provider_id)
+            .ok_or_else(|| bad(format!("제공자를 찾을 수 없습니다: {provider_id}")))?;
+        if crate::engine::gateway::is_local_runtime(&provider) {
+            return Err(bad("로컬 런타임 모델은 방 모델로 선택할 수 없습니다."));
+        }
+        if seen_models.insert(format!("{provider_id}|{model}")) {
+            models.push(json!({"providerId":provider_id,"model":model}));
+        }
+    }
     let max_turns = body
         .get("maxTurns")
         .and_then(Value::as_i64)
@@ -166,6 +202,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         "toolsEnabled":bool_field(body,previous,"toolsEnabled",false)?,
         "autoLearning":bool_field(body,previous,"autoLearning",true)?,
         "autoModels":bool_field(body,previous,"autoModels",true)?,
+        "models":models,
     }))
 }
 fn valid_id(id: &str) -> bool {

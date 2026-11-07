@@ -153,6 +153,29 @@ pub fn plan_speakers(
 fn model_pool(state: &crate::state::AppState, room: &Value) -> Vec<(String, String)> {
     let mut pool = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    // An explicit owner selection wins over agent defaults. This is how the
+    // owner says "use these Fast FreeLLMAPI models, never anything else".
+    for entry in room["models"].as_array().into_iter().flatten() {
+        let provider = entry["providerId"].as_str().unwrap_or("");
+        let model = entry["model"].as_str().unwrap_or("");
+        if provider.is_empty() || model.is_empty() {
+            continue;
+        }
+        if state
+            .store
+            .get("provider", provider)
+            .is_some_and(|record| crate::engine::gateway::is_local_runtime(&record))
+        {
+            continue;
+        }
+        let key = format!("{provider}|{model}");
+        if seen.insert(key) {
+            pool.push((provider.to_string(), model.to_string()));
+        }
+    }
+    if !pool.is_empty() {
+        return pool;
+    }
     for id in room["agentIds"].as_array().into_iter().flatten() {
         let Some(agent) = id.as_str().and_then(|id| state.store.get("agent", id)) else {
             continue;
@@ -480,7 +503,12 @@ async fn run_locked(
                     .map(|agent| json!({"id":id,"name":agent["name"]}))
             })
             .collect::<Vec<_>>();
-        let pool = if room["autoModels"].as_bool().unwrap_or(true) {
+        // An explicit owner selection is itself a rotation list. Choosing
+        // models in the room UI is the owner saying "use exactly these".
+        let explicit_pool = room["models"]
+            .as_array()
+            .is_some_and(|models| !models.is_empty());
+        let pool = if explicit_pool || room["autoModels"].as_bool().unwrap_or(true) {
             model_pool(state, &room)
         } else {
             Vec::new()
@@ -999,6 +1027,37 @@ mod pool_tests {
         state.store.put("agent", &json!({"id":"c","providerId":"p2","model":"m2"}));
         let pool = model_pool(&state, &json!({"agentIds":["a","b","c"]}));
         assert_eq!(pool, vec![("p1".into(),"m1".into()),("p2".into(),"m2".into())]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn explicit_room_models_override_agent_defaults() {
+        let dir = std::env::temp_dir().join(format!("dominion-pool-explicit-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = crate::config::Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let state = crate::state::AppState::new(
+            config,
+            crate::db::Store::open(&dir.join("db.sqlite")).unwrap(),
+            crate::vault::Vault::open(&dir.join("keys.json")),
+        );
+        state.store.put("provider", &json!({"id":"cloud","kind":"openai","baseUrl":"https://api.example.com/v1"}));
+        state.store.put("provider", &json!({"id":"local","kind":"ollama","baseUrl":"http://127.0.0.1:11434/v1"}));
+        state.store.put("agent", &json!({"id":"a","providerId":"cloud","model":"agent-default"}));
+        let room = json!({
+            "agentIds":["a"],
+            "models":[
+                {"providerId":"cloud","model":"picked-fast"},
+                {"providerId":"cloud","model":"picked-fast"},
+                {"providerId":"local","model":"should-skip"}
+            ]
+        });
+        let pool = model_pool(&state, &room);
+        assert_eq!(pool, vec![("cloud".into(),"picked-fast".into())]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

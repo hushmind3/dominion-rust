@@ -1,7 +1,7 @@
 import {useTranscriptScroll} from '../hooks/useTranscriptScroll'
 import {useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react'
 import {Activity,ArrowDown,ArrowRight,ArrowUp,AtSign,BookOpenText,Bot,Check,ChevronDown,ChevronLeft,ChevronRight,Clock3,Copy,Hash,LoaderCircle,MessageCircle,MoreHorizontal,Plus,RefreshCw,Settings2,ShieldCheck,Square,TerminalSquare,Trash2,UserRound,UsersRound,X} from 'lucide-react'
-import {get,post,del,resolveApproval,koreanReasoningEnabled,type Agent,type ChatMessage} from '../api'
+import {get,post,del,resolveApproval,koreanReasoningEnabled,type Agent,type ChatMessage,type ModelOption,type Provider} from '../api'
 import {Button,TextArea,TextInput,SelectInput} from '../components/Primitives'
 import {DialogBackdrop,DialogPanel} from '../components/Dialog'
 import {FormField,Notice,refresh,useRemote} from '../components/UI'
@@ -12,8 +12,9 @@ import {translateError} from '../i18n/errors'
 const MAX_ROOM_PARTICIPANTS=32
 
 type RoutingMode='discussion'|'round_robin'|'mentioned'
-type RoomConfig={id:string;name:string;topic?:string;description?:string;ownerName?:string;agentIds:string[];routingMode?:RoutingMode;rounds?:number;maxTurns?:number;toolsEnabled?:boolean;autoLearning?:boolean;autoModels?:boolean;sessionId?:string;status?:string;activeAgentId?:string;pauseReason?:string;updatedAt?:string}
-type RoomDraft={id?:string;name:string;topic:string;ownerName:string;agentIds:string[];routingMode:RoutingMode;rounds:number;maxTurns:number;autoModels:boolean;toolsEnabled:boolean;autoLearning:boolean}
+type RoomModel={providerId:string;model:string}
+type RoomConfig={id:string;name:string;topic?:string;description?:string;ownerName?:string;agentIds:string[];routingMode?:RoutingMode;rounds?:number;maxTurns?:number;toolsEnabled?:boolean;autoLearning?:boolean;autoModels?:boolean;models?:RoomModel[];sessionId?:string;status?:string;activeAgentId?:string;pauseReason?:string;updatedAt?:string}
+type RoomDraft={id?:string;name:string;topic:string;ownerName:string;agentIds:string[];routingMode:RoutingMode;rounds:number;maxTurns:number;autoModels:boolean;toolsEnabled:boolean;autoLearning:boolean;models:RoomModel[]}
 type Job={id:string;kind:string;status:string;stepIndex?:number;stepTotal?:number;error?:string;createdAt?:string;input?:{roomId?:string;sessionId?:string};result?:{memories?:number;status?:string};roomState?:{activeAgentId?:string;inFlight?:boolean}}
 type Execution={id:string;status:string;agentId?:string;sessionId?:string;toolCalls?:number;tokens?:number;reason?:string}
 type Operation={id:string;runId?:string;tool?:string;toolName?:string;name?:string;status?:string;result?:unknown;error?:string;arguments?:unknown}
@@ -28,7 +29,7 @@ const modes:Record<RoutingMode,{label:LocaleKey;description:LocaleKey}>={discuss
 const palette=['#668373','#9A745F','#6D7FA4','#967AA0','#B18C47','#6C9297','#AB7180','#7A8456','#8B7B69']
 const active=(status?:string)=>status==='queued'||status==='running'
 const stamp=(value?:string)=>{if(!value)return '';const normalized=value.includes('T')?value:value.replace(' ','T')+'Z';const date=new Date(normalized);return Number.isNaN(date.getTime())?'':date.toLocaleTimeString(getLocale()==='en'?'en-US':'ko-KR',{hour:'2-digit',minute:'2-digit'})}
-const draftOf=(room?:RoomConfig):RoomDraft=>({id:room?.id,name:room?.name||'',topic:room?.topic||room?.description||'',ownerName:room?.ownerName||t('rooms.me'),agentIds:room?.agentIds||[],routingMode:room?.routingMode||'discussion',rounds:room?.rounds||3,maxTurns:room?.maxTurns??0,toolsEnabled:room?.toolsEnabled===true,autoLearning:room?.autoLearning!==false,autoModels:room?.autoModels!==false})
+const draftOf=(room?:RoomConfig):RoomDraft=>({id:room?.id,name:room?.name||'',topic:room?.topic||room?.description||'',ownerName:room?.ownerName||t('rooms.me'),agentIds:room?.agentIds||[],routingMode:room?.routingMode||'discussion',rounds:room?.rounds||3,maxTurns:room?.maxTurns??0,toolsEnabled:room?.toolsEnabled===true,autoLearning:room?.autoLearning!==false,autoModels:room?.autoModels!==false,models:room?.models||[]})
 const agentColor=(agent?:Agent,index=0)=>/^#[0-9a-f]{3,8}$/i.test(agent?.color||'')?agent!.color!:palette[index%palette.length]
 
 function Avatar({agent,name,owner=false,size='normal',index=0}:{agent?:Agent;name?:string;owner?:boolean;size?:'small'|'normal';index?:number}){
@@ -39,6 +40,7 @@ export function RoomsPage({openSession}:{openSession:(id:string)=>void}){
  useLocale()
  const rooms=useRemote<RoomConfig[]>('/api/rooms',[])
  const agents=useRemote<Agent[]>('/api/agents',[])
+ const providers=useRemote<Provider[]>('/api/providers',[])
  const [selected,setSelected]=useState(()=>{try{return localStorage.getItem('dominion.room.selected')||''}catch{return ''}})
  const [showList,setShowList]=useState(()=>window.innerWidth>=840)
  const [creating,setCreating]=useState<RoomDraft|null>(null)
@@ -63,13 +65,13 @@ export function RoomsPage({openSession}:{openSession:(id:string)=>void}){
    </div>
    <div className="room-list-footer"><UsersRound size={16}/><span>{t('rooms.footer')}</span></div>
   </aside>
-  {current?<RoomConversation key={current.id} room={current} agents={agents.value} openList={()=>setShowList(v=>!v)} showList={showList} openSession={openSession} onSaved={async()=>{await rooms.reload();refresh()}} onRemoved={async()=>{setSelected('');await rooms.reload()}}/>:<div className="room-welcome"><div className="room-welcome-mark"><UsersRound size={40}/></div><span className="room-eyebrow">{t('ui.label.teamPlace')}</span><h1>{t('rooms.welcome.title')}</h1><p>{t('rooms.welcome.line1')}<br/>{t('rooms.welcome.line2')}<br/>{t('rooms.welcome.line3')}</p><Button variant="primary" onClick={()=>{setCreating(draftOf());setError('')}}><Plus size={16}/> {t('rooms.create')}</Button><button className="room-mobile-list-button" onClick={()=>setShowList(true)}>{t('rooms.viewSaved')}</button></div>}
+  {current?<RoomConversation key={current.id} room={current} agents={agents.value} providers={providers.value} openList={()=>setShowList(v=>!v)} showList={showList} openSession={openSession} onSaved={async()=>{await rooms.reload();refresh()}} onRemoved={async()=>{setSelected('');await rooms.reload()}}/>:<div className="room-welcome"><div className="room-welcome-mark"><UsersRound size={40}/></div><span className="room-eyebrow">{t('ui.label.teamPlace')}</span><h1>{t('rooms.welcome.title')}</h1><p>{t('rooms.welcome.line1')}<br/>{t('rooms.welcome.line2')}<br/>{t('rooms.welcome.line3')}</p><Button variant="primary" onClick={()=>{setCreating(draftOf());setError('')}}><Plus size={16}/> {t('rooms.create')}</Button><button className="room-mobile-list-button" onClick={()=>setShowList(true)}>{t('rooms.viewSaved')}</button></div>}
   {(error||rooms.error||agents.error)&&!creating&&<div className="room-global-error"><Notice message={error||rooms.error||agents.error}/></div>}
-  {creating&&<DialogBackdrop onDismiss={()=>{if(!saving)setCreating(null)}}><DialogPanel size="wide" aria-label={t('rooms.newTitle')}><div className="room-dialog-header"><div><span className="room-eyebrow">{t('ui.label.startConversation')}</span><h2>{t('rooms.who')}</h2></div><Button size="icon" variant="ghost" aria-label={t('rooms.close')} onClick={()=>setCreating(null)} disabled={saving}><X size={18}/></Button></div><div className="room-dialog-body"><RoomSettings value={creating} onChange={setCreating} agents={agents.value} disabled={saving}/><Notice message={error}/></div><div className="room-dialog-footer"><span>{t('rooms.createHint')}</span><Button variant="primary" onClick={()=>void createRoom()} disabled={saving||!creating.name.trim()||!creating.agentIds.length}>{saving?<LoaderCircle size={15} className="animate-spin"/>:<Plus size={15}/>} {t('rooms.create')}</Button></div></DialogPanel></DialogBackdrop>}
+  {creating&&<DialogBackdrop onDismiss={()=>{if(!saving)setCreating(null)}}><DialogPanel size="wide" aria-label={t('rooms.newTitle')}><div className="room-dialog-header"><div><span className="room-eyebrow">{t('ui.label.startConversation')}</span><h2>{t('rooms.who')}</h2></div><Button size="icon" variant="ghost" aria-label={t('rooms.close')} onClick={()=>setCreating(null)} disabled={saving}><X size={18}/></Button></div><div className="room-dialog-body"><RoomSettings value={creating} onChange={setCreating} agents={agents.value} providers={providers.value} disabled={saving}/><Notice message={error}/></div><div className="room-dialog-footer"><span>{t('rooms.createHint')}</span><Button variant="primary" onClick={()=>void createRoom()} disabled={saving||!creating.name.trim()||!creating.agentIds.length}>{saving?<LoaderCircle size={15} className="animate-spin"/>:<Plus size={15}/>} {t('rooms.create')}</Button></div></DialogPanel></DialogBackdrop>}
  </div>
 }
 
-function RoomSettings({value,onChange,agents,disabled=false}:{value:RoomDraft;onChange:(value:RoomDraft)=>void;agents:Agent[];disabled?:boolean}){
+function RoomSettings({value,onChange,agents,providers,disabled=false}:{value:RoomDraft;onChange:(value:RoomDraft)=>void;agents:Agent[];providers:Provider[];disabled?:boolean}){
  useLocale()
  const toggle=(id:string)=>onChange({...value,agentIds:value.agentIds.includes(id)?value.agentIds.filter(item=>item!==id):[...value.agentIds,id]})
  return <div className="room-settings-form">
@@ -81,12 +83,49 @@ function RoomSettings({value,onChange,agents,disabled=false}:{value:RoomDraft;on
   <FormField label={t('rooms.mode')}><SelectInput value={value.routingMode} onChange={e=>onChange({...value,routingMode:e.target.value as RoutingMode})} disabled={disabled}>{Object.entries(modes).map(([key,item])=><option key={key} value={key}>{t(item.label)}</option>)}</SelectInput><small className="room-note">{t(modes[value.routingMode].description)}</small></FormField>
   <div className="room-settings-numbers"><FormField label={t('rooms.rounds')} hint={t('rooms.roundsHint')}><TextInput type="number" min={1} max={100000} value={value.rounds} onChange={e=>onChange({...value,rounds:Math.min(100000,Math.max(1,Number(e.target.value)||1))})} disabled={disabled||value.routingMode==='round_robin'}/></FormField><FormField label={t('rooms.maxTurns')} hint={t('rooms.maxTurnsHint')}><TextInput type="number" min={0} max={100000} value={value.maxTurns} onChange={e=>onChange({...value,maxTurns:Math.min(100000,Math.max(0,Number(e.target.value)||0))})} disabled={disabled}/></FormField></div>
   <label className="room-setting-check"><input type="checkbox" checked={value.autoLearning} onChange={e=>onChange({...value,autoLearning:e.target.checked})} disabled={disabled}/><span><strong>{t('rooms.autoLearn')}</strong><small>{t('rooms.autoLearnDesc')}</small></span></label>
+  <RoomModelPicker value={value.models} onChange={models=>onChange({...value,models})} providers={providers} disabled={disabled}/>
   <label className="room-setting-check"><input type="checkbox" checked={value.autoModels} onChange={e=>onChange({...value,autoModels:e.target.checked})} disabled={disabled}/><span><strong>{t('rooms.autoModels')}</strong><small>{t('rooms.autoModelsDesc')}</small></span></label>
   <label className="room-setting-check"><input type="checkbox" checked={value.toolsEnabled} onChange={e=>onChange({...value,toolsEnabled:e.target.checked})} disabled={disabled}/><span><strong>{t('rooms.tools')}</strong><small>{t('rooms.toolsDesc')}</small></span></label>
  </div>
 }
 
-function RoomConversation({room,agents,openList,showList,openSession,onSaved,onRemoved}:{room:RoomConfig;agents:Agent[];openList:()=>void;showList:boolean;openSession:(id:string)=>void;onSaved:()=>Promise<void>;onRemoved:()=>Promise<void>}){
+
+function RoomModelPicker({value,onChange,providers,disabled=false}:{value:RoomModel[];onChange:(models:RoomModel[])=>void;providers:Provider[];disabled?:boolean}){
+ useLocale()
+ const cloud=providers.filter(provider=>provider.enabled!==false&&!['ollama','mlx','mlx-lm','llama','llamacpp','lmstudio'].includes((provider.kind||'').toLowerCase()))
+ const [providerId,setProviderId]=useState(()=>cloud[0]?.id||'')
+ const [catalog,setCatalog]=useState<Record<string,ModelOption[]>>({})
+ const [loading,setLoading]=useState(false),[error,setError]=useState('')
+ useEffect(()=>{
+  if(!providerId||catalog[providerId])return
+  let alive=true
+  setLoading(true);setError('')
+  get<ModelOption[]>('/api/providers/'+providerId+'/models')
+   .then(models=>{if(alive)setCatalog(previous=>({...previous,[providerId]:models}))})
+   .catch(reason=>{if(alive)setError((reason as Error).message)})
+   .finally(()=>{if(alive)setLoading(false)})
+  return()=>{alive=false}
+ },[providerId,catalog])
+ const has=(provider:string,model:string)=>value.some(item=>item.providerId===provider&&item.model===model)
+ const toggle=(model:string)=>onChange(has(providerId,model)?value.filter(item=>!(item.providerId===providerId&&item.model===model)):[...value,{providerId,model}])
+ const models=(catalog[providerId]||[]).filter(item=>item.id)
+ const picked=value.filter(item=>item.providerId===providerId).length
+ return <div className="room-model-picker">
+  <div className="room-roster-heading"><strong>{t('rooms.models')}</strong><span>{t('rooms.modelsSelected',{count:value.length})}</span></div>
+  <small className="room-note">{t('rooms.modelsDesc')}</small>
+  <div className="room-model-picker-controls">
+   <SelectInput value={providerId} onChange={e=>setProviderId(e.target.value)} disabled={disabled||!cloud.length}>{cloud.map(provider=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</SelectInput>
+   <Button size="sm" variant="ghost" onClick={()=>onChange([...value,...models.filter(item=>!has(providerId,item.id)).map(item=>({providerId,model:item.id}))])} disabled={disabled||!models.length}>{t('rooms.modelsAll')}</Button>
+   <Button size="sm" variant="ghost" onClick={()=>onChange(value.filter(item=>item.providerId!==providerId))} disabled={disabled||!picked}>{t('rooms.modelsNone')}</Button>
+  </div>
+  {loading&&<p className="room-note">{t('rooms.modelsLoading')}</p>}
+  {error&&<p className="room-message-error">{translateError(error)}</p>}
+  {!loading&&!error&&<div className="room-model-list">{models.map(item=>{const checked=has(providerId,item.id);return <label key={item.id} className={'room-model-option '+(checked?'checked':'')}><input type="checkbox" checked={checked} onChange={()=>toggle(item.id)} disabled={disabled}/><span>{item.name||item.id}</span>{checked&&<Check size={13}/>}</label>})}{!models.length&&<p className="room-note">{t('rooms.modelsEmpty')}</p>}</div>}
+  <small className="room-note">{t('rooms.modelsHint')}</small>
+ </div>
+}
+
+function RoomConversation({room,agents,providers,openList,showList,openSession,onSaved,onRemoved}:{room:RoomConfig;agents:Agent[];providers:Provider[];openList:()=>void;showList:boolean;openSession:(id:string)=>void;onSaved:()=>Promise<void>;onRemoved:()=>Promise<void>}){
  useLocale()
  const [messages,setMessages]=useState<ChatMessage[]>([]),[feed,setFeed]=useState<FeedState>(initialFeed)
  const [loading,setLoading]=useState(true),[loadError,setLoadError]=useState(''),[error,setError]=useState('')
@@ -230,7 +269,7 @@ function RoomConversation({room,agents,openList,showList,openSession,onSaved,onR
    </div>
    {showActivity&&<RoomActivity jobs={feed.jobs} executions={feed.executions} learningJobs={feed.learningJobs} recordedOperations={feed.operations} sessionId={sessionId} openSession={openSession} onClose={()=>setShowActivity(false)}/>}
   </section>
-  {inspector&&<><button className="room-inspector-scrim" aria-label={t('rooms.inspectorClose')} onClick={()=>setInspector(false)}/><aside className="room-inspector" aria-label={t('rooms.inspectorAria')}><div className="room-inspector-title"><div><span className="room-eyebrow">{t('ui.label.inThisRoom')}</span><h2>{t('rooms.inspectorTitle')}</h2></div><Button size="icon" variant="ghost" aria-label={t('rooms.settingsClose')} onClick={()=>setInspector(false)}><X size={17}/></Button></div><div className="room-owner-card"><Avatar owner/><div><strong>{current.ownerName||t('rooms.me')}</strong><small>{t('rooms.ownerTag')}</small></div><span>{t('rooms.me')}</span></div><div className="room-inspector-scroll"><RoomSettings value={draft} onChange={updateDraft} agents={agents} disabled={saving}/>{saved&&<p className="room-saved"><Check size={13}/> {t('rooms.settingsSaved')}</p>}<button className="room-delete" onClick={()=>void remove()}><Trash2 size={13}/> {t('rooms.deleteRoom')}</button></div><div className="room-inspector-footer"><Button variant="primary" disabled={!dirty||saving||!draft.name.trim()||!draft.agentIds.length} onClick={()=>void save()}>{saving?<LoaderCircle size={14} className="animate-spin"/>:<Check size={14}/>} {t('rooms.saveChanges')}</Button></div></aside></>}
+  {inspector&&<><button className="room-inspector-scrim" aria-label={t('rooms.inspectorClose')} onClick={()=>setInspector(false)}/><aside className="room-inspector" aria-label={t('rooms.inspectorAria')}><div className="room-inspector-title"><div><span className="room-eyebrow">{t('ui.label.inThisRoom')}</span><h2>{t('rooms.inspectorTitle')}</h2></div><Button size="icon" variant="ghost" aria-label={t('rooms.settingsClose')} onClick={()=>setInspector(false)}><X size={17}/></Button></div><div className="room-owner-card"><Avatar owner/><div><strong>{current.ownerName||t('rooms.me')}</strong><small>{t('rooms.ownerTag')}</small></div><span>{t('rooms.me')}</span></div><div className="room-inspector-scroll"><RoomSettings value={draft} onChange={updateDraft} agents={agents} providers={providers} disabled={saving}/>{saved&&<p className="room-saved"><Check size={13}/> {t('rooms.settingsSaved')}</p>}<button className="room-delete" onClick={()=>void remove()}><Trash2 size={13}/> {t('rooms.deleteRoom')}</button></div><div className="room-inspector-footer"><Button variant="primary" disabled={!dirty||saving||!draft.name.trim()||!draft.agentIds.length} onClick={()=>void save()}>{saving?<LoaderCircle size={14} className="animate-spin"/>:<Check size={14}/>} {t('rooms.saveChanges')}</Button></div></aside></>}
   {knowledgeOpen&&<DialogBackdrop onDismiss={()=>setKnowledgeOpen(false)}><DialogPanel size="wide" aria-label={t('rooms.sharedKnowledge')}><div className="room-dialog-header"><div><span className="room-eyebrow">{t('ui.label.sharedKnowledge')}</span><h2>{t('rooms.knowledgeOf',{name:current.name})}</h2></div><Button size="icon" variant="ghost" aria-label={t('rooms.close')} onClick={()=>setKnowledgeOpen(false)}><X size={18}/></Button></div><div className="room-dialog-body"><p className="room-note">{t('rooms.knowledgeDesc')}</p><div className="room-knowledge-list">{knowledgeBusy&&!knowledge.length&&<p className="room-note"><LoaderCircle size={14} className="animate-spin"/> {t('rooms.knowledgeLoading')}</p>}{!knowledgeBusy&&!knowledge.length&&<p className="room-note">{t('rooms.knowledgeEmpty')}</p>}{knowledge.map(item=>{const sources=(item.sources||[]).map((source:any)=>[source.agentName||source.agentId||'?',source.model||t('rooms.modelUnrecorded')].filter(Boolean).join(' · ')).filter(Boolean).join(', ');return <div className={'room-knowledge-item '+(item.status==='superseded'?'is-superseded':'')} key={item.id}><div className="room-knowledge-head"><strong>{item.type}</strong><span>{item.verification||'unverified'}</span><span>{item.status==='active'?t('rooms.knowledgeActive'):t('rooms.knowledgeSuperseded')}</span></div><p>{item.text}</p><small>{t('rooms.source')}: {sources||t('rooms.noRecord')}</small></div>})}</div>{knowledgeNotice&&<p className="room-saved"><Check size={13}/>{knowledgeNotice}</p>}</div><div className="room-dialog-footer"><span>{t('rooms.selectedKnowledge')}</span><div className="flex gap-2"><Button variant="secondary" disabled={knowledgeBusy} onClick={()=>void learnKnowledge()}>{knowledgeBusy?<LoaderCircle size={14} className="animate-spin"/>:<RefreshCw size={14}/>} {t('rooms.learnNow')}</Button><Button onClick={()=>setKnowledgeOpen(false)}>{t('rooms.close')}</Button></div></div></DialogPanel></DialogBackdrop>}
  </div>
 }

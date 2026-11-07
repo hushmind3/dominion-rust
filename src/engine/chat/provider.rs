@@ -378,6 +378,16 @@ fn room_route_keys(state: &AppState, session_id: &str) -> Option<std::collection
     let session = state.store.get("session", session_id)?;
     let room = state.store.get("room", session["roomId"].as_str()?)?;
     let mut keys = std::collections::HashSet::new();
+    for entry in room["models"].as_array().into_iter().flatten() {
+        if let (Some(provider), Some(model)) =
+            (entry["providerId"].as_str(), entry["model"].as_str())
+        {
+            keys.insert(format!("{provider}|{model}"));
+        }
+    }
+    if !keys.is_empty() {
+        return Some(keys);
+    }
     for id in room["agentIds"].as_array()? {
         let Some(agent) = id.as_str().and_then(|id| state.store.get("agent", id)) else {
             continue;
