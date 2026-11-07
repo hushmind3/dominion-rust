@@ -2,6 +2,7 @@ use crate::state::AppState;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::process::{Child, Command};
 
@@ -2141,6 +2142,48 @@ fn declared_total(files: &[Value]) -> u64 {
         .sum()
 }
 
+fn file_sha256(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+async fn hf_blob_metadata(
+    client: &reqwest::Client,
+    repo: &str,
+) -> std::collections::HashMap<String, (u64, Option<String>)> {
+    let url = format!("https://huggingface.co/api/models/{repo}?blobs=true");
+    let Ok(response) = client.get(url).timeout(Duration::from_secs(20)).send().await else {
+        return Default::default();
+    };
+    let Ok(value) = response.json::<Value>().await else {
+        return Default::default();
+    };
+    let mut map = std::collections::HashMap::new();
+    for sibling in value["siblings"].as_array().into_iter().flatten() {
+        let Some(path) = sibling["rfilename"].as_str() else {
+            continue;
+        };
+        let size = sibling["size"].as_u64().unwrap_or(0);
+        let sha = sibling["lfs"]["oid"]
+            .as_str()
+            .filter(|value| value.len() == 64)
+            .or_else(|| sibling["blobId"].as_str().filter(|value| value.len() == 64))
+            .map(str::to_string);
+        map.insert(path.to_string(), (size, sha));
+    }
+    map
+}
+
 async fn download_worker(state: AppState, job_id: String) {
     use futures_util::StreamExt;
     if !active_downloads()
@@ -2169,6 +2212,7 @@ async fn download_worker(state: AppState, job_id: String) {
         return;
     }
     let client = reqwest::Client::new();
+    let blobs = hf_blob_metadata(&client, &repo).await;
     for index in 0..files.len() {
         if job_status(&state, &job_id) != "downloading" {
             return;
@@ -2190,8 +2234,12 @@ async fn download_worker(state: AppState, job_id: String) {
         }
         if target.is_file() {
             let size = std::fs::metadata(&target).map(|meta| meta.len()).unwrap_or(0);
-            let expected = files[index]["total"].as_u64().unwrap_or(0);
-            if expected > 0 && size != expected {
+            let (remote_size, remote_sha) = blobs.get(&path).cloned().unwrap_or((0, None));
+            let expected = remote_size.max(files[index]["total"].as_u64().unwrap_or(0));
+            let hash_ok = remote_sha.as_deref().is_none_or(|sha| {
+                file_sha256(&target).is_ok_and(|actual| actual == sha)
+            });
+            if (expected > 0 && size != expected) || !hash_ok {
                 let _ = std::fs::remove_file(&target);
             } else {
                 files[index]["downloaded"] = json!(size);
@@ -2222,8 +2270,12 @@ async fn download_worker(state: AppState, job_id: String) {
             }
         };
         if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && existing > 0 {
-            let expected = files[index]["total"].as_u64().unwrap_or(0);
-            if expected > 0 && existing == expected {
+            let (remote_size, remote_sha) = blobs.get(&path).cloned().unwrap_or((0, None));
+            let expected = remote_size.max(files[index]["total"].as_u64().unwrap_or(0));
+            let hash_ok = remote_sha.as_deref().is_none_or(|sha| {
+                file_sha256(&partial).is_ok_and(|actual| actual == sha)
+            });
+            if expected > 0 && existing == expected && hash_ok {
                 let _ = tokio::fs::rename(&partial, &target).await;
                 files[index]["downloaded"] = json!(existing);
                 continue;
@@ -2318,6 +2370,22 @@ async fn download_worker(state: AppState, job_id: String) {
                 json!({"status": "failed", "error": format!("다운로드 크기 불일치: {downloaded}/{declared} 바이트. 재개하면 이어받습니다.")}),
             );
             return;
+        }
+        if let Some((_, Some(sha))) = blobs.get(&path).cloned() {
+            let verify_path = partial.clone();
+            let actual = tokio::task::spawn_blocking(move || file_sha256(&verify_path))
+                .await
+                .ok()
+                .and_then(Result::ok);
+            if actual.as_deref() != Some(sha.as_str()) {
+                let _ = tokio::fs::remove_file(&partial).await;
+                patch_download(
+                    &state,
+                    &job_id,
+                    json!({"status": "failed", "error": "다운로드 파일 해시가 원격 파일과 일치하지 않습니다. 다시 다운로드하세요."}),
+                );
+                return;
+            }
         }
         let _commit = DOWNLOAD_COMMIT.lock().unwrap();
         if target.exists() {
@@ -2457,6 +2525,19 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         (AppState::new(config, store, vault), dir)
+    }
+
+    #[test]
+    fn file_sha256_matches_known_digest() {
+        let dir = std::env::temp_dir().join(format!("dominion-sha-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("abc.txt");
+        std::fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            file_sha256(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

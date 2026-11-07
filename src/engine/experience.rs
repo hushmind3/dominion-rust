@@ -508,7 +508,28 @@ pub fn context_block_with_manifest_at(
         .collect::<Vec<_>>();
     methods.sort_by(|a, b| b.0.cmp(&a.0));
     methods.truncate(method_limit.min(8));
-    if cases.is_empty() && methods.is_empty() {
+    // Validated room conclusions are global assets. Rank them against the
+    // current question so a busy room history does not crowd out the rest.
+    let mut promoted = state
+        .store
+        .all("experience_principle")
+        .into_iter()
+        .filter(|principle| {
+            principle["origin"].as_str() == Some("room_knowledge")
+                && principle["status"].as_str() == Some("active")
+        })
+        .filter_map(|principle| {
+            let text = principle["principle"].as_str().unwrap_or("").to_lowercase();
+            let score = query_tokens
+                .iter()
+                .filter(|token| text.contains(token.as_str()))
+                .count();
+            (score > 0).then_some((score, principle))
+        })
+        .collect::<Vec<_>>();
+    promoted.sort_by(|a, b| b.0.cmp(&a.0));
+    promoted.truncate(3);
+    if cases.is_empty() && methods.is_empty() && promoted.is_empty() {
         return (None, Vec::new());
     }
     let mut manifest = cases
@@ -557,6 +578,29 @@ pub fn context_block_with_manifest_at(
                 "id": method["id"],
                 "revision": method["revision"],
                 "applicability": verdict,
+            }));
+        }
+    }
+    if !promoted.is_empty() {
+        block.push_str("\n\nValidated knowledge from other rooms (model-agnostic):");
+        for (_, principle) in &promoted {
+            block.push_str(&format!(
+                "\n- {} (confidence {:.2}; sources: {})",
+                principle["principle"].as_str().unwrap_or(""),
+                principle["confidence"].as_f64().unwrap_or(0.0),
+                principle["supportingModels"]
+                    .as_array()
+                    .map(|models| models.iter().filter_map(|model| model.as_str()).collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default(),
+            ));
+            manifest.push(json!({
+                "kind": "room_knowledge_global",
+                "id": principle["id"],
+                "revision": memory::stable_id(&[
+                    principle["id"].as_str().unwrap_or(""),
+                    principle["principle"].as_str().unwrap_or(""),
+                    principle["updatedAt"].as_str().unwrap_or(""),
+                ]),
             }));
         }
     }

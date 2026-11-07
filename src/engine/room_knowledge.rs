@@ -400,6 +400,7 @@ fn apply_extraction(
             }
             if let Some(saved) = state.store.put("room_knowledge", &existing) {
                 state.bus.record("room_knowledge", &saved);
+                promote_global(state, &saved);
                 updated += 1;
             }
             continue;
@@ -425,6 +426,7 @@ fn apply_extraction(
         });
         if let Some(saved) = state.store.put("room_knowledge", &record) {
             state.bus.record("room_knowledge", &saved);
+            promote_global(state, &saved);
             inserted += 1;
         }
     }
@@ -434,6 +436,104 @@ fn apply_extraction(
         "superseded": superseded,
         "rejected": rejected,
     }))
+}
+
+/// Validated room conclusions become global, model-agnostic assets. They are
+/// still provenance-linked to the room but are no longer limited to it; chat
+/// and other rooms retrieve them through the experience context.
+fn promote_global(state: &AppState, knowledge: &Value) {
+    if knowledge["status"].as_str() != Some("active") {
+        return;
+    }
+    if !matches!(
+        knowledge["verification"].as_str(),
+        Some("owner_confirmed" | "tool_evidence")
+    ) {
+        return;
+    }
+    if !matches!(knowledge["type"].as_str(), Some("conclusion" | "correction")) {
+        return;
+    }
+    let Some(text) = knowledge["text"].as_str().filter(|text| !text.trim().is_empty()) else {
+        return;
+    };
+    let id = format!(
+        "room-global-{}",
+        memory::stable_id(&[&normalize_text(text)])
+    );
+    let models = knowledge["sources"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|source| source["model"].as_str().filter(|value| !value.is_empty()))
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    let agents = knowledge["sources"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|source| source["agentId"].as_str().filter(|value| !value.is_empty()))
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    let mut principle = state
+        .store
+        .get("experience_principle", &id)
+        .unwrap_or_else(|| {
+            json!({
+                "id": id,
+                "kind": "room_validated",
+                "origin": "room_knowledge",
+                "scope": "global",
+                "status": "active",
+                "principle": text,
+                "topicKey": knowledge["topicKey"],
+                "evidenceGrade": "E2_verified",
+                "confidence": knowledge["confidence"],
+                "supportingCases": [],
+                "supportingModels": [],
+                "supportingAgents": [],
+                "sourceRooms": [],
+                "counterexamples": [],
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+            })
+        });
+    let mut cases = principle["supportingCases"].as_array().cloned().unwrap_or_default();
+    if !cases.iter().any(|case| case.as_str() == knowledge["id"].as_str()) {
+        cases.push(knowledge["id"].clone());
+    }
+    cases.truncate(50);
+    principle["supportingCases"] = json!(cases);
+    let mut support_models = principle["supportingModels"].as_array().cloned().unwrap_or_default();
+    for model in models {
+        if !support_models.iter().any(|value| value.as_str() == Some(model.as_str())) {
+            support_models.push(json!(model));
+        }
+    }
+    principle["supportingModels"] = json!(support_models);
+    let mut support_agents = principle["supportingAgents"].as_array().cloned().unwrap_or_default();
+    for agent in agents {
+        if !support_agents.iter().any(|value| value.as_str() == Some(agent.as_str())) {
+            support_agents.push(json!(agent));
+        }
+    }
+    principle["supportingAgents"] = json!(support_agents);
+    let mut rooms = principle["sourceRooms"].as_array().cloned().unwrap_or_default();
+    if let Some(room) = knowledge["roomId"].as_str() {
+        if !rooms.iter().any(|value| value.as_str() == Some(room)) {
+            rooms.push(json!(room));
+        }
+    }
+    principle["sourceRooms"] = json!(rooms);
+    principle["principle"] = json!(text);
+    principle["confidence"] = json!(knowledge["confidence"]);
+    principle["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    if let Some(saved) = state.store.put("experience_principle", &principle) {
+        state.bus.record("experience_principle", &saved);
+        state.store.audit(
+            "room_knowledge.promoted",
+            json!({"id": saved["id"], "knowledgeId": knowledge["id"], "roomId": knowledge["roomId"]}),
+        );
+    }
 }
 
 /// Registers one completed room exchange. The job id is content-addressed by
@@ -909,6 +1009,11 @@ mod tests {
             .find(|item| item["type"] == "correction")
             .expect("correction");
         assert_eq!(correction["verification"], "owner_confirmed");
+        let promoted = state.store.all("experience_principle");
+        assert_eq!(promoted.len(), 1, "{promoted:?}");
+        assert_eq!(promoted[0]["origin"], "room_knowledge");
+        assert_eq!(promoted[0]["scope"], "global");
+        assert_eq!(promoted[0]["principle"], "배포는 Y 방식");
         assert_eq!(correction["status"], "active");
         let claim = items
             .iter()
