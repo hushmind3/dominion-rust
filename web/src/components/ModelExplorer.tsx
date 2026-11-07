@@ -22,6 +22,7 @@ export function ModelExplorer(){
  const [installed,setInstalled]=useState<Installed[]>([])
  const [jobs,setJobs]=useState<Job[]>([])
  const [runtime,setRuntime]=useState<Runtime>({status:'idle'})
+ const [runtimes,setRuntimes]=useState<any[]>([])
  const [q,setQ]=useState('')
  const [format,setFormat]=useState(()=>/Mac/i.test(navigator.platform)?'mlx':'gguf')
  const [catalog,setCatalog]=useState<Catalog[]>([])
@@ -40,10 +41,11 @@ export function ModelExplorer(){
  const unsupported=t('models.ui.unsupported')
  const [context,setContext]=useState(4096)
  const refresh=useCallback(async()=>{
-  const results=await Promise.allSettled([get<Installed[]>('/api/model-library/installed'),get<Job[]>('/api/model-library/jobs'),get<Runtime>('/api/model-library/runtime')])
+  const results=await Promise.allSettled([get<Installed[]>('/api/model-library/installed'),get<Job[]>('/api/model-library/jobs'),get<Runtime>('/api/model-library/runtime'),get<any>('/api/model-library/runtimes')])
   if(results[0].status==='fulfilled')setInstalled(results[0].value)
   if(results[1].status==='fulfilled')setJobs(results[1].value)
   if(results[2].status==='fulfilled')setRuntime(results[2].value)
+  if(results[3].status==='fulfilled')setRuntimes(results[3].value?.items||[])
  },[])
  useEffect(()=>{
   let live=true;
@@ -99,6 +101,12 @@ export function ModelExplorer(){
   const result=await post<Installed>('/api/model-library/import',{filePath:localPath.trim(),reference:true})
   setLocalPath('');setView('installed');return result
  })
+ const chooseFolder=async()=>{
+  if(picking||!localPicker)return;
+  setPicking(true);setError('');
+  try{const {path}=await post<{path?:string}>('/api/system/pick-folder',{});if(path)setLocalPath(path)}
+  catch(e){setError((e as Error).message)}finally{setPicking(false)}
+ }
  const chooseLocal=async()=>{
   if(picking||!localPicker)return;
   setPicking(true);setError('');
@@ -115,14 +123,7 @@ export function ModelExplorer(){
  return <section className="overflow-hidden rounded-xl border border-[#E7E0D5] bg-white">
   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#EFE9DF] px-4 py-3">
    <div className="flex flex-wrap items-center gap-1">{viewTabs.map(tab=>{const Icon=tab.icon;return <button key={tab.id} type="button" onClick={()=>{setView(tab.id);setError('')}} className={'flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-semibold '+(view===tab.id?'bg-[#F7E8E1] text-[#A94E30]':'text-[#7C7469] hover:bg-[#F3EEE5]')}><Icon size={14}/>{t(tab.label)}{tab.id==='installed'&&<span className="ml-1 rounded bg-white/75 px-1.5 text-[10px]">{installed.length}</span>}</button>})}</div>
-   <div className="flex items-center gap-2 text-[11px] text-[#7C7469]">{runtime.capabilities?.gguf.installable&&<button type="button" className={btn} disabled={Boolean(working)||installing} onClick={()=>void safe('install',()=>post('/api/model-library/runtime/install',{}))}>{working==='install'||installing?<LoaderCircle size={13} className="animate-spin"/>:<ArrowDownToLine size={13}/>}{t('models.installRunner')}</button>}{runtime.capabilities?.mlx.installable&&<button type="button" className={btn} disabled={Boolean(working)||installing} onClick={()=>void safe('install-mlx',()=>post('/api/model-library/runtime/install',{engine:'mlx'}))}>{working==='install-mlx'||installing?<LoaderCircle size={13} className="animate-spin"/>:<ArrowDownToLine size={13}/>}{t('models.installMlx')}</button>}<span className={'size-1.5 rounded-full '+(runtime.status==='ready'?'bg-emerald-500':runtime.status==='loading'?'bg-amber-500':'bg-slate-300')}/>{runtime.status==='ready'?t('models.status.ready'):runtime.status==='loading'?t('models.status.loading'):runtime.status==='installing'?t('models.status.installing'):t('models.status.idle')}<button type="button" aria-label={t('models.refresh')} onClick={()=>void refresh()} className="ml-2 text-[#9C9388] hover:text-[#4A443C]"><RefreshCw size={14}/></button></div>
-  </div>
-  <div className="flex flex-wrap items-center gap-3 border-b border-[#EFE9DF] bg-[#FAF7F1] px-4 py-2 text-[11px] text-[#7C7469]">
-   <strong className="text-[10px] font-bold uppercase tracking-widest text-[#9C9388]">{t('models.runtimes')}</strong>
-   <span className="inline-flex items-center gap-1.5"><i className={'size-1.5 rounded-full '+(runtime.capabilities?.gguf.available?'bg-emerald-500':'bg-slate-300')}/>llama.cpp · {runtime.capabilities?.gguf.available?t('models.runtimeReady'):t('models.runtimeMissing')}{runtime.capabilities?.gguf.path&&<code className="hidden max-w-[220px] truncate text-[10px] text-[#9C9388] md:inline">{runtime.capabilities.gguf.path}</code>}</span>
-   <span className="inline-flex items-center gap-1.5"><i className={'size-1.5 rounded-full '+(runtime.capabilities?.mlx.available?'bg-emerald-500':'bg-slate-300')}/>MLX · {runtime.capabilities?.mlx.available?t('models.runtimeReady'):t('models.runtimeMissing')}{runtime.capabilities?.mlx.path&&<code className="hidden max-w-[260px] truncate text-[10px] text-[#9C9388] md:inline">{runtime.capabilities.mlx.path}</code>}</span>
-   {runtime.capabilities?.gguf.installable&&<button type="button" className={btn} disabled={Boolean(working)||installing} onClick={()=>void safe('install',()=>post('/api/model-library/runtime/install',{}))}>{t('models.installRunner')}</button>}
-   {runtime.capabilities?.mlx.installable&&<button type="button" className={btn} disabled={Boolean(working)||installing} onClick={()=>void safe('install-mlx',()=>post('/api/model-library/runtime/install',{engine:'mlx'}))}>{t('models.installMlx')}</button>}
+   <div className="flex items-center gap-2 text-[11px] text-[#7C7469]"><span className={'size-1.5 rounded-full '+(runtime.status==='ready'?'bg-emerald-500':runtime.status==='loading'?'bg-amber-500':'bg-slate-300')}/>{runtime.status==='ready'?t('models.status.ready'):runtime.status==='loading'?t('models.status.loading'):runtime.status==='installing'?t('models.status.installing'):t('models.status.idle')}<button type="button" aria-label={t('models.refresh')} onClick={()=>void refresh()} className="ml-2 text-[#9C9388] hover:text-[#4A443C]"><RefreshCw size={14}/></button></div>
   </div>
   {error&&<div role="alert" className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700"><CircleAlert size={15}/><span className="flex-1">{error}</span><button aria-label={t('models.ui.close')} onClick={()=>setError('')}><X size={14}/></button></div>}
   {runtime.status==='ready'&&<div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-100 bg-[#f2fbf7] px-4 py-3">
@@ -137,15 +138,42 @@ export function ModelExplorer(){
     <div className="flex items-center gap-1.5">{runtime.status==='ready'&&runtime.id===m.id?<span className="mr-1 rounded bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700">{t('models.inUse')}</span>:<button type="button" className={btn+' !border-[#C96442] !bg-[#C96442] !text-white hover:!bg-[#A94E30]'} disabled={Boolean(working)||runtime.status==='loading'} onClick={()=>void load(m.id)}><Play size={13}/>{working==='load'+m.id?t('models.loadingModel'):t('models.run')}</button>}
      <button type="button" className="rounded-md p-2 text-[#A79C8E] hover:bg-rose-50 hover:text-rose-600" aria-label={t('models.delete')+' '+m.repo} disabled={Boolean(working)||m.source==='lmstudio'||(runtime.id===m.id&&runtime.status==='ready')} title={m.source==='lmstudio'?unsupported:undefined} onClick={()=>void remove(m)}><Trash2 size={14}/></button>
     </div>
-   </div>)}</div>:<div className="flex min-h-48 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-[#E7E0D5] bg-[#FAF7F1] px-4 py-7 text-center"><HardDrive size={25} className="text-[#B8AFA2]"/><strong className="text-[13px]">{t('models.emptyTitle')}</strong><p className="text-[11px] text-[#8A8176]">{t('models.emptyDesc')}</p><div className="flex flex-wrap gap-2"><button type="button" className={btn} onClick={()=>setView('import')}>{t('models.connectExisting')}</button><button type="button" className={btn} onClick={()=>setView('search')}>{t('models.downloadModels')}</button>{runtime.capabilities?.gguf.installable&&<button type="button" className={btn} disabled={Boolean(working)||installing} onClick={()=>void safe('install',()=>post('/api/model-library/runtime/install',{}))}>{working==='install'||installing?<LoaderCircle size={13} className="animate-spin"/>:<ArrowDownToLine size={13}/>}{t('models.installRunner')}</button>}{runtime.capabilities?.mlx.installable&&<button type="button" className={btn} disabled={Boolean(working)||installing} onClick={()=>void safe('install-mlx',()=>post('/api/model-library/runtime/install',{engine:'mlx'}))}>{working==='install-mlx'||installing?<LoaderCircle size={13} className="animate-spin"/>:<ArrowDownToLine size={13}/>}{t('models.installMlx')}</button>}</div></div>}
+   </div>)}</div>:<div className="flex min-h-48 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-[#E7E0D5] bg-[#FAF7F1] px-4 py-7 text-center"><HardDrive size={25} className="text-[#B8AFA2]"/><strong className="text-[13px]">{t('models.emptyTitle')}</strong><p className="text-[11px] text-[#8A8176]">{t('models.emptyDesc')}</p><div className="flex flex-wrap gap-2"><button type="button" className={btn} onClick={()=>setView('import')}>{t('models.connectExisting')}</button><button type="button" className={btn} onClick={()=>setView('search')}>{t('models.downloadModels')}</button></div></div>}
   </div>}
   {view==='import'&&<div className="max-w-3xl p-4">
    <h3 className="text-[13px] font-bold">{t('models.importTitle')}</h3>
    <p className="mt-1 text-[11px] text-[#7C7469]">{t('models.importDesc')}</p>
    <label className="mt-4 block text-[11px] font-medium text-[#5C544A]">{t('models.path')}</label>
-   <div className="mt-1.5 flex flex-col gap-2 sm:flex-row"><TextInput className="!flex-1" value={localPath} onChange={e=>setLocalPath(e.target.value)} placeholder="/models/model.gguf"/><button type="button" className={btn} disabled={!localPicker||picking} onClick={()=>void chooseLocal()}><FolderOpen size={14}/> {t('models.pickFile')}</button></div>
+   <div className="mt-1.5 flex flex-col gap-2 sm:flex-row"><TextInput className="!flex-1" value={localPath} onChange={e=>setLocalPath(e.target.value)} placeholder="/models/model.gguf · /models/mlx-model"/><button type="button" className={btn} disabled={!localPicker||picking} onClick={()=>void chooseLocal()}><FolderOpen size={14}/> {t('models.pickFile')}</button><button type="button" className={btn} disabled={!localPicker||picking} onClick={()=>void chooseFolder()}><FolderOpen size={14}/> {t('models.pickFolder')}</button></div>
    <p className="mt-2 text-[11px] text-[#8A8176]">{localPicker?t('models.pickHintLocal'):t('models.pickHintRemote')}</p>
    <button type="button" disabled={!localPath.trim()||Boolean(working)} onClick={()=>void importLocal()} className="mt-5 flex h-9 items-center gap-2 rounded-lg bg-[#C96442] px-4 text-[12px] font-semibold text-white hover:bg-[#A94E30] disabled:opacity-40">{working==='import'?<LoaderCircle className="animate-spin" size={15}/>:<Check size={15}/>}{t('models.file.register')}</button>
+   <div className="mt-7 border-t border-[#EFE9DF] pt-5">
+    <div className="mb-3"><strong className="text-[13px] text-[#24211D]">{t('models.runtimes')}</strong><p className="mt-1 text-[11px] text-[#818a96]">{t('models.runtimesDesc')}</p></div>
+    <div className="grid gap-3 lg:grid-cols-2">{runtimes.map((item:any)=>{
+    const setup=runtime.setup
+    const active=Boolean(item.installing)
+    const percent=Math.round((setup?.downloaded||0)/Math.max(1,setup?.total||0)*100)
+    return <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] p-4" key={item.id}>
+     <div className="flex items-start justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-3">
+       <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-[#F7E8E1] text-[#C96442]"><Cpu size={20}/></span>
+       <div className="min-w-0"><strong className="block text-[13px] text-[#24211D]">{item.name}</strong><small className="text-[10px] text-[#8A8176]">{(item.formats||[]).join(' · ')} · {item.installMethod}</small></div>
+      </div>
+      <span className={'shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold '+(item.installed?'bg-emerald-50 text-emerald-700':'bg-[#F3EEE5] text-[#7C7469]')}>{item.installed?t('models.runtime.installed'):t('models.runtime.missing')}</span>
+     </div>
+     <p className="text-[11px] leading-5 text-[#7C7469]">{t(('models.runtime.desc.'+item.id) as any)||item.description||''}</p>
+     {item.path&&<code className="block max-w-full truncate rounded bg-[#F7F2EA] px-2 py-1 text-[10px] text-[#8A8176]" title={item.path}>{item.path}</code>}
+     {item.version&&<small className="text-[10px] text-[#9C9388]">{t('models.runtime.version',{version:item.version})}</small>}
+     {active?<div><div className="flex items-center justify-between text-[10px] text-[#7C7469]"><span>{item.name} · {t('models.runtime.installing')}</span><span>{setup?.total?percent+'%':''}</span></div><div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[#E7E0D5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,percent)+'%'}}/></div></div>:
+      <div className="mt-auto flex items-center justify-between gap-2 border-t border-[#EFE9DF] pt-3">
+       <small className="text-[10px] text-[#9C9388]">{!item.installed&&!item.installable?t('models.runtime.external'):''}</small>
+       {!item.installed&&(item.installable
+        ?<button type="button" className={btn+' !border-[#C96442] !bg-[#C96442] !text-white hover:!bg-[#A94E30]'} disabled={Boolean(working)||installing} onClick={()=>void safe('install-'+item.id,()=>post('/api/model-library/runtime/install',{engine:item.id}))}>{t('models.runtime.install')}</button>
+        :item.url?<a className={btn} href={item.url} target="_blank" rel="noreferrer">{t('models.runtime.download')} <ExternalLink size={12}/></a>:null)}
+      </div>}
+    </div>
+   })}</div>
+   </div>
   </div>}
   {view==='search'&&<div className="grid min-h-[560px] grid-cols-1 lg:grid-cols-[400px_minmax(0,1fr)]">
    <div className="min-w-0 border-b border-[#E7E0D5] lg:border-b-0 lg:border-r">

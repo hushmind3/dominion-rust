@@ -221,6 +221,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/model-library/runtime/load", post(models::load))
         .route("/api/model-library/runtime/unload", post(models::unload))
         .route("/api/model-library/runtime/install", post(models::install_runtime))
+        .route("/api/model-library/runtimes", get(models::runtimes))
         .route("/api/model-library/download", post(models::download))
         .route("/api/model-library/import", post(models::import))
         .route(

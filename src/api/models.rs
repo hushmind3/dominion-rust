@@ -73,6 +73,10 @@ pub async fn unload(State(state): State<AppState>) -> Json<Value> {
     Json(models::unload(&state))
 }
 
+pub async fn runtimes(State(state): State<AppState>) -> Json<Value> {
+    Json(models::runtimes(&state))
+}
+
 pub async fn install_runtime(
     State(state): State<AppState>,
     Json(body): Json<Value>,
