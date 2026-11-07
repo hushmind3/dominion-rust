@@ -400,6 +400,8 @@ const en: Record<LocaleKey, string> = {
   'models.installFailed': 'Runner install failed',
   'models.verifying': 'Verifying runner',
   'models.extracting': 'Extracting',
+  'models.installMlx': 'Install MLX runtime',
+  'models.installingMlx': 'Installing MLX runtime',
   'models.installRunner': 'Install llama.cpp runner',
   'models.installingRunner': 'Installing official llama.cpp runner',
   'models.recommended': 'Recommended for Apple Silicon',

@@ -399,6 +399,8 @@ const ko = {
   'models.installFailed': '실행기 설치 실패',
   'models.verifying': '실행기 검증 중',
   'models.extracting': '압축 해제 중',
+  'models.installMlx': 'MLX 실행기 설치',
+  'models.installingMlx': 'MLX 실행기 설치 중',
   'models.installRunner': 'llama.cpp 실행기 설치',
   'models.installingRunner': '공식 llama.cpp 실행기 설치 중',
   'models.recommended': 'Apple Silicon 권장',

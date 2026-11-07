@@ -403,6 +403,133 @@ fn llama_installable(state: &AppState) -> bool {
         && matches!(std::env::consts::ARCH, "aarch64" | "x86_64")
 }
 
+fn mlx_runtime_dir(state: &AppState) -> PathBuf {
+    state.config.data_dir.join("mlx-runtime")
+}
+
+fn mlx_runtime_python(state: &AppState) -> Option<PathBuf> {
+    let dir = mlx_runtime_dir(state);
+    let python = dir.join(if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" });
+    (python.is_file() && dir.join(".ready").is_file()).then_some(python)
+}
+
+fn mlx_installable(state: &AppState) -> bool {
+    mlx_runtime_python(state).is_none()
+        && cfg!(target_os = "macos")
+        && cfg!(target_arch = "aarch64")
+}
+
+/// Resolve a downloaded MLX repository below the managed models root.
+fn mlx_model_dir(state: &AppState, repo: &str) -> Option<PathBuf> {
+    let root = mlx_models_root().unwrap_or_else(|| models_dir(state).join("mlx"));
+    managed_model_dir(&root, repo)
+}
+
+fn mlx_runtime_snapshot(state: &AppState) -> Value {
+    let standalone = mlx_runtime_python(state);
+    json!({
+        "available": standalone.is_some() || lms_bin().is_some(),
+        "backend": if standalone.is_some() { "mlx-lm" } else if lms_bin().is_some() { "LM Studio MLX" } else { "" },
+        "standalone": standalone.is_some(),
+        "installable": mlx_installable(state),
+        "path": standalone.map(|path| path.to_string_lossy().to_string()),
+        "installMethod": "python-venv",
+    })
+}
+
+async fn install_mlx_runtime(state: &AppState) -> Result<Value, String> {
+    let dir = mlx_runtime_dir(state);
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let _ = std::fs::remove_file(dir.join(".ready"));
+    let python = std::env::var("DOMINION_PYTHON").unwrap_or_else(|_| "python3".into());
+    set_install(json!({
+        "status": "checking", "engine": "mlx", "backend": "mlx-lm",
+        "tag": "mlx-lm", "downloaded": 0, "total": 0,
+        "file": "python -m venv mlx-runtime", "error": "",
+    }));
+    let venv = tokio::time::timeout(
+        Duration::from_secs(180),
+        Command::new(&python).args(["-m", "venv"]).arg(&dir).output(),
+    )
+    .await
+    .map_err(|_| "Python 가상환경 생성 시간 초과".to_string())?
+    .map_err(|error| format!("Python 실행 실패: {error}"))?;
+    if !venv.status.success() {
+        return Err(format!(
+            "Python 가상환경 생성 실패: {}",
+            String::from_utf8_lossy(&venv.stderr).trim()
+        ));
+    }
+    let pip = dir.join(if cfg!(windows) { "Scripts/pip.exe" } else { "bin/pip" });
+    set_install(json!({
+        "status": "downloading", "engine": "mlx", "backend": "mlx-lm",
+        "tag": "mlx-lm", "downloaded": 0, "total": 0,
+        "file": "pip install mlx-lm", "error": "",
+    }));
+    let installed = tokio::time::timeout(
+        Duration::from_secs(900),
+        Command::new(&pip)
+            .args(["install", "--upgrade", "pip"])
+            .output(),
+    )
+    .await
+    .map_err(|_| "pip 업그레이드 시간 초과".to_string())?
+    .map_err(|error| format!("pip 실행 실패: {error}"))?;
+    if !installed.status.success() {
+        return Err(format!(
+            "pip 업그레이드 실패: {}",
+            String::from_utf8_lossy(&installed.stderr).trim()
+        ));
+    }
+    let installed = tokio::time::timeout(
+        Duration::from_secs(1800),
+        Command::new(&pip).args(["install", "mlx-lm"]).output(),
+    )
+    .await
+    .map_err(|_| "mlx-lm 설치 시간 초과".to_string())?
+    .map_err(|error| format!("pip 실행 실패: {error}"))?;
+    if !installed.status.success() {
+        return Err(format!(
+            "mlx-lm 설치 실패: {}",
+            String::from_utf8_lossy(&installed.stderr).trim()
+        ));
+    }
+    set_install(json!({
+        "status": "verifying", "engine": "mlx", "backend": "mlx-lm",
+        "tag": "mlx-lm", "downloaded": 0, "total": 0,
+        "file": "import mlx_lm", "error": "",
+    }));
+    let check = tokio::time::timeout(
+        Duration::from_secs(120),
+        Command::new(dir.join(if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" }))
+            .args(["-c", "import mlx_lm; print(mlx_lm.__version__)"])
+            .output(),
+    )
+    .await
+    .map_err(|_| "mlx-lm 검증 시간 초과".to_string())?
+    .map_err(|error| format!("mlx-lm 검증 실패: {error}"))?;
+    if !check.status.success() {
+        return Err(format!(
+            "mlx-lm을 불러오지 못했습니다: {}",
+            String::from_utf8_lossy(&check.stderr).trim()
+        ));
+    }
+    let version = String::from_utf8_lossy(&check.stdout).trim().to_string();
+    std::fs::write(dir.join(".ready"), &version).map_err(|error| error.to_string())?;
+    Ok(json!({
+        "status": "installed",
+        "engine": "mlx",
+        "backend": "mlx-lm",
+        "path": mlx_runtime_python(state).map(|path| path.to_string_lossy().to_string()),
+        "version": version,
+        "tag": "mlx-lm",
+        "downloaded": 0,
+        "total": 0,
+        "file": "",
+        "error": "",
+    }))
+}
+
 fn brew_bin() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("DOMINION_BREW_BIN") {
         let path = PathBuf::from(path);
@@ -795,6 +922,58 @@ pub async fn install_llama_server(state: AppState) -> Result<Value, String> {
     }))
 }
 
+pub async fn install_runtime(state: AppState, engine: &str) -> Result<Value, String> {
+    if engine != "mlx" {
+        return install_llama_server(state).await;
+    }
+    if let Some(python) = mlx_runtime_python(&state) {
+        let version = std::fs::read_to_string(mlx_runtime_dir(&state).join(".ready"))
+            .unwrap_or_default();
+        set_install(json!({
+            "status": "installed", "engine": "mlx", "backend": "mlx-lm",
+            "path": python.to_string_lossy(), "version": version, "tag": "mlx-lm",
+            "downloaded": 0, "total": 0, "file": "", "error": "",
+        }));
+        return Ok(json!({
+            "status": "already_installed",
+            "engine": "mlx",
+            "path": python.to_string_lossy(),
+            "version": version,
+            "setup": install_snapshot(),
+            "capabilities": runtime_snapshot(&state)["capabilities"],
+        }));
+    }
+    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
+        return Err("MLX 실행기는 Apple Silicon macOS에서만 자동 설치할 수 있습니다.".into());
+    }
+    if install_active() {
+        return Ok(json!({"status": "installing", "setup": install_snapshot()}));
+    }
+    set_install(json!({
+        "status": "checking", "engine": "mlx", "backend": "mlx-lm",
+        "tag": "mlx-lm", "downloaded": 0, "total": 0,
+        "file": "python -m venv mlx-runtime", "error": "",
+    }));
+    let task_state = state.clone();
+    tokio::spawn(async move {
+        let result = match install_mlx_runtime(&task_state).await {
+            Ok(result) => result,
+            Err(error) => json!({
+                "status": "failed", "engine": "mlx", "backend": "mlx-lm",
+                "tag": "mlx-lm", "downloaded": 0, "total": 0,
+                "file": "", "error": error,
+                "updatedAt": chrono::Utc::now().to_rfc3339(),
+            }),
+        };
+        set_install(result);
+    });
+    Ok(json!({
+        "status": "installing",
+        "setup": install_snapshot(),
+        "capabilities": runtime_snapshot(&state)["capabilities"],
+    }))
+}
+
 fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
     if depth > 4 {
         return;
@@ -993,7 +1172,7 @@ pub fn runtime_snapshot(state: &AppState) -> Value {
         "setup": install_snapshot(),
         "capabilities": {
             "gguf": { "available": lms_bin().is_some() || llama_server_bin_for(state).is_some(), "backend": "llama.cpp", "installable": llama_installable(state), "path": llama_server_bin_for(state).map(|path| path.to_string_lossy().to_string()), "installMethod": if cfg!(target_os="macos") && brew_bin().is_some() { "homebrew" } else { "release" } },
-            "mlx": { "available": lms_bin().is_some(), "backend": "LM Studio MLX" },
+            "mlx": mlx_runtime_snapshot(state),
             "memory": {
                 "total": total_memory(),
                 "free": 0,
@@ -1005,13 +1184,126 @@ pub fn runtime_snapshot(state: &AppState) -> Value {
     })
 }
 
+async fn load_mlx_standalone(
+    state: &AppState,
+    id: &str,
+    repo: &str,
+    context: u64,
+) -> Result<Value, String> {
+    let python = mlx_runtime_python(state)
+        .ok_or("MLX 실행기가 설치되지 않았습니다. 모델 관리에서 MLX 실행기를 설치하세요.")?;
+    let dir = mlx_model_dir(state, repo)
+        .ok_or("다운로드한 MLX 모델 디렉터리를 찾을 수 없습니다.")?;
+    unload(state);
+    {
+        let mut guard = runtime().lock().unwrap();
+        guard.status = "loading".into();
+        guard.id = id.to_string();
+        guard.name = repo.rsplit('/').next().unwrap_or(repo).to_string();
+        guard.engine = "MLX".into();
+        guard.backend = "mlx-lm".into();
+        guard.model_key.clear();
+        guard.error.clear();
+        guard.logs.clear();
+    }
+    let log_path = state.config.data_dir.join("mlx-server.log");
+    let log = std::fs::File::create(&log_path).map_err(|error| error.to_string())?;
+    let child = Command::new(python)
+        .args([
+            "-m",
+            "mlx_lm.server",
+            "--model",
+            &dir.to_string_lossy(),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &RUNTIME_PORT.to_string(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(log))
+        .spawn()
+        .map_err(|error| format!("MLX 실행기 시작 실패: {error}"))?;
+    runtime().lock().unwrap().child = Some(child);
+    let client = reqwest::Client::new();
+    for _ in 0..600 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let exited = {
+            let mut guard = runtime().lock().unwrap();
+            guard
+                .child
+                .as_mut()
+                .and_then(|child| child.try_wait().ok().flatten())
+        };
+        if let Some(status) = exited {
+            let tail = std::fs::read_to_string(&log_path)
+                .unwrap_or_default()
+                .lines()
+                .rev()
+                .take(6)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            let message = format!("MLX 실행기가 종료되었습니다 (exit {status}): {tail}");
+            {
+                let mut guard = runtime().lock().unwrap();
+                guard.status = "error".into();
+                guard.error = message.clone();
+            }
+            return Err(message);
+        }
+        if let Ok(response) = client
+            .get(format!("http://127.0.0.1:{RUNTIME_PORT}/v1/models"))
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+        {
+            if response.status().is_success() {
+                if let Ok(value) = response.json::<Value>().await {
+                    if let Some(served) = value["data"]
+                        .as_array()
+                        .and_then(|models| models.first())
+                        .and_then(|model| model["id"].as_str())
+                    {
+                        let saved = state.store.put(
+                            "provider",
+                            &json!({
+                                "id": PROVIDER_ID,
+                                "name": "DOMINION Native",
+                                "baseUrl": format!("http://127.0.0.1:{RUNTIME_PORT}/v1"),
+                                "kind": "openai",
+                                "local": true,
+                                "enabled": true,
+                                "model": served,
+                                "contextTokens": context.clamp(512, 32768),
+                                "description": "MLX runtime managed by the Rust engine",
+                            }),
+                        )
+                        .ok_or("모델 제공자를 저장할 수 없습니다.")?;
+                        runtime().lock().unwrap().status = "ready".into();
+                        state.bus.record("provider", &saved);
+                        return Ok(runtime_snapshot(state));
+                    }
+                }
+            }
+        }
+    }
+    runtime().lock().unwrap().status = "error".into();
+    runtime().lock().unwrap().error = "MLX 실행기 응답 시간 초과".into();
+    Err("MLX 실행기 응답 시간 초과".into())
+}
+
 pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, String> {
     if let Some(key) = id.strip_prefix("lms:") {
         return load_lmstudio(state, id, key, context).await;
     }
     if let Some(repo) = id.strip_prefix("mlx:") {
+        if mlx_runtime_python(state).is_some() {
+            return load_mlx_standalone(state, id, repo, context).await;
+        }
         let key = find_lms_key(repo).ok_or(
-            "LM Studio가 아직 이 MLX 모델을 인식하지 못했습니다. 모델 관리에서 새로고침한 뒤 다시 시도하세요.",
+            "MLX 실행기가 없습니다. 모델 관리에서 MLX 실행기를 설치하거나 LM Studio를 설치하세요.",
         )?;
         return load_lmstudio(state, id, &key, context).await;
     }
@@ -1835,6 +2127,24 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         (AppState::new(config, store, vault), dir)
+    }
+
+    #[test]
+    fn mlx_runtime_is_detected_only_with_a_ready_marker() {
+        let (state, dir) = temp_state();
+        let runtime = dir.join("mlx-runtime");
+        let python = runtime.join(if cfg!(windows) {
+            "Scripts/python.exe"
+        } else {
+            "bin/python"
+        });
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, b"#!/bin/sh\n").unwrap();
+        assert!(mlx_runtime_python(&state).is_none());
+        std::fs::write(runtime.join(".ready"), b"0.32.2").unwrap();
+        assert_eq!(mlx_runtime_python(&state), Some(python));
+        assert!(!mlx_installable(&state));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

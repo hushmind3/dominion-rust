@@ -73,8 +73,12 @@ pub async fn unload(State(state): State<AppState>) -> Json<Value> {
     Json(models::unload(&state))
 }
 
-pub async fn install_runtime(State(state): State<AppState>) -> Response {
-    match models::install_llama_server(state).await {
+pub async fn install_runtime(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Response {
+    let engine = body["engine"].as_str().unwrap_or("gguf");
+    match models::install_runtime(state, engine).await {
         Ok(result) => Json(result).into_response(),
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
     }
