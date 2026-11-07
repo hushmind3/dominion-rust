@@ -19,7 +19,7 @@ export function Feedback({message,kind='info',onDismiss}:{
    className={'flex items-start gap-3 rounded-xl border p-3 text-xs leading-6 '+colors}>
    <Icon size={17} className="mt-0.5 shrink-0"/>
    <span className="min-w-0 flex-1">{message}</span>
-   {onDismiss&&<button type="button" onClick={onDismiss} aria-label="알림 닫기"
+   {onDismiss&&<button type="button" onClick={onDismiss} aria-label={t('common.dismiss')}
     className="inline-grid size-6 shrink-0 place-items-center rounded-lg hover:bg-black/5"><X size={14}/></button>}
   </div>
 }

@@ -73,9 +73,9 @@ export function MemoryPage(){
    <div>
     <Subheading title={t('memory.count',{count:filtered.length})}/>
     <div className="mb-4 grid gap-2 sm:grid-cols-2">
-     <TextInput className="sm:col-span-2" aria-label="기억 검색" value={query} onChange={e=>setQuery(e.target.value)} placeholder={t('memory.search')}/>
-     <SelectInput aria-label="기억 상태" value={status} onChange={e=>setStatus(e.target.value)}><option value="all">{t('memory.status.all')}</option>{Object.entries(statusLabels).map(([key,label])=><option key={key} value={key}>{t(label)}</option>)}</SelectInput>
-     <SelectInput aria-label="기억 범위" value={owner} onChange={e=>setOwner(e.target.value)}><option value="all">{t('memory.owner.all')}</option><option value="shared">{t('memory.owner.shared')}</option><option value="session">{t('memory.owner.session')}</option>{owners.map(id=><option key={id} value={id}>{agentNames.get(id)??id}</option>)}</SelectInput>
+     <TextInput className="sm:col-span-2" aria-label={t('memory.searchAria')} value={query} onChange={e=>setQuery(e.target.value)} placeholder={t('memory.search')}/>
+     <SelectInput aria-label={t('memory.statusAria')} value={status} onChange={e=>setStatus(e.target.value)}><option value="all">{t('memory.status.all')}</option>{Object.entries(statusLabels).map(([key,label])=><option key={key} value={key}>{t(label)}</option>)}</SelectInput>
+     <SelectInput aria-label={t('memory.scopeAria')} value={owner} onChange={e=>setOwner(e.target.value)}><option value="all">{t('memory.owner.all')}</option><option value="shared">{t('memory.owner.shared')}</option><option value="session">{t('memory.owner.session')}</option>{owners.map(id=><option key={id} value={id}>{agentNames.get(id)??id}</option>)}</SelectInput>
     </div>
     <div className="flex flex-col gap-3">{filtered.map(m=><Panel key={m.id} className="min-w-0 p-4">
      <div className="mb-2 flex flex-wrap items-center gap-2"><BookOpenText size={18}/><strong>{ownerName(m)}</strong><span className="text-xs text-[#7C7469]">{t(statusLabels[statusOf(m)] ?? 'memory.status.excluded')}</span><Button size="icon" variant="ghost" className="ml-auto" disabled={busy} onClick={()=>void drop(m.id)} aria-label={t('memory.delete')}><Trash2 size={16}/></Button></div>

@@ -1038,7 +1038,7 @@ export function ExtensionsPage() {
                     <StateTag online={Boolean(record)}>
                       {record
                         ? connected
-                          ? "연결됨 · 도구 " + connected + "개"
+                          ? t('ext.connectedTools', { count: connected })
                           : t('ext.registeredCheck')
                         : t('ext.notInstalled')}
                     </StateTag>
@@ -1323,7 +1323,7 @@ export function ExtensionsPage() {
                 {t('ext.cancel')}
               </Action>
               <Action onClick={saveMcp}>
-                <Check size={16} /> 저장
+                <Check size={16} /> {t('ext.save')}
               </Action>
             </div>
           </DialogPanel>

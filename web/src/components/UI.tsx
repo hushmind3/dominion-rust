@@ -1,3 +1,4 @@
+import {t} from '../i18n'
 import React,{useCallback,useEffect,useRef,useState} from 'react'
 import {ArrowUpRight,LoaderCircle,Plus} from 'lucide-react'
 import {get} from '../api'
@@ -67,5 +68,5 @@ export function useRemote<T>(endpoint: string | null, initial: T, refreshOnEvent
 export const refresh=()=>window.dispatchEvent(new Event('dominion-refresh'))
 export function Notice({message}:{message:string}){return message?<div role="alert" className="my-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">{message}</div>:null}
 export function InfoRow({label,value}:{label:string;value:React.ReactNode}){return <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#EFE9DF] py-2 text-[12px]"><span className="text-[#7C7469]">{label}</span><strong className="font-semibold">{value}</strong></div>}
-export function Loading(){return <span className="inline-flex items-center gap-2 text-[12px] text-[#7C7469]"><LoaderCircle size={14} className="animate-spin"/> 처리 중</span>}
+export function Loading(){return <span className="inline-flex items-center gap-2 text-[12px] text-[#7C7469]"><LoaderCircle size={14} className="animate-spin"/> {t('common.processing')}</span>}
 export function ArrowLink({children,onClick}:{children:React.ReactNode;onClick:()=>void}){return <Button variant="ghost" onClick={onClick}>{children}<ArrowUpRight size={14}/></Button>}
