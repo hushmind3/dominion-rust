@@ -752,7 +752,7 @@ fn persistent_room_http_flow_keeps_owner_once_and_shares_peer_context() {
 }
 
 #[test]
-fn room_compact_tools_keep_read_write_history_and_require_real_write_approval() {
+fn room_selected_tools_keep_read_write_history_and_require_real_write_approval() {
     let _serial = serial();
     let (port, requests) = scripted_provider(|request| {
         let observations = request["messages"].as_array().unwrap().iter()
@@ -763,14 +763,14 @@ fn room_compact_tools_keep_read_write_history_and_require_real_write_approval() 
             _ => None,
         };
         match call {
-            Some((id,name,arguments)) => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":id,"type":"function","function":{"name":"dominion_tool","arguments":json!({"name":name,"arguments":arguments.to_string()}).to_string()}}]},"finish_reason":"tool_calls"}]})],
+            Some((id,name,arguments)) => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":id,"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]},"finish_reason":"tool_calls"}]})],
             None => vec![json!({"choices":[{"delta":{"content":"확인한 근거를 기록했습니다."},"finish_reason":"stop"}]})],
         }
     });
     let app = TestApp::new(port,"native");
     std::fs::write(app._root.join("input.txt"),"copied evidence").unwrap();
     app.post("/api/agents",&json!({"id":"a","name":"Reader","systemPrompt":"Inspect the requested file and record the evidence."}));
-    let room=app.post("/api/rooms",&json!({"name":"compact protocol","agentIds":["a"],"rounds":1,"maxTurns":1,"toolsEnabled":true,"autoLearning":false}));
+    let room=app.post("/api/rooms",&json!({"name":"selected tools","agentIds":["a"],"rounds":1,"maxTurns":1,"toolsEnabled":true,"autoLearning":false}));
     let sent=app.post(&format!("/api/rooms/{}/messages",room["id"].as_str().unwrap()),&json!({"input":"테스트 파일을 확인하고 결과를 기록해줘"}));
     let approval=app.wait_pending_approval(15);
     assert_eq!(approval["tool"],"workspace_write");
@@ -787,8 +787,13 @@ fn room_compact_tools_keep_read_write_history_and_require_real_write_approval() 
     assert_eq!(std::fs::read_to_string(app._root.join("output.txt")).unwrap(),"copied evidence");
     let requests=requests.lock().unwrap();
     assert_eq!(requests.len(),3);
-    assert_eq!(requests[0]["tools"][0]["function"]["name"],"dominion_tool");
-    assert!(requests[1]["messages"].as_array().unwrap().iter().any(|message|message["tool_calls"][0]["function"]["name"]=="dominion_tool"));
+    let tools = requests[0]["tools"].as_array().unwrap();
+    let tool_names = tools.iter().filter_map(|tool| tool["function"]["name"].as_str()).collect::<Vec<_>>();
+    assert!(tool_names.contains(&"workspace_read"), "{tool_names:?}");
+    assert!(tool_names.contains(&"workspace_write"), "{tool_names:?}");
+    assert!(!tool_names.contains(&"dominion_tool"), "{tool_names:?}");
+    assert!(tool_names.len() < 19, "casual/work tool selection must not ship the full registry: {tool_names:?}");
+    assert!(requests[1]["messages"].as_array().unwrap().iter().any(|message|message["tool_calls"][0]["function"]["name"]=="workspace_read"));
     let execution=app.get("/api/executions")[0].clone();
     assert_eq!(execution["inputContext"]["contextModelCalls"],0);
     assert!(execution["inputContext"]["personaTokens"].as_u64().unwrap()>0);

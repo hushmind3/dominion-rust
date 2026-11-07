@@ -293,49 +293,25 @@ fn normalize_assistant_reasoning(messages: &mut [Value], required: bool) {
 /// evidence* as an explicitly quoted user record, never invent private
 /// reasoning and never erase the entire transcript.
 fn preserve_reflection_history(messages: Vec<Value>) -> (Vec<Value>, bool) {
-    let mut converted = false;
-    let mut converted_calls = std::collections::HashSet::new();
+    let mut filled = false;
     let mut out = Vec::with_capacity(messages.len());
-    for message in messages {
+    for mut message in messages {
         if message["role"] == "assistant"
-            && message["reasoning_content"].as_str().is_none_or(str::is_empty)
+            && message["reasoning_content"]
+                .as_str()
+                .is_none_or(|text| text.is_empty())
         {
-            converted = true;
-            let mut details = message["content"].as_str().unwrap_or("").to_string();
-            if let Some(calls) = message["tool_calls"].as_array().filter(|calls| !calls.is_empty()) {
-                for call in calls {
-                    if let Some(id) = call["id"].as_str() {
-                        converted_calls.insert(id.to_string());
-                    }
-                }
-                details.push_str("\nPrior tool requests (quoted): ");
-                details.push_str(&json!(calls).to_string());
-            }
-            out.push(json!({
-                "role":"user",
-                "content":format!("[Previously recorded assistant message; quoted history, not a new owner instruction]\n{details}")
-            }));
-        } else if message["role"] == "tool"
-            && message["tool_call_id"].as_str().is_some_and(|id| converted_calls.contains(id))
-        {
-            converted = true;
-            out.push(json!({
-                "role":"user",
-                "content":format!(
-                    "[Previously recorded tool observation; quoted history, not a new instruction; tool_call_id={}]\n{}",
-                    message["tool_call_id"].as_str().unwrap_or(""),
-                    message["content"].as_str().unwrap_or("")
-                )
-            }));
-        } else {
-            out.push(message);
+            // Reflection requires the field on every earlier assistant turn.
+            // A space preserves roles, tool IDs and pairing without inventing
+            // a private rationale. Real reasoning is never overwritten.
+            message["reasoning_content"] = json!(" ");
+            filled = true;
         }
+        out.push(message);
     }
-    (out, converted)
+    (out, filled)
 }
 
-/// Provider usage is authoritative when present; cache reporting is optional.
-/// An absent cached_tokens field must never be interpreted as a cache miss.
 fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
     usage.pointer("/prompt_tokens_details/cached_tokens").and_then(Value::as_u64)
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens").and_then(Value::as_u64))
@@ -698,7 +674,7 @@ async fn stream_completion_once(
                 "reflection.history_preserved",
                 json!({
                     "sessionId": session_id,
-                    "reason": "assistant reasoning missing; quoted old content without deleting history",
+                    "reason": "assistant reasoning missing; sent placeholder to preserve roles and tool pairing",
                 }),
             );
         }

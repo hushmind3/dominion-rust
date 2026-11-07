@@ -470,6 +470,11 @@ async fn run_turn_body(
         tool_definitions.extend(mcp::definitions(state).await);
     }
     let is_room = session["roomId"].is_string();
+    if is_room && request.tools_enabled && request.tools_execution_enabled {
+        let recent = recent_room_tools(state, session_id);
+        tool_definitions =
+            select_room_tools(tool_definitions, &request.input, &recent, acceptance.is_some());
+    }
     let discovery = if is_room {
         Value::Null
     } else {
@@ -480,26 +485,15 @@ async fn run_turn_body(
     if !is_room {
         tool_definitions = select_tool_definitions(tool_definitions, &request.input, &discovery);
     }
-    let compact_tools = if is_room {
-        if acceptance.is_some() {
-            tool_definitions.clone()
-        } else {
-            super::tool_catalog::for_request(&tool_definitions, &request.input, &state.config.workspace)
-        }
-    } else {
-        Vec::new()
-    };
-    let uses_dispatch = is_room && super::tool_catalog::uses_dispatch(&compact_tools);
-
     let compiled = if is_room {
         let source = source_message_id.or(reply_to.as_deref()).ok_or("응답할 원문이 없습니다.")?;
         let compiled = super::room_context::compile(
-            state, request, session_id, source, &compact_tools, &strategy_candidates,
+            state, request, session_id, source, &tool_definitions, &strategy_candidates,
         )?;
         // A tool task needs room for its applicable procedures and evidence.
-        // When fixed identity + native schemas already exhaust the proposed
+        // When fixed identity + selected native schemas exhaust the proposed
         // conversational budget, keep the established work-context policy.
-        let work_needs_context = !uses_dispatch && !tool_definitions.is_empty()
+        let work_needs_context = !tool_definitions.is_empty()
             && compiled.accounting["requiredOverBudget"] == true;
         if work_needs_context {
             if let Some(mut execution) = state.store.get("execution", execution_id) {
@@ -545,8 +539,8 @@ async fn run_turn_body(
                     "personaTokens":persona_tokens, "memoryTokens":null,
                     "historyTokens":super::room_context::estimate(&json!(history_messages).to_string()),
                     "systemTokens":super::room_context::estimate(&prompt_context.prompt).saturating_sub(persona_tokens),
-                    "toolSchemaTokens":super::room_context::estimate(&json!(compact_tools).to_string()),
-                    "totalInputTokens":super::room_context::input_estimate(&prepared,&compact_tools),
+                    "toolSchemaTokens":super::room_context::estimate(&json!(tool_definitions).to_string()),
+                    "totalInputTokens":super::room_context::input_estimate(&prepared,&tool_definitions),
                     "note":"legacy work prompt does not expose memory as a separate component"
                 });
                 state.store.put("execution", &execution);
@@ -736,9 +730,7 @@ async fn run_turn_body(
         "kind": "tools",
         "providerToolMode": provider.tool_mode,
         "availableDefinitions": native_tool_names,
-        "nativeDefinitions": if is_room {
-            compact_tools.iter().map(tool_name).map(str::to_string).collect::<Vec<_>>()
-        } else { native_tool_names.clone() },
+        "nativeDefinitions": native_tool_names.clone(),
         "textManual": provider.tool_mode == "compat"
             && request.tools_enabled
             && request.tools_execution_enabled,
@@ -958,21 +950,6 @@ async fn run_turn_body(
         let model_offset_ms = turn_started.elapsed().as_millis() as u64;
         let mut round_tools = if force_final {
             Vec::new()
-        } else if is_room {
-            let mut presented = compact_tools.clone();
-            // An actual tool choice is enough to load its complete schema on
-            // the next normal round. No model-driven discovery call is needed.
-            for definition in &tool_definitions {
-                let name = tool_name(definition);
-                let used = messages.iter().any(|message| {
-                    message["tool_calls"].as_array().into_iter().flatten()
-                        .any(|call| call["function"]["name"] == name)
-                });
-                if used && !presented.iter().any(|tool| tool_name(tool) == name) {
-                    presented.push(definition.clone());
-                }
-            }
-            presented
         } else {
             tool_definitions.clone()
         };
@@ -991,9 +968,7 @@ async fn run_turn_body(
                 .unwrap_or(60_000);
             round_tools = trim_tool_definitions(round_tools, budget);
         }
-        let wire_messages = if uses_dispatch {
-            super::tool_catalog::encode_history(&messages, &tool_definitions)
-        } else { messages.clone() };
+        let wire_messages = messages.clone();
         if is_room {
             if let Some(mut execution) = state.store.get("execution", execution_id) {
                 execution["inputContext"]["preparedInputTokensEstimate"] = json!(super::room_context::input_estimate(&wire_messages,&round_tools));
@@ -1124,12 +1099,6 @@ async fn run_turn_body(
                         arguments,
                     })
                     .collect();
-            }
-        }
-
-        if uses_dispatch {
-            for call in &mut completion.tool_calls {
-                super::tool_catalog::decode(call, &tool_definitions);
             }
         }
 
@@ -2442,6 +2411,138 @@ fn tool_name(definition: &Value) -> &str {
         .as_str()
         .or_else(|| definition["name"].as_str())
         .unwrap_or("")
+}
+
+/// Casual room turns carry zero tool schemas. Action requests select the
+/// exact native schemas the harness judges relevant; no model call is used.
+fn room_tool_request(input: &str) -> bool {
+    let lower = input.to_lowercase();
+    [
+        "파일", "폴더", "읽", "쓰", "저장", "수정", "삭제", "만들", "작성", "열어",
+        "보여", "실행", "명령", "터미널", "빌드", "테스트", "설치", "검색", "웹",
+        "http", "url", "api", "코드", "버그", "도구", "계속", "이어", "마저",
+        "스킬", "기억", "브라우저", "깃허브", "github", "shell", "file", "read",
+        "write", "run", "search", "fetch", "install", "build", "test", "tool",
+        "browser", "memory", "delegate", "task",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
+}
+
+fn recent_room_tools(state: &AppState, session_id: &str) -> std::collections::HashSet<String> {
+    state
+        .store
+        .messages(session_id)
+        .into_iter()
+        .rev()
+        .take(30)
+        .flat_map(|message| {
+            message["tool_calls"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|call| {
+            call["function"]["name"]
+                .as_str()
+                .map(|name| name.to_lowercase())
+        })
+        .collect()
+}
+
+fn select_room_tools(
+    definitions: Vec<Value>,
+    query: &str,
+    recent: &std::collections::HashSet<String>,
+    acceptance: bool,
+) -> Vec<Value> {
+    if definitions.is_empty() {
+        return Vec::new();
+    }
+    if !acceptance && !room_tool_request(query) {
+        return Vec::new();
+    }
+    let lower = query.to_lowercase();
+    let groups: &[(&[&str], &[&str])] = &[
+        (
+            &["파일", "폴더", "읽", "열어", "보여", "read", "file"],
+            &["workspace_list", "workspace_read", "file_list", "file_read"],
+        ),
+        (
+            &["쓰", "저장", "수정", "삭제", "만들", "작성", "기록", "남겨", "write", "save", "edit"],
+            &["workspace_write", "file_write"],
+        ),
+        (
+            &["실행", "명령", "터미널", "빌드", "테스트", "설치", "shell", "run", "build", "test", "install"],
+            &["shell_exec", "terminal_exec"],
+        ),
+        (
+            &["검색", "웹", "http", "url", "fetch", "search"],
+            &["web_search", "http_fetch"],
+        ),
+        (&["기억", "memory"], &["memory_store", "memory_search"]),
+        (&["스킬", "skill"], &["skill_propose"]),
+        (
+            &["위임", "delegate", "task", "에이전트"],
+            &["delegate_task", "task_status", "task_result"],
+        ),
+        (
+            &["브라우저", "browser", "클릭", "click"],
+            &["browser_control"],
+        ),
+        (&["github", "깃허브"], &["github_api"]),
+        (&["계정", "oauth", "account"], &["account_status"]),
+    ];
+    let mut scored: Vec<(i32, Value)> = definitions
+        .iter()
+        .filter_map(|definition| {
+            let name = tool_name(definition);
+            let name_lower = name.to_lowercase();
+            let haystack = serde_json::to_string(definition)
+                .unwrap_or_default()
+                .to_lowercase();
+            let mut score = 0i32;
+            if lower.contains(&name_lower) {
+                score += 30;
+            }
+            for token in lower
+                .split(|ch: char| !ch.is_alphanumeric())
+                .filter(|token| token.chars().count() > 1)
+            {
+                if haystack.contains(token) {
+                    score += 2;
+                }
+            }
+            for (terms, tools) in groups {
+                if terms.iter().any(|term| lower.contains(term))
+                    && tools.contains(&name_lower.as_str())
+                {
+                    score += 12;
+                }
+            }
+            if recent.contains(&name_lower) {
+                score += 8;
+            }
+            (score > 0).then(|| (score, definition.clone()))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    if scored.is_empty() {
+        if acceptance {
+            return definitions;
+        }
+        return definitions
+            .into_iter()
+            .filter(|definition| {
+                matches!(
+                    tool_name(definition),
+                    "workspace_list" | "workspace_read" | "workspace_write" | "shell_exec" | "web_search"
+                )
+            })
+            .collect();
+    }
+    scored.truncate(8);
+    scored.into_iter().map(|(_, definition)| definition).collect()
 }
 
 fn select_tool_definitions(
