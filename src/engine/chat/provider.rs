@@ -374,6 +374,23 @@ fn fit_tool_context(provider: &ProviderRef, messages: &mut [Value], schema_chars
     }
 }
 
+fn room_route_keys(state: &AppState, session_id: &str) -> Option<std::collections::HashSet<String>> {
+    let session = state.store.get("session", session_id)?;
+    let room = state.store.get("room", session["roomId"].as_str()?)?;
+    let mut keys = std::collections::HashSet::new();
+    for id in room["agentIds"].as_array()? {
+        let Some(agent) = id.as_str().and_then(|id| state.store.get("agent", id)) else {
+            continue;
+        };
+        if let (Some(provider), Some(model)) =
+            (agent["providerId"].as_str(), agent["model"].as_str())
+        {
+            keys.insert(format!("{provider}|{model}"));
+        }
+    }
+    Some(keys)
+}
+
 async fn fallback_candidates(
     state: &AppState,
     primary: &ProviderRef,
@@ -389,8 +406,20 @@ async fn fallback_candidates(
     } else {
         escaped_content_chars(&super::protocol::tool_manual(tools, &request.input).await)
     };
+    // A room may only fall back to its own participants' routes. Otherwise a
+    // dead free model silently escalates to whatever paid provider happens to
+    // rank highest, which is exactly the surprise bill to avoid.
+    let room_routes = request
+        .session_id
+        .as_deref()
+        .and_then(|session_id| room_route_keys(state, session_id));
     crate::engine::gateway::ordered_alternatives(state, &primary.id)
         .into_iter()
+        .filter(|route| {
+            room_routes.as_ref().is_none_or(|allowed| {
+                allowed.contains(&format!("{}|{}", route.id, route.model))
+            })
+        })
         // Native/API and compat/local models can take over the same turn.
         // A smaller context clips *only tool observations* for that attempt;
         // it does not prevent a local fallback when the tool output is large.
