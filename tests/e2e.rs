@@ -3869,7 +3869,7 @@ fn block_write_without_read_algorithm_blocks_and_then_allows_the_write() {
     );
     let activated = app.post(
         &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
-        &json!({}),
+        &json!({"force": true}),
     );
     assert_eq!(activated["status"], "active", "{activated}");
     let stream = app.chat(&json!({"input":"guarded.txt 파일을 만들어줘","autoLearning":false}));
@@ -4181,7 +4181,7 @@ fn allow_all_recovery_algorithm_retries_the_same_failed_call() {
     );
     app.post(
         &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
-        &json!({}),
+        &json!({"force": true}),
     );
     let _ = app.chat(&json!({"input":"같은 실패를 재시도해","autoLearning":false}));
     let executions = app.get("/api/executions");
@@ -4222,7 +4222,7 @@ fn parallel_reads_combination_executes_independent_reads_in_one_round() {
     );
     app.post(
         &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
-        &json!({}),
+        &json!({"force": true}),
     );
     let stream = app.chat(&json!({"input":"one.txt와 two.txt를 읽어","autoLearning":false}));
     assert!(stream.contains("두 파일을 읽었습니다"), "{stream}");
@@ -4281,7 +4281,7 @@ fn parallel_reads_answer_malformed_arguments_so_no_tool_call_is_orphaned() {
     );
     app.post(
         &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
-        &json!({}),
+        &json!({"force": true}),
     );
     let stream = app.chat(&json!({"input":"one.txt를 읽어","autoLearning":false}));
     assert!(stream.contains("malformed-read-was-answered"), "{stream}");
@@ -4309,7 +4309,7 @@ fn parallel_reads_counts_a_failed_tool_as_a_failed_combination() {
     );
     app.post(
         &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
-        &json!({}),
+        &json!({"force": true}),
     );
     let stream = app.chat(&json!({"input":"one.txt와 missing.txt를 읽어","autoLearning":false}));
     assert!(stream.contains("읽기 시도 완료"), "{stream}");
@@ -4346,7 +4346,7 @@ fn normalize_paths_arguments_run_through_the_common_dispatch() {
     );
     app.post(
         &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
-        &json!({}),
+        &json!({"force": true}),
     );
     let _ = app.chat(&json!({"input":"normalized.txt를 만들어","autoLearning":false}));
     assert_eq!(
@@ -4432,7 +4432,7 @@ fn clause_split_decomposition_is_persisted_with_independent_quality() {
     );
     app.post(
         &format!("/api/algorithms/{}/activate", algorithm["id"].as_str().unwrap()),
-        &json!({}),
+        &json!({"force": true}),
     );
     let _ = app.chat(&json!({
         "input":"설정 파일을 읽고 그리고 테스트를 실행한 뒤 결과를 보고해",

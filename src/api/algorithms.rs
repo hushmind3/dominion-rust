@@ -20,10 +20,14 @@ pub async fn register(State(state): State<AppState>, Json(body): Json<Value>) ->
 pub async fn activate(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    body: Option<Json<Value>>,
 ) -> Response {
-    match crate::engine::algorithms::activate(&state, &id) {
+    let force = body
+        .and_then(|Json(value)| value["force"].as_bool())
+        .unwrap_or(false);
+    match crate::engine::algorithms::activate_checked(&state, &id, force) {
         Ok(record) => Json(record).into_response(),
-        Err(error) => (axum::http::StatusCode::NOT_FOUND, Json(json!({"error": error}))).into_response(),
+        Err(error) => (axum::http::StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response(),
     }
 }
 

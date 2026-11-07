@@ -1568,6 +1568,39 @@ pub fn activate(state: &AppState, id: &str) -> Result<Value, String> {
     Ok(activated)
 }
 
+/// Promotion with evidence. Deterministic evaluation must recommend the exact
+/// winner for this kind unless the caller explicitly asks for a manual switch.
+pub fn activate_checked(state: &AppState, id: &str, force: bool) -> Result<Value, String> {
+    let Some(algorithm) = state.store.get("algorithm", id) else {
+        return Err("algorithm not found".into());
+    };
+    if !force && algorithm["status"].as_str() != Some("active") {
+        let kind = algorithm["kind"].as_str().unwrap_or("");
+        let implementation = algorithm["implementation"].as_str().unwrap_or("");
+        let promoted = state.store.all("algorithm_eval").into_iter().any(|record| {
+            record["dimensions"].as_array().is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row["kind"].as_str() == Some(kind)
+                        && row["winner"].as_str() == Some(implementation)
+                        && row["recommendation"].as_str() == Some("promote")
+                })
+            })
+        });
+        if !promoted {
+            return Err(
+                "실험 평가에서 승격 추천을 받지 못했습니다. 검증 후 승급하거나 force=true로 수동 전환하세요."
+                    .into(),
+            );
+        }
+    }
+    let activated = activate(state, id)?;
+    state.store.audit(
+        "algorithm.activation_mode",
+        json!({"id": id, "force": force, "kind": activated["kind"]}),
+    );
+    Ok(activated)
+}
+
 pub fn disable(state: &AppState, id: &str) -> Option<Value> {
     let mut algorithm = state.store.get("algorithm", id)?;
     algorithm["status"] = json!("disabled");
@@ -1697,6 +1730,46 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         (AppState::new(config, store, vault), dir)
+    }
+
+    #[test]
+    fn activation_requires_evaluation_evidence_unless_forced() {
+        let (state, dir) = state();
+        seed(&state);
+        let record = register(
+            &state,
+            &json!({
+                "kind": "memory.rerank",
+                "name": "bm25-candidate",
+                "variant": "bm25",
+                "implementation": "bm25"
+            }),
+        )
+        .unwrap();
+        let id = record["id"].as_str().unwrap();
+        assert!(activate_checked(&state, id, false).is_err());
+        state.store.put(
+            "algorithm_eval",
+            &json!({
+                "id": "eval-1",
+                "dimensions": [
+                    {"kind": "memory.rerank", "winner": "bm25", "recommendation": "promote"}
+                ]
+            }),
+        );
+        assert!(activate_checked(&state, id, false).is_ok());
+        let other = register(
+            &state,
+            &json!({
+                "kind": "memory.rerank",
+                "name": "none-manual",
+                "variant": "none",
+                "implementation": "none"
+            }),
+        )
+        .unwrap();
+        assert!(activate_checked(&state, other["id"].as_str().unwrap(), true).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
