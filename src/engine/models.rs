@@ -373,6 +373,428 @@ fn llama_available() -> bool {
     llama_server_bin().is_some()
 }
 
+fn llama_server_bin_for(state: &AppState) -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("DOMINION_LLAMA_SERVER") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let managed = state
+        .config
+        .data_dir
+        .join("bin")
+        .join(if cfg!(windows) {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        });
+    if managed.is_file() {
+        return Some(managed);
+    }
+    llama_server_bin()
+}
+
+/// Automatic installation is limited to platforms where the official
+/// llama.cpp release assets are known to run. Homebrew is preferred on macOS.
+fn llama_installable(state: &AppState) -> bool {
+    llama_server_bin_for(state).is_none()
+        && matches!(std::env::consts::OS, "macos" | "linux")
+        && matches!(std::env::consts::ARCH, "aarch64" | "x86_64")
+}
+
+fn brew_bin() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("DOMINION_BREW_BIN") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+}
+
+fn verify_llama_server(path: &Path) -> Result<String, String> {
+    for argument in ["--version", "--help"] {
+        let output = std::process::Command::new(path)
+            .arg(argument)
+            .output()
+            .map_err(|error| format!("llama-server 실행 확인 실패: {error}"))?;
+        if output.status.success() {
+            let version = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .trim()
+            .chars()
+            .take(500)
+            .collect::<String>();
+            return Ok(version);
+        }
+    }
+    Err("llama-server가 설치되었지만 실행 확인에 실패했습니다.".into())
+}
+
+fn llama_release_suffix() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "bin-macos-arm64.zip",
+        ("macos", "x86_64") => "bin-macos-x64.zip",
+        ("linux", "x86_64") => "bin-ubuntu-x64.zip",
+        ("linux", "aarch64") => "bin-ubuntu-arm64.zip",
+        _ => "",
+    }
+}
+
+static INSTALL_STATE: OnceLock<Mutex<Option<Value>>> = OnceLock::new();
+
+fn install_state() -> &'static Mutex<Option<Value>> {
+    INSTALL_STATE.get_or_init(|| Mutex::new(None))
+}
+
+pub fn install_snapshot() -> Value {
+    install_state()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or(Value::Null)
+}
+
+fn set_install(value: Value) {
+    if let Ok(mut guard) = install_state().lock() {
+        *guard = Some(value);
+    }
+}
+
+fn install_active() -> bool {
+    install_state()
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .and_then(|value| value["status"].as_str().map(str::to_owned))
+        })
+        .is_some_and(|status| {
+            matches!(
+                status.as_str(),
+                "checking" | "downloading" | "extracting" | "verifying"
+            )
+        })
+}
+
+fn install_progress(
+    status: &str,
+    backend: &str,
+    tag: &str,
+    downloaded: u64,
+    total: u64,
+    file: &str,
+) -> Value {
+    json!({
+        "status": status,
+        "backend": backend,
+        "tag": tag,
+        "downloaded": downloaded,
+        "total": total,
+        "file": file,
+        "error": "",
+        "updatedAt": chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+async fn install_from_release(state: &AppState) -> Result<(PathBuf, String), String> {
+    let suffix = llama_release_suffix();
+    if suffix.is_empty() {
+        return Err("이 플랫폼의 llama.cpp 자동 설치 자산이 없습니다.".into());
+    }
+    let client = reqwest::Client::new();
+    let release = client
+        .get("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest")
+        .header("User-Agent", "dominion-rust")
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|error| format!("llama.cpp 릴리스 조회 실패: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("llama.cpp 릴리스 HTTP 오류: {error}"))?
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("llama.cpp 릴리스 응답 오류: {error}"))?;
+    let asset = release["assets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|asset| {
+            asset["name"]
+                .as_str()
+                .is_some_and(|name| name.ends_with(suffix))
+        })
+        .ok_or_else(|| format!("llama.cpp 릴리스에 {suffix} 자산이 없습니다."))?;
+    let asset_name = asset["name"]
+        .as_str()
+        .unwrap_or("llama.cpp")
+        .to_string();
+    let url = asset["browser_download_url"]
+        .as_str()
+        .ok_or("llama.cpp 다운로드 주소가 없습니다.")?;
+    let temp = state
+        .config
+        .data_dir
+        .join(format!("llama-install-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
+    let archive = temp.join("llama.zip");
+    let mut response = client
+        .get(url)
+        .header("User-Agent", "dominion-rust")
+        .timeout(Duration::from_secs(900))
+        .send()
+        .await
+        .map_err(|error| format!("llama.cpp 다운로드 실패: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("llama.cpp 다운로드 HTTP 오류: {error}"))?;
+    let total = response.content_length().unwrap_or(0);
+    set_install(install_progress(
+        "downloading",
+        "release",
+        &asset_name,
+        0,
+        total,
+        &asset_name,
+    ));
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("llama.cpp 다운로드 본문 오류: {error}"))?
+    {
+        bytes.extend_from_slice(&chunk);
+        set_install(install_progress(
+            "downloading",
+            "release",
+            &asset_name,
+            bytes.len() as u64,
+            total,
+            &asset_name,
+        ));
+    }
+    std::fs::write(&archive, &bytes).map_err(|error| error.to_string())?;
+    set_install(install_progress(
+        "extracting",
+        "release",
+        &asset_name,
+        bytes.len() as u64,
+        total,
+        &asset_name,
+    ));
+    let extracted = temp.join("extracted");
+    std::fs::create_dir_all(&extracted).map_err(|error| error.to_string())?;
+    let output = if cfg!(target_os = "macos") {
+        std::process::Command::new("ditto")
+            .args(["-x", "-k"])
+            .arg(&archive)
+            .arg(&extracted)
+            .output()
+    } else {
+        std::process::Command::new("unzip")
+            .arg("-q")
+            .arg(&archive)
+            .arg("-d")
+            .arg(&extracted)
+            .output()
+    }
+    .map_err(|error| format!("llama.cpp 압축 해제 실행 실패: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "llama.cpp 압축 해제 실패: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let mut found = Vec::new();
+    walk(&extracted, 0, &mut found);
+    let binary = found
+        .into_iter()
+        .find(|path| {
+            path.file_name().and_then(|name| name.to_str()) == Some("llama-server")
+                || path.file_name().and_then(|name| name.to_str()) == Some("llama-server.exe")
+        })
+        .ok_or("다운로드한 llama.cpp에 llama-server가 없습니다.")?;
+    let source_dir = binary.parent().ok_or("llama-server 경로가 올바르지 않습니다.")?;
+    let bin_dir = state.config.data_dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).map_err(|error| error.to_string())?;
+    for entry in std::fs::read_dir(source_dir).map_err(|error| error.to_string())?.flatten() {
+        let source = entry.path();
+        if source.is_file() {
+            let target = bin_dir.join(entry.file_name());
+            std::fs::copy(&source, &target)
+                .map_err(|error| format!("llama.cpp 파일 복사 실패: {error}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&source)
+                    .map(|meta| meta.permissions().mode())
+                    .unwrap_or(0o755);
+                let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&temp);
+    let installed = bin_dir.join(if cfg!(windows) {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    });
+    Ok((installed, asset_name))
+}
+
+async fn run_llama_install(state: &AppState) -> Result<Value, String> {
+    let prefer_brew = cfg!(target_os = "macos") && brew_bin().is_some();
+    set_install(install_progress(
+        "checking",
+        if prefer_brew { "homebrew" } else { "release" },
+        "",
+        0,
+        0,
+        "",
+    ));
+    if let Some(brew) = brew_bin().filter(|_| cfg!(target_os = "macos")) {
+        set_install(install_progress(
+            "downloading",
+            "homebrew",
+            "llama.cpp",
+            0,
+            0,
+            "brew install llama.cpp",
+        ));
+        let result = tokio::time::timeout(
+            Duration::from_secs(900),
+            tokio::process::Command::new(&brew)
+                .args(["install", "llama.cpp"])
+                .output(),
+        )
+        .await;
+        if let Ok(Ok(output)) = result {
+            if output.status.success() {
+                set_install(install_progress(
+                    "verifying",
+                    "homebrew",
+                    "llama.cpp",
+                    0,
+                    0,
+                    "",
+                ));
+                if let Some(path) = llama_server_bin_for(state) {
+                    let version = verify_llama_server(&path)?;
+                    return Ok(json!({
+                        "status": "installed",
+                        "method": "homebrew",
+                        "backend": "homebrew",
+                        "path": path.to_string_lossy(),
+                        "version": version,
+                        "tag": "llama.cpp",
+                        "downloaded": 0,
+                        "total": 0,
+                        "file": path.to_string_lossy(),
+                        "error": "",
+                    }));
+                }
+            }
+        }
+    }
+    let (path, asset) = install_from_release(state).await?;
+    set_install(install_progress(
+        "verifying",
+        "release",
+        &asset,
+        0,
+        0,
+        &path.to_string_lossy(),
+    ));
+    let version = verify_llama_server(&path)?;
+    Ok(json!({
+        "status": "installed",
+        "method": "release",
+        "backend": "release",
+        "path": path.to_string_lossy(),
+        "version": version,
+        "tag": asset,
+        "downloaded": 0,
+        "total": 0,
+        "file": path.to_string_lossy(),
+        "error": "",
+    }))
+}
+
+pub async fn install_llama_server(state: AppState) -> Result<Value, String> {
+    if let Some(path) = llama_server_bin_for(&state) {
+        let version = verify_llama_server(&path)?;
+        set_install(json!({
+            "status": "installed",
+            "backend": "existing",
+            "path": path.to_string_lossy(),
+            "version": version,
+            "tag": "",
+            "downloaded": 0,
+            "total": 0,
+            "file": path.to_string_lossy(),
+            "error": "",
+        }));
+        return Ok(json!({
+            "status": "already_installed",
+            "path": path.to_string_lossy(),
+            "version": version,
+            "setup": install_snapshot(),
+            "capabilities": runtime_snapshot(&state)["capabilities"],
+        }));
+    }
+    if !llama_installable(&state) {
+        return Err("이 플랫폼에서는 llama.cpp 자동 설치를 지원하지 않습니다.".into());
+    }
+    if install_active() {
+        return Ok(json!({
+            "status": "installing",
+            "setup": install_snapshot(),
+            "capabilities": runtime_snapshot(&state)["capabilities"],
+        }));
+    }
+    set_install(install_progress(
+        "checking",
+        if cfg!(target_os = "macos") && brew_bin().is_some() {
+            "homebrew"
+        } else {
+            "release"
+        },
+        "",
+        0,
+        0,
+        "",
+    ));
+    let task_state = state.clone();
+    tokio::spawn(async move {
+        let result = match run_llama_install(&task_state).await {
+            Ok(result) => result,
+            Err(error) => json!({
+                "status": "failed",
+                "backend": "",
+                "tag": "",
+                "downloaded": 0,
+                "total": 0,
+                "file": "",
+                "error": error,
+                "updatedAt": chrono::Utc::now().to_rfc3339(),
+            }),
+        };
+        set_install(result);
+    });
+    Ok(json!({
+        "status": "installing",
+        "setup": install_snapshot(),
+        "capabilities": runtime_snapshot(&state)["capabilities"],
+    }))
+}
+
 fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
     if depth > 4 {
         return;
@@ -549,8 +971,9 @@ pub fn runtime_snapshot(state: &AppState) -> Value {
         "port": RUNTIME_PORT,
         "error": guard.error,
         "logs": logs.into_iter().rev().collect::<Vec<_>>(),
+        "setup": install_snapshot(),
         "capabilities": {
-            "gguf": { "available": lms_bin().is_some() || llama_available(), "backend": "llama.cpp", "installable": false },
+            "gguf": { "available": lms_bin().is_some() || llama_server_bin_for(state).is_some(), "backend": "llama.cpp", "installable": llama_installable(state), "path": llama_server_bin_for(state).map(|path| path.to_string_lossy().to_string()), "installMethod": if cfg!(target_os="macos") && brew_bin().is_some() { "homebrew" } else { "release" } },
             "mlx": { "available": lms_bin().is_some(), "backend": "LM Studio MLX" },
             "memory": {
                 "total": total_memory(),
@@ -580,7 +1003,7 @@ pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, Str
     } else {
         managed_model_path(state, id)
     }.ok_or_else(|| format!("설치된 모델을 찾을 수 없습니다: {id}"))?;
-    let llama_server = llama_server_bin()
+    let llama_server = llama_server_bin_for(state)
         .ok_or("llama-server를 찾을 수 없습니다. llama.cpp를 설치하거나 PATH를 확인하세요.")?;
 
     unload(state);
@@ -1393,6 +1816,34 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         (AppState::new(config, store, vault), dir)
+    }
+
+    #[test]
+    fn install_state_tracks_progress_and_activity() {
+        set_install(install_progress(
+            "downloading",
+            "release",
+            "asset.zip",
+            10,
+            100,
+            "asset.zip",
+        ));
+        let snapshot = install_snapshot();
+        assert_eq!(snapshot["status"], "downloading");
+        assert_eq!(snapshot["downloaded"], 10);
+        assert_eq!(snapshot["total"], 100);
+        assert!(install_active());
+        set_install(install_progress(
+            "installed",
+            "release",
+            "asset.zip",
+            100,
+            100,
+            "llama-server",
+        ));
+        assert!(!install_active());
+        assert_eq!(install_snapshot()["status"], "installed");
+        set_install(Value::Null);
     }
 
     #[test]

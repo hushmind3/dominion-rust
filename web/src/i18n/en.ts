@@ -380,6 +380,7 @@ const en: Record<LocaleKey, string> = {
   'models.installFailed': 'Runner install failed',
   'models.verifying': 'Verifying runner',
   'models.extracting': 'Extracting',
+  'models.installRunner': 'Install llama.cpp runner',
   'models.installingRunner': 'Installing official llama.cpp runner',
   'models.recommended': 'Recommended for Apple Silicon',
   'chat.recent': 'Recent conversations',

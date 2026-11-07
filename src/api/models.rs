@@ -73,6 +73,13 @@ pub async fn unload(State(state): State<AppState>) -> Json<Value> {
     Json(models::unload(&state))
 }
 
+pub async fn install_runtime(State(state): State<AppState>) -> Response {
+    match models::install_llama_server(state).await {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
+    }
+}
+
 pub async fn download(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let repo = body
         .get("repo")
