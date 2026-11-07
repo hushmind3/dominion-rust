@@ -21,11 +21,15 @@ fn effective_agent(state: &AppState, session_id: &str) -> Option<String> {
         })
 }
 
-fn checkpoint_id(scope: &MemoryScope) -> String {
+/// Deterministic and semantic learning advance independently. Sharing one
+/// checkpoint let automatic model-free learning suppress a later semantic
+/// extraction for the same message.
+fn checkpoint_id(scope: &MemoryScope, semantic: bool) -> String {
     memory::stable_id(&[
         &scope.session_id,
         &scope.partition_key,
         scope.agent_id.as_deref().unwrap_or("default"),
+        if semantic { "semantic" } else { "deterministic" },
     ])
 }
 
@@ -132,7 +136,7 @@ fn enqueue_for_agent_through_mode(
     let scope = MemoryScope::for_session(&state.store, session_id, agent_id);
     if state
         .store
-        .get("learning_checkpoint", &checkpoint_id(&scope))
+        .get("learning_checkpoint", &checkpoint_id(&scope, semantic))
         .is_some_and(|checkpoint| checkpoint["throughMessageId"].as_str() == Some(through.as_str()))
     {
         return None;
@@ -263,7 +267,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let scope = MemoryScope::for_session(&state.store, session_id, agent_id.as_deref());
     // Multiple durable workers may claim overlapping snapshots. Serialize
     // this actor's checkpoint independently of its foreground chat turn.
-    let lock_id = format!("learning:{}", checkpoint_id(&scope));
+    let semantic = input["semantic"].as_bool() == Some(true);
+    let lock_id = format!("learning:{}", checkpoint_id(&scope, semantic));
     if !state.begin_session(&lock_id) {
         return Err("deferred: learning checkpoint is already in use".into());
     }
@@ -289,7 +294,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .ok_or("학습 스냅샷의 마지막 메시지 ID가 없습니다.")?;
     let checkpoint = state
         .store
-        .get("learning_checkpoint", &checkpoint_id(&scope));
+        .get("learning_checkpoint", &checkpoint_id(&scope, semantic));
     let start = checkpoint
         .as_ref()
         .and_then(|checkpoint| checkpoint["throughMessageId"].as_str())
@@ -364,7 +369,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             .put(
                 "learning_checkpoint",
                 &json!({
-                    "id":checkpoint_id(&scope),"sessionId":session_id,"agentId":scope.agent_id,
+                    "id":checkpoint_id(&scope, semantic),"sessionId":session_id,"agentId":scope.agent_id,
                     "partitionKey":scope.partition_key,"throughMessageId":snapshot_last_id,
                     "updatedAt":chrono::Utc::now().to_rfc3339(),
                 }),
@@ -428,7 +433,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .put(
             "learning_checkpoint",
             &json!({
-                "id":checkpoint_id(&scope),"sessionId":session_id,"agentId":scope.agent_id,
+                "id":checkpoint_id(&scope, semantic),"sessionId":session_id,"agentId":scope.agent_id,
                 "partitionKey":scope.partition_key,"throughMessageId":through,
                 "updatedAt":chrono::Utc::now().to_rfc3339(),
             }),
@@ -920,6 +925,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
     #[test]
+    fn deterministic_completion_does_not_block_semantic_learning() {
+        let (state, dir) = state();
+        state.store.put("agent", &json!({"id":"a"}));
+        state.store.put(
+            "session",
+            &json!({"id":"s","agentId":"a","providerId":"provider-a","model":"m"}),
+        );
+        state.store.write_message(
+            &json!({"id":"u1","session_id":"s","role":"user","content":"기억해"}),
+        );
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        state.store.put(
+            "learning_checkpoint",
+            &json!({
+                "id": checkpoint_id(&scope, false),
+                "sessionId": "s",
+                "agentId": "a",
+                "throughMessageId": "u1",
+            }),
+        );
+        assert!(enqueue(&state, "s", "", "").is_none());
+        let semantic = enqueue_semantic(&state, "s", "", "").expect("semantic job");
+        assert_eq!(semantic["input"]["semantic"], true);
+        assert_eq!(semantic["input"]["throughMessageId"], "u1");
+        state.store.put(
+            "learning_checkpoint",
+            &json!({
+                "id": checkpoint_id(&scope, true),
+                "sessionId": "s",
+                "agentId": "a",
+                "throughMessageId": "u1",
+            }),
+        );
+        assert!(enqueue_semantic(&state, "s", "", "").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn explicit_room_learning_freezes_each_actor_provider_instead_of_last_speaker() {
         let (state, dir) = state();
         for (id, provider, model) in [("a", "pa", "ma"), ("b", "pb", "mb")] {
@@ -1047,7 +1090,7 @@ mod tests {
         let context = JobContext::new(state.clone(), "unit-learning-job".into());
         let first_job = json!({"input":{"sessionId":"s","agentId":"a","providerId":"p","throughMessageId":"failed","semantic":true}});
         let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
-        let lock_id = format!("learning:{}", checkpoint_id(&scope));
+    let lock_id = format!("learning:{}", checkpoint_id(&scope, true));
         assert!(state.begin_session(&lock_id));
         assert!(run(&context, &first_job)
             .await
@@ -1105,7 +1148,7 @@ mod tests {
         assert_eq!(
             state
                 .store
-                .get("learning_checkpoint", &checkpoint_id(&scope))
+                .get("learning_checkpoint", &checkpoint_id(&scope, true))
                 .unwrap()["throughMessageId"],
             "u2"
         );
