@@ -774,6 +774,9 @@ async fn run_turn_body(
     let mut final_reasoning = String::new();
     let mut last_reasoning = String::new();
     let mut total_tokens: u64 = 0;
+    let mut prompt_tokens_total: u64 = 0;
+    let mut completion_tokens_total: u64 = 0;
+    let mut usage_estimated = false;
     let started_at = std::time::Instant::now();
     metrics.lock().unwrap().context_elapsed_ms = turn_started.elapsed().as_millis() as u64;
     let mut finished = false;
@@ -964,7 +967,32 @@ async fn run_turn_body(
         last_reasoning = completion.reasoning.clone();
         // Intermediate preambles are stored with their tool-call message, so
         // the final message keeps only the last substantive answer.
-        total_tokens += completion.usage;
+        // Exact provider usage when available; otherwise estimate from the
+        // prompt and the streamed output so the UI always shows a number.
+        let (call_prompt, call_completion) = if completion.usage_exact {
+            (completion.prompt_tokens, completion.completion_tokens)
+        } else {
+            usage_estimated = true;
+            let prompt_chars: usize = messages
+                .iter()
+                .filter_map(|message| message["content"].as_str())
+                .map(str::len)
+                .sum();
+            let output_chars =
+                completion.content.chars().count() + completion.reasoning.chars().count();
+            (
+                ((prompt_chars / 4).max(1)) as u64,
+                ((output_chars / 4).max(1)) as u64,
+            )
+        };
+        prompt_tokens_total += call_prompt;
+        completion_tokens_total += call_completion;
+        let call_total = if completion.usage > 0 {
+            completion.usage
+        } else {
+            call_prompt + call_completion
+        };
+        total_tokens += call_total;
         metrics.lock().unwrap().tokens = total_tokens;
         if total_tokens > MAX_TOKENS {
             return Err(format!(
@@ -1750,6 +1778,16 @@ async fn run_turn_body(
         execution["budget"] = budget.snapshot();
         state.store.put("execution", &execution);
     }
+    // Attach the usage to the message so every client can show what the turn
+    // cost without a second lookup.
+    metadata["usage"] = json!({
+        "promptTokens": prompt_tokens_total,
+        "completionTokens": completion_tokens_total,
+        "totalTokens": total_tokens,
+        "estimated": usage_estimated,
+        "providerId": provider.id,
+        "model": provider.model,
+    });
     let saved = state
         .store
         .write_message(&json!({

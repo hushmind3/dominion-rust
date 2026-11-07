@@ -1,6 +1,6 @@
 import {createPortal} from 'react-dom'
 import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
-import {FormEvent,useEffect,useRef,useState,type KeyboardEvent} from 'react'
+import {FormEvent,useEffect,useMemo,useRef,useState,type KeyboardEvent} from 'react'
 import {ArrowRight,ArrowUp,BrainCircuit,Check,ChevronDown,ChevronRight,CircleHelp,Clock3,Code2,Command,Compass,Copy,Cpu,CornerDownLeft,HardDrive,List,LoaderCircle,MessageCircle,MoreHorizontal,Plus,Power,RefreshCw,ShieldAlert,ShieldCheck,SlidersHorizontal,Sparkles,TerminalSquare,Trash2,X} from 'lucide-react'
 import {Agent,Approval,ChatMessage,ChatSession,Provider,get,post,resolveApproval,streamChat,koreanReasoningEnabled,koreanReasoningKey} from '../api'
 import {Action,Empty,Notice,StateTag,refresh,useRemote} from '../components/UI'
@@ -36,7 +36,9 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const current=sessionId;
  const selectedSession=sessions.value.find(session=>session.id===current);
  const transcript=useRemote<ChatMessage[]>(current?'/api/sessions/'+encodeURIComponent(current)+'/messages':null,[]);
- const messages=transcript.value;
+ const messages=transcript.value
+ const messageUsage=useMemo(()=>messages.reduce((sum,message)=>sum+(Number(message.metadata?.usage?.totalTokens)||0),0),[messages])
+ const [serverUsage,setServerUsage]=useState(0);
  const approvals=useRemote<Approval[]>('/api/approvals',[]);
  const [input,setInput]=useState('');
  const [agentChoice,setAgentChoice]=useState<{scope?:string;id:string}>();
@@ -75,6 +77,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const viewingTurn=turnSession===current&&(!savedMessageId||!messages.some(message=>message.id===savedMessageId));
  const slashItems=slashOpen?slashCandidates(input,agents.value,models):[];
  const transcriptRevision=JSON.stringify([messages.at(-1)?.id,messages.length,viewingTurn?live.length:0,viewingTurn?thought.length:0,viewingTurn?toolStatus:'',approval?.id]);
+ useEffect(()=>{if(!current){setServerUsage(0);return}let alive=true;get<{totalTokens?:number}>('/api/sessions/'+encodeURIComponent(current)+'/usage').then(usage=>{if(alive)setServerUsage(Number(usage.totalTokens)||0)}).catch(()=>{});return()=>{alive=false}},[current,transcriptRevision])
  const {scrollRef,onScroll,jumpDown}=useTranscriptScroll(current,transcriptRevision);
  const modelPanel=useAnchoredPanel(modelMenu,()=>setModelMenu(false),380);
  const permissionPanel=useAnchoredPanel(permissionOpen,()=>setPermissionOpen(false),300,'top');
@@ -385,6 +388,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
      </div>
     </div>
     <div className="flex shrink-0 items-center gap-1">
+     {(serverUsage||messageUsage)>0&&<span className="hidden rounded-lg border border-[#E7DDCC] bg-[#F7F1E6] px-2 py-1 text-[10px] font-semibold text-[#8A775F] sm:inline-flex">{t('usage.sessionTotal',{count:(serverUsage||messageUsage).toLocaleString()})}</span>}
      <span role="status" className={'hidden items-center gap-2 text-[11px] font-semibold sm:inline-flex '+(modelState.confirmed?'text-emerald-700':'text-[#7C7469]')}><i className={'size-1.5 rounded-full '+(modelState.confirmed?'bg-emerald-500':'bg-slate-400')}/>{modelState.label}</span>
      
      <Button size="icon" variant="ghost" title={t('chat.modelManage')} onClick={openModels}><Cpu size={18}/></Button>
@@ -431,7 +435,7 @@ function Message({message,agentName,showReasoning}:{message:ChatMessage;agentNam
  return <div className={'flex min-w-0 items-start gap-3 '+(human?'':'')} data-message>
   <div className={'grid size-9 shrink-0 place-items-center rounded-xl '+(human?'bg-[#E9E2D7] text-[#4A443C]':'bg-[#F7E8E1] text-[#A94E30]')}>{human?'U':<Sparkles size={17}/>}</div>
   <div className="relative min-w-0 flex-1">
-   <div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#4A443C]">{human?t('ui.you'):agentName||'DOMINION'}</div>
+   <div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#4A443C]">{human?t('ui.you'):agentName||'DOMINION'}{!human&&message.metadata?.usage?.totalTokens?<span className="ml-auto rounded border border-[#E7DDCC] bg-[#F7F1E6] px-1.5 py-0.5 text-[9px] font-medium text-[#8A775F]" title={t('usage.detail',{prompt:(message.metadata.usage.promptTokens||0).toLocaleString(),completion:(message.metadata.usage.completionTokens||0).toLocaleString()})}>{message.metadata.usage.estimated?t('usage.tokensEstimated',{count:message.metadata.usage.totalTokens.toLocaleString()}):t('usage.tokens',{count:message.metadata.usage.totalTokens.toLocaleString()})}</span>:null}</div>
    {showReasoning&&message.reasoning&&<details className="mb-3 max-h-56 overflow-y-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]" open={open}><summary className="cursor-pointer select-none" onClick={e=>{e.preventDefault();setOpen(v=>!v)}}><BrainCircuit size={14} className="inline"/> {t('chat.reasoningProcess',{count:message.reasoning.length.toLocaleString()})} <ChevronRight size={13} className="inline"/></summary><div className="mt-2 whitespace-pre-wrap">{message.reasoning}</div></details>}
    <div className={"min-w-0 break-words text-sm leading-7 text-[#3A342D] [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-slate-100 [&_code]:break-words [&_ul]:list-disc [&_ul]:pl-6 "+(human?"rounded-xl bg-[#F3EEE5] px-4 py-3":"")}>{message.content||(!human&&message.tool_calls?.length?t('chat.toolRequest'):'' )}</div>
    {!human&&message.content&&<Button className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-[#7C7469] hover:bg-[#F3EEE5]" onClick={()=>navigator.clipboard.writeText(message.content)} title={t('chat.copy')}><Copy size={14}/></Button>}

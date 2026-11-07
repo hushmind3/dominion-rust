@@ -972,6 +972,43 @@ impl Store {
         })
     }
 
+    /// Token totals for one session, including calls made before usage was
+    /// attached to messages. Audit is the durable source of truth.
+    pub fn session_usage(&self, session_id: &str) -> Value {
+        let conn = self.conn.lock().unwrap();
+        let summary = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CAST(json_extract(detail,'$.promptTokens') AS INTEGER)),0),
+                    COALESCE(SUM(CAST(json_extract(detail,'$.completionTokens') AS INTEGER)),0),
+                    COALESCE(SUM(CAST(json_extract(detail,'$.totalTokens') AS INTEGER)),0),
+                    COALESCE(SUM(CASE WHEN json_extract(detail,'$.estimated')=1 THEN 1 ELSE 0 END),0)
+             FROM audit
+             WHERE event='model.usage' AND json_extract(detail,'$.sessionId')=?1",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        );
+        match summary {
+            Ok((calls, prompt, completion, total, estimated)) => json!({
+                "calls": calls.max(0),
+                "promptTokens": prompt.max(0),
+                "completionTokens": completion.max(0),
+                "totalTokens": total.max(0),
+                "estimatedCalls": estimated.max(0),
+            }),
+            Err(_) => json!({
+                "calls":0,"promptTokens":0,"completionTokens":0,"totalTokens":0,"estimatedCalls":0
+            }),
+        }
+    }
+
     pub fn recent_audit(&self, limit: usize) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn

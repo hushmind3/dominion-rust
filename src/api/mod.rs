@@ -179,6 +179,7 @@ pub fn router(state: AppState) -> Router {
                 .post(sessions::rename_session),
         )
         .route("/api/sessions/:id/messages", get(sessions::session_messages))
+        .route("/api/sessions/:id/usage", get(sessions::session_usage))
         .route("/api/sessions/:id/rename", post(sessions::rename_session))
         .route("/api/sessions/:id/clear", post(sessions::clear_session))
         .route("/api/sessions/:id/fork", post(sessions::fork_session))

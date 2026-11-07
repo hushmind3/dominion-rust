@@ -496,15 +496,19 @@ pub fn record_usage(
     );
 }
 
-/// Usage for a streaming call where only the total is known.
-pub fn record_usage_total(
+/// Usage for a streaming call where the breakdown may be estimated.
+#[allow(clippy::too_many_arguments)]
+pub fn record_usage_tokens(
     state: &AppState,
     provider_id: &str,
     model: &str,
     local: bool,
     purpose: &str,
     session_id: Option<&str>,
+    prompt_tokens: u64,
+    completion_tokens: u64,
     total_tokens: u64,
+    estimated: bool,
 ) {
     if total_tokens == 0 {
         return;
@@ -517,9 +521,35 @@ pub fn record_usage_total(
             "local": local,
             "purpose": purpose,
             "sessionId": session_id,
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
             "totalTokens": total_tokens,
-            "estimated": true,
+            "estimated": estimated,
         }),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_usage_total(
+    state: &AppState,
+    provider_id: &str,
+    model: &str,
+    local: bool,
+    purpose: &str,
+    session_id: Option<&str>,
+    total_tokens: u64,
+) {
+    record_usage_tokens(
+        state,
+        provider_id,
+        model,
+        local,
+        purpose,
+        session_id,
+        0,
+        0,
+        total_tokens,
+        true,
     );
 }
 

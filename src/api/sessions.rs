@@ -42,6 +42,13 @@ pub async fn session_messages(
     Json(json!(state.store.messages(&id)))
 }
 
+pub async fn session_usage(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<Value> {
+    Json(state.store.session_usage(&id))
+}
+
 pub async fn rename_session(
     State(state): State<AppState>,
     Path(id): Path<String>,

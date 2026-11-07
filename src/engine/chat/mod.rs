@@ -144,6 +144,9 @@ struct Completion {
     reasoning: String,
     tool_calls: Vec<ToolCall>,
     usage: u64,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    usage_exact: bool,
     first_delta_ms: Option<u64>,
 }
 

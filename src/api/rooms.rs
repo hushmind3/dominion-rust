@@ -180,8 +180,20 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         if crate::engine::gateway::is_local_runtime(&provider) {
             return Err(bad("로컬 런타임 모델은 방 모델로 선택할 수 없습니다."));
         }
+        let effort = entry
+            .get("reasoningEffort")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if !valid_effort(effort) {
+            return Err(bad("추론 강도는 none/minimal/low/medium/high 중 하나여야 합니다."));
+        }
         if seen_models.insert(format!("{provider_id}|{model}")) {
-            models.push(json!({"providerId":provider_id,"model":model}));
+            let mut picked = json!({"providerId":provider_id,"model":model});
+            if !effort.is_empty() {
+                picked["reasoningEffort"] = json!(effort);
+            }
+            models.push(picked);
         }
     }
     let max_turns = body
@@ -191,6 +203,10 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         .unwrap_or(0);
     if !(0..=100_000).contains(&max_turns) {
         return Err(bad("총 AI 발언 상한은 0~100000 사이여야 합니다."));
+    }
+    let reasoning_effort=text_field(body,previous,"reasoningEffort","",16)?;
+    if !valid_effort(&reasoning_effort) {
+        return Err(bad("추론 강도는 none/minimal/low/medium/high 중 하나여야 합니다."));
     }
     Ok(json!({
         "id":id,"name":name,"agentIds":agent_ids,"routingMode":routing,
@@ -202,8 +218,12 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         "toolsEnabled":bool_field(body,previous,"toolsEnabled",false)?,
         "autoLearning":bool_field(body,previous,"autoLearning",true)?,
         "autoModels":bool_field(body,previous,"autoModels",true)?,
+        "reasoningEffort":reasoning_effort,
         "models":models,
     }))
+}
+fn valid_effort(value: &str) -> bool {
+    matches!(value, "" | "none" | "minimal" | "low" | "medium" | "high")
 }
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -575,7 +595,7 @@ pub async fn state(State(state): State<AppState>, Path(id): Path<String>) -> Res
             .collect::<Vec<_>>();
         Ok(
             json!({"room":room(&state,&id)?,"sessionId":session_id,"status":status,"activeAgentId":active_agent,"queueDepth":queue_depth,
-            "jobs":jobs.iter().take(30).collect::<Vec<_>>(),"executions":executions,"learningJobs":learning,"operations":operations,"approvals":approvals}),
+            "jobs":jobs.iter().take(30).collect::<Vec<_>>(),"executions":executions,"learningJobs":learning,"operations":operations,"approvals":approvals,"usage":state.store.session_usage(session_id)}),
         )
     })())
 }

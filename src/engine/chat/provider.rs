@@ -473,6 +473,22 @@ async fn fallback_candidates(
 /// Returns the completed response and the route which actually generated it.
 /// A private relay preserves streaming to the user while detecting whether any
 /// output was emitted before a provider failed.
+/// Providers that omit usage during streaming still need a cost signal, so
+/// prompt/output characters provide a conservative estimate. The flag stored
+/// with the message keeps the estimate distinguishable from exact usage.
+fn estimate_usage(messages: &[Value], completion: &Completion) -> (u64, u64) {
+    let prompt_chars: usize = messages
+        .iter()
+        .filter_map(|message| message["content"].as_str())
+        .map(str::len)
+        .sum();
+    let output_chars = completion.content.chars().count() + completion.reasoning.chars().count();
+    (
+        ((prompt_chars / 4).max(1)) as u64,
+        ((output_chars / 4).max(1)) as u64,
+    )
+}
+
 pub(super) async fn stream_completion(
     state: &AppState,
     client: &reqwest::Client,
@@ -743,12 +759,20 @@ async fn stream_completion_once(
             if let Some(error) = piece.get("error") {
                 return Err(format!("모델 오류: {error}"));
             }
-            if let Some(total) = piece
-                .get("usage")
-                .and_then(|usage| usage.get("total_tokens"))
-                .and_then(|value| value.as_u64())
-            {
-                completion.usage = total;
+            if let Some(usage) = piece.get("usage").filter(|value| value.is_object()) {
+                let prompt = usage.get("prompt_tokens").and_then(Value::as_u64);
+                let generated = usage.get("completion_tokens").and_then(Value::as_u64);
+                if let Some(total) = usage.get("total_tokens").and_then(Value::as_u64) {
+                    completion.usage = total;
+                }
+                if let (Some(prompt), Some(generated)) = (prompt, generated) {
+                    completion.prompt_tokens = prompt;
+                    completion.completion_tokens = generated;
+                    if completion.usage == 0 {
+                        completion.usage = prompt + generated;
+                    }
+                    completion.usage_exact = true;
+                }
             }
             if let Some(reason) = piece["choices"][0]["finish_reason"].as_str() {
                 if reason == "content_filter" {
@@ -862,14 +886,27 @@ async fn stream_completion_once(
         })
         .collect();
 
-    crate::engine::gateway::record_usage_total(
+    let (prompt_tokens, completion_tokens) = if completion.usage_exact {
+        (completion.prompt_tokens, completion.completion_tokens)
+    } else {
+        estimate_usage(messages, &completion)
+    };
+    let total_tokens = if completion.usage > 0 {
+        completion.usage
+    } else {
+        prompt_tokens + completion_tokens
+    };
+    crate::engine::gateway::record_usage_tokens(
         state,
         &provider.id,
         &provider.model,
         provider.local,
         "chat",
         Some(session_id),
-        completion.usage,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        !completion.usage_exact,
     );
     Ok(completion)
 }
@@ -1173,15 +1210,21 @@ async fn stream_anthropic_once(
         return Err("Anthropic 스트림이 완료 신호 없이 종료되었습니다.".into());
     }
     completion.tool_calls = calls;
+    completion.prompt_tokens = input_tokens;
+    completion.completion_tokens = output_tokens;
     completion.usage = input_tokens + output_tokens;
-    crate::engine::gateway::record_usage_total(
+    completion.usage_exact = true;
+    crate::engine::gateway::record_usage_tokens(
         state,
         &provider.id,
         &provider.model,
         provider.local,
         "chat",
         Some(session_id),
+        input_tokens,
+        output_tokens,
         completion.usage,
+        false,
     );
     Ok(completion)
 }
