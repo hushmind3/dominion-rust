@@ -188,6 +188,8 @@ pub(super) fn select_provider(
         context_tokens: route.context_tokens,
         max_output_tokens: route.max_output_tokens,
         requests_per_minute: route.requests_per_minute,
+        kind: route.kind,
+        account_id: route.account_id,
     })
 }
 
@@ -466,6 +468,8 @@ async fn fallback_candidates(
             context_tokens: route.context_tokens,
             max_output_tokens: route.max_output_tokens,
             requests_per_minute: route.requests_per_minute,
+            kind: route.kind,
+            account_id: route.account_id,
         })
         .collect()
 }
@@ -622,6 +626,12 @@ async fn stream_completion_once(
     tx: &UnboundedSender<Value>,
     convert_native_history: bool,
 ) -> Result<Completion, String> {
+    if provider.kind == "codex" {
+        return stream_codex_once(
+            state, client, provider, messages, request, session_id, tx,
+        )
+        .await;
+    }
     if provider.reasoning_protocol == "anthropic" {
         return stream_anthropic_once(
             state, client, provider, messages, tools, request, session_id, tx,
@@ -1032,6 +1042,204 @@ fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// Converts chat messages into the Responses API shape used by the Codex
+/// backend. System text becomes `instructions`; tool observations become user
+/// text because Codex is used as a text participant here.
+fn codex_input(messages: &[Value]) -> (String, Vec<Value>) {
+    let mut instructions = String::new();
+    let mut input = Vec::new();
+    for message in messages {
+        let role = message["role"].as_str().unwrap_or("");
+        let content = message["content"].as_str().unwrap_or("");
+        if content.trim().is_empty() {
+            continue;
+        }
+        match role {
+            "system" => {
+                if !instructions.is_empty() {
+                    instructions.push_str("\n\n");
+                }
+                instructions.push_str(content);
+            }
+            "assistant" => input.push(json!({
+                "role":"assistant",
+                "content":[{"type":"output_text","text":content}]
+            })),
+            "tool" => input.push(json!({
+                "role":"user",
+                "content":[{"type":"input_text","text":format!("Tool observation: {content}")}]
+            })),
+            _ => input.push(json!({
+                "role":"user",
+                "content":[{"type":"input_text","text":content}]
+            })),
+        }
+    }
+    if input.is_empty() {
+        input.push(json!({
+            "role":"user",
+            "content":[{"type":"input_text","text":"ping"}]
+        }));
+    }
+    (instructions, input)
+}
+
+/// Codex/ChatGPT subscription models speak the Responses API on a different
+/// host and require the OAuth account id, not an API key.
+async fn stream_codex_once(
+    state: &AppState,
+    client: &reqwest::Client,
+    provider: &ProviderRef,
+    messages: &[Value],
+    request: &TurnRequest,
+    session_id: &str,
+    tx: &UnboundedSender<Value>,
+) -> Result<Completion, String> {
+    let account_id = provider
+        .account_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("Codex OAuth 계정 ID가 없습니다. 모델 관리에서 Codex를 다시 가져오세요.")?;
+    let started = std::time::Instant::now();
+    let (instructions, input) = codex_input(messages);
+    let mut body = json!({
+        "model": provider.model,
+        "instructions": if instructions.is_empty() { "You are a helpful assistant. Answer in Korean unless the user writes in another language.".to_string() } else { instructions },
+        "input": input,
+        "stream": true,
+        "store": false,
+    });
+    if let Some(limit) = provider.max_output_tokens {
+        body["max_output_tokens"] = json!(limit);
+    }
+    if let Some(effort) = request
+        .reasoning_effort
+        .as_deref()
+        .filter(|effort| *effort != "none")
+    {
+        body["reasoning"] = json!({"effort": effort});
+    }
+    let response = client
+        .post(format!("{}/responses", provider.base_url.trim_end_matches('/')))
+        .header("Authorization", format!("Bearer {}", provider.api_key))
+        .header("chatgpt-account-id", account_id)
+        .header("OpenAI-Beta", "responses=experimental")
+        .header("originator", "codex_cli_rs")
+        .header("User-Agent", "codex_cli_rs/0.0.0")
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| format!("{} 연결 실패: {error}", provider.name))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if matches!(status.as_u16(), 401 | 403) {
+            return Err("Codex OAuth 토큰이 만료되었거나 거부되었습니다. Codex 앱에서 다시 로그인한 뒤 모델 관리에서 다시 가져오세요.".into());
+        }
+        return Err(format!(
+            "{} 호출 실패 (HTTP {status}): {}",
+            provider.name,
+            text.chars().take(600).collect::<String>()
+        ));
+    }
+
+    let mut completion = Completion::default();
+    let mut buffer = SseBuffer::default();
+    let mut stream = response.bytes_stream();
+    let mut terminated = false;
+    'stream: while let Some(chunk) = stream.next().await {
+        if state.is_cancelled(session_id) {
+            return Err("실행이 중단되었습니다.".into());
+        }
+        let chunk = chunk.map_err(|error| format!("스트림 오류: {error}"))?;
+        buffer.push(&chunk)?;
+        while let Some(block) = buffer.pop()? {
+            let payload = block
+                .lines()
+                .filter(|line| line.starts_with("data:"))
+                .map(|line| line[5..].trim_start())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if payload == "[DONE]" {
+                terminated = true;
+                break 'stream;
+            }
+            if payload.is_empty() {
+                continue;
+            }
+            let piece: Value = match serde_json::from_str(&payload) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            match piece["type"].as_str().unwrap_or("") {
+                "response.output_text.delta" => {
+                    let delta = piece["delta"].as_str().unwrap_or("");
+                    if delta.is_empty() {
+                        continue;
+                    }
+                    if completion.first_delta_ms.is_none() {
+                        completion.first_delta_ms = Some(started.elapsed().as_millis() as u64);
+                    }
+                    completion.content.push_str(delta);
+                    let _ = tx.send(json!({"type":"text","text":delta}));
+                }
+                "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                    let delta = piece["delta"].as_str().unwrap_or("");
+                    if !delta.is_empty() {
+                        if completion.first_delta_ms.is_none() {
+                            completion.first_delta_ms = Some(started.elapsed().as_millis() as u64);
+                        }
+                        completion.reasoning.push_str(delta);
+                        let _ = tx.send(json!({"type":"reasoning","text":delta}));
+                    }
+                }
+                "response.completed" => {
+                    if let Some(usage) = piece["response"]["usage"].as_object() {
+                        completion.prompt_tokens =
+                            usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+                        completion.completion_tokens =
+                            usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+                        completion.usage = usage
+                            .get("total_tokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(completion.prompt_tokens + completion.completion_tokens);
+                        completion.usage_exact = true;
+                    }
+                    terminated = true;
+                }
+                "response.failed" => {
+                    let message = piece["response"]["error"]["message"]
+                        .as_str()
+                        .unwrap_or("Codex 응답이 실패했습니다.");
+                    return Err(format!("Codex: {message}"));
+                }
+                "error" => {
+                    let message = piece["error"]["message"].as_str().unwrap_or("알 수 없는 오류");
+                    return Err(format!("Codex: {message}"));
+                }
+                _ => {}
+            }
+        }
+    }
+    if !terminated {
+        return Err("Codex 스트림이 완료 신호 없이 종료되었습니다.".into());
+    }
+    crate::engine::gateway::record_usage_tokens(
+        state,
+        &provider.id,
+        &provider.model,
+        provider.local,
+        "chat",
+        Some(session_id),
+        completion.prompt_tokens,
+        completion.completion_tokens,
+        completion.usage,
+        !completion.usage_exact,
+    );
+    Ok(completion)
+}
+
 async fn stream_anthropic_once(
     state: &AppState,
     client: &reqwest::Client,
@@ -1326,7 +1534,7 @@ mod tests {
             api_key:String::new(), model:"small".into(), tool_mode:"compat".into(),
             reasoning_protocol:String::new(), local:true,
             context_tokens:Some(4096), max_output_tokens:Some(512),
-            requests_per_minute: None,
+            requests_per_minute: None, kind:"openai".into(), account_id:None,
         };
         let original = vec![
             json!({"role":"system","content":"working context"}),
@@ -1592,7 +1800,7 @@ mod tests {
             model: "claude-test".into(), tool_mode: "native".into(),
             reasoning_protocol: "anthropic".into(), local: false,
             context_tokens: None, max_output_tokens: Some(4096),
-            requests_per_minute: None,
+            requests_per_minute: None, kind: "anthropic".into(), account_id: None,
         };
         let request = TurnRequest::from_value(&json!({
             "input":"안녕","sessionId":"s","autoLearning":false

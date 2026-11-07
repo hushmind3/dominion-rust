@@ -4,6 +4,140 @@ use serde_json::{json,Value};
 use std::time::Duration;
 use super::response::error;
 
+fn home_file(relative: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(relative))
+}
+
+/// Codex stores a ChatGPT OAuth session in ~/.codex/auth.json. Only the
+/// presence and account are exposed to the UI; tokens never leave the vault.
+fn codex_auth() -> Result<Value, String> {
+    let path = home_file(".codex/auth.json").ok_or("HOME 환경변수를 찾을 수 없습니다.")?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|_| "Codex 로그인 정보를 찾을 수 없습니다. Codex 앱에서 먼저 로그인하세요.")?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|_| "Codex 로그인 정보 형식을 읽을 수 없습니다.")?;
+    let access = value["tokens"]["access_token"]
+        .as_str()
+        .filter(|token| !token.is_empty())
+        .ok_or("Codex OAuth 토큰이 없습니다. Codex 앱에서 ChatGPT로 로그인하세요.")?;
+    if value["tokens"]["account_id"].as_str().is_none() {
+        return Err("Codex 계정 ID가 없습니다. Codex 앱에서 다시 로그인하세요.".into());
+    }
+    let _ = access;
+    Ok(value)
+}
+
+fn codex_model() -> String {
+    if let Some(path) = home_file(".codex/config.toml") {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            for line in text.lines() {
+                let line = line.trim();
+                if let Some(value) = line.strip_prefix("model = ") {
+                    let model = value.trim().trim_matches('"');
+                    if !model.is_empty() {
+                        return model.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "gpt-6.1-sol".to_string()
+}
+
+pub async fn cli_credentials() -> Json<Value> {
+    let codex = codex_auth().ok();
+    let claude = home_file(".claude/.credentials.json").is_some_and(|path| path.exists());
+    let gemini = home_file(".gemini/oauth_creds.json").is_some_and(|path| path.exists());
+    let opencode = [
+        ".local/share/opencode/auth.json",
+        ".config/opencode/auth.json",
+    ]
+    .iter()
+    .any(|path| home_file(path).is_some_and(|path| path.exists()));
+    Json(json!([
+        {
+            "id":"codex",
+            "name":"Codex (ChatGPT OAuth)",
+            "available":codex.is_some(),
+            "supported":true,
+            "accountId":codex.as_ref().and_then(|value| value["tokens"]["account_id"].as_str()),
+            "model":codex_model(),
+            "hint":if codex.is_some() { "Codex 앱의 ChatGPT 로그인을 그대로 사용합니다." } else { "Codex 앱에서 ChatGPT로 로그인한 뒤 다시 시도하세요." }
+        },
+        {
+            "id":"claude",
+            "name":"Claude Code (OAuth)",
+            "available":claude,
+            "supported":false,
+            "hint":if claude { "로그인 파일은 찾았지만 아직 가져오기를 지원하지 않습니다." } else { "Claude Code에서 로그인하면 감지됩니다." }
+        },
+        {
+            "id":"gemini",
+            "name":"Gemini CLI (OAuth)",
+            "available":gemini,
+            "supported":false,
+            "hint":if gemini { "로그인 파일은 찾았지만 아직 가져오기를 지원하지 않습니다." } else { "Gemini CLI에서 로그인하면 감지됩니다." }
+        },
+        {
+            "id":"opencode",
+            "name":"OpenCode (OAuth/CLI)",
+            "available":opencode,
+            "supported":false,
+            "hint":if opencode { "OpenCode 인증 파일은 찾았지만 아직 가져오기를 지원하지 않습니다." } else { "OpenCode에서 로그인하면 감지됩니다." }
+        }
+    ]))
+}
+
+pub async fn import_cli_credential(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    let source = body["source"].as_str().unwrap_or("");
+    if source != "codex" {
+        return error(StatusCode::BAD_REQUEST, "지원하지 않는 OAuth/CLI 소스입니다.");
+    }
+    let auth = match codex_auth() {
+        Ok(value) => value,
+        Err(message) => return error(StatusCode::BAD_REQUEST, &message),
+    };
+    let tokens = &auth["tokens"];
+    let access = tokens["access_token"].as_str().unwrap_or_default().to_string();
+    let account = tokens["account_id"].as_str().unwrap_or_default().to_string();
+    let id = "codex-oauth";
+    let previous = state.store.get("provider", id).unwrap_or(Value::Null);
+    let mut record = json!({
+        "id":id,
+        "name":"Codex (ChatGPT OAuth)",
+        "baseUrl":"https://chatgpt.com/backend-api/codex",
+        "kind":"codex",
+        "model":codex_model(),
+        "accountId":account,
+        "enabled":true,
+        "local":false,
+        "toolMode":"compat",
+        "reasoningProtocol":"openai",
+        "reflection":previous["reflection"].as_bool().unwrap_or(false),
+        "learning":previous["learning"].as_bool().unwrap_or(false),
+        "requestsPerMinute":0
+    });
+    if let Some(flags) = record.as_object_mut() {
+        flags.remove("apiKey");
+    }
+    state.save_secret(&format!("provider:{id}"), &access);
+    state.save_secret(
+        &format!("provider:{id}:oauth"),
+        &json!({
+            "refreshToken":tokens["refresh_token"],
+            "clientId":tokens["oauth_provenance"]["client_id"],
+            "lastRefresh":auth["last_refresh"],
+        })
+        .to_string(),
+    );
+    let Some(saved) = state.store.put("provider", &record) else {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Codex 연결을 저장할 수 없습니다.");
+    };
+    state.store.audit("provider.saved", json!({"providerId":id,"source":"codex-oauth"}));
+    state.bus.record("provider", &saved);
+    Json(public_provider(&state, saved)).into_response()
+}
+
 fn needs_account_discovery(provider: &Value) -> bool {
     provider["accountId"].as_str().unwrap_or("").trim().is_empty()
         && provider["baseUrl"].as_str().is_some_and(|url| {
@@ -120,6 +254,7 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
     let kind = match body.get("kind").and_then(|value| value.as_str()) {
         Some("ollama") => "ollama",
         Some("anthropic") => "anthropic",
+        Some("codex") => "codex",
         _ => "openai",
     };
     let existing = state.store.get("provider", &id);
@@ -186,7 +321,7 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
             Some("compat") => "compat",
             Some("auto") => "auto",
             _ =>
-                if kind == "ollama" {
+                if kind == "ollama" || kind == "codex" {
                     "compat"
                 } else if kind == "anthropic" {
                     "native"
@@ -349,6 +484,8 @@ pub async fn test_provider(
     let cloudflare = base.contains("/client/v4/accounts/") && base.contains("/ai/v1");
     let tested_model = if cloudflare && model.is_empty() {
         "@cf/zai-org/glm-4.7-flash".to_string()
+    } else if kind == "codex" && model.is_empty() {
+        codex_model()
     } else {
         model.clone()
     };
@@ -356,7 +493,26 @@ pub async fn test_provider(
         Ok(client) => client,
         Err(err) => return error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
     };
-    let request = if cloudflare {
+    let request = if kind == "codex" {
+        let account = provider["accountId"].as_str().unwrap_or("");
+        if account.is_empty() {
+            return Json(json!({"ok":false,"message":"Codex 계정 ID가 없습니다. Codex를 다시 가져오세요."})).into_response();
+        }
+        client
+            .post(format!("{base}/responses"))
+            .header("Authorization", format!("Bearer {key}"))
+            .header("chatgpt-account-id", account)
+            .header("OpenAI-Beta", "responses=experimental")
+            .header("originator", "codex_cli_rs")
+            .header("User-Agent", "codex_cli_rs/0.0.0")
+            .json(&json!({
+                "model":tested_model,
+                "input":[{"role":"user","content":[{"type":"input_text","text":"ping"}]}],
+                "stream":false,
+                "store":false,
+                "max_output_tokens":16
+            }))
+    } else if cloudflare {
         client
             .post(format!("{base}/chat/completions"))
             .header("Authorization", format!("Bearer {key}"))
@@ -446,6 +602,21 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
     }
     let base = crate::engine::gateway::resolved_base_url(&provider);
     let kind = provider.get("kind").and_then(|value| value.as_str()).unwrap_or("openai");
+    if kind == "codex" {
+        let current = codex_model();
+        let mut seen = std::collections::HashSet::new();
+        let models: Vec<Value> = [
+            current.clone(),
+            "gpt-5.1-codex".to_string(),
+            "gpt-5.1-codex-mini".to_string(),
+            "gpt-5.1".to_string(),
+        ]
+        .into_iter()
+        .filter(|id| seen.insert(id.clone()))
+        .map(|id| json!({"id":id,"name":id,"free":false}))
+        .collect();
+        return Json(json!(models)).into_response();
+    }
     // Cloudflare's OpenAI-compatible surface has no /models route. Its native
     // model search returns the catalogue instead.
     let cloudflare = base.contains("/client/v4/accounts/") && base.contains("/ai/v1");

@@ -31,6 +31,7 @@ pub struct Route {
     pub context_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub requests_per_minute: Option<u64>,
+    pub account_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -216,6 +217,10 @@ pub fn route_from_provider(
         requests_per_minute: provider["requestsPerMinute"]
             .as_u64()
             .filter(|value| *value > 0),
+        account_id: provider["accountId"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
         id,
         base_url,
         api_key,

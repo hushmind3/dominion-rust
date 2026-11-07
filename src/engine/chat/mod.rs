@@ -163,6 +163,8 @@ struct ProviderRef {
     context_tokens: Option<u64>,
     max_output_tokens: Option<u64>,
     requests_per_minute: Option<u64>,
+    kind: String,
+    account_id: Option<String>,
 }
 
 // SSE entry point used by `POST /api/chat`.

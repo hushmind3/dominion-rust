@@ -140,6 +140,8 @@ pub fn router(state: AppState) -> Router {
             "/api/providers/:id",
             axum::routing::delete(providers::delete_provider),
         )
+        .route("/api/providers/cli", get(providers::cli_credentials))
+        .route("/api/providers/cli/import", post(providers::import_cli_credential))
         .route("/api/providers/:id/models", get(providers::provider_models))
         .route("/api/providers/:id/test", post(providers::test_provider))
         .route("/api/gateways/freellmapi", get(gateways::freellmapi))
