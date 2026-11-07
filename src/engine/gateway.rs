@@ -46,7 +46,9 @@ impl Route {
     }
 }
 
-fn is_local(provider: &Value) -> bool {
+/// A provider that runs on this machine. Room rotation never uses these,
+/// even when an agent's own configuration points at one.
+pub fn is_local_provider(provider: &Value) -> bool {
     let base = provider["baseUrl"].as_str().unwrap_or("");
     provider["local"].as_bool() == Some(true)
         || base.contains("127.0.0.1")
@@ -169,7 +171,7 @@ pub fn route_from_provider(
                 .map(str::to_string)
         })
         .unwrap_or_default();
-    let local = is_local(provider);
+    let local = is_local_provider(provider);
     let context_tokens = provider["capabilities"]["contextTokens"]
         .as_u64()
         .or_else(|| provider["contextTokens"].as_u64());
