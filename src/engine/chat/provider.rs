@@ -718,6 +718,19 @@ async fn stream_completion_once(
             crate::engine::gateway::mark_rate_limited(&provider.base_url, &provider.model);
         }
         let text = response.text().await.unwrap_or_default();
+        let lower = text.to_ascii_lowercase();
+        if text.contains("1305") || lower.contains("temporarily overloaded") {
+            return Err(format!(
+                "{}가 혼잡합니다(1305). 다른 무료 모델을 선택하거나 잠시 후 다시 시도하세요.",
+                provider.name
+            ));
+        }
+        if matches!(status.as_u16(), 401 | 403) && provider.base_url.contains("cloudflare") {
+            return Err(format!(
+                "{} 키가 거부되었습니다. Workers AI 권한이 있는 Cloudflare API 토큰(40자)인지 확인하세요.",
+                provider.name
+            ));
+        }
         return Err(format!(
             "{} 호출 실패 (HTTP {status}): {}",
             provider.name,

@@ -270,6 +270,15 @@ fn model_is_free(_provider: &Value, kind: &str, base: &str, item: &Value, id: &s
     if kind == "ollama" || base.contains(":11434") || base.contains(":1234") {
         return true;
     }
+    // Z.ai publishes three models with free input and output.
+    if base.contains("z.ai") {
+        return matches!(id, "glm-4.7-flash" | "glm-4.5-flash" | "glm-4.6v-flash");
+    }
+    // Workers AI draws from the free daily Neuron allowance, and Groq's
+    // on-demand tier is free within its rate limits.
+    if base.contains("api.cloudflare.com") || base.contains("api.groq.com") {
+        return true;
+    }
     if id.ends_with(":free") || id.contains(":free") {
         return true;
     }
@@ -338,21 +347,21 @@ pub async fn test_provider(
         .unwrap_or("")
         .to_string();
     let cloudflare = base.contains("/client/v4/accounts/") && base.contains("/ai/v1");
+    let tested_model = if cloudflare && model.is_empty() {
+        "@cf/zai-org/glm-4.7-flash".to_string()
+    } else {
+        model.clone()
+    };
     let client = match reqwest::Client::builder().timeout(Duration::from_secs(20)).build() {
         Ok(client) => client,
         Err(err) => return error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
     };
     let request = if cloudflare {
-        let cloudflare_model = if model.is_empty() {
-            "@cf/meta/llama-3.1-8b-instruct".to_string()
-        } else {
-            model.clone()
-        };
         client
             .post(format!("{base}/chat/completions"))
             .header("Authorization", format!("Bearer {key}"))
             .json(&json!({
-                "model":cloudflare_model,
+                "model":tested_model,
                 "messages":[{"role":"user","content":"ping"}],
                 "max_tokens":4,
                 "stream":false
@@ -383,19 +392,40 @@ pub async fn test_provider(
     };
     match request.send().await {
         Ok(response) if response.status().is_success() => {
-            Json(json!({"ok":true,"status":response.status().as_u16(),"accountId":provider["accountId"]})).into_response()
+            Json(json!({
+                "ok":true,
+                "status":response.status().as_u16(),
+                "accountId":provider["accountId"],
+                "model":tested_model
+            })).into_response()
         }
         Ok(response) => {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
             let detail = text.chars().take(300).collect::<String>();
-            let message = match status.as_u16() {
-                401 | 403 => "키가 거부되었습니다. API 토큰 권한과 계정을 확인하세요.",
-                404 | 405 => "주소는 응답했지만 이 경로를 지원하지 않습니다. 서버 주소를 확인하세요.",
-                429 => "호출 한도에 걸렸습니다. 잠시 후 다시 시도하세요.",
-                _ => "연결 테스트에 실패했습니다.",
+            let overloaded = detail.contains("1305")
+                || detail.to_ascii_lowercase().contains("temporarily overloaded");
+            let cloudflare_key_shape = cloudflare && key.len() != 40;
+            let message = if cloudflare_key_shape {
+                "Cloudflare API 토큰은 40자입니다. 저장된 값의 길이가 다릅니다. 다른 서비스 키를 붙여넣지 않았는지 확인하세요."
+            } else if overloaded {
+                "제공자가 혼잡합니다(1305). 다른 무료 모델을 선택하거나 잠시 후 다시 시도하세요."
+            } else {
+                match status.as_u16() {
+                    401 | 403 => "키가 거부되었습니다. API 토큰 권한과 계정을 확인하세요.",
+                    404 | 405 => "주소는 응답했지만 이 경로를 지원하지 않습니다. 서버 주소를 확인하세요.",
+                    429 => "호출 한도에 걸렸습니다. 잠시 후 다시 시도하세요.",
+                    _ => "연결 테스트에 실패했습니다.",
+                }
             };
-            Json(json!({"ok":false,"status":status.as_u16(),"message":message,"detail":detail})).into_response()
+            Json(json!({
+                "ok":false,
+                "status":status.as_u16(),
+                "keyLength":key.chars().count(),
+                "model":tested_model,
+                "message":message,
+                "detail":detail
+            })).into_response()
         }
         Err(err) => Json(json!({"ok":false,"message":format!("연결할 수 없습니다: {err}")})).into_response(),
     }
@@ -464,7 +494,7 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
             let Some(items) = value[key_name].as_array() else {
                 return error(StatusCode::BAD_GATEWAY, "모델 목록 형식을 확인할 수 없습니다. 서버 주소와 API 방식을 확인하세요.");
             };
-            let models: Vec<Value> = items.iter().filter_map(|item| {
+            let mut models: Vec<Value> = items.iter().filter_map(|item| {
                 let id = if kind == "ollama" || cloudflare {
                     item["name"].as_str().or_else(|| item["id"].as_str())?
                 } else {
@@ -476,6 +506,17 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
                     "free": model_is_free(&provider, kind, &base, item, id),
                 }))
             }).collect();
+            // Z.ai's model endpoint omits the free flash models even though
+            // they are callable. Add them so the picker can show free options.
+            if base.contains("z.ai") {
+                for id in ["glm-4.7-flash", "glm-4.5-flash", "glm-4.6v-flash"] {
+                    if let Some(row) = models.iter_mut().find(|row| row["id"] == id) {
+                        row["free"] = json!(true);
+                    } else {
+                        models.push(json!({"id":id,"name":id,"free":true}));
+                    }
+                }
+            }
             Json(json!(models)).into_response()
         }
         Ok(response) => {
