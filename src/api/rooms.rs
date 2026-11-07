@@ -157,6 +157,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         "maxTurns":number_field(body,previous,"maxTurns",12,60)?,
         "toolsEnabled":bool_field(body,previous,"toolsEnabled",false)?,
         "autoLearning":bool_field(body,previous,"autoLearning",true)?,
+        "autoModels":bool_field(body,previous,"autoModels",true)?,
     }))
 }
 fn valid_id(id: &str) -> bool {

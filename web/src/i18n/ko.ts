@@ -1036,6 +1036,8 @@ const ko = {
   'rooms.rounds': '대화 라운드',
   'rooms.roundCount': '{count}라운드',
   'rooms.maxTurns': '최대 AI 발언',
+  'rooms.autoModels': '참가자 모델 자동 순환',
+  'rooms.autoModelsDesc': '턴마다 참가자 모델을 돌려써서 호출 한도를 분산합니다.',
   'rooms.autoLearn': '대화 후 기억 후보 추출',
   'rooms.autoLearnDesc': '근거가 있는 내용만 참가자별 기억으로 남깁니다.',
   'rooms.tools': '이 대화방에서 도구 사용 허용',

@@ -1037,6 +1037,8 @@ const en: Record<LocaleKey, string> = {
   'rooms.rounds': 'Conversation rounds',
   'rooms.roundCount': '{count} rounds',
   'rooms.maxTurns': 'Max AI turns',
+  'rooms.autoModels': 'Rotate participant models',
+  'rooms.autoModelsDesc': 'Rotate models across turns to spread provider rate limits.',
   'rooms.autoLearn': 'Extract memory candidates after the chat',
   'rooms.autoLearnDesc': 'Only grounded statements become per-agent memories.',
   'rooms.tools': 'Allow tools in this room',
