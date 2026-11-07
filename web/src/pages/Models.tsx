@@ -21,6 +21,7 @@ const providerPresets:ProviderPreset[]=[
  {name:'DeepSeek',baseUrl:'https://api.deepseek.com/v1',kind:'openai',local:false},
  {name:'Mistral',baseUrl:'https://api.mistral.ai/v1',kind:'openai',local:false},
  {name:'xAI',baseUrl:'https://api.x.ai/v1',kind:'openai',local:false},
+ {name:'z.ai',baseUrl:'https://api.z.ai/api/paas/v4',kind:'openai',local:false},
  {name:'Together',baseUrl:'https://api.together.xyz/v1',kind:'openai',local:false},
  {name:'Perplexity',baseUrl:'https://api.perplexity.ai',kind:'openai',local:false},
  {name:'Reflection',baseUrl:'https://api.reflection.ai/openai/v1',kind:'openai',local:false},
