@@ -167,7 +167,11 @@ export function translateError(message: string): string {
     rule(/^([A-Za-z0-9_]+)는 서버가 관리하는 상태입니다\.$/, match => `${match[1]} is managed by the server.`) ||
     rule(/^모델 목록 조회 실패 \(HTTP (\d+)\)\. (.*)$/, match => `Model list request failed (HTTP ${match[1]}). ${match[2]}`) ||
     rule(/^Rust 백엔드에 없는 API 경로입니다: (.+)$/, match => `API path not found in the Rust backend: ${match[1]}`) ||
-    rule(/^폴더 선택기를 실행할 수 없습니다: (.+)$/, match => `Could not open the folder picker: ${match[1]}`) ||
+    rule(/^secret key 복원 실패: (.+)$/, match => `Secret key restore failed: ${match[1]}`) ||
+    rule(/^복구 대상의 secret key를 확인할 수 없습니다: (.+)\. 현재 상태를 유지합니다\.$/, match => `Cannot read the recovery secret key: ${match[1]}. The current state is preserved.`) ||
+    rule(/^복구 후 마이그레이션 실패: (.+)$/, match => `Post-recovery migration failed: ${match[1]}`) ||
+    rule(/^허브 모델 목록 HTTP (\d+)$/, match => `Hub model list HTTP ${match[1]}`) ||
+    rule(/^모델 목록 조회 실패 \(HTTP (\d+)\)\. (.*)$/, match => `Model list request failed (HTTP ${match[1]}). ${match[2]}`) ||
     rule(/^(.+?) 실패$/, match => `${enNoun(match[1])} failed.`) ||
     text
   )
