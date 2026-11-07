@@ -3,6 +3,7 @@ import {createPortal} from 'react-dom'
 import {Check, ChevronDown, LoaderCircle, Search, X} from 'lucide-react'
 import {useProviderModels} from '../hooks/useProviderModels'
 import {useAnchoredPanel} from '../hooks/useAnchoredPanel'
+import {t,useLocale} from '../i18n'
 
 type Catalogue = ReturnType<typeof useProviderModels>
 
@@ -21,12 +22,13 @@ export function ModelPicker({
   providerId,
   value,
   onChange,
-  placeholder = '모델 선택',
+  placeholder = t('picker.placeholder'),
   className = '',
   disabled = false,
-  ariaLabel = '모델 선택',
+  ariaLabel = t('picker.placeholder'),
   catalogue,
 }: Props) {
+  useLocale()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(-1)
@@ -118,7 +120,7 @@ export function ModelPicker({
                 aria-expanded={visible}
                 aria-controls={listId}
                 aria-activedescendant={filtered[active] ? listId+'-'+active : undefined}
-                aria-label="모델 검색 또는 모델 ID 입력"
+                aria-label={t('picker.searchAria')}
                 onKeyDown={event=>{
                   if(event.nativeEvent.isComposing||loading||error||!filtered.length)return
                   if(event.key==='ArrowDown'||event.key==='ArrowUp'){
@@ -130,13 +132,13 @@ export function ModelPicker({
                     if(selected){event.preventDefault();choose(selected.id)}
                   }
                 }}
-                placeholder="모델 검색 또는 ID 입력"
+                placeholder={t('picker.searchPlaceholder')}
                 className="min-w-0 flex-1 border-0 bg-transparent text-[12px] text-[#3A342D] outline-none placeholder:text-[#A79C8E]"
               />
               {query && (
                 <button
                   type="button"
-                  aria-label="검색 지우기"
+                  aria-label={t('picker.clear')}
                   onClick={() => setQuery('')}
                   className="rounded p-0.5 text-[#9C9388] hover:bg-[#F3EEE5]"
                 >
@@ -148,11 +150,11 @@ export function ModelPicker({
             <div ref={list} id={listId} role="listbox" aria-label={ariaLabel} className="min-h-0 max-h-[min(58vh,320px)] overflow-y-auto overscroll-contain p-1">
               {loading && (
                 <div className="flex items-center gap-2 px-3 py-4 text-[12px] text-[#8A8176]">
-                  <LoaderCircle size={14} className="animate-spin" /> 모델 목록 불러오는 중
+                  <LoaderCircle size={14} className="animate-spin" /> {t('picker.loading')}
                 </div>
               )}
               {!loading && error && (
-                <div className="px-3 py-4 text-[12px] text-rose-600">{error}<button type="button" className="ml-2 underline" onClick={()=>void (catalogue??ownCatalogue).reload()}>다시 불러오기</button></div>
+                <div className="px-3 py-4 text-[12px] text-rose-600">{error}<button type="button" className="ml-2 underline" onClick={()=>void (catalogue??ownCatalogue).reload()}>{t('picker.retry')}</button></div>
               )}
               {!loading &&
                 !error &&
@@ -173,7 +175,7 @@ export function ModelPicker({
                     <span className="min-w-0 flex-1 truncate">{model.id}</span>
                     {model.free && (
                       <span className="shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">
-                        무료
+                        {t('picker.free')}
                       </span>
                     )}
                     {model.id === value && <Check size={13} className="shrink-0" />}
@@ -182,10 +184,10 @@ export function ModelPicker({
               {!loading && !error && filtered.length === 0 && (
                 <div className="px-3 py-4 text-[12px] text-[#8A8176]">
                   {!models.length
-                    ? '이 제공자에서 모델을 찾지 못했습니다.'
+                    ? t('picker.noneProvider')
                     : freeOnly && !models.some((model) => model.free)
-                      ? '이 제공자에서 무료로 표시된 모델이 없습니다.'
-                      : '검색 결과가 없습니다.'}
+                      ? t('picker.noneFree')
+                      : t('picker.noResults')}
                 </div>
               )}
             </div>
@@ -194,7 +196,7 @@ export function ModelPicker({
               <button type="button" disabled={new TextEncoder().encode(query.trim()).length>256}
                 className="shrink-0 truncate border-t border-[#EFE9DF] px-3 py-2 text-left text-[11px] font-semibold text-[#A94E30] hover:bg-[#F7F2EA] disabled:opacity-50"
                 title={query.trim()} onClick={()=>choose(query.trim())}>
-                이 모델 ID 사용 · {query.trim()}
+                {t('picker.useId', { id: query.trim() })}
               </button>
             )}
 
@@ -206,10 +208,10 @@ export function ModelPicker({
                   onChange={(event) => setFreeOnly(event.target.checked)}
                   className="accent-[#C96442]"
                 />
-                무료만
+                {t('picker.freeOnly')}
               </label>
               <span>
-                {filtered.length}개 표시 · 전체 {models.length}개
+                {t('picker.count', { shown: filtered.length, total: models.length })}
               </span>
             </div>
           </div>,

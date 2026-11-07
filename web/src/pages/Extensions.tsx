@@ -1,5 +1,6 @@
 import { DialogBackdrop, DialogPanel } from "../components/Dialog";
 import { SkillsPanel } from "./extensions/SkillsPanel";
+import { t, useLocale } from "../i18n";
 import {
   Button,
   TextInput,
@@ -76,6 +77,7 @@ const featured = [
   {
     name: "Playwright Browser",
     description: "웹 페이지 탐색, 클릭, 입력 및 스크린샷",
+    descriptionEn: "Browse web pages, click, type and capture screenshots",
     icon: Globe2,
     transport: "stdio",
     command: "npx",
@@ -85,6 +87,7 @@ const featured = [
   {
     name: "Hugging Face",
     description: "모델·데이터셋을 검색하는 원격 MCP",
+    descriptionEn: "Remote MCP for searching models and datasets",
     icon: BrainIcon,
     transport: "http",
     command: "",
@@ -99,135 +102,223 @@ function BrainIcon({ size = 22 }: { size?: number }) {
 const skillTemplates = [
   {
     name: "웹 리서치",
+    nameEn: "Web research",
     category: "리서치",
+    categoryEn: "Research",
     instructions:
       "검색이 필요한 요청은 web_search를 먼저 호출하고, 서로 다른 출처 2~3개를 비교한 뒤 URL과 함께 요약한다. 확인되지 않은 내용은 추측이라고 명시한다.",
+    instructionsEn:
+      "For requests that need search, call web_search first, compare two or three independent sources, and summarize with URLs. State clearly when something is unverified and is an inference.",
   },
   {
     name: "리서치 노트",
+    nameEn: "Research notes",
     category: "리서치",
+    categoryEn: "Research",
     instructions:
       "조사한 내용을 주장·근거·출처·추가 확인 항목으로 나눠 노트로 정리한다. 출처가 없는 주장은 별도 표시한다.",
+    instructionsEn:
+      "Organize findings into claims, evidence, sources and open questions. Mark claims without a source separately.",
   },
   {
     name: "경쟁사 분석",
+    nameEn: "Competitor analysis",
     category: "리서치",
+    categoryEn: "Research",
     instructions:
       "제품, 가격, 타깃, 차별점 기준으로 비교표를 만든다. 확인된 사실과 추정을 구분하고 출처 URL을 남긴다.",
+    instructionsEn:
+      "Build a comparison table of product, pricing, target and differentiators. Separate confirmed facts from estimates and keep source URLs.",
   },
   {
     name: "파일 정리",
+    nameEn: "File organization",
     category: "파일",
+    categoryEn: "Files",
     instructions:
       "대상 폴더를 file_list로 먼저 확인하고, 이동·이름 변경 전에 현재 구조를 요약한다. 파일을 삭제하기 전에는 항상 사용자에게 확인한다.",
+    instructionsEn:
+      "Inspect the target folder with file_list first and summarize its structure before moving or renaming anything. Always confirm with the user before deleting files.",
   },
   {
     name: "파일 검색",
+    nameEn: "File search",
     category: "파일",
+    categoryEn: "Files",
     instructions:
       "파일 이름과 내용을 함께 검색하고, 일치한 경로·크기·수정 시간을 표로 정리한다. 읽기 전용으로 먼저 확인한다.",
+    instructionsEn:
+      "Search file names and contents together, then report matching paths, sizes and modification times in a table. Start read-only.",
   },
   {
     name: "코드 리뷰",
+    nameEn: "Code review",
     category: "코딩",
+    categoryEn: "Coding",
     instructions:
       "버그, 보안, 성능, 유지보수성 순서로 리뷰한다. 각 지적에는 파일 경로와 근거를 붙이고, 확실하지 않은 내용은 질문으로 남긴다.",
+    instructionsEn:
+      "Review in the order of bugs, security, performance and maintainability. Attach a file path and evidence to each finding and leave uncertain points as questions.",
   },
   {
     name: "테스트 작성",
+    nameEn: "Write tests",
     category: "코딩",
+    categoryEn: "Coding",
     instructions:
       "기존 테스트 프레임워크를 먼저 확인하고, 정상·경계·실패 경로를 각각 검증하는 테스트를 추가한다. 테스트가 실제로 실패하는지도 확인한다.",
+    instructionsEn:
+      "Check the existing test framework first, then add tests covering success, boundary and failure paths. Confirm the tests actually fail without the fix.",
   },
   {
     name: "리팩터링",
+    nameEn: "Refactoring",
     category: "코딩",
+    categoryEn: "Coding",
     instructions:
       "동작을 바꾸지 않는 범위에서 중복과 결합을 줄인다. 변경 전후 테스트를 실행하고, 공개 API 변경은 별도로 보고한다.",
+    instructionsEn:
+      "Reduce duplication and coupling without changing behavior. Run tests before and after, and report public API changes separately.",
   },
   {
     name: "Git 작업",
+    nameEn: "Git work",
     category: "개발 운영",
+    categoryEn: "DevOps",
     instructions:
       "변경 상태를 git status와 diff로 확인한 뒤 작업한다. 커밋 메시지는 변경 이유를 한 줄로 요약하고, 사용자가 요청하지 않은 push는 하지 않는다.",
+    instructionsEn:
+      "Check git status and diff before working. Summarize the reason for the change in one commit line and never push unless the user asks.",
   },
   {
     name: "배포 체크리스트",
+    nameEn: "Release checklist",
     category: "개발 운영",
+    categoryEn: "DevOps",
     instructions:
       "빌드, 테스트, 환경변수, 마이그레이션, 롤백 계획을 순서대로 확인한다. 실패한 항목이 있으면 배포 완료라고 말하지 않는다.",
+    instructionsEn:
+      "Check build, tests, environment variables, migrations and rollback plan in order. If anything fails, do not call the release complete.",
   },
   {
     name: "로그 분석",
+    nameEn: "Log analysis",
     category: "개발 운영",
+    categoryEn: "DevOps",
     instructions:
       "에러 빈도와 시간대, 공통 스택 트레이스, 최초 발생 시점을 분리해 분석한다. 원인과 추정을 구분한다.",
+    instructionsEn:
+      "Separate error frequency and timing, shared stack traces and first occurrence. Distinguish cause from inference.",
   },
   {
     name: "장애 대응",
+    nameEn: "Incident response",
     category: "개발 운영",
+    categoryEn: "DevOps",
     instructions:
       "영향 범위, 현재 상태, 즉시 완화 조치, 재발 방지 항목 순서로 정리한다. 확인되지 않은 원인을 단정하지 않는다.",
+    instructionsEn:
+      "Report impact, current state, immediate mitigation and prevention items in that order. Never assert an unverified cause.",
   },
   {
     name: "보안 점검",
+    nameEn: "Security review",
     category: "보안",
+    categoryEn: "Security",
     instructions:
       "비밀키 노출, 인증 우회, 입력 검증, 권한 범위를 우선 점검한다. 민감한 값을 출력하지 않고 위치와 위험도만 보고한다.",
+    instructionsEn:
+      "Check secret exposure, auth bypass, input validation and permission scope first. Report locations and risk only, never the sensitive values.",
   },
   {
     name: "데이터 분석",
+    nameEn: "Data analysis",
     category: "데이터",
+    categoryEn: "Data",
     instructions:
       "질문을 지표와 차원으로 나누고, 데이터 범위와 전처리 가정을 먼저 밝힌다. 결과와 한계를 함께 보고한다.",
+    instructionsEn:
+      "Split the question into metrics and dimensions, state the data range and preprocessing assumptions, and report results with limitations.",
   },
   {
     name: "SQL 쿼리",
+    nameEn: "SQL queries",
     category: "데이터",
+    categoryEn: "Data",
     instructions:
       "스키마를 먼저 확인하고 읽기 전용 쿼리로 검증한다. 대량 변경 전에는 예상 행 수와 롤백 방법을 제시한다.",
+    instructionsEn:
+      "Inspect the schema first and verify with read-only queries. Before bulk changes, state the expected row count and rollback method.",
   },
   {
     name: "문서 작성",
+    nameEn: "Writing documents",
     category: "글쓰기",
+    categoryEn: "Writing",
     instructions:
       "독자, 목적, 핵심 메시지를 먼저 정하고 제목·요약·본문·다음 단계 순서로 작성한다. 사실과 의견을 구분한다.",
+    instructionsEn:
+      "Define the audience, purpose and key message first, then write title, summary, body and next steps. Separate facts from opinions.",
   },
   {
     name: "회의 요약",
+    nameEn: "Meeting summary",
     category: "글쓰기",
+    categoryEn: "Writing",
     instructions:
       "결정 사항, 담당자, 마감, 미해결 질문을 구분해 요약한다. 원문에 없는 담당자나 날짜를 만들어내지 않는다.",
+    instructionsEn:
+      "Summarize decisions, owners, deadlines and open questions separately. Never invent owners or dates not in the source.",
   },
   {
     name: "번역·현지화",
+    nameEn: "Translation and localization",
     category: "글쓰기",
+    categoryEn: "Writing",
     instructions:
       "원문의 의미와 톤을 유지하고, 고유명사·UI 문자열은 용어집을 따른다. 직역투를 피하고 변경 이유를 간단히 남긴다.",
+    instructionsEn:
+      "Keep the meaning and tone of the source, follow the glossary for proper nouns and UI strings, avoid literal phrasing, and note why a change was made.",
   },
   {
     name: "API 문서화",
+    nameEn: "API documentation",
     category: "글쓰기",
+    categoryEn: "Writing",
     instructions:
       "엔드포인트, 인증, 요청·응답 예시, 오류 코드, 제한 사항을 실제 코드와 대조해 작성한다.",
+    instructionsEn:
+      "Document endpoints, authentication, request and response examples, error codes and limits against the real code.",
   },
   {
     name: "이메일·메시지",
+    nameEn: "Email and messages",
     category: "커뮤니케이션",
+    categoryEn: "Communication",
     instructions:
       "목적, 요청 사항, 기한, 다음 단계가 한 번에 보이게 작성한다. 상대에 따라 정중함과 간결함의 균형을 조정한다.",
+    instructionsEn:
+      "Show purpose, request, deadline and next step at a glance. Adjust the balance of politeness and brevity for the recipient.",
   },
   {
     name: "일정 정리",
+    nameEn: "Schedule planning",
     category: "생산성",
+    categoryEn: "Productivity",
     instructions:
       "할 일을 중요도·마감·소요 시간으로 나누고 오늘/이번 주/나중으로 묶는다. 일정 충돌을 먼저 확인한다.",
+    instructionsEn:
+      "Split tasks by importance, deadline and effort, then group them into today, this week and later. Check for conflicts first.",
   },
   {
     name: "프롬프트 설계",
+    nameEn: "Prompt design",
     category: "AI",
+    categoryEn: "AI",
     instructions:
       "역할, 입력, 제약, 출력 형식, 검증 기준을 명시한 프롬프트를 만든다. 모호한 지시는 예시로 보완한다.",
+    instructionsEn:
+      "Write prompts that specify role, input, constraints, output format and validation criteria. Clarify vague instructions with examples.",
   },
 ];
 function StatusLine({
@@ -246,6 +337,7 @@ function StatusLine({
   );
 }
 export function ExtensionsPage() {
+  const loc = useLocale();
   const mcp = useRemote<Mcp[]>("/api/mcp", []),
     skills = useRemote<Skill[]>("/api/skills", []),
     presets = useRemote<any[]>("/api/mcp/presets", []);
@@ -275,14 +367,24 @@ export function ExtensionsPage() {
     [catalogCategory, setCatalogCategory] = useState("all"),
     [catalogLimit, setCatalogLimit] = useState(30),
     [importing, setImporting] = useState("");
+  const templates = skillTemplates.map((item) =>
+    loc === "en"
+      ? {
+          ...item,
+          name: item.nameEn,
+          category: item.categoryEn,
+          instructions: item.instructionsEn,
+        }
+      : item,
+  );
   const skillCategories = [
     "all",
-    ...new Set(skillTemplates.map((t) => t.category)),
+    ...new Set(templates.map((item) => item.category)),
   ];
-  const filteredSkills = skillTemplates.filter(
-    (t) =>
-      (skillCategory === "all" || t.category === skillCategory) &&
-      (t.name + t.instructions + t.category)
+  const filteredSkills = templates.filter(
+    (item) =>
+      (skillCategory === "all" || item.category === skillCategory) &&
+      (item.name + item.instructions + item.category)
         .toLowerCase()
         .includes(skillQuery.toLowerCase()),
   );
@@ -328,8 +430,7 @@ export function ExtensionsPage() {
   const install = async (entry: any) => {
     if (
       !confirm(
-        entry.name +
-          " MCP를 DOMINION에 등록하시겠습니까?\n로컬 MCP는 실행 시 외부 프로그램을 시작할 수 있습니다.",
+        t('ext.confirmRegister'),
       )
     )
       return;
@@ -347,7 +448,7 @@ export function ExtensionsPage() {
       await post("/api/mcp", payload);
       mcp.reload();
       setMessage(
-        entry.name + " 등록됨 · 실행 연결은 설치 목록에서 확인할 수 있습니다.",
+        t('ext.registeredHint'),
       );
     } catch (e) {
       setError((e as Error).message);
@@ -358,8 +459,7 @@ export function ExtensionsPage() {
     setInstalling(preset.id);
     setError("");
     setMessage(
-      preset.name +
-        " 설치 중 · 첫 실행은 패키지 다운로드로 시간이 걸릴 수 있습니다.",
+      t('ext.installHint', { name: preset.name }),
     );
     try {
       const saved = await post<any>("/api/mcp", {
@@ -376,16 +476,13 @@ export function ExtensionsPage() {
         const own = found.filter((t) => t.mcpId === saved.id && !t.error);
         if (own.length) {
           setMessage(
-            preset.name +
-              " 연결 완료 · 도구 " +
-              own.length +
-              "개를 사용할 수 있습니다.",
+            t('ext.connectedToolsMsg', { name: preset.name, count: own.length }),
           );
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-      setMessage(preset.name + " 등록됨 · 연결 확인이 필요합니다.");
+      setMessage(t('ext.registeredCheckMsg', { name: preset.name }));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -409,7 +506,7 @@ export function ExtensionsPage() {
   };
   const search = async () => {
     if (query.trim() && query.trim().length < 3) {
-      setError("3자 이상 검색해주세요.");
+      setError(t('ext.searchMin'));
       return;
     }
     await loadCatalog(query.trim());
@@ -445,7 +542,7 @@ export function ExtensionsPage() {
     try {
       await post("/api/skills", { ...template, enabled: true });
       await skills.reload();
-      setMessage(template.name + " 스킬을 추가했습니다.");
+      setMessage(t('ext.skillAdded', { name: template.name }));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -458,7 +555,7 @@ export function ExtensionsPage() {
     try {
       await post("/api/skill-catalog/import", { id: item.id });
       await skills.reload();
-      setMessage(item.source + "의 " + item.name + " 스킬을 가져왔습니다.");
+      setMessage(t('ext.skillImported', { source: item.source, name: item.name }));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -474,7 +571,7 @@ export function ExtensionsPage() {
       const r = await post<any>("/api/skills/import-repo", {
         repo: repo.trim(),
       });
-      setMessage(r.repo + "에서 " + r.added + "개 스킬을 가져왔습니다");
+      setMessage(t('ext.skillImportedRepo', { repo: r.repo, count: r.added }));
       await skills.reload();
     } catch (e) {
       setError((e as Error).message);
@@ -506,7 +603,7 @@ export function ExtensionsPage() {
   const discover = async (silent = false) => {
     try {
       setTools(await get("/api/mcp/discover"));
-      if (!silent) setMessage("MCP 도구 검색 완료");
+      if (!silent) setMessage(t('ext.toolsFound'));
     } catch (e) {
       if (!silent) setError((e as Error).message);
     }
@@ -521,8 +618,8 @@ export function ExtensionsPage() {
     <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
       <Headline
         eyebrow="CAPABILITY MARKETPLACE"
-        title="필요한 능력만, 자유롭게."
-        description="MCP 도구와 지식을 찾아 설치하고 관리하세요. 에이전트가 실행 중 연결된 도구를 발견합니다."
+        title={t('ext.title')}
+        description={t('ext.description')}
         actions={
           <Action
             variant="secondary"
@@ -537,18 +634,18 @@ export function ExtensionsPage() {
               setArgText("");
             }}
           >
-            <Plus size={17} /> MCP 직접 추가
+            <Plus size={17} /> {t('ext.addMcp')}
           </Action>
         }
       />
       <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] px-4 py-3 text-[11px] text-[#5C544A]">
-        <StatusLine label="MCP 서버" value={mcp.value.length} />
+        <StatusLine label={t('ext.tab.servers')} value={mcp.value.length} />
         <StatusLine
-          label="연결된 도구"
+          label={t('ext.tab.tools')}
           value={tools.filter((t) => !t.error).length}
         />
         <StatusLine
-          label="스킬"
+          label={t('ext.tab.skills')}
           value={
             skills.value.filter((s) => s.enabled).length +
             "/" +
@@ -567,19 +664,19 @@ export function ExtensionsPage() {
           variant={tab === "plugins" ? "primary" : "ghost"}
           onClick={() => setTab("plugins")}
         >
-          <PackagePlus size={17} /> 플러그인
+          <PackagePlus size={17} /> {t('ext.tab.plugins')}
         </Button>
         <Button
           variant={tab === "installed" ? "primary" : "ghost"}
           onClick={() => setTab("installed")}
         >
-          설치됨 <b>{mcp.value.length}</b>
+          {t('ext.tab.installed')} <b>{mcp.value.length}</b>
         </Button>
         <Button
           variant={tab === "skills" ? "primary" : "ghost"}
           onClick={() => setTab("skills")}
         >
-          <BookOpenText size={17} /> 스킬{" "}
+          <BookOpenText size={17} /> {t('ext.tab.skills')}{" "}
           <b>
             {skills.value.filter((s) => s.enabled).length}/{skills.value.length}
           </b>
@@ -596,18 +693,18 @@ export function ExtensionsPage() {
         <>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <Subheading
-              title="공식 MCP Registry"
+              title={t('ext.registry')}
               extra={
                 <div className="flex items-center gap-2">
                   <span className="text-[11px] text-[#8A8176]">
-                    실시간 · {catalog.length}개
+                    {t('ext.realtime', { count: catalog.length })}
                   </span>
                   <Button
                     variant="secondary"
                     onClick={() => void loadCatalog(query.trim())}
                     disabled={searching}
                   >
-                    <RefreshCw size={14} /> 새로고침
+                    <RefreshCw size={14} /> {t('ext.refresh')}
                   </Button>
                 </div>
               }
@@ -618,17 +715,16 @@ export function ExtensionsPage() {
               <Search size={18} />
               <TextInput
                 value={query}
-                placeholder="MCP 서버 검색 (예: GitHub, browser, filesystem)"
+                placeholder={t('ext.searchPlaceholder')}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && search()}
               />
               <Action onClick={search} disabled={searching}>
-                {searching ? "검색 중" : "검색"}
+                {searching ? t('ext.searching') : t('ext.search')}
               </Action>
             </div>
             <div className="rounded-xl bg-[#FAF7F1] p-3 text-xs leading-5 text-[#7C7469]">
-              공식 Registry에서 실시간으로 가져옵니다. 서버 설치 전 명령과 배포
-              출처를 확인하세요.
+              {t('ext.registryNote')}
             </div>
             <div className="registry-results">
               {catalog.map((x) => (
@@ -642,7 +738,7 @@ export function ExtensionsPage() {
                   <div>
                     <strong>{x.name}</strong>
                     <p>{x.description || "MCP server"}</p>
-                    <small>{x.packageName || x.url || "설치 정보 없음"}</small>
+                    <small>{x.packageName || x.url || t('ext.noInstallInfo')}</small>
                   </div>
                   {(x.packageName || x.url) &&
                     (mcp.value.some((r: any) => r.name === x.name) ? (
@@ -656,7 +752,7 @@ export function ExtensionsPage() {
                           await mcp.reload();
                         }}
                       >
-                        취소
+                        {t('ext.cancel')}
                       </Button>
                     ) : (
                       <Button
@@ -671,7 +767,7 @@ export function ExtensionsPage() {
                           })
                         }
                       >
-                        설치
+                        {t('ext.install')}
                       </Button>
                     ))}
                 </div>
@@ -679,8 +775,8 @@ export function ExtensionsPage() {
               {!catalog.length && (
                 <Empty
                   icon={Compass}
-                  title="MCP를 검색해보세요"
-                  description="검색된 서버의 설치 가능 패키지나 원격 URL을 보여줍니다."
+                  title={t('ext.emptySearch')}
+                  description={t('ext.emptySearchDesc')}
                 />
               )}
             </div>
@@ -692,21 +788,21 @@ export function ExtensionsPage() {
           <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
             <div>
               <h3 className="m-0 text-[15px] font-bold text-[#24211D]">
-                OpenClaw 플러그인
+                {t('ext.openclawTitle')}
               </h3>
               <p className="mt-1 text-[11px] text-[#8A8176]">
-                OpenClaw 플러그인과 DOMINION 스킬 폴더의 SKILL.md를 읽습니다.{" "}
-                {catalogSkills.value.total}개 발견 ·{" "}
+                {t('ext.openclawDesc')}{" "}
+                {t('ext.foundCount', { count: catalogSkills.value.total })} ·{" "}
                 {catalogSkills.value.updatedAt
-                  ? new Date(catalogSkills.value.updatedAt).toLocaleTimeString()
-                  : "읽는 중"}
+                  ? new Date(catalogSkills.value.updatedAt).toLocaleTimeString(loc === 'en' ? 'en-US' : 'ko-KR')
+                  : t('ext.reading')}
               </p>
             </div>
             <Button
               variant="secondary"
               onClick={() => void catalogSkills.reload()}
             >
-              <RefreshCw size={14} /> 새로고침
+              <RefreshCw size={14} /> {t('ext.refresh')}
             </Button>
           </div>
           <div className="mb-3 flex flex-wrap items-center gap-1.5">
@@ -717,7 +813,7 @@ export function ExtensionsPage() {
                 onClick={() => setCatalogSource(source)}
                 className="!px-3 !py-1.5 !text-[12px]"
               >
-                {source === "all" ? "전체 소스" : source}
+                {source === "all" ? t('ext.allSources') : source}
               </Button>
             ))}
           </div>
@@ -727,14 +823,14 @@ export function ExtensionsPage() {
               <TextInput
                 value={catalogQuery}
                 onChange={(e) => setCatalogQuery(e.target.value)}
-                placeholder="플러그인 검색 (이름, 카테고리)"
+                placeholder={t('ext.pluginSearch')}
               />
             </div>
             <SelectInput
               value={catalogCategory}
               onChange={(e) => setCatalogCategory(e.target.value)}
             >
-              <option value="all">전체 카테고리</option>
+              <option value="all">{t('ext.allCategories')}</option>
               {catalogCategories
                 .filter((category) => category !== "all")
                 .map((category) => (
@@ -771,7 +867,7 @@ export function ExtensionsPage() {
                     </p>
                     {!item.available && (
                       <small className="mt-1 block text-[10px] text-amber-700">
-                        실행 파일 필요: {(item.requires || []).join(", ")}
+                        {t('ext.requiresBinary', { list: (item.requires || []).join(', ') })}
                       </small>
                     )}
                   </div>
@@ -788,17 +884,17 @@ export function ExtensionsPage() {
                           try {
                             await del("/api/skills/" + target.id);
                             await skills.reload();
-                            setMessage(item.name + " 취소됨");
+                            setMessage(t('ext.cancelled', { name: item.name }));
                           } catch (e) {
                             setError((e as Error).message);
                           }
                         }}
                       >
-                        취소
+                        {t('ext.cancel')}
                       </Button>
                     ) : !item.available ? (
                       <span className="rounded-md bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-700">
-                        도구 필요
+                        {t('ext.requiredTool')}
                       </span>
                     ) : (
                       <Button
@@ -806,7 +902,7 @@ export function ExtensionsPage() {
                         disabled={importing === item.id}
                         onClick={() => void importCatalogSkill(item)}
                       >
-                        {importing === item.id ? "설치 중" : "설치"}
+                        {importing === item.id ? t('ext.installing') : t('ext.install')}
                       </Button>
                     )}
                   </div>
@@ -816,30 +912,30 @@ export function ExtensionsPage() {
             {!visibleCatalog.length && (
               <Empty
                 icon={BookOpenText}
-                title="카탈로그가 비어 있습니다"
-                description="OpenClaw 또는 Hermes 스킬 폴더를 확인하세요."
+                title={t('ext.catalogEmpty')}
+                description={t('ext.catalogHint')}
               />
             )}
           </div>
           <div className="mb-6 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#8A8176]">
             <span>
-              {filteredCatalog.length}개 중 {visibleCatalog.length}개 표시
+              {t('ext.showing', { visible: visibleCatalog.length, total: filteredCatalog.length })}
             </span>
             {visibleCatalog.length < filteredCatalog.length && (
               <Button
                 variant="secondary"
                 onClick={() => setCatalogLimit((limit) => limit + 30)}
               >
-                더 보기
+                {t('ext.more')}
               </Button>
             )}
           </div>
           <div className="mb-4">
             <Subheading
-              title="플러그인 검색 결과"
+              title={t('ext.pluginResults')}
               extra={
                 <span className="text-[11px] text-[#8A8176]">
-                  {pluginRemote.length}개
+                  {t('ext.count', { count: pluginRemote.length })}
                 </span>
               }
             />
@@ -869,7 +965,7 @@ export function ExtensionsPage() {
                           await mcp.reload();
                         }}
                       >
-                        취소
+                        {t('ext.cancel')}
                       </Button>
                     ) : (
                       <Button
@@ -884,7 +980,7 @@ export function ExtensionsPage() {
                           })
                         }
                       >
-                        설치
+                        {t('ext.install')}
                       </Button>
                     )}
                   </div>
@@ -892,7 +988,7 @@ export function ExtensionsPage() {
               </div>
             ) : (
               <p className="mt-2 text-[11px] text-[#8A8176]">
-                검색어를 2자 이상 입력하면 레지스트리에서도 찾습니다.
+                {t('ext.remoteHint')}
               </p>
             )}
           </div>
@@ -904,7 +1000,7 @@ export function ExtensionsPage() {
                 onClick={() => setPluginCategory(category)}
                 className="!px-3 !py-1.5 !text-[12px]"
               >
-                {category === "all" ? "전체" : category}
+                {category === "all" ? t('ext.all') : category}
               </Button>
             ))}
           </div>
@@ -913,14 +1009,14 @@ export function ExtensionsPage() {
             <TextInput
               value={pluginQuery}
               onChange={(e) => setPluginQuery(e.target.value)}
-              placeholder="플러그인 검색 (예: Git, SQLite, browser)"
+              placeholder={t('ext.pluginSearchExample')}
             />
           </div>
           <Subheading
-            title="추천 플러그인"
+            title={t('ext.recommendedPlugins')}
             extra={
               <span className="text-[11px] text-[#8A8176]">
-                {filteredPresets.length}개
+                {t('ext.count', { count: filteredPresets.length })}
               </span>
             }
           />
@@ -943,8 +1039,8 @@ export function ExtensionsPage() {
                       {record
                         ? connected
                           ? "연결됨 · 도구 " + connected + "개"
-                          : "등록됨 · 확인 필요"
-                        : "미설치"}
+                          : t('ext.registeredCheck')
+                        : t('ext.notInstalled')}
                     </StateTag>
                   </div>
                   <h3>{preset.name}</h3>
@@ -964,13 +1060,13 @@ export function ExtensionsPage() {
                           try {
                             await del("/api/mcp/" + record.id);
                             await mcp.reload();
-                            setMessage(preset.name + " 취소됨");
+                            setMessage(t('ext.cancelled', { name: preset.name }));
                           } catch (e) {
                             setError((e as Error).message);
                           }
                         }}
                       >
-                        취소
+                        {t('ext.cancel')}
                       </Button>
                     ) : (
                       <Button
@@ -979,7 +1075,7 @@ export function ExtensionsPage() {
                         disabled={installing === preset.id}
                         onClick={() => void installPreset(preset)}
                       >
-                        {installing === preset.id ? "설치 중" : "설치"}
+                        {installing === preset.id ? t('ext.installing') : t('ext.install')}
                       </Button>
                     )}
                   </div>
@@ -988,7 +1084,7 @@ export function ExtensionsPage() {
             })}
           </div>
           <Subheading
-            title="추천 도구"
+            title={t('ext.recommendedTools')}
             extra={
               <span className="text-[10px] font-bold uppercase tracking-widest text-[#9C9388]">
                 VERIFIED SOURCES
@@ -1008,10 +1104,10 @@ export function ExtensionsPage() {
                     <Icon size={24} />
                   </div>
                   <h3>{x.name}</h3>
-                  <p>{x.description}</p>
+                  <p>{loc === "en" ? x.descriptionEn || x.description : x.description}</p>
                   <div className="mt-auto flex items-center justify-between gap-3 border-t border-[#EFE9DF] pt-3">
                     <a href={x.url} target="_blank" rel="noreferrer">
-                      공식 안내 <ExternalLink size={13} />
+                      {t('ext.officialGuide')} <ExternalLink size={13} />
                     </a>
                     {record ? (
                       <Button
@@ -1021,13 +1117,13 @@ export function ExtensionsPage() {
                           try {
                             await del("/api/mcp/" + record.id);
                             await mcp.reload();
-                            setMessage(x.name + " 취소됨");
+                            setMessage(t('ext.cancelled', { name: x.name }));
                           } catch (e) {
                             setError((e as Error).message);
                           }
                         }}
                       >
-                        취소
+                        {t('ext.cancel')}
                       </Button>
                     ) : (
                       <Button
@@ -1035,7 +1131,7 @@ export function ExtensionsPage() {
                         className="shrink-0 whitespace-nowrap"
                         onClick={() => install(x)}
                       >
-                        설치
+                        {t('ext.install')}
                       </Button>
                     )}
                   </div>
@@ -1048,10 +1144,10 @@ export function ExtensionsPage() {
       {tab === "installed" && (
         <>
           <Subheading
-            title="연결된 MCP 서버"
+            title={t('ext.connectedServers')}
             extra={
               <Action variant="secondary" onClick={discover}>
-                <Activity size={16} /> 도구 검색
+                <Activity size={16} /> {t('ext.toolSearch')}
               </Action>
             }
           />
@@ -1080,15 +1176,15 @@ export function ExtensionsPage() {
                   {(() => {
                     const own = tools.filter((t) => t.mcpId === x.id);
                     const ok = own.filter((t) => !t.error).length;
-                    if (ok) return "도구 " + ok + "개 연결됨";
-                    if (own.some((t) => t.error)) return "연결 실패";
-                    return tools.length ? "연결 확인 필요" : "확인 중";
+                    if (ok) return t('ext.connectedTools', { count: ok });
+                    if (own.some((t) => t.error)) return t('ext.connectionFailed');
+                    return tools.length ? t('ext.checkConnection') : t('ext.checking');
                   })()}
                 </StateTag>
                 <Button
                   size="icon"
                   variant="ghost"
-                  title="설정"
+                  title={t('ext.settings')}
                   onClick={() => {
                     setEdit(x);
                     setArgText((x.args || []).join("\n"));
@@ -1099,9 +1195,9 @@ export function ExtensionsPage() {
                 <Button
                   size="icon"
                   variant="ghost"
-                  title="제거"
+                  title={t('ext.remove')}
                   onClick={async () => {
-                    if (confirm(x.name + " 연결을 제거할까요?")) {
+                    if (confirm(t('ext.confirmRemove'))) {
                       await del("/api/mcp/" + x.id);
                       mcp.reload();
                     }
@@ -1115,8 +1211,8 @@ export function ExtensionsPage() {
               <Panel>
                 <Empty
                   icon={Blocks}
-                  title="MCP 서버가 없습니다"
-                  description="탐색 탭에서 필요한 기능을 등록하세요."
+                  title={t('ext.noServers')}
+                  description={t('ext.noServersDesc')}
                 />
               </Panel>
             )}
@@ -1124,8 +1220,8 @@ export function ExtensionsPage() {
           {tools.length > 0 && (
             <Panel className="grid gap-3">
               <Subheading
-                title="검색된 실제 도구"
-                extra={<span>{tools.filter((t) => !t.error).length}개</span>}
+                title={t('ext.realTools')}
+                extra={<span>{t('ext.count', { count: tools.filter((item) => !item.error).length })}</span>}
               />
               {tools.map((t) => (
                 <div
@@ -1156,33 +1252,33 @@ export function ExtensionsPage() {
             <div className="flex items-center justify-between border-b border-[#EFE9DF] p-5">
               <div>
                 <small>MCP CONNECTION</small>
-                <h2>서버 등록</h2>
+                <h2>{t('ext.register')}</h2>
               </div>
               <Button size="icon" variant="ghost" onClick={() => setEdit(null)}>
                 <X size={18} />
               </Button>
             </div>
             <div className="grid gap-4 p-5">
-              <FormField label="표시 이름">
+              <FormField label={t('ext.displayName')}>
                 <TextInput
                   value={edit.name}
                   onChange={(e) => setEdit({ ...edit, name: e.target.value })}
                 />
               </FormField>
-              <FormField label="연결 방식">
+              <FormField label={t('ext.transport')}>
                 <SelectInput
                   value={edit.transport}
                   onChange={(e) =>
                     setEdit({ ...edit, transport: e.target.value })
                   }
                 >
-                  <option value="stdio">stdio · 로컬 실행</option>
-                  <option value="http">HTTP · 원격 서버</option>
+                  <option value="stdio">{t('ext.stdio')}</option>
+                  <option value="http">{t('ext.http')}</option>
                 </SelectInput>
               </FormField>
               {edit.transport === "http" ? (
                 <>
-                  <FormField label="MCP 서버 URL">
+                  <FormField label={t('ext.url')}>
                     <TextInput
                       value={edit.url || ""}
                       onChange={(e) =>
@@ -1190,20 +1286,20 @@ export function ExtensionsPage() {
                       }
                     />
                   </FormField>
-                  <FormField label="인증 Bearer Token">
+                  <FormField label={t('ext.bearer')}>
                     <TextInput
                       type="password"
                       value={edit.token || ""}
                       onChange={(e) =>
                         setEdit({ ...edit, token: e.target.value })
                       }
-                      placeholder="선택사항"
+                      placeholder={t('ext.optional')}
                     />
                   </FormField>
                 </>
               ) : (
                 <>
-                  <FormField label="실행 파일">
+                  <FormField label={t('ext.executable')}>
                     <TextInput
                       value={edit.command || ""}
                       onChange={(e) =>
@@ -1211,7 +1307,7 @@ export function ExtensionsPage() {
                       }
                     />
                   </FormField>
-                  <FormField label="인수 (한 줄에 하나씩)">
+                  <FormField label={t('ext.args')}>
                     <TextArea
                       rows={4}
                       className="min-h-28"
@@ -1224,7 +1320,7 @@ export function ExtensionsPage() {
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5">
               <Action variant="secondary" onClick={() => setEdit(null)}>
-                취소
+                {t('ext.cancel')}
               </Action>
               <Action onClick={saveMcp}>
                 <Check size={16} /> 저장
@@ -1239,7 +1335,7 @@ export function ExtensionsPage() {
             <div className="flex items-center justify-between border-b border-[#EFE9DF] p-5">
               <div>
                 <small>SKILL EDITOR</small>
-                <h2>스킬 작성 · 검토</h2>
+                <h2>{t('ext.skillWrite')}</h2>
               </div>
               <Button
                 size="icon"
@@ -1250,7 +1346,7 @@ export function ExtensionsPage() {
               </Button>
             </div>
             <div className="grid gap-4 p-5">
-              <FormField label="이름">
+              <FormField label={t('ext.skillName')}>
                 <TextInput
                   value={skillEdit.name || ""}
                   onChange={(e) =>
@@ -1258,7 +1354,7 @@ export function ExtensionsPage() {
                   }
                 />
               </FormField>
-              <FormField label="실행 지침">
+              <FormField label={t('ext.skillInstructions')}>
                 <TextArea
                   className="min-h-28"
                   rows={10}
@@ -1280,15 +1376,15 @@ export function ExtensionsPage() {
                     })
                   }
                 />{" "}
-                에이전트 시스템 지침에 적용
+                {t('ext.applySystem')}
               </label>
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5">
               <Action variant="secondary" onClick={() => setSkillEdit(null)}>
-                취소
+                {t('ext.cancel')}
               </Action>
               <Action onClick={saveSkill}>
-                <Check size={16} /> 스킬 저장
+                <Check size={16} /> {t('ext.saveSkill')}
               </Action>
             </div>
           </DialogPanel>

@@ -2,6 +2,7 @@ import {del,post} from '../../api'
 import {Action,Empty,Panel,StateTag,Subheading} from '../../components/UI'
 import {Button,TextInput} from '../../components/Primitives'
 import {ArrowRight,BookOpenText,Check,Plus,Search,Trash2} from 'lucide-react'
+import {t,useLocale} from '../../i18n'
 
 type Props={
  repo:string;setRepo:(v:string)=>void;repoBusy:boolean;importRepo:()=>Promise<void>;
@@ -12,6 +13,7 @@ type Props={
 }
 
 export function SkillsPanel(p:Props){
+ useLocale()
  const {repo,setRepo,repoBusy,importRepo,skills,addSkillTemplate,filteredSkills,skillCategories,skillCategory,setSkillCategory,skillQuery,setSkillQuery,setSkillEdit,setError,setMessage}=p
  return (
   <>
@@ -21,18 +23,18 @@ export function SkillsPanel(p:Props){
         <TextInput
           value={repo}
           onChange={(e) => setRepo(e.target.value)}
-          placeholder="GitHub 저장소 (예: anthropics/skills)"
+          placeholder={t('sp.repoPlaceholder')}
         />
         <Action onClick={() => void importRepo()} disabled={repoBusy}>
-          {repoBusy ? "가져오는 중" : "스킬 가져오기"}
+          {repoBusy ? t('sp.importing') : t('sp.import')}
         </Action>
       </div>
     </Panel>
     <Subheading
-      title="기본 스킬 템플릿"
+      title={t('sp.templates')}
       extra={
         <span className="text-[11px] text-[#8A8176]">
-          {filteredSkills.length}개
+          {t('sp.count', { count: filteredSkills.length })}
         </span>
       }
     />
@@ -44,7 +46,7 @@ export function SkillsPanel(p:Props){
           onClick={() => setSkillCategory(category)}
           className="!px-3 !py-1.5 !text-[12px]"
         >
-          {category === "all" ? "전체" : category}
+          {category === "all" ? t('sp.all') : category}
         </Button>
       ))}
     </div>
@@ -53,7 +55,7 @@ export function SkillsPanel(p:Props){
       <TextInput
         value={skillQuery}
         onChange={(e) => setSkillQuery(e.target.value)}
-        placeholder="스킬 검색 (예: 리서치, Git, 보안)"
+        placeholder={t('sp.searchPlaceholder')}
       />
     </div>
     <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -80,11 +82,11 @@ export function SkillsPanel(p:Props){
                     await skills.reload();
                   }}
                 >
-                  취소
+                  {t('sp.cancel')}
                 </Button>
               ) : (
                 <Button variant="secondary" onClick={() => void addSkillTemplate(template)}>
-                  설치
+                  {t('sp.install')}
                 </Button>
               )}
             </div>
@@ -93,14 +95,14 @@ export function SkillsPanel(p:Props){
       })}
     </div>
     <Subheading
-      title="내 스킬"
+      title={t('sp.mine')}
       extra={
         <Action
           onClick={() =>
             setSkillEdit({ name: "", instructions: "", enabled: true })
           }
         >
-          <Plus size={16} /> 스킬 작성
+          <Plus size={16} /> {t('sp.write')}
         </Action>
       }
     />
@@ -114,14 +116,14 @@ export function SkillsPanel(p:Props){
             {x.name}
             {String(x.source || "").includes("anthropics") && (
               <span className="ml-2 rounded bg-[#FFF3E8] px-1.5 py-0.5 text-[10px] font-semibold text-[#A94E30]">
-                Claude 기준
+                {t('sp.claudeBasis')}
               </span>
             )}
           </h3>
           <p>{x.instructions.slice(0, 170)}</p>
           <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-[#EFE9DF] pt-3">
             <StateTag online={x.enabled}>
-              {x.enabled ? "활성화" : "제안 / 비활성"}
+              {x.enabled ? t('sp.active') : t('sp.suggested')}
             </StateTag>
             <div className="flex items-center gap-1">
               <Button
@@ -138,28 +140,28 @@ export function SkillsPanel(p:Props){
                   }
                 }}
               >
-                {x.enabled ? "비활성화" : "활성화"}
+                {x.enabled ? t('sp.disable') : t('sp.enable')}
               </Button>
               <a
                 href={"/api/skills/" + x.id + "/export"}
                 download={x.name + ".md"}
                 className="inline-flex items-center gap-1 rounded-lg border border-[#E1D9CC] px-2 py-1 text-[11px] font-semibold text-[#3A342D] hover:bg-[#F7F2EA]"
               >
-                내보내기
+                {t('sp.export')}
               </a>
               <Button onClick={() => setSkillEdit(x)}>
-                편집 <ArrowRight size={15} />
+                {t('sp.edit')} <ArrowRight size={15} />
               </Button>
               <Button
                 size="icon"
                 variant="ghost"
-                title="삭제"
+                title={t('sp.delete')}
                 onClick={async () => {
-                  if (!confirm(x.name + " 스킬을 삭제할까요?")) return;
+                  if (!confirm(t('sp.confirmDelete', { name: x.name }))) return;
                   try {
                     await del("/api/skills/" + x.id);
                     await skills.reload();
-                    setMessage(x.name + " 삭제됨");
+                    setMessage(t('ext.skillDeleted', { name: x.name }));
                   } catch (e) {
                     setError((e as Error).message);
                   }
@@ -175,8 +177,8 @@ export function SkillsPanel(p:Props){
         <Panel>
           <Empty
             icon={BookOpenText}
-            title="아직 스킬이 없습니다"
-            description="에이전트가 제안한 스킬을 검토하거나 직접 작성할 수 있습니다."
+            title={t('sp.empty')}
+            description={t('sp.emptyDesc')}
           />
         </Panel>
       )}
