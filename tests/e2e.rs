@@ -591,13 +591,9 @@ fn room_debate_knowledge_is_recalled_by_a_different_model_with_provenance() {
                         .as_str()
                         .is_some_and(|content| content.contains("우리가 정한 배포 방식"))
             });
+            // Retrieved knowledge is quoted data, not a system instruction.
             has_owner.then(|| {
-                messages
-                    .iter()
-                    .find(|message| message["role"] == "system")
-                    .and_then(|message| message["content"].as_str())
-                    .unwrap_or("")
-                    .to_string()
+                messages.iter().filter_map(|message|message["content"].as_str()).collect::<Vec<_>>().join("\n")
             })
         })
         .next()
@@ -753,6 +749,50 @@ fn persistent_room_http_flow_keeps_owner_once_and_shares_peer_context() {
         .collect::<Vec<_>>();
     assert_eq!(speakers, vec!["a", "b"]);
     assert_eq!(task["attempts"][0]["verificationOwner"], "self");
+}
+
+#[test]
+fn room_compact_tools_keep_read_write_history_and_require_real_write_approval() {
+    let _serial = serial();
+    let (port, requests) = scripted_provider(|request| {
+        let observations = request["messages"].as_array().unwrap().iter()
+            .filter(|message|message["role"]=="tool").count();
+        let call = match observations {
+            0 => Some(("read","workspace_read",json!({"path":"input.txt"}))),
+            1 => Some(("write","workspace_write",json!({"path":"output.txt","content":"copied evidence"}))),
+            _ => None,
+        };
+        match call {
+            Some((id,name,arguments)) => vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":id,"type":"function","function":{"name":"dominion_tool","arguments":json!({"name":name,"arguments":arguments.to_string()}).to_string()}}]},"finish_reason":"tool_calls"}]})],
+            None => vec![json!({"choices":[{"delta":{"content":"확인한 근거를 기록했습니다."},"finish_reason":"stop"}]})],
+        }
+    });
+    let app = TestApp::new(port,"native");
+    std::fs::write(app._root.join("input.txt"),"copied evidence").unwrap();
+    app.post("/api/agents",&json!({"id":"a","name":"Reader","systemPrompt":"Inspect the requested file and record the evidence."}));
+    let room=app.post("/api/rooms",&json!({"name":"compact protocol","agentIds":["a"],"rounds":1,"maxTurns":1,"toolsEnabled":true,"autoLearning":false}));
+    let sent=app.post(&format!("/api/rooms/{}/messages",room["id"].as_str().unwrap()),&json!({"input":"테스트 파일을 확인하고 결과를 기록해줘"}));
+    let approval=app.wait_pending_approval(15);
+    assert_eq!(approval["tool"],"workspace_write");
+    assert!(!app._root.join("output.txt").exists());
+    app.post("/api/approvals",&json!({"id":approval["id"],"allow":true}));
+    let deadline=Instant::now()+Duration::from_secs(20);
+    loop {
+        let job=app.get(&format!("/api/jobs/{}",sent["jobId"].as_str().unwrap()));
+        if job["status"]=="completed" { break; }
+        assert!(matches!(job["status"].as_str(),Some("queued"|"running")),"{job}");
+        assert!(Instant::now()<deadline,"{job}");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(std::fs::read_to_string(app._root.join("output.txt")).unwrap(),"copied evidence");
+    let requests=requests.lock().unwrap();
+    assert_eq!(requests.len(),3);
+    assert_eq!(requests[0]["tools"][0]["function"]["name"],"dominion_tool");
+    assert!(requests[1]["messages"].as_array().unwrap().iter().any(|message|message["tool_calls"][0]["function"]["name"]=="dominion_tool"));
+    let execution=app.get("/api/executions")[0].clone();
+    assert_eq!(execution["inputContext"]["contextModelCalls"],0);
+    assert!(execution["inputContext"]["personaTokens"].as_u64().unwrap()>0);
+    assert_eq!(execution["toolCalls"],2);
 }
 
 #[test]

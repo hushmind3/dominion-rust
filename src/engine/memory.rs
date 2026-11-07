@@ -179,7 +179,7 @@ fn contains_secret(text: &str) -> bool {
 
 /// Character bigrams handle Korean particles/spacing without shipping a model
 /// or importing a tokenizer. Latin words keep whole-token matching.
-fn terms(text: &str) -> BTreeSet<String> {
+pub(crate) fn terms(text: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for token in text.to_lowercase().split(|ch: char| !ch.is_alphanumeric()) {
         let chars: Vec<char> = token.chars().collect();
@@ -264,7 +264,7 @@ fn retrieve_ranked(
     retrieve_ranked_with_rerank(store, scope, query, limit, algorithm, &rerank)
 }
 
-fn bm25_scores(
+pub(crate) fn bm25_scores(
     query_terms: &BTreeSet<String>,
     documents: &[BTreeSet<String>],
     k1: f64,
@@ -997,16 +997,11 @@ fn context_block_ranked(
     context_block_from_records(store, retrieve_ranked(store, scope, query, 6, algorithm))
 }
 
-fn context_block_from_records(store: &Store, memories: Vec<Value>)
-    -> (Option<String>, Vec<Value>)
-{
-    if memories.is_empty() {
-        return (None, Vec::new());
-    }
+pub(crate) fn record_context_use(store: &Store, memories: &[Value]) {
     // Count delivered context, not merely search hits. The importance kernel
     // learns from memories actually shown to an agent on a later turn.
     // CAS retries keep concurrent sessions from overwriting one another.
-    for memory in &memories {
+    for memory in memories {
         let Some(id) = memory["id"].as_str() else { continue };
         for _ in 0..3 {
             let Some(current) = store.get("memory", id) else { break };
@@ -1020,6 +1015,15 @@ fn context_block_from_records(store: &Store, memories: Vec<Value>)
             }
         }
     }
+}
+
+fn context_block_from_records(store: &Store, memories: Vec<Value>)
+    -> (Option<String>, Vec<Value>)
+{
+    if memories.is_empty() {
+        return (None, Vec::new());
+    }
+    record_context_use(store,&memories);
     // JSON escaping prevents a remembered newline from manufacturing a new
     // system instruction. Memory remains evidence, not executable policy.
     let rows = memories

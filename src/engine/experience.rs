@@ -31,7 +31,7 @@ fn signature(request: &str) -> String {
         .join(" ")
 }
 
-fn visible(record: &Value, scope: &MemoryScope) -> bool {
+pub(crate) fn visible(record: &Value, scope: &MemoryScope) -> bool {
     if record["scope"].as_str() == Some("global") {
         return true;
     }
@@ -42,7 +42,7 @@ fn visible(record: &Value, scope: &MemoryScope) -> bool {
         || record["agentId"].as_str() == scope.agent_id.as_deref()
 }
 
-fn rule_visible(rule: &Value, scope: &MemoryScope) -> bool {
+pub(crate) fn rule_visible(rule: &Value, scope: &MemoryScope) -> bool {
     if rule["scope"].as_str() == Some("global") {
         return true;
     }

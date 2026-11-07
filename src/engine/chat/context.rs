@@ -326,9 +326,6 @@ pub(super) fn history(
         .get("session", session_id)
         .unwrap_or(Value::Null);
     let room_id = session["roomId"].as_str();
-    let room = room_id
-        .and_then(|id| state.store.get("room", id))
-        .unwrap_or(Value::Null);
     let is_room = room_id.is_some();
     if is_room {
         // Historical automated prompts are not the owner's words.
@@ -370,8 +367,19 @@ pub(super) fn history(
             break;
         }
     }
-    let mut out = prefix;
-    let window = &all[start..];
+    render_history(state, session_id, agent_id, &all[start..], prefix)
+}
+
+pub(super) fn render_history(
+    state: &AppState,
+    session_id: &str,
+    agent_id: Option<&str>,
+    window: &[Value],
+    mut out: Vec<Value>,
+) -> Vec<Value> {
+    let session = state.store.get("session", session_id).unwrap_or(Value::Null);
+    let is_room = session["roomId"].is_string();
+    let room = session["roomId"].as_str().and_then(|id| state.store.get("room", id)).unwrap_or(Value::Null);
     // Keep newest files first when bounding a long transcript. Otherwise an
     // old screenshot could exhaust the budget before today's image is read.
     let mut selected_files = std::collections::HashSet::new();

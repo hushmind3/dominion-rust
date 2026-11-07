@@ -480,16 +480,10 @@ async fn fallback_candidates(
 /// Providers that omit usage during streaming still need a cost signal, so
 /// prompt/output characters provide a conservative estimate. The flag stored
 /// with the message keeps the estimate distinguishable from exact usage.
-fn estimate_usage(messages: &[Value], completion: &Completion) -> (u64, u64) {
-    let prompt_chars: usize = messages
-        .iter()
-        .filter_map(|message| message["content"].as_str())
-        .map(str::len)
-        .sum();
-    let output_chars = completion.content.chars().count() + completion.reasoning.chars().count();
+fn estimate_usage(messages: &[Value], tools: &[Value], completion: &Completion) -> (u64, u64) {
     (
-        ((prompt_chars / 4).max(1)) as u64,
-        ((output_chars / 4).max(1)) as u64,
+        super::room_context::input_estimate(messages, tools) as u64,
+        super::room_context::estimate(&format!("{}{}",completion.content,completion.reasoning)).max(1) as u64,
     )
 }
 
@@ -912,7 +906,7 @@ async fn stream_completion_once(
     let (prompt_tokens, completion_tokens) = if completion.usage_exact {
         (completion.prompt_tokens, completion.completion_tokens)
     } else {
-        estimate_usage(messages, &completion)
+        estimate_usage(&provider_messages, if compatible { &[] } else { tools }, &completion)
     };
     let total_tokens = if completion.usage > 0 {
         completion.usage

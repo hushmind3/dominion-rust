@@ -868,16 +868,7 @@ pub fn context_block(state: &AppState, room_id: &str, query: &str) -> Option<Str
                         .cmp(a["updatedAt"].as_str().unwrap_or(""))
                 })
         });
-        if active
-            .first()
-            .map(|record| relevance(record, query) <= 0.0)
-            .unwrap_or(false)
-        {
-            active = list(state, room_id)
-                .into_iter()
-                .filter(|record| record["status"].as_str() == Some("active"))
-                .collect();
-        }
+        active.retain(|record|relevance(record,query)>0.0);
     }
     let items = active.into_iter().take(6).collect::<Vec<_>>();
     if items.is_empty() {

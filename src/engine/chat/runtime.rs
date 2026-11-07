@@ -461,23 +461,98 @@ async fn run_turn_body(
         .and_then(|algorithm| algorithm["parameters"]["maxTools"].as_u64())
         .unwrap_or(MAX_TOOL_CALLS as u64)
         .clamp(4, 120) as usize;
-    let prompt_context = super::context::system_prompt_with_manifest_at(
-        state,
-        request,
-        session_id,
-        &request.input,
-        Some(&strategy_candidates),
-        Some(execution_id),
-    );
-    let mut messages = vec![json!({ "role": "system", "content": prompt_context.prompt })];
-    let history_messages = history(
-        state,
-        session_id,
-        request.agent_id.as_deref(),
-        provider
-            .context_tokens
-            .map(|tokens| ((tokens as usize).saturating_mul(3)).clamp(8_000, 400_000)),
-    );
+    let mut tool_definitions = if request.tools_enabled && request.tools_execution_enabled {
+        tools::definitions()
+    } else {
+        Vec::new()
+    };
+    if request.tools_enabled && request.tools_execution_enabled {
+        tool_definitions.extend(mcp::definitions(state).await);
+    }
+    let is_room = session["roomId"].is_string();
+    let discovery = if is_room {
+        Value::Null
+    } else {
+        crate::engine::algorithms::choose_for_agent(
+            state, "tool.discovery", request.agent_id.as_deref(), Some(execution_id),
+        ).unwrap_or(Value::Null)
+    };
+    if !is_room {
+        tool_definitions = select_tool_definitions(tool_definitions, &request.input, &discovery);
+    }
+    let compact_tools = if is_room {
+        if acceptance.is_some() {
+            tool_definitions.clone()
+        } else {
+            super::tool_catalog::for_request(&tool_definitions, &request.input, &state.config.workspace)
+        }
+    } else {
+        Vec::new()
+    };
+    let uses_dispatch = is_room && super::tool_catalog::uses_dispatch(&compact_tools);
+
+    let compiled = if is_room {
+        let source = source_message_id.or(reply_to.as_deref()).ok_or("응답할 원문이 없습니다.")?;
+        let compiled = super::room_context::compile(
+            state, request, session_id, source, &compact_tools, &strategy_candidates,
+        )?;
+        // A tool task needs room for its applicable procedures and evidence.
+        // When fixed identity + native schemas already exhaust the proposed
+        // conversational budget, keep the established work-context policy.
+        let work_needs_context = !uses_dispatch && !tool_definitions.is_empty()
+            && compiled.accounting["requiredOverBudget"] == true;
+        if work_needs_context {
+            if let Some(mut execution) = state.store.get("execution", execution_id) {
+                execution["contextPolicy"] = json!("native-work-context");
+                execution["contextPolicyReason"] = json!("fixed work context exceeds the conversational target; preserve procedures and evidence");
+                state.store.put("execution", &execution);
+            }
+            None
+        } else {
+            Some(compiled)
+        }
+    } else {
+        None
+    };
+    let (prompt_context, history_messages) = match compiled {
+        Some(compiled) => {
+            let delivered_memories = compiled.system.items.iter()
+                .filter(|item| item["kind"] == "memory")
+                .filter_map(|item| item["id"].as_str().and_then(|id| state.store.get("memory", id)))
+                .collect::<Vec<_>>();
+            crate::engine::memory::record_context_use(&state.store, &delivered_memories);
+            if let Some(mut execution) = state.store.get("execution", execution_id) {
+                execution["inputContext"] = compiled.accounting;
+                state.store.put("execution", &execution);
+            }
+            (compiled.system, compiled.history)
+        }
+        None => (
+            super::context::system_prompt_with_manifest_at(state,request,session_id,&request.input,Some(&strategy_candidates),Some(execution_id)),
+            history(state,session_id,request.agent_id.as_deref(),provider.context_tokens.map(|tokens|((tokens as usize).saturating_mul(3)).clamp(8_000,400_000))),
+        ),
+    };
+    let mut messages = vec![json!({"role":"system","content":prompt_context.prompt})];
+    if is_room {
+        if let Some(mut execution) = state.store.get("execution", execution_id) {
+            if execution["inputContext"].is_null() {
+                let persona = request.agent_id.as_deref().and_then(|id| state.store.get("agent", id));
+                let persona_tokens = super::room_context::estimate(persona.as_ref().and_then(|agent|agent["systemPrompt"].as_str()).unwrap_or(""));
+                let mut prepared = messages.clone();
+                prepared.extend(history_messages.clone());
+                execution["inputContext"] = json!({
+                    "policy":"native-work-context", "estimated":true, "contextModelCalls":0,
+                    "personaTokens":persona_tokens, "memoryTokens":null,
+                    "historyTokens":super::room_context::estimate(&json!(history_messages).to_string()),
+                    "systemTokens":super::room_context::estimate(&prompt_context.prompt).saturating_sub(persona_tokens),
+                    "toolSchemaTokens":super::room_context::estimate(&json!(compact_tools).to_string()),
+                    "totalInputTokens":super::room_context::input_estimate(&prepared,&compact_tools),
+                    "note":"legacy work prompt does not expose memory as a separate component"
+                });
+                state.store.put("execution", &execution);
+            }
+        }
+    }
     let mut context_overflow = false;
     let mut context_items = prompt_context.items.clone();
     let retrieved_experience_ids = context_items
@@ -630,26 +705,6 @@ async fn run_turn_body(
         }));
     }
 
-    let mut tool_definitions = if request.tools_enabled && request.tools_execution_enabled {
-        tools::definitions()
-    } else {
-        Vec::new()
-    };
-    if request.tools_enabled && request.tools_execution_enabled {
-        tool_definitions.extend(mcp::definitions(state).await);
-    }
-    let discovery = crate::engine::algorithms::choose_for_agent(
-        state,
-        "tool.discovery",
-        request.agent_id.as_deref(),
-        Some(execution_id),
-    )
-    .unwrap_or(Value::Null);
-    tool_definitions = select_tool_definitions(
-        tool_definitions,
-        &request.input,
-        &discovery,
-    );
     // Keep a native tool schema catalog. The provider adapter constructs
     // native calls or the text-tool manual for whichever local/API model
     // actually handles each round, including after failover.
@@ -680,7 +735,10 @@ async fn run_turn_body(
     context_items.push(json!({
         "kind": "tools",
         "providerToolMode": provider.tool_mode,
-        "nativeDefinitions": native_tool_names,
+        "availableDefinitions": native_tool_names,
+        "nativeDefinitions": if is_room {
+            compact_tools.iter().map(tool_name).map(str::to_string).collect::<Vec<_>>()
+        } else { native_tool_names.clone() },
         "textManual": provider.tool_mode == "compat"
             && request.tools_enabled
             && request.tools_execution_enabled,
@@ -896,7 +954,26 @@ async fn run_turn_body(
         }
         let model_started = std::time::Instant::now();
         let model_offset_ms = turn_started.elapsed().as_millis() as u64;
-        let mut round_tools = if force_final { Vec::new() } else { tool_definitions.clone() };
+        let mut round_tools = if force_final {
+            Vec::new()
+        } else if is_room {
+            let mut presented = compact_tools.clone();
+            // An actual tool choice is enough to load its complete schema on
+            // the next normal round. No model-driven discovery call is needed.
+            for definition in &tool_definitions {
+                let name = tool_name(definition);
+                let used = messages.iter().any(|message| {
+                    message["tool_calls"].as_array().into_iter().flatten()
+                        .any(|call| call["function"]["name"] == name)
+                });
+                if used && !presented.iter().any(|tool| tool_name(tool) == name) {
+                    presented.push(definition.clone());
+                }
+            }
+            presented
+        } else {
+            tool_definitions.clone()
+        };
         if !round_tools.is_empty() {
             let budget = provider
                 .context_tokens
@@ -912,11 +989,21 @@ async fn run_turn_body(
                 .unwrap_or(60_000);
             round_tools = trim_tool_definitions(round_tools, budget);
         }
+        let wire_messages = if uses_dispatch {
+            super::tool_catalog::encode_history(&messages, &tool_definitions)
+        } else { messages.clone() };
+        if is_room {
+            if let Some(mut execution) = state.store.get("execution", execution_id) {
+                execution["inputContext"]["preparedInputTokensEstimate"] = json!(super::room_context::input_estimate(&wire_messages,&round_tools));
+                execution["inputContext"]["preProviderDigest"] = json!(crate::engine::memory::stable_id(&[&json!({"messages":wire_messages,"tools":round_tools}).to_string()]));
+                state.store.put("execution", &execution);
+            }
+        }
         let completion_result = stream_completion(
             state,
             &client,
             &provider,
-            &messages,
+            &wire_messages,
             &round_tools,
             request,
             session_id,
@@ -973,16 +1060,9 @@ async fn run_turn_body(
             (completion.prompt_tokens, completion.completion_tokens)
         } else {
             usage_estimated = true;
-            let prompt_chars: usize = messages
-                .iter()
-                .filter_map(|message| message["content"].as_str())
-                .map(str::len)
-                .sum();
-            let output_chars =
-                completion.content.chars().count() + completion.reasoning.chars().count();
             (
-                ((prompt_chars / 4).max(1)) as u64,
-                ((output_chars / 4).max(1)) as u64,
+                super::room_context::input_estimate(&wire_messages, &round_tools) as u64,
+                super::room_context::estimate(&format!("{}{}", completion.content, completion.reasoning)).max(1) as u64,
             )
         };
         prompt_tokens_total += call_prompt;
@@ -993,6 +1073,14 @@ async fn run_turn_body(
             call_prompt + call_completion
         };
         total_tokens += call_total;
+        if is_room {
+            if let Some(mut execution)=state.store.get("execution",execution_id) {
+                execution["inputContext"]["providerPromptTokens"]=json!(prompt_tokens_total);
+                execution["inputContext"]["providerOutputTokens"]=json!(completion_tokens_total);
+                execution["inputContext"]["providerUsageExact"]=json!(!usage_estimated);
+                state.store.put("execution",&execution);
+            }
+        }
         metrics.lock().unwrap().tokens = total_tokens;
         if total_tokens > MAX_TOKENS {
             return Err(format!(
@@ -1022,6 +1110,12 @@ async fn run_turn_body(
                         arguments,
                     })
                     .collect();
+            }
+        }
+
+        if uses_dispatch {
+            for call in &mut completion.tool_calls {
+                super::tool_catalog::decode(call, &tool_definitions);
             }
         }
 
