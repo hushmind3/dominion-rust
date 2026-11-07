@@ -13,6 +13,9 @@ type ProviderPreset={name:string;baseUrl:string;kind:string;local:boolean;integr
 type CliCredential={id:string;name:string;available:boolean;supported:boolean;accountId?:string;model?:string;hint?:string}
 type CatalogProvider={id:string;name:string;api:string;models:number;env?:string[];doc?:string}
 type CatalogResponse={providers:CatalogProvider[];cached?:boolean;error?:string}
+type FreeCatalogModel={id:string;free?:boolean|null;freeStatus?:string;freeSource?:string}
+type FreeCatalogProvider={providerId:string;providerName:string;reachable:boolean;error?:string;models:FreeCatalogModel[]}
+type FreeCatalog={status?:string;updatedAt?:string;providers:FreeCatalogProvider[];counts?:{free:number;paid:number;unknown:number}}
 type Tab='providers'|'catalog'|'local'|'oauth'
 
 const providerPresets:ProviderPreset[]=[
@@ -70,6 +73,8 @@ export function ModelHub(){
  const [tab,setTab]=useState<Tab>('providers'),[category,setCategory]=useState<'all'|PresetCategory>('all'),[query,setQuery]=useState('')
  const catalog=useRemote<CatalogResponse>(tab==='catalog'?'/api/providers/catalog':null,{providers:[]})
  const [loginPending,setLoginPending]=useState(false),[loginUrl,setLoginUrl]=useState(''),[loginMessage,setLoginMessage]=useState(''),[deviceCode,setDeviceCode]=useState<{userCode:string;verificationUrl:string}|null>(null)
+ const freeCatalog=useRemote<FreeCatalog>('/api/providers/free-catalog',{providers:[]})
+ const [freeBusy,setFreeBusy]=useState(false)
  const [oauthBusy,setOauthBusy]=useState('')
  const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
  const probe=async(p:Provider)=>{
@@ -166,6 +171,13 @@ export function ModelHub(){
   },1500)
   return()=>{alive=false;clearInterval(timer)}
  },[loginPending])
+ const refreshFreeCatalog=async()=>{
+  if(freeBusy)return
+  setFreeBusy(true);setError('')
+  try{const next=await post<FreeCatalog>('/api/providers/free-catalog/refresh',{});freeCatalog.setValue(next)}
+  catch(e){setError((e as Error).message)}
+  finally{setFreeBusy(false)}
+ }
  const importCli=async(source:string)=>{
   if(oauthBusy)return
   setOauthBusy(source);setError('')
@@ -207,6 +219,15 @@ export function ModelHub(){
     {tab==='providers'&&<div className="flex flex-wrap gap-1">{(['all','free','cloud'] as const).map(value=><button key={value} type="button" onClick={()=>setCategory(value)} className={'rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold '+(category===value?'border-[#C96442] bg-[#FBF1EC] text-[#A94E30]':'border-[#E7E0D5] bg-white text-[#7C7469]')}>{t(value==='all'?'models.filter.all':value==='free'?'models.filter.free':'models.filter.cloud')}</button>)}</div>}</>}
   </div>
 
+  <section className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] px-3 py-2 text-[11px] text-[#7C7469]" title={t('models.freeCheck.note')}>
+   <strong className="text-[#3A342D]">{t('models.freeCheck.title')}</strong>
+   <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-700">{t('models.freeCheck.free',{count:freeCatalog.value.counts?.free||0})}</span>
+   <span className="rounded bg-[#F1ECE3] px-1.5 py-0.5 font-semibold text-[#8A8176]">{t('models.freeCheck.unknown',{count:freeCatalog.value.counts?.unknown||0})}</span>
+   <span className="rounded bg-[#F7EEE9] px-1.5 py-0.5 font-semibold text-[#A05B48]">{t('models.freeCheck.paid',{count:freeCatalog.value.counts?.paid||0})}</span>
+   {freeCatalog.value.providers.filter(p=>!p.reachable).length>0&&<span className="font-semibold text-rose-600">{t('models.freeCheck.failed',{count:freeCatalog.value.providers.filter(p=>!p.reachable).length})}</span>}
+   <span className="ml-auto text-[10px] text-[#9C9388]">{freeCatalog.value.updatedAt?t('models.freeCheck.updated',{time:new Date(freeCatalog.value.updatedAt).toLocaleString()}):t('models.freeCheck.empty')}</span>
+   <Button type="button" variant="ghost" size="sm" disabled={freeBusy} onClick={()=>void refreshFreeCatalog()}>{freeBusy?<RefreshCw size={13} className="animate-spin"/>:<RefreshCw size={13}/>} {freeBusy?t('models.freeCheck.checking'):t('models.freeCheck.refresh')}</Button>
+  </section>
   {tab==='catalog'&&<section className="rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9] p-5 shadow-[0_1px_2px_rgba(36,33,29,.04)]">
    <div className="mb-3 flex flex-wrap items-start justify-between gap-2"><div><h2 className="m-0 text-[16px] font-bold text-[#24211D]">{t('models.catalog.title')}</h2><p className="mt-1 text-[12px] text-[#7C7469]">{t('models.catalog.desc')}</p></div><Button type="button" variant="ghost" size="sm" disabled={catalog.loading} onClick={()=>void catalog.reload()}>{catalog.loading?<RefreshCw size={13} className="animate-spin"/>:<RefreshCw size={13}/>} {t('models.catalog.refresh')}</Button></div>
    <div className="mb-2"><TextInput value={query} onChange={e=>setQuery(e.target.value)} placeholder={t('models.providerSearch')} className="!text-[12px]"/></div>

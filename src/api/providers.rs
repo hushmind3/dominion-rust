@@ -130,6 +130,103 @@ pub async fn provider_catalog(State(state): State<AppState>) -> Json<Value> {
     Json(json!({"providers":record["providers"],"cached":false}))
 }
 
+/// Refreshes every enabled provider's model catalogue and stores the
+/// free/paid/unknown classification with a timestamp. Runs on demand and from
+/// the background scheduler; the Models page reads the cached result.
+pub async fn refresh_free_catalog(state: &AppState) -> Value {
+    let lock = "free-catalog-refresh";
+    if !state.begin_session(lock) {
+        return state
+            .store
+            .get("free_catalog", "catalog")
+            .unwrap_or_else(|| json!({"id":"catalog","status":"running","providers":[]}));
+    }
+    let _guard = state.session_guard(lock);
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => return json!({"id":"catalog","status":"error","error":error.to_string()}),
+    };
+    let port = state.config.port;
+    let mut providers = Vec::new();
+    let (mut free, mut paid, mut unknown) = (0u64, 0u64, 0u64);
+    for provider in state.store.all("provider") {
+        if provider["enabled"].as_bool() == Some(false) {
+            continue;
+        }
+        let Some(id) = provider["id"].as_str() else {
+            continue;
+        };
+        let name = provider["name"].as_str().unwrap_or(id);
+        let url = format!("http://127.0.0.1:{port}/api/providers/{id}/models");
+        match client.get(&url).send().await {
+            Ok(response) if response.status().is_success() => {
+                let models = response.json::<Vec<Value>>().await.unwrap_or_default();
+                let mut rows = Vec::new();
+                for model in models {
+                    match model["freeStatus"].as_str() {
+                        Some("free") => free += 1,
+                        Some("paid") => paid += 1,
+                        _ => unknown += 1,
+                    }
+                    rows.push(json!({
+                        "id":model["id"],
+                        "free":model["free"],
+                        "freeStatus":model["freeStatus"],
+                        "freeSource":model["freeSource"],
+                    }));
+                }
+                providers.push(json!({
+                    "providerId":id,"providerName":name,"reachable":true,
+                    "models":rows
+                }));
+            }
+            Ok(response) => {
+                providers.push(json!({
+                    "providerId":id,"providerName":name,"reachable":false,
+                    "error":format!("HTTP {}",response.status()),"models":[]
+                }));
+            }
+            Err(error) => {
+                providers.push(json!({
+                    "providerId":id,"providerName":name,"reachable":false,
+                    "error":error.to_string(),"models":[]
+                }));
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let record = json!({
+        "id":"catalog",
+        "status":"ready",
+        "updatedAt":chrono::Utc::now().to_rfc3339(),
+        "providers":providers,
+        "counts":{"free":free,"paid":paid,"unknown":unknown},
+    });
+    state.store.put("free_catalog", &record);
+    record
+}
+
+pub async fn free_catalog(State(state): State<AppState>) -> Json<Value> {
+    Json(
+        state
+            .store
+            .get("free_catalog", "catalog")
+            .unwrap_or_else(|| {
+                json!({
+                    "id":"catalog","status":"empty","providers":[],
+                    "counts":{"free":0,"paid":0,"unknown":0}
+                })
+            }),
+    )
+}
+
+pub async fn free_catalog_refresh(State(state): State<AppState>) -> Json<Value> {
+    Json(refresh_free_catalog(&state).await)
+}
+
 pub async fn cli_credentials() -> Json<Value> {
     let codex = codex_auth().ok();
     let claude = home_file(".claude/.credentials.json").is_some_and(|path| path.exists());
@@ -836,42 +933,68 @@ pub async fn delete_provider(State(state): State<AppState>, Path(id): Path<Strin
     Json(json!({ "ok": true })).into_response()
 }
 
-fn model_is_free(_provider: &Value, kind: &str, base: &str, item: &Value, id: &str) -> bool {
+/// Returns (free?, source). `None` means the provider did not publish enough
+/// information to decide; the UI must show "확인 필요", never a fake FREE.
+fn model_free_status(
+    _provider: &Value,
+    kind: &str,
+    base: &str,
+    item: &Value,
+    id: &str,
+) -> (Option<bool>, &'static str) {
     // Local runtimes on their standard ports are free. A localhost shim that
     // proxies paid providers (for example port 4399) is not automatically free.
     if kind == "ollama" || base.contains(":11434") || base.contains(":1234") {
-        return true;
+        return (Some(true), "local-runtime");
     }
-    // Z.ai publishes three models with free input and output.
+    if base.contains(":4399") {
+        return (Some(false), "subscription-proxy");
+    }
     if base.contains("z.ai") {
-        return matches!(id, "glm-4.7-flash" | "glm-4.5-flash" | "glm-4.6v-flash");
+        return (
+            Some(matches!(id, "glm-4.7-flash" | "glm-4.5-flash" | "glm-4.6v-flash")),
+            "z.ai-free-list",
+        );
     }
-    // Workers AI draws from the free daily Neuron allowance, and Groq's
-    // on-demand tier is free within its rate limits.
-    if base.contains("api.cloudflare.com") || base.contains("api.groq.com") {
-        return true;
+    if base.contains("oai.endpoints.kepler.ai.cloud.ovh.net") {
+        return (Some(true), "ovh-free-endpoint");
     }
-    if id.ends_with(":free") || id.contains(":free") {
-        return true;
+    if base.contains("127.0.0.1:31415") || base.contains("127.0.0.1:3001") {
+        return (Some(true), "freellmapi-hub");
+    }
+    if base.contains("api.groq.com") {
+        return (Some(true), "groq-free-tier");
     }
     if item["free"].as_bool() == Some(true) || item["is_free"].as_bool() == Some(true) {
-        return true;
+        return (Some(true), "provider-metadata");
     }
-    let Some(pricing) = item.get("pricing") else {
-        return false;
-    };
-    let zero = |key: &str| {
-        pricing
-            .get(key)
-            .and_then(|value| {
-                value
-                    .as_str()
-                    .and_then(|text| text.parse::<f64>().ok())
-                    .or_else(|| value.as_f64())
-            })
-            .is_some_and(|value| value == 0.0)
-    };
-    zero("prompt") && zero("completion")
+    if id.ends_with(":free") || id.contains(":free") {
+        return (Some(true), "openrouter-free-suffix");
+    }
+    if let Some(pricing) = item.get("pricing") {
+        let zero = |key: &str| {
+            pricing
+                .get(key)
+                .and_then(|value| {
+                    value
+                        .as_str()
+                        .and_then(|text| text.parse::<f64>().ok())
+                        .or_else(|| value.as_f64())
+                })
+                .is_some_and(|value| value == 0.0)
+        };
+        return (Some(zero("prompt") && zero("completion")), "provider-pricing");
+    }
+    // Workers AI models do not publish per-model pricing in the catalogue.
+    // Some are paid-only, so an unknown model must not be advertised as free.
+    if base.contains("api.cloudflare.com") {
+        return (None, "cloudflare-no-free-metadata");
+    }
+    (None, "no-pricing-metadata")
+}
+
+fn model_is_free(provider: &Value, kind: &str, base: &str, item: &Value, id: &str) -> bool {
+    model_free_status(provider, kind, base, item, id).0 == Some(true)
 }
 
 /// Verifies a provider without saving anything. The UI can test the key the
@@ -1058,7 +1181,10 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
         ]
         .into_iter()
         .filter(|id| seen.insert(id.clone()))
-        .map(|id| json!({"id":id,"name":id,"free":false}))
+        .map(|id| json!({
+            "id":id,"name":id,"free":false,
+            "freeStatus":"paid","freeSource":"chatgpt-subscription"
+        }))
         .collect();
         return Json(json!(models)).into_response();
     }
@@ -1116,10 +1242,17 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
                 } else {
                     item["id"].as_str()?
                 };
+                let (free, source) = model_free_status(&provider, kind, &base, item, id);
                 Some(json!({
                     "id": id,
                     "name": item["display_name"].as_str().unwrap_or(id),
-                    "free": model_is_free(&provider, kind, &base, item, id),
+                    "free": free,
+                    "freeStatus": match free {
+                        Some(true) => "free",
+                        Some(false) => "paid",
+                        None => "unknown",
+                    },
+                    "freeSource": source,
                 }))
             }).collect();
             // Z.ai's model endpoint omits the free flash models even though
@@ -1128,8 +1261,13 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
                 for id in ["glm-4.7-flash", "glm-4.5-flash", "glm-4.6v-flash"] {
                     if let Some(row) = models.iter_mut().find(|row| row["id"] == id) {
                         row["free"] = json!(true);
+                        row["freeStatus"] = json!("free");
+                        row["freeSource"] = json!("z.ai-free-list");
                     } else {
-                        models.push(json!({"id":id,"name":id,"free":true}));
+                        models.push(json!({
+                            "id":id,"name":id,"free":true,
+                            "freeStatus":"free","freeSource":"z.ai-free-list"
+                        }));
                     }
                 }
             }

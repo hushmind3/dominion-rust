@@ -81,6 +81,16 @@ async fn serve(mut config: Config, open_browser: bool, parent_bound: bool) -> Re
     engine::policy::propose_candidates(&state);
     engine::jobs::start(state.clone());
     engine::maintenance::start(state.clone());
+    {
+        let refresh_state = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+            loop {
+                let _ = crate::api::providers::refresh_free_catalog(&refresh_state).await;
+                tokio::time::sleep(std::time::Duration::from_secs(6 * 60 * 60)).await;
+            }
+        });
+    }
     engine::scheduler::start(state.clone());
     engine::discord::start(state.clone());
     engine::telegram::start(state.clone());

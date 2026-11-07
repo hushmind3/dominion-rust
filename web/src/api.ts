@@ -49,7 +49,7 @@ export const post = <T = any>(url: string, data: unknown) =>
  request<T>(url, {method: 'POST', body: JSON.stringify(data)})
 export const del = (url: string) => request(url, {method: 'DELETE'})
 
-export type ModelOption = {id: string; name?: string; free?: boolean}
+export type ModelOption = {id: string; name?: string; free?: boolean|null; freeStatus?: 'free'|'paid'|'unknown'; freeSource?: string}
 export type Approval = {id: string; tool: string; args: unknown; status: string; sessionId: string}
 export async function resolveApproval(id: string, allow: boolean) {
  const result = await post<{resolved: boolean; error?: string}>('/api/approvals', {id, allow})

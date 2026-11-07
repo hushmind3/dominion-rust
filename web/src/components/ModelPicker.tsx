@@ -52,7 +52,7 @@ export function ModelPicker({
   }, [providerId, disabled])
 
   const filtered = useMemo(() => {
-    const source = freeOnly ? models.filter((model) => model.free) : models
+    const source = freeOnly ? models.filter((model) => model.free === true) : models
     const needle = query.trim().toLowerCase()
     if (!needle) return source
     return source.filter(
@@ -173,9 +173,14 @@ export function ModelPicker({
                     }
                   >
                     <span className="min-w-0 flex-1 truncate">{model.id}</span>
-                    {model.free && (
+                    {model.free === true && (
                       <span className="shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">
                         {t('picker.free')}
+                      </span>
+                    )}
+                    {model.freeStatus === 'unknown' && (
+                      <span className="shrink-0 rounded bg-[#F1ECE3] px-1.5 py-0.5 text-[9px] font-semibold text-[#8A8176]" title={model.freeSource || ''}>
+                        {t('picker.unknownFree')}
                       </span>
                     )}
                     {model.id === value && <Check size={13} className="shrink-0" />}
@@ -185,7 +190,7 @@ export function ModelPicker({
                 <div className="px-3 py-4 text-[12px] text-[#8A8176]">
                   {!models.length
                     ? t('picker.noneProvider')
-                    : freeOnly && !models.some((model) => model.free)
+                    : freeOnly && !models.some((model) => model.free === true)
                       ? t('picker.noneFree')
                       : t('picker.noResults')}
                 </div>
