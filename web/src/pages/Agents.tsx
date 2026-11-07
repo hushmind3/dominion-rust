@@ -70,7 +70,7 @@ export function AgentsPage() {
     if (!edit?.name?.trim() || saving) return;
     const model = edit.model?.trim() || "";
     if (edit.providerId && (!editProvider || (!model && !editProvider.model))) {
-      setError("사용 가능한 API와 모델을 선택하거나, 모델을 채팅에서 선택하도록 설정하세요.");
+      setError(t('agents.modelHint'));
       return;
     }
     setSaving(true);
@@ -102,7 +102,7 @@ export function AgentsPage() {
         providerId: bulkProvider,
         model: bulkModel.trim(),
       });
-      setBulkNotice(r.count + "개 에이전트의 모델을 변경했습니다.");
+      setBulkNotice(t('agents.bulkDone', { count: r.count }));
       setBulk(false);
       await agents.reload();
       refresh();
@@ -140,7 +140,7 @@ export function AgentsPage() {
                   description: "",
                   aliases: [],
                   systemPrompt:
-                    "당신은 숙련된 전문가입니다. 실제 행동과 정확한 보고를 우선합니다.",
+                    t('agents.defaultPrompt'),
                   providerId: "",
                   model: "",
                   color: accents[agents.value.length % accents.length],
@@ -175,7 +175,7 @@ export function AgentsPage() {
             title={t('agents.bulk.title')}
             extra={
               <span className="text-[10px] font-bold uppercase tracking-widest text-[#9C9388]">
-                {agents.value.length}명 중 {selected.length}명 선택
+                {t('agents.selectedCount', { total: agents.value.length, selected: selected.length })}
               </span>
             }
           />
@@ -206,7 +206,7 @@ export function AgentsPage() {
                   setBulkModel("");
                 }}
               >
-                <option value="">선택</option>
+                <option value="">{t('agents.select')}</option>
                 {enabledProviders.map((p) => (
                   <option value={p.id} key={p.id}>
                     {p.name}
@@ -258,7 +258,7 @@ export function AgentsPage() {
                   <label className="inline-flex items-center gap-2">
                     <TextInput
                       type="checkbox"
-                      aria-label={a.name + " 선택"}
+                      aria-label={a.name + ' ' + t('agents.select')}
                       checked={selected.includes(a.id)}
                       onChange={(e) =>
                         setSelected((prev) =>
@@ -273,7 +273,7 @@ export function AgentsPage() {
                 <Button
                   size="icon"
                   variant="ghost"
-                  aria-label={a.name + " 편집"}
+                  aria-label={a.name + ' ' + t('agents.editShort')}
                   onClick={() => { setError(""); setEdit({ ...a }); }}
                 >
                   <Edit3 size={16} />
@@ -283,7 +283,7 @@ export function AgentsPage() {
                     size="icon"
                     variant="ghost"
                     onClick={async () => {
-                      if (confirm(a.name + " 에이전트를 삭제하시겠습니까?")) {
+                      if (confirm(a.name + ' ' + t('agents.confirmDelete'))) {
                         try {
                           await del("/api/agents/" + encodeURIComponent(a.id));
                           setSelected(previous => previous.filter(id => id !== a.id));
@@ -307,23 +307,23 @@ export function AgentsPage() {
               <span>
                 <Sparkles size={15} />{" "}
                 {providers.value.find((p) => p.id === a.providerId)?.name ||
-                  (a.providerId ? "연결 확인 필요" : "채팅에서 모델 선택")}
+                  (a.providerId ? t('agents.providerMissing') : t('agents.modelInChat'))}
               </span>
-              {a.providerId&&<span>{a.model || enabledProviders.find(p=>p.id===a.providerId)?.model || "모델 선택 필요"}</span>}
-              <a href={"#/chat?agent="+encodeURIComponent(a.id)} className="mt-1 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline">이 에이전트와 채팅 <ArrowRight size={13}/></a>
+              {a.providerId&&<span>{a.model || enabledProviders.find(p=>p.id===a.providerId)?.model || t('agents.modelNeeded')}</span>}
+              <a href={"#/chat?agent="+encodeURIComponent(a.id)} className="mt-1 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline">{t('agents.chatWith')} <ArrowRight size={13}/></a>
             </div>
           </Panel>
         ))}
       </div>
       {!edit && <Notice message={error || agents.error || providers.error} />}
-      {showPersonaImport&&<PersonaImportDialog agents={agents.value} onClose={()=>setShowPersonaImport(false)} onImported={async(count)=>{await agents.reload();refresh();setBulkNotice(count+'개 페르소나와 아이콘을 가져왔습니다.')}}/>}
+      {showPersonaImport&&<PersonaImportDialog agents={agents.value} onClose={()=>setShowPersonaImport(false)} onImported={async(count)=>{await agents.reload();refresh();setBulkNotice(t('agents.personaImported', { count }))}}/>}
       {edit && (
         <DialogBackdrop onDismiss={closeEditor}>
           <DialogPanel size="wide">
             <div className="flex items-center justify-between border-b border-[#EFE9DF] p-5">
               <div>
-                <small>역할과 모델 설정</small>
-                <h2>{edit.id ? "에이전트 편집" : "에이전트 만들기"}</h2>
+                <small>{t('agents.roleAndModel')}</small>
+                <h2>{edit.id ? t('agents.edit') : t('agents.new')}</h2>
               </div>
               <Button size="icon" variant="ghost" onClick={closeEditor} disabled={saving}>
                 <X size={19} />
@@ -369,8 +369,8 @@ export function AgentsPage() {
                       })
                     }
                   >
-                    <option value="">채팅에서 선택</option>
-                    {edit.providerId&&!editProvider&&<option value={edit.providerId} disabled>이전 연결을 사용할 수 없음</option>}
+                    <option value="">{t('agents.selectInChat')}</option>
+                    {edit.providerId&&!editProvider&&<option value={edit.providerId} disabled>{t('agents.previousMissing')}</option>}
                     {enabledProviders.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}
@@ -378,20 +378,20 @@ export function AgentsPage() {
                     ))}
                   </SelectInput>
                 </FormField>
-                <FormField label={t('agents.useModel')} hint={edit.providerId?"목록에 없으면 모델 ID를 입력할 수 있어요.":"에이전트 저장 후 채팅에서 모델을 고를 수 있어요."}>
+                <FormField label={t('agents.useModel')} hint={edit.providerId ? t('agents.modelIdHint') : t('agents.modelLaterHint')}>
                   <ModelPicker
                     providerId={editProvider?.id || ""}
                     value={edit.model || ""}
                     onChange={(model) => setEdit({ ...edit, model })}
-                    placeholder={editProvider?.model ? "저장된 기본 모델 사용" : editProvider ? "모델 선택" : "API 또는 서버 먼저 선택"}
+                    placeholder={editProvider?.model ? t('agents.defaultModel') : editProvider ? t('agents.pickModel') : t('agents.pickProviderFirst')}
                     className="w-full"
-                    ariaLabel="에이전트 모델"
+                    ariaLabel={t('agents.agentModel')}
                   />
                 </FormField>
               </div>
               <FormField
                 label={t('agents.alias')}
-                hint="여러 개는 쉼표로 나누세요. 그룹 대화에서 @이름으로 부를 수 있습니다."
+                hint={t('agents.aliasHint')}
               >
                 <TextInput
                   value={(edit.aliases || []).join(", ")}
@@ -401,7 +401,7 @@ export function AgentsPage() {
                   placeholder={t('agents.aliasPlaceholder')}
                 />
               </FormField>
-              <FormField label={t('agents.avatar')} hint="PNG/JPEG/WebP · 1MB 이하 · 저장하면 적용됩니다">
+              <FormField label={t('agents.avatar')} hint={t('agents.imageHint')}>
                 <div className="flex items-center gap-3">
                   <div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-xl border border-[#E7E0D5] bg-[#FAF7F1]">
                     {(edit.avatar || edit.avatarUrl) ? (
@@ -411,7 +411,7 @@ export function AgentsPage() {
                     )}
                   </div>
                   <label className="cursor-pointer rounded-xl border border-[#E1D9CC] bg-[#FFFDF9] px-3 py-2 text-[12px] font-semibold text-[#3A342D] hover:bg-[#F7F2EA]">
-                    이미지 선택
+                    {t('agents.imagePick')}
                     <input
                       type="file"
                       className="hidden"
@@ -419,8 +419,8 @@ export function AgentsPage() {
                       onChange={(e) => {
                         const file = e.target.files?.[0];
                         if (!file) return;
-                        if(!['image/png','image/jpeg','image/webp'].includes(file.type)){setError('PNG, JPEG, WebP 이미지를 선택하세요.');return;}
-                        if(file.size>1024*1024){setError('프로필 이미지는 1MB 이하로 선택하세요.');return;}
+                        if(!['image/png','image/jpeg','image/webp'].includes(file.type)){setError(t('agents.imageTypeError'));return;}
+                        if(file.size>1024*1024){setError(t('agents.imageSizeError'));return;}
                         const reader = new FileReader();
                         reader.onload = () => {
                           const image = String(reader.result || "");
@@ -436,7 +436,7 @@ export function AgentsPage() {
                       className="!px-2 !text-[11px] text-[#A94E30]"
                       onClick={() => setEdit({ ...edit, avatar: "" })}
                     >
-                      제거
+                      {t('agents.remove')}
                     </Button>
                   )}
                 </div>
@@ -455,10 +455,10 @@ export function AgentsPage() {
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5">
               <Action variant="secondary" onClick={closeEditor} disabled={saving}>
-                취소
+                {t('agents.cancel')}
               </Action>
               <Action onClick={save} disabled={saving||!edit.name?.trim()}>
-                <Save size={16} /> {saving?"저장 중":"저장"}
+                <Save size={16} /> {saving ? t('agents.saving') : t('agents.save')}
               </Action>
             </div>
           </DialogPanel>
@@ -479,5 +479,5 @@ function PersonaImportDialog({agents,onClose,onImported}:{agents:Agent[];onClose
   try{const result=await post<{imported:number;skipped:number;errors:{sourceProfile:string;error:string}[]}>('/api/personas/import',{apply:true,profileIds:selected,...(refreshIdentity?{refreshIdentity:true}:{})});await onImported(result.imported);if(result.errors.length)setError(result.errors.map(item=>item.sourceProfile+': '+item.error).join(' · '));else onClose()}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
- return <DialogBackdrop onDismiss={()=>{if(!busy)onClose()}}><DialogPanel size="wide" aria-label="저장한 역할 가져오기"><div className="flex items-center justify-between border-b border-[#EFE9DF] p-5"><div><small className="text-[10px] tracking-widest text-[#A2937F]">MY LOCAL PERSONAS</small><h2 className="mt-1 font-bold">{t('agents.persona.title')}</h2></div><Button size="icon" variant="ghost" aria-label="닫기" disabled={busy} onClick={onClose}><X size={18}/></Button></div><div className="grid gap-4 p-5"><p className="text-[12px] text-[#8F7D65]">{t('agents.persona.desc')}</p>{loading?<div className="flex items-center justify-center gap-2 py-10 text-[#A2937F]"><LoaderCircle size={17} className="animate-spin"/> {t('agents.persona.loading')}</div>:<><div className="flex items-center justify-between text-[11px] text-[#9A866A]"><span>{t('agents.persona.found', { count: profiles.length, selected: selected.length })}</span><button className="underline underline-offset-2" disabled={busy||!available.length} onClick={()=>setSelected(selected.length===available.length?[]:available.map(profile=>profile.sourceProfile))}>{selected.length===available.length?t('agents.persona.clear'):t('agents.persona.selectAll')}</button></div><div className="grid max-h-[48vh] gap-3 overflow-auto sm:grid-cols-2">{profiles.map((profile,index)=>{const agent=agents.find(item=>item.id===profile.id);const enabled=profile.available&&(!profile.exists||refreshIdentity);const checked=selected.includes(profile.sourceProfile);return <div className={'rounded-xl border p-3 '+(checked?'border-[#D1B894] bg-[#FBF4E8]':'border-[#E7E0D5] bg-[#FFFCF7]')} key={profile.sourceProfile}><label className="flex cursor-pointer items-center gap-3"><input type="checkbox" className="accent-[#AA8B63]" checked={checked} disabled={busy||!enabled} onChange={()=>setSelected(previous=>checked?previous.filter(id=>id!==profile.sourceProfile):[...previous,profile.sourceProfile])}/><span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl text-[13px] font-semibold text-white" style={{background:agent?.color||accents[index%accents.length]}}>{(agent?.avatar||agent?.avatarUrl)?<img src={String(agent.avatar||agent.avatarUrl)} alt="" className="size-10 object-cover"/>:profile.name.slice(0,1)}</span><span className="min-w-0 flex-1"><strong className="block text-[12px] text-[#776249]">{profile.name}</strong><small className="block text-[10px] text-[#AC987A]">{profile.role||profile.description}</small></span>{profile.exists&&<span className="rounded bg-[#EDE8DE] px-1.5 py-0.5 text-[9px] text-[#9D8D74]">{t('agents.persona.imported')}</span>}</label><div className="mt-3 flex gap-2 text-[9px] text-[#B2A087]"><span>{profile.hasAvatar?t('agents.persona.avatar'):t('agents.persona.defaultAvatar')}</span><span>·</span><span>{t('agents.persona.mine')}</span></div>{profile.personaPreview&&<details className="mt-2 text-[10px] text-[#9F896B]"><summary className="cursor-pointer">{t('agents.persona.preview')}</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-[#F4EDE1] p-3 font-sans text-[10px] leading-6 text-[#A18C6E]">{profile.personaPreview}</pre></details>}{profile.error&&<p className="mt-2 text-[10px] text-rose-600">{profile.error}</p>}</div>})}</div>{!profiles.length&&<p className="py-7 text-center text-[12px] text-[#A2937F]">{t('agents.persona.none')}</p>}<label className="flex items-start gap-2 text-[11px] text-[#9A866A]"><input type="checkbox" className="mt-1 accent-[#AA8B63]" checked={refreshIdentity} disabled={busy} onChange={e=>{setRefreshIdentity(e.target.checked);if(!e.target.checked)setSelected(previous=>previous.filter(id=>!profiles.find(profile=>profile.sourceProfile===id)?.exists))}}/><span>{t('agents.persona.refresh')}<small className="mt-1 block text-[10px] text-[#B3A187]">{t('agents.persona.refreshHint')}</small></span></label></>}<Notice message={error}/></div><div className="flex items-center justify-end gap-2 border-t border-[#EFE9DF] p-5"><Button variant="ghost" disabled={busy} onClick={onClose}>{t('agents.close')}</Button><Button variant="primary" disabled={loading||busy||!selected.length} onClick={()=>void apply()}>{busy?<LoaderCircle size={15} className="animate-spin"/>:<FolderInput size={15}/>} {t('agents.persona.apply', { count: selected.length })}</Button></div></DialogPanel></DialogBackdrop>
+ return <DialogBackdrop onDismiss={()=>{if(!busy)onClose()}}><DialogPanel size="wide" aria-label={t('agents.import')}><div className="flex items-center justify-between border-b border-[#EFE9DF] p-5"><div><small className="text-[10px] tracking-widest text-[#A2937F]">MY LOCAL PERSONAS</small><h2 className="mt-1 font-bold">{t('agents.persona.title')}</h2></div><Button size="icon" variant="ghost" aria-label={t('agents.close')} disabled={busy} onClick={onClose}><X size={18}/></Button></div><div className="grid gap-4 p-5"><p className="text-[12px] text-[#8F7D65]">{t('agents.persona.desc')}</p>{loading?<div className="flex items-center justify-center gap-2 py-10 text-[#A2937F]"><LoaderCircle size={17} className="animate-spin"/> {t('agents.persona.loading')}</div>:<><div className="flex items-center justify-between text-[11px] text-[#9A866A]"><span>{t('agents.persona.found', { count: profiles.length, selected: selected.length })}</span><button className="underline underline-offset-2" disabled={busy||!available.length} onClick={()=>setSelected(selected.length===available.length?[]:available.map(profile=>profile.sourceProfile))}>{selected.length===available.length?t('agents.persona.clear'):t('agents.persona.selectAll')}</button></div><div className="grid max-h-[48vh] gap-3 overflow-auto sm:grid-cols-2">{profiles.map((profile,index)=>{const agent=agents.find(item=>item.id===profile.id);const enabled=profile.available&&(!profile.exists||refreshIdentity);const checked=selected.includes(profile.sourceProfile);return <div className={'rounded-xl border p-3 '+(checked?'border-[#D1B894] bg-[#FBF4E8]':'border-[#E7E0D5] bg-[#FFFCF7]')} key={profile.sourceProfile}><label className="flex cursor-pointer items-center gap-3"><input type="checkbox" className="accent-[#AA8B63]" checked={checked} disabled={busy||!enabled} onChange={()=>setSelected(previous=>checked?previous.filter(id=>id!==profile.sourceProfile):[...previous,profile.sourceProfile])}/><span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl text-[13px] font-semibold text-white" style={{background:agent?.color||accents[index%accents.length]}}>{(agent?.avatar||agent?.avatarUrl)?<img src={String(agent.avatar||agent.avatarUrl)} alt="" className="size-10 object-cover"/>:profile.name.slice(0,1)}</span><span className="min-w-0 flex-1"><strong className="block text-[12px] text-[#776249]">{profile.name}</strong><small className="block text-[10px] text-[#AC987A]">{profile.role||profile.description}</small></span>{profile.exists&&<span className="rounded bg-[#EDE8DE] px-1.5 py-0.5 text-[9px] text-[#9D8D74]">{t('agents.persona.imported')}</span>}</label><div className="mt-3 flex gap-2 text-[9px] text-[#B2A087]"><span>{profile.hasAvatar?t('agents.persona.avatar'):t('agents.persona.defaultAvatar')}</span><span>·</span><span>{t('agents.persona.mine')}</span></div>{profile.personaPreview&&<details className="mt-2 text-[10px] text-[#9F896B]"><summary className="cursor-pointer">{t('agents.persona.preview')}</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-[#F4EDE1] p-3 font-sans text-[10px] leading-6 text-[#A18C6E]">{profile.personaPreview}</pre></details>}{profile.error&&<p className="mt-2 text-[10px] text-rose-600">{profile.error}</p>}</div>})}</div>{!profiles.length&&<p className="py-7 text-center text-[12px] text-[#A2937F]">{t('agents.persona.none')}</p>}<label className="flex items-start gap-2 text-[11px] text-[#9A866A]"><input type="checkbox" className="mt-1 accent-[#AA8B63]" checked={refreshIdentity} disabled={busy} onChange={e=>{setRefreshIdentity(e.target.checked);if(!e.target.checked)setSelected(previous=>previous.filter(id=>!profiles.find(profile=>profile.sourceProfile===id)?.exists))}}/><span>{t('agents.persona.refresh')}<small className="mt-1 block text-[10px] text-[#B3A187]">{t('agents.persona.refreshHint')}</small></span></label></>}<Notice message={error}/></div><div className="flex items-center justify-end gap-2 border-t border-[#EFE9DF] p-5"><Button variant="ghost" disabled={busy} onClick={onClose}>{t('agents.close')}</Button><Button variant="primary" disabled={loading||busy||!selected.length} onClick={()=>void apply()}>{busy?<LoaderCircle size={15} className="animate-spin"/>:<FolderInput size={15}/>} {t('agents.persona.apply', { count: selected.length })}</Button></div></DialogPanel></DialogBackdrop>
 }
