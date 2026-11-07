@@ -754,8 +754,19 @@ async fn run_turn_body(
         model_config,
     )?;
 
+    // Room turns are short conversational beats. A hung free model must not
+    // stall the whole room for five minutes; fail over within a minute.
+    let request_timeout = if session["roomId"].is_string() {
+        std::env::var("DOMINION_ROOM_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value >= 10)
+            .unwrap_or(60)
+    } else {
+        300
+    };
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_secs(request_timeout))
         .build()
         .map_err(|error| error.to_string())?;
 

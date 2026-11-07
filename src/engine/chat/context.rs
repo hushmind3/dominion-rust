@@ -353,8 +353,11 @@ pub(super) fn history(
             }
         }
     }
-    let limit = if is_room { 160 } else { HISTORY_LIMIT };
-    let byte_budget = byte_budget.unwrap_or(160_000);
+    // A serial room turn only needs the recent exchange. Long transcripts of
+    // every participant make each turn slower and more expensive without
+    // making the reply better.
+    let limit = if is_room { 60 } else { HISTORY_LIMIT };
+    let byte_budget = byte_budget.unwrap_or(if is_room { 60_000 } else { 160_000 });
     let mut start = all.len().saturating_sub(limit);
     let mut bytes = 0;
     for index in (start..all.len()).rev() {
@@ -436,7 +439,19 @@ pub(super) fn history(
                     });
                 if valid {
                     out.push(json!({"role":"assistant","content":content,"tool_calls":calls,"reasoning_content":message["metadata"]["providerReasoning"].as_str().or_else(||message["reasoning"].as_str()).unwrap_or("")}));
-                    out.extend(results.iter().map(|row| json!({"role":"tool", "tool_call_id":row["tool_call_id"],"content":row["content"]})));
+                    out.extend(results.iter().map(|row| {
+                        let content = row["content"].as_str().unwrap_or("");
+                        let content = if is_room && content.chars().count() > 2_000 {
+                            format!(
+                                "{}… [도구 출력 {}자 생략]",
+                                content.chars().take(2_000).collect::<String>(),
+                                content.chars().count()
+                            )
+                        } else {
+                            content.to_string()
+                        };
+                        json!({"role":"tool", "tool_call_id":row["tool_call_id"],"content":content})
+                    }));
                     index += results.len();
                 } else if !content.trim().is_empty() {
                     out.push(json!({"role":"assistant","content":format!("{content}\n[이전 도구 실행이 중단되어 결과를 확인할 수 없습니다.]")}));

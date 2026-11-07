@@ -166,7 +166,7 @@ fn model_pool(state: &crate::state::AppState, room: &Value) -> Vec<(String, Stri
         if state
             .store
             .get("provider", provider)
-            .is_some_and(|record| crate::engine::gateway::is_local_provider(&record))
+            .is_some_and(|record| crate::engine::gateway::is_local_runtime(&record))
         {
             continue;
         }
@@ -494,13 +494,13 @@ async fn run_locked(
         let resolved_model=optional(input,"model").or_else(||rotated.as_ref().map(|(_,model)| model.clone())).or_else(||optional(&agent,"model"));
         // A room turn must never silently run on a local runtime, even when the
         // agent is configured that way. Drop the pair so routing picks cloud.
-        let local_route=resolved_provider.as_deref().is_some_and(|id|state.store.get("provider",id).is_some_and(|record|crate::engine::gateway::is_local_provider(&record)));
+        let local_route=resolved_provider.as_deref().is_some_and(|id|state.store.get("provider",id).is_some_and(|record|crate::engine::gateway::is_local_runtime(&record)));
         let (provider_id,model)=if local_route{
             // Prefer an explicit cloud provider over leaving the choice to the
             // router, which may fall back to a local runtime when offline.
             let cloud=state.store.all("provider").into_iter().find(|record|{
                 crate::engine::gateway::provider_eligible(record)
-                    && !crate::engine::gateway::is_local_provider(record)
+                    && !crate::engine::gateway::is_local_runtime(record)
                     && record["enabled"].as_bool()!=Some(false)
             });
             (cloud.and_then(|record|record["id"].as_str().map(str::to_string)),None)

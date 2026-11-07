@@ -46,6 +46,18 @@ impl Route {
     }
 }
 
+/// A provider whose weights actually run on this machine. A localhost proxy
+/// to a cloud API (FreeLLMAPI and friends) is not a local runtime.
+pub fn is_local_runtime(provider: &Value) -> bool {
+    if provider["local"].as_bool() == Some(true) {
+        return true;
+    }
+    matches!(
+        provider["kind"].as_str().unwrap_or("").to_ascii_lowercase().as_str(),
+        "ollama" | "mlx" | "mlx-lm" | "llama" | "llamacpp" | "llama-server" | "lmstudio"
+    )
+}
+
 /// A provider that runs on this machine. Room rotation never uses these,
 /// even when an agent's own configuration points at one.
 pub fn is_local_provider(provider: &Value) -> bool {
@@ -235,12 +247,18 @@ pub fn ordered_alternatives(state: &AppState, exclude_id: &str) -> Vec<Route> {
             Some((route, capability_score(&provider), learning))
         })
         .collect::<Vec<_>>();
+    let tight_cap = |route: &Route| {
+        route
+            .requests_per_minute
+            .is_some_and(|limit| limit > 0 && limit <= 2)
+    };
     candidates.sort_by(|a, b| {
         b.2.cmp(&a.2)
             .then_with(|| {
                 b.1.partial_cmp(&a.1)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
+            .then_with(|| tight_cap(&a.0).cmp(&tight_cap(&b.0)))
             .then_with(|| b.0.local.cmp(&a.0.local))
             .then_with(|| a.0.id.cmp(&b.0.id))
     });
@@ -261,6 +279,9 @@ fn semaphores() -> &'static Mutex<HashMap<String, Arc<Semaphore>>> {
 struct LimitWindow {
     stamps: std::collections::VecDeque<std::time::Instant>,
     blocked_until: Option<std::time::Instant>,
+    /// Set when a route proved unusably slow, so the room rotation stops
+    /// picking it for a while instead of paying the latency every round.
+    slow_until: Option<std::time::Instant>,
 }
 
 fn rate_limits() -> &'static Mutex<HashMap<String, LimitWindow>> {
@@ -283,6 +304,9 @@ pub fn reserve_generation(
     if window.blocked_until.is_some_and(|until| until > now) {
         return Err("무료 제공자 호출 제한에 걸렸습니다. 잠시 후 다시 시도하거나 다른 모델을 사용하세요.".into());
     }
+    if window.slow_until.is_some_and(|until| until > now) {
+        return Err("최근 응답이 너무 느렸던 모델이라 잠시 건너뜁니다.".into());
+    }
     // No built-in per-host limit: the provider record owns the value so any
     // free or metered service can be configured without a code change.
     let Some(limit) = requests_per_minute.filter(|value| *value > 0) else {
@@ -300,6 +324,15 @@ pub fn reserve_generation(
     }
     window.stamps.push_back(now);
     Ok(())
+}
+
+/// Remembers that a route took too long, so rotation and failover skip it.
+pub fn mark_slow(base_url: &str, model: &str) {
+    let key = format!("{base_url}|{model}");
+    let until = std::time::Instant::now() + Duration::from_secs(900);
+    if let Ok(mut limits) = rate_limits().lock() {
+        limits.entry(key).or_default().slow_until = Some(until);
+    }
 }
 
 pub fn mark_rate_limited(base_url: &str, model: &str) {
@@ -497,6 +530,14 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         AppState::new(config, store, vault)
+    }
+
+    #[test]
+    fn a_route_marked_slow_is_skipped_without_waiting() {
+        mark_slow("http://slow.invalid/v1", "slow-model");
+        let error = reserve_generation("http://slow.invalid/v1", "slow-model", None).unwrap_err();
+        assert!(error.contains("느렸던"));
+        assert!(reserve_generation("http://fast.invalid/v1", "fast-model", None).is_ok());
     }
 
     #[test]

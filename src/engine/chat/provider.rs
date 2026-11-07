@@ -464,6 +464,7 @@ pub(super) async fn stream_completion(
             return Err("실행이 중단되었습니다.".into());
         }
         let (relay, mut relay_rx) = tokio::sync::mpsc::unbounded_channel();
+        let candidate_started = std::time::Instant::now();
         let (result, exposed) = {
             let attempt = stream_completion_once(
                 state, client, &candidate, messages, tools, request, session_id, &relay,
@@ -491,6 +492,11 @@ pub(super) async fn stream_completion(
             }
             (result, exposed)
         };
+        // A two-minute answer is not a usable room participant. Remember it
+        // so the next round does not pay the same price again.
+        if candidate_started.elapsed() >= std::time::Duration::from_secs(60) {
+            crate::engine::gateway::mark_slow(&candidate.base_url, &candidate.model);
+        }
         match result {
             Ok(completion) => {
                 if candidate.id != provider.id {
