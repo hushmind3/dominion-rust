@@ -132,7 +132,8 @@ function RoomModelPicker({value,onChange,providers,disabled=false}:{value:RoomMo
 function RoomConversation({room,agents,providers,openList,showList,openSession,onSaved,onRemoved}:{room:RoomConfig;agents:Agent[];providers:Provider[];openList:()=>void;showList:boolean;openSession:(id:string)=>void;onSaved:()=>Promise<void>;onRemoved:()=>Promise<void>}){
  useLocale()
  const [messages,setMessages]=useState<ChatMessage[]>([]),[feed,setFeed]=useState<FeedState>(initialFeed)
- const usageTotal=feed.usage?.totalTokens||useMemo(()=>messages.reduce((sum,message)=>sum+(Number(message.metadata?.usage?.totalTokens)||0),0),[messages])
+ const messageUsageTotal=useMemo(()=>messages.reduce((sum,message)=>sum+(Number(message.metadata?.usage?.totalTokens)||0),0),[messages])
+ const usageTotal=feed.usage?.totalTokens||messageUsageTotal
  const [loading,setLoading]=useState(true),[loadError,setLoadError]=useState(''),[error,setError]=useState('')
  const [input,setInput]=useState(''),[targets,setTargets]=useState<string[]>([]),[sending,setSending]=useState(false),[stopping,setStopping]=useState(false)
  const [inspector,setInspector]=useState(()=>window.innerWidth>=1450),[draft,setDraft]=useState<RoomDraft>(()=>draftOf(room)),[dirty,setDirty]=useState(false),[saving,setSaving]=useState(false),[saved,setSaved]=useState(false)
