@@ -54,6 +54,13 @@ pub fn definitions() -> Vec<Value> {
         tool("task_status", "Check a delegated task's status", object(json!({"jobId": text("Job id")}), vec!["jobId"])),
         tool("task_result", "Read a delegated task's result, artifacts and final answer", object(json!({"jobId": text("Job id")}), vec!["jobId"])),
         tool("account_status", "List OAuth accounts connected to DOMINION", object(json!({}), vec![])),
+        tool("browser_control", "Control a local Chrome/Chromium window: open pages, observe text and interactive elements, click, type, press keys and capture screenshots (approval required)", object(json!({
+            "action": json!({"type": "string", "enum": ["status", "open", "observe", "click", "type", "press", "screenshot", "close"]}),
+            "url": text("URL to open"),
+            "index": json!({"type": "number", "description": "Element index returned by observe"}),
+            "text": text("Text to type into the indexed element"),
+            "key": text("Key to press: Enter, Escape, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Backspace")
+        }), vec!["action"])),
         tool("github_api", "Call the GitHub REST API as the connected account. Write methods require approval (approval required)", object(json!({"method": json!({"type": "string", "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"]}), "path": text("GitHub API path beginning with /"), "body": json!({"type": "object"})}), vec!["method", "path"])),
     ]
 }
@@ -68,7 +75,12 @@ fn tool(name: &str, description: &str, parameters: Value) -> Value {
 pub fn requires_approval(name: &str) -> bool {
     matches!(
         name,
-        "workspace_write" | "file_write" | "shell_exec" | "terminal_exec" | "github_api"
+        "workspace_write"
+            | "file_write"
+            | "shell_exec"
+            | "terminal_exec"
+            | "github_api"
+            | "browser_control"
     )
 }
 
@@ -140,6 +152,16 @@ pub async fn execute(
                 })
                 .unwrap_or_default();
             executable(&command, &argv, ctx.workspace).await
+        }
+        "browser_control" => {
+            let action = required_arg(args, "action")?;
+            crate::engine::browser::execute(
+                &action,
+                args,
+                &ctx.state.config.data_dir,
+                ctx.workspace,
+            )
+            .await
         }
         "web_search" => {
             let query = required_arg(args, "query")?;

@@ -6,3 +6,5 @@ web/dist
 *.log
 .DS_Store
 /bench
+
+.dominion/

@@ -9,6 +9,7 @@ pub mod attachments;
 pub mod backup_keys;
 pub mod bridge;
 pub mod chat;
+pub mod browser;
 pub mod compact;
 pub mod channel_adapter;
 pub mod decompose;

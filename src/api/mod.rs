@@ -10,6 +10,7 @@ pub mod executions;
 pub mod tasks;
 pub mod experience;
 pub mod memory;
+pub mod browser;
 pub mod extensions;
 pub mod approvals;
 pub mod sessions;
@@ -119,6 +120,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks", get(tasks::list))
         .route("/api/tasks/:id", get(tasks::one))
         .route("/api/tools", get(extensions::list_tools))
+        .route("/api/browser/status", get(browser::status))
+        .route("/api/browser/screenshot", get(browser::screenshot))
+        .route("/api/browser/action", post(browser::action))
         .route("/api/policy", get(approvals::get_policy).post(approvals::save_policy))
         .route("/api/audit", get(system::audit_log))
         .route("/api/model-route", get(system::model_route))
