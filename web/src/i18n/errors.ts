@@ -85,6 +85,10 @@ const exact: Record<string, string> = {
   '채널 토큰을 입력하세요.': 'Enter the channel token.',
   '학습할 세션을 찾을 수 없습니다.': 'Session to learn not found.',
   '학습할 대화가 없습니다.': 'No conversation to learn from.',
+  '다운로드 작업 정보가 손상되었습니다.': 'Download job information is corrupted.',
+  '안전하지 않은 모델 파일 경로입니다.': 'Unsafe model file path.',
+  '다운로드 스트림 오류': 'Download stream error.',
+  '모델 파일을 찾을 수 없습니다.': 'Model file not found.',
   '학습할 참가자가 없습니다.': 'No participants to learn from.',
   '해당 작업은 대화·회의·영상의 실행 API에서 시작하세요.': 'Start this job from the chat, room or video execution API.',
   '활성화된 모델 제공자를 선택하세요.': 'Choose an enabled model provider.',
@@ -167,6 +171,9 @@ export function translateError(message: string): string {
     rule(/^([A-Za-z0-9_]+)는 서버가 관리하는 상태입니다\.$/, match => `${match[1]} is managed by the server.`) ||
     rule(/^모델 목록 조회 실패 \(HTTP (\d+)\)\. (.*)$/, match => `Model list request failed (HTTP ${match[1]}). ${match[2]}`) ||
     rule(/^Rust 백엔드에 없는 API 경로입니다: (.+)$/, match => `API path not found in the Rust backend: ${match[1]}`) ||
+    rule(/^(.+) 종료 \(exit (.+)\)$/, match => `${match[1]} exited (exit ${match[2]})`) ||
+    rule(/^(.+) 가 시작 중 종료되었습니다: (.*)$/, match => `${match[1]} exited while starting: ${match[2]}`) ||
+    rule(/^다운로드 HTTP (\d+)$/, match => `Download HTTP ${match[1]}`) ||
     rule(/^secret key 복원 실패: (.+)$/, match => `Secret key restore failed: ${match[1]}`) ||
     rule(/^복구 대상의 secret key를 확인할 수 없습니다: (.+)\. 현재 상태를 유지합니다\.$/, match => `Cannot read the recovery secret key: ${match[1]}. The current state is preserved.`) ||
     rule(/^복구 후 마이그레이션 실패: (.+)$/, match => `Post-recovery migration failed: ${match[1]}`) ||
