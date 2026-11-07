@@ -846,10 +846,37 @@ fn model_is_free(_provider: &Value, kind: &str, base: &str, item: &Value, id: &s
     if base.contains("z.ai") {
         return matches!(id, "glm-4.7-flash" | "glm-4.5-flash" | "glm-4.6v-flash");
     }
-    // Workers AI draws from the free daily Neuron allowance, and Groq's
-    // on-demand tier is free within its rate limits.
-    if base.contains("api.cloudflare.com") || base.contains("api.groq.com") {
-        return true;
+    // Groq's Free Plan has per-model rate limits. /models lists the models
+    // accessible to the key, not a "free-only" catalog.
+    // Source: https://console.groq.com/docs/rate-limits
+    // Only include text generation/chat models here; Whisper/Orpheus and
+    // prompt-guard classification models should not appear in the chat picker.
+    if base.contains("api.groq.com") {
+        return matches!(
+            id,
+            "openai/gpt-oss-120b"
+                | "openai/gpt-oss-20b"
+                | "openai/gpt-oss-safeguard-20b"
+                | "qwen/qwen3.8-27b"
+        );
+    }
+    // Cloudflare Workers Free includes 10,000 Neurons per day shared across
+    // supported models. Pricing explicitly identifies models requiring paid
+    // billing; these cannot be marked free just because /ai/models/search
+    // returned them. This is a plan-eligibility label, not a balance check.
+    // Source: https://developers.cloudflare.com/workers-ai/platform/pricing/
+    if base.contains("api.cloudflare.com") && base.contains("/ai/") {
+        return id.starts_with("@cf/")
+            && !matches!(
+                id,
+                "@cf/moonshotai/kimi-k2.6"
+                    | "@cf/moonshotai/kimi-k2.7-code"
+                    | "@cf/zai-org/glm-5.2"
+                    | "@cf/zai-org/glm-5.3"
+                    | "@cf/zai-org/glm-5.3-flash"
+                    | "@cf/deepseek-ai/deepseek-v4-flash-0731"
+                    | "@cf/deepseek-ai/deepseek-v4-pro-0813"
+            );
     }
     if id.ends_with(":free") || id.contains(":free") {
         return true;
@@ -1070,7 +1097,7 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
         format!("{native}/api/tags")
     } else if cloudflare {
         format!(
-            "{}/ai/models/search?per_page=100",
+            "{}/ai/models/search?task=text-generation&per_page=100",
             base.trim_end_matches("/ai/v1").trim_end_matches('/')
         )
     } else if kind == "anthropic" {
@@ -1163,6 +1190,47 @@ mod tests {
             "accountId":"abc123"
         })));
         assert!(!needs_account_discovery(&json!({"baseUrl":"https://api.example.com/v1"})));
+    }
+
+    #[test]
+    fn groq_free_plan_does_not_mark_all_catalog_models_free() {
+        let base = "https://api.groq.com/openai/v1";
+        for id in [
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "openai/gpt-oss-safeguard-20b",
+            "qwen/qwen3.8-27b",
+        ] {
+            assert!(model_is_free(&Value::Null, "openai", base, &Value::Null, id), "{id}");
+        }
+        for id in ["llama-3.1-8b-instant", "unknown-model", "whisper-large-v3"] {
+            assert!(!model_is_free(&Value::Null, "openai", base, &Value::Null, id), "{id}");
+        }
+    }
+
+    #[test]
+    fn cloudflare_free_plan_excludes_models_requiring_paid_billing() {
+        let base = "https://api.cloudflare.com/client/v4/accounts/abc/ai/v1";
+        for id in [
+            "@cf/zai-org/glm-4.7-flash",
+            "@cf/google/gemma-4-26b-a4b-it",
+            "@cf/nvidia/nemotron-3-120b-a12b",
+            "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
+        ] {
+            assert!(model_is_free(&Value::Null, "openai", base, &Value::Null, id), "{id}");
+        }
+        for id in [
+            "@cf/moonshotai/kimi-k2.6",
+            "@cf/moonshotai/kimi-k2.7-code",
+            "@cf/zai-org/glm-5.2",
+            "@cf/zai-org/glm-5.3",
+            "@cf/zai-org/glm-5.3-flash",
+            "@cf/deepseek-ai/deepseek-v4-flash-0731",
+            "@cf/deepseek-ai/deepseek-v4-pro-0813",
+            "unrecognized-model",
+        ] {
+            assert!(!model_is_free(&Value::Null, "openai", base, &Value::Null, id), "{id}");
+        }
     }
 
     #[test]
