@@ -96,6 +96,26 @@ fn number_field(
     }
     Ok(number)
 }
+fn number_field_allow_zero(
+    body: &Value,
+    previous: &Value,
+    key: &str,
+    max: u64,
+) -> Result<u64, (StatusCode, String)> {
+    let number = body
+        .get(key)
+        .or_else(|| previous.get(key))
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or_else(|| bad(format!("{key}는 0 이상의 정수여야 합니다.")))
+        })
+        .unwrap_or(Ok(0))?;
+    if number > max {
+        return Err(bad(format!("{key} 범위는 0~{max}입니다.")));
+    }
+    Ok(number)
+}
 fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) -> ApiResult {
     if !body.is_object() {
         return Err(bad("회의실 객체가 필요합니다."));
@@ -215,6 +235,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         "ownerName":text_field(body,previous,"ownerName","나",100)?,
         "rounds":number_field(body,previous,"rounds",3,100_000)?,
         "maxTurns":max_turns,
+        "tokenBudget":number_field_allow_zero(body,previous,"tokenBudget",10_000_000)?,
         "toolsEnabled":bool_field(body,previous,"toolsEnabled",false)?,
         "autoLearning":bool_field(body,previous,"autoLearning",true)?,
         "autoModels":bool_field(body,previous,"autoModels",true)?,

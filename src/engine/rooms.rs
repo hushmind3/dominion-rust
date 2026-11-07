@@ -95,6 +95,126 @@ pub fn ensure_room_session(state: &AppState, room_id: &str) -> Result<Value, Str
 /// Choose initial responders. Discussion visits the roster, round robin picks
 /// the next member, and mentioned waits for a real @name/@id. Explicit owner
 /// selections override the initial routing, without changing room membership.
+fn is_deep_request(input: &str) -> bool {
+    let lower = input.to_lowercase();
+    input.chars().count() > 240
+        || [
+            "분석", "설계", "구현", "검토", "조사", "테스트", "버그", "최적화", "리팩터",
+            "원인", "해결", "비교", "계획", "문서", "아키텍처", "리뷰", "debug", "refactor",
+            "design", "analyze", "investigate",
+        ]
+        .iter()
+        .any(|term| lower.contains(term))
+}
+
+/// Chooses the smallest useful cohort for a discussion turn. The owner can
+/// still force everyone with "다들/모두/전원"; mentions override this entirely.
+fn speaker_window(
+    state: &AppState,
+    room: &Value,
+    input: &str,
+    roster: &[String],
+) -> Vec<String> {
+    // Small rooms are cheap enough to keep everyone; trimming them loses more
+    // perspective than it saves.
+    if roster.len() <= 3 {
+        return roster.to_vec();
+    }
+    let lower = input.to_lowercase();
+    if [
+        "다들", "다 같이", "다같이", "모두", "전원", "각자", "everyone", "all agents",
+    ]
+        .iter()
+        .any(|term| lower.contains(term))
+    {
+        return roster.to_vec();
+    }
+    let count = if is_deep_request(input) {
+        6.min(roster.len())
+    } else if input.chars().count() <= 60 {
+        2.min(roster.len())
+    } else {
+        3.min(roster.len())
+    };
+    if count >= roster.len() {
+        return roster.to_vec();
+    }
+    let mut terms: Vec<String> = input
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| word.chars().count() >= 2)
+        .map(|word| word.to_lowercase())
+        .collect();
+    if let Some(topic) = room["topic"].as_str() {
+        terms.extend(
+            topic
+                .split(|ch: char| !ch.is_alphanumeric())
+                .filter(|word| word.chars().count() >= 2)
+                .map(|word| word.to_lowercase()),
+        );
+    }
+    terms.sort();
+    terms.dedup();
+    let mut scored: Vec<(usize, usize, String)> = roster
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let agent = state.store.get("agent", id).unwrap_or(Value::Null);
+            let mut text = String::new();
+            for key in ["name", "description", "role", "systemPrompt"] {
+                if let Some(value) = agent[key].as_str() {
+                    text.push_str(value);
+                    text.push(' ');
+                }
+            }
+            for alias in agent["aliases"].as_array().into_iter().flatten() {
+                if let Some(alias) = alias.as_str() {
+                    text.push_str(alias);
+                    text.push(' ');
+                }
+            }
+            let text = text.to_lowercase();
+            let score = terms
+                .iter()
+                .filter(|term| text.contains(term.as_str()))
+                .count();
+            (score + usize::from(index == 0), index, id.clone())
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut selected: Vec<usize> = scored.into_iter().take(count).map(|row| row.1).collect();
+    if !selected.contains(&0) {
+        if let Some(last) = selected.last_mut() {
+            *last = 0;
+        }
+    }
+    selected.sort_unstable();
+    selected.into_iter().map(|index| roster[index].clone()).collect()
+}
+
+/// Stable model assignment by participant order. Different participants get
+/// different pool entries whenever the pool is large enough, and the same
+/// participant keeps its entry for every turn of the room.
+fn pool_slot(roster: &[String], agent_id: &str, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    roster
+        .iter()
+        .position(|id| id == agent_id)
+        .unwrap_or(0)
+        % len
+}
+
+fn auto_reasoning_effort(input: &str) -> String {
+    if is_deep_request(input) {
+        "medium".into()
+    } else if input.chars().count() <= 60 {
+        "none".into()
+    } else {
+        "low".into()
+    }
+}
+
 pub fn plan_speakers(
     state: &AppState,
     room: &Value,
@@ -124,13 +244,10 @@ pub fn plan_speakers(
     let mentioned = mentioned_agents(state, &roster, input)?;
     match mode.as_str() {
         "discussion" => {
-            let mut order = mentioned;
-            for id in roster {
-                if !order.contains(&id) {
-                    order.push(id);
-                }
+            if !mentioned.is_empty() {
+                return Ok(mentioned);
             }
-            Ok(order)
+            Ok(speaker_window(state, room, input, &roster))
         }
         "round_robin" => {
             if !mentioned.is_empty() {
@@ -379,6 +496,10 @@ async fn run_locked(
                 .unwrap_or(roster.len() * rounds)
         })
         .clamp(1, max_turns_ceiling());
+    let token_budget = room["tokenBudget"].as_u64().unwrap_or(0);
+    let usage_baseline = state.store.session_usage(session_id)["totalTokens"]
+        .as_u64()
+        .unwrap_or(0);
     let conflict_strategy =
         crate::engine::algorithms::variant_for_agent(state, "multiagent.conflict", None);
     let mut conflict_resolution = existing
@@ -514,10 +635,14 @@ async fn run_locked(
         } else {
             Vec::new()
         };
+        // Keep one model per agent for the whole room. Stable routes preserve
+        // the prompt prefix (provider caching) and make costs predictable;
+        // rate limits are still spread because different agents hash to
+        // different pool entries.
         let rotated = if pool.is_empty() {
             None
         } else {
-            Some(pool[outputs.len() % pool.len()].clone())
+            Some(pool[pool_slot(&roster, &agent_id, pool.len())].clone())
         };
         let resolved_provider=optional(input,"providerId").or_else(||rotated.as_ref().map(|(provider,_,_)| provider.clone())).or_else(||optional(&agent,"providerId"));
         let resolved_model=optional(input,"model").or_else(||rotated.as_ref().map(|(_,model,_)| model.clone())).or_else(||optional(&agent,"model"));
@@ -540,7 +665,8 @@ async fn run_locked(
         let effort_choice=rotated_effort
             .or_else(||optional(input,"reasoningEffort"))
             .or_else(||optional(&room,"reasoningEffort"))
-            .or_else(||optional(&agent,"reasoningEffort"));
+            .or_else(||optional(&agent,"reasoningEffort"))
+            .or_else(||Some(auto_reasoning_effort(owner_text)));
         let reasoning_effort=effort_choice.clone().filter(|effort| effort != "none");
         let thinking=input["thinking"].as_bool()
             .or_else(||room["thinking"].as_bool())
@@ -665,6 +791,27 @@ async fn run_locked(
                 None
             },
         );
+        if token_budget > 0 {
+            let used = state.store.session_usage(session_id)["totalTokens"]
+                .as_u64()
+                .unwrap_or(0)
+                .saturating_sub(usage_baseline);
+            if used >= token_budget {
+                checkpoint(
+                    context, session_id, generation, source_id, &mode, &roster, &initial,
+                    &pending, &outputs, budget, false, None,
+                )?;
+                return Ok(finish(
+                    context,
+                    room_id,
+                    session_id,
+                    "completed",
+                    &outputs,
+                    "token_budget",
+                    None,
+                ));
+            }
+        }
         checkpoint(
             context, session_id, generation, source_id, &mode, &roster, &initial, &pending,
             &outputs, budget, false, None,
@@ -1229,12 +1376,47 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn short_casual_requests_use_a_small_speaker_window() {
+        let (state, dir) = test_state();
+        for (id, name) in [("d", "라온"), ("e", "마루")] {
+            state.store.put(
+                "agent",
+                &json!({"id":id,"name":name,"providerId":"p","model":"test"}),
+            );
+        }
+        state.store.patch_if(
+            "room",
+            "r",
+            "id",
+            &json!("r"),
+            &json!({"agentIds":["a","b","c","d","e"]}),
+        );
+        let config = room(&state);
+        let casual = plan_speakers(&state, &config, "안녕", None).unwrap();
+        assert_eq!(casual.len(), 2);
+        assert!(casual.contains(&"a".to_string()));
+        let everyone = plan_speakers(&state, &config, "다 같이 얘기하자", None).unwrap();
+        assert_eq!(everyone, vec!["a", "b", "c", "d", "e"]);
+        let mentioned = plan_speakers(&state, &config, "@나루 답해", None).unwrap();
+        assert_eq!(mentioned, vec!["b"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn pool_slots_are_stable_and_distinct_for_participants() {
+        let roster = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(pool_slot(&roster, "a", 2), 0);
+        assert_eq!(pool_slot(&roster, "b", 2), 1);
+        assert_eq!(pool_slot(&roster, "a", 2), pool_slot(&roster, "a", 2));
+    }
+
+    #[test]
     fn routing_modes_respect_owner_selection_ids_and_real_mentions() {
         let (state, dir) = test_state();
         let mut config = room(&state);
         assert_eq!(
             plan_speakers(&state, &config, "@나루 너부터", None).unwrap(),
-            vec!["b", "a", "c"]
+            vec!["b"]
         );
         config["routingMode"] = json!("round_robin");
         config["nextSpeakerIndex"] = json!(2);
@@ -1278,7 +1460,7 @@ mod tests {
             None,
         )
         .await;
-        let job = save_owner_job(&state, "j", "오늘 편하게 얘기하자");
+        let job = save_owner_job(&state, "j", "다 같이 오늘 편하게 얘기하자");
         let context = run_context(&state, "j");
         let result = run(&context, &job).await.unwrap();
         assert_eq!(result["status"], "completed");

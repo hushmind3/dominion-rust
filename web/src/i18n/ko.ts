@@ -1090,6 +1090,8 @@ const ko = {
   'rooms.rounds': '대화 라운드',
   'rooms.roundCount': '{count}라운드',
   'rooms.roundsHint': '참가자 전원이 한 번씩 발언하는 단위입니다. 원하는 만큼 직접 정하세요.',
+  'rooms.tokenBudget': '회의 토큰 예산',
+  'rooms.tokenBudgetHint': '이번 회의에서 쓸 입력+출력 토큰 상한입니다. 0이면 제한하지 않습니다.',
   'rooms.maxTurns': '총 AI 발언 상한',
   'rooms.event.memory': '기억 +{count}',
   'rooms.event.knowledge': '공유 지식 +{count}',

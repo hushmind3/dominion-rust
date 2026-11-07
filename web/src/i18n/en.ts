@@ -1091,6 +1091,8 @@ const en: Record<LocaleKey, string> = {
   'rooms.rounds': 'Conversation rounds',
   'rooms.roundCount': '{count} rounds',
   'rooms.roundsHint': 'One round means every participant speaks once. Set as many as you need.',
+  'rooms.tokenBudget': 'Meeting token budget',
+  'rooms.tokenBudgetHint': 'Input+output token limit for this meeting. 0 means no limit.',
   'rooms.maxTurns': 'Total AI turn cap',
   'rooms.event.memory': 'Memory +{count}',
   'rooms.event.knowledge': 'Shared knowledge +{count}',

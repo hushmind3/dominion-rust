@@ -359,8 +359,8 @@ pub(super) fn history(
     // A serial room turn only needs the recent exchange. Long transcripts of
     // every participant make each turn slower and more expensive without
     // making the reply better.
-    let limit = if is_room { 24 } else { HISTORY_LIMIT };
-    let byte_budget = byte_budget.unwrap_or(if is_room { 24_000 } else { 160_000 });
+    let limit = if is_room { 16 } else { HISTORY_LIMIT };
+    let byte_budget = byte_budget.unwrap_or(if is_room { 16_000 } else { 160_000 });
     let mut start = all.len().saturating_sub(limit);
     let mut bytes = 0;
     for index in (start..all.len()).rev() {
