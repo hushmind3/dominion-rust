@@ -132,17 +132,22 @@ pub fn distill_incremental(
             }
         }
         if is_correction {
-            // Link the correction to the most recent execution before it,
-            // not to every failed tool in the whole session.
-            let execution = executions
-                .iter()
-                .filter(|execution| !execution["finishedAt"].is_null())
-                .max_by(|a, b| {
-                    a["finishedAt"]
-                        .as_str()
-                        .unwrap_or("")
-                        .cmp(b["finishedAt"].as_str().unwrap_or(""))
-                });
+            // Link the correction to the latest execution that finished before
+            // the correction arrived. Choosing the newest execution overall
+            // can attribute the lesson to the correction turn itself.
+            let execution = latest_execution(
+                executions
+                    .iter()
+                    .filter(|execution| !execution["finishedAt"].is_null())
+                    .filter(|execution| finished_before(execution, message)),
+            )
+            .or_else(|| {
+                latest_execution(
+                    executions
+                        .iter()
+                        .filter(|execution| !execution["finishedAt"].is_null()),
+                )
+            });
             let Some(execution) = execution else {
                 continue;
             };
@@ -315,6 +320,32 @@ pub fn sweep(state: &AppState) -> usize {
     processed
 }
 
+fn latest_execution<'a>(items: impl Iterator<Item = &'a Value>) -> Option<&'a Value> {
+    items.max_by(|a, b| {
+        a["finishedAt"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["finishedAt"].as_str().unwrap_or(""))
+    })
+}
+
+fn finished_before(execution: &Value, correction: &Value) -> bool {
+    let Some(finished) = execution["finishedAt"]
+        .as_str()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+    else {
+        return false;
+    };
+    let Some(created) = correction["created_at"]
+        .as_str()
+        .and_then(|value| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok())
+    else {
+        return true;
+    };
+    finished.with_timezone(&chrono::Utc)
+        <= chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(created, chrono::Utc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,4 +449,41 @@ mod tests {
         assert_eq!(first, after, "reprocessing inflated occurrences");
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn correction_links_the_run_that_finished_before_it_not_a_later_run() {
+        let (state, dir) = state();
+        state.store.write_message(&json!({
+            "session_id":"s","role":"user","agent_id":"a",
+            "content":"그게 아니라 다음에는 workspace_write를 먼저 써"
+        })).unwrap();
+        state.store.put("execution", &json!({
+            "id":"run-before","sessionId":"s","agentId":"a",
+            "request":"파일을 만들어","taskOutcome":"failed",
+            "finishedAt":"2020-01-01T00:00:00Z"
+        }));
+        state.store.put("execution_operation", &json!({
+            "id":"op-before","runId":"run-before","tool":"shell_exec",
+            "status":"failed","opSeq":1
+        }));
+        state.store.put("execution", &json!({
+            "id":"run-after","sessionId":"s","agentId":"a",
+            "request":"교정을 처리해","taskOutcome":"failed",
+            "finishedAt":"2030-01-01T00:00:00Z"
+        }));
+        state.store.put("execution_operation", &json!({
+            "id":"op-after","runId":"run-after","tool":"later_tool",
+            "status":"failed","opSeq":1
+        }));
+        let result = distill_session(&state, "s", Some("a"));
+        assert_eq!(result["lessons"].as_u64().unwrap(), 1, "{result}");
+        let experiences = state.store.all("experience");
+        assert_eq!(experiences.len(), 1, "{experiences:?}");
+        let avoid = experiences[0]["avoid"].as_str().unwrap_or("");
+        assert!(avoid.contains("shell_exec"), "{experiences:?}");
+        assert!(!avoid.contains("later_tool"), "{experiences:?}");
+        assert_eq!(experiences[0]["request"], "파일을 만들어", "{experiences:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
 }
