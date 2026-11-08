@@ -8,7 +8,7 @@
 use crate::{engine::memory, state::AppState};
 use serde_json::{json, Value};
 
-const MAX_ENTRIES: usize = 24;
+const MAX_ENTRIES: usize = 256;
 const MAX_CONTEXT_ENTRIES: usize = 12;
 const MAX_CONTEXT_CHARS: usize = 2_400;
 const MAX_ENTRY_CHARS: usize = 1_200;
@@ -112,6 +112,42 @@ fn code_tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Domain keys are intentionally narrow: a correction must not erase
+/// unrelated owner facts merely because both contain the word "정정".
+/// This is a deterministic fallback, not a substitute for semantic memory.
+fn fact_domain(text: &str) -> Option<&'static str> {
+    if text.contains("배포 담당") || text.contains("배포담당") {
+        Some("deployment_owner")
+    } else if text.contains("암호") || text.contains("비밀번호") {
+        Some("credential")
+    } else if text.contains("담당자") {
+        Some("owner")
+    } else if text.contains("원칙") {
+        Some("principle")
+    } else if text.contains("정책") || text.contains("방침") {
+        Some("policy")
+    } else if text.contains("규칙") {
+        Some("rule")
+    } else {
+        None
+    }
+}
+
+fn query_relevance(query: &str, text: &str) -> usize {
+    if query.trim().is_empty() {
+        return 0;
+    }
+    let mut score = 0usize;
+    if let (Some(asked), Some(stated)) = (fact_domain(query), fact_domain(text)) {
+        if asked == stated {
+            score += 32;
+        }
+    }
+    let query_tokens = memory::terms(query);
+    let text_tokens = memory::terms(text);
+    score + query_tokens.intersection(&text_tokens).count().min(12)
+}
+
 /// Records one owner message if it states a durable fact, decision or
 /// correction. Idempotent by source message id; the full original message
 /// remains in the transcript.
@@ -161,10 +197,12 @@ pub fn observe_owner_message(
                 continue;
             }
             let old = fact["text"].as_str().unwrap_or("");
-            if code_tokens(old)
+            let same_explicit_code = code_tokens(old)
                 .iter()
-                .any(|token| tokens.iter().any(|new| new == token))
-            {
+                .any(|token| tokens.iter().any(|new| new == token));
+            let same_domain = fact_domain(text).is_some()
+                && fact_domain(text) == fact_domain(old);
+            if same_explicit_code || same_domain {
                 fact["status"] = json!("superseded");
                 fact["supersededBy"] = json!(message_id);
                 fact["supersededAt"] = json!(chrono::Utc::now().to_rfc3339());
@@ -205,54 +243,55 @@ pub fn observe_owner_message(
 /// appends it to the fixed room prompt so a history-budget rebase cannot drop
 /// it. Newest entries win when the context cap is reached.
 pub fn context_block(state: &AppState, room_id: &str) -> Option<String> {
+    context_block_for_query(state, room_id, "")
+}
+
+/// Selects the most relevant durable statements for the current question,
+/// rather than evicting an early decision merely because later turns are long.
+pub fn context_block_for_query(
+    state: &AppState,
+    room_id: &str,
+    query: &str,
+) -> Option<String> {
     let record = state.store.get("room_state", &state_id(room_id))?;
-    let mut facts = record["facts"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|fact| fact["status"].as_str() == Some("active"))
-        .filter(|fact| {
-            // Older versions promoted external room messages too. Suppress
-            // those existing entries without rewriting the archived evidence.
+    let facts = record["facts"].as_array()?;
+    let mut ranked = facts
+        .iter()
+        .enumerate()
+        .filter(|(_, fact)| fact["status"].as_str() == Some("active"))
+        .filter(|(_, fact)| {
             !fact["sourceMessageId"]
                 .as_str()
                 .and_then(|id| state.store.message(id))
                 .is_some_and(|source| source["metadata"]["origin"].is_object())
         })
-        .filter(|fact| {
-            fact["text"]
-                .as_str()
-                .is_some_and(|text| !text.trim().is_empty())
+        .filter_map(|(index, fact)| {
+            let text = fact["text"].as_str()?.trim();
+            (!text.is_empty()).then_some((query_relevance(query, text), index, fact))
         })
         .collect::<Vec<_>>();
-    if facts.is_empty() {
-        return None;
-    }
-    facts.sort_by(|a, b| {
-        a["createdAt"]
-            .as_str()
-            .unwrap_or("")
-            .cmp(b["createdAt"].as_str().unwrap_or(""))
-    });
-    let mut lines = Vec::new();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    let mut selected = Vec::new();
     let mut used = 0usize;
-    for fact in facts.iter().rev() {
+    for (_, index, fact) in ranked {
         let kind = fact["kind"].as_str().unwrap_or("fact");
         let text = fact["text"].as_str().unwrap_or("").trim();
         let line = format!("- [{kind}] {text}");
         let cost = line.chars().count() + 1;
-        if !lines.is_empty() && used + cost > MAX_CONTEXT_CHARS {
-            break;
+        if used + cost > MAX_CONTEXT_CHARS {
+            continue;
         }
-        if lines.len() >= MAX_CONTEXT_ENTRIES {
-            break;
-        }
+        selected.push((index, line));
         used += cost;
-        lines.push(line);
+        if selected.len() == MAX_CONTEXT_ENTRIES {
+            break;
+        }
     }
-    lines.reverse();
-    Some(lines.join("\n"))
+    if selected.is_empty() {
+        return None;
+    }
+    selected.sort_by_key(|(index, _)| *index);
+    Some(selected.into_iter().map(|(_, line)| line).collect::<Vec<_>>().join("\n"))
 }
 
 /// Clears the durable owner state when the room is reset.
@@ -428,4 +467,48 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(dir);
     }
+    #[test]
+    fn korean_owner_correction_replaces_the_previous_assignment() {
+        let (state, dir) = state();
+        observe_owner_message(&state, "r", "room:r", &owner(
+            "m1", "배포 담당자는 코볼트다. 기억해.",
+        )).unwrap();
+        observe_owner_message(&state, "r", "room:r", &owner(
+            "m2", "정정: 배포 담당자는 세바스다.",
+        )).unwrap();
+        let current = context_block_for_query(&state, "r", "배포 담당자가 누구야?").unwrap();
+        assert!(current.contains("세바스"), "{current}");
+        assert!(!current.contains("코볼트"), "{current}");
+        let facts = state.store.get("room_state", &state_id("r")).unwrap();
+        assert_eq!(facts["facts"][0]["status"], "superseded");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_hundred_unrelated_owner_decisions_do_not_evict_a_relevant_early_fact() {
+        let (state, dir) = state();
+        observe_owner_message(&state, "r", "room:r", &owner(
+            "m1", "배포 담당자는 코볼트다. 기억해.",
+        )).unwrap();
+        for i in 0..100 {
+            let mut message = owner("m2", &format!("작업 항목 {i}는 완료했다. 기억해."));
+            message["id"] = json!(format!("unrelated-{i}"));
+            observe_owner_message(&state, "r", "room:r", &message).unwrap();
+        }
+        let selected = context_block_for_query(&state, "r", "배포 담당자는 누구였지?").unwrap();
+        assert!(selected.contains("코볼트"), "{selected}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn corrections_keep_unrelated_domains_and_do_not_promote_questions() {
+        let (state, dir) = state();
+        observe_owner_message(&state, "r", "room:r", &owner("m1", "배포 담당자는 코볼트다. 기억해.")).unwrap();
+        observe_owner_message(&state, "r", "room:r", &owner("m2", "정책은 일요일에 배포하지 않는 것이다. 기억해.")).unwrap();
+        observe_owner_message(&state, "r", "room:r", &owner("m3", "정정: 배포 담당자는 세바스다.")).unwrap();
+        assert!(context_block_for_query(&state, "r", "정책은 뭐야?").unwrap().contains("일요일"));
+        assert!(observe_owner_message(&state, "r", "room:r", &owner("m4", "정정한 정책을 알려줘.")).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
 }
