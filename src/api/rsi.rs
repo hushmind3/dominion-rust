@@ -51,7 +51,7 @@ pub async fn apply(
 ) -> Response {
     match crate::engine::rsi_worktree::apply_to_sub(&state,&id,&body).await {
         Ok(value)=>Json(value).into_response(),
-        Err(error)=>error(error),
+        Err(message)=>error(message),
     }
 }
 
