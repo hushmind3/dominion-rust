@@ -1293,33 +1293,55 @@ async fn codex_models_live(
     if account.is_empty() { return Err("Codex 계정 ID가 없습니다.".into()); }
     let access = codex_oauth::fresh_access(state, client, provider_id, saved_token).await?;
     if access.is_empty() { return Err("Codex OAuth 연결 토큰이 없습니다.".into()); }
+    // Codex requires client_version. An absent query gives HTTP 400; using
+    // only a stale installed CLI's version hides newer account models.
+    // Query the full account catalog first (Hermes uses the same 99.0.0
+    // compatibility value), then retry with the installed CLI's version.
+    let mut versions = vec!["99.0.0".to_string()];
     let cli_version = tokio::time::timeout(Duration::from_secs(3),
         tokio::process::Command::new("codex").arg("--version").output()
-    ).await.ok().and_then(Result::ok).and_then(|output| {
-        String::from_utf8(output.stdout).ok()
-    }).and_then(|stdout|stdout.split_whitespace()
-        .find(|part|part.chars().next().is_some_and(|c|c.is_ascii_digit()))
-        .map(str::to_string));
+    ).await.ok().and_then(Result::ok)
+        .and_then(|output|String::from_utf8(output.stdout).ok())
+        .and_then(|stdout|stdout.split_whitespace()
+            .find(|part|part.chars().next().is_some_and(|c|c.is_ascii_digit()))
+            .map(str::to_string));
     let cache_version = codex_home_file("models_cache.json")
         .and_then(|path|std::fs::read_to_string(path).ok())
         .and_then(|text|serde_json::from_str::<Value>(&text).ok())
         .and_then(|value|value["client_version"].as_str().map(str::to_string));
-    let mut url = reqwest::Url::parse("https://chatgpt.com/backend-api/codex/models")
-        .map_err(|e|e.to_string())?;
     if let Some(version) = cli_version.or(cache_version) {
+        if !versions.contains(&version) { versions.push(version); }
+    }
+    versions.push("0.0.0".to_string());
+    let mut failure = String::from("Codex 계정 모델을 조회하지 못했습니다.");
+    for version in versions {
+        let mut url = reqwest::Url::parse("https://chatgpt.com/backend-api/codex/models")
+            .map_err(|e|e.to_string())?;
         url.query_pairs_mut().append_pair("client_version", &version);
+        let response = match client.get(url)
+            .bearer_auth(&access)
+            .header("chatgpt-account-id",account)
+            .header("originator","codex_cli_rs")
+            .header("Accept","application/json")
+            .send().await {
+                Ok(response) => response,
+                Err(e) => {failure = format!("Codex 모델 조회 연결 실패: {e}");break;}
+            };
+        if matches!(response.status().as_u16(),401|403) {
+            return Err(format!("Codex 계정 인증이 거부되었습니다 (HTTP {}). 재로그인하세요.",response.status()));
+        }
+        if !response.status().is_success() {
+            failure = format!("Codex 모델 조회 HTTP {} (client_version={version})",response.status());
+            continue;
+        }
+        let data:Value = response.json().await
+            .map_err(|_|"Codex 모델 응답 JSON 오류")?;
+        match parse_codex_models(&data) {
+            Ok(models) => return Ok(models),
+            Err(message) => failure = message,
+        }
     }
-    let response = client.get(url)
-        .bearer_auth(access)
-        .header("chatgpt-account-id",account)
-        .header("originator","codex_cli_rs")
-        .header("Accept","application/json")
-        .send().await.map_err(|e|format!("Codex 모델 조회 연결 실패: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("Codex 모델 조회 HTTP {}",response.status()));
-    }
-    let data:Value = response.json().await.map_err(|_|"Codex 모델 응답 JSON 오류")?;
-    parse_codex_models(&data)
+    Err(failure)
 }
 
 pub async fn provider_models(State(state): State<AppState>, Path(id): Path<String>) -> Response {
