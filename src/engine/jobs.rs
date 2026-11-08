@@ -560,16 +560,46 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
     // captures the real diff and verifier evidence before removing that copy.
     let mut scoped_state = context.state.clone();
     if let Some(worktree)=&rsi_workspace {scoped_state.config.workspace=worktree.path.clone();}
-    let message = run_quiet(&scoped_state, &request).await;
+    let mut message = run_quiet(&scoped_state, &request).await;
     let result = if let Some(worktree)=&rsi_workspace {
-        let finished=crate::engine::rsi_worktree::finish(
+        // At most 2 model repair calls after a grounded verifier failure.
+        // All attempts share the same detached worktree and model selection.
+        const MAX_REPAIRS:usize=2;
+        let mut attempts=Vec::<Value>::new();
+        let mut finished=crate::engine::rsi_worktree::finish(
             context,job,worktree,message,&session_id
         ).await;
+        for revision in 0..MAX_REPAIRS {
+            let Some(feedback)=finished.as_ref().ok()
+                .and_then(crate::engine::rsi_worktree::repair_feedback) else {break;};
+            // Cancellation or process restart is never a reason to replay a write.
+            if context.checkpoint(json!({
+                "rsiPhase":"repairing","rsiRepairAttempt":revision+1
+            })).is_err(){break;}
+            let prior=finished.as_ref().unwrap();
+            let iteration=json!({
+                "id":format!("{}-{}",context.job_id,revision),
+                "jobId":context.job_id,
+                "attempt":revision+1,"result":prior["rsi"],
+                "status":prior["status"],"reason":prior["reason"]
+            });
+            context.state.store.put("rsi_iteration",&iteration);
+            attempts.push(iteration);
+            let mut retry=request.clone();
+            retry.input=feedback;
+            message=run_quiet(&scoped_state,&retry).await;
+            finished=crate::engine::rsi_worktree::finish(
+                context,job,worktree,message,&session_id
+            ).await;
+        }
         if let Err(error)=crate::engine::rsi_worktree::cleanup(worktree).await {
             context.state.store.audit("rsi.worktree_cleanup_failed",
                 json!({"jobId":context.job_id,"error":error}));
         }
-        finished?
+        let mut output=finished?;
+        output["repairAttempts"]=json!(attempts.len());
+        output["previousAttempts"]=json!(attempts);
+        output
     } else {
         let message=message?;
         json!({

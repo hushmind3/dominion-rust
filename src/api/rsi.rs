@@ -117,10 +117,22 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
         "rsiFrozenCases": [
-            {"id":"owner-memory","domain":"memory","holdout":true,
+            {"id":"memory-explicit","domain":"memory","holdout":true,
+                "filter":"engine::room_state::tests::explicit_owner_state_survives_and_a_correction_supersedes_the_old_code"},
+            {"id":"memory-correction","domain":"memory","holdout":true,
                 "filter":"engine::room_state::tests::korean_owner_correction_replaces_the_previous_assignment"},
-            {"id":"algorithm-generation","domain":"algorithm","holdout":true,
-                "filter":"engine::algorithms::tests::generation_uses_evidence_and_returns_executable_kernels"}
+            {"id":"memory-long","domain":"memory","holdout":true,
+                "filter":"engine::room_state::tests::a_hundred_unrelated_owner_decisions_do_not_evict_a_relevant_early_fact"},
+            {"id":"memory-distinct","domain":"memory","holdout":false,
+                "filter":"engine::room_state::tests::corrections_keep_unrelated_domains_and_do_not_promote_questions"},
+            {"id":"kernel-generation","domain":"algorithm","holdout":true,
+                "filter":"engine::algorithms::tests::generation_uses_evidence_and_returns_executable_kernels"},
+            {"id":"kernel-promotion","domain":"algorithm","holdout":false,
+                "filter":"engine::algorithms::tests::unverified_generated_algorithms_never_enter_live_ucb_until_promoted"},
+            {"id":"rsi-oracle","domain":"improver","holdout":true,
+                "filter":"engine::rsi::tests::evaluation_cannot_switch_its_frozen_oracle_or_test_names"},
+            {"id":"rsi-lineage","domain":"improver","holdout":true,
+                "filter":"engine::rsi::tests::only_a_deployed_improver_can_seed_the_next_generation"}
         ],
         "autoLearning": false
     });
@@ -176,7 +188,7 @@ mod tests {
         assert_eq!(jobs[0]["input"]["model"], "sample-model");
         assert_eq!(jobs[0]["input"]["rsiSourceDir"], checkout.to_str().unwrap());
         assert!(jobs[0]["input"]["rsiBaseCommit"].as_str().is_some_and(|v|v.len()==40));
-        assert_eq!(jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap().len(),2);
+        assert_eq!(jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap().len(),8);
         assert!(jobs[0]["input"]["prompt"].as_str().unwrap().contains("workspace_write"));
         assert_eq!(jobs[0]["input"]["rsiAutonomous"], false);
         let auto_response = start(State(state.clone()), Json(json!({

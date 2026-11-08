@@ -193,12 +193,55 @@ pub async fn finish(
     }));
     context.checkpoint(json!({"rsiPhase":"review","rsiEvidenceId":result["id"],
         "rsiCandidateId":candidate_id}))?;
-    let complete=candidate_id.is_string()&&model_error.is_empty()&&source_clean;
+    let (status,reason)=run_status(
+        candidate_id.is_string(),all_checks_pass,source_clean,
+        &model_error,&capture_error,
+    );
     Ok(json!({
-        "status":if complete {"completed"}else{"needs_review"},
+        "status":status,"reason":reason,
         "sessionId":session_id,
         "rsi":result,
     }))
+}
+
+/// Compilation and typecheck are only candidate-integrity evidence.
+/// A completed run means the model produced a patch and verification ran
+/// without error; it does NOT mean the patch improves runtime behavior.
+fn run_status(
+    has_candidate:bool,checks_passed:bool,source_clean:bool,
+    model_error:&str,capture_error:&str,
+)->(&'static str,&'static str){
+    if !source_clean {return ("needs_review","original_source_changed");}
+    if !model_error.is_empty(){return ("needs_review","model_error");}
+    if !capture_error.is_empty()||!has_candidate {
+        return ("needs_review","no_valid_candidate");
+    }
+    if !checks_passed{return ("needs_review","build_or_typecheck_failed");}
+    ("completed","candidate_compiles_not_performance_verified")
+}
+
+/// Return a short, grounded repair instruction. Do not repeat blind model
+/// calls for provider errors, missing diffs or checkout integrity failures.
+pub fn repair_feedback(result:&Value)->Option<String>{
+    if result["status"]!="needs_review"||result["reason"]!="build_or_typecheck_failed"
+        ||result["rsi"]["sourceClean"]!=true
+        ||!result["rsi"]["captureError"].as_str().unwrap_or("").is_empty()
+        ||!result["rsi"]["modelError"].as_str().unwrap_or("").is_empty(){
+        return None;
+    }
+    let checks=result["rsi"]["checks"].as_array()?;
+    let failures=checks.iter().filter(|check|check["passed"]!=true)
+        .map(|check|{
+            let label=check["label"].as_str().unwrap_or("verification");
+            let detail=check["stderr"].as_str().or_else(||check["error"].as_str())
+                .unwrap_or("The verifier reported failure without further detail.");
+            format!("{label}: {}",detail.chars().take(1100).collect::<String>())
+        }).collect::<Vec<_>>();
+    if failures.is_empty(){return None;}
+    Some(format!(
+        "이전 소스 변경 후 별도의 컴파일/타입 검사에서 오류가 발견됐습니다. 기존 변경을 읽고 실제 오류를 고쳐 다시 저장하세요. 검사 자체를 삭제하거나 우회하지 마세요. 수정 전과 무관한 파일은 건드리지 마세요. 테스트는 엔진이 다시 실행합니다.\n\n{}",
+        failures.join("\n\n")
+    ))
 }
 /// Apply a model-generated patch only after explicit owner review. A successful
 /// compile is NOT proof of improved behavior. Never commit, push or deploy.
@@ -288,6 +331,21 @@ mod tests {
         assert_eq!(classify("diff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\n"),"harness");
     }
     #[test]
+    fn failing_verification_never_completes_and_only_valid_failures_retry(){
+        assert_eq!(run_status(true,false,true,"",""),("needs_review","build_or_typecheck_failed"));
+        assert_eq!(run_status(true,true,true,"",""),("completed","candidate_compiles_not_performance_verified"));
+        assert_eq!(run_status(true,true,false,"","").0,"needs_review");
+        assert_eq!(run_status(true,true,true,"provider timeout","").0,"needs_review");
+        assert_eq!(run_status(false,true,true,"","invalid diff").0,"needs_review");
+        let failing=json!({"status":"needs_review","reason":"build_or_typecheck_failed",
+            "rsi":{"sourceClean":true,"captureError":"","modelError":"",
+                "checks":[{"label":"cargo check --all-targets","passed":false,"stderr":"error[E0308]: wrong type"}]}});
+        assert!(repair_feedback(&failing).unwrap().contains("error[E0308]"));
+        let mut no_retry=failing;
+        no_retry["rsi"]["modelError"]=json!("provider unavailable");
+        assert!(repair_feedback(&no_retry).is_none());
+    }
+    #[test]
     fn requires_complete_sha(){
         assert!(valid_sha("1234567890abcdef1234567890abcdef12345678"));
         assert!(!valid_sha("bad"));
@@ -336,7 +394,8 @@ mod tests {
         assert_eq!(git_local(&source,&["rev-parse","HEAD"]),base);
         std::fs::write(worktree.path.join("web/src/pages/Demo.tsx"),"export const version = 2\n").unwrap();
         let outcome=finish(&context,&job,&worktree,Ok(Some(json!({"id":"m1"}))),"session-rsi").await.unwrap();
-        assert_eq!(outcome["status"],"completed");
+        assert_eq!(outcome["status"],"needs_review");
+        assert_eq!(outcome["reason"],"build_or_typecheck_failed");
         let candidate_id=outcome["rsi"]["candidateId"].as_str().unwrap();
         let candidate=state.store.get("rsi_candidate",candidate_id).unwrap();
         assert_eq!(candidate["status"],"proposed");

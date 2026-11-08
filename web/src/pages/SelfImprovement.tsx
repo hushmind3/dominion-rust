@@ -16,7 +16,7 @@ type RsiEvidence={
 }
 type Job={
  id:string;status:string;sessionId?:string;error?:string;
- result?:{sessionId?:string;messageId?:string;rsi?:RsiEvidence};promptState?:{inFlight?:boolean}
+ result?:{sessionId?:string;messageId?:string;rsi?:RsiEvidence;repairAttempts?:number;reason?:string};promptState?:{inFlight?:boolean}
 }
 type RsiCandidate={id:string;status:string;target?:string;patch?:string;paths?:string[];patchSha256?:string;baseCommit?:string;reviewRequired?:boolean}
 type Message={id:string;role:string;content:string;created_at:string}
@@ -192,6 +192,8 @@ export function SelfImprovementPage(){
      <p>수정 패치: <strong>{job.result.rsi.diffBytes?job.result.rsi.diffBytes+'바이트':'없음'}</strong></p>
      <p>컴파일·타입 검사: <strong>{job.result.rsi.checksPassed?'실행된 검사 통과':'불합격 또는 미실행'}</strong></p>
      <p>기준 대비 성능 비교: <strong>아직 수행하지 않음</strong></p>
+     <p>검사 실패 후 재수정: <strong>{job.result.repairAttempts??0}회 (상한 2회)</strong></p>
+     <p>코드 작업 판정: <strong>{job.result.reason==='candidate_compiles_not_performance_verified'?'컴파일 성공 · 성능 미검증':job.result.reason==='build_or_typecheck_failed'?'검사 실패 · 재검토 필요':job.result.reason||'검토 필요'}</strong></p>
     </div>
     {job.result.rsi.captureError&&<Notice message={job.result.rsi.captureError}/>}
     {job.result.rsi.modelError&&<Notice message={'모델 실행 오류: '+job.result.rsi.modelError}/>}
