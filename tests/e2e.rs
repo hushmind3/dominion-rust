@@ -801,6 +801,89 @@ fn room_selected_tools_keep_read_write_history_and_require_real_write_approval()
 }
 
 #[test]
+fn room_selects_and_executes_an_mcp_tool_through_approval() {
+    let _serial = serial();
+    let (port, requests) = scripted_provider(|request| {
+        let observations = request["messages"].as_array().unwrap().iter()
+            .filter(|message|message["role"]=="tool").count();
+        if observations == 0 {
+            vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"mcp-call","type":"function","function":{"name":"mcp__fake_mcp__search_issues","arguments":json!({"query":"repo:dominion"}).to_string()}}]},"finish_reason":"tool_calls"}]})]
+        } else {
+            vec![json!({"choices":[{"delta":{"content":"MCP 검색 결과를 확인했습니다."},"finish_reason":"stop"}]})]
+        }
+    });
+    let app = TestApp::new(port, "native");
+    let script = app._root.join("fake_mcp.py");
+    std::fs::write(
+        &script,
+        r#"import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        message = json.loads(line)
+    except Exception:
+        continue
+    if "id" not in message:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "fake", "version": "1.0"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "search_issues", "description": "Search GitHub issues and pull requests", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}]}
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": "2 issues matched the query"}]}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+"#,
+    )
+    .unwrap();
+    let conn = Connection::open(app._root.join("runtime/dominion.sqlite")).unwrap();
+    conn.busy_timeout(Duration::from_secs(5)).unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO records(kind,id,data) VALUES('mcp','fake',?1)",
+        [json!({
+            "id":"fake","name":"Fake MCP","enabled":true,"transport":"stdio",
+            "command":"python3","args":[script.to_string_lossy()]
+        }).to_string()],
+    )
+    .unwrap();
+    drop(conn);
+
+    let discovered = app.get("/api/mcp/discover");
+    assert!(discovered.as_array().unwrap().iter().any(|tool| tool["name"] == "mcp__fake_mcp__search_issues"), "{discovered}");
+
+    app.post("/api/agents",&json!({"id":"a","name":"Researcher","systemPrompt":"Use available tools and report results accurately."}));
+    let room=app.post("/api/rooms",&json!({"name":"mcp tools","agentIds":["a"],"rounds":1,"maxTurns":1,"toolsEnabled":true,"autoLearning":false}));
+    let sent=app.post(&format!("/api/rooms/{}/messages",room["id"].as_str().unwrap()),&json!({"input":"github 이슈를 검색해"}));
+    let approval=app.wait_pending_approval(20);
+    assert_eq!(approval["tool"],"mcp__fake_mcp__search_issues");
+    app.post("/api/approvals",&json!({"id":approval["id"],"allow":true}));
+    let deadline=Instant::now()+Duration::from_secs(25);
+    loop {
+        let job=app.get(&format!("/api/jobs/{}",sent["jobId"].as_str().unwrap()));
+        if job["status"]=="completed" { break; }
+        assert!(matches!(job["status"].as_str(),Some("queued"|"running")),"{job}");
+        assert!(Instant::now()<deadline,"{job}");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let requests=requests.lock().unwrap();
+    assert!(requests.len()>=2,"{requests:?}");
+    let tools=requests[0]["tools"].as_array().unwrap();
+    let names=tools.iter().filter_map(|tool|tool["function"]["name"].as_str()).collect::<Vec<_>>();
+    assert!(names.contains(&"mcp__fake_mcp__search_issues"),"{names:?}");
+    assert!(!names.contains(&"dominion_tool"),"{names:?}");
+    assert!(!names.contains(&"workspace_write"),"unrelated tools must not ship with an MCP request: {names:?}");
+    assert!(requests[1]["messages"].as_array().unwrap().iter().any(|message|message["tool_calls"][0]["function"]["name"]=="mcp__fake_mcp__search_issues"));
+    assert!(requests[1]["messages"].as_array().unwrap().iter().any(|message|message["role"]=="tool" && message["content"].as_str().is_some_and(|text|text.contains("2 issues matched"))));
+    let execution=app.get("/api/executions")[0].clone();
+    assert_eq!(execution["toolCalls"],1);
+    assert_eq!(execution["status"],"completed");
+}
+
+#[test]
 fn derived_turns_cannot_forge_or_reuse_a_stale_root_task() {
     let _serial = serial();
     let (port, _) = scripted_provider(|_| {
