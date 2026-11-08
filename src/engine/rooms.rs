@@ -120,9 +120,19 @@ fn speaker_window(
     if roster.len() <= 3 {
         return roster.to_vec();
     }
+    // An explicit total cap of at least one turn per participant is the
+    // owner's instruction that everyone should speak. Do not silently trim
+    // that room down to two casual responders.
+    if room["maxTurns"]
+        .as_u64()
+        .is_some_and(|turns| turns as usize >= roster.len())
+    {
+        return roster.to_vec();
+    }
     let lower = input.to_lowercase();
     if [
-        "다들", "다 같이", "다같이", "모두", "전원", "각자", "everyone", "all agents",
+        "다들", "다 같이", "다같이", "모두", "모든", "전원", "전부", "각자",
+        "나머지", "나머지도", "아홉", "9명", "인사", "everyone", "all agents",
     ]
         .iter()
         .any(|term| lower.contains(term))
@@ -1381,7 +1391,7 @@ mod tests {
             "r",
             "id",
             &json!("r"),
-            &json!({"agentIds":["a","b","c","d","e"]}),
+            &json!({"agentIds":["a","b","c","d","e"],"maxTurns":0}),
         );
         let config = room(&state);
         let casual = plan_speakers(&state, &config, "안녕", None).unwrap();
@@ -1544,6 +1554,28 @@ mod tests {
         server.abort();
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn an_explicit_turn_cap_keeps_all_room_speakers() {
+        let (state, dir) = test_state();
+        let mut ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        for index in 4..=9 {
+            let id = format!("a{index}");
+            state.store.put(
+                "agent",
+                &json!({"id":id,"name":format!("참가자{index}"),"providerId":"p","model":"test"}),
+            );
+            ids.push(id);
+        }
+        let mut room = json!({
+            "id":"r","agentIds":ids,"routingMode":"discussion","rounds":1,"maxTurns":9
+        });
+        assert_eq!(speaker_window(&state, &room, "다시 인사해봐", &ids).len(), 9);
+        assert_eq!(speaker_window(&state, &room, "나머지도 말해라", &ids).len(), 9);
+        room["maxTurns"] = json!(0);
+        assert_eq!(speaker_window(&state, &room, "짧게 말해", &ids).len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn discussion_follows_mentions_and_leaves_others_silent() {
         let (state, dir) = test_state();

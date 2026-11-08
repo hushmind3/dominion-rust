@@ -1128,6 +1128,46 @@ fn room_system_prompt_preview_returns_the_korean_contract_and_persona() {
 }
 
 #[test]
+fn a_short_greeting_reaches_all_nine_when_the_turn_cap_covers_the_roster() {
+    let _serial = serial();
+    let (port, requests) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"안녕하세요, 주인님."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let ids = (1..=9).map(|index| format!("a{index}")).collect::<Vec<_>>();
+    for id in &ids {
+        app.post("/api/agents", &json!({"id":id,"name":id,"systemPrompt":"인사만 하세요."}));
+    }
+    let room = app.post("/api/rooms", &json!({
+        "id":"nine-greeting","name":"아홉 명","agentIds":ids,
+        "routingMode":"discussion","rounds":1,"maxTurns":10,
+        "toolsEnabled":false,"autoLearning":false
+    }));
+    let sent = app.post(&format!("/api/rooms/{}/messages",room["id"].as_str().unwrap()), &json!({"input":"다시 인사해봐"}));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let job = app.get(&format!("/api/jobs/{}", sent["jobId"].as_str().unwrap()));
+        if job["status"] == "completed" { break; }
+        assert!(Instant::now() < deadline, "{job}");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let messages = app.get("/api/rooms/nine-greeting/messages");
+    let rows = messages.as_array().unwrap();
+    let speakers = rows
+        .iter()
+        .filter(|row| row["role"] == "assistant")
+        .map(|row| row["agent_id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(speakers.len(), 9, "only some participants replied: {speakers:?}");
+    assert_eq!(
+        rows.iter().filter(|row| row["role"] == "user").count(),
+        1,
+        "the harness must not fabricate owner messages"
+    );
+    assert_eq!(requests.lock().unwrap().len(), 9);
+}
+
+#[test]
 fn resetting_a_room_keeps_members_and_archives_the_old_transcript() {
     let _serial = serial();
     let (port, _) = scripted_provider(|_| {
