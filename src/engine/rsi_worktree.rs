@@ -1,7 +1,7 @@
 //! Evidence-producing, isolated source worktree for model-driven DOMINION revisions.
 //! A worktree protects the live checkout from ordinary workspace writes; it is
 //! NOT a process/OS security sandbox. No candidate is automatically promoted.
-use crate::{engine::{jobs::JobContext, rsi, tools}, state::AppState};
+use crate::engine::{jobs::JobContext, rsi, tools};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{path::{Path,PathBuf},time::Duration};
@@ -207,5 +207,79 @@ mod tests {
     fn requires_complete_sha(){
         assert!(valid_sha("1234567890abcdef1234567890abcdef12345678"));
         assert!(!valid_sha("bad"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detached_worktree_collects_a_real_patch_without_touching_source(){
+        use crate::{config::Config,db::Store,state::AppState,vault::Vault};
+        use std::process::Command as SyncCommand;
+        fn git_local(path:&Path,args:&[&str])->String {
+            let out=SyncCommand::new("git").current_dir(path).args(args).output().unwrap();
+            assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        let root=std::env::temp_dir().join(format!("rsi-proof-{}",uuid::Uuid::new_v4()));
+        let source=root.join("checkout");
+        let data=root.join("data");
+        std::fs::create_dir_all(source.join("src/engine")).unwrap();
+        std::fs::create_dir_all(source.join("web/src/pages")).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(source.join("Cargo.toml"),"[package]\nname=\"sample\"\nversion=\"0.1.0\"\n").unwrap();
+        std::fs::write(source.join("src/engine/rsi.rs"),"// source\n").unwrap();
+        std::fs::write(source.join("web/src/pages/Demo.tsx"),"export const version = 1\n").unwrap();
+        git_local(&source,&["init","-q"]);
+        git_local(&source,&["checkout","-b","dominion-sub"]);
+        git_local(&source,&["add","."]);
+        git_local(&source,&["-c","user.email=ci@example.com","-c","user.name=CI","commit","-qm","base"]);
+        let base=git_local(&source,&["rev-parse","HEAD"]);
+        let cfg=Config{port:0,data_dir:data.clone(),web_dir:data.join("web"),workspace:data.clone()};
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),Vault::open(&cfg.key_path()));
+        let input=json!({
+            "rsiBaseCommit":base,"rsiSourceDir":source.to_str().unwrap(),
+            "rsiObjective":"DOMINION 화면 렌더링 검증 대상 소스를 수정한다",
+            "model":"test-model",
+            "rsiFrozenCases":[
+                {"id":"memory","domain":"memory","holdout":true,"filter":"engine::room_state::tests::korean_owner_correction_replaces_the_previous_assignment"},
+                {"id":"algorithm","domain":"algorithm","holdout":true,"filter":"engine::algorithms::tests::generation_uses_evidence_and_returns_executable_kernels"}
+            ]
+        });
+        let job=state.store.put("job",&json!({"kind":"prompt","status":"running","input":input})).unwrap();
+        let context=JobContext::new(state.clone(),job["id"].as_str().unwrap().to_string());
+        let worktree=prepare(&context,&job["input"]).await.unwrap();
+        assert_ne!(worktree.path,source);
+        assert_eq!(git_local(&source,&["rev-parse","HEAD"]),base);
+        std::fs::write(worktree.path.join("web/src/pages/Demo.tsx"),"export const version = 2\n").unwrap();
+        let outcome=finish(&context,&job,&worktree,Ok(Some(json!({"id":"m1"}))),"session-rsi").await.unwrap();
+        assert_eq!(outcome["status"],"completed");
+        let candidate_id=outcome["rsi"]["candidateId"].as_str().unwrap();
+        let candidate=state.store.get("rsi_candidate",candidate_id).unwrap();
+        assert_eq!(candidate["status"],"proposed");
+        assert_eq!(candidate["pairedComparisonComplete"],false);
+        assert!(candidate["patch"].as_str().unwrap().contains("version = 2"));
+        assert_eq!(std::fs::read_to_string(source.join("web/src/pages/Demo.tsx")).unwrap(),"export const version = 1\n");
+        assert_eq!(git_local(&source,&["rev-parse","HEAD"]),base);
+        assert!(git_local(&source,&["status","--porcelain"]).is_empty());
+        cleanup(&worktree).await.unwrap();
+        assert!(!worktree.path.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn rsi_model_cannot_use_absolute_write_or_shell_tools(){
+        use crate::{config::Config,db::Store,state::AppState,vault::Vault};
+        let root=std::env::temp_dir().join(format!("rsi-permission-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),Vault::open(&cfg.key_path()));
+        state.store.put("session",&json!({"id":"rsi-session","rsiRun":true}));
+        let ctx=tools::ToolContext{
+            workspace:&root,store:&state.store,state:&state,session_id:"rsi-session",
+            agent_id:None,tools_enabled:true,tools_execution_enabled:true
+        };
+        let outside=root.join("outside.txt");
+        assert!(tools::execute(&ctx,"file_write",&json!({"path":outside.to_str().unwrap(),"content":"forbidden"}),"run").await.is_err());
+        assert!(tools::execute(&ctx,"shell_exec",&json!({"command":"touch outside.txt"}),"run").await.is_err());
+        assert!(!outside.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

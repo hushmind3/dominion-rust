@@ -527,7 +527,7 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
     }
     context.checkpoint(json!({"sessionId":session_id,"promptState":{"inFlight":true}}))?;
     let request = TurnRequest {
-        session_id: Some(session_id),
+        session_id: Some(session_id.clone()),
         input: if rsi_workspace.is_some() { format!("{prompt}\n\n현재 수정 대상은 별도의 Git 작업공간이며, workspace_list/read/write만 사용하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.") } else { prompt },
         agent_id: input
             .get("agentId")

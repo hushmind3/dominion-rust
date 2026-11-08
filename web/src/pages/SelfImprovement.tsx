@@ -8,16 +8,36 @@ import {FormField,Headline,Notice,Panel,StateTag,useRemote} from '../components/
 type DevStatus={
  config:{sourceDir:string};git:boolean;branch:string;dirty:number;exists:boolean
 }
+type RsiEvidence={
+ candidateId?:string|null;baseCommit?:string;diffSha256?:string;diffBytes?:number;
+ sourceClean?:boolean;checksPassed?:boolean;pairedComparisonComplete?:boolean;
+ checks?:{label:string;ran:boolean;passed:boolean;stdout?:string;stderr?:string;error?:string}[];
+ modelError?:string;captureError?:string
+}
 type Job={
  id:string;status:string;sessionId?:string;error?:string;
- result?:{sessionId?:string;messageId?:string};promptState?:{inFlight?:boolean}
+ result?:{sessionId?:string;messageId?:string;rsi?:RsiEvidence};promptState?:{inFlight?:boolean}
 }
+type RsiCandidate={id:string;status:string;patch?:string;paths?:string[];patchSha256?:string;reviewRequired?:boolean}
 type Message={id:string;role:string;content:string;created_at:string}
 type Approval={id:string;sessionId:string;status:string;tool:string;args:unknown}
 const SAVED_JOB='dominion.rsi.activeJob'
 const terminal=(status:string)=>['completed','failed','cancelled','needs_review'].includes(status)
 const operationLabel=(approval:Approval)=>{ const args=approval.args as Record<string,unknown>|null; const value=args&&typeof args==='object'?args:null; const detail=value?.path||value?.cwd||value?.command||''; return typeof detail==='string'&&detail.trim()?detail.slice(0,240):'선택한 도구의 실행을 승인할까요?' }
 const defaultTask='DOMINION의 100턴 회의실에서 오래된 결정과 교정을 기억하지 못하는 문제를 실제 코드에서 추적하고 수정한 뒤 관련 테스트로 검증해 주세요.'
+
+function CandidateReview({id}:{id:string}){
+ const candidate=useRemote<RsiCandidate>('/api/rsi/'+encodeURIComponent(id),{id,status:'proposed'})
+ return <div className="mt-3 rounded-lg border border-[#E7E0D5] bg-white p-3 text-[12px]">
+  <strong>등록된 개선 후보 · {candidate.value.status}</strong>
+  <p className="mt-2 break-all font-mono text-[10px] text-[#7C7469]">{id}</p>
+  <p className="mt-1 text-[11px] text-[#7C7469]">대상 파일: {candidate.value.paths?.join(', ')||'불러오는 중'}</p>
+  <details className="mt-3"><summary className="cursor-pointer font-semibold text-[#A94E30]">실제 수정 패치 확인</summary>
+   <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#F7F2EA] p-3 text-[10px]">{candidate.value.patch||'패치 정보 없음'}</pre>
+  </details>
+  <p className="mt-2 text-[11px] text-[#8A8176]">이 후보는 자동 승격되지 않습니다. 원본 대비 독립 실험 및 수동 승인 전 상태입니다.</p>
+ </div>
+}
 
 export function SelfImprovementPage(){
  const providers=useRemote<Provider[]>('/api/providers',[])
@@ -95,7 +115,7 @@ export function SelfImprovementPage(){
   }catch(e){setError((e as Error).message)}
  }
  const working=job&&!terminal(job.status)
- const statusText=job?.status==='completed'?'작업 종료':job?.status==='running'?'모델이 코드 작업 중':job?.status==='queued'?'실행 대기':job?.status==='needs_review'?'추가 검토 필요':job?.status==='failed'?'실행 실패':job?.status==='cancelled'?'중단됨':''
+ const statusText=job?.status==='completed'?'수정 작업 종료':job?.status==='running'?'모델이 코드 작업 중':job?.status==='queued'?'실행 대기':job?.status==='needs_review'?'추가 검토 필요':job?.status==='failed'?'실행 실패':job?.status==='cancelled'?'중단됨':''
  return <div className="mx-auto w-full max-w-[1080px] px-5 py-5 sm:px-7 lg:pb-10">
   <Headline eyebrow="DOMINION · RSI" title="재귀적 자기개선" description="모델을 선택하고 개선할 문제를 알려주면 Rust 하네스가 코드 조사·수정·테스트를 실행합니다." actions={<Button variant="secondary" onClick={()=>{void providers.reload();void dev.reload()}}><RefreshCw size={15}/> 새로고침</Button>}/>
   <Notice message={error||providers.error||dev.error}/>
@@ -104,7 +124,7 @@ export function SelfImprovementPage(){
    <div className="mb-5 flex items-center gap-3">
     <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#A94E30]"><BrainCircuit size={22}/></span>
     <div><strong className="text-[15px]">AI에게 DOMINION 개선 맡기기</strong>
-     <p className="mt-1 text-[12px] text-[#7C7469]">Git diff, SHA, JSON은 입력하지 않습니다. 모델이 기존 코드를 직접 읽고 작업합니다.</p></div>
+     <p className="mt-1 text-[12px] text-[#7C7469]">모델이 독립 Git 작업공간에서 코드를 수정하고, 엔진이 패치와 검사 결과를 자동 기록합니다. 원본 서버 소스는 그대로 유지됩니다.</p></div>
    </div>
    <div className="grid gap-3 md:grid-cols-2">
     <FormField label="제공자">
@@ -127,7 +147,7 @@ export function SelfImprovementPage(){
     </Button>
    </div>
    {!sourceReady&&<p role="status" className="mt-3 rounded-lg bg-[#FAF0E7] p-3 text-[12px] text-[#8F4E32]">작업 전 개발자 메뉴에서 DOMINION 소스 폴더를 연결하고 dominion-sub 브랜치와 미저장 변경 0개를 확인해야 합니다.</p>}
-   <p className="mt-4 text-[11px] text-[#8A8176]">모델은 소스 파일을 수정하고 테스트합니다. 파일 변경 등 기존 하네스의 실행 승인은 유지하며 main 수정·커밋·푸시는 요청하지 않습니다.</p>
+   <p className="mt-4 text-[11px] text-[#8A8176]">모델은 분리된 작업공간의 파일만 수정합니다. 검사는 엔진이 별도 수행하고 패치를 개선 후보로 저장합니다. 컴파일 성공과 실제 성능 향상은 서로 다른 판정입니다.</p>
   </Panel>
   {job&&<Panel className="mt-4 p-5">
    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -143,8 +163,24 @@ export function SelfImprovementPage(){
     </div>)}
    </div>}
    {job.error&&<Notice message={job.error}/>}
+   {job.result?.rsi&&<div className="mt-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-4 text-[12px]">
+    <strong className="text-[13px]">엔진 직접 확인 결과</strong>
+    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+     <p>원본 저장소: <strong>{job.result.rsi.sourceClean?'변경 없음':'변경 감지 · 점검 필요'}</strong></p>
+     <p>수정 패치: <strong>{job.result.rsi.diffBytes?job.result.rsi.diffBytes+'바이트':'없음'}</strong></p>
+     <p>컴파일·타입 검사: <strong>{job.result.rsi.checksPassed?'실행된 검사 통과':'불합격 또는 미실행'}</strong></p>
+     <p>기준 대비 성능 비교: <strong>아직 수행하지 않음</strong></p>
+    </div>
+    {job.result.rsi.captureError&&<Notice message={job.result.rsi.captureError}/>}
+    {job.result.rsi.modelError&&<Notice message={'모델 실행 오류: '+job.result.rsi.modelError}/>}
+    <div className="mt-3 grid gap-2">{job.result.rsi.checks?.map((check,index)=><details key={index} className="rounded-lg border border-[#E7E0D5] bg-white p-3">
+     <summary className="cursor-pointer font-semibold">{check.passed?'✓':'✕'} {check.label} — {check.ran?(check.passed?'통과':'실패'):'미실행'}</summary>
+     <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap break-all text-[10px] text-[#7C7469]">{check.error||check.stderr||check.stdout||'상세 출력 없음'}</pre>
+    </details>)}</div>
+    {job.result.rsi.candidateId&&<CandidateReview id={job.result.rsi.candidateId}/>}
+   </div>}
    {answer&&<div className="mt-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-4">
-    <div className="mb-2 flex items-center gap-2 text-[12px] font-bold"><CheckCircle2 size={15}/> 모델 작업 보고</div>
+    <div className="mb-2 flex items-center gap-2 text-[12px] font-bold"><CheckCircle2 size={15}/> 모델 설명 (엔진 검사와 구분)</div>
     <p className="whitespace-pre-wrap break-words text-[12px] leading-6 text-[#3A342D]">{answer}</p>
    </div>}
    {!answer&&!job.error&&<p className="mt-3 text-[12px] text-[#7C7469]">{working?'모델이 소스 조사·수정 작업을 진행하고 있습니다.':'완료된 답변이 있으면 이곳에 표시합니다.'}</p>}
