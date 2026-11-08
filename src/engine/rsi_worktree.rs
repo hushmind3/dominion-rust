@@ -335,6 +335,23 @@ mod tests {
         assert_eq!(std::fs::read_to_string(source.join("web/src/pages/Demo.tsx")).unwrap(),"export const version = 1\n");
         assert_eq!(git_local(&source,&["rev-parse","HEAD"]),base);
         assert!(git_local(&source,&["status","--porcelain"]).is_empty());
+        let request=json!({"confirmation":"APPLY_UNVERIFIED_TO_SUB",
+            "baseCommit":base,"patchSha256":candidate["patchSha256"]});
+        // Typecheck could not run without installed web dependencies. The
+        // manual apply gate must refuse even an explicit user confirmation.
+        assert!(apply_to_sub(&state,candidate_id,&request).await.is_err());
+        assert_eq!(std::fs::read_to_string(source.join("web/src/pages/Demo.tsx")).unwrap(),"export const version = 1\n");
+        // Simulate a separately completed successful verifier receipt to
+        // exercise the Git apply path. This is NOT a measured model benchmark.
+        let record_id=format!("rsi-run-{}",context.job_id);
+        let mut proof=state.store.get("rsi_run",&record_id).unwrap();
+        proof["checksPassed"]=json!(true);
+        state.store.put("rsi_run",&proof);
+        let applied=apply_to_sub(&state,candidate_id,&request).await.unwrap();
+        assert_eq!(applied["status"],"applied_to_sub");
+        assert_eq!(std::fs::read_to_string(source.join("web/src/pages/Demo.tsx")).unwrap(),"export const version = 2\n");
+        assert_eq!(git_local(&source,&["rev-parse","HEAD"]),base);
+        assert!(!git_local(&source,&["status","--porcelain"]).is_empty());
         cleanup(&worktree).await.unwrap();
         assert!(!worktree.path.exists());
         std::fs::remove_dir_all(root).unwrap();
