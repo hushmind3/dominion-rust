@@ -26,6 +26,7 @@ pub mod reflect;
 pub mod goals;
 pub mod gateway;
 pub mod improve;
+pub mod rsi;
 pub mod recovery;
 pub mod reasoning;
 pub mod remote_backup;

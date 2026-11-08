@@ -2,6 +2,7 @@ mod response;
 #[cfg(test)]
 mod tests;
 pub mod algorithms;
+pub mod rsi;
 pub mod translation;
 pub mod settings;
 pub mod goals;
@@ -79,6 +80,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/run-wakes", get(system::run_wakes))
         .route("/api/experiment-requests", get(system::experiment_requests))
         .route("/api/optimizers", get(experiments::optimizers))
+        .route("/api/rsi", get(rsi::list).post(rsi::propose))
+        .route("/api/rsi/:id", get(rsi::one))
+        .route("/api/rsi/:id/evaluate", post(rsi::evaluate))
+        .route("/api/rsi/:id/decide", post(rsi::decide))
         .route("/api/algorithms", get(algorithms::list).post(algorithms::register))
         .route("/api/algorithms/evaluate", get(algorithms::evaluate))
         .route("/api/algorithms/evaluations", get(algorithms::evaluations))
