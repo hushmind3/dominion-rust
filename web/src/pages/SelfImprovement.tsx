@@ -24,7 +24,7 @@ type Approval={id:string;sessionId:string;status:string;tool:string;args:unknown
 const SAVED_JOB='dominion.rsi.activeJob'
 const terminal=(status:string)=>['completed','failed','cancelled','needs_review'].includes(status)
 const operationLabel=(approval:Approval)=>{ const args=approval.args as Record<string,unknown>|null; const value=args&&typeof args==='object'?args:null; const detail=value?.path||value?.cwd||value?.command||''; return typeof detail==='string'&&detail.trim()?detail.slice(0,240):'선택한 도구의 실행을 승인할까요?' }
-const defaultTask='DOMINION의 100턴 회의실에서 오래된 결정과 교정을 기억하지 못하는 문제를 실제 코드에서 추적하고 수정한 뒤 관련 테스트로 검증해 주세요.'
+const defaultTask='예: 장기기억·도구 호출·토큰 비용 중 하나를 중점적으로 진단해 주세요. (비워두면 전체 소스를 스스로 진단합니다.)'
 
 function CandidateReview({id}:{id:string}){
  const candidate=useRemote<RsiCandidate>('/api/rsi/'+encodeURIComponent(id),{id,status:'proposed'})
@@ -47,7 +47,7 @@ export function SelfImprovementPage(){
  const activeProviders=providers.value.filter(provider=>provider.enabled!==false)
  const [providerId,setProviderId]=useState('')
  const [model,setModel]=useState('')
- const [request,setRequest]=useState(defaultTask)
+ const [request,setRequest]=useState('')
  const [jobId,setJobId]=useState(()=>{
   try{return localStorage.getItem(SAVED_JOB)||''}catch{return ''}
  })
@@ -97,7 +97,7 @@ export function SelfImprovementPage(){
    const created=await post<Job>('/api/rsi/start',{providerId,model,request})
    setJob(created);setJobId(created.id)
    try{localStorage.setItem(SAVED_JOB,created.id)}catch{}
-   setNotice('선택한 모델에 작업을 맡겼습니다. 코드 조사·수정·검증 과정은 실행 기록에 남습니다.')
+   setNotice(request.trim()?'지정한 분야를 중심으로 모델이 코드를 조사합니다.':'모델이 스스로 개선할 부분을 찾아 코드 진단을 시작했습니다.')
   }catch(e){setError((e as Error).message)}
   finally{setBusy(false)}
  }
@@ -117,14 +117,14 @@ export function SelfImprovementPage(){
  const working=job&&!terminal(job.status)
  const statusText=job?.status==='completed'?'수정 작업 종료':job?.status==='running'?'모델이 코드 작업 중':job?.status==='queued'?'실행 대기':job?.status==='needs_review'?'추가 검토 필요':job?.status==='failed'?'실행 실패':job?.status==='cancelled'?'중단됨':''
  return <div className="mx-auto w-full max-w-[1080px] px-5 py-5 sm:px-7 lg:pb-10">
-  <Headline eyebrow="DOMINION · RSI" title="재귀적 자기개선" description="모델을 선택하고 개선할 문제를 알려주면 Rust 하네스가 코드 조사·수정·테스트를 실행합니다." actions={<Button variant="secondary" onClick={()=>{void providers.reload();void dev.reload()}}><RefreshCw size={15}/> 새로고침</Button>}/>
+  <Headline eyebrow="DOMINION · RSI" title="재귀적 자기개선" description="모델만 고르면 DOMINION이 스스로 코드를 진단하고 더 나은 알고리즘과 구현을 찾아 개선 후보를 만듭니다." actions={<Button variant="secondary" onClick={()=>{void providers.reload();void dev.reload()}}><RefreshCw size={15}/> 새로고침</Button>}/>
   <Notice message={error||providers.error||dev.error}/>
   {notice&&<p role="status" className="mb-4 rounded-xl border border-[#E7E0D5] bg-white px-4 py-3 text-[12px] text-[#5C544A]">{notice}</p>}
   <Panel className="p-5">
    <div className="mb-5 flex items-center gap-3">
     <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#A94E30]"><BrainCircuit size={22}/></span>
-    <div><strong className="text-[15px]">AI에게 DOMINION 개선 맡기기</strong>
-     <p className="mt-1 text-[12px] text-[#7C7469]">모델이 독립 Git 작업공간에서 코드를 수정하고, 엔진이 패치와 검사 결과를 자동 기록합니다. 원본 서버 소스는 그대로 유지됩니다.</p></div>
+    <div><strong className="text-[15px]">AI가 직접 진단하고 개선하기</strong>
+     <p className="mt-1 text-[12px] text-[#7C7469]">모델이 전체 소스에서 개선할 부분을 직접 찾습니다. 선택적으로 중점 조사 분야를 지정할 수 있습니다.</p></div>
    </div>
    <div className="grid gap-3 md:grid-cols-2">
     <FormField label="제공자">
@@ -137,13 +137,13 @@ export function SelfImprovementPage(){
      <ModelPicker providerId={providerId} value={model} onChange={setModel} disabled={busy||Boolean(working)} placeholder="모델 선택"/>
     </FormField>
    </div>
-   <div className="mt-4"><FormField label="어떤 문제를 고칠까요?">
+   <div className="mt-4"><FormField label="중점적으로 살펴볼 문제 (선택)">
     <TextArea rows={4} value={request} onChange={e=>setRequest(e.target.value)} disabled={busy||Boolean(working)} placeholder={defaultTask}/>
    </FormField></div>
    <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
     <p className="text-[11px] text-[#7C7469]">소스: {dev.value.config.sourceDir||'미연결'} · 브랜치: {dev.value.branch||'미확인'}</p>
     <Button variant="primary" disabled={busy||Boolean(working)||!sourceReady||!providerId||!model.trim()} onClick={()=>void start()}>
-     <Play size={16}/>{busy?'작업 등록 중…':'모델에게 수정 맡기기'}
+     <Play size={16}/>{busy?'진단 시작 중…':'자율 진단·개선 시작'}
     </Button>
    </div>
    {!sourceReady&&<p role="status" className="mt-3 rounded-lg bg-[#FAF0E7] p-3 text-[12px] text-[#8F4E32]">작업 전 개발자 메뉴에서 DOMINION 소스 폴더를 연결하고 dominion-sub 브랜치와 미저장 변경 0개를 확인해야 합니다.</p>}
