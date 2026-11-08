@@ -81,6 +81,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/experiment-requests", get(system::experiment_requests))
         .route("/api/optimizers", get(experiments::optimizers))
         .route("/api/rsi", get(rsi::list).post(rsi::propose))
+        .route("/api/rsi/start", post(rsi::start))
         .route("/api/rsi/:id", get(rsi::one))
         .route("/api/rsi/:id/evaluate", post(rsi::evaluate))
         .route("/api/rsi/:id/decide", post(rsi::decide))
