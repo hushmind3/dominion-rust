@@ -971,18 +971,19 @@ fn finish(
             .get("room", room_id)
             .is_some_and(|room| room["autoLearning"].as_bool() != Some(false));
         if learning_enabled {
-            if let Some(through) = context
-                .state
-                .store
-                .messages(session_id)
-                .last()
-                .and_then(|message| message["id"].as_str().map(str::to_string))
+            // Snapshot the exchange this job actually completed. Re-reading the
+            // session tail could pick up a newer owner message that arrived
+            // while the final turn was finishing.
+            if let Some(through) = outputs
+                .iter()
+                .rev()
+                .find_map(|output| output["messageId"].as_str())
             {
-                crate::engine::room_knowledge::enqueue(
+                crate::engine::room_knowledge::enqueue_automatic(
                     &context.state,
                     room_id,
                     session_id,
-                    &through,
+                    through,
                 );
             }
         }

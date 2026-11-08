@@ -573,6 +573,205 @@ pub fn enqueue(
     )
 }
 
+/// Social turns carry no durable claim worth a semantic model call. These are
+/// removed from the text before deciding whether an owner turn has any content.
+/// The list is deliberately about greetings and fillers, never about work words,
+/// so a real request with a greeting attached is still learned.
+const SOCIAL_PHRASES: &[&str] = &[
+    "안녕하세요", "안녕하십니까", "안녕", "반갑습니다", "반가워", "반갑다",
+    "주인님", "주인", "여러분", "모두", "다들", "전원",
+    "고맙습니다", "고마워", "감사합니다", "감사",
+    "수고하셨습니다", "수고했어", "수고",
+    "좋은 아침", "좋은 저녁", "좋은 하루", "오늘", "지냈어", "지내",
+    "다시", "한 번", "한번", "또", "더", "이제", "그럼", "그러면",
+    "인사", "해봐", "해 보자", "해보자", "해 줘", "해줘", "보자",
+    "어때", "어떻게", "뭐", "무슨", "왜", "언제", "어디",
+    "네", "예", "응", "음", "좋아", "좋습니다", "괜찮아", "괜찮습니다",
+    "알겠습니다", "알겠어", "알았어", "그래", "맞아", "맞습니다",
+    "hello", "hi", "hey", "thanks", "thank you", "good morning",
+    "good evening", "everyone", "again", "please", "how are you",
+];
+
+/// Explicit correction wording. Only this kind of evidence may turn an
+/// otherwise social exchange into a learning candidate; broad work vocabulary
+/// is not scanned from agent persona text, which would make greetings expensive.
+const CORRECTION_MARKERS: &[&str] = &[
+    "정정", "그게 아니라", "틀렸", "correct:", "correction:",
+];
+
+fn is_social_only(text: &str) -> bool {
+    let mut remainder = text.to_lowercase();
+    for phrase in SOCIAL_PHRASES {
+        remainder = remainder.replace(phrase, " ");
+    }
+    remainder.chars().filter(|ch| ch.is_alphanumeric()).count() < 2
+}
+
+fn contains_correction_marker(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    CORRECTION_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+fn message_has_tool_evidence(message: &Value, operations: &[Value]) -> bool {
+    let Some(execution_id) = message["metadata"]["executionId"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    operations.iter().any(|operation| {
+        operation["runId"].as_str() == Some(execution_id)
+            && operation["status"].as_str() == Some("completed")
+    })
+}
+
+/// Only the current owner turn and the replies it produced are inspected. Older
+/// unlearned messages must not make a new greeting look substantive.
+fn current_exchange(state: &AppState, session_id: &str, through: &str) -> Vec<Value> {
+    let all = state.store.messages(session_id);
+    let Some(end) = all
+        .iter()
+        .position(|message| message["id"].as_str() == Some(through))
+        .map(|index| index + 1)
+    else {
+        return Vec::new();
+    };
+    let start = all[..end]
+        .iter()
+        .rposition(|message| message["role"] == "user")
+        .unwrap_or(0);
+    all[start..end].to_vec()
+}
+
+/// Deterministic policy for automatic room learning.
+///
+/// A pure social exchange is skipped without a model call. The exchange is
+/// marked processed so a long run of greetings cannot build a backlog that the
+/// next real topic has to pay for; the raw messages themselves remain in
+/// SQLite. Successful tool evidence and explicit correction wording always win
+/// over the greeting heuristic.
+pub fn should_learn_automatically(state: &AppState, session_id: &str, through: &str) -> bool {
+    let exchange = current_exchange(state, session_id, through);
+    if exchange.is_empty() {
+        return false;
+    }
+    let owner_text = exchange
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "user")
+        .and_then(|message| message["content"].as_str());
+    // A missing owner message keeps the previous learn-everything behaviour.
+    if !owner_text.is_some_and(is_social_only) {
+        return true;
+    }
+    // A social owner turn normally ends the decision here. Successful tool work
+    // or explicit correction wording is the only evidence that can still make
+    // the exchange worth an extraction call.
+    if exchange.iter().any(|message| {
+        message["content"]
+            .as_str()
+            .is_some_and(contains_correction_marker)
+    }) {
+        return true;
+    }
+    // Most social exchanges have no execution at all. Avoid scanning the
+    // operation table unless a reply actually points at one.
+    if !exchange.iter().any(|message| {
+        message["metadata"]["executionId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    }) {
+        return false;
+    }
+    let operations = state.store.all("execution_operation");
+    exchange
+        .iter()
+        .any(|message| message_has_tool_evidence(message, &operations))
+}
+
+/// Automatic path used when a room exchange completes. Manual learning still
+/// calls [`enqueue`] directly, so an owner can force a semantic pass.
+pub fn enqueue_automatic(
+    state: &AppState,
+    room_id: &str,
+    session_id: &str,
+    through_message_id: &str,
+) -> Option<Value> {
+    if !should_learn_automatically(state, session_id, through_message_id) {
+        // Advance the semantic watermark only when nothing unprocessed sits
+        // before this social exchange. If an earlier substantive job failed,
+        // marking the greeting processed would drop that backlog permanently.
+        let messages = state.store.messages(session_id);
+        let end = messages
+            .iter()
+            .position(|message| message["id"].as_str() == Some(through_message_id))
+            .map(|index| index + 1);
+        let exchange_start = end
+            .map(|end| {
+                messages[..end]
+                    .iter()
+                    .rposition(|message| message["role"] == "user")
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        let checkpoint_start = state
+            .store
+            .get("room_learning_checkpoint", &checkpoint_id(room_id))
+            .and_then(|checkpoint| {
+                checkpoint["throughMessageId"].as_str().and_then(|through| {
+                    messages
+                        .iter()
+                        .position(|message| message["id"].as_str() == Some(through))
+                        .map(|index| index + 1)
+                })
+            })
+            .unwrap_or(0);
+        let advanced = end.is_some() && checkpoint_start == exchange_start;
+        if advanced {
+            let _ = state.store.put(
+                "room_learning_checkpoint",
+                &json!({
+                    "id": checkpoint_id(room_id),
+                    "roomId": room_id,
+                    "sessionId": session_id,
+                    "throughMessageId": through_message_id,
+                    "skippedSocial": true,
+                    "updatedAt": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
+        }
+        let _ = state.store.put(
+            "room_learning_state",
+            &json!({
+                "id": state_id(room_id),
+                "roomId": room_id,
+                "sessionId": session_id,
+                "status": "skipped",
+                "reason": "social_exchange_has_no_durable_signal",
+                "throughMessageId": through_message_id,
+                "checkpointAdvanced": advanced,
+                "pendingBacklog": !advanced,
+                "modelCalls": 0,
+                "updatedAt": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+        state.store.audit(
+            "room.knowledge_skipped",
+            json!({
+                "roomId": room_id,
+                "sessionId": session_id,
+                "throughMessageId": through_message_id,
+                "reason": "social_exchange_has_no_durable_signal",
+                "checkpointAdvanced": advanced,
+            }),
+        );
+        return None;
+    }
+    enqueue(state, room_id, session_id, through_message_id)
+}
+
 /// Take the oldest unprocessed messages first. Processing newest-first would
 /// advance the checkpoint past the older backlog and drop it permanently.
 fn select_batch(messages: &[Value]) -> Vec<Value> {
@@ -1082,6 +1281,125 @@ mod tests {
         let items = list(&state, "r1");
         assert_eq!(items.len(), 1, "{items:?}");
         assert_eq!(items[0]["type"], "claim", "{items:?}");
+    }
+
+    #[test]
+    fn social_greetings_do_not_request_semantic_learning() {
+        let (state, dir) = state();
+        state
+            .store
+            .write_message(&message("m1", "user", None, "다시 인사해봐"));
+        state.store.write_message(&message(
+            "m2",
+            "assistant",
+            Some("a"),
+            "안녕하세요, 주인님. 오늘도 평화롭습니다.",
+        ));
+        assert!(!should_learn_automatically(&state, "room:r1", "m2"));
+        assert!(enqueue_automatic(&state, "r1", "room:r1", "m2").is_none());
+        assert!(state.store.all("job").is_empty());
+        let skipped = state
+            .store
+            .get("room_learning_state", &state_id("r1"))
+            .expect("skip state");
+        assert_eq!(skipped["status"], "skipped");
+        assert_eq!(skipped["modelCalls"], 0);
+        assert_eq!(skipped["checkpointAdvanced"], true);
+        assert_eq!(
+            state
+                .store
+                .get("room_learning_checkpoint", &checkpoint_id("r1"))
+                .expect("checkpoint")["throughMessageId"],
+            "m2"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_greeting_does_not_advance_past_unprocessed_work() {
+        let (state, dir) = state();
+        state
+            .store
+            .write_message(&message("m1", "user", None, "배포 방식을 정하자"));
+        state.store.write_message(&message(
+            "m2",
+            "assistant",
+            Some("a"),
+            "배포는 X 방식으로 하자.",
+        ));
+        state
+            .store
+            .write_message(&message("m3", "user", None, "다시 인사해봐"));
+        state.store.write_message(&message(
+            "m4",
+            "assistant",
+            Some("a"),
+            "안녕하세요, 주인님.",
+        ));
+        assert!(!should_learn_automatically(&state, "room:r1", "m4"));
+        assert!(enqueue_automatic(&state, "r1", "room:r1", "m4").is_none());
+        let skipped = state
+            .store
+            .get("room_learning_state", &state_id("r1"))
+            .expect("skip state");
+        assert_eq!(skipped["checkpointAdvanced"], false);
+        assert_eq!(skipped["pendingBacklog"], true);
+        assert!(state
+            .store
+            .get("room_learning_checkpoint", &checkpoint_id("r1"))
+            .is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn topic_exchange_still_requests_semantic_learning() {
+        let (state, dir) = state();
+        state
+            .store
+            .write_message(&message("m1", "user", None, "배포 방식을 정하자"));
+        state.store.write_message(&message(
+            "m2",
+            "assistant",
+            Some("a"),
+            "배포는 X 방식으로 하자.",
+        ));
+        assert!(should_learn_automatically(&state, "room:r1", "m2"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tool_evidence_overrides_a_social_owner_turn() {
+        let (state, dir) = state();
+        state.store.write_message(&message("m1", "user", None, "안녕"));
+        state.store.write_message(&json!({
+            "id":"m2","session_id":"room:r1","role":"assistant","agent_id":"a",
+            "content":"확인했습니다.","metadata":{
+                "authorKind":"agent","executionId":"run-1"
+            }
+        }));
+        state.store.put(
+            "execution_operation",
+            &json!({
+                "id":"op-1","runId":"run-1","tool":"workspace_write",
+                "status":"completed","opSeq":1
+            }),
+        );
+        assert!(should_learn_automatically(&state, "room:r1", "m2"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_correction_reply_overrides_a_social_owner_turn() {
+        let (state, dir) = state();
+        state.store.write_message(&message("m1", "user", None, "또 인사해봐"));
+        state.store.write_message(&message(
+            "m2",
+            "assistant",
+            Some("a"),
+            "정정: X는 실패했다. 배포는 Y 방식으로 해야 한다.",
+        ));
+        assert!(should_learn_automatically(&state, "room:r1", "m2"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

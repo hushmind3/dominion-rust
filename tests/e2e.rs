@@ -852,6 +852,130 @@ fn room_debate_knowledge_is_recalled_by_a_different_model_with_provenance() {
 }
 
 #[test]
+fn social_room_exchanges_spend_no_learning_model_call() {
+    let _serial = serial();
+    let (port, requests) = scripted_provider(|request| {
+        let system = request["messages"][0]["content"]
+            .as_str()
+            .unwrap_or("");
+        if request["stream"].as_bool() != Some(true)
+            && system.contains("extract durable knowledge")
+        {
+            return vec![json!({"choices":[{"delta":{"content":"{\"knowledge\":[]}"},"finish_reason":"stop"}]})];
+        }
+        vec![json!({"choices":[{"delta":{"content":"안녕하세요, 주인님."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    let provider = app.get("/api/providers")[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    app.post(
+        "/api/providers",
+        &json!({
+            "name":"learner",
+            "baseUrl":format!("http://127.0.0.1:{port}/v1"),
+            "model":"mock",
+            "reflection":true,
+            "reflectionModel":"mock",
+            "enabled":true,
+            "toolMode":"native"
+        }),
+    );
+    let agent = app.post(
+        "/api/agents",
+        &json!({"name":"A","systemPrompt":"A","providerId":provider,"model":"mock"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let room = app.post(
+        "/api/rooms",
+        &json!({
+            "name":"greeting-room","agentIds":[agent],
+            "routingMode":"discussion","rounds":1,"maxTurns":1,
+            "toolsEnabled":false,"autoLearning":true
+        }),
+    );
+    let room_id = room["id"].as_str().unwrap().to_string();
+    let submit_and_wait = |input: &str, client_id: &str| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let submitted = app.post(
+            &format!("/api/rooms/{room_id}/messages"),
+            &json!({"input":input,"clientMessageId":client_id}),
+        );
+        let job_id = submitted["jobId"].as_str().unwrap().to_string();
+        loop {
+            let job = app.get(&format!("/api/jobs/{job_id}"));
+            if matches!(job["status"].as_str(), Some("completed" | "failed")) {
+                assert_eq!(job["status"], "completed", "{job}");
+                break;
+            }
+            assert!(Instant::now() < deadline, "{job}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    submit_and_wait("다시 인사해봐", "greet-1");
+    submit_and_wait("또 인사해봐", "greet-2");
+    submit_and_wait("한 번 더 인사해봐", "greet-3");
+
+    let jobs = app.get("/api/jobs");
+    let learning_jobs = jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|job| {
+            job["kind"] == "learn"
+                && job["input"]["roomLearning"] == true
+                && job["input"]["roomId"].as_str() == Some(room_id.as_str())
+        })
+        .count();
+    assert_eq!(learning_jobs, 0, "greetings queued semantic learning: {jobs}");
+    let extraction_calls = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| {
+            request["messages"][0]["content"]
+                .as_str()
+                .is_some_and(|system| system.contains("extract durable knowledge"))
+        })
+        .count();
+    assert_eq!(extraction_calls, 0, "greetings called the learning model");
+
+    // The gate must not block a real topic.
+    submit_and_wait("배포 방식을 정하자", "topic-1");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let jobs = app.get("/api/jobs");
+        if let Some(job) = jobs.as_array().unwrap().iter().find(|job| {
+            job["kind"] == "learn"
+                && job["input"]["roomLearning"] == true
+                && job["input"]["roomId"].as_str() == Some(room_id.as_str())
+        }) {
+            if matches!(job["status"].as_str(), Some("completed" | "failed")) {
+                assert_eq!(job["status"], "completed", "{job}");
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "topic turn did not learn: {jobs}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| {
+                request["messages"][0]["content"]
+                    .as_str()
+                    .is_some_and(|system| system.contains("extract durable knowledge"))
+            }),
+        "a topic turn must still reach the extractor"
+    );
+}
+
+#[test]
 fn invalid_automations_and_workflows_are_rejected_before_execution() {
     let _serial = serial();
     let (port, _) = scripted_provider(|_| {
