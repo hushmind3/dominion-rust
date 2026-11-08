@@ -4,6 +4,10 @@ use crate::db::Store;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
 
+/// Upper bound for a single retrieval. Callers that need a narrower prompt
+/// apply their own token budget after this candidate stage.
+const MAX_RETRIEVAL_CANDIDATES: usize = 128;
+
 #[derive(Clone, Debug)]
 pub struct MemoryScope {
     pub session_id: String,
@@ -418,7 +422,10 @@ fn retrieve_ranked_with_rerank(
             );
             seen.insert(key).then_some(record)
         })
-        .take(limit.min(20))
+        // Room context requests a wider candidate pool (128) and applies its
+        // own token budget afterwards. The old hard cap of 20 silently dropped
+        // most of that pool before the budget could judge it.
+        .take(limit.min(MAX_RETRIEVAL_CANDIDATES))
         .collect()
 }
 
@@ -1770,6 +1777,37 @@ mod per_agent_memory_learning_tests {
                 == Some(implementation) { "active" } else { "disabled" });
             state.store.put("algorithm", &item);
         }
+    }
+
+    #[test]
+    fn retrieval_honors_the_requested_candidate_pool_above_twenty() {
+        let (state, dir) = state();
+        state
+            .store
+            .put("session", &json!({"id":"s","agentId":"agent-a"}));
+        only_kernel(&state, "memory.rerank", "bm25");
+        let scope = MemoryScope::for_session(&state.store, "s", Some("agent-a"));
+        for index in 0..30 {
+            state.store.put(
+                "memory",
+                &json!({
+                    "id":format!("pool-{index}"),
+                    "text":format!("database migration rollback note {index}"),
+                    "type":"lesson",
+                    "status":"active",
+                    "importance":0.5,
+                    "scope":"agent",
+                    "agentId":"agent-a",
+                    "partitionKey":scope.partition_key,
+                    "createdAt":format!("2026-01-01T00:00:{index:02}Z")
+                }),
+            );
+        }
+        let pool = retrieve(&state.store, &scope, "database migration rollback", 30);
+        assert_eq!(pool.len(), 30, "{:?}", pool.iter().map(|row| row["id"].clone()).collect::<Vec<_>>());
+        let capped = retrieve(&state.store, &scope, "database migration rollback", 500);
+        assert_eq!(capped.len(), 30);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
