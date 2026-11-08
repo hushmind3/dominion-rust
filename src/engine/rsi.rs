@@ -423,7 +423,7 @@ mod tests {
         p["patch"]=json!(patch().replace("src/engine/rsi.rs","src/../secrets.env"));
         assert!(propose(&state,&p).is_err());
         let mut p=proposal("improver");
-        p["cases"]=json!((0..8).map(|i|json!({"id":format!("case-{i}"),"domain":"only-one","holdout":i<3})).collect::<Vec<_>>());
+        p["cases"]=json!((0..8).map(|i|json!({"id":format!("case-{i}"),"domain":"only-one","holdout":i<3,"filter":format!("engine::rsi::tests::case_{i}")})).collect::<Vec<_>>());
         let candidate=propose(&state,&p).unwrap();
         assert_eq!(evaluate(&state,candidate["id"].as_str().unwrap(),&report(&candidate)).unwrap()["status"],"inconclusive");
         let _=std::fs::remove_dir_all(root);
