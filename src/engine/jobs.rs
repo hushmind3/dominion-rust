@@ -545,7 +545,27 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
         verification_owner: None,
     };
 
-    let message = run_quiet(&context.state, &request).await?;
+    // RSI jobs execute the existing tool loop with a workspace rooted at the
+    // verified development checkout, never the user's unrelated workspace.
+    // The API injects this field; the generic /api/jobs endpoint strips it.
+    let scoped_state = if let Some(path) = input["rsiSourceDir"].as_str() {
+        let status = crate::engine::dev::status(&context.state).await;
+        if status["git"] != true || status["branch"] != "dominion-sub" {
+            return Err("자기개선 작업을 시작하기 전에 dominion-sub 브랜치를 확인하세요.".into());
+        }
+        let requested = std::path::Path::new(path).canonicalize().map_err(|e| e.to_string())?;
+        let configured = status["config"]["sourceDir"].as_str().unwrap_or("");
+        let configured = if let Some(tail) = configured.strip_prefix("~/") {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(tail)
+        } else { std::path::PathBuf::from(configured) };
+        if configured.canonicalize().ok().as_deref() != Some(requested.as_path()) {
+            return Err("자기개선 작업 중 소스 연결이 변경됐습니다.".into());
+        }
+        let mut scoped = context.state.clone();
+        scoped.config.workspace = requested;
+        scoped
+    } else { context.state.clone() };
+    let message = run_quiet(&scoped_state, &request).await?;
 
     let result = json!({
         "sessionId": message.as_ref().and_then(|item| item.get("session_id")),
