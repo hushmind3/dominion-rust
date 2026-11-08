@@ -89,12 +89,13 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     if objective.chars().count() > 3000 {
         return error("개선 요청은 3,000자 이하로 입력하세요.".into());
     }
-    let objective = if objective.is_empty() {
-        "기존 실패 기록과 코드를 조사해 DOMINION 하네스의 실제 결함 하나를 수정하고 검증하라. 우선 100턴 회의실 장기기억 회상 실패를 조사하라."
+    let autonomous = objective.is_empty();
+    let objective = if autonomous {
+        "DOMINION 소스와 기존 테스트·실험 기록을 스스로 조사하고 개선 가치가 큰 문제를 직접 선정한다. 기존 기능을 유지하면서 실제로 더 정확하고 효율적이거나 견고해지는 알고리즘·하네스·개선기 구조를 탐색하고, 근거가 있는 개선안 하나를 코드로 구현한다. 이미 구현된 기능을 중복 작성하거나 근거 없이 리팩터링하지 않는다."
     } else { objective };
     let source_dir = source.to_string_lossy().to_string();
     let prompt = format!(
-        "DOMINION Rust 자체 개선 작업입니다. 원본 소스는 보호되고 실행기가 생성하는 분리된 작업공간에서 수정합니다.\\n\\n원본 (읽기 참조용): {source_dir}\\n브랜치: dominion-sub\\n개선 목표: {objective}\\n\\nworkspace_list/workspace_read로 코드를 읽고 원인을 분석하세요. 필요한 기존 코드 또는 새 소스는 workspace_write로 수정하세요. 절대경로 읽기·쓰기, 셸, GitHub API, 다른 에이전트는 이 작업에 사용할 수 없습니다. 소스 검사와 후보 기록은 종료 후 엔진이 직접 수행합니다. 작업을 하지 않았는데 성공이라고 주장하지 마세요. 코드 변경 내용과 이유를 한국어로 설명하세요. main 변경·커밋·푸시·병합·서버 재시작은 하지 마세요."
+        "DOMINION Rust 자체 개선 작업입니다. 원본 소스는 보호되고 실행기가 생성하는 분리된 작업공간에서 수정합니다.\\n\\n원본 (읽기 참조용): {source_dir}\\n브랜치: dominion-sub\\n개선 모드: {}\\n목표: {objective}\\n\\n1. workspace_list로 저장소 구조를 먼저 살펴보고 실제 Rust 실행 엔진, 문맥·기억, 도구, 학습·자기개선 관련 소스와 기존 테스트의 연결 관계를 조사하세요. workspace_read로 근거가 되는 코드를 읽으세요.\\n2. 실패·성능 저하·중복 계산·알고리즘 정확도·유지보수성 가운데 가장 효과가 클 수 있는 개선 후보를 우선순위로 비교하세요. 이미 있는 기능을 새로 만들지 마세요.\\n3. 가장 근거가 탄탄한 변경 하나를 고르고 원인·변경 전 행동·기대되는 효과·검증 방법을 정하세요. 실질적 개선을 확인할 방법이 없으면 무리하게 코드를 바꾸지 마세요.\\n4. 필요한 경우 workspace_write로 분리된 작업공간의 허용된 코드만 수정하세요. 기존 사용자 지시·페르소나·장기기억·승인·취소·복구 능력은 보존하세요.\\n5. 실제 수정 여부와 검증 여부를 구분해 보고하세요. 컴파일·타입 검사와 패치 수집은 모델 종료 후 Rust 엔진이 독립 수행하므로, 이를 모델이 직접 완료했다고 주장하지 마세요.\\n절대경로 읽기·쓰기, 셸, GitHub API, 다른 에이전트는 이 작업에 사용할 수 없습니다. main 변경·커밋·푸시·병합·서버 재시작도 하지 마세요. 사용자는 JSON, Git diff, SHA를 입력하지 않습니다. 한국어로 핵심 개선 근거와 남은 검증을 간결하게 보고하세요.", if autonomous { "자율 진단 및 개선" } else { "사용자 지정 개선" }
     ).replace("\\n", "\n");
     let mut input = json!({
         "prompt": prompt,
@@ -105,6 +106,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiSourceDir": source_dir,
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
+        "rsiAutonomous": autonomous,
         "rsiFrozenCases": [
             {"id":"owner-memory","domain":"memory","holdout":true,
                 "filter":"engine::room_state::tests::korean_owner_correction_replaces_the_previous_assignment"},
