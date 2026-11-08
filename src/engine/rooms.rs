@@ -505,7 +505,6 @@ async fn run_locked(
     if outputs.len() > budget {
         return Err("대화방 발언 체크포인트가 허용 횟수를 초과했습니다.".into());
     }
-    let mut round_index = 0usize;
     let mut round_slots = 0usize;
     let mut cohort: Vec<String> = Vec::new();
     let mut pending: VecDeque<String> = if let Some(value) = existing.get("pendingSpeakers") {
@@ -533,9 +532,6 @@ async fn run_locked(
 
     while outputs.len() < budget {
         if mode == "discussion" && (cohort.is_empty() || round_slots >= roster.len()) {
-            if round_slots > 0 {
-                round_index += 1;
-            }
             round_slots = 0;
             // Mentions since the owner's message define who may speak this
             // round. Recomputed each round so a member pulled in later joins.

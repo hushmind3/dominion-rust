@@ -4479,14 +4479,8 @@ fn parallel_and_nested_program_nodes_execute_concurrently() {
         &json!({"slot":"execution","name":"parallel-nested","parameters":{"program":program}}),
     );
     assert_eq!(activated["active"]["status"], "active", "{activated}");
-    let started = Instant::now();
     let stream = app.chat(&json!({"input":"병렬 프로그램을 실행해","autoLearning":false}));
-    let elapsed = started.elapsed();
     assert!(!stream.contains("\"type\":\"error\""), "{stream}");
-    assert!(
-        elapsed < Duration::from_millis(3_500),
-        "parallel tools did not run concurrently (serial 4s minimum): {elapsed:?}"
-    );
     assert!(app._root.join("seed.txt").exists());
     assert_eq!(
         std::fs::read_to_string(app._root.join("p1b.txt")).unwrap_or_default(),
@@ -4499,6 +4493,18 @@ fn parallel_and_nested_program_nodes_execute_concurrently() {
     assert!(!app._root.join("p1e.txt").exists());
     let executions = app.get("/api/executions");
     let execution = &executions.as_array().unwrap()[0];
+    let operations = app.get(&format!("/api/executions/{}/operations", execution["id"].as_str().unwrap()));
+    let shells = operations.as_array().unwrap().iter()
+        .filter(|operation| operation["tool"] == "shell_exec").collect::<Vec<_>>();
+    assert_eq!(shells.len(), 2, "{operations}");
+    let timestamp = |operation: &Value, key: &str| {
+        chrono::DateTime::parse_from_rfc3339(operation[key].as_str().unwrap()).unwrap()
+    };
+    assert!(
+        timestamp(shells[0], "startedAt") < timestamp(shells[1], "finishedAt")
+            && timestamp(shells[1], "startedAt") < timestamp(shells[0], "finishedAt"),
+        "parallel shell operations must overlap: {operations}"
+    );
     let checkpoint = &execution["programCheckpoint"];
     assert_eq!(checkpoint["status"], "completed", "{checkpoint}");
     assert_eq!(checkpoint["parallelMode"], "concurrent", "{checkpoint}");
@@ -4709,7 +4715,6 @@ fn preflight_inline_observation_allows_retry_without_a_separate_read() {
         "parameters":{"kernel":"same-file-revision-v2"}
     }));
     let stream = app.chat(&json!({"input":"inline.txt 파일을 수정해.","autoLearning":false}));
-    let execution = &app.get("/api/executions")[0];
     assert_eq!(std::fs::read_to_string(app._root.join("inline.txt")).unwrap(), "final", "{stream}");
     let execution = &app.get("/api/executions")[0];
     let operations = app.get(&format!("/api/executions/{}/operations", execution["id"].as_str().unwrap()));
@@ -7039,4 +7044,75 @@ fn codex_websocket_chain_reuses_identity_and_sends_only_the_new_suffix() {
     assert_eq!(
         last["metadata"]["continuity"]["incrementalTransport"]["mode"], "delta"
     );
+}
+
+#[test]
+fn codex_http_rejects_incomplete_and_unterminated_generations() {
+    let _serial = serial();
+    for terminal in [None, Some(json!({
+        "type":"response.incomplete",
+        "response":{"incomplete_details":{"reason":"max_output_tokens"}}
+    }))] {
+        let (port, requests) = scripted_provider(move |_| {
+            let mut events = vec![json!({"type":"response.output_text.delta","delta":"PARTIAL_ONLY"})];
+            events.extend(terminal.clone());
+            events
+        });
+        let app = TestApp::new(port, "native");
+        let provider = app.post("/api/providers", &json!({
+            "name":"incomplete fixture","kind":"codex",
+            "baseUrl":format!("http://127.0.0.1:{port}/codex"),
+            "accountId":"fixture","apiKey":"fixture","enabled":true,"model":"fixture"
+        }));
+        let session = app.post("/api/sessions", &json!({"title":"incomplete"}));
+        let stream = app.chat(&json!({
+            "sessionId":session["id"],"providerId":provider["id"],"model":"fixture",
+            "input":"hello","toolsEnabled":false,"autoLearning":false
+        }));
+        assert!(stream.contains("PARTIAL_ONLY"), "{stream}");
+        assert!(stream.contains("\"type\":\"error\""), "{stream}");
+        assert!(!stream.contains("assistant_saved"), "{stream}");
+        assert_eq!(requests.lock().unwrap().len(), 1, "partial output must not be replayed");
+        assert_eq!(app.get("/api/executions")[0]["status"], "failed");
+    }
+}
+
+#[test]
+fn codex_receives_uploaded_image_and_file_contents() {
+    use base64::Engine as _;
+    let _serial = serial();
+    let (port, requests) = scripted_provider(|_| vec![
+        json!({"type":"response.output_text.delta","delta":"ATTACHMENTS_RECEIVED"}),
+        json!({"type":"response.completed","response":{}}),
+    ]);
+    let app = TestApp::new(port, "native");
+    let provider = app.post("/api/providers", &json!({
+        "name":"attachment fixture","kind":"codex",
+        "baseUrl":format!("http://127.0.0.1:{port}/codex"),
+        "accountId":"fixture","apiKey":"fixture","enabled":true,"model":"fixture",
+        "capabilities":{"vision":true}
+    }));
+    let session = app.post("/api/sessions", &json!({"title":"attachments"}));
+    let image_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=";
+    let image = app.post("/api/attachments", &json!({
+        "sessionId":session["id"],"name":"sample.png","mimeType":"image/png","data":image_data
+    }));
+    let file = app.post("/api/attachments", &json!({
+        "sessionId":session["id"],"name":"sample.txt","mimeType":"text/plain",
+        "data":base64::engine::general_purpose::STANDARD.encode("ATTACHMENT_SENTINEL")
+    }));
+    let stream = app.chat(&json!({
+        "sessionId":session["id"],"providerId":provider["id"],"model":"fixture",
+        "input":"첨부를 분석해","attachmentIds":[image["id"],file["id"]],
+        "toolsEnabled":false,"autoLearning":false
+    }));
+    assert!(stream.contains("assistant_saved"), "{stream}");
+    let seen = requests.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    let parts = seen[0]["input"].as_array().unwrap().iter()
+        .flat_map(|item| item["content"].as_array().into_iter().flatten()).collect::<Vec<_>>();
+    assert!(parts.iter().any(|part| part["type"] == "input_text"
+        && part["text"].as_str().is_some_and(|text| text.contains("ATTACHMENT_SENTINEL"))), "{seen:?}");
+    assert!(parts.iter().any(|part| part["type"] == "input_image"
+        && part["image_url"] == format!("data:image/png;base64,{image_data}")), "{seen:?}");
 }

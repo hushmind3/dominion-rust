@@ -1185,12 +1185,15 @@ fn codex_input(messages: &[Value]) -> (String, Vec<Value>) {
     let mut input = Vec::new();
     for message in messages {
         let role = message["role"].as_str().unwrap_or("");
-        let content = message["content"].as_str().unwrap_or("");
+        let content = anthropic_message_text(&message["content"]);
+        let has_image = message["content"].as_array().is_some_and(|parts| {
+            parts.iter().any(|part| part["type"] == "image_url")
+        });
         let tool_calls = message["tool_calls"]
             .as_array()
             .cloned()
             .unwrap_or_default();
-        if content.trim().is_empty() && tool_calls.is_empty() && role != "tool" {
+        if content.trim().is_empty() && !has_image && tool_calls.is_empty() && role != "tool" {
             continue;
         }
         match role {
@@ -1198,7 +1201,7 @@ fn codex_input(messages: &[Value]) -> (String, Vec<Value>) {
                 if !instructions.is_empty() {
                     instructions.push_str("\n\n");
                 }
-                instructions.push_str(content);
+                instructions.push_str(&content);
             }
             "assistant" => {
                 if !content.trim().is_empty() {
@@ -1237,10 +1240,24 @@ fn codex_input(messages: &[Value]) -> (String, Vec<Value>) {
                     "output":content,
                 }));
             }
-            _ => input.push(json!({
-                "role":"user",
-                "content":[{"type":"input_text","text":content}]
-            })),
+            _ => {
+                let parts = if let Some(parts) = message["content"].as_array() {
+                    parts.iter().filter_map(|part| match part["type"].as_str() {
+                        Some("text") => Some(json!({"type":"input_text","text":part["text"]})),
+                        Some("image_url") => {
+                            let mut image = json!({"type":"input_image","image_url":part["image_url"]["url"]});
+                            if let Some(detail) = part["image_url"].get("detail") {
+                                image["detail"] = detail.clone();
+                            }
+                            Some(image)
+                        }
+                        _ => None,
+                    }).collect::<Vec<_>>()
+                } else {
+                    vec![json!({"type":"input_text","text":content})]
+                };
+                input.push(json!({"role":"user","content":parts}));
+            }
         }
     }
     if input.is_empty() {
@@ -1250,6 +1267,21 @@ fn codex_input(messages: &[Value]) -> (String, Vec<Value>) {
         }));
     }
     (instructions, input)
+}
+
+/// Terminal failure events have identical meaning on HTTP and WebSocket.
+pub(super) fn codex_terminal_error(piece: &Value) -> Option<String> {
+    let message = match piece["type"].as_str()? {
+        "response.failed" => piece["response"]["error"]["message"]
+            .as_str().unwrap_or("응답이 실패했습니다.").to_string(),
+        "response.incomplete" => format!(
+            "응답이 완료되지 않았습니다: {}",
+            piece["response"]["incomplete_details"]["reason"].as_str().unwrap_or("unknown")
+        ),
+        "error" => piece["error"]["message"].as_str().unwrap_or("알 수 없는 오류").to_string(),
+        _ => return None,
+    };
+    Some(format!("Codex: {message}"))
 }
 
 /// Codex/ChatGPT subscription models speak the Responses API on a different
@@ -1394,7 +1426,6 @@ async fn stream_codex_once(
                 .collect::<Vec<_>>()
                 .join("\n");
             if payload == "[DONE]" {
-                terminated = true;
                 break 'stream;
             }
             if payload.is_empty() {
@@ -1466,12 +1497,10 @@ async fn stream_codex_once(
                         }
                     }
                     terminated = true;
+                    break 'stream;
                 }
-                "response.failed" => {
-                    let message = piece["response"]["error"]["message"]
-                        .as_str()
-                        .unwrap_or("Codex 응답이 실패했습니다.");
-                    return Err(format!("Codex: {message}"));
+                "response.failed" | "response.incomplete" => {
+                    return Err(codex_terminal_error(&piece).unwrap());
                 }
                 "error" => {
                     let message = piece["error"]["message"].as_str().unwrap_or("알 수 없는 오류");
@@ -1720,6 +1749,28 @@ async fn stream_anthropic_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_input_preserves_attachment_text_and_images() {
+        let image = "data:image/png;base64,aW1hZ2U=";
+        let (instructions, input) = codex_input(&[
+            json!({"role":"system","content":"identity"}),
+            json!({"role":"user","content":[
+                {"type":"text","text":"첨부를 분석해"},
+                {"type":"text","text":"quoted file contents"},
+                {"type":"image_url","image_url":{"url":image,"detail":"high"}}
+            ]}),
+            json!({"role":"user","content":[{"type":"image_url","image_url":{"url":image}}]}),
+        ]);
+        assert_eq!(instructions, "identity");
+        assert_eq!(input.len(), 2, "attachment messages must not disappear");
+        assert_eq!(input[0]["content"], json!([
+            {"type":"input_text","text":"첨부를 분석해"},
+            {"type":"input_text","text":"quoted file contents"},
+            {"type":"input_image","image_url":image,"detail":"high"}
+        ]));
+        assert_eq!(input[1]["content"][0]["image_url"], image);
+    }
 
     #[test]
     fn codex_input_keeps_tool_calls_and_results_structured() {

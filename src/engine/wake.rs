@@ -49,7 +49,6 @@ fn resumable_program(state: &AppState, execution: &Value) -> Option<Value> {
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let mut remaining = Vec::new();
     for node in checkpoint["pendingOperationIds"]
         .as_array()
         .cloned()
@@ -83,12 +82,13 @@ fn resumable_program(state: &AppState, execution: &Value) -> Option<Value> {
             if !completed.iter().any(|value| value.as_str() == Some(node_id)) {
                 completed.push(node);
             }
-        } else {
-            remaining.push(node);
         }
     }
     checkpoint["completedOperationIds"] = json!(completed);
-    checkpoint["pendingOperationIds"] = json!(remaining);
+    // Any actual in-flight operation returned None above. Nodes without an
+    // operation were only planned: leave them uncompleted so the program will
+    // run them, but clear the in-flight marker that restore refuses to replay.
+    checkpoint["pendingOperationIds"] = json!([]);
     let revision = checkpoint["programRevision"].as_str()?;
     let active = state.store.all("adaptation_policy").iter().any(|policy| {
         policy["slot"].as_str() == Some("execution")
@@ -416,7 +416,7 @@ mod tests {
         let created = recover(&state);
         assert_eq!(created[0]["decision"], "queued", "{created:?}");
         let execution = state.store.get("execution", "run-pending").unwrap();
-        assert_eq!(execution["programCheckpoint"]["pendingOperationIds"], json!(["step2"]));
+        assert_eq!(execution["programCheckpoint"]["pendingOperationIds"], json!([]));
         assert_eq!(execution["programCheckpoint"]["completedOperationIds"], json!(["step1"]));
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -79,6 +79,7 @@ pub fn distill_incremental(
         .all("execution")
         .into_iter()
         .filter(|execution| execution["sessionId"].as_str() == Some(session_id))
+        .filter(|execution| execution["agentId"].as_str() == agent_id)
         .collect::<Vec<_>>();
     let processed_executions = checkpoint["executionIds"]
         .as_array()
@@ -139,15 +140,8 @@ pub fn distill_incremental(
                 executions
                     .iter()
                     .filter(|execution| !execution["finishedAt"].is_null())
-                    .filter(|execution| finished_before(execution, message)),
-            )
-            .or_else(|| {
-                latest_execution(
-                    executions
-                        .iter()
-                        .filter(|execution| !execution["finishedAt"].is_null()),
-                )
-            });
+                    .filter(|execution| finished_before(execution, message, &messages)),
+            );
             let Some(execution) = execution else {
                 continue;
             };
@@ -321,29 +315,42 @@ pub fn sweep(state: &AppState) -> usize {
 }
 
 fn latest_execution<'a>(items: impl Iterator<Item = &'a Value>) -> Option<&'a Value> {
-    items.max_by(|a, b| {
-        a["finishedAt"]
-            .as_str()
-            .unwrap_or("")
-            .cmp(b["finishedAt"].as_str().unwrap_or(""))
-    })
+    items.max_by_key(|execution| execution["finishedAt"].as_str().and_then(timestamp))
 }
 
-fn finished_before(execution: &Value, correction: &Value) -> bool {
-    let Some(finished) = execution["finishedAt"]
-        .as_str()
-        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-    else {
-        return false;
-    };
-    let Some(created) = correction["created_at"]
-        .as_str()
-        .and_then(|value| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok())
-    else {
-        return true;
-    };
-    finished.with_timezone(&chrono::Utc)
-        <= chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(created, chrono::Utc)
+fn timestamp(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|at| at.with_timezone(&chrono::Utc))
+        .ok()
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+                .ok()
+                .map(|at| at.and_utc())
+        })
+}
+
+fn finished_before(execution: &Value, correction: &Value, messages: &[Value]) -> bool {
+    if let Some(reply_id) = execution["finalMessageId"].as_str() {
+        if let (Some(reply), Some(owner)) = (
+            messages
+                .iter()
+                .position(|message| message["id"] == reply_id),
+            messages
+                .iter()
+                .position(|message| message["id"] == correction["id"]),
+        ) {
+            // Row order retains precision that SQLite's second-resolution
+            // timestamps lose, including an immediately corrected answer.
+            return reply < owner;
+        }
+    }
+    match (
+        execution["finishedAt"].as_str().and_then(timestamp),
+        correction["created_at"].as_str().and_then(timestamp),
+    ) {
+        (Some(finished), Some(created)) => finished <= created,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -453,28 +460,43 @@ mod tests {
     #[test]
     fn correction_links_the_run_that_finished_before_it_not_a_later_run() {
         let (state, dir) = state();
-        state.store.write_message(&json!({
-            "session_id":"s","role":"user","agent_id":"a",
-            "content":"그게 아니라 다음에는 workspace_write를 먼저 써"
-        })).unwrap();
-        state.store.put("execution", &json!({
-            "id":"run-before","sessionId":"s","agentId":"a",
-            "request":"파일을 만들어","taskOutcome":"failed",
-            "finishedAt":"2020-01-01T00:00:00Z"
-        }));
-        state.store.put("execution_operation", &json!({
-            "id":"op-before","runId":"run-before","tool":"shell_exec",
-            "status":"failed","opSeq":1
-        }));
-        state.store.put("execution", &json!({
-            "id":"run-after","sessionId":"s","agentId":"a",
-            "request":"교정을 처리해","taskOutcome":"failed",
-            "finishedAt":"2030-01-01T00:00:00Z"
-        }));
-        state.store.put("execution_operation", &json!({
-            "id":"op-after","runId":"run-after","tool":"later_tool",
-            "status":"failed","opSeq":1
-        }));
+        state
+            .store
+            .write_message(&json!({
+                "session_id":"s","role":"user","agent_id":"a",
+                "content":"그게 아니라 다음에는 workspace_write를 먼저 써"
+            }))
+            .unwrap();
+        state.store.put(
+            "execution",
+            &json!({
+                "id":"run-before","sessionId":"s","agentId":"a",
+                "request":"파일을 만들어","taskOutcome":"failed",
+                "finishedAt":"2020-01-01T00:00:00Z"
+            }),
+        );
+        state.store.put(
+            "execution_operation",
+            &json!({
+                "id":"op-before","runId":"run-before","tool":"shell_exec",
+                "status":"failed","opSeq":1
+            }),
+        );
+        state.store.put(
+            "execution",
+            &json!({
+                "id":"run-after","sessionId":"s","agentId":"a",
+                "request":"교정을 처리해","taskOutcome":"failed",
+                "finishedAt":"2030-01-01T00:00:00Z"
+            }),
+        );
+        state.store.put(
+            "execution_operation",
+            &json!({
+                "id":"op-after","runId":"run-after","tool":"later_tool",
+                "status":"failed","opSeq":1
+            }),
+        );
         let result = distill_session(&state, "s", Some("a"));
         assert_eq!(result["lessons"].as_u64().unwrap(), 1, "{result}");
         let experiences = state.store.all("experience");
@@ -486,4 +508,101 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn corrections_without_a_prior_run_cannot_learn_from_a_future_failure() {
+        let (state, dir) = state();
+        state
+            .store
+            .write_message(&json!({
+                "session_id":"s","role":"user","agent_id":"a",
+                "content":"그게 아니라 다음에는 workspace_write를 먼저 써"
+            }))
+            .unwrap();
+        state.store.put(
+            "execution",
+            &json!({
+                "id":"future","sessionId":"s","agentId":"a",
+                "request":"a different request","taskOutcome":"failed",
+                "finishedAt":"2100-01-01T00:00:00Z"
+            }),
+        );
+        state.store.put(
+            "execution_operation",
+            &json!({
+                "id":"future-op","runId":"future","tool":"shell_exec","status":"failed"
+            }),
+        );
+        let result = distill_session(&state, "s", Some("a"));
+        assert_eq!(result["lessons"], 0);
+        assert!(state.store.all("experience").is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_correction_does_not_attribute_another_agents_failed_tool() {
+        let (state, dir) = state();
+        state
+            .store
+            .write_message(&json!({
+                "session_id":"s","role":"user","agent_id":"a",
+                "content":"그게 아니라 다음에는 workspace_write를 먼저 써"
+            }))
+            .unwrap();
+        for (agent, finished) in [("a", "2020-01-01T00:00:00Z"), ("b", "2021-01-01T00:00:00Z")] {
+            state.store.put(
+                "execution",
+                &json!({
+                    "id":agent,"agentId":agent,"sessionId":"s","taskOutcome":"failed",
+                    "request":format!("request for {agent}"),"finishedAt":finished
+                }),
+            );
+            state.store.put(
+                "execution_operation",
+                &json!({
+                    "id":format!("op-{agent}"),"runId":agent,"tool":"shell_exec","status":"failed"
+                }),
+            );
+        }
+        let result = distill_session(&state, "s", Some("a"));
+        assert_eq!(result["lessons"], 1);
+        assert_eq!(state.store.all("experience")[0]["request"], "request for a");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn transcript_order_resolves_a_correction_within_the_same_timestamp_second() {
+        let (state, dir) = state();
+        let reply = state
+            .store
+            .write_message(&json!({
+                "session_id":"s","role":"assistant","agent_id":"a","content":"previous answer"
+            }))
+            .unwrap();
+        let correction = state
+            .store
+            .write_message(&json!({
+                "session_id":"s","role":"user","agent_id":"a",
+                "content":"그게 아니라 다음에는 workspace_write를 먼저 써"
+            }))
+            .unwrap();
+        // SQLite truncates message timestamps to seconds. The transcript IDs
+        // still establish that the visible answer preceded the correction.
+        let second = correction["created_at"].as_str().unwrap().replace(' ', "T");
+        state.store.put(
+            "execution",
+            &json!({
+                "id":"run","agentId":"a","sessionId":"s","taskOutcome":"failed",
+                "request":"original request","finishedAt":format!("{second}.500Z"),
+                "finalMessageId":reply["id"]
+            }),
+        );
+        state.store.put(
+            "execution_operation",
+            &json!({
+                "id":"op","runId":"run","tool":"shell_exec","status":"failed"
+            }),
+        );
+        assert_eq!(distill_session(&state, "s", Some("a"))["lessons"], 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
