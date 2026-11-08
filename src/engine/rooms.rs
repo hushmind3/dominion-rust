@@ -699,10 +699,7 @@ async fn run_locked(
             )?;
             continue;
         }
-        let evidence_count = message["metadata"]["evidence"]
-            .as_array()
-            .map(|items| items.len())
-            .unwrap_or(0);
+        let evidence_count = message_evidence_count(state, &message);
         outputs.push(json!({
             "agentId":agent_id,
             "name":name,
@@ -870,6 +867,27 @@ fn is_owner(message: &Value) -> bool {
             .and_then(Value::as_str)
             == Some("owner")
 }
+/// Evidence is not only the acceptance-check list. A tool operation that
+/// actually completed is evidence too; the previous count ignored it, so a
+/// successful tool-using turn could display `evidenceCount: 0`.
+fn message_evidence_count(state: &AppState, message: &Value) -> usize {
+    let recorded = message["metadata"]["evidence"]
+        .as_array()
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let operations = message["metadata"]["executionId"]
+        .as_str()
+        .and_then(|run_id| state.store.execution_operations(run_id).ok())
+        .map(|items| {
+            items
+                .iter()
+                .filter(|operation| operation["status"].as_str() == Some("completed"))
+                .count()
+        })
+        .unwrap_or(0);
+    recorded + operations
+}
+
 fn newer_owner_message(state: &AppState, session_id: &str, source_id: &str) -> Option<String> {
     let messages = state.store.messages(session_id);
     let index = messages
@@ -1270,6 +1288,41 @@ mod tests {
     }
     fn room(state: &AppState) -> Value {
         state.store.get("room", "r").unwrap()
+    }
+
+    #[test]
+    fn room_evidence_count_includes_completed_tool_operations() {
+        let (state, dir) = test_state();
+        state
+            .store
+            .put("execution", &json!({"id":"run-1","sessionId":"s","agentId":"a"}));
+        state.store.put(
+            "execution_operation",
+            &json!({"id":"op-ok","runId":"run-1","tool":"workspace_list","status":"completed"}),
+        );
+        state.store.put(
+            "execution_operation",
+            &json!({"id":"op-fail","runId":"run-1","tool":"workspace_write","status":"failed"}),
+        );
+        assert_eq!(
+            message_evidence_count(&state, &json!({"metadata":{"executionId":"run-1"}})),
+            1
+        );
+        assert_eq!(
+            message_evidence_count(
+                &state,
+                &json!({"metadata":{"evidence":[{"id":"e1"},{"id":"e2"}]}})
+            ),
+            2
+        );
+        assert_eq!(
+            message_evidence_count(
+                &state,
+                &json!({"metadata":{"executionId":"run-1","evidence":[{"id":"e1"}]}})
+            ),
+            2
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
     fn save_owner_job(state: &AppState, id: &str, text: &str) -> Value {
         let session = ensure_room_session(state, "r").unwrap();
