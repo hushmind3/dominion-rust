@@ -19,6 +19,10 @@ type Job={
  result?:{sessionId?:string;messageId?:string;rsi?:RsiEvidence;repairAttempts?:number;reason?:string};promptState?:{inFlight?:boolean}
 }
 type RsiCandidate={id:string;status:string;target?:string;patch?:string;paths?:string[];patchSha256?:string;baseCommit?:string;reviewRequired?:boolean}
+type PairedJob={id:string;status:string;error?:string;result?:{
+ verdict?:string;candidateStatus?:string;
+ metrics?:{pairedCases:number;gains:number;regressions:number;holdoutCases:number;eligible:boolean};
+}}
 type Message={id:string;role:string;content:string;created_at:string}
 type Approval={id:string;sessionId:string;status:string;tool:string;args:unknown}
 const SAVED_JOB='dominion.rsi.activeJob'
@@ -31,6 +35,38 @@ function CandidateReview({id,canApply,afterApply}:{id:string;canApply:boolean;af
  const [applying,setApplying]=useState(false)
  const [applyError,setApplyError]=useState('')
  const [applied,setApplied]=useState(false)
+ const compareKey='dominion.rsi.compare.'+id
+ const [comparisonId,setComparisonId]=useState(()=>{
+  try{return localStorage.getItem(compareKey)||''}catch{return ''}
+ })
+ const [comparison,setComparison]=useState<PairedJob|null>(null)
+ const [comparing,setComparing]=useState(false)
+ const [compareError,setCompareError]=useState('')
+ useEffect(()=>{
+  if(!comparisonId)return
+  let alive=true
+  const refresh=async()=>{
+   try{
+    const job=await get<PairedJob>('/api/jobs/'+encodeURIComponent(comparisonId))
+    if(!alive)return
+    setComparison(job)
+    if(['completed','failed','cancelled','needs_review'].includes(job.status))void candidate.reload()
+   }catch(e){if(alive)setCompareError((e as Error).message)}
+  }
+  void refresh()
+  const timer=window.setInterval(()=>void refresh(),2800)
+  return()=>{alive=false;window.clearInterval(timer)}
+ },[comparisonId])
+ const compare=async()=>{
+  if(comparing)return
+  if(!window.confirm('고정된 8개 Rust 테스트를 원본·수정본 2개 Git 작업공간에서 실행합니다. 내 컴퓨터에서 모델이 수정한 Rust 코드를 테스트하므로 CPU·시간을 사용합니다. 실행하시겠습니까?'))return
+  setComparing(true);setCompareError('')
+  try{
+   const job=await post<PairedJob>('/api/rsi/'+encodeURIComponent(id)+'/compare',{})
+   setComparisonId(job.id);setComparison(job)
+   try{localStorage.setItem(compareKey,job.id)}catch{}
+  }catch(e){setCompareError((e as Error).message)}finally{setComparing(false)}
+ }
  const apply=async()=>{
   if(!candidate.value.baseCommit||!candidate.value.patchSha256)return
   if(!window.confirm('성능 향상 비교가 완료되지 않았습니다. 컴파일 검사를 통과한 패치를 dominion-sub에 시험 반영하시겠습니까? 운영 서버는 자동 재시작되지 않습니다.'))return
@@ -50,9 +86,22 @@ function CandidateReview({id,canApply,afterApply}:{id:string;canApply:boolean;af
   <details className="mt-3"><summary className="cursor-pointer font-semibold text-[#A94E30]">실제 수정 패치 확인</summary>
    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#F7F2EA] p-3 text-[10px]">{candidate.value.patch||'패치 정보 없음'}</pre>
   </details>
-  <Notice message={applyError}/>
+  <Notice message={applyError||compareError}/>
+  {canApply&&['proposed','inconclusive'].includes(candidate.value.status)&&
+   <Button variant="secondary" className="mt-3" disabled={comparing||comparison?.status==='running'||comparison?.status==='queued'} onClick={()=>void compare()}>
+    <Terminal size={14}/> {comparing?'실험 등록 중…':'원본·수정본 8개 테스트 A/B 비교'}
+   </Button>}
+  {comparison&&<div className="mt-3 rounded-lg border border-[#E7E0D5] bg-[#FAF7F1] p-3">
+   <strong>쌍대 실험: {comparison.status==='completed'?'종료':comparison.status==='failed'?'실패':comparison.status==='running'?'실행 중':comparison.status==='queued'?'대기 중':comparison.status}</strong>
+   {comparison.error&&<Notice message={comparison.error}/>}
+   {comparison.result?.metrics&&<p className="mt-2 text-[11px]">
+    검사 {comparison.result.metrics.pairedCases}건 · 추가 성공 {comparison.result.metrics.gains}건 · 회귀 {comparison.result.metrics.regressions}건 · 보류 사례 {comparison.result.metrics.holdoutCases}건.
+    판정: {comparison.result.verdict||'판정 대기'}.
+   </p>}
+   <p className="mt-1 text-[11px] text-[#8A8176]">기존 Rust 회귀 테스트의 원본/수정본 비교입니다. 실제 모델의 100턴 기억·토큰 비용 실험은 별도입니다.</p>
+  </div>
   {applied&&<p role="status" className="mt-3 text-[12px] text-emerald-700">작업 브랜치에 코드가 반영됐습니다. 서버 재빌드·재시작 전에는 실행 중인 엔진이 변경되지 않습니다.</p>}
-  {canApply&&candidate.value.status==='proposed'&&candidate.value.target!=='improver'&&
+  {canApply&&['proposed','inconclusive','verified'].includes(candidate.value.status)&&candidate.value.target!=='improver'&&
    <Button variant="secondary" disabled={applying} className="mt-3" onClick={()=>void apply()}>
     <ClipboardCheck size={14}/> {applying?'반영 중…':'컴파일 통과 패치 시험 반영 (수동 승인)'}
    </Button>}
