@@ -1096,9 +1096,10 @@ pub async fn test_provider(
     let kind = provider["kind"].as_str().unwrap_or("openai");
     let key = if kind == "codex" {
         let client = reqwest::Client::new();
-        codex_oauth::fresh_access(&state, &client, &id, key)
-            .await
-            .unwrap_or_else(|_| key.to_string())
+        match codex_oauth::fresh_access(&state, &client, &id, key).await {
+            Ok(token) => token,
+            Err(message) => return Json(json!({"ok":false,"message":message})).into_response(),
+        }
     } else {
         key.to_string()
     };
@@ -1120,6 +1121,33 @@ pub async fn test_provider(
         Ok(client) => client,
         Err(err) => return error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
     };
+    if kind == "codex" {
+        // Verify account credentials and model visibility without spending a
+        // generation or calling unsupported non-streaming Codex responses.
+        let account = provider["accountId"].as_str().unwrap_or("");
+        match codex_models_live(&state, &client, &id, account, &key).await {
+            Ok(models) => {
+                let listed = models.iter().any(|entry|entry["id"].as_str()==Some(tested_model.as_str()));
+                return Json(json!({
+                    "ok":listed,
+                    "status":200,
+                    "model":tested_model,
+                    "accountId":account,
+                    "modelCount":models.len(),
+                    "message":if listed {
+                        format!("Codex OAuth 인증 성공. 계정에서 {}개 모델을 조회했고 선택된 모델도 목록에 있습니다.",models.len())
+                    } else {
+                        format!("Codex OAuth 인증 성공. 계정에서 {}개 모델을 조회했지만 설정된 모델 '{}'은 목록에 없습니다. 계정 모델을 다시 선택하세요.",models.len(),tested_model)
+                    }
+                })).into_response();
+            }
+            Err(message) => return Json(json!({
+                "ok":false,
+                "message":format!("Codex OAuth 모델 조회 실패: {message}"),
+                "model":tested_model
+            })).into_response(),
+        }
+    }
     let request = if kind == "codex" {
         let account = provider["accountId"].as_str().unwrap_or("");
         if account.is_empty() {
