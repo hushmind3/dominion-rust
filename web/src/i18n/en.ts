@@ -19,6 +19,8 @@ const en: Record<LocaleKey, string> = {
   'nav.settings': 'Settings',
   'nav.workflows': 'Workflows',
   'nav.developer': 'Developer studio',
+  'nav.rsi': 'Self-improvement',
+  'dashboard.shortcut.rsi.desc': 'Algorithm diagnosis · manual RSI',
   'shell.newChat': 'New chat',
   'shell.workspace': 'Workspace',
   'shell.quickNav': 'Quick navigation',

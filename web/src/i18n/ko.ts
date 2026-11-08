@@ -18,6 +18,8 @@ const ko = {
   'nav.settings': '설정',
   'nav.workflows': '반복 작업',
   'nav.developer': '소스 개발 스튜디오',
+  'nav.rsi': '자기개선',
+  'dashboard.shortcut.rsi.desc': '알고리즘 진단 · 수동 RSI',
   'shell.newChat': '새 대화',
   'shell.workspace': '워크스페이스',
   'shell.quickNav': '빠른 이동',

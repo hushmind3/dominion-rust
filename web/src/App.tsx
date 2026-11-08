@@ -15,6 +15,7 @@ const ExtensionsPage=lazy(()=>import('./pages/Extensions').then(module=>({defaul
 const ConnectionsPage=lazy(()=>import('./pages/Connections').then(module=>({default:module.ConnectionsPage})))
 const OperationsPage=lazy(()=>import('./pages/Operations').then(module=>({default:module.OperationsPage})))
 const DeveloperPage=lazy(()=>import('./pages/Developer').then(module=>({default:module.DeveloperPage})))
+const SelfImprovementPage=lazy(()=>import('./pages/SelfImprovement').then(module=>({default:module.SelfImprovementPage})))
 
 
 // A running tab retains the entry bundle from the moment it was opened.
@@ -192,6 +193,7 @@ export default function App(){
     {page==='extensions'&&<ExtensionsPage/>}
     {page==='connections'&&<ConnectionsPage/>}
     {page==='developer'&&<DeveloperPage/>}
+    {page==='rsi'&&<SelfImprovementPage/>}
     {(page==='automations'||page==='activity'||page==='settings')&&<OperationsPage section={page}/>}
     </Suspense>
     </PageLoadBoundary>

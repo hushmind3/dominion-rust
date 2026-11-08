@@ -1,11 +1,11 @@
-import {Activity,ArrowRight,Bot,CheckCircle2,Cpu,FolderOpen,MessageSquare,Play,RadioTower,Workflow} from 'lucide-react'
+import {Activity,ArrowRight,Bot,BrainCircuit,CheckCircle2,Cpu,FolderOpen,MessageSquare,Play,RadioTower,Workflow} from 'lucide-react'
 import {Button,PageContainer} from '../components/Primitives'
 import {ExecutionMonitor} from '../components/ExecutionMonitor'
 import {useRemote} from '../components/UI'
 import {StatusPill} from '../components/StatusPill'
 import {t,useLocale,formatDateTime,jobKindLabel} from '../i18n'
 import type {Agent,ChatSession,Provider} from '../api'
-type Destination='chat'|'models'|'agents'|'rooms'|'connections'|'workflows'|'memory'|'activity'
+type Destination='chat'|'models'|'agents'|'rooms'|'connections'|'workflows'|'memory'|'activity'|'rsi'
 export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  useLocale()
  const sessions=useRemote<ChatSession[]>('/api/sessions',[])
@@ -28,7 +28,8 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
   {title:'dashboard.shortcut.chat',desc:'dashboard.shortcut.chat.desc',icon:MessageSquare,page:'chat' as const},
   {title:'dashboard.shortcut.models',desc:'dashboard.shortcut.models.desc',icon:Cpu,page:'models' as const},
   {title:'dashboard.shortcut.workflows',desc:'dashboard.shortcut.workflows.desc',icon:Play,page:'workflows' as const},
-  {title:'dashboard.shortcut.agents',desc:'dashboard.shortcut.agents.desc',icon:Bot,page:'agents' as const}
+  {title:'dashboard.shortcut.agents',desc:'dashboard.shortcut.agents.desc',icon:Bot,page:'agents' as const},
+  {title:'nav.rsi',desc:'dashboard.shortcut.rsi.desc',icon:BrainCircuit,page:'rsi' as const}
  ]
  return <PageContainer className="!max-w-[1200px] !py-5">
   <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h1 className="m-0 text-[19px] font-bold tracking-tight">{t('dashboard.title')}</h1><p className="mt-1 text-[12px] text-[#7C7469]">{t('dashboard.subtitle')}</p></div><Button type="button" variant="primary" onClick={()=>navigate('chat')} className="flex h-8 items-center gap-2 rounded-lg px-3 text-[11px] font-semibold"><MessageSquare size={14}/> {t('dashboard.openChat')} <ArrowRight size={13}/></Button></div>
