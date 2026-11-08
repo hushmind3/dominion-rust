@@ -193,13 +193,10 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
             .map(str::trim)
             .filter(|value| !value.is_empty() && value.len() <= 200)
             .ok_or_else(|| bad("방 모델에 model 이름이 필요합니다."))?;
-        let provider = state
+        state
             .store
             .get("provider", provider_id)
             .ok_or_else(|| bad(format!("제공자를 찾을 수 없습니다: {provider_id}")))?;
-        if crate::engine::gateway::is_local_runtime(&provider) {
-            return Err(bad("로컬 런타임 모델은 방 모델로 선택할 수 없습니다."));
-        }
         let effort = entry
             .get("reasoningEffort")
             .and_then(Value::as_str)
@@ -760,6 +757,30 @@ mod tests {
         assert!(save_room(&state, Some("room-one"), &json!({"maxTurns":100001})).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
+    #[test]
+    fn local_runtime_models_can_be_selected_for_a_room() {
+        let (state, dir) = test_state();
+        state.store.put(
+            "provider",
+            &json!({
+                "id":"local-mlx","name":"local MLX","kind":"mlx","local":true,
+                "baseUrl":"http://127.0.0.1:1234/v1","model":"mlx-7b","enabled":true
+            }),
+        );
+        let saved = save_room(
+            &state,
+            None,
+            &json!({
+                "id":"local-room","name":"로컬 방","agentIds":["a0","a1"],
+                "models":[{"providerId":"local-mlx","model":"mlx-7b"}]
+            }),
+        )
+        .unwrap();
+        assert_eq!(saved["models"][0]["providerId"], "local-mlx", "{saved}");
+        assert_eq!(saved["models"][0]["model"], "mlx-7b", "{saved}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn room_attachments_and_response_overrides_are_bound_and_immutable() {
         use base64::Engine;

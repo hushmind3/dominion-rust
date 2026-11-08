@@ -852,6 +852,87 @@ fn room_debate_knowledge_is_recalled_by_a_different_model_with_provenance() {
 }
 
 #[test]
+fn room_runs_on_an_explicitly_selected_local_runtime() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|request| {
+        let model = request["model"].as_str().unwrap_or("");
+        assert_eq!(model, "local-room-model", "{request}");
+        vec![json!({
+            "choices":[{"delta":{"content":"LOCAL_ROOM_OK"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":30,"completion_tokens":3,"total_tokens":33}
+        })]
+    });
+    let app = TestApp::new(port, "compat");
+    let local = app.post(
+        "/api/providers",
+        &json!({
+            "name":"local room runtime",
+            "kind":"ollama",
+            "local":true,
+            "baseUrl":format!("http://127.0.0.1:{port}/v1"),
+            "model":"local-room-model",
+            "enabled":true,
+            "toolMode":"compat"
+        }),
+    );
+    let agent = app.post(
+        "/api/agents",
+        &json!({
+            "name":"local speaker",
+            "systemPrompt":"LOCAL_SPEAKER_IDENTITY",
+            "providerId":local["id"],
+            "model":"local-room-model"
+        }),
+    );
+    let room = app.post(
+        "/api/rooms",
+        &json!({
+            "name":"local-room",
+            "agentIds":[agent["id"]],
+            "routingMode":"discussion",
+            "rounds":1,
+            "maxTurns":1,
+            "toolsEnabled":false,
+            "autoLearning":false,
+            "autoModels":false,
+            "models":[{"providerId":local["id"],"model":"local-room-model"}]
+        }),
+    );
+    let room_id = room["id"].as_str().unwrap().to_string();
+    let submitted = app.post(
+        &format!("/api/rooms/{room_id}/messages"),
+        &json!({"input":"로컬 모델로 답해","clientMessageId":"local-room-turn"}),
+    );
+    let job_id = submitted["jobId"].as_str().unwrap().to_string();
+    let session_id = submitted["sessionId"].as_str().unwrap().to_string();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let job = app.get(&format!("/api/jobs/{job_id}"));
+        if matches!(job["status"].as_str(), Some("completed" | "failed")) {
+            assert_eq!(job["status"], "completed", "{job}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{job}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let messages = app.get(&format!("/api/sessions/{session_id}/messages"));
+    let reply = messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "assistant")
+        .expect("local room reply");
+    assert_eq!(reply["content"], "LOCAL_ROOM_OK", "{reply}");
+    assert_eq!(reply["metadata"]["usage"]["providerId"], local["id"], "{reply}");
+    assert_eq!(
+        reply["metadata"]["usage"]["model"],
+        "local-room-model",
+        "{reply}"
+    );
+}
+
+#[test]
 fn social_room_exchanges_spend_no_learning_model_call() {
     let _serial = serial();
     let (port, requests) = scripted_provider(|request| {

@@ -255,13 +255,16 @@ fn multiagent_conflict() -> Value {
             ],
             "b",
         ),
+        // The evidence sits on the first claim. The expected winner must follow
+        // the evidence, not the last speaker; otherwise the fixture rewards
+        // latest-speaker and cannot judge evidence-first at all.
         conflict_case(
             "테스트해",
             vec![
                 conflict_output("a", "테스트 성공", 5),
                 conflict_output("b", "테스트 실패", 0),
             ],
-            "b",
+            "a",
         ),
         conflict_case(
             "테스트해",
@@ -270,6 +273,14 @@ fn multiagent_conflict() -> Value {
                 conflict_output("b", "테스트 성공", 0),
             ],
             "b",
+        ),
+        conflict_case(
+            "테스트해",
+            vec![
+                conflict_output("a", "테스트 완료", 2),
+                conflict_output("b", "테스트 실패", 0),
+            ],
+            "a",
         ),
     ];
     let kernels = ["evidence-first", "owner-authority", "latest-speaker"];
@@ -344,6 +355,24 @@ fn dimension(kind: &str, label: &str, metric: &str, rows: &[Value], baseline: &s
     })
 }
 
+/// Promotion is justified only against the kernel that is actually running,
+/// not against the fixture baseline. A better-than-baseline candidate that is
+/// still worse than the active kernel must not displace it.
+fn promotion_recommendation(
+    winner: &str,
+    active: &str,
+    winner_value: f64,
+    active_value: f64,
+) -> &'static str {
+    if winner == active {
+        "already_active"
+    } else if winner_value > active_value + 1e-9 {
+        "promote"
+    } else {
+        "keep"
+    }
+}
+
 /// Runs every deterministic evaluation, records the result and states whether
 /// each winner should be promoted. It never calls a model and never activates
 /// a kernel; activation stays an explicit user action.
@@ -369,16 +398,26 @@ pub fn run(state: &AppState) -> Value {
         let kind = dimension["kind"].as_str().unwrap_or("").to_string();
         let baseline = dimension["baseline"].as_str().unwrap_or("").to_string();
         let winner = dimension["winner"].as_str().unwrap_or("").to_string();
-        let improvement = dimension["improvement"].as_f64().unwrap_or(0.0);
-        let active = active_by_kind.get(&kind).cloned().unwrap_or_else(|| baseline.clone());
-        let recommendation = if improvement > 0.0 && winner != active {
-            "promote"
-        } else if improvement > 0.0 && winner == active {
-            "already_active"
-        } else {
-            "keep"
-        };
+        let active = active_by_kind
+            .get(&kind)
+            .cloned()
+            .unwrap_or_else(|| baseline.clone());
+        let active_value = dimension["kernels"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["kernel"].as_str() == Some(active.as_str()))
+            })
+            .and_then(|row| row["value"].as_f64())
+            .unwrap_or(0.0);
+        let winner_value = dimension["winnerValue"].as_f64().unwrap_or(0.0);
+        // Compare the winner with what is actually running. The previous rule
+        // compared it with the fixture baseline, so a worse active kernel could
+        // be kept even when a better one was measured.
+        let recommendation =
+            promotion_recommendation(&winner, &active, winner_value, active_value);
         dimension["active"] = json!(active);
+        dimension["activeValue"] = json!(active_value);
         dimension["recommendation"] = json!(recommendation);
     }
     let improved = dimensions
@@ -479,7 +518,7 @@ mod tests {
             .any(|kernel| kernel == "numbered-first"));
         assert_eq!(
             dimension("multiagent.conflict")["winner"],
-            "owner-authority"
+            "evidence-first"
         );
         let importance = dimension("memory.importance");
         assert!(
@@ -496,5 +535,29 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0]["id"], report["id"]);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn promotion_compares_the_winner_with_the_active_kernel() {
+        assert_eq!(
+            promotion_recommendation("owner-authority", "evidence-first", 1.0, 0.8),
+            "promote"
+        );
+        assert_eq!(
+            promotion_recommendation("evidence-first", "evidence-first", 1.0, 0.8),
+            "already_active"
+        );
+        assert_eq!(
+            promotion_recommendation("owner-authority", "owner-authority", 1.0, 1.0),
+            "already_active"
+        );
+        assert_eq!(
+            promotion_recommendation("latest-speaker", "evidence-first", 0.8, 0.8),
+            "keep"
+        );
+        assert_eq!(
+            promotion_recommendation("latest-speaker", "evidence-first", 0.7, 0.8),
+            "keep"
+        );
     }
 }

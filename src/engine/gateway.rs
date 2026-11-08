@@ -47,20 +47,8 @@ impl Route {
     }
 }
 
-/// A provider whose weights actually run on this machine. A localhost proxy
-/// to a cloud API (FreeLLMAPI and friends) is not a local runtime.
-pub fn is_local_runtime(provider: &Value) -> bool {
-    if provider["local"].as_bool() == Some(true) {
-        return true;
-    }
-    matches!(
-        provider["kind"].as_str().unwrap_or("").to_ascii_lowercase().as_str(),
-        "ollama" | "mlx" | "mlx-lm" | "llama" | "llamacpp" | "llama-server" | "lmstudio"
-    )
-}
-
-/// A provider that runs on this machine. Room rotation never uses these,
-/// even when an agent's own configuration points at one.
+/// A provider that runs on this machine. It is eligible for any room or chat
+/// route; the gateway uses this flag for local concurrency admission.
 pub fn is_local_provider(provider: &Value) -> bool {
     let base = provider["baseUrl"].as_str().unwrap_or("");
     provider["local"].as_bool() == Some(true)

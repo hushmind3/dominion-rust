@@ -1,0 +1,104 @@
+{
+  "experiment": "local-room-routing-and-conflict-algorithm-evaluation",
+  "date": "2026-11-09",
+  "branch": "dominion-sub",
+  "purpose": "Remove the room-level local-runtime restriction and test whether a measured conflict-resolution kernel is actually better before adopting it.",
+  "changes": {
+    "local_models": [
+      "the room API no longer rejects a local runtime model",
+      "the room model pool keeps local and cloud routes instead of dropping local entries",
+      "the room turn no longer replaces a selected local route with a cloud provider",
+      "the room model picker no longer filters local providers"
+    ],
+    "algorithm_evaluation": [
+      "promotion now compares the winner with the active kernel, not only with the fixture baseline",
+      "the multiagent conflict fixture no longer labels the last speaker as correct when the evidence is on the first claim",
+      "owner-authority was measured as a candidate but was not adopted"
+    ]
+  },
+  "local_room_live": {
+    "provider": {
+      "id": "b86e3cc0-4ccf-461a-97dd-088e710f6287",
+      "name": "Ollama Learner",
+      "kind": "ollama",
+      "local": true,
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "model": "llama3.2:3b"
+    },
+    "room": "one-agent isolated room, toolsEnabled false, autoLearning false, autoModels false",
+    "job_status": "completed",
+    "elapsed_seconds": 3.196,
+    "assistant_messages": 1,
+    "usage": {
+      "providerId": "b86e3cc0-4ccf-461a-97dd-088e710f6287",
+      "model": "llama3.2:3b",
+      "promptTokens": 578,
+      "completionTokens": 34,
+      "totalTokens": 612,
+      "cachedPromptTokens": 0
+    },
+    "cloud_fallback_used": false,
+    "db_usage_matches_provider": true,
+    "reply_non_empty": true,
+    "reply_quality_note": "the 3B model produced one Korean sentence but the sentence was semantically odd; this probe proves local routing and execution, not local model quality"
+  },
+  "algorithm_evaluation": {
+    "before_fixture_fix": {
+      "active": "evidence-first",
+      "active_value": 0.8,
+      "winner": "owner-authority",
+      "winner_value": 1.0,
+      "baseline": "latest-speaker",
+      "baseline_value": 1.0,
+      "old_recommendation": "keep",
+      "old_recommendation_was_wrong": true,
+      "note": "the old rule compared the winner with the baseline (1.0), so it kept the 0.8 active kernel"
+    },
+    "candidate_real_room_test": {
+      "candidate": "owner-authority",
+      "result": "failed",
+      "failing_test": "room_conflict_resolution_prefers_evidence_backed_claim",
+      "observed": {
+        "outcome": "failure",
+        "winner_agent": "b",
+        "winner_evidence_score": 0,
+        "expected_outcome": "success",
+        "expected_winner_agent": "a",
+        "expected_evidence_score": 1
+      },
+      "decision": "not adopted"
+    },
+    "after_fixture_fix": {
+      "active": "evidence-first",
+      "active_value": 1.0,
+      "winner": "evidence-first",
+      "winner_value": 1.0,
+      "baseline": "latest-speaker",
+      "baseline_value": 0.6666666666666666,
+      "kernels": {
+        "evidence-first": 1.0,
+        "owner-authority": 0.6666666666666666,
+        "latest-speaker": 0.6666666666666666
+      },
+      "recommendation": "already_active",
+      "model_calls": 0,
+      "real_room_conflict_e2e": "passed"
+    },
+    "decision": "keep evidence-first; adopt the corrected evaluation logic, not the worse candidate"
+  },
+  "test_verification": {
+    "rust_full_suite": "559 passed, 0 failed (16 benchmark + 448 unit + 95 E2E)",
+    "local_room_e2e": "1 passed, 0 failed",
+    "local_room_live": "job completed, provider binding verified",
+    "web_typecheck": "passed",
+    "web_build": "passed",
+    "algorithm_unit_tests": "22 passed, 0 failed"
+  },
+  "not_claimed": [
+    "only one real local model (llama3.2:3b) was exercised; qwen3:4b and lfm3:1.7b were present but not run in a room",
+    "the local model's answer was not semantically reliable; this probe does not claim local answer quality",
+    "MLX was not registered as a provider; the local test used Ollama",
+    "the 100-turn Beam measurement is a separate long-running probe and is not included in these numbers",
+    "the algorithm evaluation is deterministic and synthetic; the real room conflict E2E was used to reject the candidate"
+  ]
+}

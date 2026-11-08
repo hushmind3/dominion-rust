@@ -97,8 +97,8 @@ function RoomSettings({value,onChange,agents,providers,disabled=false}:{value:Ro
 
 function RoomModelPicker({value,onChange,providers,disabled=false}:{value:RoomModel[];onChange:(models:RoomModel[])=>void;providers:Provider[];disabled?:boolean}){
  useLocale()
- const cloud=providers.filter(provider=>provider.enabled!==false&&!['ollama','mlx','mlx-lm','llama','llamacpp','lmstudio'].includes((provider.kind||'').toLowerCase()))
- const [providerId,setProviderId]=useState(()=>cloud[0]?.id||'')
+ const available=providers.filter(provider=>provider.enabled!==false)
+ const [providerId,setProviderId]=useState(()=>available[0]?.id||'')
  const [catalog,setCatalog]=useState<Record<string,ModelOption[]>>({})
  const [loading,setLoading]=useState(false),[error,setError]=useState('')
  useEffect(()=>{
@@ -121,13 +121,13 @@ function RoomModelPicker({value,onChange,providers,disabled=false}:{value:RoomMo
   <div className="room-roster-heading"><strong>{t('rooms.models')}</strong><span>{t('rooms.modelsSelected',{count:value.length})}</span></div>
   <small className="room-note">{t('rooms.modelsDesc')}</small>
   <div className="room-model-picker-controls">
-   <SelectInput value={providerId} onChange={e=>setProviderId(e.target.value)} disabled={disabled||!cloud.length}>{cloud.map(provider=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</SelectInput>
+   <SelectInput value={providerId} onChange={e=>setProviderId(e.target.value)} disabled={disabled||!available.length}>{available.map(provider=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</SelectInput>
    <Button size="sm" variant="ghost" onClick={()=>onChange([...value,...models.filter(item=>!has(providerId,item.id)).map(item=>({providerId,model:item.id}))])} disabled={disabled||!models.length}>{t('rooms.modelsAll')}</Button>
    <Button size="sm" variant="ghost" onClick={()=>onChange(value.filter(item=>item.providerId!==providerId))} disabled={disabled||!picked}>{t('rooms.modelsNone')}</Button>
   </div>
   {loading&&<p className="room-note">{t('rooms.modelsLoading')}</p>}
   {error&&<p className="room-message-error">{translateError(error)}</p>}
-  {!loading&&!error&&<div className="room-model-list">{models.map(item=>{const checked=has(providerId,item.id);return <div key={item.id} className={'room-model-option '+(checked?'checked':'')}><label className="room-model-check"><input type="checkbox" checked={checked} onChange={()=>toggle(item.id)} disabled={disabled}/><span>{item.name||item.id}</span></label>{checked&&<ReasoningSelect className="room-model-effort" value={effortOf(item.id)} onChange={effort=>setEffort(item.id,effort)} model={item} requireCatalog={cloud.find(provider=>provider.id===providerId)?.kind==='codex'} defaultLabel={t('rooms.models.effortDefault')} disabled={disabled}/>}{checked&&<Check size={13}/>}</div>})}{!models.length&&<p className="room-note">{t('rooms.modelsEmpty')}</p>}</div>}
+  {!loading&&!error&&<div className="room-model-list">{models.map(item=>{const checked=has(providerId,item.id);return <div key={item.id} className={'room-model-option '+(checked?'checked':'')}><label className="room-model-check"><input type="checkbox" checked={checked} onChange={()=>toggle(item.id)} disabled={disabled}/><span>{item.name||item.id}</span></label>{checked&&<ReasoningSelect className="room-model-effort" value={effortOf(item.id)} onChange={effort=>setEffort(item.id,effort)} model={item} requireCatalog={available.find(provider=>provider.id===providerId)?.kind==='codex'} defaultLabel={t('rooms.models.effortDefault')} disabled={disabled}/>}{checked&&<Check size={13}/>}</div>})}{!models.length&&<p className="room-note">{t('rooms.modelsEmpty')}</p>}</div>}
   <small className="room-note">{t('rooms.modelsHint')}</small>
  </div>
 }

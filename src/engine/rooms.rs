@@ -289,13 +289,6 @@ fn model_pool(state: &crate::state::AppState, room: &Value) -> Vec<(String, Stri
         if provider.is_empty() || model.is_empty() {
             continue;
         }
-        if state
-            .store
-            .get("provider", provider)
-            .is_some_and(|record| crate::engine::gateway::is_local_runtime(&record))
-        {
-            continue;
-        }
         let key = format!("{provider}|{model}");
         if seen.insert(key) {
             pool.push((provider.to_string(), model.to_string(), effort));
@@ -311,14 +304,6 @@ fn model_pool(state: &crate::state::AppState, room: &Value) -> Vec<(String, Stri
         let provider = agent["providerId"].as_str().unwrap_or("");
         let model = agent["model"].as_str().unwrap_or("");
         if provider.is_empty() || model.is_empty() {
-            continue;
-        }
-        // Free cloud models only. Local runtimes stay out of group rotation.
-        if state
-            .store
-            .get("provider", provider)
-            .is_some_and(|record| crate::engine::gateway::is_local_runtime(&record))
-        {
             continue;
         }
         let key = format!("{provider}|{model}");
@@ -648,19 +633,10 @@ async fn run_locked(
         let resolved_provider=optional(input,"providerId").or_else(||rotated.as_ref().map(|(provider,_,_)| provider.clone())).or_else(||optional(&agent,"providerId"));
         let resolved_model=optional(input,"model").or_else(||rotated.as_ref().map(|(_,model,_)| model.clone())).or_else(||optional(&agent,"model"));
         let rotated_effort=rotated.as_ref().and_then(|(_,_,effort)| effort.clone());
-        // A room turn must never silently run on a local runtime, even when the
-        // agent is configured that way. Drop the pair so routing picks cloud.
-        let local_route=resolved_provider.as_deref().is_some_and(|id|state.store.get("provider",id).is_some_and(|record|crate::engine::gateway::is_local_runtime(&record)));
-        let (provider_id,model)=if local_route{
-            // Prefer an explicit cloud provider over leaving the choice to the
-            // router, which may fall back to a local runtime when offline.
-            let cloud=state.store.all("provider").into_iter().find(|record|{
-                crate::engine::gateway::provider_eligible(record)
-                    && !crate::engine::gateway::is_local_runtime(record)
-                    && record["enabled"].as_bool()!=Some(false)
-            });
-            (cloud.and_then(|record|record["id"].as_str().map(str::to_string)),None)
-        }else{(resolved_provider,resolved_model)};
+        // The owner's room model selection is a routing decision, not a hint.
+        // Local runtimes are eligible exactly like cloud providers; the gateway
+        // still applies local concurrency admission and normal failover.
+        let (provider_id, model) = (resolved_provider, resolved_model);
         // Per-model effort wins, then the message, the room and the agent.
         // "none" turns reasoning off; an explicit level turns it on.
         let codex_route = provider_id.as_deref().and_then(|id|state.store.get("provider",id))
@@ -1217,16 +1193,22 @@ mod pool_tests {
             "models":[
                 {"providerId":"cloud","model":"picked-fast","reasoningEffort":"low"},
                 {"providerId":"cloud","model":"picked-fast"},
-                {"providerId":"local","model":"should-skip"}
+                {"providerId":"local","model":"picked-local"}
             ]
         });
         let pool = model_pool(&state, &room);
-        assert_eq!(pool, vec![("cloud".into(),"picked-fast".into(),Some("low".into()))]);
+        assert_eq!(
+            pool,
+            vec![
+                ("cloud".into(), "picked-fast".into(), Some("low".into())),
+                ("local".into(), "picked-local".into(), None)
+            ]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn participant_model_pool_skips_local_providers() {
+    fn participant_model_pool_keeps_local_and_cloud_routes() {
         let dir = std::env::temp_dir().join(format!("dominion-pool-local-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let config = crate::config::Config {
@@ -1245,7 +1227,13 @@ mod pool_tests {
         state.store.put("agent", &json!({"id":"a","providerId":"local","model":"mlx-7b"}));
         state.store.put("agent", &json!({"id":"b","providerId":"cloud","model":"free-model"}));
         let pool = model_pool(&state, &json!({"agentIds":["a","b"]}));
-        assert_eq!(pool, vec![("cloud".into(),"free-model".into(),None)]);
+        assert_eq!(
+            pool,
+            vec![
+                ("local".into(), "mlx-7b".into(), None),
+                ("cloud".into(), "free-model".into(), None)
+            ]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }
