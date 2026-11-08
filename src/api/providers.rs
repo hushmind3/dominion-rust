@@ -10,10 +10,17 @@ fn home_file(relative: &str) -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(relative))
 }
 
+fn codex_home_file(name: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| home_file(".codex"))
+        .map(|home| home.join(name))
+}
+
 /// Codex stores a ChatGPT OAuth session in ~/.codex/auth.json. Only the
 /// presence and account are exposed to the UI; tokens never leave the vault.
 fn codex_auth() -> Result<Value, String> {
-    let path = home_file(".codex/auth.json").ok_or("HOME 환경변수를 찾을 수 없습니다.")?;
+    let path = codex_home_file("auth.json").ok_or("CODEX_HOME/HOME 환경변수를 찾을 수 없습니다.")?;
     let text = std::fs::read_to_string(&path)
         .map_err(|_| "Codex 로그인 정보를 찾을 수 없습니다. Codex 앱에서 먼저 로그인하세요.")?;
     let value: Value = serde_json::from_str(&text)
@@ -22,7 +29,7 @@ fn codex_auth() -> Result<Value, String> {
         .as_str()
         .filter(|token| !token.is_empty())
         .ok_or("Codex OAuth 토큰이 없습니다. Codex 앱에서 ChatGPT로 로그인하세요.")?;
-    if value["tokens"]["account_id"].as_str().is_none() {
+    if codex_oauth::account_id(&value["tokens"]).is_none() {
         return Err("Codex 계정 ID가 없습니다. Codex 앱에서 다시 로그인하세요.".into());
     }
     let _ = access;
@@ -30,7 +37,7 @@ fn codex_auth() -> Result<Value, String> {
 }
 
 fn codex_model() -> String {
-    if let Some(path) = home_file(".codex/config.toml") {
+    if let Some(path) = codex_home_file("config.toml") {
         if let Ok(text) = std::fs::read_to_string(path) {
             for line in text.lines() {
                 let line = line.trim();
@@ -295,12 +302,19 @@ fn save_codex_provider(state: &AppState, tokens: &Value, shared: bool) -> Result
         .ok_or("Codex 계정 ID를 찾을 수 없습니다. 다시 로그인하세요.")?;
     codex_oauth::save_tokens(state, id, tokens, shared)?;
     let previous = state.store.get("provider", id).unwrap_or(Value::Null);
+    let same_account = previous["accountId"].as_str() == Some(account.as_str());
+    let selected_model = if same_account {
+        previous["model"].as_str().filter(|model|!model.is_empty())
+            .map(str::to_string).unwrap_or_else(codex_model)
+    } else {
+        codex_model()
+    };
     let record = json!({
         "id":id,
         "name":"Codex (ChatGPT OAuth)",
         "baseUrl":"https://chatgpt.com/backend-api/codex",
         "kind":"codex",
-        "model":previous["model"].as_str().filter(|model|!model.is_empty()).map(str::to_string).unwrap_or_else(codex_model),
+        "model":selected_model,
         "accountId":account,
         "enabled":true,
         "local":false,
@@ -1258,7 +1272,7 @@ async fn codex_models_live(
     }).and_then(|stdout|stdout.split_whitespace()
         .find(|part|part.chars().next().is_some_and(|c|c.is_ascii_digit()))
         .map(str::to_string));
-    let cache_version = home_file(".codex/models_cache.json")
+    let cache_version = codex_home_file("models_cache.json")
         .and_then(|path|std::fs::read_to_string(path).ok())
         .and_then(|text|serde_json::from_str::<Value>(&text).ok())
         .and_then(|value|value["client_version"].as_str().map(str::to_string));
@@ -1326,7 +1340,7 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
                 if codex_auth().ok().and_then(|auth|
                     auth["tokens"]["account_id"].as_str().map(str::to_string)
                 ).as_deref() == Some(account) {
-                    if let Some(path) = home_file(".codex/models_cache.json") {
+                    if let Some(path) = codex_home_file("models_cache.json") {
                         if let Ok(contents) = std::fs::read_to_string(path) {
                             if let Ok(value) = serde_json::from_str::<Value>(&contents) {
                                 if let Ok(mut rows) = parse_codex_models(&value) {
