@@ -79,7 +79,7 @@ export function ModelHub(){
  const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[defaultModel,setDefaultModel]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
  const probe=async(p:Provider)=>{
   setCounts(old=>({...old,[p.id]:{list:[],busy:true}}))
-  try{const list=await get<{id:string}[]>('/api/providers/'+p.id+'/models');setCounts(old=>({...old,[p.id]:{list:list.map(m=>m.id)}}))}
+  try{const list=await get<{id:string;catalogStale?:boolean}[]>('/api/providers/'+p.id+'/models');setCounts(old=>({...old,[p.id]:{list:list.map(m=>m.id),error:list.some(m=>m.catalogStale)?'최근 저장된 목록입니다. 실시간 Codex 조회가 실패했습니다.':undefined}}))}
   catch(e){setCounts(old=>({...old,[p.id]:{list:[],error:(e as Error).message}}))}
  }
  const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setDefaultModel(p?.model||'');setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setAccountId(p?.accountId||'');setTestResult(null);setError('');setModal(true)}
@@ -90,7 +90,7 @@ export function ModelHub(){
   setTestBusy(true);setTestResult(null)
   try{
    const result=await post<{ok:boolean;message?:string;status?:number}>(`/api/providers/${edit?.id||'new'}/test`,{
-    baseUrl:baseUrl.trim(),kind,integration,accountId:accountId.trim()||undefined,apiKey:apiKey.trim()||undefined,model:edit?.model,
+    baseUrl:baseUrl.trim(),kind,integration,accountId:accountId.trim()||undefined,apiKey:apiKey.trim()||undefined,model:kind==='codex'?defaultModel.trim()||edit?.model:edit?.model,
    })
    setTestResult(result.ok?{ok:true,message:t('models.testOk')}:{ok:false,message:(result.message||t('models.testFail'))+(result.status?` (HTTP ${result.status})`:'')})
   }catch(e){setTestResult({ok:false,message:(e as Error).message})}
@@ -130,7 +130,7 @@ export function ModelHub(){
   try{
    const started=await post<{user_code:string;verification_url:string}>('/api/providers/codex/device',{})
    setDeviceCode({userCode:started.user_code,verificationUrl:started.verification_url})
-   window.open(started.verification_url,'_blank','noopener')
+   // The code and verification link are displayed below; the user opens it directly.
    setLoginPending(true)
   }catch(e){setOauthBusy('');setError((e as Error).message)}
  }
@@ -188,7 +188,7 @@ export function ModelHub(){
   try{
    const saved=await post<Provider>('/api/providers/cli/import',{source})
    providers.setValue(rows=>rows.some(p=>p.id===saved.id)?rows.map(p=>p.id===saved.id?saved:p):[...rows,saved])
-   setSavedId(saved.id);setTab('providers');refresh()
+   setSavedId(saved.id);await cli.reload();refresh()
   }catch(e){setError((e as Error).message)}
   finally{setOauthBusy('')}
  }
