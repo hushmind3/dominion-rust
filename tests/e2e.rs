@@ -794,6 +794,22 @@ fn room_selected_tools_keep_read_write_history_and_require_real_write_approval()
     assert!(!tool_names.contains(&"dominion_tool"), "{tool_names:?}");
     assert!(tool_names.len() < 19, "casual/work tool selection must not ship the full registry: {tool_names:?}");
     assert!(requests[1]["messages"].as_array().unwrap().iter().any(|message|message["tool_calls"][0]["function"]["name"]=="workspace_read"));
+    // Runtime hints must never sit between an assistant tool call and its
+    // result; Beam rejects that ordering as an unanswered call.
+    for request in requests.iter() {
+        let messages = request["messages"].as_array().unwrap();
+        for (index, message) in messages.iter().enumerate() {
+            if message["role"] == "assistant"
+                && message["tool_calls"].as_array().is_some_and(|calls| !calls.is_empty())
+            {
+                assert_eq!(
+                    messages.get(index + 1).map(|next| next["role"].as_str().unwrap_or("")),
+                    Some("tool"),
+                    "tool call must be followed by its result: {messages:?}"
+                );
+            }
+        }
+    }
     let execution=app.get("/api/executions")[0].clone();
     assert_eq!(execution["inputContext"]["contextModelCalls"],0);
     assert!(execution["inputContext"]["personaTokens"].as_u64().unwrap()>0);

@@ -318,6 +318,20 @@ pub(super) fn compile(
     };
     let fixed_cost = estimate(&prompt) + schema_tokens;
     let previous_owner = all[..source].iter().rposition(|row| row["role"] == "user");
+    // A question about the beginning of the room must not depend on BM25
+    // guessing which old turn was first. Include the founding owner message
+    // and its first reply only when the current question asks for it.
+    let asks_about_start = ["첫", "처음", "초기", "시작", "first", "initial"]
+        .iter()
+        .any(|term| query.to_lowercase().contains(term));
+    let first_owner = all.iter().position(|row| row["role"] == "user");
+    let first_reply = first_owner.and_then(|owner| {
+        all.iter()
+            .enumerate()
+            .skip(owner + 1)
+            .find(|(_, row)| row["role"] == "assistant" && row["tool_calls"].as_array().is_none_or(Vec::is_empty))
+            .map(|(index, _)| index)
+    });
     let latest = all.iter().rposition(|row| {
         row["role"] != "tool" && row["tool_calls"].as_array().is_none_or(Vec::is_empty)
     });
@@ -358,7 +372,9 @@ pub(super) fn compile(
         let required = index == source
             || current_contributions.contains(&index)
             || Some(index) == previous_owner
-            || Some(index) == latest;
+            || Some(index) == latest
+            || (asks_about_start
+                && (Some(index) == first_owner || Some(index) == first_reply));
         index += 1;
         if row["role"] == "assistant"
             && row["agent_id"].as_str() == request.agent_id.as_deref()
@@ -655,6 +671,40 @@ mod tests {
         let text = json!(compiled.history).to_string();
         assert!(text.contains("현재 원문은 반드시 남아야 한다."));
         assert!(!text.contains("FUTURE_OWNER_MUST_NOT_LEAK"));
+        std::fs::remove_dir_all(&state.config.data_dir).unwrap();
+    }
+
+    #[test]
+    fn questions_about_the_start_keep_the_first_owner_turn_and_reply() {
+        let state = state();
+        message(&state, "first", "user", "FIRST_TURN_MARKER 취미는 독서다.");
+        message(&state, "first-reply", "assistant", "FIRST_REPLY_MARKER 기억했습니다.");
+        for index in 0..100 {
+            message(
+                &state,
+                &format!("noise-{index}"),
+                "assistant",
+                &format!("unrelated weather report number {index}"),
+            );
+        }
+        message(&state, "current", "user", "내가 첫 턴에 뭐라고 했는지 기억해?");
+        let request = TurnRequest::from_value(
+            &json!({"input":"내가 첫 턴에 뭐라고 했는지 기억해?","agentId":"a","toolsEnabled":false}),
+        )
+        .unwrap();
+        let compiled = compile(&state, &request, "room:r", "current", &[], &[]).unwrap();
+        let rendered = json!(compiled.history).to_string();
+        assert!(rendered.contains("FIRST_TURN_MARKER"), "{rendered}");
+        assert!(rendered.contains("FIRST_REPLY_MARKER"), "{rendered}");
+        // A non-start question must not pin the first turn unconditionally.
+        message(&state, "weather", "user", "오늘 날씨 어때?");
+        let request = TurnRequest::from_value(
+            &json!({"input":"오늘 날씨 어때?","agentId":"a","toolsEnabled":false}),
+        )
+        .unwrap();
+        let compiled = compile(&state, &request, "room:r", "weather", &[], &[]).unwrap();
+        let rendered = json!(compiled.history).to_string();
+        assert!(!rendered.contains("FIRST_TURN_MARKER"), "{rendered}");
         std::fs::remove_dir_all(&state.config.data_dir).unwrap();
     }
 

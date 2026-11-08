@@ -288,6 +288,55 @@ fn normalize_assistant_reasoning(messages: &mut [Value], required: bool) {
     }
 }
 
+/// Provider protocols require every assistant tool call to be followed
+/// immediately by its tool result. Runtime hints are sometimes inserted as
+/// system messages while a round is still executing; move those hints after
+/// the completed tool exchange without dropping them.
+fn order_tool_exchanges(messages: Vec<Value>) -> Vec<Value> {
+    let mut out = Vec::with_capacity(messages.len());
+    let mut index = 0;
+    while index < messages.len() {
+        let message = &messages[index];
+        let calls = message["tool_calls"]
+            .as_array()
+            .filter(|calls| !calls.is_empty());
+        if message["role"] != "assistant" || calls.is_none() {
+            out.push(message.clone());
+            index += 1;
+            continue;
+        }
+        let mut expected = calls
+            .unwrap()
+            .iter()
+            .filter_map(|call| call["id"].as_str().map(str::to_string))
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut tools = Vec::new();
+        let mut hints = Vec::new();
+        let mut cursor = index + 1;
+        while cursor < messages.len()
+            && (messages[cursor]["role"] == "tool" || messages[cursor]["role"] == "system")
+        {
+            if messages[cursor]["role"] == "tool" {
+                if let Some(id) = messages[cursor]["tool_call_id"].as_str() {
+                    expected.remove(id);
+                }
+                tools.push(messages[cursor].clone());
+            } else {
+                hints.push(messages[cursor].clone());
+            }
+            cursor += 1;
+            if expected.is_empty() {
+                break;
+            }
+        }
+        out.push(message.clone());
+        out.extend(tools);
+        out.extend(hints);
+        index = cursor;
+    }
+    out
+}
+
 /// Reflection Beam requires reasoning_content for assistant turns. If an
 /// earlier model/legacy record has no original reasoning, keep its *visible
 /// evidence* as an explicitly quoted user record, never invent private
@@ -665,6 +714,7 @@ async fn stream_completion_once(
     let reflection_provider = provider.base_url.contains("api.reflection.ai");
     let requires_reasoning_content =
         provider.reasoning_protocol == "deepseek" || reflection_provider;
+    provider_messages = order_tool_exchanges(provider_messages);
     normalize_assistant_reasoning(&mut provider_messages, requires_reasoning_content);
     if reflection_provider {
         let (preserved, quoted_legacy) = preserve_reflection_history(provider_messages);
@@ -1484,6 +1534,23 @@ mod tests {
         assert_eq!(preserved[4]["role"], "assistant");
         assert_eq!(preserved[4]["reasoning_content"], "original thinking");
         assert_eq!(preserved[5]["content"], "current");
+    }
+
+    #[test]
+    fn runtime_hints_never_split_an_assistant_tool_call_from_its_result() {
+        let messages = vec![
+            json!({"role":"system","content":"s"}),
+            json!({"role":"user","content":"write a file"}),
+            json!({"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function","function":{"name":"workspace_write","arguments":"{}"}}]}),
+            json!({"role":"system","content":"read-before-write hint"}),
+            json!({"role":"tool","tool_call_id":"call-1","content":"ok"}),
+            json!({"role":"user","content":"continue"}),
+        ];
+        let ordered = order_tool_exchanges(messages);
+        let roles = ordered.iter().map(|message| message["role"].as_str().unwrap()).collect::<Vec<_>>();
+        assert_eq!(roles, vec!["system","user","assistant","tool","system","user"], "{ordered:?}");
+        assert_eq!(ordered[3]["tool_call_id"], "call-1");
+        assert_eq!(ordered[4]["content"], "read-before-write hint");
     }
 
     #[test]

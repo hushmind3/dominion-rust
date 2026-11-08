@@ -2444,7 +2444,7 @@ fn room_tool_request(input: &str) -> bool {
         "파일", "폴더", "읽", "쓰", "저장", "수정", "삭제", "만들", "작성", "열어",
         "보여", "실행", "명령", "터미널", "빌드", "테스트", "설치", "검색", "웹",
         "http", "url", "api", "코드", "버그", "도구", "계속", "이어", "마저",
-        "스킬", "기억", "브라우저", "깃허브", "github", "shell", "file", "read",
+        "스킬", "메모리", "브라우저", "깃허브", "github", "shell", "file", "read",
         "write", "run", "search", "fetch", "install", "build", "test", "tool",
         "browser", "memory", "delegate", "task",
     ]
@@ -2503,7 +2503,10 @@ fn select_room_tools(
             &["검색", "웹", "http", "url", "fetch", "search"],
             &["web_search", "http_fetch"],
         ),
-        (&["기억", "memory"], &["memory_store", "memory_search"]),
+        (
+            &["메모리", "memory", "기억해둬", "기억해 둬", "저장해"],
+            &["memory_store", "memory_search"],
+        ),
         (&["스킬", "skill"], &["skill_propose"]),
         (
             &["위임", "delegate", "task", "에이전트"],
@@ -5816,10 +5819,22 @@ mod harness_tool_selection_tests {
             json!({"type":"function","function":{"name":"workspace_write","description":"Write a workspace file"}}),
             json!({"type":"function","function":{"name":"shell_exec","description":"Run a shell command"}}),
             json!({"type":"function","function":{"name":"web_search","description":"Search the web"}}),
+            json!({"type":"function","function":{"name":"memory_store","description":"Store a memory"}}),
+            json!({"type":"function","function":{"name":"memory_search","description":"Search memory"}}),
             json!({"type":"function","function":{"name":"mcp_github_search","description":"Search GitHub issues and pull requests"}}),
         ];
         let empty = std::collections::HashSet::new();
         assert!(select_room_tools(definitions.clone(), "안녕", &empty, false).is_empty());
+        assert!(select_room_tools(
+            definitions.clone(),
+            "내가 첫 턴에 뭐라고 했는지 기억해?",
+            &empty,
+            false
+        )
+        .iter()
+        .all(|tool| !matches!(tool_name(tool), "memory_store" | "memory_search")));
+        let memory = select_room_tools(definitions.clone(), "메모리에 저장해", &empty, false);
+        assert!(memory.iter().any(|tool| tool_name(tool) == "memory_store"), "{memory:?}");
         let files = select_room_tools(definitions.clone(), "파일을 읽고 저장해", &empty, false);
         let file_names = files.iter().map(tool_name).collect::<Vec<_>>();
         assert!(file_names.contains(&"workspace_read"), "{file_names:?}");
