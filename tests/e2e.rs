@@ -60,6 +60,14 @@ fn scripted_provider(
                 if body["prompt_cache_key"].is_string() {recorded["_testHttpHeaders"]=json!(headers);}
                 observed.lock().unwrap().push(recorded);
                 let events = reply(&body);
+                // Tests may emulate a strict provider's HTTP error before a
+                // generation starts; normal scripted streams are unchanged.
+                if let Some(status)=events.first().and_then(|event|event["_testHttpStatus"].as_u64()) {
+                    let payload=events[0]["body"].to_string();
+                    let response=format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",payload.len());
+                    let _=stream.write_all(response.as_bytes());
+                    return;
+                }
                 let stream_mode = body["stream"].as_bool().unwrap_or(false);
                 let response = if stream_mode {
                     let mut payload = events
@@ -193,6 +201,85 @@ impl TestApp {
             std::thread::sleep(Duration::from_millis(50));
         }
         panic!("approval was not requested");
+    }
+}
+
+#[test]
+fn common_participant_state_follows_provider_and_protocol_changes() {
+    let _serial=serial();
+    let (port,requests)=scripted_provider(|body| {
+        if body["input"].is_array() {
+            vec![json!({"type":"response.output_text.delta","delta":"COMMON_LOGICAL_42"}),json!({"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":5,"total_tokens":105}}})]
+        } else if !body["system"].is_null() {
+            vec![json!({"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":0}}}),json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"COMMON_LOGICAL_42"}}),json!({"type":"message_delta","usage":{"output_tokens":5}}),json!({"type":"message_stop"})]
+        } else {
+            vec![json!({"choices":[{"delta":{"content":"COMMON_LOGICAL_42"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105}})]
+        }
+    });
+    let app=TestApp::new(port,"native");
+    let agent=app.post("/api/agents",&json!({"name":"portable participant","systemPrompt":"SHARED_IDENTITY_MUST_STAY","providerId":"","model":""}));
+    let session=app.post("/api/sessions",&json!({"title":"same logical conversation","agentId":agent["id"]}));
+    let mut participant=Value::Null;
+    let mut previous_reply=Value::Null;
+    for (index,kind) in ["openai","anthropic","codex","ollama"].into_iter().enumerate() {
+        let provider=app.post("/api/providers",&json!({"name":format!("{kind} protocol fixture"),"kind":kind,"local":kind=="ollama","baseUrl":format!("http://127.0.0.1:{port}/v1"),"enabled":true,"model":format!("route-{index}"),"accountId":"fixture-account","apiKey":"fixture-only","toolMode":"native"}));
+        let stream=app.chat(&json!({"sessionId":session["id"],"agentId":agent["id"],"providerId":provider["id"],"model":provider["model"],"input":if index==0{"식별자를 말해라"}else{"앞서 말한 식별자는?"},"toolsEnabled":false,"autoLearning":false}));
+        assert!(stream.contains("COMMON_LOGICAL_42"),"{kind}: {stream}");
+        let messages=app.get(&format!("/api/sessions/{}/messages",session["id"].as_str().unwrap()));
+        let last=messages.as_array().unwrap().iter().rev().find(|row|row["role"]=="assistant").unwrap();
+        let continuity=&last["metadata"]["continuity"];
+        if index==0 {participant=continuity["participantId"].clone();}
+        assert_eq!(continuity["participantId"],participant,"{kind}");
+        assert_eq!(continuity["previousReplyMessageId"],previous_reply,"{kind}");
+        previous_reply=last["id"].clone();
+        assert!(last["metadata"]["usage"]["cachedPromptTokens"].is_null(),"missing cache telemetry is unknown: {last}");
+        let seen=requests.lock().unwrap();
+        assert_eq!(seen.len(),index+1);
+        let body=seen.last().unwrap();
+        assert!(body.to_string().contains("SHARED_IDENTITY_MUST_STAY"));
+        if index>0 {assert!(body.to_string().contains("COMMON_LOGICAL_42"));}
+        if kind=="anthropic" {
+            assert_eq!(body["system"][0]["cache_control"]["type"],"ephemeral");
+        } else {assert!(body["prompt_cache_key"].is_string());}
+    }
+}
+
+#[test]
+fn strict_provider_cache_rejection_is_learned_and_keeps_the_same_conversation() {
+    let _serial=serial();
+    for kind in ["ollama","anthropic"] {
+        let (port,requests)=scripted_provider(|body| {
+            let field=if body["prompt_cache_key"].is_string(){Some("prompt_cache_key")}
+                else if body["system"].as_array().is_some_and(|parts|parts.iter().any(|part|part.get("cache_control").is_some())){Some("cache_control")}else{None};
+            if let Some(field)=field {
+                return vec![json!({"_testHttpStatus":400,"body":{"error":{"param":field,"message":format!("Unsupported parameter: {field}")}}})];
+            }
+            if !body["system"].is_null() {
+                vec![json!({"type":"message_start","message":{"usage":{"input_tokens":30}}}),json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"state kept"}}),json!({"type":"message_delta","usage":{"output_tokens":3}}),json!({"type":"message_stop"})]
+            } else {
+                vec![json!({"choices":[{"delta":{"content":"state kept"},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":3,"total_tokens":33}})]
+            }
+        });
+        let app=TestApp::new(port,"native");
+        let provider=app.post("/api/providers",&json!({"name":"strict wire fixture","kind":kind,"local":kind=="ollama","baseUrl":format!("http://127.0.0.1:{port}/v1"),"enabled":true,"model":"strict-model","toolMode":"native"}));
+        let agent=app.post("/api/agents",&json!({"name":"strict participant","systemPrompt":"FULL_IDENTITY","providerId":provider["id"],"model":"strict-model"}));
+        let session=app.post("/api/sessions",&json!({"title":"strict provider","agentId":agent["id"]}));
+        let mut participant=Value::Null;
+        for index in 0..2 {
+            let stream=app.chat(&json!({"sessionId":session["id"],"agentId":agent["id"],"input":"안녕","toolsEnabled":false,"autoLearning":false}));
+            assert!(stream.contains("state kept"),"{kind}: {stream}");
+            let rows=app.get(&format!("/api/sessions/{}/messages",session["id"].as_str().unwrap()));
+            let last=rows.as_array().unwrap().iter().rev().find(|row|row["role"]=="assistant").unwrap();
+            let continuity=&last["metadata"]["continuity"];
+            if index==0 {participant=continuity["participantId"].clone();}
+            assert_eq!(continuity["participantId"],participant);
+            assert_eq!(continuity["cacheHintAcceptance"],false);
+            assert_eq!(continuity["httpRequests"],if index==0{2}else{1});
+            assert!(last["metadata"]["usage"]["cachedPromptTokens"].is_null());
+            let seen=requests.lock().unwrap();
+            assert_eq!(seen.len(),if index==0{2}else{3});
+            assert!(seen.last().unwrap().to_string().contains("FULL_IDENTITY"));
+        }
     }
 }
 

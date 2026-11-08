@@ -671,15 +671,37 @@ async fn stream_completion_once(
     tx: &UnboundedSender<Value>,
     convert_native_history: bool,
 ) -> Result<Completion, String> {
+    // Every provider uses the same participant state and route binding.
+    // Adapters only translate the optional cache hint into their wire schema.
+    let instructions=messages.iter().filter(|row|row["role"]=="system")
+        .map(|row|anthropic_message_text(&row["content"]))
+        .collect::<Vec<_>>().join("\n\n");
+    // Tool order is part of the execution contract: compatibility menus may
+    // use that priority when their schema budget is limited.
+    let ordered_tools=tools.to_vec();
+    let settings=json!({"thinking":request.thinking,"effort":request.reasoning_effort,
+        "tools":ordered_tools,"toolMode":provider.tool_mode});
+    let mut continuity=super::continuity::prepare(state,provider,request,session_id,&instructions,&settings)?;
+    let mut completion=stream_completion_once_body(state,client,provider,messages,&ordered_tools,
+        request,session_id,tx,convert_native_history,&mut continuity).await?;
+    completion.continuity=Some(continuity);
+    Ok(completion)
+}
+
+async fn stream_completion_once_body(
+    state:&AppState,client:&reqwest::Client,provider:&ProviderRef,messages:&[Value],tools:&[Value],
+    request:&TurnRequest,session_id:&str,tx:&UnboundedSender<Value>,convert_native_history:bool,
+    continuity:&mut Value,
+) -> Result<Completion,String> {
     if provider.kind == "codex" {
         return stream_codex_once(
-            state, client, provider, messages, request, session_id, tx,
+            state, client, provider, messages, request, session_id, tx, continuity,
         )
         .await;
     }
     if provider.reasoning_protocol == "anthropic" {
         return stream_anthropic_once(
-            state, client, provider, messages, tools, request, session_id, tx,
+            state, client, provider, messages, tools, request, session_id, tx, continuity,
         )
         .await;
     }
@@ -756,15 +778,12 @@ async fn stream_completion_once(
         provider.requests_per_minute,
     )?;
     let _permit = crate::engine::gateway::acquire(&provider.base_url, provider.local).await;
-    let response = crate::engine::gateway::benchmark_request(
+    let builder = crate::engine::gateway::benchmark_request(
         client.post(format!("{}/chat/completions", provider.base_url)),
     )
         .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", provider.api_key))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| format!("{} 연결 실패: {error}", provider.name))?;
+        .header("Authorization", format!("Bearer {}", provider.api_key));
+    let response=super::continuity::send(state,provider,builder,&body,continuity,super::continuity::CacheWire::Key).await?;
 
     crate::engine::gateway::verify_benchmark_route(&response)?;
 
@@ -1141,6 +1160,7 @@ async fn stream_codex_once(
     request: &TurnRequest,
     session_id: &str,
     tx: &UnboundedSender<Value>,
+    continuity: &mut Value,
 ) -> Result<Completion, String> {
     let account_id = provider
         .account_id
@@ -1167,11 +1187,6 @@ async fn stream_codex_once(
     if let Some(reasoning) = crate::engine::reasoning::codex_options(catalog.as_ref(), &provider.model, effort)? {
         body["reasoning"] = reasoning;
     }
-    let continuity = super::continuity::prepare(
-        state, provider, request, session_id,
-        body["instructions"].as_str().unwrap_or(""), &body["reasoning"],
-    )?;
-    body["prompt_cache_key"] = continuity["cacheKey"].clone();
     let access = crate::engine::codex_oauth::fresh_access(
         state,
         client,
@@ -1179,7 +1194,7 @@ async fn stream_codex_once(
         &provider.api_key,
     )
     .await?;
-    let response = client
+    let builder = client
         .post(format!("{}/responses", provider.base_url.trim_end_matches('/')))
         .header("Authorization", format!("Bearer {access}"))
         .header("chatgpt-account-id", account_id)
@@ -1188,11 +1203,8 @@ async fn stream_codex_once(
         .header("User-Agent", "codex_cli_rs/0.0.0")
         .header("session_id", continuity["transportSessionId"].as_str().unwrap_or(""))
         .header("x-client-request-id", continuity["cacheKey"].as_str().unwrap_or(""))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| format!("{} 연결 실패: {error}", provider.name))?;
+        .header("Content-Type", "application/json");
+    let response=super::continuity::send(state,provider,builder,&body,continuity,super::continuity::CacheWire::Key).await?;
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
@@ -1206,7 +1218,7 @@ async fn stream_codex_once(
         ));
     }
 
-    let mut completion = Completion { continuity: Some(continuity), ..Completion::default() };
+    let mut completion = Completion::default();
     let mut buffer = SseBuffer::default();
     let mut stream = response.bytes_stream();
     let mut terminated = false;
@@ -1312,6 +1324,7 @@ async fn stream_anthropic_once(
     request: &TurnRequest,
     session_id: &str,
     tx: &UnboundedSender<Value>,
+    continuity: &mut Value,
 ) -> Result<Completion, String> {
     let started = std::time::Instant::now();
     let (system, provider_messages) = anthropic_messages(messages);
@@ -1343,15 +1356,12 @@ async fn stream_anthropic_once(
     }
 
     let _permit = crate::engine::gateway::acquire(&provider.base_url, provider.local).await;
-    let response = client
+    let builder = client
         .post(format!("{}/messages", provider.base_url))
         .header("Content-Type", "application/json")
         .header("x-api-key", &provider.api_key)
-        .header("anthropic-version", "2023-06-01")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| format!("{} 연결 실패: {error}", provider.name))?;
+        .header("anthropic-version", "2023-06-01");
+    let response=super::continuity::send(state,provider,builder,&body,continuity,super::continuity::CacheWire::Ephemeral).await?;
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
@@ -1372,6 +1382,7 @@ async fn stream_anthropic_once(
     let mut in_text_tool_call = false;
     let mut input_tokens = 0u64;
     let mut cache_read_tokens = 0u64;
+    let mut cache_read_reported = false;
     let mut cache_write_tokens = 0u64;
     let mut output_tokens = 0u64;
 
@@ -1396,6 +1407,7 @@ async fn stream_anthropic_once(
             match piece["type"].as_str().unwrap_or("") {
                 "message_start" => {
                     input_tokens = piece["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0);
+                    cache_read_reported = piece["message"]["usage"]["cache_read_input_tokens"].as_u64().is_some();
                     cache_read_tokens = piece["message"]["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
                     cache_write_tokens = piece["message"]["usage"]["cache_creation_input_tokens"].as_u64().unwrap_or(0);
                 }
@@ -1499,7 +1511,7 @@ async fn stream_anthropic_once(
     }
     completion.tool_calls = calls;
     completion.prompt_tokens = input_tokens.saturating_add(cache_read_tokens).saturating_add(cache_write_tokens);
-    completion.cached_prompt_tokens = Some(cache_read_tokens);
+    completion.cached_prompt_tokens = cache_read_reported.then_some(cache_read_tokens);
     completion.completion_tokens = output_tokens;
     completion.usage = completion.prompt_tokens + output_tokens;
     completion.usage_exact = true;
@@ -1922,7 +1934,9 @@ mod tests {
         let body = &calls[0]["body"];
         assert_eq!(calls[0]["headerKey"], "secret");
         assert_eq!(calls[0]["headerVersion"], "2023-06-01");
-        assert_eq!(body["system"], "system rule");
+        assert_eq!(anthropic_message_text(&body["system"]), "system rule");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert!(completion.continuity.is_some());
         assert_eq!(body["messages"][0]["content"][0]["type"], "text");
         assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
         assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
