@@ -67,3 +67,4 @@
 .room-message-review{background:#F5FAF3;border-radius:12px;padding:4px 6px;margin-left:-6px;margin-right:-6px}
 .room-reset{display:flex;align-items:center;gap:5px;color:#7E8C78;font-size:9px;background:none;border:0;margin-top:14px;padding:0}.room-reset:hover{color:#5F7358}.room-reset:disabled{opacity:.5}
 .room-system-prompt{white-space:pre-wrap;word-break:break-word;max-height:55vh;overflow:auto;background:#FFFCF6;border:1px solid #E7DDCC;border-radius:8px;padding:12px;font-size:11px;line-height:1.65;color:#5F5444;margin:8px 0 0}
+.room-prompt-part{margin:10px 0 0}.room-prompt-part>summary{cursor:pointer;font-size:11px;color:#77664E;font-weight:600;padding:4px 0}

@@ -918,6 +918,12 @@ fn room_system_prompt_preview_returns_the_korean_contract_and_persona() {
     assert!(prompt.contains("테스트 페르소나 원문입니다."), "{prompt}");
     assert!(preview["chars"].as_u64().unwrap() > preview["personaChars"].as_u64().unwrap());
     assert!(preview["tokens"].as_u64().unwrap() > 0);
+    let common = preview["common"].as_str().unwrap();
+    assert!(common.contains("주인이 결정권을 가집니다."), "{common}");
+    assert!(!common.contains("테스트 페르소나 원문입니다."), "{common}");
+    assert_eq!(preview["persona"], "테스트 페르소나 원문입니다.");
+    assert!(preview["commonChars"].as_u64().unwrap() > 0);
+    assert!(preview["commonTokens"].as_u64().unwrap() > 0);
 }
 
 #[test]

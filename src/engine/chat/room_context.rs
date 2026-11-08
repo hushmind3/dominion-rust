@@ -145,6 +145,16 @@ pub(crate) fn preview(
         "reasoningLanguage": "ko",
     }))?;
     let (prompt, persona_tokens, _) = core(state, &request, &room);
+    // The common contract is built without an agent so it can be compared
+    // with the individual persona. Both are concatenated into the final
+    // system message at request time.
+    let common_request = TurnRequest::from_value(&json!({
+        "input": "시스템 프롬프트 미리보기",
+        "toolsEnabled": tools_enabled,
+        "toolsExecutionEnabled": tools_enabled,
+        "reasoningLanguage": "ko",
+    }))?;
+    let (common, _, _) = core(state, &common_request, &room);
     let persona = agent_id
         .and_then(|id| state.store.get("agent", id))
         .and_then(|agent| agent["systemPrompt"].as_str().map(str::to_string))
@@ -155,9 +165,12 @@ pub(crate) fn preview(
         "prompt": prompt,
         "chars": prompt.chars().count(),
         "tokens": estimate(&prompt),
+        "common": common,
+        "commonChars": common.chars().count(),
+        "commonTokens": estimate(&common),
+        "persona": persona,
         "personaChars": persona.chars().count(),
         "personaTokens": persona_tokens,
-        "coreChars": estimate(&prompt).saturating_sub(persona_tokens),
     }))
 }
 
