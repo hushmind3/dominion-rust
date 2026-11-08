@@ -15,6 +15,11 @@ mod transport;
 pub use protocol::parse_text_tool_calls;
 pub use runtime::{run_room_turn, run_turn, run_turn_background, run_turn_resume};
 
+/// Cancel approvals bound to a session that is being archived/reset.
+pub(crate) fn close_session_approvals(state: &crate::state::AppState, session_id: &str) {
+    approval::close_pending_approvals(state, session_id);
+}
+
 /// Clean up old durable approvals at startup and in the maintenance loop.
 pub(crate) fn expire_stale_approvals(state: &crate::state::AppState) -> usize {
     approval::expire_stale_approvals(state)

@@ -174,6 +174,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/rooms/:id/knowledge", get(rooms::knowledge))
         .route("/api/rooms/:id/knowledge/learn", post(rooms::learn))
         .route("/api/rooms/:id/run", post(rooms::run))
+        .route("/api/rooms/:id/reset", post(rooms::reset))
         .route("/api/rooms/:id/stop", post(rooms::stop))
         // sessions
         .route(

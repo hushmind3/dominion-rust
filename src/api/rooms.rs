@@ -541,6 +541,62 @@ pub async fn remove(State(state): State<AppState>, Path(id): Path<String>) -> Re
     })())
 }
 
+/// Archives the current room transcript and binds the room to a fresh empty
+/// session. The room, members, settings and knowledge stay intact; the old
+/// session and all of its messages remain available as a durable archive.
+pub async fn reset(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    response((|| {
+        let _guard = lock(&state, &id)?;
+        stop_room_locked(&state, &id)?;
+        let current = rooms::ensure_room_session(&state, &id).map_err(bad)?;
+        let previous_session_id = current["id"]
+            .as_str()
+            .ok_or_else(|| failed("회의실 세션 ID가 없습니다."))?
+            .to_string();
+        crate::engine::chat::close_session_approvals(&state, &previous_session_id);
+
+        let current_room = room(&state, &id)?;
+        let title = current_room
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("대화방");
+        let session_id = format!("room:{id}:{}", uuid::Uuid::new_v4().simple());
+        let record = json!({
+            "id": session_id,
+            "title": title,
+            "roomId": id,
+            "kind": "room",
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+        });
+        if state.store.put_if_absent("session", &record).is_none() {
+            return Err(failed("새 대화방 세션을 만들 수 없습니다."));
+        }
+        let binding = current_room.get("sessionId").unwrap_or(&Value::Null);
+        let Some(saved) = state.store.patch_if(
+            "room",
+            &id,
+            "sessionId",
+            binding,
+            &json!({
+                "sessionId": session_id,
+                "status": "idle",
+                "pauseReason": Value::Null,
+                "activeAgentId": Value::Null,
+                "resetAt": chrono::Utc::now().to_rfc3339(),
+            }),
+        ) else {
+            return Err(conflict("대화방 세션이 동시에 변경되었습니다. 다시 시도하세요."));
+        };
+        state.bus.record("room", &saved);
+        Ok(json!({
+            "ok": true,
+            "roomId": id,
+            "previousSessionId": previous_session_id,
+            "sessionId": session_id,
+        }))
+    })())
+}
+
 pub async fn state(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     response((|| {
         let config = room(&state, &id)?;

@@ -65,3 +65,4 @@
 @media (max-width:640px){.room-header-usage{display:none}}
 .room-message-review .room-message-text{color:#5E7059}
 .room-message-review{background:#F5FAF3;border-radius:12px;padding:4px 6px;margin-left:-6px;margin-right:-6px}
+.room-reset{display:flex;align-items:center;gap:5px;color:#7E8C78;font-size:9px;background:none;border:0;margin-top:14px;padding:0}.room-reset:hover{color:#5F7358}.room-reset:disabled{opacity:.5}

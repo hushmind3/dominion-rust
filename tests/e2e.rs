@@ -900,6 +900,48 @@ for line in sys.stdin:
 }
 
 #[test]
+fn resetting_a_room_keeps_members_and_archives_the_old_transcript() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"기억했습니다."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/agents", &json!({"id":"a","name":"Alice","systemPrompt":"answer"}));
+    app.post("/api/agents", &json!({"id":"b","name":"Bob","systemPrompt":"answer"}));
+    let room = app.post("/api/rooms", &json!({
+        "id":"reset-room","name":"reset room","agentIds":["a","b"],
+        "rounds":1,"maxTurns":1,"toolsEnabled":false,"autoLearning":false
+    }));
+    let sent = app.post("/api/rooms/reset-room/messages", &json!({"input":"안녕"}));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let job = app.get(&format!("/api/jobs/{}", sent["jobId"].as_str().unwrap()));
+        if job["status"] == "completed" { break; }
+        assert!(Instant::now() < deadline, "{job}");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let old_session = sent["sessionId"].as_str().unwrap().to_string();
+    let before = app.get("/api/rooms/reset-room/messages");
+    assert!(!before.as_array().unwrap().is_empty(), "{before}");
+
+    let reset = app.post("/api/rooms/reset-room/reset", &json!({}));
+    assert_eq!(reset["previousSessionId"], old_session, "{reset}");
+    assert_ne!(reset["sessionId"], old_session, "{reset}");
+
+    let after = app.get("/api/rooms/reset-room/messages");
+    assert!(after.as_array().unwrap().is_empty(), "reset kept visible context: {after}");
+    let room_after = app.get("/api/rooms/reset-room");
+    assert_eq!(room_after["agentIds"], room["agentIds"], "members changed on reset");
+    assert_eq!(room_after["sessionId"], reset["sessionId"]);
+    let archived = app.get(&format!("/api/sessions/{old_session}/messages"));
+    assert_eq!(
+        archived.as_array().unwrap().len(),
+        before.as_array().unwrap().len(),
+        "the previous transcript must remain archived"
+    );
+}
+
+#[test]
 fn derived_turns_cannot_forge_or_reuse_a_stale_root_task() {
     let _serial = serial();
     let (port, _) = scripted_provider(|_| {
