@@ -9,6 +9,8 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message;
 use std::time::{Duration, Instant};
 
 fn scripted_provider(
@@ -55,7 +57,11 @@ fn scripted_provider(
                     }
                     bytes.extend_from_slice(&chunk[..read]);
                 }
-                let body: Value = serde_json::from_slice(&bytes[end..end + length]).unwrap();
+                // Websocket upgrades from the Codex adapter carry no JSON body;
+                // ignore them instead of panicking the fixture thread.
+                let Ok(body) = serde_json::from_slice::<Value>(&bytes[end..end + length]) else {
+                    return;
+                };
                 let mut recorded=body.clone();
                 if body["prompt_cache_key"].is_string() {recorded["_testHttpHeaders"]=json!(headers);}
                 observed.lock().unwrap().push(recorded);
@@ -4975,8 +4981,13 @@ fn chat_fails_over_from_native_api_to_compat_provider_in_one_turn() {
         "/api/providers",
         &json!({"name":"local-compat","baseUrl":format!("http://127.0.0.1:{fallback_port}/v1"),"model":"local","enabled":true,"toolMode":"compat"}),
     );
+    let agent = app.post("/api/agents", &json!({
+        "name":"failover agent","systemPrompt":"FAILOVER_IDENTITY",
+        "providerId":primary["id"]
+    }));
     let stream = app.chat(&json!({
         "input":"파일 도구로 상태를 확인해",
+        "agentId":agent["id"],
         "providerId":primary["id"],
         "toolsEnabled":true,
         "autoLearning":false
@@ -4992,6 +5003,15 @@ fn chat_fails_over_from_native_api_to_compat_provider_in_one_turn() {
         })
         .expect("failover execution");
     assert!(execution["failoverAt"].is_string(), "{execution}");
+    let saved = app.get("/api/agents")
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|saved| saved["id"] == agent["id"])
+        .cloned()
+        .expect("agent survives failover");
+    assert_eq!(saved["providerId"], fallback["id"], "agent must store the provider that answered: {saved}");
+    assert_eq!(saved["model"], "local", "agent must store the fallback model: {saved}");
     let captured = fallback_requests.lock().unwrap();
     assert!(!captured.is_empty(), "fallback provider was not called");
     assert!(captured.iter().all(|body| body.get("tools").is_none()));
@@ -6340,4 +6360,218 @@ fn harness_assisted_executes_dag_nodes_through_the_common_dispatch() {
         .collect::<Vec<_>>();
     assert!(nodes.contains(&"audit"));
     assert!(nodes.contains(&"report"));
+}
+
+fn measure_estimate(text: &str) -> usize {
+    let ascii = text.chars().filter(char::is_ascii).count();
+    ascii.div_ceil(4) + text.chars().count() - ascii
+}
+
+/// Research measurement, not a behavioural guarantee: shows exactly what the
+/// harness sends per participant across three owner turns in a nine-person room.
+#[test]
+fn measure_room_input_growth_across_three_turns() {
+    let _serial = serial();
+    let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reply_counter = counter.clone();
+    let (port, requests) = scripted_provider(move |_| {
+        let n = reply_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        vec![json!({
+            "choices":[{"delta":{"content":format!("응답 {n}")},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105}
+        })]
+    });
+    let root = temp_root();
+    let app = TestApp::from_root(port, "native", root.clone(), &[]);
+    let persona = "지침 문장입니다. ".repeat(220);
+    let mut ids = Vec::new();
+    for index in 1..=9 {
+        let agent = app.post("/api/agents", &json!({
+            "id":format!("m{index}"),
+            "name":format!("참가자{index}"),
+            "systemPrompt":format!("{persona}나는 참가자{index}입니다.")
+        }));
+        ids.push(agent["id"].as_str().unwrap().to_string());
+    }
+    app.post("/api/rooms", &json!({
+        "id":"measure-room","name":"측정 방","agentIds":ids,
+        "routingMode":"discussion","rounds":1,"maxTurns":10,
+        "toolsEnabled":false,"autoLearning":false,"contextBudgetTokens":2000
+    }));
+    let mut seen = 0usize;
+    for (round, text) in ["안녕", "오늘 기분은 어때", "점심은 뭐 먹을까"].iter().enumerate() {
+        let sent = app.post("/api/rooms/measure-room/messages", &json!({"input":text}));
+        let job_id = sent["jobId"].as_str().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(40);
+        loop {
+            let job = app.get(&format!("/api/jobs/{job_id}"));
+            if job["status"] == "completed" { break; }
+            assert_ne!(job["status"], "failed", "{job}");
+            assert!(Instant::now() < deadline, "timeout: {job}");
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let bodies = requests.lock().unwrap();
+        let fresh: Vec<Value> = bodies[seen..].to_vec();
+        seen = bodies.len();
+        drop(bodies);
+        let mut total = 0usize;
+        for (index, body) in fresh.iter().enumerate() {
+            let tokens = measure_estimate(&body["messages"].to_string());
+            total += tokens;
+            let prompt = body["messages"][0]["content"].as_str().unwrap_or("");
+            let name = prompt.split("활성 에이전트: ").nth(1)
+                .and_then(|rest| rest.split(" (id:").next()).unwrap_or("?");
+            println!("round {} call {} agent={} estimate={} items={}", round + 1, index + 1, name, tokens, body["messages"].as_array().map(Vec::len).unwrap_or(0));
+        }
+        println!("round {} summary calls={} total_estimate={}", round + 1, fresh.len(), total);
+    }
+    let db = rusqlite::Connection::open_with_flags(
+        root.join("runtime/dominion.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ).unwrap();
+    let mut statement = db.prepare("select data from records where kind='participant_conversation'").unwrap();
+    let rows = statement.query_map([], |row| row.get::<_, String>(0)).unwrap();
+    for row in rows {
+        let data: Value = serde_json::from_str(&row.unwrap()).unwrap();
+        let view = &data["workingView"];
+        let frames = view["frames"].as_array().cloned().unwrap_or_default();
+        let mut contents = std::collections::HashMap::new();
+        for frame in &frames {
+            let text = frame["message"]["content"].as_str().unwrap_or("").to_string();
+            if !text.is_empty() { *contents.entry(text).or_insert(0usize) += 1; }
+        }
+        let duplicates = contents.values().filter(|count| **count > 1).count();
+        println!(
+            "view agent={} epoch={} frames={} duplicate_contents={} estimate={}",
+            data["agentId"].as_str().unwrap_or("?"),
+            view["epoch"], frames.len(), duplicates,
+            measure_estimate(&json!(frames).to_string())
+        );
+    }
+}
+
+
+/// Minimal Codex Responses websocket: one chain per connection, exactly like
+/// the subscription backend. Records every `response.create` frame it receives
+/// so a test can inspect the incremental payload.
+fn scripted_websocket_provider() -> (u16, Arc<Mutex<Vec<Value>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let observed = requests.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let observed = observed.clone();
+                tokio::spawn(async move {
+                    let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                        return;
+                    };
+                    let mut count = 0usize;
+                    while let Some(Ok(message)) = socket.next().await {
+                        let Message::Text(text) = message else {
+                            continue;
+                        };
+                        let Ok(body) = serde_json::from_str::<Value>(&text) else {
+                            continue;
+                        };
+                        if body["type"] != "response.create" {
+                            continue;
+                        }
+                        count += 1;
+                        observed.lock().unwrap().push(body.clone());
+                        let id = format!("resp_ws_fixture_{count}");
+                        let answer = format!("WEBSOCKET_ANSWER_{count}");
+                        let events = [
+                            json!({"type":"response.output_text.delta","delta":answer}),
+                            json!({"type":"response.completed","response":{
+                                "id":id,
+                                "output":[{"type":"message","role":"assistant",
+                                    "content":[{"type":"output_text","text":answer}]}],
+                                "usage":{"input_tokens":40,
+                                    "input_tokens_details":{"cached_tokens":0},
+                                    "output_tokens":5,"total_tokens":45}
+                            }}),
+                        ];
+                        for event in events {
+                            if socket
+                                .send(Message::Text(event.to_string().into()))
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    });
+    (port, requests)
+}
+
+#[test]
+fn codex_websocket_chain_reuses_identity_and_sends_only_the_new_suffix() {
+    let _serial = serial();
+    let (port, requests) = scripted_websocket_provider();
+    let app = TestApp::new(port, "compat");
+    let provider = app.post("/api/providers", &json!({
+        "name":"codex websocket fixture","kind":"codex",
+        "baseUrl":format!("http://127.0.0.1:{port}/codex"),
+        "accountId":"fixture-account","apiKey":"fixture-only",
+        "enabled":true,"model":"fixture-model"
+    }));
+    let agent = app.post("/api/agents", &json!({
+        "name":"ws participant",
+        "systemPrompt":"WEBSOCKET_IDENTITY_VERBATIM persona stays whole",
+        "providerId":provider["id"],"model":"fixture-model"
+    }));
+    let session = app.post("/api/sessions", &json!({"title":"ws chain","agentId":agent["id"]}));
+    for text in ["첫 번째 질문", "두 번째 질문"] {
+        let stream = app.chat(&json!({
+            "sessionId":session["id"],"agentId":agent["id"],
+            "providerId":provider["id"],"model":"fixture-model",
+            "input":text,"toolsEnabled":false,"autoLearning":false
+        }));
+        assert!(stream.contains("WEBSOCKET_ANSWER"), "{stream}");
+    }
+    let seen = requests.lock().unwrap();
+    assert_eq!(seen.len(), 2, "one websocket request per turn: {seen:?}");
+    assert!(seen[0].get("previous_response_id").is_none());
+    assert_eq!(seen[1]["previous_response_id"], "resp_ws_fixture_1");
+    assert_eq!(seen[1]["client_metadata"]["session_id"], seen[0]["client_metadata"]["session_id"]);
+    for request in seen.iter() {
+        assert!(
+            request["instructions"].as_str().unwrap().contains("WEBSOCKET_IDENTITY_VERBATIM"),
+            "identity is re-sent on every websocket call"
+        );
+    }
+    let first = seen[0]["input"].as_array().unwrap();
+    let second = seen[1]["input"].as_array().unwrap();
+    assert!(
+        !second.iter().any(|item| item.to_string().contains("첫 번째 질문")),
+        "already-chained items stay on the server: first={first:?} second={second:?}"
+    );
+    assert!(
+        second.iter().any(|item| item.to_string().contains("두 번째 질문")),
+        "the new turn is sent: {second:?}"
+    );
+    let messages = app.get(&format!("/api/sessions/{}/messages", session["id"].as_str().unwrap()));
+    let last = messages.as_array().unwrap().iter().rev()
+        .find(|row| row["role"] == "assistant").unwrap();
+    assert_eq!(
+        last["metadata"]["continuity"]["incrementalTransport"]["wire"], "websocket"
+    );
+    assert_eq!(
+        last["metadata"]["continuity"]["incrementalTransport"]["mode"], "delta"
+    );
 }

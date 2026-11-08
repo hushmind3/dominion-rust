@@ -14,7 +14,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
 futures-util = "0.3"
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 async-stream = "0.3"
 chacha20poly1305 = "0.10"
 rand = "0.8"

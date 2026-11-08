@@ -1052,8 +1052,8 @@ async fn run_turn_body(
                 crate::engine::router::rotate_agent_route(
                     state,
                     agent_id,
-                    &provider.id,
-                    &provider.model,
+                    &selected_provider.id,
+                    &selected_provider.model,
                 );
             }
             provider = selected_provider;

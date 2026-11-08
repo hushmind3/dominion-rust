@@ -1,6 +1,7 @@
 //! Native Rust chat engine: shared request contract and stable public entry points.
 mod approval;
 mod budget;
+mod codex_ws;
 mod context;
 mod continuity;
 mod room_context;

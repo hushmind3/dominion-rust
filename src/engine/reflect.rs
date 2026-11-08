@@ -143,6 +143,29 @@ pub fn enqueue(
     )
 }
 
+/// `Store::all` is ordered newest-updated first. Reflection must look at the
+/// latest executions; reversing that order selected the oldest records.
+fn recent_operations(state: &AppState, session_id: &str) -> Vec<Value> {
+    state
+        .store
+        .all("execution")
+        .into_iter()
+        .filter(|execution| execution["sessionId"] == session_id)
+        .take(2)
+        .flat_map(|execution| {
+            let run_id = execution["id"].as_str().unwrap_or("").to_string();
+            state
+                .store
+                .all("execution_operation")
+                .into_iter()
+                .filter(move |operation| operation["runId"].as_str() == Some(run_id.as_str()))
+                .collect::<Vec<_>>()
+        })
+        .map(|operation| operation_summary(&operation))
+        .take(20)
+        .collect()
+}
+
 fn operation_summary(operation: &Value) -> Value {
     json!({
         "id": operation["id"],
@@ -214,25 +237,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     lines.reverse();
     let transcript = lines.join("\n");
 
-    let operations = state
-        .store
-        .all("execution")
-        .into_iter()
-        .filter(|execution| execution["sessionId"] == session_id)
-        .rev()
-        .take(2)
-        .flat_map(|execution| {
-            let run_id = execution["id"].as_str().unwrap_or("").to_string();
-            state
-                .store
-                .all("execution_operation")
-                .into_iter()
-                .filter(move |operation| operation["runId"].as_str() == Some(run_id.as_str()))
-                .collect::<Vec<_>>()
-        })
-        .map(|operation| operation_summary(&operation))
-        .take(20)
-        .collect::<Vec<_>>();
+    let operations = recent_operations(state, session_id);
 
     let correction_class = classify_correction(correction_text, &transcript, &operations);
     // Build the LearningCase before reflection. Ambiguous corrections stay a
@@ -608,4 +613,32 @@ mod tests {
         assert!(!looks_like_correction("이 파일 설명해줘"));
         assert!(!looks_like_correction("러스트가 왜 좋은지 알려줘"));
     }
+
+    #[test]
+    fn reflection_operations_come_from_the_newest_executions() {
+        let (state, dir) = state();
+        for id in ["old", "middle", "new"] {
+            state.store.put("execution", &json!({"id":id,"sessionId":"s"}));
+            state.store.put("execution_operation", &json!({
+                "id":format!("op-{id}"),"runId":id,"tool":format!("{id}_tool"),
+                "status":"completed","opSeq":1
+            }));
+        }
+        let connection = rusqlite::Connection::open(dir.join("dominion.sqlite")).unwrap();
+        for (id, updated) in [
+            ("old", "2026-01-01 00:00:00"),
+            ("middle", "2026-01-02 00:00:00"),
+            ("new", "2026-01-03 00:00:00"),
+        ] {
+            connection.execute(
+                "UPDATE records SET updated_at=?1 WHERE id=?2", [updated, id],
+            ).unwrap();
+        }
+        let operations = recent_operations(&state, "s");
+        assert_eq!(operations[0]["tool"], "new_tool", "{operations:?}");
+        assert!(operations.iter().any(|operation| operation["tool"] == "middle_tool"), "{operations:?}");
+        assert!(!operations.iter().any(|operation| operation["tool"] == "old_tool"), "{operations:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
 }

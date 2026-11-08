@@ -361,7 +361,7 @@ fn preserve_reflection_history(messages: Vec<Value>) -> (Vec<Value>, bool) {
     (out, filled)
 }
 
-fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
+pub(super) fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
     usage.pointer("/prompt_tokens_details/cached_tokens").and_then(Value::as_u64)
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens").and_then(Value::as_u64))
         .or_else(|| usage["prompt_cache_hit_tokens"].as_u64())
@@ -1174,7 +1174,7 @@ async fn stream_codex_once(
     let mut body = json!({
         "model": provider.model,
         "instructions": if instructions.is_empty() { "You are a helpful assistant. Answer in Korean unless the user writes in another language.".to_string() } else { instructions },
-        "input": input,
+        "input": input.clone(),
         "stream": true,
         "store": false,
     });
@@ -1196,6 +1196,56 @@ async fn stream_codex_once(
         &provider.api_key,
     )
     .await?;
+    // Prefer the incremental websocket transport: the identity/persona
+    // instructions are still sent every call, but the accumulated transcript
+    // is replaced by the new suffix while the connection holds the chain.
+    let websocket = super::codex_ws::stream(
+        state,
+        provider,
+        account_id,
+        &access,
+        continuity["transportSessionId"].as_str().unwrap_or(""),
+        &body,
+        input,
+        session_id,
+        tx,
+    )
+    .await;
+    match websocket {
+        Ok(outcome) => {
+            let completion = outcome.completion;
+            continuity["incrementalTransport"] = outcome.transport;
+            crate::engine::gateway::record_usage_tokens(
+                state,
+                &provider.id,
+                &provider.model,
+                provider.local,
+                "chat",
+                Some(session_id),
+                completion.prompt_tokens,
+                completion.completion_tokens,
+                completion.usage,
+                !completion.usage_exact,
+            );
+            return Ok(completion);
+        }
+        Err(super::codex_ws::WsError::Fatal(message)) => return Err(message),
+        Err(super::codex_ws::WsError::Fallback(reason)) => {
+            continuity["incrementalTransport"] = json!({
+                "wire":"http",
+                "mode":"full-fallback",
+                "fallbackReason":reason,
+                "sentInputTokens":super::room_context::estimate(&json!(body["input"]).to_string()),
+                "fullInputTokens":super::room_context::estimate(&json!(body["input"]).to_string()),
+                "instructionTokens":super::room_context::estimate(&json!(body["instructions"]).to_string()),
+                "modelCalls":0
+            });
+            state.store.audit(
+                "codex.ws.fallback",
+                json!({"sessionId":session_id,"reason":reason}),
+            );
+        }
+    }
     let builder = client
         .post(format!("{}/responses", provider.base_url.trim_end_matches('/')))
         .header("Authorization", format!("Bearer {access}"))
