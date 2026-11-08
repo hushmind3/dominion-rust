@@ -2,6 +2,7 @@
 mod approval;
 mod budget;
 mod context;
+mod continuity;
 mod room_context;
 mod evidence;
 pub(crate) use evidence::prepare_owner_action;
@@ -157,6 +158,7 @@ struct ToolCall {
 
 #[derive(Default)]
 struct Completion {
+    continuity: Option<Value>,
     content: String,
     reasoning: String,
     tool_calls: Vec<ToolCall>,

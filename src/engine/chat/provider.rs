@@ -1167,6 +1167,11 @@ async fn stream_codex_once(
     if let Some(reasoning) = crate::engine::reasoning::codex_options(catalog.as_ref(), &provider.model, effort)? {
         body["reasoning"] = reasoning;
     }
+    let continuity = super::continuity::prepare(
+        state, provider, request, session_id,
+        body["instructions"].as_str().unwrap_or(""), &body["reasoning"],
+    )?;
+    body["prompt_cache_key"] = continuity["cacheKey"].clone();
     let access = crate::engine::codex_oauth::fresh_access(
         state,
         client,
@@ -1181,6 +1186,8 @@ async fn stream_codex_once(
         .header("OpenAI-Beta", "responses=experimental")
         .header("originator", "codex_cli_rs")
         .header("User-Agent", "codex_cli_rs/0.0.0")
+        .header("session_id", continuity["transportSessionId"].as_str().unwrap_or(""))
+        .header("x-client-request-id", continuity["cacheKey"].as_str().unwrap_or(""))
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
@@ -1199,7 +1206,7 @@ async fn stream_codex_once(
         ));
     }
 
-    let mut completion = Completion::default();
+    let mut completion = Completion { continuity: Some(continuity), ..Completion::default() };
     let mut buffer = SseBuffer::default();
     let mut stream = response.bytes_stream();
     let mut terminated = false;

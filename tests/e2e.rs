@@ -39,7 +39,7 @@ fn scripted_provider(
                         break at + 4;
                     }
                 };
-                let headers = String::from_utf8_lossy(&bytes[..end]);
+                let headers = String::from_utf8_lossy(&bytes[..end]).into_owned();
                 let length = headers
                     .lines()
                     .find_map(|line| {
@@ -56,7 +56,9 @@ fn scripted_provider(
                     bytes.extend_from_slice(&chunk[..read]);
                 }
                 let body: Value = serde_json::from_slice(&bytes[end..end + length]).unwrap();
-                observed.lock().unwrap().push(body.clone());
+                let mut recorded=body.clone();
+                if body["prompt_cache_key"].is_string() {recorded["_testHttpHeaders"]=json!(headers);}
+                observed.lock().unwrap().push(recorded);
                 let events = reply(&body);
                 let stream_mode = body["stream"].as_bool().unwrap_or(false);
                 let response = if stream_mode {
@@ -192,6 +194,61 @@ impl TestApp {
         }
         panic!("approval was not requested");
     }
+}
+
+#[test]
+fn room_bot_continuity_is_distinct_and_survives_an_engine_restart() {
+    let _serial=serial();
+    let (port,requests)=scripted_provider(|_|vec![
+        json!({"type":"response.output_text.delta","delta":"MY_BOT_PREVIOUS_ANSWER_42"}),
+        json!({"type":"response.completed","response":{"usage":{"input_tokens":200,"input_tokens_details":{"cached_tokens":128},"output_tokens":10,"total_tokens":210}}}),
+    ]);
+    let app=TestApp::new(port,"native");
+    let provider=app.post("/api/providers",&json!({"name":"continuity","kind":"codex","baseUrl":format!("http://127.0.0.1:{port}/codex"),"accountId":"fixture-account","apiKey":"fixture-only","enabled":true,"model":"fixture-model"}));
+    let a=app.post("/api/agents",&json!({"name":"A","systemPrompt":"A identity stays verbatim","providerId":provider["id"],"model":"fixture-model"}));
+    let b=app.post("/api/agents",&json!({"name":"B","systemPrompt":"B identity stays verbatim","providerId":provider["id"],"model":"fixture-model"}));
+    let room=app.post("/api/rooms",&json!({"name":"continuous bots","agentIds":[a["id"],b["id"]],"routingMode":"mentioned","rounds":1,"autoModels":false,"autoLearning":false,"toolsEnabled":false,"models":[{"providerId":provider["id"],"model":"fixture-model","reasoningEffort":"low"}]}));
+    fn send(app:&TestApp,room:&Value,agent:&Value,input:&str) {
+        let submitted=app.post(&format!("/api/rooms/{}/messages",room["id"].as_str().unwrap()),&json!({"input":input,"agentIds":[agent["id"]]}));
+        let job=submitted["job"]["id"].as_str().unwrap();
+        let deadline=Instant::now()+Duration::from_secs(10);
+        loop {
+            let record=app.get(&format!("/api/jobs/{job}"));
+            if record["status"]=="completed" {break;}
+            assert_ne!(record["status"],"failed","{record}");
+            assert!(Instant::now()<deadline,"{record}");
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    }
+    send(&app,&room,&a,"처음 선택한 식별자를 말해라.");
+    send(&app,&room,&b,"동료도 자기 식별자를 말해라.");
+    let root=app._root.clone();
+    drop(app);
+    let app=TestApp::from_root(port,"native",root,&[]);
+    send(&app,&room,&a,"앞서 네가 말했던 식별자는?");
+    let seen=requests.lock().unwrap();
+    assert_eq!(seen.len(),3,"no extra model for continuity");
+    assert_eq!(seen[0]["prompt_cache_key"],seen[2]["prompt_cache_key"]);
+    assert_ne!(seen[0]["prompt_cache_key"],seen[1]["prompt_cache_key"]);
+    assert_eq!(seen[0]["instructions"],seen[2]["instructions"]);
+    assert!(seen[0]["instructions"].as_str().unwrap().contains("A identity stays verbatim"));
+    assert!(seen[1]["instructions"].as_str().unwrap().contains("B identity stays verbatim"));
+    for request in seen.iter() {
+        let headers=request["_testHttpHeaders"].as_str().unwrap().to_lowercase();
+        assert!(headers.contains("session_id:"));
+        assert!(headers.contains(&format!("x-client-request-id: {}",request["prompt_cache_key"].as_str().unwrap())));
+        assert!(request.get("prompt_cache_options").is_none(),"consumer Codex owns cache policy");
+    }
+    assert!(seen[2]["input"].as_array().unwrap().iter().any(|row|row["role"]=="assistant" && row["content"][0]["text"]=="MY_BOT_PREVIOUS_ANSWER_42"));
+    let messages=app.get(&format!("/api/rooms/{}/messages",room["id"].as_str().unwrap()));
+    let rows=messages.as_array().unwrap();
+    let last=rows.iter().rev().find(|row|row["role"]=="assistant").unwrap();
+    assert_eq!(last["metadata"]["continuity"]["samePrefixAsPreviousRequest"],true);
+    assert_eq!(last["metadata"]["usage"]["cachedPromptTokens"],128);
+    assert_eq!(last["metadata"]["usage"]["uncachedPromptTokens"],72);
+    let c=Connection::open(app._root.join("runtime/dominion.sqlite")).unwrap();
+    let saved:String=c.query_row("SELECT data FROM records WHERE kind='model_conversation' AND id=?1",[last["metadata"]["continuity"]["id"].as_str().unwrap()],|row|row.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&saved).unwrap()["lastReplyMessageId"],last["id"]);
 }
 
 #[test]

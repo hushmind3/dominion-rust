@@ -1061,6 +1061,11 @@ async fn run_turn_body(
         {
             return Err("도구가 비활성인 대화에서 모델이 도구 실행을 요청했습니다.".into());
         }
+        metadata["continuity"] = completion.continuity.clone().unwrap_or(Value::Null);
+        if let Some(mut execution) = state.store.get("execution", execution_id) {
+            execution["modelContinuity"] = metadata["continuity"].clone();
+            state.store.put("execution", &execution);
+        }
 
         if !completion.reasoning.is_empty() {
             final_reasoning.push_str(&completion.reasoning);
@@ -1916,6 +1921,7 @@ async fn run_turn_body(
         }))
         .ok_or("최종 응답을 저장할 수 없습니다.")?;
     state.bus.message(&saved);
+    super::continuity::commit(state, &metadata["continuity"], &saved);
     if let Some(mut execution) = state.store.get("execution", execution_id) {
         execution["finalMessageId"] = saved["id"].clone();
         state.store.put("execution", &execution);
