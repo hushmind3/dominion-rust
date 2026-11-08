@@ -106,7 +106,8 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
     let patch = body["patch"].as_str().ok_or("patch가 필요합니다.")?;
     let paths = patch_paths(patch)?;
     if target == "improver" && !paths.iter().any(|path| {
-        path == "src/engine/rsi.rs" || path == "src/engine/algorithms.rs"
+        path == "src/engine/rsi.rs" || path == "src/engine/rsi_worktree.rs"
+            || path == "src/api/rsi.rs" || path == "src/engine/algorithms.rs"
             || path == "src/engine/algorithm_eval.rs"
             || path == "src/engine/policy_patch.rs"
     }) {

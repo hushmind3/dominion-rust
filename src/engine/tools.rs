@@ -84,12 +84,20 @@ pub fn requires_approval(name: &str) -> bool {
     )
 }
 
+pub fn rsi_allowed(name:&str)->bool{
+    matches!(name,"workspace_list"|"workspace_read"|"workspace_write"|"web_search"|"http_fetch")
+}
+
 pub async fn execute(
     ctx: &ToolContext<'_>,
     name: &str,
     args: &Value,
     run_id: &str,
 ) -> Result<Value, String> {
+    if ctx.store.get("session",ctx.session_id).is_some_and(|s|s["rsiRun"]==true)
+        && !rsi_allowed(name) {
+        return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
+    }
     match name {
         "workspace_list" => {
             let path = resolve_workspace(ctx.workspace, string_arg(args, "path").unwrap_or("."))?;

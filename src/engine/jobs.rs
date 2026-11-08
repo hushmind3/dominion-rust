@@ -506,6 +506,9 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
             json!({"status":"needs_review","reason":"중단된 프롬프트 작업 결과를 확인해야 합니다."}),
         );
     }
+    let rsi_workspace = if input["rsiSourceDir"].is_string() {
+        Some(crate::engine::rsi_worktree::prepare(context,&input).await?)
+    } else { None };
     let session_id = job
         .get("sessionId")
         .or_else(|| input.get("sessionId"))
@@ -516,10 +519,16 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
         None => context.state.store.put("session",&json!({"title":prompt.chars().take(40).collect::<String>(),"agentId":input.get("agentId")}))
             .and_then(|session|session["id"].as_str().map(str::to_string)).ok_or("작업 세션을 저장할 수 없습니다.")?,
     };
+    if rsi_workspace.is_some() {
+        if let Some(mut session)=context.state.store.get("session",&session_id) {
+            session["rsiRun"]=json!(true);
+            context.state.store.put("session",&session);
+        }
+    }
     context.checkpoint(json!({"sessionId":session_id,"promptState":{"inFlight":true}}))?;
     let request = TurnRequest {
         session_id: Some(session_id),
-        input: prompt,
+        input: if rsi_workspace.is_some() { format!("{prompt}\n\n현재 수정 대상은 별도의 Git 작업공간이며, workspace_list/read/write만 사용하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.") } else { prompt },
         agent_id: input
             .get("agentId")
             .and_then(|value| value.as_str())
@@ -545,32 +554,27 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
         verification_owner: None,
     };
 
-    // RSI jobs execute the existing tool loop with a workspace rooted at the
-    // verified development checkout, never the user's unrelated workspace.
-    // The API injects this field; the generic /api/jobs endpoint strips it.
-    let scoped_state = if let Some(path) = input["rsiSourceDir"].as_str() {
-        let status = crate::engine::dev::status(&context.state).await;
-        if status["git"] != true || status["branch"] != "dominion-sub" {
-            return Err("자기개선 작업을 시작하기 전에 dominion-sub 브랜치를 확인하세요.".into());
+    // A detached worktree protects the running DOMINION checkout. The worker
+    // captures the real diff and verifier evidence before removing that copy.
+    let mut scoped_state = context.state.clone();
+    if let Some(worktree)=&rsi_workspace {scoped_state.config.workspace=worktree.path.clone();}
+    let message = run_quiet(&scoped_state, &request).await;
+    let result = if let Some(worktree)=&rsi_workspace {
+        let finished=crate::engine::rsi_worktree::finish(
+            context,job,worktree,message,&session_id
+        ).await;
+        if let Err(error)=crate::engine::rsi_worktree::cleanup(worktree).await {
+            context.state.store.audit("rsi.worktree_cleanup_failed",
+                json!({"jobId":context.job_id,"error":error}));
         }
-        let requested = std::path::Path::new(path).canonicalize().map_err(|e| e.to_string())?;
-        let configured = status["config"]["sourceDir"].as_str().unwrap_or("");
-        let configured = if let Some(tail) = configured.strip_prefix("~/") {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(tail)
-        } else { std::path::PathBuf::from(configured) };
-        if configured.canonicalize().ok().as_deref() != Some(requested.as_path()) {
-            return Err("자기개선 작업 중 소스 연결이 변경됐습니다.".into());
-        }
-        let mut scoped = context.state.clone();
-        scoped.config.workspace = requested;
-        scoped
-    } else { context.state.clone() };
-    let message = run_quiet(&scoped_state, &request).await?;
-
-    let result = json!({
-        "sessionId": message.as_ref().and_then(|item| item.get("session_id")),
-        "messageId": message.as_ref().and_then(|item| item.get("id")),
-    });
+        finished?
+    } else {
+        let message=message?;
+        json!({
+            "sessionId": message.as_ref().and_then(|item| item.get("session_id")),
+            "messageId": message.as_ref().and_then(|item| item.get("id")),
+        })
+    };
     context.checkpoint(json!({"promptState":{"inFlight":false,"result":result}}))?;
     Ok(result)
 }

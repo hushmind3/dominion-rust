@@ -94,7 +94,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     } else { objective };
     let source_dir = source.to_string_lossy().to_string();
     let prompt = format!(
-        "DOMINION Rust 자체 개선 작업입니다. 지정된 저장소만 조사·수정하십시오.\\n\\n저장소: {source_dir}\\n현재 브랜치: dominion-sub\\n개선 목표: {objective}\\n\\n반드시 실제 workspace_list/workspace_read로 현재 소스를 읽고 원인을 분석하세요. 필요한 코드를 workspace_write로 수정하고, shell_exec 또는 terminal_exec로 관련 테스트와 빌드를 실행하세요. 실패하면 허용된 반복 내에서 코드를 재수정하고 테스트하세요. 선택한 모델과 원래의 사용자 페르소나를 변경하지 마세요. main 브랜치 변경·브랜치 생성·커밋·푸시·병합·운영 서버 재시작을 하지 마세요. 완료했다고 주장하기 전에 실제 도구 결과를 확인하세요. 성공 여부, 수정 파일, 테스트 결과, 남은 실패를 한국어로 보고하세요. 사용자는 코딩을 하지 않으므로 JSON, Git diff, SHA 입력을 요청하지 마세요."
+        "DOMINION Rust 자체 개선 작업입니다. 원본 소스는 보호되고 실행기가 생성하는 분리된 작업공간에서 수정합니다.\\n\\n원본 (읽기 참조용): {source_dir}\\n브랜치: dominion-sub\\n개선 목표: {objective}\\n\\nworkspace_list/workspace_read로 코드를 읽고 원인을 분석하세요. 필요한 기존 코드 또는 새 소스는 workspace_write로 수정하세요. 절대경로 읽기·쓰기, 셸, GitHub API, 다른 에이전트는 이 작업에 사용할 수 없습니다. 소스 검사와 후보 기록은 종료 후 엔진이 직접 수행합니다. 작업을 하지 않았는데 성공이라고 주장하지 마세요. 코드 변경 내용과 이유를 한국어로 설명하세요. main 변경·커밋·푸시·병합·서버 재시작은 하지 마세요."
     ).replace("\\n", "\n");
     let mut input = json!({
         "prompt": prompt,
@@ -103,6 +103,14 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "toolsEnabled": true,
         "toolsExecutionEnabled": true,
         "rsiSourceDir": source_dir,
+        "rsiBaseCommit": status["commit"],
+        "rsiObjective": objective,
+        "rsiFrozenCases": [
+            {"id":"owner-memory","domain":"memory","holdout":true,
+                "filter":"engine::room_state::tests::korean_owner_correction_replaces_the_previous_assignment"},
+            {"id":"algorithm-generation","domain":"algorithm","holdout":true,
+                "filter":"engine::algorithms::tests::generation_uses_evidence_and_returns_executable_kernels"}
+        ],
         "autoLearning": false
     });
     if let Some(effort) = body["reasoningEffort"].as_str().filter(|v| !v.is_empty()) {
@@ -156,6 +164,8 @@ mod tests {
         assert_eq!(jobs[0]["input"]["providerId"], "test-provider");
         assert_eq!(jobs[0]["input"]["model"], "sample-model");
         assert_eq!(jobs[0]["input"]["rsiSourceDir"], checkout.to_str().unwrap());
+        assert!(jobs[0]["input"]["rsiBaseCommit"].as_str().is_some_and(|v|v.len()==40));
+        assert_eq!(jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap().len(),2);
         assert!(jobs[0]["input"]["prompt"].as_str().unwrap().contains("workspace_write"));
         std::fs::write(checkout.join("uncommitted.txt"), "owner edits").unwrap();
         let refused = start(State(state.clone()), Json(body)).await;

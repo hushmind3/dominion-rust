@@ -500,6 +500,9 @@ async fn run_turn_body(
     if !is_room {
         tool_definitions = select_tool_definitions(tool_definitions, &request.input, &discovery);
     }
+    if session["rsiRun"]==true {
+        tool_definitions.retain(|definition| tools::rsi_allowed(tool_name(definition)));
+    }
     let compiled = if is_room {
         let source = source_message_id.or(reply_to.as_deref()).ok_or("응답할 원문이 없습니다.")?;
         let compiled = super::room_context::compile(
@@ -4176,7 +4179,10 @@ async fn dispatch_tool_call(
             tools_enabled: request.tools_enabled,
             tools_execution_enabled: request.tools_execution_enabled,
         };
-        let outcome = if call.name.starts_with("mcp__") {
+        let outcome = if state.store.get("session",session_id).is_some_and(|s|s["rsiRun"]==true)
+            && !tools::rsi_allowed(&call.name) {
+            Err("자기개선 작업의 허용 도구 범위를 벗어났습니다.".into())
+        } else if call.name.starts_with("mcp__") {
             mcp::call(state, &call.name, &arguments).await
         } else {
             tools::execute(&context, &call.name, &arguments, execution_id).await
