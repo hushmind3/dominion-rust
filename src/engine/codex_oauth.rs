@@ -145,6 +145,9 @@ pub fn jwt_claims(token: &str) -> Option<Value> {
 }
 
 pub fn account_id(tokens: &Value) -> Option<String> {
+    if let Some(id) = tokens["account_id"].as_str().filter(|value|!value.is_empty()) {
+        return Some(id.to_string());
+    }
     let id_token = tokens["id_token"].as_str().unwrap_or("");
     let access_token = tokens["access_token"].as_str().unwrap_or("");
     [id_token, access_token].into_iter().find_map(|token| {
@@ -216,7 +219,30 @@ pub async fn fresh_access(
         return Ok(current.to_string());
     };
     if meta["shared"].as_bool() == Some(true) {
-        return Ok(current.to_string());
+        // A Codex CLI import is a shared credential, not a refresh-token
+        // grant owned by DOMINION. Re-read the CLI's rotated access token
+        // without refreshing/revoking its refresh token ourselves.
+        let home = std::env::var_os("CODEX_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(||std::env::var_os("HOME")
+                .map(|path|std::path::PathBuf::from(path).join(".codex")));
+        if let Some(path) = home.map(|dir|dir.join("auth.json")) {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                if let Ok(cli) = serde_json::from_str::<Value>(&contents) {
+                    let tokens = &cli["tokens"];
+                    let expected = state.store.get("provider",provider_id)
+                        .and_then(|provider|provider["accountId"].as_str().map(str::to_string));
+                    let actual = account_id(tokens);
+                    if expected.is_some() && expected == actual {
+                        if let Some(access) = tokens["access_token"].as_str()
+                            .filter(|value|!value.is_empty()) {
+                            return Ok(access.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        return Err("Codex CLI 인증 정보를 갱신하지 못했습니다. Codex에서 로그인 상태를 확인하거나 DOMINION 브라우저 로그인으로 전환하세요.".into());
     }
     let expires = meta["expiresAt"].as_i64().unwrap_or(0);
     let now = chrono::Utc::now().timestamp();
@@ -225,7 +251,7 @@ pub async fn fresh_access(
     }
     let refresh_token = meta["refreshToken"].as_str().unwrap_or("");
     if refresh_token.is_empty() {
-        return Ok(current.to_string());
+        return Err("Codex OAuth 토큰이 만료됐고 갱신 토큰이 없습니다. 모델 관리에서 브라우저 로그인을 진행하세요.".into());
     }
     let tokens = refresh(client, refresh_token).await?;
     save_tokens(state, provider_id, &tokens, false)?;
@@ -233,4 +259,14 @@ pub async fn fresh_access(
         .as_str()
         .map(str::to_string)
         .ok_or("Codex 갱신 응답에 access_token이 없습니다.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cli_account_id_is_preserved_without_jwt_decoding() {
+        assert_eq!(account_id(&json!({"account_id":"acct-example"})).as_deref(),Some("acct-example"));
+        assert!(account_id(&json!({"access_token":"invalid"})).is_none());
+    }
 }
