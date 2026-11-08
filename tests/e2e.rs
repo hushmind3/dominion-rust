@@ -7107,6 +7107,9 @@ fn codex_receives_uploaded_image_and_file_contents() {
         "toolsEnabled":false,"autoLearning":false
     }));
     assert!(stream.contains("assistant_saved"), "{stream}");
+    let usage=app.get(&format!("/api/sessions/{}/usage",session["id"].as_str().unwrap()));
+    assert!(usage["totalTokens"].as_u64().unwrap()>0,"missing provider usage must not become a free call: {usage}");
+    assert!(usage["estimatedCalls"].as_u64().unwrap()>0,"estimates must remain distinguishable: {usage}");
     let seen = requests.lock().unwrap();
     assert_eq!(seen.len(), 1);
     let parts = seen[0]["input"].as_array().unwrap().iter()

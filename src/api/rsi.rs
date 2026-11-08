@@ -7,7 +7,8 @@ fn error(message: String) -> Response {
 }
 
 pub async fn list(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({"version":"manual-rsi-v1","candidates":engine::list(&state),
+    Json(json!({"version":"rsi-v2","candidates":engine::list(&state),
+        "campaigns":state.store.all("rsi_campaign").into_iter().take(20).collect::<Vec<_>>(),
         "minPairedCases":engine::MIN_PAIRED_CASES}))
 }
 
@@ -40,6 +41,31 @@ pub async fn deployment(
     match engine::confirm_deployment(&state,&id,&body) {
         Ok(value)=>Json(value).into_response(), Err(err)=>error(err)
     }
+}
+
+pub async fn choose(State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>)->Response{
+    match crate::engine::rsi_evolve::choose(&state,&id,&body){
+        Ok(value)=>Json(value).into_response(),Err(message)=>error(message)
+    }
+}
+
+pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(job)=state.store.get("job",&id).filter(|job|job["kind"]=="rsi_evolve")else{
+        return error("개선 작업을 찾을 수 없습니다.".into());
+    };
+    let mut record=state.store.get("rsi_campaign",&id).unwrap_or_else(||json!({"id":id,"phase":"preparing_lab"}));
+    if job["status"]!="running"||record["status"].is_null(){record["status"]=job["status"].clone();}
+    if !job["error"].is_null(){record["error"]=job["error"].clone();}
+    Json(record).into_response()
+}
+
+pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
+    let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|record|{
+        let job=record["id"].as_str().and_then(|id|state.store.get("job",id)).unwrap_or(Value::Null);
+        json!({"id":record["id"],"phase":record["phase"],
+            "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
+    }).collect::<Vec<_>>();
+    Json(json!({"campaigns":rows}))
 }
 
  
@@ -83,6 +109,21 @@ pub async fn apply(
 }
 
 pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    let continuous=body["mode"]=="continuous";
+    let _start_guard=if continuous{
+        if !state.begin_session("rsi-evolution-start"){return error("개선 시작을 처리 중입니다.".into());}
+        let guard=state.session_guard("rsi-evolution-start");
+        if state.store.all("job").iter().any(|job|job["kind"]=="rsi_evolve"&&matches!(job["status"].as_str(),Some("queued"|"running"))){
+            return error("진행 중인 개선이 있습니다. 기존 작업에서 계속하거나 중단해 주세요.".into());
+        }
+        Some(guard)
+    }else{None};
+    if continuous && body["confirmation"]!="START_RSI_EVOLUTION" {
+        return error("시작 버튼에서 자동 진단·실험 실행을 선택하세요.".into());
+    }
+    if !body["mode"].is_null() && !matches!(body["mode"].as_str(),Some("manual"|"continuous")){
+        return error("지원하지 않는 실행 방식입니다.".into());
+    }
     let provider_id = body["providerId"].as_str().unwrap_or("").trim();
     let model = body["model"].as_str().unwrap_or("").trim();
     if provider_id.is_empty() || model.is_empty() || model.len() > 200 {
@@ -95,10 +136,10 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         return error("비활성화된 모델 제공자입니다.".into());
     }
     let status = crate::engine::dev::status(&state).await;
-    if status["git"] != true || status["branch"] != "dominion-sub" {
+    if status["git"] != true || (!continuous && status["branch"] != "dominion-sub") {
         return error("자기개선은 연결된 Git 소스의 dominion-sub 브랜치에서만 실행합니다. 개발자 설정에서 소스 폴더를 연결하세요.".into());
     }
-    if status["dirty"].as_u64().unwrap_or(u64::MAX) != 0 {
+    if !continuous && status["dirty"].as_u64().unwrap_or(u64::MAX) != 0 {
         return error("소스 폴더에 미저장 변경사항이 있습니다. 기존 작업이 덮어써지지 않도록 먼저 정리하세요.".into());
     }
     let source_raw = status["config"]["sourceDir"].as_str().unwrap_or("");
@@ -170,7 +211,17 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         }
         input["reasoningEffort"] = json!(effort);
     }
-    match crate::engine::jobs::enqueue(&state, "prompt", input) {
+    if continuous {
+        let limits=match crate::engine::rsi_evolve::limits(&body){Ok(v)=>v,Err(e)=>return error(e)};
+        let policy=body["selectionPolicy"].as_str().unwrap_or("manual");
+        if !matches!(policy,"manual"|"automatic"){return error("선택 방식이 올바르지 않습니다.".into());}
+        input["selectionPolicy"]=json!(policy);input["limits"]=limits;
+        input["rsiNativeApproved"]=json!(true);
+    }
+    let mut cases=input["rsiFrozenCases"].as_array().cloned().unwrap_or_default();
+    cases.extend(crate::engine::rsi_worktree::metric_cases());
+    input["rsiFrozenCases"]=json!(cases);
+    match crate::engine::jobs::enqueue(&state, if continuous{"rsi_evolve"}else{"prompt"}, input) {
         Some(job) => (StatusCode::ACCEPTED, Json(job)).into_response(),
         None => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"자기개선 작업을 대기열에 등록하지 못했습니다."}))).into_response()
     }
@@ -214,9 +265,9 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0]["input"]["providerId"], "test-provider");
         assert_eq!(jobs[0]["input"]["model"], "sample-model");
-        assert_eq!(jobs[0]["input"]["rsiSourceDir"], checkout.to_str().unwrap());
+        assert_eq!(jobs[0]["input"]["rsiSourceDir"], checkout.canonicalize().unwrap().to_str().unwrap());
         assert!(jobs[0]["input"]["rsiBaseCommit"].as_str().is_some_and(|v|v.len()==40));
-        assert_eq!(jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap().len(),8);
+        assert_eq!(jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap().len(),12);
         assert!(jobs[0]["input"]["prompt"].as_str().unwrap().contains("workspace_write"));
         assert_eq!(jobs[0]["input"]["rsiAutonomous"], false);
         let auto_response = start(State(state.clone()), Json(json!({
@@ -232,6 +283,20 @@ mod tests {
         let refused = start(State(state.clone()), Json(body)).await;
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
         assert_eq!(state.store.all("job").len(), 2);
+        // A non-developer can start from an unchanged copy of their current
+        // source without committing unrelated files or switching Git branches.
+        git(&checkout, &["checkout","-b","ordinary-owner-branch"]);
+        let continuous=json!({"providerId":"test-provider","model":"sample-model",
+            "mode":"continuous","confirmation":"START_RSI_EVOLUTION","selectionPolicy":"manual"});
+        let response=start(State(state.clone()),Json(continuous.clone())).await;
+        assert_eq!(response.status(),StatusCode::ACCEPTED);
+        let queued=state.store.all("job");
+        let campaign=queued.iter().find(|job|job["kind"]=="rsi_evolve").unwrap();
+        assert_eq!(campaign["input"]["rsiNativeApproved"],true);
+        assert_eq!(campaign["input"]["selectionPolicy"],"manual");
+        assert!(campaign["input"]["limits"]["tokenBudget"].as_u64().unwrap()>0);
+        assert_eq!(start(State(state.clone()),Json(continuous)).await.status(),StatusCode::BAD_REQUEST);
+        assert_eq!(std::fs::read_to_string(checkout.join("uncommitted.txt")).unwrap(),"owner edits");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -213,6 +213,10 @@ pub(super) async fn request_approval(
     operation_id: &str,
     procedure_node: Option<&str>,
 ) -> bool {
+    if crate::engine::rsi_evolve::auto_write_allowed(state,session_id,tool,args) {
+        state.store.audit("rsi.isolated_write_authorized",json!({"sessionId":session_id,"runId":execution_id,"operationId":operation_id,"args":args}));
+        return true;
+    }
     let policy = state
         .store
         .get("policy", "default")

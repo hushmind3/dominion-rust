@@ -27,6 +27,8 @@ pub mod goals;
 pub mod gateway;
 pub mod improve;
 pub mod rsi;
+pub mod rsi_metrics;
+pub mod rsi_evolve;
 pub mod rsi_worktree;
 pub mod recovery;
 pub mod reasoning;

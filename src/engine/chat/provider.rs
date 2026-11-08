@@ -538,6 +538,16 @@ fn estimate_usage(messages: &[Value], tools: &[Value], completion: &Completion) 
     )
 }
 
+fn fill_estimated_usage(messages:&[Value],tools:&[Value],completion:&mut Completion){
+    if !completion.usage_exact {
+        let(prompt,output)=estimate_usage(messages,tools,completion);
+        completion.prompt_tokens=prompt;
+        completion.completion_tokens=output;
+        completion.usage=prompt.saturating_add(output);
+        completion.cached_prompt_tokens=None;
+    }
+}
+
 pub(super) async fn stream_completion(
     state: &AppState,
     client: &reqwest::Client,
@@ -1351,7 +1361,8 @@ async fn stream_codex_once(
     .await;
     match websocket {
         Ok(outcome) => {
-            let completion = outcome.completion;
+            let mut completion = outcome.completion;
+            fill_estimated_usage(messages,tools,&mut completion);
             continuity["incrementalTransport"] = outcome.transport;
             crate::engine::gateway::record_usage_tokens(
                 state,
@@ -1513,6 +1524,7 @@ async fn stream_codex_once(
     if !terminated {
         return Err("Codex 스트림이 완료 신호 없이 종료되었습니다.".into());
     }
+    fill_estimated_usage(messages,tools,&mut completion);
     crate::engine::gateway::record_usage_tokens(
         state,
         &provider.id,
@@ -1594,6 +1606,8 @@ async fn stream_anthropic_once(
     let mut text_pending = String::new();
     let mut in_text_tool_call = false;
     let mut input_tokens = 0u64;
+    let mut input_reported = false;
+    let mut output_reported = false;
     let mut cache_read_tokens = 0u64;
     let mut cache_read_reported = false;
     let mut cache_write_tokens = 0u64;
@@ -1619,6 +1633,7 @@ async fn stream_anthropic_once(
                 .map_err(|_| "Anthropic 스트림 JSON이 올바르지 않습니다.")?;
             match piece["type"].as_str().unwrap_or("") {
                 "message_start" => {
+                    input_reported=piece["message"]["usage"]["input_tokens"].as_u64().is_some();
                     input_tokens = piece["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0);
                     cache_read_reported = piece["message"]["usage"]["cache_read_input_tokens"].as_u64().is_some();
                     cache_read_tokens = piece["message"]["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
@@ -1697,6 +1712,7 @@ async fn stream_anthropic_once(
                     }
                 }
                 "message_delta" => {
+                    output_reported|=piece["usage"]["output_tokens"].as_u64().is_some();
                     output_tokens = piece["usage"]["output_tokens"].as_u64().unwrap_or(output_tokens);
                 }
                 "message_stop" => {
@@ -1727,7 +1743,8 @@ async fn stream_anthropic_once(
     completion.cached_prompt_tokens = cache_read_reported.then_some(cache_read_tokens);
     completion.completion_tokens = output_tokens;
     completion.usage = completion.prompt_tokens + output_tokens;
-    completion.usage_exact = true;
+    completion.usage_exact = input_reported&&output_reported;
+    fill_estimated_usage(messages,&tools,&mut completion);
     crate::engine::gateway::record_usage_tokens(
         state,
         &provider.id,
@@ -1736,9 +1753,9 @@ async fn stream_anthropic_once(
         "chat",
         Some(session_id),
         completion.prompt_tokens,
-        output_tokens,
+        completion.completion_tokens,
         completion.usage,
-        false,
+        !completion.usage_exact,
     );
     Ok(completion)
 }

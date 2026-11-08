@@ -90,7 +90,8 @@ fn case_plan(value: &Value) -> Result<Vec<Value>, String> {
         if !seen.insert(id.to_string()) {
             return Err(format!("중복 평가 사례: {id}"));
         }
-        result.push(json!({"id":id,"domain":domain,"holdout":row["holdout"] == true,"filter":filter}));
+        let metrics = crate::engine::rsi_metrics::plan(&row["metrics"])?;
+        result.push(json!({"id":id,"domain":domain,"holdout":row["holdout"] == true,"filter":filter,"metrics":metrics}));
     }
     Ok(result)
 }
@@ -106,6 +107,7 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
     let paths = patch_paths(patch)?;
     if target == "improver" && !paths.iter().any(|path| {
         path == "src/engine/rsi.rs" || path == "src/engine/rsi_worktree.rs"
+            || path == "src/engine/rsi_evolve.rs" || path == "src/engine/rsi_metrics.rs"
             || path == "src/api/rsi.rs" || path == "src/engine/algorithms.rs"
             || path == "src/engine/algorithm_eval.rs"
             || path == "src/engine/policy_patch.rs"
@@ -120,7 +122,8 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
         .filter(|v| !v.is_empty() && v.len() <= 120)
         .ok_or("후보 등록 전에 고정된 oracleVersion이 필요합니다.")?;
     let patch_hash = digest(patch);
-    let id = format!("rsi-{}", digest(&format!("{base}:{target}:{patch_hash}")));
+    let plan_hash=digest(&json!({"cases":cases,"oracleVersion":oracle_version}).to_string());
+    let id = format!("rsi-{}", digest(&format!("{base}:{target}:{patch_hash}:{plan_hash}")));
     if let Some(existing) = state.store.get("rsi_candidate", &id) {
         return Ok(existing);
     }
@@ -174,6 +177,10 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     let mut holdouts = 0usize;
     let mut improved_holdouts = 0usize;
     let mut holdout_domains = BTreeSet::new();
+    let mut metric_gains = 0;
+    let mut metric_losses = 0;
+    let mut measurements = Vec::new();
+    let mut meta_gains = 0;
     for measurement in measured {
         let id = measurement["id"].as_str().ok_or("측정 사례 id가 없습니다.")?;
         let Some(planned) = plan.iter().find(|row| row["id"] == id) else {
@@ -190,25 +197,37 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
         if after { candidate_successes += 1; }
         if !before && after { gains += 1; }
         if before && !after { losses += 1; }
+        let specs = planned["metrics"].as_array().cloned().unwrap_or_default();
+        let (mg, ml, detail) = if before && after {
+            crate::engine::rsi_metrics::compare(&specs,&measurement["metrics"])?
+        } else { (0,0,Vec::new()) };
+        // Failed cases cannot earn metric gains by returning early or doing less work.
+        let mg = if before && after { mg } else { 0 };
+        metric_gains += mg;
+        metric_losses += ml;
+        if planned["domain"] == "improver" { meta_gains += mg; }
+        measurements.push(json!({"id":id,"metrics":detail}));
         if planned["holdout"] == true {
             holdouts += 1;
             holdout_domains.insert(planned["domain"].as_str().unwrap_or("").to_string());
-            if !before && after { improved_holdouts += 1; }
+            if (!before && after) || mg > 0 { improved_holdouts += 1; }
         }
     }
     let ready = plan.len() >= MIN_PAIRED_CASES
         && holdouts >= 2
-        && gains > 0
-        && losses == 0
+        && gains + metric_gains > 0
+        && losses + metric_losses == 0
         && (target != "improver"
-            || (holdout_domains.len() >= 2 && improved_holdouts > 0));
+            || (holdout_domains.len() >= 2 && improved_holdouts > 0
+                && (!plan.iter().any(|p|p["domain"]=="improver" && p["metrics"].as_array().is_some_and(|m|!m.is_empty())) || meta_gains>0)));
     Ok(json!({
         "pairedCases":plan.len(),"holdoutCases":holdouts,
         "holdoutDomains":holdout_domains.into_iter().collect::<Vec<_>>(),
         "baselineSuccesses":baseline_successes,"candidateSuccesses":candidate_successes,
-        "gains":gains,"regressions":losses,"improvedHoldouts":improved_holdouts,
+        "gains":gains,"regressions":losses+metric_losses,"improvedHoldouts":improved_holdouts,
+        "metricGains":metric_gains,"metricRegressions":metric_losses,"metaGains":meta_gains,"measurements":measurements,
         "eligible":ready,
-        "verdict":if losses>0 {"regressed"} else if ready {"improved"} else {"inconclusive"}
+        "verdict":if losses+metric_losses>0 {"regressed"} else if ready {"improved"} else {"inconclusive"}
     }))
 }
 
@@ -446,6 +465,22 @@ mod tests {
         })).unwrap()["status"],"reported_deployed");
         child["generatorSourceCommit"]=json!(deployed);
         assert_eq!(propose(&state,&child).unwrap()["lineageGeneration"],2);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn all_passed_guards_can_promote_a_real_metric_gain_and_freeze_its_plan(){
+        let(state,root)=state();let mut p=proposal("harness");
+        p["cases"][0]["metrics"]=json!([{"key":"quality","direction":"higher","minRelativeGain":0.1}]);
+        let candidate=propose(&state,&p).unwrap();
+        let mut measured=report(&candidate);
+        for row in measured["cases"].as_array_mut().unwrap(){row["baselinePass"]=json!(true);}
+        measured["cases"][0]["metrics"]=json!({"quality":{"baseline":0.7,"candidate":0.9}});
+        let result=evaluate(&state,candidate["id"].as_str().unwrap(),&measured).unwrap();
+        assert_eq!(result["status"],"verified");assert_eq!(result["evaluation"]["metrics"]["gains"],0);
+        assert_eq!(result["evaluation"]["metrics"]["metricGains"],1);
+        p["cases"][0]["metrics"][0]["minRelativeGain"]=json!(0.01);
+        assert_ne!(propose(&state,&p).unwrap()["id"],candidate["id"],"a different oracle cannot reuse a verified candidate identity");
         let _=std::fs::remove_dir_all(root);
     }
 }

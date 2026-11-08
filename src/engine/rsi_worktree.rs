@@ -13,6 +13,27 @@ const CHECK_LIMIT: Duration = Duration::from_secs(360);
 // near that boundary rather than hashing/approving a silently truncated diff.
 const MAX_CAPTURE_BYTES: usize = 79_000;
 
+pub fn metric_cases()->Vec<Value>{
+    [
+        ("memory-quality","memory","memory_ranking",false),
+        ("long-recall-quality","memory","long_owner_recall",true),
+        ("planning-quality","planning","planning_quality",true),
+        ("search-quality","improver","improvement_search",true),
+    ].into_iter().map(|(id,domain,name,holdout)|json!({
+        "id":id,"domain":domain,"holdout":holdout,"filter":format!("rsi_frozen_oracle::{name}"),
+        "metrics":[
+            {"key":"quality","direction":"higher","minRelativeGain":0.02,"minAbsoluteGain":0.025},
+            {"key":"elapsedMs","direction":"lower","minRelativeGain":0.2,"minAbsoluteGain":1.0,"maxRelativeRegression":0.25}
+        ]
+    })).map(|mut case|{
+        if case["id"]=="long-recall-quality"{
+            case["metrics"].as_array_mut().unwrap().push(json!({"key":"contextChars","direction":"lower",
+                "minRelativeGain":0.1,"minAbsoluteGain":20.0,"maxRelativeRegression":0.1}));
+        }
+        case
+    }).collect()
+}
+
 /// Evidence from earlier autonomous source runs, reintroduced to the next
 /// generation. A successful build is explicitly NOT behavioral improvement.
 pub fn recent_feedback(state:&crate::state::AppState)->String{
@@ -79,7 +100,8 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     if !source.join("Cargo.toml").is_file() || !source.join("src/engine/rsi.rs").is_file() {
         return Err("DOMINION 소스가 아닙니다.".into());
     }
-    if git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?.trim()!="dominion-sub" {
+    let campaign=crate::engine::rsi_evolve::campaign_source(&context.state,input,&source,base);
+    if !campaign && git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?.trim()!="dominion-sub" {
         return Err("원본 소스 브랜치가 dominion-sub가 아닙니다.".into());
     }
     if git(&source,&["rev-parse","HEAD"]).await?.trim()!=base {
@@ -105,6 +127,8 @@ fn classify(patch:&str)->&'static str {
     if patch.lines().any(|line|line.starts_with("diff --git ")
         && (line.contains("src/engine/rsi.rs ")
             || line.contains("src/engine/rsi_worktree.rs ")
+            || line.contains("src/engine/rsi_evolve.rs ")
+            || line.contains("src/engine/rsi_metrics.rs ")
             || line.contains("src/api/rsi.rs "))) {
         "improver"
     } else if patch.lines().filter(|line|line.starts_with("diff --git "))
@@ -188,7 +212,7 @@ pub async fn finish(
         let proposal=json!({
             "target":classify(&patch),"baseCommit":worktree.base,
             "patch":patch,"hypothesis":hypothesis,
-            "cases":input["rsiFrozenCases"],"oracleVersion":"rsi-worktree-v1",
+            "cases":input["rsiFrozenCases"],"oracleVersion":"rsi-worktree-v2",
             "generatorModel":input["model"],"generatorEffort":input["reasoningEffort"],
             "generatorSourceCommit":worktree.base
         });
@@ -198,6 +222,8 @@ pub async fn finish(
                 candidate["origin"]="model_driven_detached_worktree".into();
                 candidate["pairedComparisonComplete"]=json!(false);
                 candidate["reviewRequired"]=json!(true);
+                candidate["experimentCampaignId"]=input["rsiCampaignId"].clone();
+                candidate["actualGeneratorCommit"]=input["rsiGeneratorCommit"].clone();
                 candidate_id=candidate["id"].clone();
                 context.state.store.put("rsi_candidate",&candidate);
                 checks=validate(worktree,&patch).await;
@@ -285,11 +311,10 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
     static APPLY_LOCK:OnceLock<tokio::sync::Mutex<()>>=OnceLock::new();
     let _lock=APPLY_LOCK.get_or_init(||tokio::sync::Mutex::new(())).lock().await;
     let mut candidate=state.store.get("rsi_candidate",id).ok_or("개선 후보를 찾을 수 없습니다.")?;
-    if !matches!(candidate["status"].as_str(),Some("proposed"|"inconclusive"|"verified"))
-        || candidate["target"]=="improver" {
-        return Err("독립 실험이 없는 개선기 자체 패치는 시험 적용할 수 없습니다.".into());
+    if !matches!(candidate["status"].as_str(),Some("proposed"|"inconclusive"|"verified")) {
+        return Err("현재 상태에서는 적용할 수 없습니다.".into());
     }
-    if body["confirmation"]!="APPLY_UNVERIFIED_TO_SUB"
+    if !matches!(body["confirmation"].as_str(),Some("APPLY_UNVERIFIED_TO_SUB"|"APPLY_VERIFIED_TO_SUB"))
         || body["baseCommit"]!=candidate["baseCommit"]
         || body["patchSha256"]!=candidate["patchSha256"] {
         return Err("기준 커밋·패치 해시·수동 적용 의사를 확인하세요.".into());
@@ -298,9 +323,20 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
     let record_id=format!("rsi-run-{job_id}");
     let mut evidence=state.store.get("rsi_run",&record_id).ok_or("실제 실행 증거가 없습니다.")?;
     if evidence["candidateId"]!=candidate["id"] || evidence["diffSha256"]!=candidate["patchSha256"]
-        || evidence["checksPassed"]!=true || evidence["sourceClean"]!=true
-        || evidence["pairedComparisonComplete"]!=false {
+        || evidence["checksPassed"]!=true || evidence["sourceClean"]!=true {
         return Err("코드 출처 및 컴파일·타입 검사 통과 증거를 만족하지 못했습니다.".into());
+    }
+    let verified=candidate["status"]=="verified"
+        &&candidate["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+        &&candidate["evaluation"]["metrics"]["eligible"]==true
+        &&evidence["pairedComparisonComplete"]==true
+        &&candidate["evaluation"]["evidenceSha256"].is_string()
+        &&candidate["evaluation"]["evidenceSha256"]==evidence["paired"]["reportSha256"];
+    if (candidate["target"]=="improver"||body["confirmation"]=="APPLY_VERIFIED_TO_SUB")&&!verified {
+        return Err("독립 비교에서 우세함이 확인된 개선기만 적용할 수 있습니다.".into());
+    }
+    if evidence["pairedComparisonComplete"]==true && candidate["evaluation"]["metrics"]["regressions"].as_u64()!=Some(0){
+        return Err("비교에서 회귀가 발견된 후보는 적용할 수 없습니다.".into());
     }
     let patch=candidate["patch"].as_str().ok_or("패치 본문이 없습니다.")?;
     if digest(patch)!=candidate["patchSha256"].as_str().unwrap_or("") {
@@ -337,7 +373,7 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
     let now=chrono::Utc::now().to_rfc3339();
     candidate["status"]=json!("applied_to_sub");
     candidate["manualApplication"]=json!({
-        "mode":"explicit_trial_without_paired_proof",
+        "mode":if verified{"explicit_verified_paired_application"}else{"explicit_trial_without_paired_proof"},
         "appliedAt":now,"sourceCommit":status["commit"],
         "requiresRebuild":true,"requiresCommit":true,"autoDeployed":false
     });
@@ -355,8 +391,16 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
 /// exact model patch. Tests run on the operator's host: Git worktrees provide
 /// source isolation, NOT an OS security sandbox. Never call this from a model.
 pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
-    let id=job["input"]["candidateId"].as_str()
-        .ok_or("비교할 자기개선 후보가 없습니다.")?;
+    let id=job["input"]["candidateId"].as_str().ok_or("비교할 후보가 없습니다.")?;
+    let status=crate::engine::dev::status(&context.state).await;
+    if status["git"]!=true || status["branch"]!="dominion-sub" || status["dirty"]!=0 {
+        return Err("비교 실험은 깨끗한 dominion-sub 소스에서 시작하세요.".into());
+    }
+    let source=std::fs::canonicalize(status["config"]["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
+    compare_at(context,id,&source,&source).await
+}
+
+pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_source:&Path)->Result<Value,String>{
     let state=&context.state;
     let candidate=state.store.get("rsi_candidate",id)
         .ok_or("비교할 후보 기록이 없습니다.")?;
@@ -376,26 +420,30 @@ pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
     if prior["candidateId"]!=candidate["id"]||prior["checksPassed"]!=true {
         return Err("컴파일 검사를 통과한 현재 실행 후보만 A/B 실험을 실행합니다.".into());
     }
-    let status=crate::engine::dev::status(state).await;
-    if status["git"]!=true || status["branch"]!="dominion-sub"
-        || status["dirty"]!=0 {
-        return Err("자기개선 비교는 깨끗한 dominion-sub 소스에서만 실행합니다.".into());
+    if !git(source,&["status","--porcelain"]).await?.is_empty(){
+        return Err("비교할 기준 작업공간이 변경됐습니다.".into());
     }
-    let source=std::fs::canonicalize(
-        status["config"]["sourceDir"].as_str().ok_or("저장소 소스 경로가 없습니다.")?
-    ).map_err(|e|e.to_string())?;
-    let runner=source.join("scripts/rsi-lab.sh");
-    if !runner.is_file() {
-        return Err("고정된 쌍대 실험기 scripts/rsi-lab.sh가 없습니다.".into());
-    }
+    // Older frozen candidates remain evaluable after the checkout advances.
+    // Both lab variants are created from candidate.baseCommit, never HEAD.
+    git(source,&["cat-file","-e",&format!("{}^{{commit}}",candidate["baseCommit"].as_str().ok_or("기준 커밋 없음")?)]).await?;
     let output_dir=state.config.data_dir.join("rsi-paired")
         .join(format!("{}-{}",id,uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&output_dir).map_err(|e|e.to_string())?;
+    let output_dir=std::fs::canonicalize(output_dir).map_err(|e|e.to_string())?;
     let patch_file=output_dir.join("candidate.patch");
     let plan_file=output_dir.join("plan.json");
     let report_file=output_dir.join("report.json");
     std::fs::write(&patch_file,patch).map_err(|e|e.to_string())?;
-    let plan=json!({"oracleVersion":candidate["oracleVersion"],"cases":candidate["cases"]});
+    let runner=output_dir.join("rsi-lab.sh");
+    std::fs::write(&runner,include_str!("../../scripts/rsi-lab.sh")).map_err(|e|e.to_string())?;
+    std::fs::write(output_dir.join("rsi-measure.mjs"),include_str!("../../scripts/rsi-measure.mjs")).map_err(|e|e.to_string())?;
+    let mut plan=json!({"oracleVersion":candidate["oracleVersion"],"cases":candidate["cases"]});
+    if candidate["cases"].as_array().into_iter().flatten().any(|c|c["filter"].as_str().is_some_and(|f|f.starts_with("rsi_frozen_oracle::"))){
+        let oracle=include_str!("rsi_oracle_fixture.rs");
+        let file=std::fs::canonicalize(&output_dir).map_err(|e|e.to_string())?.join("frozen-oracle.rs");
+        std::fs::write(&file,oracle).map_err(|e|e.to_string())?;
+        plan["oracleFixture"]=json!(file);plan["oracleSha256"]=json!(digest(oracle));
+    }
     std::fs::write(&plan_file,plan.to_string()).map_err(|e|e.to_string())?;
     context.checkpoint(json!({
         "rsiCompareInFlight":true,"rsiPhase":"paired_experiment",
@@ -404,8 +452,9 @@ pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
     let mut command=Command::new("bash");
     command.current_dir(&source).arg(&runner)
         .arg(candidate["baseCommit"].as_str().unwrap_or(""))
-        .arg(&patch_file).arg(&plan_file).arg(&report_file);
-    let outcome=run(command,Duration::from_secs(1200)).await?;
+        .arg(&patch_file).arg(&plan_file).arg(&report_file)
+        .env("RSI_BUILD_CACHE",std::fs::canonicalize(&state.config.data_dir).map_err(|e|e.to_string())?.join("rsi-paired-build").join(&context.job_id));
+    let outcome=crate::engine::rsi_evolve::command(context,command,Duration::from_secs(1200)).await?;
     if !outcome.status.success() {
         return Err(format!("독립 A/B 실험 실행 실패: {}",String::from_utf8_lossy(&outcome.stderr)
             .chars().rev().take(1200).collect::<String>().chars().rev().collect::<String>()));
@@ -430,6 +479,7 @@ pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
     let metrics=updated["evaluation"]["metrics"].clone();
     // This evaluation came from a real local script invocation, not a
     // client-supplied verdict. It is still host execution, not a VM sandbox.
+    updated["pairedComparisonComplete"]=json!(true);
     updated["evaluation"]["source"]=json!("server_invoked_local_paired_git_worktrees");
     updated["evaluation"]["evidenceSha256"]=json!(evidence_sha);
     state.store.put("rsi_candidate",&updated)
@@ -461,7 +511,8 @@ pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
         "verdict":verdict,"metrics":metrics,
         "evidenceSha256":evidence_sha,
         "pairedCases":report["cases"].as_array().map(Vec::len).unwrap_or(0),
-        "performanceImprovementClaimed":false
+        "performanceImprovementClaimed":metrics["metricGains"].as_u64().unwrap_or(0)>0,
+        "measurementScope":"frozen_native_cases_only"
     }))
 }
 
@@ -496,6 +547,7 @@ mod tests {
     fn classification_covers_the_improver_harness_and_algorithm(){
         assert_eq!(classify("diff --git a/src/engine/rsi.rs b/src/engine/rsi.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/api/rsi.rs b/src/api/rsi.rs\n"),"improver");
+        assert_eq!(classify("diff --git a/src/engine/rsi_evolve.rs b/src/engine/rsi_evolve.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/engine/room_state.rs b/src/engine/room_state.rs\n"),"algorithm");
         assert_eq!(classify("diff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\n"),"harness");
     }
@@ -584,7 +636,12 @@ mod tests {
         let record_id=format!("rsi-run-{}",context.job_id);
         let mut proof=state.store.get("rsi_run",&record_id).unwrap();
         proof["checksPassed"]=json!(true);
+        proof["pairedComparisonComplete"]=json!(true);
         state.store.put("rsi_run",&proof);
+        let mut compared=state.store.get("rsi_candidate",candidate_id).unwrap();
+        compared["status"]=json!("inconclusive");
+        compared["evaluation"]=json!({"metrics":{"regressions":0}});
+        state.store.put("rsi_candidate",&compared);
         let applied=apply_to_sub(&state,candidate_id,&request).await.unwrap();
         assert_eq!(applied["status"],"applied_to_sub");
         assert_eq!(std::fs::read_to_string(source.join("web/src/pages/Demo.tsx")).unwrap(),"export const version = 2\n");

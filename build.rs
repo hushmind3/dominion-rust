@@ -10,6 +10,7 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=DOMINION_RSI_BUILD_COMMIT");
     let commit = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
     let branch =
         git(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|| "unknown".into());

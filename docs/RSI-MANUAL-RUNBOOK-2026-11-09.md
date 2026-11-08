@@ -2,6 +2,8 @@
 
 기준: 2026-11-09, `dominion-sub`. 기존 Rust 실행 엔진을 보존하면서 알고리즘·하네스·개선기를 모두 개선 대상으로 취급한다.
 
+현재의 버튼 기반 반복 실행과 직접/자동 선택은 [RSI-EVOLUTION-2026-11-09.md](RSI-EVOLUTION-2026-11-09.md)를 참고한다. 아래는 기존 수동 등록·평가 API의 운용 명세이며, 새 실험 계보와 운영 배포는 구분한다.
+
 ## 현재 구현
 
 `src/engine/rsi.rs`는 코드 변경 후보를 `algorithm` / `harness` / `improver`로 분류하고, 원본 git SHA·patch SHA-256·실험 계획·생성 모델·부모 후보를 보관한다. `src/api/rsi.rs`는 등록/조회/평가/수동 승인을 연결한다.

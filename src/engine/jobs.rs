@@ -137,6 +137,7 @@ pub fn recover(state: &AppState) {
             "/inFlight",
             "/promptState/inFlight",
             "/rsiCompareInFlight",
+            "/rsiEvolutionInFlight",
             "/goalState/inFlight",
             "/goalState/reviewPending",
             "/roomState/inFlight",
@@ -435,6 +436,7 @@ async fn run_job(state: AppState, job: Value) {
         "goal" => goals::run(&context, &job).await,
         "prompt" => run_prompt(&context, &job).await,
         "rsi_compare" => crate::engine::rsi_worktree::compare(&context,&job).await,
+        "rsi_evolve" => crate::engine::rsi_evolve::run(&context,&job).await,
         "resume" => run_resume(&context, &job).await,
         "learn" => learning::run(&context, &job).await,
         "reflect" => reflect::run(&context, &job).await,
@@ -489,7 +491,7 @@ async fn run_job(state: AppState, job: Value) {
     }
 }
 
-async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> {
+pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> {
     let input = job.get("input").cloned().unwrap_or_else(|| json!({}));
     let prompt = input
         .get("prompt")
@@ -529,6 +531,10 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
     if rsi_workspace.is_some() {
         if let Some(mut session)=context.state.store.get("session",&session_id) {
             session["rsiRun"]=json!(true);
+            if let Some(id)=input["rsiCampaignId"].as_str(){
+                session["rsiCampaignId"]=json!(id);
+                session["rsiGenerationJobId"]=json!(context.job_id);
+            }
             context.state.store.put("session",&session);
         }
     }

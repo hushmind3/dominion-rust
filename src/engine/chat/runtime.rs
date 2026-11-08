@@ -459,7 +459,7 @@ async fn run_turn_body(
     let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"taskId":task_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
 
     let mut provider = select_provider(state, request, &session)?;
-    let allow_provider_fallback = true;
+    let allow_provider_fallback = session["rsiRun"]!=true;
     let budget_algorithm = crate::engine::algorithms::choose_for_agent(
         state,
         "execution.budget",
@@ -1018,6 +1018,11 @@ async fn run_turn_body(
                 execution["inputContext"]["preProviderDigest"] = json!(crate::engine::memory::stable_id(&[&json!({"messages":wire_messages,"tools":round_tools}).to_string()]));
                 state.store.put("execution", &execution);
             }
+        }
+        if let Some(limit)=crate::engine::rsi_evolve::remaining_output_tokens(
+            state,session_id,super::room_context::input_estimate(&wire_messages,&round_tools) as u64,
+        )?{
+            provider.max_output_tokens=Some(provider.max_output_tokens.unwrap_or(8192).min(limit));
         }
         let completion_result = stream_completion(
             state,
