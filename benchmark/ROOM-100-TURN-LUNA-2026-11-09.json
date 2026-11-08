@@ -1,0 +1,82 @@
+{
+  "experiment": "room-longrun-100-luna-low",
+  "date": "2026-11-09",
+  "branch": "dominion-sub",
+  "purpose": "Measure 100-turn room continuity, recall, cost, cache behavior and context rebasing on Codex gpt-6-luna with the lowest reasoning effort.",
+  "method": {
+    "provider": "codex-oauth",
+    "model": "gpt-6-luna",
+    "reasoningEffort": "low",
+    "room": "9 agents, discussion routing",
+    "maxTurns": "3 for filler turns, 9 for the plant/recall turns",
+    "ownerTurns": 100,
+    "autoLearning": false,
+    "toolsEnabled": false,
+    "isolatedPort": 4318,
+    "live4317Untouched": true,
+    "specialTurns": {
+      "1": "plant BLUE-HARBOR-7421",
+      "10": "plant deploy owner 코볼트",
+      "25": "discard BLUE-HARBOR-7421 and set SILVER-ORCHID-1188",
+      "50": "recall current secret",
+      "60": "recall deploy owner",
+      "75": "recall current and discarded secret",
+      "100": "recall both secrets and deploy owner"
+    }
+  },
+  "result": {
+    "ownerTurnsSubmitted": 100,
+    "jobsCompleted": 99,
+    "jobsFailed": 1,
+    "failedTurn": 36,
+    "failedTurnError": "도구가 비활성 상태라 요청한 작업을 실제로 수행할 수 없습니다.",
+    "failedTurnNote": "engine tool-policy error, not a provider error; no provider fallback",
+    "assistantMessages": 884,
+    "promptTokens": 2630782,
+    "cachedPromptTokens": 477568,
+    "uncachedPromptTokens": 2153214,
+    "completionTokens": 194512,
+    "cacheHitRate": 0.1815,
+    "meanTurnSeconds": 47.71,
+    "maxTurnSeconds": 75.15,
+    "wallMinutes": 79.5,
+    "allRepliesUsedLuna": true,
+    "providerErrors": 0,
+    "fallbackEvents": 0,
+    "rebases": {
+      "initial": 9,
+      "history_budget": 621,
+      "contract_changed": 91,
+      "total": 721
+    },
+    "turn10Replies": 2,
+    "participation": [
+      {"agentId":"dominion-ainz","replies":99,"promptTokens":269750,"cachedPromptTokens":110336,"completionTokens":39509,"maxPromptTokens":3397},
+      {"agentId":"dominion-albedo","replies":99,"promptTokens":280872,"cachedPromptTokens":74240,"completionTokens":23411,"maxPromptTokens":3403},
+      {"agentId":"dominion-shalltear","replies":98,"promptTokens":280254,"cachedPromptTokens":17024,"completionTokens":16281,"maxPromptTokens":3475},
+      {"agentId":"dominion-cocytus","replies":98,"promptTokens":284112,"cachedPromptTokens":4608,"completionTokens":13942,"maxPromptTokens":3487},
+      {"agentId":"dominion-demiurge","replies":98,"promptTokens":293664,"cachedPromptTokens":14720,"completionTokens":24743,"maxPromptTokens":4046},
+      {"agentId":"dominion-aura","replies":98,"promptTokens":337343,"cachedPromptTokens":201856,"completionTokens":20504,"maxPromptTokens":4829},
+      {"agentId":"dominion-mare","replies":98,"promptTokens":292013,"cachedPromptTokens":21760,"completionTokens":16564,"maxPromptTokens":4666},
+      {"agentId":"dominion-sebas","replies":98,"promptTokens":294652,"cachedPromptTokens":16128,"completionTokens":19318,"maxPromptTokens":4706},
+      {"agentId":"dominion-pandora-actor","replies":98,"promptTokens":298122,"cachedPromptTokens":16896,"completionTokens":20240,"maxPromptTokens":4913}
+    ],
+    "recall": [
+      {"turn":1,"fact":"BLUE-HARBOR-7421","replies":9,"correct":9,"note":"introduced"},
+      {"turn":10,"fact":"코볼트","replies":2,"correct":2,"note":"introduced"},
+      {"turn":25,"fact":"SILVER-ORCHID-1188 / BLUE-HARBOR-7421","replies":9,"correct":9,"note":"introduced and old secret discarded"},
+      {"turn":50,"fact":"SILVER-ORCHID-1188","replies":9,"correct":0},
+      {"turn":60,"fact":"코볼트","replies":9,"correct":0},
+      {"turn":75,"fact":"SILVER-ORCHID-1188 / BLUE-HARBOR-7421","replies":9,"correct":0},
+      {"turn":100,"fact":"SILVER-ORCHID-1188 / BLUE-HARBOR-7421 / 코볼트","replies":9,"correct":0}
+    ]
+  },
+  "conclusion": "The run finished 99 of 100 turns, but long-term recall failed: every later checkpoint scored 0/9. The facts were acknowledged when introduced and then dropped after the history_budget and contract_changed rebases. This is not a success for continuity or recall.",
+  "notClaimed": [
+    "0/9 recall at turns 50, 60, 75 and 100 is a measured failure, not a display artifact",
+    "the 621 history_budget and 91 contract_changed rebases are counted from assistant-message metadata",
+    "turn 36 failed because the engine rejected a tool request while tools were disabled; it is not a provider failure",
+    "turn 10 produced 2 replies rather than 3; the filler cap was 3, not a fixed speaker count",
+    "the raw 1.83 MB report remains outside the repository; this file is the curated evidence"
+  ]
+}
