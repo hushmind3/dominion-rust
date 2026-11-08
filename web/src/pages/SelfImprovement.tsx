@@ -99,7 +99,7 @@ function CandidateReview({id,canApply,afterApply}:{id:string;canApply:boolean;af
     판정: {comparison.result.verdict||'판정 대기'}.
    </p>}
    <p className="mt-1 text-[11px] text-[#8A8176]">기존 Rust 회귀 테스트의 원본/수정본 비교입니다. 실제 모델의 100턴 기억·토큰 비용 실험은 별도입니다.</p>
-  </div>
+  </div>}
   {applied&&<p role="status" className="mt-3 text-[12px] text-emerald-700">작업 브랜치에 코드가 반영됐습니다. 서버 재빌드·재시작 전에는 실행 중인 엔진이 변경되지 않습니다.</p>}
   {canApply&&['proposed','inconclusive','verified'].includes(candidate.value.status)&&candidate.value.target!=='improver'&&
    <Button variant="secondary" disabled={applying} className="mt-3" onClick={()=>void apply()}>
