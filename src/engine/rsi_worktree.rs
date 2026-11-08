@@ -191,6 +191,78 @@ pub async fn finish(
         "rsi":result,
     }))
 }
+/// Apply a model-generated patch only after explicit owner review. A successful
+/// compile is NOT proof of improved behavior. Never commit, push or deploy.
+pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Result<Value,String>{
+    use std::sync::OnceLock;
+    static APPLY_LOCK:OnceLock<tokio::sync::Mutex<()>>=OnceLock::new();
+    let _lock=APPLY_LOCK.get_or_init(||tokio::sync::Mutex::new(())).lock().await;
+    let mut candidate=state.store.get("rsi_candidate",id).ok_or("개선 후보를 찾을 수 없습니다.")?;
+    if candidate["status"]!="proposed" || candidate["target"]=="improver" {
+        return Err("독립 실험이 없는 개선기 자체 패치는 시험 적용할 수 없습니다.".into());
+    }
+    if body["confirmation"]!="APPLY_UNVERIFIED_TO_SUB"
+        || body["baseCommit"]!=candidate["baseCommit"]
+        || body["patchSha256"]!=candidate["patchSha256"] {
+        return Err("기준 커밋·패치 해시·수동 적용 의사를 확인하세요.".into());
+    }
+    let job_id=candidate["rsiJobId"].as_str().ok_or("실행 증거가 없습니다.")?.to_string();
+    let record_id=format!("rsi-run-{job_id}");
+    let mut evidence=state.store.get("rsi_run",&record_id).ok_or("실제 실행 증거가 없습니다.")?;
+    if evidence["candidateId"]!=candidate["id"] || evidence["diffSha256"]!=candidate["patchSha256"]
+        || evidence["checksPassed"]!=true || evidence["sourceClean"]!=true
+        || evidence["pairedComparisonComplete"]!=false {
+        return Err("코드 출처 및 컴파일·타입 검사 통과 증거를 만족하지 못했습니다.".into());
+    }
+    let patch=candidate["patch"].as_str().ok_or("패치 본문이 없습니다.")?;
+    if digest(patch)!=candidate["patchSha256"].as_str().unwrap_or("") {
+        return Err("패치 해시가 저장된 값과 다릅니다.".into());
+    }
+    let status=crate::engine::dev::status(state).await;
+    if status["git"]!=true || status["branch"]!="dominion-sub"
+        || status["dirty"]!=0 || status["commit"]!=candidate["baseCommit"] {
+        return Err("원본 작업 브랜치가 기준과 다르거나 수정 중이므로 적용하지 않았습니다.".into());
+    }
+    let remote=status["remote"].as_str().unwrap_or("");
+    if !remote.is_empty() && !remote.contains("hushmind3/dominion-rust") {
+        return Err("연결된 소스가 DOMINION Rust 저장소가 아닙니다.".into());
+    }
+    let source=status["config"]["sourceDir"].as_str().ok_or("소스 폴더가 연결되지 않았습니다.")?;
+    let source=std::fs::canonicalize(source).map_err(|e|e.to_string())?;
+    if !source.join("Cargo.toml").is_file() || !source.join("src/engine/rsi.rs").is_file(){
+        return Err("DOMINION Rust 프로젝트 폴더가 아닙니다.".into());
+    }
+    let temporary=std::env::temp_dir().join(format!("dominion-rsi-patch-{}.diff",uuid::Uuid::new_v4()));
+    std::fs::write(&temporary,patch).map_err(|e|e.to_string())?;
+    let path=temporary.to_str().ok_or("임시 패치 경로 오류")?;
+    let applied=async {
+        git(&source,&["apply","--check",path]).await?;
+        if !git(&source,&["status","--porcelain","--untracked-files=normal"]).await?.is_empty()
+            || git(&source,&["rev-parse","HEAD"]).await?!=candidate["baseCommit"].as_str().unwrap_or("") {
+            return Err("최종 적용 직전 기준 소스가 변경되어 중단했습니다.".into());
+        }
+        git(&source,&["apply",path]).await?;
+        Ok::<(),String>(())
+    }.await;
+    let _=std::fs::remove_file(temporary);
+    applied?;
+    let now=chrono::Utc::now().to_rfc3339();
+    candidate["status"]=json!("applied_to_sub");
+    candidate["manualApplication"]=json!({
+        "mode":"explicit_trial_without_paired_proof",
+        "appliedAt":now,"sourceCommit":status["commit"],
+        "requiresRebuild":true,"requiresCommit":true,"autoDeployed":false
+    });
+    evidence["manuallyApplied"]=json!(true);
+    evidence["appliedAt"]=json!(now);
+    state.store.put("rsi_run",&evidence);
+    let saved=state.store.put("rsi_candidate",&candidate).ok_or("코드 적용 후 기록 저장에 실패했습니다.")?;
+    state.store.audit("rsi.applied_trial_to_sub",
+        json!({"candidateId":id,"jobId":job_id,"baseCommit":status["commit"]}));
+    state.bus.record("rsi_candidate",&saved);
+    Ok(saved)
+}
+
 pub async fn cleanup(worktree:&Worktree)->Result<(),String>{
     let name=worktree.path.to_str().ok_or("작업공간 경로 오류")?;
     git(&worktree.source,&["worktree","remove","--force",name]).await.map(|_|())
