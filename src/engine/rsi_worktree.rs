@@ -125,7 +125,16 @@ pub async fn finish(
     // Include newly created files without staging actual content; only the
     // disposable worktree index is touched, never the real branch/index.
     git(&worktree.path,&["add","-N","-A","."]).await?;
-    let patch=git(&worktree.path,&["diff","--no-ext-diff","--no-color","--binary","HEAD"]).await?;
+    // Preserve the final newline: unlike SHA/status output, Git patches
+    // must not be trimmed or git apply may reject them as corrupt.
+    let mut diff_command=Command::new("git");
+    diff_command.current_dir(&worktree.path)
+        .args(["diff","--no-ext-diff","--no-color","--binary","HEAD"]);
+    let raw=run(diff_command,GIT_LIMIT).await?;
+    if !raw.status.success(){
+        return Err(String::from_utf8_lossy(&raw.stderr).to_string());
+    }
+    let patch=String::from_utf8_lossy(&raw.stdout).to_string();
     let patch_size=patch.len();
     let patch_sha=digest(&patch);
     let mut candidate_id=Value::Null;
