@@ -178,5 +178,28 @@
     "the chain lives only while the socket lives; reconnect/restart resends the full transcript",
     "a 3-turn greeting is short: the saving grows with transcript length up to the context budget",
     "provider cache behavior is not controlled by this change"
-  ]
+  ],
+  "repeat_confirmation": {
+    "date": "2026-11-08",
+    "note": "Re-run on the committed tree with a fresh database copy.",
+    "turn2": {
+      "calls": 9,
+      "prompt": 21060,
+      "cached": 8192,
+      "uncached": 12868,
+      "completion": 221,
+      "sentInputTokens": 1685,
+      "fullInputTokens": 5085,
+      "sentRatio": 0.3314,
+      "modes": [
+        "delta"
+      ],
+      "wire": [
+        "websocket"
+      ],
+      "rebases": []
+    },
+    "all_calls_incremental": true,
+    "rebases_after_initial": 0
+  }
 }
