@@ -186,7 +186,11 @@ pub fn save_tokens(
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .unwrap_or(Value::Null);
     // Never carry a previous account's refresh token into a new OAuth login.
-    let same_account = previous["accountId"].as_str() == account_id(tokens).as_deref();
+    let token_account = account_id(tokens);
+    let old_account = previous["accountId"].as_str().map(str::to_string)
+        .or_else(||state.store.get("provider",provider_id)
+            .and_then(|provider|provider["accountId"].as_str().map(str::to_string)));
+    let same_account = old_account.as_deref() == token_account.as_deref();
     let refresh = tokens["refresh_token"]
         .as_str()
         .filter(|value| !value.is_empty())
