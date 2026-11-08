@@ -319,6 +319,7 @@ mod tests {
         let base=git_local(&source,&["rev-parse","HEAD"]);
         let cfg=Config{port:0,data_dir:data.clone(),web_dir:data.join("web"),workspace:data.clone()};
         let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),Vault::open(&cfg.key_path()));
+        crate::engine::dev::save_config(&state,&json!({"sourceDir":source.to_str().unwrap()}));
         let input=json!({
             "rsiBaseCommit":base,"rsiSourceDir":source.to_str().unwrap(),
             "rsiObjective":"DOMINION 화면 렌더링 검증 대상 소스를 수정한다",
