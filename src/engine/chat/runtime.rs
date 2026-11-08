@@ -2441,8 +2441,11 @@ fn tool_name(definition: &Value) -> &str {
 fn room_tool_request(input: &str) -> bool {
     let lower = input.to_lowercase();
     [
-        "파일", "폴더", "읽", "쓰", "저장", "수정", "삭제", "만들", "작성", "열어",
-        "보여", "실행", "명령", "터미널", "빌드", "테스트", "설치", "검색", "웹",
+        "파일", "폴더", "읽고", "읽어", "읽어줘", "읽어봐", "읽기",
+        "쓰기", "써줘", "써 줘", "저장해", "저장하", "수정해", "수정하",
+        "삭제해", "삭제하", "만들어", "만들어줘", "작성해", "작성하",
+        "열어줘", "열어봐", "보여줘", "보여 줘", "실행", "명령", "터미널",
+        "빌드", "테스트", "설치", "검색", "웹",
         "http", "url", "api", "코드", "버그", "도구", "계속", "이어", "마저",
         "스킬", "메모리", "브라우저", "깃허브", "github", "shell", "file", "read",
         "write", "run", "search", "fetch", "install", "build", "test", "tool",
@@ -2488,11 +2491,18 @@ fn select_room_tools(
     let lower = query.to_lowercase();
     let groups: &[(&[&str], &[&str])] = &[
         (
-            &["파일", "폴더", "읽", "열어", "보여", "read", "file"],
+            &[
+                "파일", "폴더", "읽고", "읽어", "읽어줘", "읽어봐", "읽기",
+                "열어줘", "열어봐", "보여줘", "보여 줘", "read", "file",
+            ],
             &["workspace_list", "workspace_read", "file_list", "file_read"],
         ),
         (
-            &["쓰", "저장", "수정", "삭제", "만들", "작성", "기록", "남겨", "write", "save", "edit"],
+            &[
+                "쓰기", "써줘", "써 줘", "저장해", "저장하", "수정해", "수정하",
+                "삭제해", "삭제하", "만들어", "만들어줘", "작성해", "작성하",
+                "기록", "남겨", "write", "save", "edit", "delete", "create",
+            ],
             &["workspace_write", "file_write"],
         ),
         (
@@ -5825,6 +5835,8 @@ mod harness_tool_selection_tests {
         ];
         let empty = std::collections::HashSet::new();
         assert!(select_room_tools(definitions.clone(), "안녕", &empty, false).is_empty());
+        assert!(select_room_tools(definitions.clone(), "오늘 날씨는 어때 보여?", &empty, false).is_empty());
+        assert!(select_room_tools(definitions.clone(), "책 읽는 건 좋아해?", &empty, false).is_empty());
         assert!(select_room_tools(
             definitions.clone(),
             "내가 첫 턴에 뭐라고 했는지 기억해?",
