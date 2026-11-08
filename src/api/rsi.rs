@@ -46,6 +46,15 @@ pub async fn deployment(
 /// A non-developer chooses a configured model and describes the issue.
  /// The existing Rust tool harness performs inspection, edits and verification;
  /// patch/commit/test manifests remain internal, never a form prerequisite.
+pub async fn apply(
+    State(state): State<AppState>, Path(id): Path<String>, Json(body): Json<Value>
+) -> Response {
+    match crate::engine::rsi_worktree::apply_to_sub(&state,&id,&body).await {
+        Ok(value)=>Json(value).into_response(),
+        Err(error)=>error(error),
+    }
+}
+
 pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let provider_id = body["providerId"].as_str().unwrap_or("").trim();
     let model = body["model"].as_str().unwrap_or("").trim();

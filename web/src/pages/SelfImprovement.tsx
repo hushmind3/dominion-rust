@@ -18,7 +18,7 @@ type Job={
  id:string;status:string;sessionId?:string;error?:string;
  result?:{sessionId?:string;messageId?:string;rsi?:RsiEvidence};promptState?:{inFlight?:boolean}
 }
-type RsiCandidate={id:string;status:string;patch?:string;paths?:string[];patchSha256?:string;reviewRequired?:boolean}
+type RsiCandidate={id:string;status:string;target?:string;patch?:string;paths?:string[];patchSha256?:string;baseCommit?:string;reviewRequired?:boolean}
 type Message={id:string;role:string;content:string;created_at:string}
 type Approval={id:string;sessionId:string;status:string;tool:string;args:unknown}
 const SAVED_JOB='dominion.rsi.activeJob'
@@ -26,8 +26,23 @@ const terminal=(status:string)=>['completed','failed','cancelled','needs_review'
 const operationLabel=(approval:Approval)=>{ const args=approval.args as Record<string,unknown>|null; const value=args&&typeof args==='object'?args:null; const detail=value?.path||value?.cwd||value?.command||''; return typeof detail==='string'&&detail.trim()?detail.slice(0,240):'선택한 도구의 실행을 승인할까요?' }
 const defaultTask='예: 장기기억·도구 호출·토큰 비용 중 하나를 중점적으로 진단해 주세요. (비워두면 전체 소스를 스스로 진단합니다.)'
 
-function CandidateReview({id}:{id:string}){
+function CandidateReview({id,canApply,afterApply}:{id:string;canApply:boolean;afterApply:()=>void}){
  const candidate=useRemote<RsiCandidate>('/api/rsi/'+encodeURIComponent(id),{id,status:'proposed'})
+ const [applying,setApplying]=useState(false)
+ const [applyError,setApplyError]=useState('')
+ const [applied,setApplied]=useState(false)
+ const apply=async()=>{
+  if(!candidate.value.baseCommit||!candidate.value.patchSha256)return
+  if(!window.confirm('성능 향상 비교가 완료되지 않았습니다. 컴파일 검사를 통과한 패치를 dominion-sub에 시험 반영하시겠습니까? 운영 서버는 자동 재시작되지 않습니다.'))return
+  setApplying(true);setApplyError('')
+  try{
+   await post('/api/rsi/'+encodeURIComponent(id)+'/apply',{
+    confirmation:'APPLY_UNVERIFIED_TO_SUB',baseCommit:candidate.value.baseCommit,
+    patchSha256:candidate.value.patchSha256
+   })
+   setApplied(true);await candidate.reload();afterApply()
+  }catch(e){setApplyError((e as Error).message)}finally{setApplying(false)}
+ }
  return <div className="mt-3 rounded-lg border border-[#E7E0D5] bg-white p-3 text-[12px]">
   <strong>등록된 개선 후보 · {candidate.value.status}</strong>
   <p className="mt-2 break-all font-mono text-[10px] text-[#7C7469]">{id}</p>
@@ -35,7 +50,14 @@ function CandidateReview({id}:{id:string}){
   <details className="mt-3"><summary className="cursor-pointer font-semibold text-[#A94E30]">실제 수정 패치 확인</summary>
    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#F7F2EA] p-3 text-[10px]">{candidate.value.patch||'패치 정보 없음'}</pre>
   </details>
-  <p className="mt-2 text-[11px] text-[#8A8176]">이 후보는 자동 승격되지 않습니다. 원본 대비 독립 실험 및 수동 승인 전 상태입니다.</p>
+  <Notice message={applyError}/>
+  {applied&&<p role="status" className="mt-3 text-[12px] text-emerald-700">작업 브랜치에 코드가 반영됐습니다. 서버 재빌드·재시작 전에는 실행 중인 엔진이 변경되지 않습니다.</p>}
+  {canApply&&candidate.value.status==='proposed'&&candidate.value.target!=='improver'&&
+   <Button variant="secondary" disabled={applying} className="mt-3" onClick={()=>void apply()}>
+    <ClipboardCheck size={14}/> {applying?'반영 중…':'컴파일 통과 패치 시험 반영 (수동 승인)'}
+   </Button>}
+  {candidate.value.status==='applied_to_sub'&&<p className="mt-2 font-semibold text-[#A94E30]">dominion-sub 시험 반영됨 · 독립 성능 개선 미검증</p>}
+  <p className="mt-2 text-[11px] text-[#8A8176]">실제 성능 비교·최종 승격은 아직 수행되지 않았습니다. 코드는 자동 배포되지 않습니다.</p>
  </div>
 }
 
@@ -177,7 +199,7 @@ export function SelfImprovementPage(){
      <summary className="cursor-pointer font-semibold">{check.passed?'✓':'✕'} {check.label} — {check.ran?(check.passed?'통과':'실패'):'미실행'}</summary>
      <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap break-all text-[10px] text-[#7C7469]">{check.error||check.stderr||check.stdout||'상세 출력 없음'}</pre>
     </details>)}</div>
-    {job.result.rsi.candidateId&&<CandidateReview id={job.result.rsi.candidateId}/>}
+    {job.result.rsi.candidateId&&<CandidateReview id={job.result.rsi.candidateId} canApply={!!job.result.rsi.checksPassed&&!!job.result.rsi.sourceClean} afterApply={()=>void dev.reload()}/>}
    </div>}
    {answer&&<div className="mt-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-4">
     <div className="mb-2 flex items-center gap-2 text-[12px] font-bold"><CheckCircle2 size={15}/> 모델 설명 (엔진 검사와 구분)</div>
