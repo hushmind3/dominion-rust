@@ -663,7 +663,7 @@ async fn run_locked(
             // Codex's default is model-specific. Do not convert a greeting's
             // heuristic `none` into an unsupported effort on reasoning models.
             .or_else(||(!codex_route).then(||auto_reasoning_effort(owner_text)));
-        let reasoning_effort=effort_choice.clone();
+        let reasoning_effort=effort_choice.clone().filter(|effort|codex_route || effort != "none");
         let thinking=input["thinking"].as_bool()
             .or_else(||room["thinking"].as_bool())
             .or_else(||agent["thinking"].as_bool())

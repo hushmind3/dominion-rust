@@ -209,7 +209,7 @@ fn codex_effort_survives_agent_bulk_chat_override_and_room_selection() {
         "INSERT INTO records(kind,id,data) VALUES('codex_model_catalog',?1,?2)",
         rusqlite::params![provider["id"].as_str().unwrap(),catalog.to_string()],
     ).unwrap();
-    let agent = app.post("/api/agents", &json!({"name":"Effort agent","systemPrompt":"간결하게 응답하세요.","providerId":provider["id"],"model":"catalog-model","reasoningEffort":"ultra"}));
+    let agent = app.post("/api/agents", &json!({"name":"Effort agent","systemPrompt":"간결하게 응답하세요.","providerId":provider["id"],"model":"catalog-model","reasoningEffort":"ultra","thinking":false}));
     let chat = |effort: Option<&str>, expected:&str| {
         let session=app.post("/api/sessions",&json!({"title":"reasoning","agentId":agent["id"]}));
         let mut body=json!({"sessionId":session["id"],"agentId":agent["id"],"input":"안녕하세요","toolsEnabled":false,"autoLearning":false});
@@ -223,6 +223,10 @@ fn codex_effort_survives_agent_bulk_chat_override_and_room_selection() {
     };
     chat(None,"ultra");
     for effort in ["xhigh","max","ultra","none"] {chat(Some(effort),effort);}
+    let off_session=app.post("/api/sessions",&json!({"title":"off","agentId":agent["id"]}));
+    let off=app.chat(&json!({"sessionId":off_session["id"],"agentId":agent["id"],"input":"안녕하세요","thinking":false,"toolsEnabled":false,"autoLearning":false}));
+    assert!(off.contains("확인했습니다"),"{off}");
+    assert_eq!(requests.lock().unwrap().last().unwrap()["reasoning"]["effort"],"none");
     let bulk=app.post("/api/agents/bulk-model",&json!({"agentIds":[agent["id"]],"providerId":provider["id"],"model":"catalog-model","reasoningEffort":"max"}));
     assert_eq!(bulk["agents"][0]["reasoningEffort"],"max");
     chat(None,"max");

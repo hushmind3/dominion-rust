@@ -1161,9 +1161,9 @@ async fn stream_codex_once(
     }
     let catalog = state.store.get("codex_model_catalog", &provider.id)
         .filter(|row|row["accountId"].as_str() == Some(account_id));
-    let effort = if request.thinking == Some(false) {
-        Some("none")
-    } else { request.reasoning_effort.as_deref() };
+    // An explicit tier wins over a legacy inherited boolean setting.
+    let effort = request.reasoning_effort.as_deref()
+        .or_else(|| (request.thinking == Some(false)).then_some("none"));
     if let Some(reasoning) = crate::engine::reasoning::codex_options(catalog.as_ref(), &provider.model, effort)? {
         body["reasoning"] = reasoning;
     }

@@ -110,6 +110,7 @@ async fn run_turn_with_policy(
             .and_then(Value::as_str)
             .map(str::to_string);
     }
+    let off_requested = request.reasoning_effort.is_none() && request.thinking == Some(false);
     if let Some(id) = &request.agent_id {
         let agent = state.store.get("agent", id)
             .ok_or_else(||format!("에이전트를 찾을 수 없습니다: {id}"))?;
@@ -120,6 +121,11 @@ async fn run_turn_with_policy(
         if request.thinking.is_none() { request.thinking = agent["thinking"].as_bool(); }
     }
     let provider = select_provider(state, &request, &session)?;
+    // Codex expresses off as an effort, rather than the legacy boolean.
+    // Keep other providers' existing protocol-specific handling unchanged.
+    if provider.kind == "codex" && off_requested {
+        request.reasoning_effort = Some("none".into());
+    }
     if request.reasoning_effort.is_none() {
         request.reasoning_effort = state.store.get("provider", &provider.id)
             .and_then(|record|record["reasoningEffort"].as_str().filter(|value|!value.is_empty()).map(str::to_string));
