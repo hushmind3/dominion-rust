@@ -169,10 +169,20 @@ mod tests {
         assert!(jobs[0]["input"]["rsiBaseCommit"].as_str().is_some_and(|v|v.len()==40));
         assert_eq!(jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap().len(),2);
         assert!(jobs[0]["input"]["prompt"].as_str().unwrap().contains("workspace_write"));
+        assert_eq!(jobs[0]["input"]["rsiAutonomous"], false);
+        let auto_response = start(State(state.clone()), Json(json!({
+            "providerId":"test-provider","model":"sample-model"
+        }))).await;
+        assert_eq!(auto_response.status(), StatusCode::ACCEPTED);
+        let queued = state.store.all("job");
+        assert_eq!(queued.len(), 2);
+        let automated = queued.iter().find(|job| job["input"]["rsiAutonomous"] == true).unwrap();
+        assert!(automated["input"]["prompt"].as_str().unwrap().contains("개선 모드: 자율 진단 및 개선"));
+        assert!(automated["input"]["rsiObjective"].as_str().unwrap().contains("스스로 조사"));
         std::fs::write(checkout.join("uncommitted.txt"), "owner edits").unwrap();
         let refused = start(State(state.clone()), Json(body)).await;
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(state.store.all("job").len(), 1);
+        assert_eq!(state.store.all("job").len(), 2);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
