@@ -649,6 +649,25 @@ impl Store {
         rows.filter_map(|row| row.ok()).collect()
     }
 
+    /// Error-preserving variant for model-context assembly. A database failure
+    /// must abort the turn, not look like a session with no history.
+    pub fn try_messages(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT id,session_id,role,content,reasoning,agent_id,tool_calls,tool_call_id,created_at,metadata FROM messages WHERE session_id=?1 ORDER BY created_at ASC,rowid ASC",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([session_id], message_from_row)
+            .map_err(|error| error.to_string())?;
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row.map_err(|error| error.to_string())?);
+        }
+        Ok(messages)
+    }
+
     /// Increment a durable cancellation epoch under the same SQLite lock.
     pub fn cancel_session_epoch(&self, session_id: &str) -> Option<u64> {
         let conn = self.conn.lock().unwrap();
@@ -1289,6 +1308,22 @@ mod tests {
         assert_eq!(messages[1]["tool_calls"][0]["id"], "c1");
         store.clear_messages("s1");
         assert!(store.messages("s1").is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn try_messages_reads_the_same_rows_with_error_preservation() {
+        let (store, dir) = temp_store();
+        store.write_message(&json!({
+            "session_id": "s1", "role": "user", "content": "hello"
+        }));
+        store.write_message(&json!({
+            "session_id": "s1", "role": "assistant", "content": "hi"
+        }));
+        let strict = store.try_messages("s1").unwrap();
+        assert_eq!(strict, store.messages("s1"));
+        assert_eq!(strict.len(), 2);
+        assert!(store.try_messages("missing").unwrap().is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 

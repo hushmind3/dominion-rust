@@ -12,6 +12,7 @@ async fn try_complete(
     model: &str,
     system: &str,
     prompt: &str,
+    session_id: Option<&str>,
 ) -> Result<String, String> {
     let route = gateway::resolve(state, provider_id, Some(model))?;
     // Thinking models can consume the entire completion budget on reasoning
@@ -41,7 +42,13 @@ async fn try_complete(
             return Err(format!("모델 호출 실패: HTTP {}", response.status()));
         }
         let value: Value = response.json().await.map_err(|error| error.to_string())?;
-        gateway::record_usage(state, &route, gateway::usage_from(&value), "helper", None);
+        gateway::record_usage(
+            state,
+            &route,
+            gateway::usage_from(&value),
+            "helper",
+            session_id,
+        );
         let choice = value
             .get("choices")
             .and_then(|choices| choices.get(0))
@@ -76,7 +83,41 @@ pub async fn complete(
     system: &str,
     prompt: &str,
 ) -> Result<String, String> {
-    try_complete(state, provider_id, model, system, prompt).await
+    try_complete(state, provider_id, model, system, prompt, None).await
+}
+
+/// Session-aware helper call used by room learning, reflection and planning so
+/// their cost is attributed to the conversation that caused it.
+pub async fn complete_for_session(
+    state: &AppState,
+    provider_id: &str,
+    model: &str,
+    system: &str,
+    prompt: &str,
+    session_id: &str,
+) -> Result<String, String> {
+    try_complete(
+        state,
+        provider_id,
+        model,
+        system,
+        prompt,
+        Some(session_id),
+    )
+    .await
+}
+
+/// Optional-session variant for turn helpers that can run without a durable
+/// session id. The call is still recorded; only the attribution differs.
+pub async fn complete_for_turn(
+    state: &AppState,
+    provider_id: &str,
+    model: &str,
+    system: &str,
+    prompt: &str,
+    session_id: Option<&str>,
+) -> Result<String, String> {
+    try_complete(state, provider_id, model, system, prompt, session_id).await
 }
 
 /// A provider explicitly marked for learning is used as the teacher model,
@@ -107,12 +148,33 @@ pub fn learning_route(state: &AppState) -> Option<(String, String)> {
 /// Learning and reflection should not fail just because the conversation used
 /// a very small thinking model. Try the same model first, then up to two
 /// capability-ordered alternatives.
-pub async fn complete_with_fallback(
+/// Session-aware fallback helper for learning and reflection jobs.
+pub async fn complete_with_fallback_for_session(
     state: &AppState,
     provider_id: &str,
     model: &str,
     system: &str,
     prompt: &str,
+    session_id: &str,
+) -> Result<(String, String, String), String> {
+    complete_with_fallback_inner(
+        state,
+        provider_id,
+        model,
+        system,
+        prompt,
+        Some(session_id),
+    )
+    .await
+}
+
+async fn complete_with_fallback_inner(
+    state: &AppState,
+    provider_id: &str,
+    model: &str,
+    system: &str,
+    prompt: &str,
+    session_id: Option<&str>,
 ) -> Result<(String, String, String), String> {
     let alternatives = gateway::ordered_alternatives(state, provider_id);
     let mut last_error = String::new();
@@ -129,6 +191,7 @@ pub async fn complete_with_fallback(
             &candidate_model,
             system,
             prompt,
+            session_id,
         )
         .await
         {

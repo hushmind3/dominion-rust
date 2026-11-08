@@ -278,7 +278,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             input["model"].as_str().unwrap_or("").to_string(),
         )
     });
-    let completion = llm::complete_with_fallback(
+    let completion = llm::complete_with_fallback_for_session(
         state,
         &preferred_provider,
         &preferred_model,
@@ -287,6 +287,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             "주인 교정: {correction_text}\n교정 분류: {correction_class}\n이전 요청: {previous_request}\n\n대화:\n{transcript}\n\n실제 도구 기록:\n{}",
             serde_json::to_string(&operations).unwrap_or_default()
         ),
+        session_id,
     )
     .await;
     let (reflection_provider, reflection_model, value) = match completion {

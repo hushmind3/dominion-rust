@@ -339,7 +339,8 @@ pub(super) fn compile(
     let room = state.store.get("room", room_id).unwrap_or(Value::Null);
     let mut all = state
         .store
-        .messages(session_id)
+        .try_messages(session_id)
+        .map_err(|error| format!("회의실 대화 기록을 읽을 수 없습니다: {error}"))?
         .into_iter()
         .filter(|row| {
             row["metadata"]["kind"] != "learning_report"

@@ -866,8 +866,15 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     };
     let prompt = build_prompt(state, &batch);
     let (raw, used_provider, used_model) =
-        llm::complete_with_fallback(state, &provider_id, &model, SYSTEM_PROMPT, &prompt)
-            .await
+        llm::complete_with_fallback_for_session(
+            state,
+            &provider_id,
+            &model,
+            SYSTEM_PROMPT,
+            &prompt,
+            session_id,
+        )
+        .await
             .map_err(|error| format!("방 학습 모델 호출 실패: {error}"))?;
     let extracted = program::parse_json_object(&raw).ok_or_else(|| {
         format!(

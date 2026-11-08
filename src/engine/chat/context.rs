@@ -316,8 +316,11 @@ pub(super) fn history(
     session_id: &str,
     agent_id: Option<&str>,
     byte_budget: Option<usize>,
-) -> Vec<Value> {
-    let mut all = state.store.messages(session_id);
+) -> Result<Vec<Value>, String> {
+    let mut all = state
+        .store
+        .try_messages(session_id)
+        .map_err(|error| format!("대화 기록을 읽을 수 없습니다: {error}"))?;
     // Self-improvement notices are for humans and bridged channels, never
     // model context or learning evidence.
     all.retain(|message| message["metadata"]["kind"] != "learning_report");
@@ -367,7 +370,7 @@ pub(super) fn history(
             break;
         }
     }
-    render_history(state, session_id, agent_id, &all[start..], prefix)
+    Ok(render_history(state, session_id, agent_id, &all[start..], prefix))
 }
 
 // Preserve provider reasoning in the *internal* history for protocols such
@@ -589,7 +592,7 @@ mod tests {
             "reasoning":"SECRET-REASONING-TEXT",
             "metadata":{"providerReasoning":"SECRET-REASONING-TEXT"},
         }));
-        let history = history(&state, "room:t", Some("a1"), None);
+        let history = history(&state, "room:t", Some("a1"), None).unwrap();
         let serialized = serde_json::to_string(&history).unwrap();
         assert!(serialized.contains("SECRET-REASONING-TEXT"));
         assert!(history.iter().any(|message| message["role"] == "assistant"
