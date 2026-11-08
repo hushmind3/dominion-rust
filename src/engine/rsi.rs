@@ -84,10 +84,14 @@ fn case_plan(value: &Value) -> Result<Vec<Value>, String> {
             .ok_or("각 사례에는 id가 필요합니다.")?;
         let domain = row["domain"].as_str().filter(|v| !v.is_empty() && v.len() <= 80)
             .ok_or("각 사례에는 domain이 필요합니다.")?;
+        let filter = row["filter"].as_str()
+            .filter(|v| !v.is_empty() && v.len() <= 240
+                && v.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == ':'))
+            .ok_or("각 사례는 동결된 Rust 테스트 함수 filter를 지정해야 합니다.")?;
         if !seen.insert(id.to_string()) {
             return Err(format!("중복 평가 사례: {id}"));
         }
-        result.push(json!({"id":id,"domain":domain,"holdout":row["holdout"] == true}));
+        result.push(json!({"id":id,"domain":domain,"holdout":row["holdout"] == true,"filter":filter}));
     }
     Ok(result)
 }
@@ -112,6 +116,9 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
         .filter(|v| v.trim().chars().count() >= 15 && v.chars().count() <= 3000)
         .ok_or("재현 가능한 개선 가설(15~3000자)이 필요합니다.")?;
     let cases = case_plan(&body["cases"])?;
+    let oracle_version = body["oracleVersion"].as_str()
+        .filter(|v| !v.is_empty() && v.len() <= 120)
+        .ok_or("후보 등록 전에 고정된 oracleVersion이 필요합니다.")?;
     let patch_hash = digest(patch);
     let id = format!("rsi-{}", digest(&format!("{base}:{target}:{patch_hash}")));
     if let Some(existing) = state.store.get("rsi_candidate", &id) {
@@ -121,10 +128,13 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
     if let Some(parent) = parent {
         let previous = state.store.get("rsi_candidate", parent)
             .ok_or("parentCandidateId가 존재하지 않습니다.")?;
-        if previous["status"] != "approved_for_merge"
-            && previous["status"] != "reported_merged"
+        if previous["target"] != "improver"
+            || previous["status"] != "reported_deployed"
         {
-            return Err("승인되지 않은 개선기를 다음 세대의 부모로 지정할 수 없습니다.".into());
+            return Err("실제 배포를 기록한 개선기만 다음 세대 개선기의 부모가 될 수 있습니다.".into());
+        }
+        if body["generatorSourceCommit"] != previous["deployment"]["commitSha"] {
+            return Err("다음 개선기를 실행한 소스 커밋을 부모의 배포 revision과 연결하세요.".into());
         }
     }
     let generator_revision = algorithms::active(state, "selfimprove.search")
@@ -133,9 +143,11 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
     let record = json!({
         "id":id, "target":target, "baseCommit":base, "patchSha256":patch_hash,
         "patch":patch, "paths":paths, "hypothesis":hypothesis,
-        "cases":cases, "status":"proposed", "createdAt":now,
+        "cases":cases, "oracleVersion":oracle_version,
+        "status":"proposed", "createdAt":now,
         "generatorAlgorithmRevision":generator_revision,
         "generatorModel":body["generatorModel"], "generatorEffort":body["generatorEffort"],
+        "generatorSourceCommit":body["generatorSourceCommit"],
         "parentCandidateId":parent, "lineageGeneration": parent
             .and_then(|id| state.store.get("rsi_candidate", id))
             .and_then(|v| v["lineageGeneration"].as_u64())
@@ -214,6 +226,9 @@ pub fn evaluate(state: &AppState, id: &str, body: &Value) -> Result<Value, Strin
         .ok_or("독립 실행 환경 식별자 runner가 필요합니다.")?;
     let oracle = body["oracleVersion"].as_str().filter(|s| !s.is_empty() && s.len() <= 120)
         .ok_or("고정된 oracleVersion이 필요합니다.")?;
+    if record["oracleVersion"] != oracle {
+        return Err("후보 등록 후 평가 oracleVersion을 변경할 수 없습니다.".into());
+    }
     let proof = body["reportSha256"].as_str().filter(|s| s.len()==64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
         .ok_or("실행 보고서의 SHA-256 해시가 필요합니다.")?;
     let plan = record["cases"].as_array().ok_or("계획이 손상되었습니다.")?;
@@ -279,6 +294,43 @@ pub fn decide(state: &AppState, id: &str, body: &Value) -> Result<Value, String>
     Ok(saved)
 }
 
+/// Records an operator-attested deployment of an approved improver.
+/// This is deliberately NOT a Git mutation or an independently verified
+/// deployment. The commit and CI evidence are shown for separate review.
+pub fn confirm_deployment(
+    state: &AppState,
+    id: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let mut record = state.store.get("rsi_candidate", id)
+        .ok_or("후보를 찾을 수 없습니다.")?;
+    if record["status"] != "approved_for_merge" {
+        return Err("수동 병합 승인된 후보만 배포 기록을 만들 수 있습니다.".into());
+    }
+    let commit = body["commitSha"].as_str().filter(|sha_value| sha(sha_value))
+        .ok_or("배포 commitSha는 40자리 Git SHA여야 합니다.")?;
+    if commit == record["baseCommit"].as_str().unwrap_or("") {
+        return Err("배포 커밋이 원본과 같습니다.".into());
+    }
+    let operator = body["operator"].as_str().filter(|s| !s.trim().is_empty())
+        .ok_or("배포 확인자 operator가 필요합니다.")?;
+    if body["confirmation"] != "DEPLOYED" {
+        return Err("실제 배포 후 DEPLOYED를 명시해야 합니다.".into());
+    }
+    record["deployment"] = json!({
+        "commitSha":commit,
+        "operator":operator,
+        "ciEvidence":body["ciEvidence"],
+        "at":chrono::Utc::now().to_rfc3339(),
+        "verification":"operator_reported_not_automatically_verified"
+    });
+    record["status"] = json!("reported_deployed");
+    let saved = state.store.put("rsi_candidate", &record).ok_or("배포 기록 저장 실패")?;
+    state.store.audit("rsi.deployment_reported",json!({"id":id,"commitSha":commit}));
+    state.bus.record("rsi_candidate",&saved);
+    Ok(saved)
+}
+
 pub fn list(state: &AppState) -> Vec<Value> {
     let mut items = state.store.all("rsi_candidate");
     items.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
@@ -304,12 +356,13 @@ mod tests {
         "diff --git a/src/engine/rsi.rs b/src/engine/rsi.rs\n--- a/src/engine/rsi.rs\n+++ b/src/engine/rsi.rs\n@@ -1 +1 @@\n-old\n+new\n".into()
     }
     fn cases(domain: &str) -> Vec<Value> {
-        (0..8).map(|i|json!({"id":format!("case-{i}"),"domain":if i==1 {"other"} else {domain},"holdout":i<3})).collect()
+        (0..8).map(|i|json!({"id":format!("case-{i}"),"domain":if i==1 {"other"} else {domain},"holdout":i<3,
+            "filter":format!("engine::rsi::tests::case_{i}")})).collect()
     }
     fn proposal(target: &str) -> Value {
         json!({"target":target,"baseCommit":base(),"patch":patch(),
             "hypothesis":"반복되는 개선 후보를 보다 정확하게 평가하도록 변경한다.",
-            "cases":cases("memory"),"generatorModel":"manual"})
+            "cases":cases("memory"),"oracleVersion":"frozen-v1","generatorModel":"manual"})
     }
     fn report(record: &Value) -> Value {
         json!({"baseCommit":record["baseCommit"],"patchSha256":record["patchSha256"],
@@ -333,6 +386,18 @@ mod tests {
         assert_eq!(decide(&state,id,&json!({"action":"approve","confirmation":"APPROVE",
             "baseCommit":base(),"patchSha256":record["patchSha256"],"operator":"owner"})).unwrap()["status"],"approved_for_merge");
         assert_eq!(state.store.all("rsi_evaluation").len(),1);
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn evaluation_cannot_switch_its_frozen_oracle_or_test_names() {
+        let (state,root)=state();
+        let mut bad=proposal("algorithm");
+        bad["cases"][0]["filter"]=json!("not-a-full-test-name%");
+        assert!(propose(&state,&bad).is_err());
+        let record=propose(&state,&proposal("algorithm")).unwrap();
+        let mut result=report(&record);
+        result["oracleVersion"]=json!("a-different-test");
+        assert!(evaluate(&state,record["id"].as_str().unwrap(),&result).is_err());
         let _=std::fs::remove_dir_all(root);
     }
     #[test]
@@ -364,7 +429,7 @@ mod tests {
         let _=std::fs::remove_dir_all(root);
     }
     #[test]
-    fn a_verified_parent_can_seed_the_next_generation_without_deploying_code() {
+    fn only_a_deployed_improver_can_seed_the_next_generation() {
         let (state,root)=state();
         let parent=propose(&state,&proposal("improver")).unwrap();
         let id=parent["id"].as_str().unwrap();
@@ -374,6 +439,12 @@ mod tests {
         let mut child=proposal("improver");
         child["patch"]=json!(patch().replace("+new","+newer"));
         child["parentCandidateId"]=parent["id"].clone();
+        assert!(propose(&state,&child).is_err(), "approval is not deployment");
+        let deployed = "b".repeat(40);
+        assert_eq!(confirm_deployment(&state,id,&json!({
+            "commitSha":deployed,"operator":"owner","confirmation":"DEPLOYED"
+        })).unwrap()["status"],"reported_deployed");
+        child["generatorSourceCommit"]=json!(deployed);
         assert_eq!(propose(&state,&child).unwrap()["lineageGeneration"],2);
         let _=std::fs::remove_dir_all(root);
     }

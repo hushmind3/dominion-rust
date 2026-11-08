@@ -65,3 +65,9 @@ bash scripts/rsi-lab.sh "$(git rev-parse HEAD)" /path/candidate.patch /path/froz
 `selfimprove.search`/`rsi.rs` 등의 개선기 A와 B를 **같은 LLM, 추론 단계, 도구 목록, 토큰 상한, 작업/holdout 세트**에서 비교한다. 최종 점수는 개선기가 바꿀 수 없는 고정된 외부 평가기로 산출한다. B가 A보다 더 나은 후보를 찾아서 실제 후속 작업 성능이 오르거나 동일 성능을 적은 비용으로 달성하는 것이 독립적으로 반복돼야 차세대 개선기로 승격한다.
 
 운용 순서: 기억 회상 → 교정 인과 연결 → 자율 도구 선택 → 하네스 복구 → 개선기 탐색/평가 알고리즘 자체 개선. 전체 과정에서 `main`은 사용자의 승인 없이 수정하지 않는다.
+
+## 적용 확인과 다음 세대
+
+개선기가 승인됐다는 이유만으로 다음 세대로 연결하지 않는다. 승인 후 실제 Git 수동 병합 및 CI·운영 검토를 거치고, `POST /api/rsi/:id/deployment`에서 `commitSha`, `operator`, `confirmation:DEPLOYED`, `ciEvidence`를 기록한 후보만 부모로 허용한다. 이후 후보는 `parentCandidateId` 및 `generatorSourceCommit`(부모가 적용됐다고 보고한 커밋)을 일치시켜야 한다. 이 배포 기록은 **운영자 보고이며 서버가 Git을 독립 조회한 증거는 아니다.**
+
+실험 등록 시 `oracleVersion` 및 모든 `cases[].filter`를 동결한다. 평가 결과의 oracle 버전이 달라지면 거절한다.

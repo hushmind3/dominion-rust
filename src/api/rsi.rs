@@ -33,3 +33,11 @@ pub async fn decide(
 ) -> Response {
     match engine::decide(&state,&id,&body) { Ok(value)=>Json(value).into_response(), Err(err)=>error(err) }
 }
+
+pub async fn deployment(
+    State(state): State<AppState>, Path(id): Path<String>, Json(body): Json<Value>
+) -> Response {
+    match engine::confirm_deployment(&state,&id,&body) {
+        Ok(value)=>Json(value).into_response(), Err(err)=>error(err)
+    }
+}
