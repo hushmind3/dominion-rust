@@ -10,7 +10,7 @@ import {t,useLocale} from '../i18n'
 
 type PresetCategory='free'|'cloud'|'local'
 type ProviderPreset={name:string;baseUrl:string;kind:string;local:boolean;integration?:'freellmapi';free?:boolean;requestsPerMinute?:number;category:PresetCategory;auth?:'key'|'none';note?:string}
-type CliCredential={id:string;name:string;available:boolean;supported:boolean;accountId?:string;model?:string;hint?:string}
+type CliCredential={id:string;name:string;available:boolean;supported:boolean;connected?:boolean;importAvailable?:boolean;accountId?:string;model?:string;hint?:string}
 type CatalogProvider={id:string;name:string;api:string;models:number;env?:string[];doc?:string}
 type CatalogResponse={providers:CatalogProvider[];cached?:boolean;error?:string}
 type FreeCatalogModel={id:string;free?:boolean|null;freeStatus?:string;freeSource?:string}
@@ -76,14 +76,14 @@ export function ModelHub(){
  const freeCatalog=useRemote<FreeCatalog>('/api/providers/free-catalog',{providers:[]})
  const [freeBusy,setFreeBusy]=useState(false)
  const [oauthBusy,setOauthBusy]=useState('')
- const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
+ const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[defaultModel,setDefaultModel]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
  const probe=async(p:Provider)=>{
   setCounts(old=>({...old,[p.id]:{list:[],busy:true}}))
   try{const list=await get<{id:string}[]>('/api/providers/'+p.id+'/models');setCounts(old=>({...old,[p.id]:{list:list.map(m=>m.id)}}))}
   catch(e){setCounts(old=>({...old,[p.id]:{list:[],error:(e as Error).message}}))}
  }
- const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setAccountId(p?.accountId||'');setTestResult(null);setError('');setModal(true)}
- const openPreset=(preset:ProviderPreset)=>{setEdit(null);setIntegration(preset.integration);setFreePreset(Boolean(preset.free&&preset.auth==='none'));setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId('');setReflection(false);setRpm(preset.requestsPerMinute?String(preset.requestsPerMinute):'');setAccountId('');setTestResult(null);setError('');setModal(true)}
+ const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setDefaultModel(p?.model||'');setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setAccountId(p?.accountId||'');setTestResult(null);setError('');setModal(true)}
+ const openPreset=(preset:ProviderPreset)=>{setEdit(null);setIntegration(preset.integration);setFreePreset(Boolean(preset.free&&preset.auth==='none'));setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId('');setDefaultModel('');setReflection(false);setRpm(preset.requestsPerMinute?String(preset.requestsPerMinute):'');setAccountId('');setTestResult(null);setError('');setModal(true)}
  const needsNewKey=presetMode&&!freePreset&&(!local||integration==='freellmapi')
  const testConnection=async()=>{
   if(testBusy||!baseUrl.trim())return
@@ -105,7 +105,7 @@ export function ModelHub(){
    const saved=await post<Provider>('/api/providers',{
     ...edit,name:name.trim(),baseUrl:baseUrl.trim(),kind,apiKey:apiKey.trim()||undefined,local,integration,accountId:accountId.trim()||undefined,requestsPerMinute:Number(rpm)||0,
     toolMode:edit?.kind===kind?edit.toolMode:undefined,
-    enabled:edit?.enabled??true,model:edit?.model,reflection,reflectionModel:reflection?modelId.trim():undefined,
+    enabled:edit?.enabled??true,model:kind==='codex'?defaultModel.trim()||edit?.model:edit?.model,reflection,reflectionModel:reflection?modelId.trim():undefined,
    })
    providers.setValue(rows=>rows.some(p=>p.id===saved.id)?rows.map(p=>p.id===saved.id?saved:p):[...rows,saved])
    setCounts(rows=>{const next={...rows};delete next[saved.id];return next})
@@ -126,7 +126,7 @@ export function ModelHub(){
  }
  const startCodexDevice=async()=>{
   if(oauthBusy)return
-  setOauthBusy('codex-device');setLoginMessage('');setLoginUrl('');setDeviceCode(null)
+  setOauthBusy('codex-device');setError('');setLoginMessage('');setLoginUrl('');setDeviceCode(null)
   try{
    const started=await post<{user_code:string;verification_url:string}>('/api/providers/codex/device',{})
    setDeviceCode({userCode:started.user_code,verificationUrl:started.verification_url})
@@ -136,13 +136,17 @@ export function ModelHub(){
  }
  const startCodexLogin=async()=>{
   if(oauthBusy)return
-  setOauthBusy('codex-login');setLoginMessage('');setLoginUrl('')
+  // A blank tab must be opened synchronously from the click; after an
+  // awaited API request browsers often block the OAuth login popup.
+  const loginWindow=window.open('about:blank','_blank')
+  setOauthBusy('codex-login');setError('');setLoginMessage('');setLoginUrl('');setDeviceCode(null)
   try{
    const started=await get<{url:string}>('/api/providers/codex/login')
    setLoginUrl(started.url)
-   window.open(started.url,'_blank','noopener')
+   if(loginWindow)loginWindow.location.href=started.url
    setLoginPending(true)
-  }catch(e){setOauthBusy('');setError((e as Error).message)}
+   if(!loginWindow)setLoginMessage('팝업이 차단되었습니다. 아래 로그인 링크를 직접 누르세요.')
+  }catch(e){loginWindow?.close();setOauthBusy('');setError((e as Error).message)}
  }
  useEffect(()=>{
   if(tab!=='oauth')return
@@ -163,7 +167,7 @@ export function ModelHub(){
     if(!alive)return
     if(status.status==='success'){
      setLoginPending(false);setOauthBusy('');setDeviceCode(null);setLoginMessage(status.message||t('models.oauth.loginSuccess'))
-     await providers.reload();setSavedId('codex-oauth');setTab('providers');refresh()
+     await Promise.all([providers.reload(),cli.reload()]);setSavedId('codex-oauth');refresh()
     }else if(status.status==='error'){
      setLoginPending(false);setOauthBusy('');setDeviceCode(null);setError(status.message||t('models.oauth.loginFailed'))
     }
@@ -239,7 +243,7 @@ export function ModelHub(){
   {tab==='oauth'&&<section className="rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9] p-5 shadow-[0_1px_2px_rgba(36,33,29,.04)]">
    <div className="mb-4"><h2 className="m-0 text-[16px] font-bold text-[#24211D]">{t('models.oauth.title')}</h2><p className="mt-1 text-[12px] text-[#7C7469]">{t('models.oauth.desc')}</p></div>
    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">{cli.value.map(item=><div key={item.id} className="rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-4">
-    <div className="flex items-start justify-between gap-3"><div className="min-w-0"><strong className="block text-[13px] text-[#3A342D]">{item.name}</strong><small className={'mt-1 inline-flex items-center gap-1 text-[11px] '+(item.available?'text-emerald-700':'text-[#9C9388]')}><UserRound size={12}/>{item.available?t('models.oauth.available'):t('models.oauth.unavailable')}</small></div><div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">{item.id==='codex'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexDevice()}>{oauthBusy==='codex-device'?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {oauthBusy==='codex-device'?t('models.oauth.loggingIn'):t('models.oauth.deviceLogin')}</Button>}{item.id==='codex'&&<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexLogin()}>{oauthBusy==='codex-login'?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {t('models.oauth.browserLogin')}</Button>}{item.supported&&item.available?<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}>{oauthBusy===item.id?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {oauthBusy===item.id?t('models.oauth.importing'):t('models.oauth.importExisting')}</Button>:!item.available?<span className="rounded bg-[#EFE9DF] px-2 py-1 text-[10px] font-semibold text-[#8A8176]">{item.supported?t('models.oauth.unavailable'):t('models.oauth.coming')}</span>:null}</div></div>
+    <div className="flex items-start justify-between gap-3"><div className="min-w-0"><strong className="block text-[13px] text-[#3A342D]">{item.name}</strong><small className={'mt-1 inline-flex items-center gap-1 text-[11px] '+(item.available?'text-emerald-700':'text-[#9C9388]')}><UserRound size={12}/>{item.connected?'DOMINION 연결됨':item.available?t('models.oauth.available'):t('models.oauth.unavailable')}</small></div><div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">{item.id==='codex'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexLogin()}>{oauthBusy==='codex-login'?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {item.connected?'브라우저 재연결':t('models.oauth.browserLogin')}</Button>}{item.id==='codex'&&<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexDevice()}>{oauthBusy==='codex-device'?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {t('models.oauth.deviceLogin')}</Button>}{item.supported&&(item.importAvailable??item.available)&&<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}>{oauthBusy===item.id?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {oauthBusy===item.id?t('models.oauth.importing'):t('models.oauth.importExisting')}</Button>}{item.id==='codex'&&item.connected&&<Button type="button" variant="ghost" size="sm" onClick={()=>{setTab('providers');const p=providers.value.find(p=>p.id==='codex-oauth');if(p)void probe(p)}}><RefreshCw size={13}/> 모델 새로고침</Button>}
     {item.accountId&&<div className="mt-3 break-all rounded-lg bg-white px-2.5 py-2 text-[10px] text-[#8A8176]">{t('models.oauth.account')} · {item.accountId}</div>}
     {item.model&&<div className="mt-1.5 text-[11px] text-[#8A8176]">{t('models.defaultModel')} · {item.model}</div>}
     <p className="mt-2 text-[11px] leading-5 text-[#9C9388]">{item.hint}</p>
@@ -278,7 +282,8 @@ export function ModelHub(){
      <FormField label={t('models.dlg.serverUrl')}><TextInput value={baseUrl} onChange={e=>setBaseUrl(e.target.value)} placeholder="http://127.0.0.1:1234/v1"/></FormField>
      {baseUrl.includes('ACCOUNT_ID')&&<FormField label={t('models.dlg.accountId')} hint={t('models.dlg.accountIdHint')}><TextInput value={accountId} onChange={e=>setAccountId(e.target.value)} placeholder="a1b2c3d4e5f6..."/></FormField>}
      <FormField label={t('models.dlg.apiMode')}><SelectInput value={kind} onChange={e=>setKind(e.target.value)}><option value="openai">{t('models.dlg.openaiCompat')}</option><option value="anthropic">Anthropic</option><option value="codex">Codex (OAuth)</option><option value="ollama">Ollama</option></SelectInput></FormField>
-     <FormField label={t('models.dlg.apiKey')}><TextInput type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={edit?.hasKey?t('models.dlg.keepKey'):t('models.dlg.keyIfNeeded')}/></FormField>
+     {kind==='codex'&&edit&&<FormField label="Codex 기본 모델" hint="계정 모델 목록에서 선택합니다. 모델이 보이지 않으면 OAuth 연결을 갱신하세요."><ModelPicker providerId={edit.id} value={defaultModel} onChange={setDefaultModel} className="w-full"/></FormField>}
+     {kind!=='codex'&&<FormField label={t('models.dlg.apiKey')}><TextInput type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={edit?.hasKey?t('models.dlg.keepKey'):t('models.dlg.keyIfNeeded')}/></FormField>}
      <label className="flex items-center gap-2 text-[12px]"><TextInput type="checkbox" checked={local} onChange={e=>setLocal(e.target.checked)}/> {t('models.dlg.localServer')}</label>
      {edit&&<details open={reflection||undefined} className="rounded-xl border border-[#F0DFD2] bg-[#FFF9F4] p-3">
       <summary className="cursor-pointer text-[12px]">{t('models.dlg.reflection')}</summary>
