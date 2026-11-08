@@ -227,8 +227,9 @@ pub async fn free_catalog_refresh(State(state): State<AppState>) -> Json<Value> 
     Json(refresh_free_catalog(&state).await)
 }
 
-pub async fn cli_credentials() -> Json<Value> {
+pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
     let codex = codex_auth().ok();
+    let connected = state.store.get("provider", "codex-oauth");
     let claude = home_file(".claude/.credentials.json").is_some_and(|path| path.exists());
     let gemini = home_file(".gemini/oauth_creds.json").is_some_and(|path| path.exists());
     let opencode = [
@@ -241,11 +242,13 @@ pub async fn cli_credentials() -> Json<Value> {
         {
             "id":"codex",
             "name":"Codex (ChatGPT OAuth)",
-            "available":codex.is_some(),
+            "available":codex.is_some() || connected.is_some(),
+            "importAvailable":codex.is_some(),
+            "connected":connected.is_some(),
             "supported":true,
-            "accountId":codex.as_ref().and_then(|value| value["tokens"]["account_id"].as_str()),
-            "model":codex_model(),
-            "hint":if codex.is_some() { "Codex 앱의 ChatGPT 로그인을 그대로 사용합니다." } else { "Codex 앱에서 ChatGPT로 로그인한 뒤 다시 시도하세요." }
+            "accountId":connected.as_ref().and_then(|value| value["accountId"].as_str()).or_else(||codex.as_ref().and_then(|value| value["tokens"]["account_id"].as_str())),
+            "model":connected.as_ref().and_then(|value| value["model"].as_str()).unwrap_or_else(||""),
+            "hint":if connected.is_some() { "DOMINION에 ChatGPT 계정이 연결되어 있습니다. 사용 가능한 모델은 실제 계정 목록에서 조회합니다." } else if codex.is_some() { "Codex 앱 로그인이 감지되었습니다. 기존 인증 가져오기를 누르면 재로그인 없이 연결됩니다." } else { "브라우저에서 ChatGPT로 로그인하거나 Codex 앱의 기존 인증을 가져오세요." }
         },
         {
             "id":"claude",
@@ -297,7 +300,7 @@ fn save_codex_provider(state: &AppState, tokens: &Value, shared: bool) -> Result
         "name":"Codex (ChatGPT OAuth)",
         "baseUrl":"https://chatgpt.com/backend-api/codex",
         "kind":"codex",
-        "model":codex_model(),
+        "model":previous["model"].as_str().filter(|model|!model.is_empty()).map(str::to_string).unwrap_or_else(codex_model),
         "accountId":account,
         "enabled":true,
         "local":false,
@@ -1197,6 +1200,86 @@ pub async fn test_provider(
     }
 }
 
+/// Decode the account-specific Codex catalog, never manufacture model IDs.
+fn parse_codex_models(value: &Value) -> Result<Vec<Value>, String> {
+    let rows = value["models"].as_array()
+        .or_else(||value["data"].as_array())
+        .ok_or("Codex 응답에 models 배열이 없습니다.")?;
+    let mut seen = std::collections::HashSet::new();
+    let mut models = Vec::new();
+    for row in rows {
+        if row["hidden"] == true
+            || row["show_in_picker"] == false
+            || matches!(row["visibility"].as_str(), Some("hide"|"hidden"|"none"))
+        { continue; }
+        let Some(id) = row["slug"].as_str()
+            .or_else(||row["model"].as_str())
+            .or_else(||row["id"].as_str())
+            .filter(|id|!id.is_empty()) else { continue };
+        if !seen.insert(id.to_string()) { continue; }
+        let efforts = row["supported_reasoning_levels"].as_array()
+            .or_else(||row["supported_reasoning_efforts"].as_array())
+            .cloned().unwrap_or_default();
+        models.push(json!({
+            "id":id,
+            "name":row["display_name"].as_str()
+                .or_else(||row["displayName"].as_str()).unwrap_or(id),
+            "free":null,
+            "freeStatus":"unknown",
+            "freeSource":"chatgpt-subscription",
+            "reasoningEfforts":efforts.iter().filter_map(|value|
+                value["effort"].as_str().or_else(||value["reasoningEffort"].as_str())
+            ).collect::<Vec<_>>(),
+            "defaultReasoningEffort":row["default_reasoning_level"].as_str()
+                .or_else(||row["defaultReasoningEffort"].as_str()),
+            "isDefault":row["is_default"].as_bool()
+                .or_else(||row["isDefault"].as_bool()).unwrap_or(false),
+        }));
+    }
+    if models.is_empty() {
+        return Err("Codex 계정에서 선택 가능한 모델이 반환되지 않았습니다.".into());
+    }
+    Ok(models)
+}
+
+/// The same authenticated /models endpoint used by Codex's model manager.
+/// Client version comes from the installed CLI or its cache, not a fake list.
+async fn codex_models_live(
+    state: &AppState, client: &reqwest::Client,
+    provider_id: &str, account: &str, saved_token: &str,
+) -> Result<Vec<Value>, String> {
+    if account.is_empty() { return Err("Codex 계정 ID가 없습니다.".into()); }
+    let access = codex_oauth::fresh_access(state, client, provider_id, saved_token).await?;
+    if access.is_empty() { return Err("Codex OAuth 연결 토큰이 없습니다.".into()); }
+    let cli_version = tokio::time::timeout(Duration::from_secs(3),
+        tokio::process::Command::new("codex").arg("--version").output()
+    ).await.ok().and_then(Result::ok).and_then(|output| {
+        String::from_utf8(output.stdout).ok()
+    }).and_then(|stdout|stdout.split_whitespace()
+        .find(|part|part.chars().next().is_some_and(|c|c.is_ascii_digit()))
+        .map(str::to_string));
+    let cache_version = home_file(".codex/models_cache.json")
+        .and_then(|path|std::fs::read_to_string(path).ok())
+        .and_then(|text|serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value|value["client_version"].as_str().map(str::to_string));
+    let mut url = reqwest::Url::parse("https://chatgpt.com/backend-api/codex/models")
+        .map_err(|e|e.to_string())?;
+    if let Some(version) = cli_version.or(cache_version) {
+        url.query_pairs_mut().append_pair("client_version", &version);
+    }
+    let response = client.get(url)
+        .bearer_auth(access)
+        .header("chatgpt-account-id",account)
+        .header("originator","codex_cli_rs")
+        .header("Accept","application/json")
+        .send().await.map_err(|e|format!("Codex 모델 조회 연결 실패: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Codex 모델 조회 HTTP {}",response.status()));
+    }
+    let data:Value = response.json().await.map_err(|_|"Codex 모델 응답 JSON 오류")?;
+    parse_codex_models(&data)
+}
+
 pub async fn provider_models(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(mut provider) = state.store.get("provider", &id) else {
         return error(StatusCode::NOT_FOUND, "제공자를 찾을 수 없습니다.");
@@ -1213,22 +1296,53 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
     let base = crate::engine::gateway::resolved_base_url(&provider);
     let kind = provider.get("kind").and_then(|value| value.as_str()).unwrap_or("openai");
     if kind == "codex" {
-        let current = codex_model();
-        let mut seen = std::collections::HashSet::new();
-        let models: Vec<Value> = [
-            current.clone(),
-            "gpt-5.1-codex".to_string(),
-            "gpt-5.1-codex-mini".to_string(),
-            "gpt-5.1".to_string(),
-        ]
-        .into_iter()
-        .filter(|id| seen.insert(id.clone()))
-        .map(|id| json!({
-            "id":id,"name":id,"free":false,
-            "freeStatus":"paid","freeSource":"chatgpt-subscription"
-        }))
-        .collect();
-        return Json(json!(models)).into_response();
+        // The owner's actual Codex catalog replaces the historical four-name stub.
+        // Subscription models are not metered as ordinary API-key purchases.
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        let account = provider["accountId"].as_str().unwrap_or("");
+        let cached = state.store.get("codex_model_catalog", &id)
+            .filter(|row| row["accountId"].as_str() == Some(account));
+        match codex_models_live(&state, &client, &id, account, &key).await {
+            Ok(models) => {
+                state.store.put("codex_model_catalog", &json!({
+                    "id":id,"accountId":account,"models":models,
+                    "fetchedAt":chrono::Utc::now().to_rfc3339()
+                }));
+                return Json(json!(models)).into_response();
+            }
+            Err(reason) => {
+                if let Some(models) = cached.as_ref().and_then(|row| row["models"].as_array()) {
+                    return Json(json!(models.iter().map(|model| {
+                        let mut item = model.clone();
+                        item["catalogStale"] = json!(true);
+                        item
+                    }).collect::<Vec<_>>())).into_response();
+                }
+                // A matching Codex CLI account may already have a local catalog.
+                // Never expose the models of another logged-in account.
+                if codex_auth().ok().and_then(|auth|
+                    auth["tokens"]["account_id"].as_str().map(str::to_string)
+                ).as_deref() == Some(account) {
+                    if let Some(path) = home_file(".codex/models_cache.json") {
+                        if let Ok(contents) = std::fs::read_to_string(path) {
+                            if let Ok(value) = serde_json::from_str::<Value>(&contents) {
+                                if let Ok(mut rows) = parse_codex_models(&value) {
+                                    for row in &mut rows {
+                                        row["catalogStale"] = json!(true);
+                                    }
+                                    return Json(json!(rows)).into_response();
+                                }
+                            }
+                        }
+                    }
+                }
+                return error(StatusCode::BAD_GATEWAY,
+                    &format!("Codex 계정 모델 목록을 조회하지 못했습니다: {reason}. 계정 재연결 또는 Codex CLI 모델 동기화를 확인하세요."));
+            }
+        }
     }
     // Cloudflare's OpenAI-compatible surface has no /models route. Its native
     // model search returns the catalogue instead.
@@ -1332,6 +1446,31 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn codex_catalog_uses_real_slugs_and_no_obsolete_stub() {
+        let models = parse_codex_models(&json!({"models":[
+            {"slug":"gpt-6.1-sol","display_name":"GPT-6.1 Sol",
+             "visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]},
+            {"slug":"gpt-6.1-terra","visibility":"list"},
+            {"slug":"gpt-6-sol","visibility":"list"},
+            {"slug":"gpt-6-luna","visibility":"list"},
+            {"slug":"hidden-model","visibility":"hide"},
+            {"slug":"gpt-6.1-sol","visibility":"list"}
+        ]})).unwrap();
+        assert_eq!(models.len(),4);
+        assert_eq!(models[0]["id"],"gpt-6.1-sol");
+        assert_eq!(models[0]["reasoningEfforts"],json!(["low","high"]));
+        assert_eq!(models[0]["freeStatus"],"unknown");
+        assert!(!models.iter().any(|model|model["id"]=="hidden-model"));
+    }
+
+    #[test]
+    fn codex_catalog_rejects_empty_or_invented_model_list() {
+        assert!(parse_codex_models(&json!({"models":[]})).is_err());
+        assert!(parse_codex_models(&json!({"data":[{"model":"real-model"}]})).is_ok());
+        assert!(parse_codex_models(&json!({"wrong":[]})).is_err());
+    }
 
     #[test]
     fn account_placeholder_is_detected_only_when_unfilled() {
