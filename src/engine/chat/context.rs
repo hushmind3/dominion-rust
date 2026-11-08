@@ -427,6 +427,7 @@ pub(super) fn render_history(
     let mut index = 0;
     while index < window.len() {
         let message = &window[index];
+        let output_start = out.len();
         let role = message["role"].as_str().unwrap_or("");
         let content = message["content"].as_str().unwrap_or("");
         let speaker = message["agent_id"].as_str();
@@ -470,7 +471,7 @@ pub(super) fn render_history(
                         } else {
                             content.to_string()
                         };
-                        json!({"role":"tool", "tool_call_id":row["tool_call_id"],"content":content})
+                        json!({"role":"tool", "tool_call_id":row["tool_call_id"],"content":content,"_dominion_frame":row["id"]})
                     }));
                     index += results.len();
                 } else if !content.trim().is_empty() {
@@ -528,6 +529,11 @@ pub(super) fn render_history(
         }
         // Orphan tool results (window truncation, peer turns, crash) stay in
         // SQLite but are never sent as invalid provider protocol messages.
+        for rendered in &mut out[output_start..] {
+            if rendered.get("_dominion_frame").is_none() {
+                rendered["_dominion_frame"] = message["id"].clone();
+            }
+        }
         index += 1;
     }
     out

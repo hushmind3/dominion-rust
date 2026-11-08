@@ -339,6 +339,47 @@ fn room_bot_continuity_is_distinct_and_survives_an_engine_restart() {
 }
 
 #[test]
+fn nine_room_participants_keep_actual_request_prefix_across_sliding_windows_and_restart() {
+    let _serial=serial();
+    let (port,requests)=scripted_provider(|_|vec![
+        json!({"type":"response.output_text.delta","delta":"인사했습니다."}),
+        json!({"type":"response.completed","response":{"usage":{"input_tokens":200,"output_tokens":5,"total_tokens":205}}}),
+    ]);
+    let mut app=TestApp::new(port,"native");
+    let provider=app.post("/api/providers",&json!({"name":"prefix fixture","kind":"codex","baseUrl":format!("http://127.0.0.1:{port}/codex"),"accountId":"fixture-account","apiKey":"fixture-only","enabled":true,"model":"fixture-model"}));
+    let agents=(0..9).map(|i|app.post("/api/agents",&json!({"name":format!("participant-{i}"),"systemPrompt":format!("VERBATIM_IDENTITY_{i}"),"providerId":provider["id"],"model":"fixture-model"}))).collect::<Vec<_>>();
+    let room=app.post("/api/rooms",&json!({"name":"nine continuous participants","agentIds":agents.iter().map(|a|a["id"].clone()).collect::<Vec<_>>(),"routingMode":"discussion","rounds":1,"maxTurns":9,"autoModels":false,"autoLearning":false,"toolsEnabled":false,"models":[{"providerId":provider["id"],"model":"fixture-model","reasoningEffort":"low"}]}));
+    for round in 0..3 {
+        if round==2 {
+            let root=app._root.clone();drop(app);
+            app=TestApp::from_root(port,"native",root,&[]);
+        }
+        let submitted=app.post(&format!("/api/rooms/{}/messages",room["id"].as_str().unwrap()),&json!({"input":"다들 인사해라","agentIds":agents.iter().map(|a|a["id"].clone()).collect::<Vec<_>>()}));
+        let deadline=Instant::now()+Duration::from_secs(20);
+        loop {
+            let job=app.get(&format!("/api/jobs/{}",submitted["job"]["id"].as_str().unwrap()));
+            if job["status"]=="completed" {break;}
+            assert_ne!(job["status"],"failed","{job}");
+            assert!(Instant::now()<deadline,"{job}");
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let seen=requests.lock().unwrap();
+        assert_eq!(seen.len(),(round+1)*9,"exactly one model call per participant");
+        if round>0 {
+            for current in &seen[round*9..] {
+                let previous=seen[(round-1)*9..round*9].iter().find(|old|old["prompt_cache_key"]==current["prompt_cache_key"]).unwrap();
+                assert_eq!(current["instructions"],previous["instructions"]);
+                let prefix=previous["input"].as_array().unwrap();
+                let next=current["input"].as_array().unwrap();
+                assert!(next.len()>prefix.len());
+                assert_eq!(&next[..prefix.len()],prefix.as_slice(),"same key alone cannot prove request prefix reuse");
+                assert!(!current.to_string().contains("_dominion_"));
+            }
+        }
+    }
+}
+
+#[test]
 fn codex_effort_survives_agent_bulk_chat_override_and_room_selection() {
     let _serial = serial();
     let (port, requests) = scripted_provider(|_| vec![

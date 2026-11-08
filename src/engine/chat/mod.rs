@@ -159,6 +159,8 @@ struct ToolCall {
 #[derive(Default)]
 struct Completion {
     continuity: Option<Value>,
+    // Internal working history; never serialized into client message metadata.
+    projection: Option<continuity::Projection>,
     content: String,
     reasoning: String,
     tool_calls: Vec<ToolCall>,

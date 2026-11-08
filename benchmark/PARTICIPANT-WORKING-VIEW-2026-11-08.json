@@ -1,0 +1,1094 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-08",
+  "baseCommit": "5a1f9f4f8a8042cdda980ab2bcb8a872af8ea8de",
+  "purpose": "Measure actual per-participant input reuse after interleaved group responses, sliding selection and engine restart",
+  "methodology": {
+    "model": "gpt-6-luna",
+    "reasoningEffort": "low",
+    "sameNineProductionPersonas": true,
+    "sameOwnerInstructions": true,
+    "isolatedTemporaryRuntime": true,
+    "productionConversationModified": false,
+    "toolsEnabled": false,
+    "autoLearning": false,
+    "contextManagementModelCalls": 0,
+    "measurement": "Exact provider-reported input/cache/output usage; a stable request prefix is not treated as a cache hit. Each visible reply used one model call.",
+    "fixture": "Owner sets a marker, all nine answer it, then all nine recall it. No canned responses or deterministic answer substitution."
+  },
+  "runs": [
+    {
+      "name": "final-restart",
+      "variant": "working view + date/evidence dedup; evidence validity checks do not affect this fixture because no retrieved evidence was selected",
+      "restartedBeforeRound": 2,
+      "idleSecondsBeforeRestart": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "participants": 9,
+          "correct": 9,
+          "cacheHits": 1,
+          "promptTokens": 18460,
+          "cachedPromptTokens": 2176,
+          "uncachedPromptTokens": 16284,
+          "completionTokens": 63
+        },
+        {
+          "round": 2,
+          "participants": 9,
+          "correct": 9,
+          "cacheHits": 8,
+          "promptTokens": 19514,
+          "cachedPromptTokens": 14720,
+          "uncachedPromptTokens": 4794,
+          "completionTokens": 63
+        }
+      ],
+      "turns": [
+        {
+          "round": 1,
+          "agentId": "dominion-ainz",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1899,
+            "totalTokens": 1906,
+            "uncachedPromptTokens": 1899
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 2,
+            "epoch": 1,
+            "estimatedInputTokens": 2474,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-albedo",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1974,
+            "totalTokens": 1981,
+            "uncachedPromptTokens": 1974
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 3,
+            "epoch": 1,
+            "estimatedInputTokens": 2541,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-shalltear",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1989,
+            "totalTokens": 1996,
+            "uncachedPromptTokens": 1989
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 4,
+            "epoch": 1,
+            "estimatedInputTokens": 2534,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-cocytus",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1934,
+            "totalTokens": 1941,
+            "uncachedPromptTokens": 1934
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2485,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-demiurge",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2070,
+            "totalTokens": 2077,
+            "uncachedPromptTokens": 2070
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2656,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-aura",
+          "usage": {
+            "cachedPromptTokens": 2176,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2472,
+            "totalTokens": 2479,
+            "uncachedPromptTokens": 296
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 3216,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-mare",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1989,
+            "totalTokens": 1996,
+            "uncachedPromptTokens": 1989
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2552,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-sebas",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2027,
+            "totalTokens": 2034,
+            "uncachedPromptTokens": 2027
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2618,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-pandora-actor",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2106,
+            "totalTokens": 2113,
+            "uncachedPromptTokens": 2106
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2703,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-ainz",
+          "usage": {
+            "cachedPromptTokens": 1664,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1961,
+            "totalTokens": 1968,
+            "uncachedPromptTokens": 297
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 1,
+            "epoch": 1,
+            "estimatedInputTokens": 2529,
+            "rebaseReason": null,
+            "reusedFrames": 3
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-albedo",
+          "usage": {
+            "cachedPromptTokens": 1792,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2059,
+            "totalTokens": 2066,
+            "uncachedPromptTokens": 267
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 2,
+            "epoch": 1,
+            "estimatedInputTokens": 2625,
+            "rebaseReason": null,
+            "reusedFrames": 4
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-shalltear",
+          "usage": {
+            "cachedPromptTokens": 1792,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2096,
+            "totalTokens": 2103,
+            "uncachedPromptTokens": 304
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 3,
+            "epoch": 1,
+            "estimatedInputTokens": 2647,
+            "rebaseReason": null,
+            "reusedFrames": 5
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-cocytus",
+          "usage": {
+            "cachedPromptTokens": 1792,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2066,
+            "totalTokens": 2073,
+            "uncachedPromptTokens": 274
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 4,
+            "epoch": 1,
+            "estimatedInputTokens": 2628,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-demiurge",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2204,
+            "totalTokens": 2211,
+            "uncachedPromptTokens": 2204
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 4,
+            "epoch": 1,
+            "estimatedInputTokens": 2801,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-aura",
+          "usage": {
+            "cachedPromptTokens": 2176,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2609,
+            "totalTokens": 2616,
+            "uncachedPromptTokens": 433
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 4,
+            "epoch": 1,
+            "estimatedInputTokens": 3363,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-mare",
+          "usage": {
+            "cachedPromptTokens": 1792,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2124,
+            "totalTokens": 2131,
+            "uncachedPromptTokens": 332
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 4,
+            "epoch": 1,
+            "estimatedInputTokens": 2699,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-sebas",
+          "usage": {
+            "cachedPromptTokens": 1792,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2159,
+            "totalTokens": 2166,
+            "uncachedPromptTokens": 367
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 4,
+            "epoch": 1,
+            "estimatedInputTokens": 2762,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-pandora-actor",
+          "usage": {
+            "cachedPromptTokens": 1920,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2236,
+            "totalTokens": 2243,
+            "uncachedPromptTokens": 316
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 4,
+            "epoch": 1,
+            "estimatedInputTokens": 2845,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        }
+      ]
+    },
+    {
+      "name": "prototype-six-minute-delay",
+      "variant": "initial working-view prototype before date dedup and evidence invalidation hardening",
+      "restartedBeforeRound": 3,
+      "idleSecondsBeforeRestart": 360,
+      "rounds": [
+        {
+          "round": 1,
+          "participants": 9,
+          "correct": 9,
+          "cacheHits": 0,
+          "promptTokens": 18442,
+          "cachedPromptTokens": 0,
+          "uncachedPromptTokens": 18442,
+          "completionTokens": 63
+        },
+        {
+          "round": 2,
+          "participants": 9,
+          "correct": 9,
+          "cacheHits": 5,
+          "promptTokens": 19721,
+          "cachedPromptTokens": 9344,
+          "uncachedPromptTokens": 10377,
+          "completionTokens": 76
+        },
+        {
+          "round": 3,
+          "participants": 9,
+          "correct": 9,
+          "cacheHits": 7,
+          "promptTokens": 21000,
+          "cachedPromptTokens": 13696,
+          "uncachedPromptTokens": 7304,
+          "completionTokens": 63
+        }
+      ],
+      "turns": [
+        {
+          "round": 1,
+          "agentId": "dominion-ainz",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1897,
+            "totalTokens": 1904,
+            "uncachedPromptTokens": 1897
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 2,
+            "epoch": 1,
+            "estimatedInputTokens": 2474,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-albedo",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1972,
+            "totalTokens": 1979,
+            "uncachedPromptTokens": 1972
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 3,
+            "epoch": 1,
+            "estimatedInputTokens": 2541,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-shalltear",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1987,
+            "totalTokens": 1994,
+            "uncachedPromptTokens": 1987
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 4,
+            "epoch": 1,
+            "estimatedInputTokens": 2534,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-cocytus",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1932,
+            "totalTokens": 1939,
+            "uncachedPromptTokens": 1932
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2485,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-demiurge",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2068,
+            "totalTokens": 2075,
+            "uncachedPromptTokens": 2068
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2656,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-aura",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2470,
+            "totalTokens": 2477,
+            "uncachedPromptTokens": 2470
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 3216,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-mare",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1987,
+            "totalTokens": 1994,
+            "uncachedPromptTokens": 1987
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2552,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-sebas",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2025,
+            "totalTokens": 2032,
+            "uncachedPromptTokens": 2025
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2618,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 1,
+          "agentId": "dominion-pandora-actor",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2104,
+            "totalTokens": 2111,
+            "uncachedPromptTokens": 2104
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2703,
+            "rebaseReason": "initial",
+            "reusedFrames": 0
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-ainz",
+          "usage": {
+            "cachedPromptTokens": 1664,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 1984,
+            "totalTokens": 1991,
+            "uncachedPromptTokens": 320
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 2,
+            "epoch": 1,
+            "estimatedInputTokens": 2558,
+            "rebaseReason": null,
+            "reusedFrames": 3
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-albedo",
+          "usage": {
+            "cachedPromptTokens": 1792,
+            "completionTokens": 20,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2082,
+            "totalTokens": 2102,
+            "uncachedPromptTokens": 290
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 3,
+            "epoch": 1,
+            "estimatedInputTokens": 2654,
+            "rebaseReason": null,
+            "reusedFrames": 4
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-shalltear",
+          "usage": {
+            "cachedPromptTokens": 1792,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2119,
+            "totalTokens": 2126,
+            "uncachedPromptTokens": 327
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 4,
+            "epoch": 1,
+            "estimatedInputTokens": 2676,
+            "rebaseReason": null,
+            "reusedFrames": 5
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-cocytus",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2089,
+            "totalTokens": 2096,
+            "uncachedPromptTokens": 2089
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2657,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-demiurge",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2227,
+            "totalTokens": 2234,
+            "uncachedPromptTokens": 2227
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2829,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-aura",
+          "usage": {
+            "cachedPromptTokens": 2304,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2632,
+            "totalTokens": 2639,
+            "uncachedPromptTokens": 328
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 3392,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-mare",
+          "usage": {
+            "cachedPromptTokens": 1792,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2147,
+            "totalTokens": 2154,
+            "uncachedPromptTokens": 355
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2727,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-sebas",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2182,
+            "totalTokens": 2189,
+            "uncachedPromptTokens": 2182
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2791,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 2,
+          "agentId": "dominion-pandora-actor",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2259,
+            "totalTokens": 2266,
+            "uncachedPromptTokens": 2259
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2873,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 3,
+          "agentId": "dominion-ainz",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2071,
+            "totalTokens": 2078,
+            "uncachedPromptTokens": 2071
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 2,
+            "epoch": 1,
+            "estimatedInputTokens": 2643,
+            "rebaseReason": null,
+            "reusedFrames": 6
+          }
+        },
+        {
+          "round": 3,
+          "agentId": "dominion-albedo",
+          "usage": {
+            "cachedPromptTokens": 1920,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2192,
+            "totalTokens": 2199,
+            "uncachedPromptTokens": 272
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 3,
+            "epoch": 1,
+            "estimatedInputTokens": 2768,
+            "rebaseReason": null,
+            "reusedFrames": 8
+          }
+        },
+        {
+          "round": 3,
+          "agentId": "dominion-shalltear",
+          "usage": {
+            "cachedPromptTokens": 1920,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2251,
+            "totalTokens": 2258,
+            "uncachedPromptTokens": 331
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 4,
+            "epoch": 1,
+            "estimatedInputTokens": 2819,
+            "rebaseReason": null,
+            "reusedFrames": 10
+          }
+        },
+        {
+          "round": 3,
+          "agentId": "dominion-cocytus",
+          "usage": {
+            "cachedPromptTokens": 1920,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2246,
+            "totalTokens": 2253,
+            "uncachedPromptTokens": 326
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2830,
+            "rebaseReason": null,
+            "reusedFrames": 12
+          }
+        },
+        {
+          "round": 3,
+          "agentId": "dominion-demiurge",
+          "usage": {
+            "cachedPromptTokens": 2048,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2386,
+            "totalTokens": 2393,
+            "uncachedPromptTokens": 338
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 3003,
+            "rebaseReason": null,
+            "reusedFrames": 12
+          }
+        },
+        {
+          "round": 3,
+          "agentId": "dominion-aura",
+          "usage": {
+            "cachedPromptTokens": 0,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2794,
+            "totalTokens": 2801,
+            "uncachedPromptTokens": 2794
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 3569,
+            "rebaseReason": null,
+            "reusedFrames": 12
+          }
+        },
+        {
+          "round": 3,
+          "agentId": "dominion-mare",
+          "usage": {
+            "cachedPromptTokens": 1920,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2307,
+            "totalTokens": 2314,
+            "uncachedPromptTokens": 387
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2903,
+            "rebaseReason": null,
+            "reusedFrames": 12
+          }
+        },
+        {
+          "round": 3,
+          "agentId": "dominion-sebas",
+          "usage": {
+            "cachedPromptTokens": 2048,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2339,
+            "totalTokens": 2346,
+            "uncachedPromptTokens": 291
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 2965,
+            "rebaseReason": null,
+            "reusedFrames": 12
+          }
+        },
+        {
+          "round": 3,
+          "agentId": "dominion-pandora-actor",
+          "usage": {
+            "cachedPromptTokens": 1920,
+            "completionTokens": 7,
+            "estimated": false,
+            "model": "gpt-6-luna",
+            "promptTokens": 2414,
+            "totalTokens": 2421,
+            "uncachedPromptTokens": 494
+          },
+          "modelCalls": 1,
+          "markerRecalled": true,
+          "workingView": {
+            "appendedFrames": 5,
+            "epoch": 1,
+            "estimatedInputTokens": 3044,
+            "rebaseReason": null,
+            "reusedFrames": 12
+          }
+        }
+      ]
+    }
+  ],
+  "conclusion": {
+    "workingViewAndRecallPreserved": true,
+    "universalCacheHitGuarantee": false,
+    "finalFollowupCacheMisses": 1,
+    "note": "Final follow-up new input fell from 16284 to 4794 for nine participants, but one participant still had zero cached tokens. The prototype delayed follow-up had two misses. Total prompt tokens grew; newly processed input fell. This is not a controlled A/B or proof of general intelligence growth."
+  },
+  "limits": [
+    "Provider cache eligibility and eviction remain external to the Rust harness.",
+    "Stateless protocols still receive the full selected working view; this change does not create remote KV storage.",
+    "The first call, contract changes, revoked evidence and bounded history rebases can incur uncached input.",
+    "Marker recall verifies this continuity case, not arbitrary answer quality or tool task quality.",
+    "No vendor or model-name whitelist controls working-view selection."
+  ]
+}

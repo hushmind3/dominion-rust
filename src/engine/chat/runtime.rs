@@ -311,7 +311,7 @@ async fn run_turn_body(
         .and_then(|execution| execution["strategyCandidates"].as_array().cloned())
         .unwrap_or_default();
 
-    if record_input {
+    let recorded_source = if record_input {
         let attachments =
             crate::engine::attachments::validate_ids(state, session_id, &request.attachment_ids)?;
         let user_message = state
@@ -329,7 +329,8 @@ async fn run_turn_body(
             &request.input,
         );
         retitle_if_placeholder(state, &session, &request.input);
-    }
+        user_message["id"].as_str().map(str::to_string)
+    } else { None };
     let reply_to = if let Some(id) = source_message_id {
         let source = state
             .store
@@ -343,13 +344,13 @@ async fn run_turn_body(
         }
         Some(id.to_string())
     } else {
-        state
+        recorded_source.or_else(|| state
             .store
             .messages(session_id)
             .iter()
             .rev()
             .find(|message| message["role"] == "user")
-            .and_then(|message| message["id"].as_str().map(str::to_string))
+            .and_then(|message| message["id"].as_str().map(str::to_string)))
     };
     // The acceptance baseline is captured BEFORE any tool runs. For rooms the
     // original owner message is the only source of truth; the synthesized
@@ -552,7 +553,8 @@ async fn run_turn_body(
         );
         (prompt_context, history_messages)
     };
-    let mut messages = vec![json!({"role":"system","content":prompt_context.prompt})];
+    let mut messages = vec![json!({"role":"system","content":prompt_context.prompt,"_dominion_source":reply_to,
+        "_dominion_dependencies":super::continuity::dependencies(state,&prompt_context.items)})];
     if is_room {
         if let Some(mut execution) = state.store.get("execution", execution_id) {
             if execution["inputContext"].is_null() {
@@ -860,6 +862,7 @@ async fn run_turn_body(
     let mut final_content = String::new();
     let mut final_reasoning = String::new();
     let mut last_reasoning = String::new();
+    let mut continuation_projection = None;
     let mut total_tokens: u64 = 0;
     let mut prompt_tokens_total: u64 = 0;
     let mut completion_tokens_total: u64 = 0;
@@ -1062,8 +1065,12 @@ async fn run_turn_body(
             return Err("도구가 비활성인 대화에서 모델이 도구 실행을 요청했습니다.".into());
         }
         metadata["continuity"] = completion.continuity.clone().unwrap_or(Value::Null);
+        continuation_projection = completion.projection.take();
         if let Some(mut execution) = state.store.get("execution", execution_id) {
             execution["modelContinuity"] = metadata["continuity"].clone();
+            if let Some(estimate) = metadata["continuity"]["workingView"]["estimatedInputTokens"].as_u64() {
+                execution["inputContext"]["projectedInputTokensEstimate"] = json!(estimate);
+            }
             state.store.put("execution", &execution);
         }
 
@@ -1080,7 +1087,8 @@ async fn run_turn_body(
         } else {
             usage_estimated = true;
             (
-                super::room_context::input_estimate(&wire_messages, &round_tools) as u64,
+                metadata["continuity"]["workingView"]["estimatedInputTokens"].as_u64()
+                    .unwrap_or_else(||super::room_context::input_estimate(&wire_messages, &round_tools) as u64),
                 super::room_context::estimate(&format!("{}{}", completion.content, completion.reasoning)).max(1) as u64,
             )
         };
@@ -1922,6 +1930,9 @@ async fn run_turn_body(
         .ok_or("최종 응답을 저장할 수 없습니다.")?;
     state.bus.message(&saved);
     super::continuity::commit(state, &metadata["continuity"], &saved);
+    if let Some(projection) = continuation_projection {
+        super::continuity::commit_projection(state, &metadata["continuity"], &saved, projection);
+    }
     if let Some(mut execution) = state.store.get("execution", execution_id) {
         execution["finalMessageId"] = saved["id"].clone();
         state.store.put("execution", &execution);

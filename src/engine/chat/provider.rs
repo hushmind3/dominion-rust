@@ -682,8 +682,10 @@ async fn stream_completion_once(
     let settings=json!({"thinking":request.thinking,"effort":request.reasoning_effort,
         "tools":ordered_tools,"toolMode":provider.tool_mode});
     let mut continuity=super::continuity::prepare(state,provider,request,session_id,&instructions,&settings)?;
-    let mut completion=stream_completion_once_body(state,client,provider,messages,&ordered_tools,
+    let (projected, projection)=super::continuity::project(state,provider,messages,&ordered_tools,session_id,&mut continuity);
+    let mut completion=stream_completion_once_body(state,client,provider,&projected,&ordered_tools,
         request,session_id,tx,convert_native_history,&mut continuity).await?;
+    completion.projection=projection;
     completion.continuity=Some(continuity);
     Ok(completion)
 }
