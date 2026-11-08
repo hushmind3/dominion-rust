@@ -16,6 +16,7 @@ type Message={id:string;role:string;content:string;created_at:string}
 type Approval={id:string;sessionId:string;status:string;tool:string;args:unknown}
 const SAVED_JOB='dominion.rsi.activeJob'
 const terminal=(status:string)=>['completed','failed','cancelled','needs_review'].includes(status)
+const operationLabel=(approval:Approval)=>{ const args=approval.args as Record<string,unknown>|null; const value=args&&typeof args==='object'?args:null; const detail=value?.path||value?.cwd||value?.command||''; return typeof detail==='string'&&detail.trim()?detail.slice(0,240):'선택한 도구의 실행을 승인할까요?' }
 const defaultTask='DOMINION의 100턴 회의실에서 오래된 결정과 교정을 기억하지 못하는 문제를 실제 코드에서 추적하고 수정한 뒤 관련 테스트로 검증해 주세요.'
 
 export function SelfImprovementPage(){
@@ -36,7 +37,6 @@ export function SelfImprovementPage(){
  const [busy,setBusy]=useState(false)
  const [error,setError]=useState('')
  const [notice,setNotice]=useState('')
- const selectedProvider=activeProviders.find(provider=>provider.id===providerId)
  useEffect(()=>{
   if(!activeProviders.length)return
   if(!activeProviders.some(provider=>provider.id===providerId)){
@@ -138,7 +138,7 @@ export function SelfImprovementPage(){
    {!!approvals.length&&<div className="mt-4 grid gap-2">
     {approvals.map(item=><div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#E7D8C8] bg-[#FBF6EF] p-3">
      <div><p className="text-[12px] font-semibold"><ClipboardCheck size={14} className="mr-1 inline"/> 실행 승인 필요: {item.tool}</p>
-      <p className="mt-1 max-w-[550px] break-all text-[11px] text-[#7C7469]">{JSON.stringify(item.args).slice(0,340)}</p></div>
+      <p className="mt-1 max-w-[550px] break-all text-[11px] text-[#7C7469]">{operationLabel(item)}</p></div>
      <div className="flex gap-2"><Button variant="secondary" size="sm" onClick={()=>void approve(item.id,false)}>거절</Button><Button variant="primary" size="sm" onClick={()=>void approve(item.id,true)}>승인</Button></div>
     </div>)}
    </div>}
