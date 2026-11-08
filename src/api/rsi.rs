@@ -46,6 +46,29 @@ pub async fn deployment(
 /// A non-developer chooses a configured model and describes the issue.
  /// The existing Rust tool harness performs inspection, edits and verification;
  /// patch/commit/test manifests remain internal, never a form prerequisite.
+/// Explicit operator-triggered paired code check. This runs model-written
+/// Rust tests on the local host, so the UI must require an explicit action.
+pub async fn compare(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(candidate)=engine::one(&state,&id)else{
+        return error("자기개선 후보가 없습니다.".into());
+    };
+    if !matches!(candidate["status"].as_str(),Some("proposed"|"inconclusive"))
+        || candidate["cases"].as_array().is_none_or(|c|c.len()<engine::MIN_PAIRED_CASES){
+        return error("평가 가능한 8개 이상 동결 사례와 대기 중인 후보가 필요합니다.".into());
+    }
+    let run_id=format!("rsi-run-{}",candidate["rsiJobId"].as_str().unwrap_or(""));
+    let Some(evidence)=state.store.get("rsi_run",&run_id)else{
+        return error("코드 수정 증거가 없습니다.".into());
+    };
+    if evidence["candidateId"]!=candidate["id"]||evidence["checksPassed"]!=true {
+        return error("기존 정적 검사를 통과한 코드 후보만 비교할 수 있습니다.".into());
+    }
+    match crate::engine::jobs::enqueue(&state,"rsi_compare",json!({"candidateId":id})){
+        Some(job)=>(StatusCode::ACCEPTED,Json(job)).into_response(),
+        None=>error("A/B 실험을 대기열에 넣지 못했습니다.".into())
+    }
+}
+
 pub async fn apply(
     State(state): State<AppState>, Path(id): Path<String>, Json(body): Json<Value>
 ) -> Response {

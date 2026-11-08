@@ -136,6 +136,7 @@ pub fn recover(state: &AppState) {
         let flagged = [
             "/inFlight",
             "/promptState/inFlight",
+            "/rsiCompareInFlight",
             "/goalState/inFlight",
             "/goalState/reviewPending",
             "/roomState/inFlight",
@@ -318,6 +319,8 @@ fn next_queued(state: &AppState) -> Option<Value> {
     let learning_running = jobs
         .iter()
         .any(|job| job["status"] == "running" && job["kind"] == "learn");
+    let comparison_running = jobs.iter().any(|job|
+        job["status"]=="running"&&job["kind"]=="rsi_compare");
     let mut queued = jobs
         .iter()
         .cloned()
@@ -325,6 +328,7 @@ fn next_queued(state: &AppState) -> Option<Value> {
         // Learning is background work: at most one at a time, so it can never
         // occupy every worker while a prompt/room/workflow job waits.
         .filter(|job| !(job["kind"] == "learn" && learning_running))
+        .filter(|job| !(job["kind"] == "rsi_compare" && comparison_running))
         .filter(|job| {
             if !matches!(job["kind"].as_str(), Some("room" | "meeting")) {
                 return true;
@@ -351,7 +355,7 @@ fn next_queued(state: &AppState) -> Option<Value> {
         })
         .collect::<Vec<_>>();
     queued.sort_by(|a, b| {
-        let priority = |job: &Value| u8::from(job["kind"] == "learn");
+        let priority = |job: &Value| u8::from(matches!(job["kind"].as_str(),Some("learn"|"rsi_compare")));
         let by_priority = priority(a).cmp(&priority(b));
         if by_priority != std::cmp::Ordering::Equal {
             return by_priority;
@@ -430,6 +434,7 @@ async fn run_job(state: AppState, job: Value) {
         "room" | "meeting" => rooms::run(&context, &job).await,
         "goal" => goals::run(&context, &job).await,
         "prompt" => run_prompt(&context, &job).await,
+        "rsi_compare" => crate::engine::rsi_worktree::compare(&context,&job).await,
         "resume" => run_resume(&context, &job).await,
         "learn" => learning::run(&context, &job).await,
         "reflect" => reflect::run(&context, &job).await,

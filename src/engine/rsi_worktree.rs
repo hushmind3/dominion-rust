@@ -33,13 +33,14 @@ pub fn recent_feedback(state:&crate::state::AppState)->String{
             .take(3).collect::<Vec<_>>().join(", ")).unwrap_or_default();
         let result=if checks_ok{"정적 검사 통과(실제 성능 향상 미검증)"}
             else {"정적 검사 실패 또는 실행되지 않음"};
+        let paired_verdict=run["paired"]["verdict"].as_str().unwrap_or("비교 안 함");
         let error=if !invalid.is_empty(){invalid}
             else if !model_err.is_empty(){model_err}
             else if !broken.is_empty(){broken.as_str()}else{"증거 없음"};
         lines.push(format!(
-            "- 과거 목표: {}; 결과: {}; 오류: {}; 후보: {}",
+            "- 과거 목표: {}; 결과: {}; A/B 검증: {}; 오류: {}; 후보: {}",
             objective.chars().take(220).collect::<String>(),
-            result,error.chars().take(220).collect::<String>(),
+            result,paired_verdict,error.chars().take(220).collect::<String>(),
             run["candidateId"].as_str().unwrap_or("없음"),
         ));
     }
@@ -284,7 +285,8 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
     static APPLY_LOCK:OnceLock<tokio::sync::Mutex<()>>=OnceLock::new();
     let _lock=APPLY_LOCK.get_or_init(||tokio::sync::Mutex::new(())).lock().await;
     let mut candidate=state.store.get("rsi_candidate",id).ok_or("개선 후보를 찾을 수 없습니다.")?;
-    if candidate["status"]!="proposed" || candidate["target"]=="improver" {
+    if !matches!(candidate["status"].as_str(),Some("proposed"|"inconclusive"|"verified"))
+        || candidate["target"]=="improver" {
         return Err("독립 실험이 없는 개선기 자체 패치는 시험 적용할 수 없습니다.".into());
     }
     if body["confirmation"]!="APPLY_UNVERIFIED_TO_SUB"
@@ -347,6 +349,120 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
         json!({"candidateId":id,"jobId":job_id,"baseCommit":status["commit"]}));
     state.bus.record("rsi_candidate",&saved);
     Ok(saved)
+}
+
+/// Execute the existing paired-runner against the frozen baseline and the
+/// exact model patch. Tests run on the operator's host: Git worktrees provide
+/// source isolation, NOT an OS security sandbox. Never call this from a model.
+pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
+    let id=job["input"]["candidateId"].as_str()
+        .ok_or("비교할 자기개선 후보가 없습니다.")?;
+    let state=&context.state;
+    let candidate=state.store.get("rsi_candidate",id)
+        .ok_or("비교할 후보 기록이 없습니다.")?;
+    if !matches!(candidate["status"].as_str(),Some("proposed"|"inconclusive")) {
+        return Err("평가 대기 또는 근거 부족 후보만 재비교할 수 있습니다.".into());
+    }
+    if candidate["cases"].as_array().is_none_or(|c|c.len()<rsi::MIN_PAIRED_CASES) {
+        return Err("고정된 평가 사례가 8개 미만이므로 승격 평가를 실행할 수 없습니다.".into());
+    }
+    let patch=candidate["patch"].as_str().ok_or("코드 패치가 없습니다.")?;
+    if digest(patch)!=candidate["patchSha256"].as_str().unwrap_or("") {
+        return Err("평가 전 코드 패치 SHA-256이 일치하지 않습니다.".into());
+    }
+    let prior=state.store.get("rsi_run",
+        &format!("rsi-run-{}",candidate["rsiJobId"].as_str().unwrap_or("")))
+        .ok_or("모델이 생성한 후보의 원본 실행 증거가 없습니다.")?;
+    if prior["candidateId"]!=candidate["id"]||prior["checksPassed"]!=true {
+        return Err("컴파일 검사를 통과한 현재 실행 후보만 A/B 실험을 실행합니다.".into());
+    }
+    let status=crate::engine::dev::status(state).await;
+    if status["git"]!=true || status["branch"]!="dominion-sub"
+        || status["dirty"]!=0 {
+        return Err("자기개선 비교는 깨끗한 dominion-sub 소스에서만 실행합니다.".into());
+    }
+    let source=std::fs::canonicalize(
+        status["config"]["sourceDir"].as_str().ok_or("저장소 소스 경로가 없습니다.")?
+    ).map_err(|e|e.to_string())?;
+    let runner=source.join("scripts/rsi-lab.sh");
+    if !runner.is_file() {
+        return Err("고정된 쌍대 실험기 scripts/rsi-lab.sh가 없습니다.".into());
+    }
+    let output_dir=state.config.data_dir.join("rsi-paired")
+        .join(format!("{}-{}",id,uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&output_dir).map_err(|e|e.to_string())?;
+    let patch_file=output_dir.join("candidate.patch");
+    let plan_file=output_dir.join("plan.json");
+    let report_file=output_dir.join("report.json");
+    std::fs::write(&patch_file,patch).map_err(|e|e.to_string())?;
+    let plan=json!({"oracleVersion":candidate["oracleVersion"],"cases":candidate["cases"]});
+    std::fs::write(&plan_file,plan.to_string()).map_err(|e|e.to_string())?;
+    context.checkpoint(json!({
+        "rsiCompareInFlight":true,"rsiPhase":"paired_experiment",
+        "rsiCandidateId":id
+    }))?;
+    let mut command=Command::new("bash");
+    command.current_dir(&source).arg(&runner)
+        .arg(candidate["baseCommit"].as_str().unwrap_or(""))
+        .arg(&patch_file).arg(&plan_file).arg(&report_file);
+    let outcome=run(command,Duration::from_secs(1200)).await?;
+    if !outcome.status.success() {
+        return Err(format!("독립 A/B 실험 실행 실패: {}",String::from_utf8_lossy(&outcome.stderr)
+            .chars().rev().take(1200).collect::<String>().chars().rev().collect::<String>()));
+    }
+    let report_text=std::fs::read_to_string(&report_file).map_err(|e|e.to_string())?;
+    let report:Value=serde_json::from_str(&report_text).map_err(|e|e.to_string())?;
+    let evidence_path=output_dir.join("report.json.evidence.txt");
+    let evidence_meta=std::fs::metadata(&evidence_path).map_err(|e|e.to_string())?;
+    if evidence_meta.len()>24*1024*1024 {
+        return Err("실험 출력이 증거 보관 상한(24MiB)을 초과했습니다.".into());
+    }
+    let evidence=std::fs::read(&evidence_path).map_err(|e|e.to_string())?;
+    let evidence_sha=format!("{:x}",Sha256::digest(&evidence));
+    if report["reportSha256"].as_str()!=Some(evidence_sha.as_str())
+        || report["baseCommit"]!=candidate["baseCommit"]
+        || report["patchSha256"]!=candidate["patchSha256"]
+        || report["oracleVersion"]!=candidate["oracleVersion"] {
+        return Err("원본·패치·평가 기준 또는 실행 증거의 해시가 일치하지 않습니다.".into());
+    }
+    let mut updated=rsi::evaluate(state,id,&report)?;
+    let verdict=updated["evaluation"]["metrics"]["verdict"].clone();
+    let metrics=updated["evaluation"]["metrics"].clone();
+    // This evaluation came from a real local script invocation, not a
+    // client-supplied verdict. It is still host execution, not a VM sandbox.
+    updated["evaluation"]["source"]=json!("server_invoked_local_paired_git_worktrees");
+    updated["evaluation"]["evidenceSha256"]=json!(evidence_sha);
+    state.store.put("rsi_candidate",&updated)
+        .ok_or("A/B 평가 후보 갱신에 실패했습니다.")?;
+    state.store.put("rsi_evaluation",&updated["evaluation"]);
+    let receipt=json!({
+        "id":format!("rsi-pair-{}",context.job_id),
+        "candidateId":id,"jobId":context.job_id,
+        "report":report,"verdict":verdict,"metrics":metrics,
+        "evidenceSha256":evidence_sha,
+        "runner":"local_gitrepo_not_os_sandbox",
+        "createdAt":chrono::Utc::now().to_rfc3339()
+    });
+    state.store.put("rsi_pair",&receipt);
+    let origin_id=format!("rsi-run-{}",candidate["rsiJobId"].as_str().unwrap_or(""));
+    if let Some(mut origin)=state.store.get("rsi_run",&origin_id) {
+        origin["paired"]=json!({"verdict":verdict,"metrics":metrics,
+            "reportSha256":evidence_sha,"comparedAt":receipt["createdAt"]});
+        origin["pairedComparisonComplete"]=json!(true);
+        state.store.put("rsi_run",&origin);
+    }
+    state.store.audit("rsi.paired_evaluation",
+        json!({"id":id,"verdict":verdict,"evidenceSha256":evidence_sha}));
+    context.checkpoint(json!({
+        "rsiCompareInFlight":false,"rsiPhase":"paired_review"
+    }))?;
+    Ok(json!({
+        "candidateId":id,"candidateStatus":updated["status"],
+        "verdict":verdict,"metrics":metrics,
+        "evidenceSha256":evidence_sha,
+        "pairedCases":report["cases"].as_array().map(Vec::len).unwrap_or(0),
+        "performanceImprovementClaimed":false
+    }))
 }
 
 pub async fn cleanup(worktree:&Worktree)->Result<(),String>{
