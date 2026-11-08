@@ -185,15 +185,20 @@ pub fn save_tokens(
         .read_secret(&format!("provider:{provider_id}:oauth"))
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .unwrap_or(Value::Null);
+    // Never carry a previous account's refresh token into a new OAuth login.
+    let same_account = previous["accountId"].as_str() == account_id(tokens).as_deref();
     let refresh = tokens["refresh_token"]
         .as_str()
         .filter(|value| !value.is_empty())
-        .or_else(|| previous["refreshToken"].as_str())
+        .or_else(|| {
+            if same_account { previous["refreshToken"].as_str() } else { None }
+        })
         .unwrap_or("");
     state.save_secret(
         &format!("provider:{provider_id}:oauth"),
         &json!({
             "refreshToken":refresh,
+            "accountId":account_id(tokens),
             "clientId":CLIENT_ID,
             "expiresAt":expires_at(tokens),
             "shared":shared,
