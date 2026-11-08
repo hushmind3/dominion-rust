@@ -62,7 +62,7 @@ function CandidateReview({id,canApply,afterApply}:{id:string;canApply:boolean;af
   if(!window.confirm('고정된 8개 Rust 테스트를 원본·수정본 2개 Git 작업공간에서 실행합니다. 내 컴퓨터에서 모델이 수정한 Rust 코드를 테스트하므로 CPU·시간을 사용합니다. 실행하시겠습니까?'))return
   setComparing(true);setCompareError('')
   try{
-   const job=await post<PairedJob>('/api/rsi/'+encodeURIComponent(id)+'/compare',{})
+   const job=await post<PairedJob>('/api/rsi/'+encodeURIComponent(id)+'/compare',{confirmation:'RUN_PAIRED_NATIVE_TESTS'})
    setComparisonId(job.id);setComparison(job)
    try{localStorage.setItem(compareKey,job.id)}catch{}
   }catch(e){setCompareError((e as Error).message)}finally{setComparing(false)}

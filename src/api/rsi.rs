@@ -48,7 +48,11 @@ pub async fn deployment(
  /// patch/commit/test manifests remain internal, never a form prerequisite.
 /// Explicit operator-triggered paired code check. This runs model-written
 /// Rust tests on the local host, so the UI must require an explicit action.
-pub async fn compare(State(state):State<AppState>,Path(id):Path<String>)->Response{
+pub async fn compare(State(state):State<AppState>,Path(id):Path<String>,
+    Json(body):Json<Value>)->Response{
+    if body["confirmation"]!="RUN_PAIRED_NATIVE_TESTS" {
+        return error("수정된 Rust 코드의 실제 로컬 테스트 실행을 명시적으로 승인하세요.".into());
+    }
     let Some(candidate)=engine::one(&state,&id)else{
         return error("자기개선 후보가 없습니다.".into());
     };
