@@ -6,6 +6,8 @@ import {FormField,Notice,refresh,useRemote} from '../components/UI'
 import {DialogBackdrop,DialogPanel} from '../components/Dialog'
 import {ModelExplorer} from '../components/ModelExplorer'
 import {ModelPicker} from '../components/ModelPicker'
+import {ReasoningSelect} from '../components/ReasoningSelect'
+import {useProviderModels} from '../hooks/useProviderModels'
 import {t,useLocale} from '../i18n'
 
 type PresetCategory='free'|'cloud'|'local'
@@ -77,13 +79,15 @@ export function ModelHub(){
  const [freeBusy,setFreeBusy]=useState(false)
  const [oauthBusy,setOauthBusy]=useState('')
  const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[defaultModel,setDefaultModel]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
+ const [defaultEffort,setDefaultEffort]=useState('')
+ const editModels=useProviderModels(modal&&edit?edit.id:'')
  const probe=async(p:Provider)=>{
   setCounts(old=>({...old,[p.id]:{list:[],busy:true}}))
   try{const list=await get<{id:string;catalogStale?:boolean}[]>('/api/providers/'+p.id+'/models');setCounts(old=>({...old,[p.id]:{list:list.map(m=>m.id),error:list.some(m=>m.catalogStale)?'최근 저장된 목록입니다. 실시간 Codex 조회가 실패했습니다.':undefined}}))}
   catch(e){setCounts(old=>({...old,[p.id]:{list:[],error:(e as Error).message}}))}
  }
- const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setDefaultModel(p?.model||'');setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setAccountId(p?.accountId||'');setTestResult(null);setError('');setModal(true)}
- const openPreset=(preset:ProviderPreset)=>{setEdit(null);setIntegration(preset.integration);setFreePreset(Boolean(preset.free&&preset.auth==='none'));setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId('');setDefaultModel('');setReflection(false);setRpm(preset.requestsPerMinute?String(preset.requestsPerMinute):'');setAccountId('');setTestResult(null);setError('');setModal(true)}
+ const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setDefaultModel(p?.model||'');setDefaultEffort(String(p?.reasoningEffort||''));setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setAccountId(p?.accountId||'');setTestResult(null);setError('');setModal(true)}
+ const openPreset=(preset:ProviderPreset)=>{setEdit(null);setIntegration(preset.integration);setFreePreset(Boolean(preset.free&&preset.auth==='none'));setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId('');setDefaultModel('');setDefaultEffort('');setReflection(false);setRpm(preset.requestsPerMinute?String(preset.requestsPerMinute):'');setAccountId('');setTestResult(null);setError('');setModal(true)}
  const needsNewKey=presetMode&&!freePreset&&(!local||integration==='freellmapi')
  const testConnection=async()=>{
   if(testBusy||!baseUrl.trim())return
@@ -105,7 +109,7 @@ export function ModelHub(){
    const saved=await post<Provider>('/api/providers',{
     ...edit,name:name.trim(),baseUrl:baseUrl.trim(),kind,apiKey:apiKey.trim()||undefined,local,integration,accountId:accountId.trim()||undefined,requestsPerMinute:Number(rpm)||0,
     toolMode:edit?.kind===kind?edit.toolMode:undefined,
-    enabled:edit?.enabled??true,model:kind==='codex'?defaultModel.trim()||edit?.model:edit?.model,reflection,reflectionModel:reflection?modelId.trim():undefined,
+    reasoningEffort:defaultEffort,enabled:edit?.enabled??true,model:kind==='codex'?defaultModel.trim()||edit?.model:edit?.model,reflection,reflectionModel:reflection?modelId.trim():undefined,
    })
    providers.setValue(rows=>rows.some(p=>p.id===saved.id)?rows.map(p=>p.id===saved.id?saved:p):[...rows,saved])
    setCounts(rows=>{const next={...rows};delete next[saved.id];return next})
@@ -282,7 +286,8 @@ export function ModelHub(){
      <FormField label={t('models.dlg.serverUrl')}><TextInput value={baseUrl} onChange={e=>setBaseUrl(e.target.value)} placeholder="http://127.0.0.1:1234/v1"/></FormField>
      {baseUrl.includes('ACCOUNT_ID')&&<FormField label={t('models.dlg.accountId')} hint={t('models.dlg.accountIdHint')}><TextInput value={accountId} onChange={e=>setAccountId(e.target.value)} placeholder="a1b2c3d4e5f6..."/></FormField>}
      <FormField label={t('models.dlg.apiMode')}><SelectInput value={kind} onChange={e=>setKind(e.target.value)}><option value="openai">{t('models.dlg.openaiCompat')}</option><option value="anthropic">Anthropic</option><option value="codex">Codex (OAuth)</option><option value="ollama">Ollama</option></SelectInput></FormField>
-     {kind==='codex'&&edit&&<FormField label="Codex 기본 모델" hint="계정 모델 목록에서 선택합니다. 모델이 보이지 않으면 OAuth 연결을 갱신하세요."><ModelPicker providerId={edit.id} value={defaultModel} onChange={setDefaultModel} className="w-full"/></FormField>}
+     {kind==='codex'&&edit&&<FormField label="Codex 기본 모델" hint="계정 모델 목록에서 선택합니다. 모델이 보이지 않으면 OAuth 연결을 갱신하세요."><ModelPicker providerId={edit.id} catalogue={editModels} value={defaultModel} onChange={model=>{setDefaultModel(model);setDefaultEffort('')}} className="w-full"/></FormField>}
+     <FormField label={t('chat.reasoningEffort')} hint="에이전트나 대화에서 별도로 지정하지 않았을 때 사용하는 기본값입니다."><ReasoningSelect value={defaultEffort} onChange={setDefaultEffort} model={editModels.value.find(item=>item.id===(defaultModel||edit?.model))} requireCatalog={kind==='codex'}/></FormField>
      {kind!=='codex'&&<FormField label={t('models.dlg.apiKey')}><TextInput type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={edit?.hasKey?t('models.dlg.keepKey'):t('models.dlg.keyIfNeeded')}/></FormField>}
      <label className="flex items-center gap-2 text-[12px]"><TextInput type="checkbox" checked={local} onChange={e=>setLocal(e.target.checked)}/> {t('models.dlg.localServer')}</label>
      {edit&&<details open={reflection||undefined} className="rounded-xl border border-[#F0DFD2] bg-[#FFF9F4] p-3">

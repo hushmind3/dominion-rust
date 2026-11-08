@@ -1,6 +1,6 @@
 import {useEffect, useId, useLayoutEffect, useMemo, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
-import {Check, ChevronDown, LoaderCircle, Search, X} from 'lucide-react'
+import {Check, ChevronDown, LoaderCircle, RefreshCw, Search, X} from 'lucide-react'
 import {useProviderModels} from '../hooks/useProviderModels'
 import {useAnchoredPanel} from '../hooks/useAnchoredPanel'
 import {t,useLocale} from '../i18n'
@@ -48,6 +48,7 @@ export function ModelPicker({
   useEffect(() => {
     setOpen(false)
     setQuery('')
+    setFreeOnly(false)
     trigger.current?.focus({preventScroll: true})
   }, [providerId, disabled])
 
@@ -147,6 +148,7 @@ export function ModelPicker({
               )}
             </div>
 
+            {models.some(model=>model.catalogStale)&&<p role="status" className="px-3 py-2 text-[11px] text-amber-700">최근 저장된 모델 목록입니다. 새로고침으로 현재 계정 목록을 확인하세요.</p>}
             <div ref={list} id={listId} role="listbox" aria-label={ariaLabel} className="min-h-0 max-h-[min(58vh,320px)] overflow-y-auto overscroll-contain p-1">
               {loading && (
                 <div className="flex items-center gap-2 px-3 py-4 text-[12px] text-[#8A8176]">
@@ -215,6 +217,7 @@ export function ModelPicker({
                 />
                 {t('picker.freeOnly')}
               </label>
+              <button type="button" aria-label="모델 목록 새로고침" title="모델 목록 새로고침" disabled={loading} onClick={()=>void (catalogue??ownCatalogue).reload()} className="rounded p-1 hover:bg-[#F3EEE5] disabled:opacity-50"><RefreshCw size={12} className={loading?'animate-spin':''}/></button>
               <span>
                 {t('picker.count', { shown: filtered.length, total: models.length })}
               </span>

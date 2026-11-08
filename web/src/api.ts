@@ -3,7 +3,7 @@ import {translateError} from './i18n/errors'
 
 export type RecordItem = {id:string;name?:string;createdAt?:string;updatedAt?:string;[key:string]:any}
 export type Provider = RecordItem & {name:string;baseUrl:string;kind:string;enabled:boolean;hasKey?:boolean;model?:string;learning?:boolean;reflection?:boolean;reflectionModel?:string;accountId?:string}
-export type Agent = RecordItem & {name:string;description?:string;systemPrompt:string;providerId:string;model:string;color?:string;aliases?:string[];avatarUrl?:string;personaSource?:string;sourceProfile?:string;role?:string}
+export type Agent = RecordItem & {name:string;description?:string;systemPrompt:string;providerId:string;model:string;reasoningEffort?:string;thinking?:boolean;color?:string;aliases?:string[];avatarUrl?:string;personaSource?:string;sourceProfile?:string;role?:string}
 export type ChatMessage = {id:string;session_id:string;role:string;content:string;reasoning?:string;agent_id?:string;tool_calls?:any[];tool_call_id?:string;metadata?:{authorKind?:string;roomId?:string;replyToMessageId?:string;executionId?:string;usage?:{promptTokens?:number;cachedPromptTokens?:number|null;uncachedPromptTokens?:number|null;completionTokens?:number;totalTokens?:number;estimated?:boolean;model?:string;providerId?:string};[key:string]:unknown};created_at:string}
 export type ChatSession = RecordItem & {title:string;agentId:string;providerId?:string;model?:string;roomId?:string}
 export type Room = RecordItem & {name:string;agentIds:string[];rounds:number;maxTurns?:number;sessionId?:string}
@@ -49,7 +49,7 @@ export const post = <T = any>(url: string, data: unknown) =>
  request<T>(url, {method: 'POST', body: JSON.stringify(data)})
 export const del = (url: string) => request(url, {method: 'DELETE'})
 
-export type ModelOption = {id: string; name?: string; free?: boolean|null; freeStatus?: 'free'|'paid'|'unknown'; freeSource?: string}
+export type ModelOption = {id: string; name?: string; free?: boolean|null; freeStatus?: 'free'|'paid'|'unknown'; freeSource?: string; reasoningEfforts?: string[]; defaultReasoningEffort?: string|null; catalogStale?: boolean}
 export type Approval = {id: string; tool: string; args: unknown; status: string; sessionId: string}
 export async function resolveApproval(id: string, allow: boolean) {
  const result = await post<{resolved: boolean; error?: string}>('/api/approvals', {id, allow})
@@ -76,7 +76,7 @@ export async function openOAuth(id: string) {
 export type ChatRequest = {
  sessionId: string; agentId: string; providerId?: string; model?: string; input: string;
  toolsEnabled: boolean; toolsExecutionEnabled: boolean; autoLearning: boolean;
- reasoningLanguage?: string; reasoningEffort?: string; thinking: boolean;
+ reasoningLanguage?: string; reasoningEffort?: string; thinking?: boolean;
 }
 
 export async function streamChat(data: ChatRequest, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {

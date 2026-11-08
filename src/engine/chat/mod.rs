@@ -88,6 +88,7 @@ pub struct TurnRequest {
 
 impl TurnRequest {
     pub fn from_value(value: &Value) -> Result<Self, String> {
+        crate::engine::reasoning::validate(value)?;
         let text = value
             .get("input")
             .and_then(|item| item.as_str())
@@ -122,17 +123,13 @@ impl TurnRequest {
                 .unwrap_or(true),
             thinking: value.get("thinking").and_then(|item| item.as_bool()),
             reasoning_effort: match string("reasoningEffort") {
-                Some(effort)
-                    if matches!(
-                        effort.as_str(),
-                        "none" | "minimal" | "low" | "medium" | "high"
-                    ) =>
+                Some(effort) if crate::engine::reasoning::valid_effort(&effort) =>
                 {
                     Some(effort)
                 }
                 Some(_) => {
                     return Err(
-                        "추론 강도는 none/minimal/low/medium/high 중 하나여야 합니다.".into(),
+                        "추론 강도 값이 올바르지 않습니다.".into(),
                     )
                 }
                 None => None,

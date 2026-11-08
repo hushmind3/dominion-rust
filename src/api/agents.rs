@@ -8,6 +8,9 @@ pub async fn list_agents(State(state): State<AppState>) -> Json<Value> {
 }
 
 pub async fn save_agent(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    if let Err(message) = crate::engine::reasoning::validate(&body) {
+        return error(StatusCode::BAD_REQUEST, &message);
+    }
     if body
         .get("name")
         .and_then(|value| value.as_str())
@@ -26,6 +29,9 @@ pub async fn save_agent(State(state): State<AppState>, Json(body): Json<Value>) 
 }
 
 pub async fn bulk_agent_model(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    if let Err(message) = crate::engine::reasoning::validate(&body) {
+        return error(StatusCode::BAD_REQUEST, &message);
+    }
     let Some(items) = body["agentIds"]
         .as_array()
         .filter(|items| !items.is_empty() && items.len() <= 100)
@@ -64,10 +70,15 @@ pub async fn bulk_agent_model(State(state): State<AppState>, Json(body): Json<Va
             ids.push(id.to_string());
         }
     }
+    let mut patch = json!({"providerId":provider_id,"model":model});
+    if let Some(effort) = body.get("reasoningEffort") {
+        patch["reasoningEffort"] = effort.clone();
+        patch["thinking"] = Value::Null;
+    }
     let Some(records) = state.store.patch_records(
         "agent",
         &ids,
-        &json!({"providerId":provider_id,"model":model}),
+        &patch,
     ) else {
         return error(
             StatusCode::BAD_REQUEST,

@@ -27,6 +27,7 @@ pub mod goals;
 pub mod gateway;
 pub mod improve;
 pub mod recovery;
+pub mod reasoning;
 pub mod remote_backup;
 pub mod jobs;
 pub mod learning;

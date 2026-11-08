@@ -206,7 +206,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
             .unwrap_or("")
             .trim();
         if !valid_effort(effort) {
-            return Err(bad("추론 강도는 none/minimal/low/medium/high 중 하나여야 합니다."));
+            return Err(bad("추론 강도 값이 올바르지 않습니다."));
         }
         if seen_models.insert(format!("{provider_id}|{model}")) {
             let mut picked = json!({"providerId":provider_id,"model":model});
@@ -226,7 +226,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
     }
     let reasoning_effort=text_field(body,previous,"reasoningEffort","",16)?;
     if !valid_effort(&reasoning_effort) {
-        return Err(bad("추론 강도는 none/minimal/low/medium/high 중 하나여야 합니다."));
+        return Err(bad("추론 강도 값이 올바르지 않습니다."));
     }
     Ok(json!({
         "id":id,"name":name,"agentIds":agent_ids,"routingMode":routing,
@@ -245,7 +245,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
     }))
 }
 fn valid_effort(value: &str) -> bool {
-    matches!(value, "" | "none" | "minimal" | "low" | "medium" | "high")
+    crate::engine::reasoning::valid_effort(value)
 }
 fn valid_id(id: &str) -> bool {
     !id.is_empty()

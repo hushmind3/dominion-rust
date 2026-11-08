@@ -30,6 +30,8 @@ import {
 } from "lucide-react";
 import { Agent, Provider, Room, del, get, post } from "../api";
 import { ModelPicker } from "../components/ModelPicker";
+import { ReasoningSelect } from "../components/ReasoningSelect";
+import { useProviderModels } from "../hooks/useProviderModels";
 import {
   Action,
   Empty,
@@ -61,10 +63,13 @@ export function AgentsPage() {
     [selected, setSelected] = useState<string[]>([]),
     [bulkProvider, setBulkProvider] = useState(""),
     [bulkModel, setBulkModel] = useState(""),
+    [bulkEffort, setBulkEffort] = useState(""),
     [bulkBusy, setBulkBusy] = useState(false),
     [bulkNotice, setBulkNotice] = useState("");
   const enabledProviders = providers.value.filter(p => p.enabled !== false);
   const editProvider = enabledProviders.find(p => p.id === edit?.providerId);
+  const editModels = useProviderModels(edit?.providerId || "");
+  const bulkModels = useProviderModels(bulk ? bulkProvider : "");
   const closeEditor = () => { if (!saving) { setEdit(null); setError(""); } };
   const save = async () => {
     if (!edit?.name?.trim() || saving) return;
@@ -101,6 +106,7 @@ export function AgentsPage() {
         agentIds: selected,
         providerId: bulkProvider,
         model: bulkModel.trim(),
+        reasoningEffort: bulkEffort,
       });
       setBulkNotice(t('agents.bulkDone', { count: r.count }));
       setBulk(false);
@@ -204,6 +210,7 @@ export function AgentsPage() {
                 onChange={(e) => {
                   setBulkProvider(e.target.value);
                   setBulkModel("");
+                  setBulkEffort("");
                 }}
               >
                 <option value="">{t('agents.select')}</option>
@@ -217,12 +224,16 @@ export function AgentsPage() {
             <FormField label={t('agents.model')}>
               <ModelPicker
                 providerId={bulkProvider}
+                catalogue={bulkModels}
                 value={bulkModel}
-                onChange={setBulkModel}
+                onChange={model=>{setBulkModel(model);setBulkEffort("")}}
                 placeholder={t('agents.modelPick')}
                 className="w-full"
                 ariaLabel={t('agents.model')}
               />
+            </FormField>
+            <FormField label={t('chat.reasoningEffort')}>
+              <ReasoningSelect value={bulkEffort} onChange={setBulkEffort} model={bulkModels.value.find(item=>item.id===bulkModel)} requireCatalog={enabledProviders.find(item=>item.id===bulkProvider)?.kind==='codex'} disabled={bulkBusy||!bulkModel}/>
             </FormField>
             <Action
               disabled={
@@ -366,6 +377,7 @@ export function AgentsPage() {
                         ...edit,
                         providerId: e.target.value,
                         model: "",
+                        reasoningEffort: "",
                       })
                     }
                   >
@@ -381,14 +393,18 @@ export function AgentsPage() {
                 <FormField label={t('agents.useModel')} hint={edit.providerId ? t('agents.modelIdHint') : t('agents.modelLaterHint')}>
                   <ModelPicker
                     providerId={editProvider?.id || ""}
+                    catalogue={editModels}
                     value={edit.model || ""}
-                    onChange={(model) => setEdit({ ...edit, model })}
+                    onChange={(model) => setEdit({ ...edit, model, reasoningEffort: "" })}
                     placeholder={editProvider?.model ? t('agents.defaultModel') : editProvider ? t('agents.pickModel') : t('agents.pickProviderFirst')}
                     className="w-full"
                     ariaLabel={t('agents.agentModel')}
                   />
                 </FormField>
               </div>
+              <FormField label={t('chat.reasoningEffort')} hint="이 에이전트의 기본 추론 강도입니다. 대화나 회의실에서 지정한 값이 있으면 해당 값이 우선합니다.">
+                <ReasoningSelect value={edit.reasoningEffort||""} onChange={reasoningEffort=>setEdit({...edit,reasoningEffort,thinking:undefined})} model={editModels.value.find(item=>item.id===(edit.model||editProvider?.model))} requireCatalog={editProvider?.kind==='codex'} disabled={saving}/>
+              </FormField>
               <FormField
                 label={t('agents.alias')}
                 hint={t('agents.aliasHint')}

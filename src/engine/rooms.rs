@@ -653,17 +653,22 @@ async fn run_locked(
         }else{(resolved_provider,resolved_model)};
         // Per-model effort wins, then the message, the room and the agent.
         // "none" turns reasoning off; an explicit level turns it on.
+        let codex_route = provider_id.as_deref().and_then(|id|state.store.get("provider",id))
+            .is_some_and(|provider|provider["kind"] == "codex");
         let effort_choice=rotated_effort
             .or_else(||optional(input,"reasoningEffort"))
             .or_else(||optional(&room,"reasoningEffort"))
             .or_else(||optional(&agent,"reasoningEffort"))
-            .or_else(||Some(auto_reasoning_effort(owner_text)));
-        let reasoning_effort=effort_choice.clone().filter(|effort| effort != "none");
+            .or_else(||provider_id.as_deref().and_then(|id|state.store.get("provider",id)).and_then(|provider|optional(&provider,"reasoningEffort")))
+            // Codex's default is model-specific. Do not convert a greeting's
+            // heuristic `none` into an unsupported effort on reasoning models.
+            .or_else(||(!codex_route).then(||auto_reasoning_effort(owner_text)));
+        let reasoning_effort=effort_choice.clone();
         let thinking=input["thinking"].as_bool()
             .or_else(||room["thinking"].as_bool())
             .or_else(||agent["thinking"].as_bool())
             .or_else(||effort_choice.as_deref().map(|effort| effort != "none"))
-            .or(Some(false));
+            .or_else(||(!codex_route).then_some(false));
         let mut request=TurnRequest {
             session_id:Some(session_id.to_string()),input:owner_text.to_string(),agent_id:Some(agent_id.clone()),provider_id,model,attachment_ids: Vec::new(),tools_enabled:room["toolsEnabled"].as_bool().unwrap_or(false),tools_execution_enabled:true,thinking,auto_learning:room["autoLearning"].as_bool().unwrap_or(true),reasoning_effort,reasoning_language: (input["reasoningLanguage"].as_str().unwrap_or("ko") == "ko").then(|| "ko".into()),
             task_id:Some(task_id.clone()),parent_task_id:None,task_revision:task_revision.clone(),verification_owner:Some("self".into()),

@@ -111,11 +111,19 @@ async fn run_turn_with_policy(
             .map(str::to_string);
     }
     if let Some(id) = &request.agent_id {
-        if state.store.get("agent", id).is_none() {
-            return Err(format!("에이전트를 찾을 수 없습니다: {id}"));
+        let agent = state.store.get("agent", id)
+            .ok_or_else(||format!("에이전트를 찾을 수 없습니다: {id}"))?;
+        if request.reasoning_effort.is_none() {
+            request.reasoning_effort = agent["reasoningEffort"].as_str()
+                .filter(|value|!value.is_empty()).map(str::to_string);
         }
+        if request.thinking.is_none() { request.thinking = agent["thinking"].as_bool(); }
     }
     let provider = select_provider(state, &request, &session)?;
+    if request.reasoning_effort.is_none() {
+        request.reasoning_effort = state.store.get("provider", &provider.id)
+            .and_then(|record|record["reasoningEffort"].as_str().filter(|value|!value.is_empty()).map(str::to_string));
+    }
     request.provider_id = Some(provider.id.clone());
     request.model = Some(provider.model.clone());
     let mut session = session;

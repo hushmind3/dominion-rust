@@ -195,6 +195,59 @@ impl TestApp {
 }
 
 #[test]
+fn codex_effort_survives_agent_bulk_chat_override_and_room_selection() {
+    let _serial = serial();
+    let (port, requests) = scripted_provider(|_| vec![
+        json!({"type":"response.output_text.delta","delta":"확인했습니다."}),
+        json!({"type":"response.completed","response":{"usage":{"input_tokens":30,"output_tokens":5,"total_tokens":35}}}),
+    ]);
+    let app = TestApp::new(port,"native");
+    let provider = app.post("/api/providers", &json!({"name":"Codex test","kind":"codex","baseUrl":format!("http://127.0.0.1:{port}/codex"),"accountId":"test-account","apiKey":"test-only","enabled":true,"model":"catalog-model","reasoningEffort":"high"}));
+    // Seed the normalized account catalog, without a real login or generation.
+    let catalog = json!({"id":provider["id"],"accountId":"test-account","models":[{"id":"catalog-model","reasoningEfforts":["none","low","medium","high","xhigh","max","ultra"]}]});
+    Connection::open(app._root.join("runtime/dominion.sqlite")).unwrap().execute(
+        "INSERT INTO records(kind,id,data) VALUES('codex_model_catalog',?1,?2)",
+        rusqlite::params![provider["id"].as_str().unwrap(),catalog.to_string()],
+    ).unwrap();
+    let agent = app.post("/api/agents", &json!({"name":"Effort agent","systemPrompt":"간결하게 응답하세요.","providerId":provider["id"],"model":"catalog-model","reasoningEffort":"ultra"}));
+    let chat = |effort: Option<&str>, expected:&str| {
+        let session=app.post("/api/sessions",&json!({"title":"reasoning","agentId":agent["id"]}));
+        let mut body=json!({"sessionId":session["id"],"agentId":agent["id"],"input":"안녕하세요","toolsEnabled":false,"autoLearning":false});
+        if let Some(effort)=effort {body["reasoningEffort"]=json!(effort);}
+        let before=requests.lock().unwrap().len();
+        let stream=app.chat(&body);
+        assert!(stream.contains("확인했습니다"),"{stream}");
+        let seen=requests.lock().unwrap();
+        assert_eq!(seen.len(),before+1,"no discovery/review calls: {seen:?}");
+        assert_eq!(seen.last().unwrap()["reasoning"]["effort"],expected);
+    };
+    chat(None,"ultra");
+    for effort in ["xhigh","max","ultra","none"] {chat(Some(effort),effort);}
+    let bulk=app.post("/api/agents/bulk-model",&json!({"agentIds":[agent["id"]],"providerId":provider["id"],"model":"catalog-model","reasoningEffort":"max"}));
+    assert_eq!(bulk["agents"][0]["reasoningEffort"],"max");
+    chat(None,"max");
+    let mut updated=bulk["agents"][0].clone();updated["reasoningEffort"]=json!("");
+    app.post("/api/agents",&updated);
+    chat(None,"high"); // Provider default is inherited only when agent/turn are unset.
+
+    let room=app.post("/api/rooms",&json!({"name":"Effort room","agentIds":[agent["id"]],"routingMode":"mentioned","rounds":1,"autoModels":false,"autoLearning":false,"toolsEnabled":false,"reasoningEffort":"xhigh","models":[{"providerId":provider["id"],"model":"catalog-model","reasoningEffort":"ultra"}]}));
+    let before=requests.lock().unwrap().len();
+    let submitted=app.post(&format!("/api/rooms/{}/messages",room["id"].as_str().unwrap()),&json!({"input":"안녕하세요","agentIds":[agent["id"]]}));
+    let job_id=submitted["job"]["id"].as_str().unwrap();
+    let deadline=Instant::now()+Duration::from_secs(10);
+    loop {
+        let job=app.get(&format!("/api/jobs/{job_id}"));
+        if job["status"]=="completed" {break;}
+        assert!(job["status"]!="failed","{job}");
+        assert!(Instant::now()<deadline,"{job}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let seen=requests.lock().unwrap();
+    assert_eq!(seen.len(),before+1);
+    assert_eq!(seen.last().unwrap()["reasoning"]["effort"],"ultra");
+}
+
+#[test]
 fn command_failure_persists_actual_evidence() {
     let _serial = serial();
     let (port, _) = scripted_provider(|request| {

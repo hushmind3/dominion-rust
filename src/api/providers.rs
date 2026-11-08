@@ -769,6 +769,9 @@ fn public_provider(state: &AppState, mut provider: Value) -> Value {
 }
 
 pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    if let Err(message) = crate::engine::reasoning::validate(&body) {
+        return error(StatusCode::BAD_REQUEST, &message);
+    }
     let name = body
         .get("name")
         .and_then(|value| value.as_str())
@@ -1261,6 +1264,7 @@ fn parse_codex_models(value: &Value) -> Result<Vec<Value>, String> {
         if !seen.insert(id.to_string()) { continue; }
         let efforts = row["supported_reasoning_levels"].as_array()
             .or_else(||row["supported_reasoning_efforts"].as_array())
+            .or_else(||row["supportedReasoningEfforts"].as_array())
             .cloned().unwrap_or_default();
         models.push(json!({
             "id":id,
@@ -1270,9 +1274,10 @@ fn parse_codex_models(value: &Value) -> Result<Vec<Value>, String> {
             "freeStatus":"unknown",
             "freeSource":"chatgpt-subscription",
             "reasoningEfforts":efforts.iter().filter_map(|value|
-                value["effort"].as_str().or_else(||value["reasoningEffort"].as_str())
+                value.as_str().or_else(||value["effort"].as_str()).or_else(||value["reasoningEffort"].as_str())
             ).collect::<Vec<_>>(),
             "defaultReasoningEffort":row["default_reasoning_level"].as_str()
+                .or_else(||row["default_reasoning_effort"].as_str())
                 .or_else(||row["defaultReasoningEffort"].as_str()),
             "isDefault":row["is_default"].as_bool()
                 .or_else(||row["isDefault"].as_bool()).unwrap_or(false),
@@ -1534,6 +1539,19 @@ mod tests {
         assert!(parse_codex_models(&json!({"models":[]})).is_err());
         assert!(parse_codex_models(&json!({"data":[{"model":"real-model"}]})).is_ok());
         assert!(parse_codex_models(&json!({"wrong":[]})).is_err());
+    }
+
+    #[test]
+    fn codex_catalog_has_no_four_model_cap_and_preserves_all_advertised_efforts() {
+        let rows = (0..9).map(|index| json!({
+            "id":format!("account-model-{index}"), "displayName":format!("Account model {index}"),
+            "supportedReasoningEfforts":["low",{"reasoningEffort":"xhigh"},{"effort":"max"},"ultra","future_tier"],
+            "defaultReasoningEffort":"xhigh"
+        })).collect::<Vec<_>>();
+        let models = parse_codex_models(&json!({"data":rows})).unwrap();
+        assert_eq!(models.len(), 9);
+        assert_eq!(models[8]["reasoningEfforts"], json!(["low","xhigh","max","ultra","future_tier"]));
+        assert_eq!(models[8]["defaultReasoningEffort"], "xhigh");
     }
 
     #[test]

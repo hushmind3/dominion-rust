@@ -1159,12 +1159,13 @@ async fn stream_codex_once(
     if let Some(limit) = provider.max_output_tokens {
         body["max_output_tokens"] = json!(limit);
     }
-    if let Some(effort) = request
-        .reasoning_effort
-        .as_deref()
-        .filter(|effort| *effort != "none")
-    {
-        body["reasoning"] = json!({"effort": effort});
+    let catalog = state.store.get("codex_model_catalog", &provider.id)
+        .filter(|row|row["accountId"].as_str() == Some(account_id));
+    let effort = if request.thinking == Some(false) {
+        Some("none")
+    } else { request.reasoning_effort.as_deref() };
+    if let Some(reasoning) = crate::engine::reasoning::codex_options(catalog.as_ref(), &provider.model, effort)? {
+        body["reasoning"] = reasoning;
     }
     let access = crate::engine::codex_oauth::fresh_access(
         state,
