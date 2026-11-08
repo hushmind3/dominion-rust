@@ -108,6 +108,18 @@ fn core(state: &AppState, request: &TurnRequest, room: &Value) -> (String, usize
             );
         }
     }
+    prompt.push_str(
+        "\n최신 주인 메시지와 아래 확정 상태가 이전 대화 주제보다 우선합니다. 회상·질문·정정에는 이전 주제를 반복하지 말고 직접 답하십시오.",
+    );
+    if let Some(state_block) =
+        crate::engine::room_state::context_block(state, room["id"].as_str().unwrap_or(""))
+    {
+        prompt.push_str("\n주인 확정 상태(원문 보존; 나중 발언이 이전 발언을 대체):\n");
+        prompt.push_str(&state_block);
+        items.push(
+            json!({"kind":"owner_state","digest":memory::stable_id(&[&state_block])}),
+        );
+    }
     if request.tools_enabled && request.tools_execution_enabled {
         prompt.push_str("\n필요할 때 도구를 사용하십시오. 도구 결과는 정확히 보고해야 하며, 실행 권한과 승인은 엔진이 강제합니다.");
     } else {

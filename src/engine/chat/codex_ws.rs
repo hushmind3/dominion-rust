@@ -468,6 +468,19 @@ async fn exchange(
         let text = match message {
             Message::Text(text) => text.to_string(),
             Message::Binary(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            Message::Ping(payload) => {
+                // Long model turns can leave the socket otherwise write-idle.
+                // Answer keepalive pings explicitly; a missing pong surfaces as
+                // a 1011 timeout and forces a full-chain resend.
+                socket
+                    .send(Message::Pong(payload))
+                    .await
+                    .map_err(|error| {
+                        WsError::Fallback(format!("Codex WebSocket pong 전송 실패: {error}"))
+                    })?;
+                continue;
+            }
+            Message::Pong(_) => continue,
             Message::Close(frame) => {
                 let reason = frame
                     .map(|frame| format!("{} {}", frame.code, frame.reason))

@@ -468,6 +468,12 @@ pub(crate) fn submit_internal(
         .ok_or_else(|| failed("메시지와 응답 작업을 저장할 수 없습니다."))?;
     state.bus.message(&saved_message);
     state.bus.record("job", &saved_job);
+    crate::engine::room_state::observe_owner_message(
+        &state,
+        id,
+        session_id,
+        &saved_message,
+    );
     state.store.audit("room.owner_message",json!({"roomId":id,"sessionId":session_id,"messageId":saved_message["id"],"jobId":saved_job["id"]}));
     if let Some(saved)=state.store.patch_if("room",id,"id",&json!(id),&json!({"lastOwnerMessageId":saved_message["id"],"lastSubmittedAt":chrono::Utc::now().to_rfc3339(),"stoppedAt":null})){
         state.bus.record("room",&saved);
@@ -597,6 +603,7 @@ pub async fn reset(State(state): State<AppState>, Path(id): Path<String>) -> Res
             return Err(conflict("대화방 세션이 동시에 변경되었습니다. 다시 시도하세요."));
         };
         state.bus.record("room", &saved);
+        crate::engine::room_state::clear(&state, &id);
         Ok(json!({
             "ok": true,
             "roomId": id,
