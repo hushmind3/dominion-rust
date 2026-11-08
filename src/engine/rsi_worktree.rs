@@ -57,10 +57,13 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     let name=path.to_str().ok_or("분리 작업공간 경로를 읽을 수 없습니다.")?;
     // Detached Git worktree, not a new branch; the running server checkout stays pristine.
     git(&source,&["worktree","add","--detach",name,base]).await?;
-    context.checkpoint(json!({
+    if let Err(error)=context.checkpoint(json!({
         "rsiWorkspace":name,"rsiBaseCommit":base,
         "rsiPhase":"model_editing","rsiIsolation":"detached_git_worktree_not_os_sandbox"
-    }))?;
+    })) {
+        let _=git(&source,&["worktree","remove","--force",name]).await;
+        return Err(error);
+    }
     Ok(Worktree{source,path,base:base.to_string()})
 }
 fn classify(patch:&str)->&'static str {
@@ -279,6 +282,8 @@ mod tests {
         let outside=root.join("outside.txt");
         assert!(tools::execute(&ctx,"file_write",&json!({"path":outside.to_str().unwrap(),"content":"forbidden"}),"run").await.is_err());
         assert!(tools::execute(&ctx,"shell_exec",&json!({"command":"touch outside.txt"}),"run").await.is_err());
+        assert!(tools::execute(&ctx,"workspace_write",&json!({"path":".git","content":"tamper"}),"run").await.is_err());
+        assert!(tools::execute(&ctx,"workspace_write",&json!({"path":"Cargo.toml","content":"tamper"}),"run").await.is_err());
         assert!(!outside.exists());
         std::fs::remove_dir_all(root).unwrap();
     }

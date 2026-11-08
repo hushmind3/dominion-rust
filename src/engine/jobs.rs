@@ -509,6 +509,8 @@ async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> 
     let rsi_workspace = if input["rsiSourceDir"].is_string() {
         Some(crate::engine::rsi_worktree::prepare(context,&input).await?)
     } else { None };
+    // The dedicated source checkout is validated and detached before a model
+    // call, never modified directly by the RSI execution.
     let session_id = job
         .get("sessionId")
         .or_else(|| input.get("sessionId"))

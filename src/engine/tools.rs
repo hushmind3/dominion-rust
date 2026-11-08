@@ -94,9 +94,16 @@ pub async fn execute(
     args: &Value,
     run_id: &str,
 ) -> Result<Value, String> {
-    if ctx.store.get("session",ctx.session_id).is_some_and(|s|s["rsiRun"]==true)
-        && !rsi_allowed(name) {
+    let isolated_rsi = ctx.store.get("session",ctx.session_id)
+        .is_some_and(|s|s["rsiRun"]==true);
+    if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
+    }
+    if isolated_rsi && name=="workspace_write" {
+        let path=args["path"].as_str().unwrap_or("");
+        if !crate::engine::rsi::safe_path(path) {
+            return Err("자기개선은 허용된 소스코드 경로만 수정할 수 있습니다.".into());
+        }
     }
     match name {
         "workspace_list" => {

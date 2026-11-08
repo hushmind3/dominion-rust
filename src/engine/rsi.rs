@@ -21,7 +21,7 @@ fn sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn safe_path(path: &str) -> bool {
+pub(crate) fn safe_path(path: &str) -> bool {
     !path.contains('\\')
         && !path.starts_with('/')
         && !path.split('/').any(|part| part == ".." || part == "." || part.is_empty())
