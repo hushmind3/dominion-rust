@@ -86,6 +86,15 @@ fn source_dir(state: &AppState) -> Option<PathBuf> {
         .and_then(|value| value.as_str())
         .unwrap_or("");
     if path.trim().is_empty() {
+        // A source checkout launched from its own root should not require
+        // a non-developer to configure the same folder again.
+        let cwd = std::env::current_dir().ok()?;
+        if cwd.join(".git").exists()
+            && cwd.join("Cargo.toml").is_file()
+            && cwd.join("src/engine/rsi.rs").is_file()
+        {
+            return Some(cwd);
+        }
         return None;
     }
     let expanded = if let Some(rest) = path.strip_prefix("~/") {
@@ -189,7 +198,9 @@ pub async fn status(state: &AppState) -> Value {
 
     json!({
         "config": {
-            "sourceDir": config.get("sourceDir"),
+            "sourceDir": dir.as_ref()
+                .map(|path| json!(path.to_string_lossy().to_string()))
+                .unwrap_or_else(|| config.get("sourceDir").cloned().unwrap_or(Value::Null)),
             "repoUrl": config.get("repoUrl"),
             "branch": config.get("branch"),
             "previewPort": config.get("previewPort"),
