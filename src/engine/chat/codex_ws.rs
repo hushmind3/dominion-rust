@@ -48,18 +48,42 @@ pub(super) enum Plan {
 /// role plus visible text. Ids and JSON envelope details are deliberately
 /// ignored because the harness re-renders them deterministically.
 pub(super) fn item_signature(item: &Value) -> (String, String) {
-    let role = item["role"].as_str().unwrap_or("").to_string();
-    let text = item["content"]
-        .as_array()
-        .map(|parts| {
-            parts
-                .iter()
-                .filter_map(|part| part["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
-    (role, text)
+    match item["type"].as_str() {
+        Some("function_call") => (
+            "function_call".to_string(),
+            format!(
+                "{}|{}|{}",
+                item["call_id"].as_str().unwrap_or(""),
+                item["name"].as_str().unwrap_or(""),
+                item["arguments"].as_str().unwrap_or("")
+            ),
+        ),
+        Some("function_call_output") => (
+            "function_call_output".to_string(),
+            format!(
+                "{}|{}",
+                item["call_id"].as_str().unwrap_or(""),
+                item["output"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| item["output"].to_string())
+            ),
+        ),
+        _ => {
+            let role = item["role"].as_str().unwrap_or("").to_string();
+            let text = item["content"]
+                .as_array()
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(|part| part["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("")
+                })
+                .unwrap_or_default();
+            (role, text)
+        }
+    }
 }
 
 /// A prefix match is the only safe incremental form. Any edit, truncation or
@@ -84,6 +108,12 @@ pub(super) fn plan_chain(chain: &[(String, String)], incoming: &[(String, String
 fn assistant_items(response: &Value, fallback_text: &str) -> Vec<Value> {
     let mut items = Vec::new();
     for item in response["output"].as_array().into_iter().flatten() {
+        if item["type"].as_str() == Some("function_call") {
+            if let Some(normalized) = super::provider::codex_function_call_item(item) {
+                items.push(normalized);
+            }
+            continue;
+        }
         if item["type"].as_str() != Some("message") || item["role"].as_str() != Some("assistant") {
             continue;
         }
@@ -472,12 +502,34 @@ async fn exchange(
                     let _ = tx.send(json!({"type":"reasoning","text":delta}));
                 }
             }
+            "response.output_item.done" => {
+                if let Some(item) = piece.get("item") {
+                    for call in super::provider::codex_tool_calls(std::slice::from_ref(item)) {
+                        if !completion
+                            .tool_calls
+                            .iter()
+                            .any(|existing| existing.id == call.id)
+                        {
+                            completion.tool_calls.push(call);
+                        }
+                    }
+                }
+            }
             "response.completed" => {
                 let response_id = piece["response"]["id"].as_str().unwrap_or("").to_string();
                 let output = piece["response"]["output"]
                     .as_array()
                     .cloned()
                     .unwrap_or_default();
+                for call in super::provider::codex_tool_calls(&output) {
+                    if !completion
+                        .tool_calls
+                        .iter()
+                        .any(|existing| existing.id == call.id)
+                    {
+                        completion.tool_calls.push(call);
+                    }
+                }
                 if let Some(usage) = piece["response"]["usage"].as_object() {
                     completion.cached_prompt_tokens =
                         super::provider::cached_prompt_tokens(&json!(usage));
@@ -528,6 +580,25 @@ mod tests {
 
     fn item(role: &str, text: &str) -> Value {
         json!({"role":role,"content":[{"type":"text","text":text}]})
+    }
+
+    #[test]
+    fn tool_item_signatures_include_call_identity_and_output() {
+        let call_a = json!({
+            "type":"function_call","call_id":"call-a",
+            "name":"workspace_write","arguments":"{\"path\":\"a.txt\"}"
+        });
+        let call_b = json!({
+            "type":"function_call","call_id":"call-b",
+            "name":"workspace_write","arguments":"{\"path\":\"a.txt\"}"
+        });
+        let output = json!({
+            "type":"function_call_output","call_id":"call-a","output":"ok"
+        });
+        assert_ne!(item_signature(&call_a), item_signature(&call_b));
+        assert_ne!(item_signature(&call_a), item_signature(&output));
+        assert_eq!(item_signature(&call_a).0, "function_call");
+        assert_eq!(item_signature(&output).0, "function_call_output");
     }
 
     #[test]

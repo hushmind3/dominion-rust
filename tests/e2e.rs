@@ -6643,6 +6643,266 @@ fn scripted_websocket_provider() -> (u16, Arc<Mutex<Vec<Value>>>) {
     (port, requests)
 }
 
+/// Codex Responses websocket that answers the first request with a structured
+/// `workspace_write` function call and the continuation with a final answer.
+/// The continuation must carry the function-call output, not a text transcript.
+fn scripted_codex_tool_provider() -> (u16, Arc<Mutex<Vec<Value>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let observed = requests.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let observed = observed.clone();
+                tokio::spawn(async move {
+                    let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                        return;
+                    };
+                    let mut count = 0usize;
+                    while let Some(Ok(message)) = socket.next().await {
+                        let Message::Text(text) = message else {
+                            continue;
+                        };
+                        let Ok(body) = serde_json::from_str::<Value>(&text) else {
+                            continue;
+                        };
+                        if body["type"] != "response.create" {
+                            continue;
+                        }
+                        count += 1;
+                        observed.lock().unwrap().push(body.clone());
+                        let id = format!("resp_ws_tool_{count}");
+                        let events = if body.get("previous_response_id").is_none() {
+                            let call = json!({
+                                "type":"function_call",
+                                "id":"fc_ws_tool_1",
+                                "call_id":"call_ws_tool_1",
+                                "name":"workspace_write",
+                                "arguments":"{\"path\":\"ws_tool.txt\",\"content\":\"WS_TOOL_OK\"}"
+                            });
+                            vec![
+                                json!({"type":"response.output_item.done","item":call.clone()}),
+                                json!({"type":"response.completed","response":{
+                                    "id":id,
+                                    "output":[call],
+                                    "usage":{"input_tokens":40,
+                                        "input_tokens_details":{"cached_tokens":0},
+                                        "output_tokens":5,"total_tokens":45}
+                                }}),
+                            ]
+                        } else {
+                            let answer = "웹소켓 도구 실행 완료";
+                            vec![
+                                json!({"type":"response.output_text.delta","delta":answer}),
+                                json!({"type":"response.completed","response":{
+                                    "id":id,
+                                    "output":[{"type":"message","role":"assistant",
+                                        "content":[{"type":"output_text","text":answer}]}],
+                                    "usage":{"input_tokens":45,
+                                        "input_tokens_details":{"cached_tokens":40},
+                                        "output_tokens":5,"total_tokens":50}
+                                }}),
+                            ]
+                        };
+                        for event in events {
+                            if socket
+                                .send(Message::Text(event.to_string().into()))
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    });
+    (port, requests)
+}
+
+#[test]
+fn codex_websocket_executes_a_structured_tool_call_and_continues_the_chain() {
+    let _serial = serial();
+    let (port, requests) = scripted_codex_tool_provider();
+    let app = TestApp::new(port, "compat");
+    app.post("/api/policy", &json!({"autoApproveAll": true}));
+    let provider = app.post("/api/providers", &json!({
+        "name":"codex tool fixture","kind":"codex",
+        "baseUrl":format!("http://127.0.0.1:{port}/codex"),
+        "accountId":"fixture-account","apiKey":"fixture-only",
+        "enabled":true,"model":"fixture-model"
+    }));
+    let agent = app.post("/api/agents", &json!({
+        "name":"ws tool participant",
+        "systemPrompt":"WEBSOCKET_TOOL_IDENTITY stays verbatim",
+        "providerId":provider["id"],"model":"fixture-model"
+    }));
+    let session = app.post("/api/sessions", &json!({"title":"ws tool","agentId":agent["id"]}));
+    let stream = app.chat(&json!({
+        "sessionId":session["id"],"agentId":agent["id"],
+        "providerId":provider["id"],"model":"fixture-model",
+        "input":"ws_tool.txt 파일을 만들어줘",
+        "toolsEnabled":true,"autoLearning":false
+    }));
+    assert!(stream.contains("웹소켓 도구 실행 완료"), "{stream}");
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("ws_tool.txt")).unwrap_or_default(),
+        "WS_TOOL_OK"
+    );
+    let seen = requests.lock().unwrap();
+    assert_eq!(seen.len(), 2, "one tool round plus one final answer: {seen:?}");
+    let tools = seen[0]["tools"].as_array().expect("native tools");
+    assert!(
+        tools.iter().any(|tool| {
+            tool["type"] == "function"
+                && tool["name"] == "workspace_write"
+                && tool["parameters"]["type"] == "object"
+        }),
+        "workspace_write schema was not sent: {tools:?}"
+    );
+    assert!(seen[0].get("previous_response_id").is_none());
+    assert_eq!(seen[1]["previous_response_id"], "resp_ws_tool_1");
+    let second = seen[1]["input"].as_array().unwrap();
+    assert!(
+        second.iter().any(|item| {
+            item["type"] == "function_call_output"
+                && item["call_id"] == "call_ws_tool_1"
+                && item["output"]
+                    .as_str()
+                    .is_some_and(|output| output.contains("ws_tool.txt"))
+        }),
+        "the continuation must carry the function-call output: {second:?}"
+    );
+    assert!(
+        !second
+            .iter()
+            .any(|item| item["role"] == "user" && item["content"].to_string().contains("Tool observation")),
+        "tool output stayed structured instead of becoming user text: {second:?}"
+    );
+    assert!(
+        !second
+            .iter()
+            .any(|item| item.to_string().contains("ws_tool.txt 파일을 만들어줘")),
+        "the chained user turn must not be re-sent: {second:?}"
+    );
+    let messages = app.get(&format!(
+        "/api/sessions/{}/messages",
+        session["id"].as_str().unwrap()
+    ));
+    let assistant = messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["role"] == "assistant")
+        .find(|row| row["tool_calls"].as_array().is_some_and(|calls| {
+            calls.iter().any(|call| call["id"] == "call_ws_tool_1")
+        }))
+        .expect("persisted structured tool call");
+    assert_eq!(
+        assistant["tool_calls"][0]["function"]["name"],
+        "workspace_write"
+    );
+}
+
+#[test]
+fn codex_http_fallback_executes_a_structured_tool_call() {
+    let _serial = serial();
+    let (port, requests) = scripted_provider(|body| {
+        let has_output = body["input"].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item["type"] == "function_call_output")
+        });
+        if has_output {
+            return vec![
+                json!({"type":"response.output_text.delta","delta":"HTTP 도구 완료"}),
+                json!({"type":"response.completed","response":{
+                    "id":"resp_http_tool_2",
+                    "output":[{"type":"message","role":"assistant",
+                        "content":[{"type":"output_text","text":"HTTP 도구 완료"}]}],
+                    "usage":{"input_tokens":45,"output_tokens":5,"total_tokens":50}
+                }}),
+            ];
+        }
+        let call = json!({
+            "type":"function_call",
+            "id":"fc_http_tool_1",
+            "call_id":"call_http_tool_1",
+            "name":"workspace_write",
+            "arguments":"{\"path\":\"http_tool.txt\",\"content\":\"HTTP_TOOL_OK\"}"
+        });
+        vec![
+            json!({"type":"response.output_item.done","item":call.clone()}),
+            json!({"type":"response.completed","response":{
+                "id":"resp_http_tool_1",
+                "output":[call],
+                "usage":{"input_tokens":40,"output_tokens":5,"total_tokens":45}
+            }}),
+        ]
+    });
+    let app = TestApp::new_with_env(port, "compat", &[("DOMINION_CODEX_WS", "off")]);
+    app.post("/api/policy", &json!({"autoApproveAll": true}));
+    let provider = app.post("/api/providers", &json!({
+        "name":"codex http tool fixture","kind":"codex",
+        "baseUrl":format!("http://127.0.0.1:{port}/codex"),
+        "accountId":"fixture-account","apiKey":"fixture-only",
+        "enabled":true,"model":"fixture-model"
+    }));
+    let agent = app.post("/api/agents", &json!({
+        "name":"http tool participant",
+        "systemPrompt":"HTTP_TOOL_IDENTITY stays verbatim",
+        "providerId":provider["id"],"model":"fixture-model"
+    }));
+    let session = app.post("/api/sessions", &json!({"title":"http tool","agentId":agent["id"]}));
+    let stream = app.chat(&json!({
+        "sessionId":session["id"],"agentId":agent["id"],
+        "providerId":provider["id"],"model":"fixture-model",
+        "input":"http_tool.txt 파일을 만들어줘",
+        "toolsEnabled":true,"autoLearning":false
+    }));
+    assert!(stream.contains("HTTP 도구 완료"), "{stream}");
+    assert_eq!(
+        std::fs::read_to_string(app._root.join("http_tool.txt")).unwrap_or_default(),
+        "HTTP_TOOL_OK"
+    );
+    let seen = requests.lock().unwrap();
+    assert!(
+        seen.iter().any(|body| {
+            body["tools"].as_array().is_some_and(|tools| {
+                tools.iter().any(|tool| {
+                    tool["type"] == "function" && tool["name"] == "workspace_write"
+                })
+            })
+        }),
+        "HTTP fallback must send the tool schema: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|body| {
+            body["input"].as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item["type"] == "function_call_output"
+                        && item["call_id"] == "call_http_tool_1"
+                        && item["output"]
+                            .as_str()
+                            .is_some_and(|output| output.contains("http_tool.txt"))
+                })
+            })
+        }),
+        "HTTP fallback must send the function-call output: {seen:?}"
+    );
+}
+
 #[test]
 fn codex_websocket_chain_reuses_identity_and_sends_only_the_new_suffix() {
     let _serial = serial();

@@ -697,7 +697,7 @@ async fn stream_completion_once_body(
 ) -> Result<Completion,String> {
     if provider.kind == "codex" {
         return stream_codex_once(
-            state, client, provider, messages, request, session_id, tx, continuity,
+            state, client, provider, messages, tools, request, session_id, tx, continuity,
         )
         .await;
     }
@@ -1110,16 +1110,87 @@ fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// Codex Responses tool schema. The harness stores OpenAI chat-compatible
+/// definitions; the Responses wire format moves `name` and `parameters` to the
+/// top level of a `function` tool.
+fn codex_tools(tools: &[Value]) -> Vec<Value> {
+    tools
+        .iter()
+        .filter_map(|tool| {
+            let function = tool.get("function").unwrap_or(tool);
+            let name = function["name"].as_str()?;
+            Some(json!({
+                "type":"function",
+                "name":name,
+                "description":function["description"].as_str().unwrap_or(""),
+                "parameters":function["parameters"].clone(),
+            }))
+        })
+        .collect()
+}
+
+/// Normalizes a Responses `function_call` output item into the shape the
+/// harness rebuilds from persisted messages. Extra response fields (`id`,
+/// `status`) are deliberately dropped so chain signatures stay stable.
+pub(super) fn codex_function_call_item(item: &Value) -> Option<Value> {
+    if item["type"].as_str() != Some("function_call") {
+        return None;
+    }
+    let call_id = item["call_id"]
+        .as_str()
+        .or_else(|| item["id"].as_str())
+        .filter(|value| !value.is_empty())?;
+    let name = item["name"].as_str().filter(|value| !value.is_empty())?;
+    let arguments = item["arguments"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| item["arguments"].to_string());
+    Some(json!({
+        "type":"function_call",
+        "call_id":call_id,
+        "name":name,
+        "arguments":arguments,
+    }))
+}
+
+/// Extracts structured Codex tool calls from a final response output or from
+/// one completed output item.
+pub(super) fn codex_tool_calls(output: &[Value]) -> Vec<super::ToolCall> {
+    let mut calls = Vec::new();
+    for item in output {
+        let Some(normalized) = codex_function_call_item(item) else {
+            continue;
+        };
+        let id = normalized["call_id"].as_str().unwrap_or("").to_string();
+        if calls.iter().any(|call: &super::ToolCall| call.id == id) {
+            continue;
+        }
+        calls.push(super::ToolCall {
+            id,
+            name: normalized["name"].as_str().unwrap_or("").to_string(),
+            arguments: normalized["arguments"]
+                .as_str()
+                .unwrap_or("{}")
+                .to_string(),
+        });
+    }
+    calls
+}
+
 /// Converts chat messages into the Responses API shape used by the Codex
-/// backend. System text becomes `instructions`; tool observations become user
-/// text because Codex is used as a text participant here.
+/// backend. System text becomes `instructions`; assistant tool calls and tool
+/// observations stay structured so the model can continue a real tool loop.
 fn codex_input(messages: &[Value]) -> (String, Vec<Value>) {
     let mut instructions = String::new();
     let mut input = Vec::new();
     for message in messages {
         let role = message["role"].as_str().unwrap_or("");
         let content = message["content"].as_str().unwrap_or("");
-        if content.trim().is_empty() {
+        let tool_calls = message["tool_calls"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if content.trim().is_empty() && tool_calls.is_empty() && role != "tool" {
             continue;
         }
         match role {
@@ -1129,14 +1200,43 @@ fn codex_input(messages: &[Value]) -> (String, Vec<Value>) {
                 }
                 instructions.push_str(content);
             }
-            "assistant" => input.push(json!({
-                "role":"assistant",
-                "content":[{"type":"output_text","text":content}]
-            })),
-            "tool" => input.push(json!({
-                "role":"user",
-                "content":[{"type":"input_text","text":format!("Tool observation: {content}")}]
-            })),
+            "assistant" => {
+                if !content.trim().is_empty() {
+                    input.push(json!({
+                        "role":"assistant",
+                        "content":[{"type":"output_text","text":content}]
+                    }));
+                }
+                for call in tool_calls {
+                    let Some(name) = call["function"]["name"]
+                        .as_str()
+                        .filter(|value| !value.is_empty())
+                    else {
+                        continue;
+                    };
+                    let Some(call_id) = call["id"].as_str().filter(|value| !value.is_empty())
+                    else {
+                        continue;
+                    };
+                    input.push(json!({
+                        "type":"function_call",
+                        "call_id":call_id,
+                        "name":name,
+                        "arguments":call["function"]["arguments"].as_str().unwrap_or("{}"),
+                    }));
+                }
+            }
+            "tool" => {
+                let Some(call_id) = message["tool_call_id"].as_str().filter(|value| !value.is_empty())
+                else {
+                    continue;
+                };
+                input.push(json!({
+                    "type":"function_call_output",
+                    "call_id":call_id,
+                    "output":content,
+                }));
+            }
             _ => input.push(json!({
                 "role":"user",
                 "content":[{"type":"input_text","text":content}]
@@ -1159,6 +1259,7 @@ async fn stream_codex_once(
     client: &reqwest::Client,
     provider: &ProviderRef,
     messages: &[Value],
+    tools: &[Value],
     request: &TurnRequest,
     session_id: &str,
     tx: &UnboundedSender<Value>,
@@ -1180,6 +1281,11 @@ async fn stream_codex_once(
     });
     if let Some(limit) = provider.max_output_tokens {
         body["max_output_tokens"] = json!(limit);
+    }
+    let codex_tools = codex_tools(tools);
+    if !codex_tools.is_empty() {
+        body["tools"] = json!(codex_tools);
+        body["tool_choice"] = json!("auto");
     }
     let catalog = state.store.get("codex_model_catalog", &provider.id)
         .filter(|row|row["accountId"].as_str() == Some(account_id));
@@ -1320,6 +1426,19 @@ async fn stream_codex_once(
                         let _ = tx.send(json!({"type":"reasoning","text":delta}));
                     }
                 }
+                "response.output_item.done" => {
+                    if let Some(item) = piece.get("item") {
+                        for call in codex_tool_calls(std::slice::from_ref(item)) {
+                            if !completion
+                                .tool_calls
+                                .iter()
+                                .any(|existing| existing.id == call.id)
+                            {
+                                completion.tool_calls.push(call);
+                            }
+                        }
+                    }
+                }
                 "response.completed" => {
                     if let Some(usage) = piece["response"]["usage"].as_object() {
                         completion.cached_prompt_tokens = cached_prompt_tokens(&json!(usage));
@@ -1332,6 +1451,19 @@ async fn stream_codex_once(
                             .and_then(Value::as_u64)
                             .unwrap_or(completion.prompt_tokens + completion.completion_tokens);
                         completion.usage_exact = true;
+                    }
+                    let output = piece["response"]["output"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    for call in codex_tool_calls(&output) {
+                        if !completion
+                            .tool_calls
+                            .iter()
+                            .any(|existing| existing.id == call.id)
+                        {
+                            completion.tool_calls.push(call);
+                        }
                     }
                     terminated = true;
                 }
@@ -1588,6 +1720,65 @@ async fn stream_anthropic_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_input_keeps_tool_calls_and_results_structured() {
+        let messages = vec![
+            json!({"role":"system","content":"identity"}),
+            json!({"role":"user","content":"write a file"}),
+            json!({
+                "role":"assistant","content":"",
+                "tool_calls":[{
+                    "id":"call-1","type":"function",
+                    "function":{"name":"workspace_write","arguments":"{\"path\":\"a.txt\"}"}
+                }]
+            }),
+            json!({"role":"tool","tool_call_id":"call-1","content":"ok"}),
+        ];
+        let (instructions, input) = codex_input(&messages);
+        assert_eq!(instructions, "identity");
+        assert_eq!(input.len(), 3, "{input:?}");
+        assert_eq!(input[1]["type"], "function_call");
+        assert_eq!(input[1]["call_id"], "call-1");
+        assert_eq!(input[1]["name"], "workspace_write");
+        assert_eq!(input[1]["arguments"], "{\"path\":\"a.txt\"}");
+        assert_eq!(input[2]["type"], "function_call_output");
+        assert_eq!(input[2]["call_id"], "call-1");
+        assert_eq!(input[2]["output"], "ok");
+    }
+
+    #[test]
+    fn codex_function_calls_become_harness_tool_calls_without_duplicates() {
+        let output = vec![
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"preamble"}]}),
+            json!({"type":"function_call","id":"fc_1","call_id":"call_1","name":"workspace_write","arguments":"{\"path\":\"a.txt\"}"}),
+            json!({"type":"function_call","id":"fc_1d","call_id":"call_1","name":"workspace_write","arguments":"{\"path\":\"a.txt\"}"}),
+        ];
+        let calls = codex_tool_calls(&output);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].name, "workspace_write");
+        assert_eq!(calls[0].arguments, "{\"path\":\"a.txt\"}");
+    }
+
+    #[test]
+    fn codex_tool_schema_moves_function_fields_to_the_top_level() {
+        let tools = vec![json!({
+            "type":"function",
+            "function":{
+                "name":"workspace_write",
+                "description":"write",
+                "parameters":{"type":"object"}
+            }
+        })];
+        let codex = codex_tools(&tools);
+        assert_eq!(codex.len(), 1, "{codex:?}");
+        assert_eq!(codex[0]["type"], "function");
+        assert_eq!(codex[0]["name"], "workspace_write");
+        assert_eq!(codex[0]["description"], "write");
+        assert_eq!(codex[0]["parameters"]["type"], "object");
+        assert!(codex[0].get("function").is_none(), "{codex:?}");
+    }
 
     #[test]
     fn reflection_quotes_missing_reasoning_without_dropping_old_context() {

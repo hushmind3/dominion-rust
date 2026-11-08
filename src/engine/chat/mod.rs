@@ -150,7 +150,7 @@ impl TurnRequest {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 struct ToolCall {
     id: String,
     name: String,
