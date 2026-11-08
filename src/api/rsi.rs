@@ -116,3 +116,51 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         None => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"자기개선 작업을 대기열에 등록하지 못했습니다."}))).into_response()
     }
 }
+
+ 
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::{config::Config, db::Store, vault::Vault};
+    use std::{path::Path, process::Command};
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git").current_dir(dir).args(args).output().unwrap();
+        assert!(output.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[tokio::test]
+    async fn natural_language_start_queues_selected_model_only_on_clean_sub_branch() {
+        let root = std::env::temp_dir().join(format!("dominion-rsi-start-{}", uuid::Uuid::new_v4()));
+        let checkout = root.join("checkout");
+        let data = root.join("data");
+        std::fs::create_dir_all(checkout.join("src/engine")).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(checkout.join("Cargo.toml"), "[package]\nname = \"dominion\"\nversion = \"0.1.0\"\n").unwrap();
+        std::fs::write(checkout.join("src/engine/rsi.rs"), "// source\n").unwrap();
+        git(&checkout, &["init", "-q"]);
+        git(&checkout, &["checkout", "-b", "dominion-sub"]);
+        git(&checkout, &["add", "."]);
+        git(&checkout, &["-c", "user.email=ci@example.com", "-c", "user.name=CI", "commit", "-qm", "fixture"]);
+        let cfg = Config { port:0, data_dir:data.clone(), web_dir:data.join("web"), workspace:data.clone() };
+        let state = AppState::new(cfg.clone(), Store::open(&cfg.db_path()).unwrap(), Vault::open(&cfg.key_path()));
+        crate::engine::dev::save_config(&state, &json!({"sourceDir":checkout.to_str().unwrap()}));
+        state.store.put("provider", &json!({"id":"test-provider","name":"Local","enabled":true,
+            "kind":"openai","model":"sample-model","baseUrl":"http://127.0.0.1:1/v1"}));
+        let body = json!({"providerId":"test-provider","model":"sample-model",
+            "request":"100턴에서 장기기억이 사라지는 문제를 찾아 고쳐 주세요."});
+        let response = start(State(state.clone()), Json(body.clone())).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let jobs = state.store.all("job");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["input"]["providerId"], "test-provider");
+        assert_eq!(jobs[0]["input"]["model"], "sample-model");
+        assert_eq!(jobs[0]["input"]["rsiSourceDir"], checkout.to_str().unwrap());
+        assert!(jobs[0]["input"]["prompt"].as_str().unwrap().contains("workspace_write"));
+        std::fs::write(checkout.join("uncommitted.txt"), "owner edits").unwrap();
+        let refused = start(State(state.clone()), Json(body)).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(state.store.all("job").len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
