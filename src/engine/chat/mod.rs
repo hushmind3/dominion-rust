@@ -20,6 +20,20 @@ pub(crate) fn close_session_approvals(state: &crate::state::AppState, session_id
     approval::close_pending_approvals(state, session_id);
 }
 
+/// Static prompt preview for the room settings UI.
+pub(crate) fn system_prompt_preview(
+    state: &crate::state::AppState,
+    room_id: &str,
+    agent_id: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let tools = state
+        .store
+        .get("room", room_id)
+        .and_then(|room| room["toolsEnabled"].as_bool())
+        .unwrap_or(true);
+    room_context::preview(state, room_id, agent_id, tools)
+}
+
 /// Clean up old durable approvals at startup and in the maintenance loop.
 pub(crate) fn expire_stale_approvals(state: &crate::state::AppState) -> usize {
     approval::expire_stale_approvals(state)

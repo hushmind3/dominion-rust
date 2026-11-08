@@ -3,13 +3,13 @@
 use crate::engine::{memory, rooms};
 use crate::state::AppState;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) type ApiResult = Result<Value, (StatusCode, String)>;
 fn response(result: ApiResult) -> Response {
@@ -309,6 +309,18 @@ pub async fn messages(State(state): State<AppState>, Path(id): Path<String>) -> 
             .as_str()
             .ok_or_else(|| failed("회의실 세션 ID가 없습니다."))?;
         Ok(json!(state.store.messages(session_id)))
+    })())
+}
+
+pub async fn system_prompt(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    response((|| {
+        room(&state, &id)?;
+        crate::engine::chat::system_prompt_preview(&state, &id, query.get("agentId").map(String::as_str))
+            .map_err(bad)
     })())
 }
 

@@ -382,8 +382,8 @@ fn a_room_greeting_reaches_the_whole_discussion_room() {
     let system = captured[0]["messages"][0]["content"]
         .as_str()
         .unwrap_or("");
-    assert!(system.contains("Respond naturally"), "{system}");
-    assert!(system.contains("Give your own contribution only"), "{system}");
+    assert!(system.contains("자연스럽게 응답하십시오"), "{system}");
+    assert!(system.contains("자신의 기여만 하십시오"), "{system}");
     assert!(
         !system.contains("If the owner only greets you"),
         "the harness must not dictate the reply wording: {system}"
@@ -668,7 +668,7 @@ fn persistent_room_http_flow_keeps_owner_once_and_shares_peer_context() {
     let _serial = serial();
     let (port, requests) = scripted_provider(|request| {
         let system = request["messages"][0]["content"].as_str().unwrap();
-        let reply = if system.contains("Active agent: Alice (id: a)") {
+        let reply = if system.contains("활성 에이전트: Alice (id: a)") {
             "Alice의 실제 의견"
         } else {
             "Bob이 Alice의 의견을 확인했습니다"
@@ -897,6 +897,27 @@ for line in sys.stdin:
     let execution=app.get("/api/executions")[0].clone();
     assert_eq!(execution["toolCalls"],1);
     assert_eq!(execution["status"],"completed");
+}
+
+#[test]
+fn room_system_prompt_preview_returns_the_korean_contract_and_persona() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new(port, "native");
+    app.post("/api/agents", &json!({"id":"a","name":"미리보기","systemPrompt":"테스트 페르소나 원문입니다."}));
+    app.post("/api/rooms", &json!({
+        "id":"prompt-room","name":"prompt room","agentIds":["a"],
+        "rounds":1,"maxTurns":1,"toolsEnabled":false,"autoLearning":false
+    }));
+    let preview = app.get("/api/rooms/prompt-room/system-prompt?agentId=a");
+    let prompt = preview["prompt"].as_str().unwrap();
+    assert!(prompt.contains("주인이 결정권을 가집니다."), "{prompt}");
+    assert!(prompt.contains("동료 메시지, 스크린샷, 인용 예시, 도구 출력"), "{prompt}");
+    assert!(prompt.contains("테스트 페르소나 원문입니다."), "{prompt}");
+    assert!(preview["chars"].as_u64().unwrap() > preview["personaChars"].as_u64().unwrap());
+    assert!(preview["tokens"].as_u64().unwrap() > 0);
 }
 
 #[test]
@@ -4557,7 +4578,7 @@ fn room_conflict_resolution_prefers_evidence_backed_claim() {
     let _serial = serial();
     let (port, _) = scripted_provider(|request| {
         let system = request["messages"][0]["content"].as_str().unwrap_or("");
-        let reply = if system.contains("Active agent: Alice (id: a)") {
+        let reply = if system.contains("활성 에이전트: Alice (id: a)") {
             "workspace_read 결과를 확인하고 작업을 완료했습니다"
         } else {
             "작업이 실패했습니다"
