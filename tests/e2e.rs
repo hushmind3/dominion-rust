@@ -4176,11 +4176,13 @@ fn per_bot_growth_changes_only_that_bots_next_prompt() {
                 if !has_user {
                     return None;
                 }
-                messages
-                    .iter()
-                    .find(|message| message["role"] == "system")
-                    .and_then(|message| message["content"].as_str())
-                    .map(str::to_string)
+                Some(
+                    messages
+                        .iter()
+                        .filter_map(|message| message["content"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
             })
             .unwrap_or_default()
     };

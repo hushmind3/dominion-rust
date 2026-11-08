@@ -547,6 +547,7 @@ pub(super) fn compile(
     Ok(Compiled {
         system: PromptContext {
             prompt,
+            dynamic_context: String::new(),
             items,
             memory_watermark: watermark,
         },
