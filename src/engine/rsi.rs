@@ -24,9 +24,8 @@ fn sha(value: &str) -> bool {
 pub(crate) fn safe_path(path: &str) -> bool {
     !path.contains('\\')
         && !path.starts_with('/')
-        && !path.split('/').any(|part| part == ".." || part == "." || part.is_empty())
-        && (path.starts_with("src/engine/")
-            || path.starts_with("src/api/")
+        && !path.split('/').any(|part|part.is_empty() || part.starts_with('.'))
+        && (path.starts_with("src/")
             || path.starts_with("tests/")
             || path.starts_with("web/src/")
             || path.starts_with("src-tauri/src/"))
