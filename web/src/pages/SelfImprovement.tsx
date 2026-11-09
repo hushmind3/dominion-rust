@@ -130,7 +130,7 @@ export function SelfImprovementPage(){
   <Headline eyebrow="DOMINION" title="계속 발전하기" description="개선할 부분을 스스로 찾고, 기존 버전과 비교합니다. 어느 쪽이 더 나은지 보고 선택하세요."
    actions={<Button variant="secondary" onClick={()=>{void providers.reload();void catalogue.reload()}} aria-label="새로고침"><RefreshCw size={15}/></Button>}/>
   <Notice message={error||providers.error||(campaign?.error?'이번 개선을 완료하지 못해 기존 버전을 유지했습니다. 다시 시작할 수 있습니다.':'')}/>
-  {campaign&&!working&&<div className="mb-3 flex justify-end"><Button variant="ghost" onClick={()=>setSettingsOpen(v=>!v)}>{settingsOpen?'설정 닫기':'모델·작업량 바꾸기'}</Button></div>}
+  {campaign&&!working&&<div className="mb-3 flex justify-end"><Button variant="ghost" onClick={()=>setSettingsOpen(v=>!v)}>{settingsOpen?'설정 닫기':'모델 바꾸기'}</Button></div>}
   {(!campaign||settingsOpen)&&<Panel className="p-5 sm:p-7">
    <div className="mb-5 flex items-center gap-3"><BrainCircuit size={25} className="text-[#A94E30]"/><div><h2 className="font-bold">더 나은 버전이 다음 개선을 이어갑니다</h2><p className="mt-1 text-[12px] text-[#7C7469]">코딩 없이 모델과 선택 방식만 고르면 됩니다.</p></div></div>
    <div className="grid gap-3 sm:grid-cols-2"><FormField label="연결된 서비스"><SelectInput value={providerId} disabled={working||busy} onChange={e=>{setProviderId(e.target.value);setModel(enabled.find(p=>p.id===e.target.value)?.model||'')}}>
