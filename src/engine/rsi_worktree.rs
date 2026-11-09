@@ -9,6 +9,60 @@ use tokio::process::Command;
 
 const GIT_LIMIT: Duration = Duration::from_secs(30);
 const CHECK_LIMIT: Duration = Duration::from_secs(360);
+
+/// launchd starts the engine with a minimal PATH that often omits
+/// `~/.cargo/bin` and Homebrew. Resolve the tool explicitly so RSI can build
+/// even when the service environment is narrower than the user's shell.
+fn first_existing(paths: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    paths.into_iter().find(|path| path.is_file())
+}
+
+pub(super) fn cargo_executable() -> PathBuf {
+    if let Some(explicit) = std::env::var_os("DOMINION_CARGO") {
+        let path = PathBuf::from(explicit);
+        if path.is_file() {
+            return path;
+        }
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut candidates = Vec::new();
+    if let Some(home) = &home {
+        candidates.push(home.join(".cargo/bin/cargo"));
+    }
+    candidates.extend([
+        PathBuf::from("/opt/homebrew/bin/cargo"),
+        PathBuf::from("/usr/local/bin/cargo"),
+        PathBuf::from("/usr/bin/cargo"),
+    ]);
+    first_existing(candidates).unwrap_or_else(|| PathBuf::from("cargo"))
+}
+
+pub(super) fn npm_executable() -> PathBuf {
+    if let Some(explicit) = std::env::var_os("DOMINION_NPM") {
+        let path = PathBuf::from(explicit);
+        if path.is_file() {
+            return path;
+        }
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut candidates = Vec::new();
+    if let Some(home) = &home {
+        candidates.push(home.join(".volta/bin/npm"));
+        candidates.push(home.join(".local/bin/npm"));
+        let nvm = home.join(".nvm/versions/node");
+        if let Ok(entries) = std::fs::read_dir(nvm) {
+            for entry in entries.flatten() {
+                candidates.push(entry.path().join("bin/npm"));
+            }
+        }
+    }
+    candidates.extend([
+        PathBuf::from("/opt/homebrew/bin/npm"),
+        PathBuf::from("/usr/local/bin/npm"),
+        PathBuf::from("/usr/bin/npm"),
+    ]);
+    first_existing(candidates).unwrap_or_else(|| PathBuf::from("npm"))
+}
 // tools::run_command retains at most 80_004 bytes of stdout. Reject anything
 // near that boundary rather than hashing/approving a silently truncated diff.
 const MAX_CAPTURE_BYTES: usize = 79_000;
@@ -161,7 +215,7 @@ async fn validate(worktree:&Worktree,patch:&str)->Vec<Value> {
     let rust_change=patch.lines().any(|line|line.starts_with("diff --git a/src/")||line.starts_with("diff --git a/tests/"));
     let web_change=patch.lines().any(|line|line.starts_with("diff --git a/web/"));
     if rust_change {
-        let mut command=Command::new("cargo");
+        let mut command=Command::new(cargo_executable());
         command.current_dir(&worktree.path).args(["check","--all-targets"]);
         checks.push(check_result("cargo check --all-targets",run(command,CHECK_LIMIT).await));
     }
@@ -173,7 +227,7 @@ async fn validate(worktree:&Worktree,patch:&str)->Vec<Value> {
             let _=std::os::unix::fs::symlink(&installed,&deps);
         }
         if deps.exists() {
-            let mut command=Command::new("npm");
+            let mut command=Command::new(npm_executable());
             command.current_dir(worktree.path.join("web")).args(["run","typecheck"]);
             checks.push(check_result("npm run typecheck",run(command,Duration::from_secs(120)).await));
         } else {
@@ -531,6 +585,15 @@ pub async fn cleanup(worktree:&Worktree)->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rsi_resolves_cargo_even_with_a_minimal_service_path() {
+        let cargo = cargo_executable();
+        assert!(
+            cargo.is_file() || cargo == Path::new("cargo"),
+            "unexpected cargo path: {cargo:?}"
+        );
+        assert!(!npm_executable().as_os_str().is_empty());
+    }
     #[test]
     fn later_generations_see_prior_compile_failures_without_fabricated_gains(){
         use crate::{config::Config,db::Store,state::AppState,vault::Vault};

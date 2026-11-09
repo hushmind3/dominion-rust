@@ -591,7 +591,7 @@ async fn run_loop(
         if built_commit != head {
             record["phase"] = json!("building_generator");
             save(context, record)?;
-            let mut build = Command::new("cargo");
+            let mut build = Command::new(rsi_worktree::cargo_executable());
             build
                 .current_dir(&lab)
                 .args([
