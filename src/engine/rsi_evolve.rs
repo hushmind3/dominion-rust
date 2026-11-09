@@ -586,6 +586,15 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     Ok(json!({"status":record["status"],"evolution":record}))
 }
 
+/// A model-budget error can happen after the model has already written a
+/// patch. If that patch was captured and passed independent checks, it is a
+/// real candidate even when the worker reports needs_review.
+fn verified_candidate_id(result: &Value) -> Option<&str> {
+    result["rsi"]["candidateId"]
+        .as_str()
+        .filter(|_| result["rsi"]["checksPassed"] == true)
+}
+
 fn generation_context(state: &AppState, input: &Value, record: &Value) -> String {
     let objective = input["rsiObjective"].as_str().unwrap_or("");
     let scope = MemoryScope {
@@ -835,14 +844,7 @@ async fn run_loop(
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"capabilitiesUsed":capabilities_used,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
-        let worker_ok = output.as_ref().is_ok_and(|out| out.status.success());
-        let candidate_id = current["result"]["rsi"]["candidateId"]
-            .as_str()
-            .filter(|_| {
-                worker_ok
-                    && current["result"]["status"] == "completed"
-                    && current["result"]["rsi"]["checksPassed"] == true
-            });
+        let candidate_id = verified_candidate_id(&current["result"]);
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
         if let Some(id) = candidate_id {
             record["phase"] = json!("measuring");
@@ -1152,6 +1154,24 @@ mod tests {
         assert!(text.contains("1세대"), "{text}");
         assert!(text.contains("이전 세대의 실제 능력 사용 기록"), "{text}");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_verified_patch_is_a_candidate_even_when_the_model_hit_the_budget() {
+        let result = json!({
+            "status": "needs_review",
+            "reason": "model_error",
+            "rsi": {
+                "candidateId": "rsi-test",
+                "checksPassed": true,
+                "modelError": "토큰 예산(250000)을 초과했습니다."
+            }
+        });
+        assert_eq!(verified_candidate_id(&result), Some("rsi-test"));
+        assert_eq!(
+            verified_candidate_id(&json!({"rsi":{"candidateId":"rsi-test","checksPassed":false}})),
+            None
+        );
     }
 
     #[test]
