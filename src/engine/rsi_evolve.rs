@@ -13,7 +13,7 @@ use crate::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -999,8 +999,13 @@ fn pending_trial_candidate(state: &AppState, objective: &str) -> Option<Value> {
 
 /// Finds a prior generation that used the globally active strategy under the
 /// same generator commit and target domain. Different domains, different
-/// source revisions or a missing evaluation are not comparable.
-fn comparable_trial_baseline(prior_history: &[Value], generation: &Value) -> Option<Value> {
+/// source revisions, a missing evaluation or a control already paired with
+/// this candidate are not comparable.
+fn comparable_trial_baseline(
+    prior_history: &[Value],
+    generation: &Value,
+    candidate: &Value,
+) -> Option<Value> {
     prior_history
         .iter()
         .rev()
@@ -1010,6 +1015,12 @@ fn comparable_trial_baseline(prior_history: &[Value], generation: &Value) -> Opt
                 && row["domain"] == generation["domain"]
                 && row["accepted"].is_boolean()
                 && row["evaluation"].is_object()
+                && row["jobId"].as_str().is_some_and(|id| !id.is_empty())
+                && !candidate["rsiTrial"]["trials"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|trial| trial["comparison"]["baselineJobId"] == row["jobId"])
         })
         .cloned()
 }
@@ -1038,11 +1049,15 @@ fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
         "rejected"
     } else if trial_error && !baseline_error {
         "rejected"
+    } else if trial_error {
+        "inconclusive"
     } else if trial_accepted && !baseline_accepted {
         "supported"
     } else if !trial_accepted && baseline_accepted {
         "rejected"
-    } else if tokens > 0.0
+    } else if trial_accepted
+        && baseline_accepted
+        && tokens > 0.0
         && baseline_tokens > 0.0
         && elapsed > 0.0
         && baseline_elapsed > 0.0
@@ -1075,12 +1090,14 @@ fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
                 "trial generation failed where the baseline did not"
             } else if trial_regressed {
                 "trial generation regressed"
+            } else if trial_error {
+                "both generations failed; lower cost is not successful improvement"
             } else if trial_accepted && !baseline_accepted {
                 "trial produced an accepted change where the baseline did not"
             } else if !trial_accepted && baseline_accepted {
                 "baseline produced an accepted change where the trial did not"
-            } else if token_ratio <= 0.9 && time_ratio <= 1.1 {
-                "same acceptance with lower measured token cost"
+            } else if verdict == "supported" {
+                "both generations produced accepted changes with lower measured token cost"
             } else if token_ratio >= 1.25 && time_ratio >= 1.25 {
                 "trial used more tokens and time with no better result"
             } else {
@@ -1107,7 +1124,17 @@ fn record_trial_outcome(
         return json!({"status":"not_used","domainSelection":generation["domainSelection"],
             "reason":"이 세대는 후보 전략 계산식을 실행하지 않았습니다."});
     }
-    let Some(baseline) = comparable_trial_baseline(prior_history, generation) else {
+    if let Some(previous) = candidate["rsiTrial"]["trials"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| row["jobId"] == generation["jobId"])
+    {
+        return json!({"status":candidate["rsiTrial"]["status"],
+            "verdict":previous["verdict"],"comparison":previous["comparison"],
+            "alreadyRecorded":true});
+    }
+    let Some(baseline) = comparable_trial_baseline(prior_history, generation, &candidate) else {
         let mut trial = candidate["rsiTrial"].clone();
         trial["status"] = json!("trial_inconclusive");
         trial["lastReason"] = json!("comparable_baseline_missing");
@@ -1129,18 +1156,32 @@ fn record_trial_outcome(
     if !trial["trials"].is_array() {
         trial["trials"] = json!([]);
     }
-    let already_trialed = trial["trials"]
-        .as_array()
-        .is_some_and(|rows| rows.iter().any(|row| row["jobId"] == generation["jobId"]));
-    if !already_trialed {
-        trial["trials"].as_array_mut().unwrap().push(json!({
-            "jobId": generation["jobId"], "attempt": generation["attempt"],
-            "domain": generation["domain"], "verdict": verdict,
-            "comparison": comparison, "at": chrono::Utc::now().to_rfc3339(),
-        }));
-    }
+    trial["trials"].as_array_mut().unwrap().push(json!({
+        "jobId": generation["jobId"], "attempt": generation["attempt"],
+        "domain": generation["domain"], "verdict": verdict,
+        "comparison": comparison, "at": chrono::Utc::now().to_rfc3339(),
+    }));
     let trials = trial["trials"].as_array().cloned().unwrap_or_default();
-    let supported = trials.iter().filter(|row| row["verdict"] == "supported").count();
+    // Old records may contain repeated pairs. They cannot satisfy the two-trial gate.
+    let mut baseline_ids = BTreeSet::new();
+    let mut trial_ids = BTreeSet::new();
+    let supported = trials.iter().filter(|row| {
+        let Some(baseline_id) = row["comparison"]["baselineJobId"].as_str().filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        let Some(trial_id) = row["jobId"].as_str().filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        if row["verdict"] != "supported"
+            || baseline_ids.contains(baseline_id)
+            || trial_ids.contains(trial_id)
+        {
+            return false;
+        }
+        baseline_ids.insert(baseline_id);
+        trial_ids.insert(trial_id);
+        true
+    }).count();
     let rejected = trials.iter().filter(|row| row["verdict"] == "rejected").count();
     let inconclusive = trials.iter().filter(|row| row["verdict"] == "inconclusive").count();
     let status = match verdict.as_str() {
@@ -1737,6 +1778,7 @@ fn select_generation_strategy(
     objective: &str,
     continuation: Option<String>,
     trial_id: Option<String>,
+    generator_commit: &str,
 ) -> (String, &'static str, Value) {
     let active = crate::engine::algorithms::active(state, "selfimprove.search");
     if let Some(domain) = continuation {
@@ -1748,11 +1790,18 @@ fn select_generation_strategy(
                 && algorithm["source"] == "rsi-generated"
                 && algorithm["rsiTrial"]["status"] != "trial_rejected"
         }) {
-            return (
-                select_domain(&algorithm, history, objective),
-                "algorithm_trial",
-                search_strategy(&algorithm, "trial"),
-            );
+            let domain = select_domain(&algorithm, history, objective);
+            let generation = json!({"domain":domain,"generatorCommit":generator_commit});
+            if comparable_trial_baseline(history, &generation, &algorithm).is_some() {
+                return (domain, "algorithm_trial", search_strategy(&algorithm, "trial"));
+            }
+            // Use this already scheduled generation normally. Do not spend a
+            // trial on a missing/reused control or create another generation.
+            let active = active
+                .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
+            let mut selected = search_strategy(&active, "active");
+            selected["trialFallback"] = json!("unused_comparable_baseline_missing");
+            return (select_domain(&active, history, objective), "algorithm_active", selected);
         }
         let algorithm = active
             .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
@@ -1814,7 +1863,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .filter(|value| !value.is_empty())
         .map(str::to_string);
     let (domain, domain_selection, strategy) =
-        select_generation_strategy(&state, &history, objective, continuation, trial_id);
+        select_generation_strategy(&state, &history, objective, continuation, trial_id,
+            job["input"]["rsiGeneratorCommit"].as_str().unwrap_or(""));
     job["rsiDomain"] = json!(domain);
     job["rsiDomainSelection"] = json!(domain_selection);
     job["rsiSearchStrategy"] = strategy.clone();
@@ -2669,23 +2719,54 @@ mod tests {
             "context",
             Some("memory".to_string()),
             Some(id.to_string()),
+            "commit-1",
         );
         assert_eq!(domain, "memory");
         assert_eq!(mode, "research_continuation");
         assert!(strategy.is_null(), "continuation did not run the formula");
 
-        let (domain, mode, strategy) =
-            select_generation_strategy(&state, &[], "context", None, Some(id.to_string()));
+        let (_, mode, strategy) =
+            select_generation_strategy(&state, &[], "context", None, Some(id.to_string()), "commit-1");
+        assert_eq!(mode, "algorithm_active");
+        assert_eq!(strategy["trialFallback"], "unused_comparable_baseline_missing");
+
+        let baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
+        let (_, mode, _) = select_generation_strategy(
+            &state, &[baseline.clone()], "context", None, Some(id.to_string()), "commit-2");
+        assert_eq!(mode, "algorithm_active", "another generator's result is not a control");
+        let (domain, mode, strategy) = select_generation_strategy(
+            &state, &[baseline], "context", None, Some(id.to_string()), "commit-1");
         assert_eq!(domain, "context");
         assert_eq!(mode, "algorithm_trial");
         assert_eq!(strategy["id"], id);
         assert_eq!(strategy["mode"], "trial");
 
         let (_, mode, strategy) =
-            select_generation_strategy(&state, &[], "context", None, None);
+            select_generation_strategy(&state, &[], "context", None, None, "commit-1");
         assert_eq!(mode, "algorithm_active");
         assert_eq!(strategy["mode"], "active");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn trial_verdict_requires_success_before_supporting_cost_savings() {
+        let mut baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
+        let mut trial = trial_generation("trial", 2, "context", false, "commit-1", 5_000, 500, "candidate");
+        assert_eq!(trial_verdict(&trial, &baseline).0, "inconclusive",
+            "cheaper non-results are not successful improvement");
+        baseline["error"] = json!("failed");
+        trial["error"] = json!("failed");
+        assert_eq!(trial_verdict(&trial, &baseline).0, "inconclusive");
+        // Even an inconsistent accepted flag cannot turn execution errors into support.
+        baseline["accepted"] = json!(true);
+        trial["accepted"] = json!(true);
+        assert_eq!(trial_verdict(&trial, &baseline).0, "inconclusive");
+        baseline["error"] = Value::Null;
+        assert_eq!(trial_verdict(&trial, &baseline).0, "rejected");
+        trial["error"] = Value::Null;
+        assert_eq!(trial_verdict(&trial, &baseline).0, "supported");
+        trial["evaluation"]["verdict"] = json!("regressed");
+        assert_eq!(trial_verdict(&trial, &baseline).0, "rejected");
     }
 
     #[test]
@@ -2726,8 +2807,23 @@ mod tests {
             "one trial must not activate the candidate"
         );
 
-        let second = trial_generation("trial-2", 3, "context", true, "commit-1", 9_000, 900, id);
-        let outcome = record_trial_outcome(&state, id, &second, &[baseline.clone(), first.clone()]);
+        let repeated = record_trial_outcome(&state, id, &first, &[baseline.clone()]);
+        assert_eq!(repeated["alreadyRecorded"], true);
+        assert_eq!(repeated["status"], "pending_second_trial");
+        let (_, mode, strategy) = select_generation_strategy(
+            &state, &[baseline.clone(), first.clone()], "context", None, Some(id.into()), "commit-1");
+        assert_eq!(mode, "algorithm_active", "a second trial must not reuse the first control");
+        assert_eq!(strategy["trialFallback"], "unused_comparable_baseline_missing");
+        let saved = state.store.get("algorithm", id).unwrap();
+        assert_eq!(saved["rsiTrial"]["trials"].as_array().unwrap().len(), 1);
+        assert!(comparable_trial_baseline(&[baseline.clone()], &first, &saved).is_none());
+
+        let baseline2 = active_generation("base-2", 3, "context", false, "commit-1", 10_000, 1_000);
+        let (_, mode, _) = select_generation_strategy(
+            &state, &[baseline.clone(), first.clone(), baseline2.clone()], "context", None, Some(id.into()), "commit-1");
+        assert_eq!(mode, "algorithm_trial", "a fresh control permits the pending trial");
+        let second = trial_generation("trial-2", 4, "context", true, "commit-1", 9_000, 900, id);
+        let outcome = record_trial_outcome(&state, id, &second, &[baseline.clone(), first.clone(), baseline2]);
         assert_eq!(outcome["verdict"], "supported");
         assert_eq!(outcome["status"], "adopted");
         let saved = state.store.get("algorithm", id).unwrap();
@@ -2755,6 +2851,9 @@ mod tests {
         let unmatched = trial_generation("trial-x", 2, "context", true, "commit-9", 1, 1, id2);
         let outcome = record_trial_outcome(&state2, id2, &unmatched, &[]);
         assert_eq!(outcome["status"], "inconclusive");
+        let repeated = record_trial_outcome(&state2, id2, &unmatched, &[]);
+        assert_eq!(repeated["alreadyRecorded"], true);
+        assert_eq!(state2.store.get("algorithm", id2).unwrap()["rsiTrial"]["trials"].as_array().unwrap().len(), 1);
         assert_eq!(
             crate::engine::algorithms::active(&state2, "selfimprove.search").unwrap()["id"],
             active2["id"]
