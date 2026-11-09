@@ -322,11 +322,16 @@ pub(super) async fn send(
 ) -> Result<reqwest::Response,String> {
     let mut body=hinted_body(state,provider,original,plan,wire);
     let mut hinted=plan["wireHintSent"]==true;
+    let opencode_go=state.store.get("provider",&provider.id)
+        .is_some_and(|record|record["integration"]=="opencode-go");
     for attempt in 1..=2 {
         plan["httpRequests"]=json!(attempt);
         let mut request=builder.try_clone().ok_or("모델 요청을 복제할 수 없습니다.")?;
         if let Some(id)=plan["cacheAffinityId"].as_str().or_else(||plan["transportSessionId"].as_str()) {
             request=request.header("x-dominion-conversation",id);
+            // OpenCode Go's direct endpoint uses the same stable conversation
+            // affinity under its own header. No local shim is involved.
+            if opencode_go { request=request.header("x-opencode-session",id); }
         }
         let response=request.json(&body).send().await.map_err(|e|format!("{} 연결 실패: {e}",provider.name))?;
         let status=response.status();
@@ -460,6 +465,39 @@ mod tests {
         assert_eq!(seen.len(),4,"one negotiation retry, then no further retries");
         assert_eq!(seen[0],seen[1]);assert_eq!(seen[1],seen[2]);
         assert_ne!(seen[2],seen[3],"another bot must have a separate route affinity");
+        drop(seen);server.abort();let _=std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn opencode_go_direct_sends_the_stable_session_header() {
+        use axum::{extract::State,http::HeaderMap,routing::post,Json,Router};
+        use std::sync::{Arc,Mutex};
+        type Seen=Arc<Mutex<Vec<(String,Option<String>)>>>;
+        async fn endpoint(State(seen):State<Seen>,headers:HeaderMap,Json(_body):Json<Value>)->Json<Value>{
+            seen.lock().unwrap().push((
+                headers["x-dominion-conversation"].to_str().unwrap_or("").to_string(),
+                headers.get("x-opencode-session").and_then(|value|value.to_str().ok()).map(str::to_string),
+            ));
+            Json(json!({"ok":true}))
+        }
+        let seen:Seen=Arc::new(Mutex::new(Vec::new()));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let app=Router::new().route("/test",post(endpoint)).with_state(seen.clone());
+        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let root=std::env::temp_dir().join(format!("dominion-opencode-go-{}",uuid::Uuid::new_v4()));
+        let state=state(&root);
+        state.store.put("provider",&json!({"id":"p","integration":"opencode-go"})).unwrap();
+        let mut provider=route();provider.base_url=format!("http://{address}");provider.kind="openai".into();
+        let request=TurnRequest::from_value(&json!({"agentId":"a","input":"hello"})).unwrap();
+        let mut plan=prepare(&state,&provider,&request,"room:one","identity",&json!({})).unwrap();
+        let response=send(&state,&provider,reqwest::Client::new().post(format!("http://{address}/test")),
+            &json!({"model":"test","messages":[{"role":"user","content":"hello"}]}),&mut plan,CacheWire::Key).await.unwrap();
+        assert!(response.status().is_success());
+        let seen=seen.lock().unwrap();
+        let affinity=plan["cacheAffinityId"].as_str().unwrap();
+        assert_eq!(seen[0].0,affinity);
+        assert_eq!(seen[0].1.as_deref(),Some(affinity),"direct OpenCode Go must receive the session affinity");
         drop(seen);server.abort();let _=std::fs::remove_dir_all(root);
     }
 

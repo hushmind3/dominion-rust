@@ -69,16 +69,17 @@ fn api_key() -> Result<String, String> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|error| error.to_string())?;
-    let path = std::path::PathBuf::from(home).join(".openclaw/openclaw.json");
-    let text =
-        std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let value: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
-    value
-        .pointer("/env/vars/OPENCODE_API_KEY")
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "OPENCODE_API_KEY 를 찾을 수 없습니다.".to_string())
+    // The shim is a legacy adapter. It must not silently borrow another
+    // application's credentials; direct DOMINION providers keep the key in
+    // the DOMINION vault instead.
+    let path = std::path::PathBuf::from(home).join(".config/dominion/opencode-go.key");
+    let key = std::fs::read_to_string(&path)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err("OPENCODE_API_KEY 또는 ~/.config/dominion/opencode-go.key 가 필요합니다.".into());
+    }
+    Ok(key)
 }
 
 async fn proxy(
