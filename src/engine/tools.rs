@@ -54,6 +54,9 @@ pub fn definitions() -> Vec<Value> {
             "description": text("Why this formula should choose better improvement targets"),
             "evidence": json!({"type":"array","items":{"type":"string"},"description":"Observed failures or regressions that justify the formula"})
         }), vec!["expression"])),
+        tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
+            "path": text("Optional relative file or folder; defaults to the workspace root")
+        }), vec![])),
         tool("delegate_task", "Delegate a self-contained task to another agent and optionally wait for its result", object(json!({
             "agentId": text("Target agent id"),
             "prompt": text("Task instructions"),
@@ -95,7 +98,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose")
+    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit")
 }
 
 pub async fn execute(
@@ -325,6 +328,18 @@ pub async fn execute(
                 "algorithm": record,
                 "next": "다음 예정된 세대에서 제한적으로 시험 사용됩니다. 과거 일치율은 참고 기록이며 채택 근거가 아닙니다.",
             }))
+        }
+        "unsafe_audit" => {
+            let session = ctx
+                .store
+                .get("session", ctx.session_id)
+                .ok_or("자기개선 세션을 찾을 수 없습니다.")?;
+            if session["rsiRun"] != true {
+                return Err("unsafe_audit는 자기개선 세대에서만 사용할 수 있습니다.".into());
+            }
+            let scope = string_arg(args, "path").unwrap_or(".");
+            let path = resolve_workspace(ctx.workspace, scope)?;
+            Ok(crate::engine::unsafe_audit::audit_path(&path))
         }
         "delegate_task" => delegate(ctx, args).await,
         "task_status" => task_payload(ctx, args, false),
@@ -973,6 +988,8 @@ impl Drop for ToolProcessGroup {
             // A negative PID targets that private group, never our own group;
             // zero and special global process IDs are excluded by new().
             // SIGKILL is 9 on the supported macOS/Linux Unix hosts.
+            // SAFETY: the target is the private process group created above;
+            // the group id is positive and our own group is never targeted.
             unsafe {
                 kill(-id, 9);
             }
@@ -1357,6 +1374,7 @@ mod tests {
         assert!(rsi_allowed("workspace_replace"));
         assert!(rsi_allowed("workspace_write"));
         assert!(rsi_allowed("algorithm_propose"));
+        assert!(rsi_allowed("unsafe_audit"));
         assert!(!rsi_allowed("workspace_read"));
         assert!(!rsi_allowed("shell_exec"));
     }
@@ -1411,6 +1429,57 @@ mod tests {
             .is_some());
         let invalid = json!({"expression":"unknownVariable * 2"});
         assert!(execute(&ctx, "algorithm_propose", &invalid, "run").await.is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn unsafe_audit_is_limited_to_rsi_sessions_and_reports_findings() {
+        use crate::config::Config;
+        use crate::db::Store;
+        use crate::vault::Vault;
+        let dir = std::env::temp_dir().join(format!("dominion-unsafe-tool-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src/lib.rs"),
+            "// SAFETY: private process group\nunsafe { kill(-id, 9); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src/other.rs"),
+            "unsafe fn undocumented() {}\n",
+        )
+        .unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let state = crate::state::AppState::new(
+            config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()),
+        );
+        let ctx = ToolContext {
+            workspace: &dir,
+            store: &state.store,
+            state: &state,
+            session_id: "s",
+            agent_id: None,
+            tools_enabled: true,
+            tools_execution_enabled: true,
+        };
+        assert!(execute(&ctx, "unsafe_audit", &json!({}), "run").await.is_err());
+        state
+            .store
+            .put("session", &json!({"id":"s","rsiRun":true}))
+            .unwrap();
+        let report = execute(&ctx, "unsafe_audit", &json!({}), "run").await.unwrap();
+        assert_eq!(report["scanned"], 2);
+        assert_eq!(report["passed"], false);
+        let findings = report["findings"].as_array().unwrap();
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].as_str().unwrap().ends_with("src/other.rs:1"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

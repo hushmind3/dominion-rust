@@ -60,6 +60,7 @@ pub mod scheduler;
 pub mod skills;
 pub mod telegram;
 pub mod tools;
+pub mod unsafe_audit;
 pub mod vault_rotation;
 pub mod video;
 pub mod workflows;

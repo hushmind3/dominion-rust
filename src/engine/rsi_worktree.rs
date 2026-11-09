@@ -286,6 +286,7 @@ pub async fn finish(
     let mut candidate_id=Value::Null;
     let mut capture_error=String::new();
     let mut checks=Vec::<Value>::new();
+    let mut unsafe_audit=Value::Null;
     if patch.trim().is_empty(){
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
     } else if patch_size>=MAX_CAPTURE_BYTES {
@@ -314,6 +315,16 @@ pub async fn finish(
                 candidate_id=candidate["id"].clone();
                 context.state.store.put("rsi_candidate",&candidate);
                 checks=validate(worktree,&patch).await;
+                // An added `unsafe` construct is checked against the same
+                // SAFETY rule as the CLI and the `unsafe_audit` tool. This is
+                // an actual engine invocation, not a prompt instruction.
+                if let Some(audit)=unsafe_audit_for_patch(&worktree.path,&patch) {
+                    let check=unsafe_audit_check(&audit);
+                    checks.push(check);
+                    candidate["unsafeAudit"]=audit.clone();
+                    context.state.store.put("rsi_candidate",&candidate);
+                    unsafe_audit=audit;
+                }
             }
             Err(err)=>capture_error=format!("후보 등록 거부: {err}"),
         }
@@ -328,6 +339,7 @@ pub async fn finish(
         "baseCommit":worktree.base,"candidateId":candidate_id,
         "sourceClean":source_clean,"diffSha256":patch_sha,"diffBytes":patch_size,
         "checks":checks,"checksPassed":all_checks_pass,
+        "unsafeAudit":unsafe_audit,
         "pairedComparisonComplete":false,"autoMerged":false,"autoDeployed":false,
         "modelError":model_error,"captureError":capture_error,
         "modelMessageId":model_result.ok().flatten().and_then(|m|m["id"].as_str().map(str::to_string)),
@@ -337,6 +349,7 @@ pub async fn finish(
     context.state.store.audit("rsi.run_evidence",json!({
         "jobId":context.job_id,"candidateId":candidate_id,
         "patchSha256":patch_sha,"sourceClean":source_clean,"checksPassed":all_checks_pass,
+        "unsafeAuditPassed":unsafe_audit["passed"],
         "modelError":model_error,"captureError":capture_error
     }));
     context.checkpoint(json!({"rsiPhase":"review","rsiEvidenceId":result["id"],
@@ -350,6 +363,49 @@ pub async fn finish(
         "sessionId":session_id,
         "rsi":result,
     }))
+}
+
+/// Runs the shared audit only when the patch adds an unsafe construct. The
+/// automatic check is scoped to files the patch changed, so a pre-existing
+/// issue in an unrelated file cannot block the candidate.
+pub(crate) fn unsafe_audit_for_patch(workspace:&Path,patch:&str)->Option<Value>{
+    if !crate::engine::unsafe_audit::needs_audit(patch){return None;}
+    let mut paths=Vec::new();
+    for line in patch.lines(){
+        let Some(path)=line.strip_prefix("+++ b/") else{continue};
+        if path=="dev/null"||!crate::engine::rsi::safe_path(path)||paths.iter().any(|item|item==path){continue;}
+        paths.push(path.to_string());
+    }
+    if paths.is_empty(){
+        return Some(crate::engine::unsafe_audit::audit_workspace(workspace));
+    }
+    let mut scanned=0u64;
+    let mut findings=Vec::new();
+    for relative in paths{
+        let path=workspace.join(&relative);
+        if !path.is_file(){continue;}
+        let report=crate::engine::unsafe_audit::audit_path(&path);
+        scanned+=report["scanned"].as_u64().unwrap_or(0);
+        if let Some(rows)=report["findings"].as_array(){
+            findings.extend(rows.iter().cloned());
+        }
+    }
+    findings.sort_by(|a,b|a.as_str().cmp(&b.as_str()));
+    Some(json!({
+        "scanned":scanned,"findings":findings,"passed":findings.is_empty(),
+        "scope":"changed_files",
+    }))
+}
+
+/// Converts the audit report into the existing verification-check shape so a
+/// missing SAFETY reason blocks the candidate through the normal repair loop.
+pub(crate) fn unsafe_audit_check(audit:&Value)->Value{
+    let passed=audit["passed"]==true;
+    json!({
+        "label":"unsafe_safety","passed":passed,
+        "error":if passed {""} else {"unsafe 블록에 SAFETY 근거가 없습니다."},
+        "findings":audit["findings"],
+    })
 }
 
 /// Compilation and typecheck are only candidate-integrity evidence.
@@ -779,6 +835,25 @@ mod tests {
         assert!(tools::execute(&ctx,"workspace_write",&json!({"path":".git","content":"tamper"}),"run").await.is_err());
         assert!(tools::execute(&ctx,"workspace_write",&json!({"path":"Cargo.toml","content":"tamper"}),"run").await.is_err());
         assert!(!outside.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unsafe_patch_is_audited_and_unrelated_patch_is_not(){
+        let root=std::env::temp_dir().join(format!("rsi-unsafe-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"),"unsafe { call(); }\n").unwrap();
+        std::fs::write(root.join("src/unrelated.rs"),"unsafe fn unrelated() {}\n").unwrap();
+        let unsafe_patch="diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-unsafe { call(); }\n+unsafe { call_again(); }\n";
+        let audit=unsafe_audit_for_patch(&root,unsafe_patch).expect("unsafe patch must be audited");
+        assert_eq!(audit["passed"],false);
+        let check=unsafe_audit_check(&audit);
+        assert_eq!(check["label"],"unsafe_safety");
+        assert_eq!(check["passed"],false);
+        assert!(check["findings"].as_array().unwrap()[0].as_str().unwrap().ends_with("src/lib.rs:1"));
+        assert!(check["findings"].as_array().unwrap().iter().all(|row|!row.as_str().unwrap().contains("unrelated.rs")),
+            "unrelated pre-existing files must not block this patch");
+        assert!(unsafe_audit_for_patch(&root,"diff --git a/src/lib.rs b/src/lib.rs\n+let value = 1;\n").is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
 }
