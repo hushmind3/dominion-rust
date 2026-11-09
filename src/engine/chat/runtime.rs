@@ -1628,12 +1628,12 @@ async fn run_turn_body(
             }
             let mutating_call = matches!(
                 call.name.as_str(),
-                "workspace_write" | "file_write" | "shell_exec" | "terminal_exec"
+                "workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec"
             );
             let has_prior_read = completed_operations.iter().any(|operation| {
                 matches!(
                     operation["tool"].as_str(),
-                    Some("workspace_list" | "workspace_read" | "file_list" | "file_read")
+                    Some("workspace_list" | "workspace_read" | "workspace_read_range" | "file_list" | "file_read")
                 )
             });
             if mutating_call && !has_prior_read {
@@ -1696,7 +1696,7 @@ async fn run_turn_body(
             // actually changed environment fingerprint.
             let mutating = matches!(
                 call.name.as_str(),
-                "workspace_write" | "file_write" | "shell_exec" | "terminal_exec"
+                "workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec"
                     | "github_api" | "delegate_task"
             );
             if mutating {
@@ -1783,7 +1783,7 @@ async fn run_turn_body(
                 failed_calls.remove(&call_key);
                 if matches!(
                     call.name.as_str(),
-                    "workspace_write" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task"
+                    "workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task"
                 ) {
                     environment_version += 1;
                 }
@@ -1828,7 +1828,7 @@ async fn run_turn_body(
                         if tool_succeeded(result)
                             && matches!(
                                 selected["tool"].as_str(),
-                                Some("workspace_write" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task")
+                                Some("workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task")
                             )
                         {
                             environment_version += 1;
@@ -2456,7 +2456,7 @@ fn restore_program_state(
 fn tool_is_read_only(name: &str) -> bool {
     matches!(
         name,
-        "workspace_list" | "workspace_read" | "file_list" | "file_read"
+        "workspace_list" | "workspace_read" | "workspace_read_range" | "file_list" | "file_read"
             | "web_search" | "http_fetch" | "memory_search"
             | "task_status" | "task_result" | "account_status"
     )
@@ -2566,7 +2566,7 @@ fn select_room_tools(
                 "파일", "폴더", "읽고", "읽어", "읽어줘", "읽어봐", "읽기",
                 "열어줘", "열어봐", "보여줘", "보여 줘", "read", "file",
             ],
-            &["workspace_list", "workspace_read", "file_list", "file_read"],
+            &["workspace_list", "workspace_read", "workspace_read_range", "file_list", "file_read"],
         ),
         (
             &[
@@ -2574,7 +2574,7 @@ fn select_room_tools(
                 "삭제해", "삭제하", "만들어", "만들어줘", "작성해", "작성하",
                 "기록", "남겨", "write", "save", "edit", "delete", "create",
             ],
-            &["workspace_write", "file_write"],
+            &["workspace_read", "workspace_read_range", "workspace_replace", "workspace_write", "file_write"],
         ),
         (
             &["실행", "명령", "터미널", "빌드", "테스트", "설치", "shell", "run", "build", "test", "install"],
@@ -2643,7 +2643,7 @@ fn select_room_tools(
             .filter(|definition| {
                 matches!(
                     tool_name(definition),
-                    "workspace_list" | "workspace_read" | "workspace_write" | "shell_exec" | "web_search"
+                    "workspace_list" | "workspace_read" | "workspace_read_range" | "workspace_replace" | "workspace_write" | "shell_exec" | "web_search"
                 )
             })
             .collect();
@@ -2665,7 +2665,7 @@ fn select_tool_definitions(
         return definitions;
     }
     let default_core = [
-        "workspace_list", "workspace_read", "workspace_write", "shell_exec",
+        "workspace_list", "workspace_read", "workspace_read_range", "workspace_replace", "workspace_write", "shell_exec",
         "web_search", "memory_store", "memory_search", "delegate_task",
         "task_status", "task_result",
     ];
@@ -3824,7 +3824,7 @@ async fn deterministic_tool(
     // dispatch path so the opt-in guard can see this read.
     let file_observation = if matches!(
         tool,
-        "workspace_read" | "file_read" | "workspace_write"
+        "workspace_read" | "workspace_read_range" | "file_read" | "workspace_replace" | "workspace_write"
     ) {
         result
             .as_object_mut()
@@ -4219,7 +4219,7 @@ async fn dispatch_tool_call(
         match outcome {
             Ok(value) => {
                 let mut value = value;
-                if matches!(call.name.as_str(), "workspace_read" | "file_read" | "workspace_write") {
+                if matches!(call.name.as_str(), "workspace_read" | "workspace_read_range" | "file_read" | "workspace_replace" | "workspace_write") {
                     file_observation = value.as_object_mut()
                         .and_then(|value| value.remove("fileObservation"));
                 }

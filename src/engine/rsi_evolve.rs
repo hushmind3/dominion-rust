@@ -37,8 +37,23 @@ pub fn limits(body: &Value) -> Result<Value, String> {
             Err(format!("{key} 범위는 {min}~{max}입니다."))
         }
     };
+    let token_budget = match body.get("tokenBudget") {
+        None | Some(Value::Null) => Value::Null,
+        Some(value) => {
+            let number = value
+                .as_u64()
+                .ok_or("tokenBudget은 정수여야 합니다.")?;
+            if number == 0 {
+                Value::Null
+            } else if (1_000..=2_000_000).contains(&number) {
+                json!(number)
+            } else {
+                return Err("tokenBudget 범위는 1,000~2,000,000입니다. 0 또는 생략은 상한 없음입니다.".into());
+            }
+        }
+    };
     Ok(json!({"maxAttempts":bound("maxAttempts",1,1,100)?,
-        "tokenBudget":bound("tokenBudget",50_000,1_000,2_000_000)?,
+        "tokenBudget":token_budget,
         "timeBudgetSeconds":bound("timeBudgetSeconds",900,60,7200)?}))
 }
 
@@ -69,7 +84,7 @@ pub fn choose_domain(history: &[Value]) -> String {
 }
 
 pub fn auto_write_allowed(state: &AppState, session_id: &str, tool: &str, args: &Value) -> bool {
-    if tool != "workspace_write"
+    if !matches!(tool, "workspace_write" | "workspace_replace")
         || !args["path"]
             .as_str()
             .is_some_and(crate::engine::rsi::safe_path)
@@ -143,9 +158,14 @@ pub fn remaining_output_tokens(
     {
         return Err("자동 개선이 중단되었습니다.".into());
     }
-    let budget = parent["input"]["limits"]["tokenBudget"]
+    let Some(budget) = parent["input"]["limits"]["tokenBudget"]
         .as_u64()
-        .ok_or("자동 개선 사용량 상한이 없습니다.")?;
+        .filter(|budget| *budget > 0)
+    else {
+        // The owner explicitly asked not to cap self-improvement tokens. We
+        // still return None so the provider's own context/output limits apply.
+        return Ok(None);
+    };
     let prior = parent["evolution"]["activeBaseTokens"]
         .as_u64()
         .unwrap_or(0);
@@ -196,8 +216,10 @@ pub(crate) async fn command(
                         .and_then(|id|context.state.store.get("job",id))
                         .and_then(|j|j["sessionId"].as_str().map(str::to_string))
                         .map(|s|context.state.store.session_usage(&s)["totalTokens"].as_u64().unwrap_or(0)).unwrap_or(0);
-                    if record["phase"]=="diagnosing_and_editing"&&record["activeBaseTokens"].as_u64().unwrap_or(record["tokens"].as_u64().unwrap_or(0)).saturating_add(active_tokens)
-                        >=record["limits"]["tokenBudget"].as_u64().unwrap_or(100_000){
+                    if record["phase"]=="diagnosing_and_editing"
+                        && record["limits"]["tokenBudget"].as_u64().is_some_and(|budget|
+                            record["activeBaseTokens"].as_u64().unwrap_or(record["tokens"].as_u64().unwrap_or(0)).saturating_add(active_tokens) >= budget)
+                    {
                         return Err("token_budget".into());
                     }
                 }
@@ -481,7 +503,6 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "nativeApproved":true,"limits":limits,"attempts":0,"acceptedGenerations":0,"tokens":0,
         "history":[],"activeGenerationJobId":null,"createdAt":chrono::Utc::now().to_rfc3339(),
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
-        "improvementItemId":input["rsiImprovementItemId"],
         "productionChanged":false,"accelerationProven":false});
     save(context, &record)?;
     let started = Instant::now();
@@ -535,9 +556,6 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .put("rsi_campaign", &record)
         .ok_or("최종 실험 기록 저장 실패")?;
     context.state.bus.record("rsi_campaign", &record);
-    if record["improvementItemId"].as_str().is_some() {
-        crate::engine::rsi_backlog::finish_campaign(&context.state, &record);
-    }
     // Cancellation deliberately forbids resurrecting the parent job.
     if record["status"] != "cancelled" {
         context.checkpoint(json!({"rsiEvolutionInFlight":false,"evolution":record}))?;
@@ -583,8 +601,9 @@ async fn run_loop(
         {
             return Ok("attempt_limit".into());
         }
-        if record["tokens"].as_u64().unwrap_or(0)
-            >= record["limits"]["tokenBudget"].as_u64().unwrap_or(100_000)
+        if record["limits"]["tokenBudget"]
+            .as_u64()
+            .is_some_and(|budget| record["tokens"].as_u64().unwrap_or(0) >= budget)
         {
             return Ok("token_budget".into());
         }
@@ -974,11 +993,13 @@ mod tests {
     }
     #[test]
     fn resource_limits_reject_unbounded_or_malformed_requests() {
-        assert!(limits(&json!({})).unwrap()["tokenBudget"].as_u64().unwrap() > 0);
+        assert!(limits(&json!({})).unwrap()["tokenBudget"].is_null());
+        assert!(limits(&json!({"tokenBudget":0})).unwrap()["tokenBudget"].is_null());
         for body in [
             json!({"maxAttempts":0}),
             json!({"timeBudgetSeconds":999999}),
             json!({"tokenBudget":"unlimited"}),
+            json!({"tokenBudget":999}),
         ] {
             assert!(limits(&body).is_err());
         }

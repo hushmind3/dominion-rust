@@ -34,6 +34,8 @@ pub fn definitions() -> Vec<Value> {
     vec![
         tool("workspace_list", "List files and folders in the workspace", object(json!({"path": text("Relative folder path")}), vec![])),
         tool("workspace_read", "Read a UTF-8 file from the workspace", object(json!({"path": text("Relative file path")}), vec!["path"])),
+        tool("workspace_read_range", "Read only a line range from a workspace file. Use the line numbers from the repository index instead of reading a large file end to end.", object(json!({"path": text("Relative file path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1, "description":"Inclusive end line; at most 400 lines are returned"})}), vec!["path","startLine"])),
+        tool("workspace_replace", "Replace one exact block in a workspace file without resending the whole file (approval required). oldText must occur exactly once.", object(json!({"path": text("Relative file path"), "oldText": text("Exact existing text to replace; must occur exactly once"), "newText": text("Replacement text"), "expectedSha256": text("Optional SHA-256 observed before editing")}), vec!["path","oldText","newText"])),
         tool("workspace_write", "Write a UTF-8 file inside the workspace (approval required)", object(json!({"path": text("Relative file path"), "content": text("UTF-8 content")}), vec!["path", "content"])),
         tool("file_list", "List any folder on this computer using an absolute path", object(json!({"path": text("Absolute folder path")}), vec!["path"])),
         tool("file_read", "Read any UTF-8 text file using an absolute path", object(json!({"path": text("Absolute file path")}), vec!["path"])),
@@ -76,6 +78,7 @@ pub fn requires_approval(name: &str) -> bool {
     matches!(
         name,
         "workspace_write"
+            | "workspace_replace"
             | "file_write"
             | "shell_exec"
             | "terminal_exec"
@@ -85,7 +88,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"workspace_list"|"workspace_read"|"workspace_write"|"web_search"|"http_fetch")
+    matches!(name,"workspace_list"|"workspace_read"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch")
 }
 
 pub async fn execute(
@@ -99,7 +102,7 @@ pub async fn execute(
     if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
     }
-    if isolated_rsi && name=="workspace_write" {
+    if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace") {
         let path=args["path"].as_str().unwrap_or("");
         if !crate::engine::rsi::safe_path(path) {
             return Err("자기개선은 허용된 소스코드 경로만 수정할 수 있습니다.".into());
@@ -113,6 +116,43 @@ pub async fn execute(
         "workspace_read" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
             observed_read(ctx, &path, run_id).await
+        }
+        "workspace_read_range" => {
+            let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
+            let start = args["startLine"].as_u64().unwrap_or(1).max(1);
+            let requested_end = args["endLine"].as_u64().unwrap_or(start.saturating_add(199));
+            let result = observed_read(ctx, &path, run_id).await?;
+            let text = result["content"].as_str().unwrap_or_default();
+            let lines = text.lines().collect::<Vec<_>>();
+            let begin = (start as usize).min(lines.len());
+            let end = (requested_end as usize).min(lines.len()).max(begin).min(begin.saturating_add(400));
+            let mut numbered = String::new();
+            for (offset, line) in lines[begin.saturating_sub(1)..end].iter().enumerate() {
+                numbered.push_str(&format!("{:>5} {}\n", begin + offset, line));
+            }
+            let mut output = json!({
+                "path": result["path"],
+                "startLine": begin.max(1),
+                "endLine": end,
+                "totalLines": lines.len(),
+                "content": numbered,
+            });
+            if let Some(observation) = result.get("fileObservation") {
+                output["fileObservation"] = observation.clone();
+            }
+            Ok(output)
+        }
+        "workspace_replace" => {
+            let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
+            replace_text(
+                ctx,
+                &path,
+                &required_arg(args, "oldText")?,
+                &required_arg(args, "newText")?,
+                args["expectedSha256"].as_str(),
+                run_id,
+            )
+            .await
         }
         "workspace_write" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
@@ -568,6 +608,35 @@ async fn observed_read(ctx: &ToolContext<'_>, path: &Path, run_id: &str) -> Resu
         "path": canonical.to_string_lossy(),
         "sha256": format!("{:x}", Sha256::digest(text.as_bytes())),
     });
+    Ok(result)
+}
+
+async fn replace_text(
+    ctx: &ToolContext<'_>,
+    path: &Path,
+    old_text: &str,
+    new_text: &str,
+    expected_sha256: Option<&str>,
+    run_id: &str,
+) -> Result<Value, String> {
+    if old_text.is_empty() {
+        return Err("oldText는 비어 있을 수 없습니다.".into());
+    }
+    let text = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let occurrences = text.matches(old_text).count();
+    if occurrences != 1 {
+        return Ok(json!({
+            "error": "oldText가 파일 안에서 정확히 한 번만 나타나야 합니다.",
+            "occurrences": occurrences,
+            "path": path.to_string_lossy(),
+        }));
+    }
+    let updated = text.replacen(old_text, new_text, 1);
+    let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
+    result["replaced"] = json!(true);
+    result["replacedChars"] = json!(old_text.chars().count());
     Ok(result)
 }
 
@@ -1118,6 +1187,59 @@ mod tests {
             .unwrap();
         assert_eq!(stale["staleVersion"], true, "{stale}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "external change");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn workspace_replace_edits_one_exact_block_without_full_content() {
+        use crate::config::Config;
+        use crate::db::Store;
+        use crate::vault::Vault;
+        let dir = std::env::temp_dir().join(format!("dominion-replace-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let state = crate::state::AppState::new(
+            config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()),
+        );
+        let path = dir.join("large.rs");
+        std::fs::write(&path, "let old_value = 1;\nlet untouched = 2;\n").unwrap();
+        let expected = format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap()));
+        let ctx = ToolContext {
+            workspace: &dir,
+            store: &state.store,
+            state: &state,
+            session_id: "s",
+            agent_id: None,
+            tools_enabled: true,
+            tools_execution_enabled: true,
+        };
+        let result = replace_text(
+            &ctx,
+            &path,
+            "let old_value = 1;",
+            "let new_value = 3;",
+            Some(&expected),
+            "run",
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["replaced"], true, "{result}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "let new_value = 3;\nlet untouched = 2;\n"
+        );
+        let ambiguous = replace_text(&ctx, &path, "let", "const", None, "run")
+            .await
+            .unwrap();
+        assert_eq!(ambiguous["occurrences"], 2, "{ambiguous}");
+        assert!(result["bytes"].as_u64().unwrap() > 0);
         let _ = std::fs::remove_dir_all(dir);
     }
 

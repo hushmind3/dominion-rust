@@ -1,4 +1,4 @@
-import {useEffect,useState} from 'react'
+import {useEffect,useRef,useState} from 'react'
 import {ArrowRight,BrainCircuit,Check,LoaderCircle,Play,RefreshCw,Square} from 'lucide-react'
 import {Provider,get,post} from '../api'
 import {ModelPicker} from '../components/ModelPicker'
@@ -12,25 +12,22 @@ type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGen
  tokensEstimated?:boolean;
  error?:string;stopReason?:string;selectionPolicy?:string;comparison?:Comparison;
  history?:{attempt:number;accepted:boolean;selection?:string;error?:string;tokens?:number;domain:string}[]}
-type Signal={id:string;kind:string;title:string;detail:string;evidence:unknown[];suggestedRequest:string}
-type BacklogItem={id:string;kind:string;title:string;detail:string;status:'open'|'in_progress'|'done'|'dismissed';
- attempts?:number;tokensSpent?:number;lastError?:string;targetFiles?:string[];suggestedRequest?:string;
- evidence?:unknown[];lastCampaignId?:string;campaigns?:string[];lastSeenAt?:string}
-type Check={id:string;title:string;inspected:number}
-const itemLabels:Record<string,string>={open:'대기',in_progress:'수정 중',done:'완료',dismissed:'제외'}
+type IndexMeta={id:string;fingerprint:string;files:number;totalLines:number;symbols:number;tests:number;todos:number;
+ changedFiles:number;reusedFiles:number;removedFiles:number;durationMs:number;generatedAt:string;
+ modules:{module:string;files:number;lines:number;symbols:number;tests:number}[];
+ hotspots:{path:string;lines:number;symbols:number;tests:number;reasons:string[];score:number}[]}
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
 function preferences():{selection:'manual'|'automatic';budget:number}{
- try{const saved=JSON.parse(localStorage.getItem(PREFERENCES)||'null');return {selection:saved?.selection==='automatic'?'automatic':'manual',budget:[0,1,2,3].includes(saved?.budget)?saved.budget:0}}
+ try{const saved=JSON.parse(localStorage.getItem(PREFERENCES)||'null');return {selection:saved?.selection==='automatic'?'automatic':'manual',budget:[0,1].includes(saved?.budget)?saved.budget:0}}
  catch{return {selection:'manual',budget:0}}
 }
 const terminal=(status:string)=>['completed','failed','cancelled','needs_review'].includes(status)
 const phases:Record<string,string>={preparing_lab:'개선 준비 중',building_generator:'선택한 버전 준비 중',
  diagnosing_and_editing:'문제를 찾고 개선하는 중',measuring:'기존 버전과 개선 버전 비교 중',
  waiting_for_choice:'어느 버전을 사용할지 선택해 주세요',selecting:'선택한 버전으로 이어가는 중'}
-const budgets=[{label:'한 번',seconds:600,tokens:30000,attempts:1},
- {label:'짧게',seconds:300,tokens:20000,attempts:2},
- {label:'보통',seconds:900,tokens:50000,attempts:3},{label:'길게',seconds:3600,tokens:150000,attempts:6}]
+const budgets=[{label:'전수조사 + 1회 수정',seconds:1800,attempts:1},
+ {label:'전수조사 + 긴 수정',seconds:3600,attempts:1}]
 const stopLabels:Record<string,string>={
  no_progress:'3회 연속 실제 코드 변경이 없어 중단했습니다.',
  token_budget:'토큰 예산을 모두 사용해 중단했습니다.',
@@ -73,7 +70,7 @@ function Results({comparison,waiting,busy,onChoose}:{comparison:Comparison;waiti
 export function SelfImprovementPage(){
  const providers=useRemote<Provider[]>('/api/providers',[])
  const catalogue=useRemote<{campaigns:Campaign[]}>('/api/rsi/campaigns',{campaigns:[]})
- const signals=useRemote<{signals:Signal[];checks:Check[];items:BacklogItem[]}>('/api/rsi/signals',{signals:[],checks:[],items:[]})
+ const index=useRemote<{index:IndexMeta|null}>('/api/rsi/index',{index:null})
  const enabled=providers.value.filter(provider=>provider.enabled!==false)
  const [providerId,setProviderId]=useState(''),[model,setModel]=useState('')
  const [request,setRequest]=useState(''),[selection,setSelection]=useState<'manual'|'automatic'>(()=>preferences().selection)
@@ -104,36 +101,36 @@ export function SelfImprovementPage(){
   return()=>{alive=false;window.clearInterval(timer)}
  },[jobId])
  useEffect(()=>{
-  if(campaign&&terminal(campaign.status))void signals.reload()
+  if(campaign&&terminal(campaign.status))void index.reload()
  },[campaign?.status])
  const working=!!campaign&&!terminal(campaign.status)
- const start=async(improvementItemId?:string,itemRequest?:string)=>{
+ const start=async(focusFiles?:string[])=>{
   if(busy||working||!providerId||!model.trim())return
   setBusy(true);setError('')
   try{
-   const cap=improvementItemId?budgets[0]:budgets[budget]
+   const cap=budgets[budget]||budgets[0]
    const job=await post<{id:string;status:string}>('/api/rsi/start',{
-    providerId,model,request:itemRequest??request,mode:'continuous',confirmation:'START_RSI_EVOLUTION',
-    selectionPolicy:selection,maxAttempts:cap.attempts,timeBudgetSeconds:cap.seconds,tokenBudget:cap.tokens,
-    ...(improvementItemId?{improvementItemId}: {})
+    providerId,model,request,mode:'continuous',confirmation:'START_RSI_EVOLUTION',
+    selectionPolicy:selection,maxAttempts:cap.attempts,timeBudgetSeconds:cap.seconds,
+    fullInspection:true,...(focusFiles?.length?{focusFiles}:{})
    })
    setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setSettingsOpen(false)
    try{localStorage.setItem(SAVED,job.id)}catch{}
-   void signals.reload()
+   void index.reload()
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
- const startItem=async(item:BacklogItem)=>{
-  if(busy||working)return
-  if(!providerId||!model.trim()){setError('개선을 실행할 모델을 먼저 선택하세요.');setSettingsOpen(true);return}
-  setRequest(item.suggestedRequest||item.detail);setBudget(0)
-  await start(item.id,item.suggestedRequest||item.detail)
- }
- const dismissItem=async(item:BacklogItem)=>{
+ const inspect=async()=>{
   if(busy)return
   setBusy(true);setError('')
-  try{await post('/api/rsi/backlog/'+encodeURIComponent(item.id)+'/dismiss',{});await signals.reload()}
+  try{await post('/api/rsi/inspect',{});await index.reload()}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
+ const autoInspected=useRef(false)
+ useEffect(()=>{
+  if(autoInspected.current||index.loading||index.value.index)return
+  autoInspected.current=true
+  void inspect()
+ },[index.loading,index.value.index])
  const choose=async(choice:'baseline'|'candidate')=>{
   if(!campaign?.comparison||busy)return
   setBusy(true);setError('')
@@ -156,22 +153,25 @@ export function SelfImprovementPage(){
   campaign.status==='needs_review'||campaign.status==='failed'?'이번 작업을 계속하지 못했습니다':phases[campaign.phase]||'개선을 준비하고 있습니다':''
  return <div className="mx-auto w-full max-w-[920px] px-5 py-6 sm:px-7">
   <Headline eyebrow="DOMINION" title="계속 발전하기" description="개선할 부분을 스스로 찾고, 기존 버전과 비교합니다. 어느 쪽이 더 나은지 보고 선택하세요."
-   actions={<Button variant="secondary" onClick={()=>{void providers.reload();void catalogue.reload();void signals.reload()}} aria-label="새로고침"><RefreshCw size={15}/></Button>}/>
+   actions={<Button variant="secondary" onClick={()=>{void providers.reload();void catalogue.reload();void index.reload()}} aria-label="새로고침"><RefreshCw size={15}/></Button>}/>
   <Notice message={error||providers.error||(campaign?.error?'이번 개선을 완료하지 못해 기존 버전을 유지했습니다. 다시 시작할 수 있습니다.':'')}/>
   <Panel className="mb-4 p-5">
-   <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-[14px] font-bold">자동 점검 · 개선 바구니</h2><p className="mt-1 text-[11px] text-[#7C7469]">모델을 부르기 전에 기록을 결정적으로 점검하고, 찾은 후보를 여기에 쌓아 둡니다.</p></div>
-    <span className="rounded-full bg-[#F9EDE6] px-2 py-1 text-[11px] font-semibold text-[#A94E30]">점검 {(signals.value.checks||[]).length}개 · 후보 {(signals.value.items||[]).filter(item=>item.status==='open'||item.status==='in_progress').length}개</span></div>
-   <div className="mt-3 flex flex-wrap gap-1.5">{(signals.value.checks||[]).map(check=><span key={check.id} className="rounded-full border border-[#E7E0D5] bg-[#FAF7F1] px-2 py-1 text-[10px] text-[#7C7469]">{check.title} {check.inspected}</span>)}</div>
-   {!(signals.value.items||[]).length&&<p className="mt-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]">지금 기록에서는 자동으로 찾은 후보가 없습니다. 전체 점검은 계속 돌아가며, 새 실패나 토큰 낭비가 생기면 여기에 쌓입니다.</p>}
-   <div className="mt-3 grid gap-2">{(signals.value.items||[]).map(item=><div key={item.id} className="rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
-    <div className="flex flex-wrap items-start justify-between gap-2"><strong className="block text-[12px] text-[#3A342D]">{item.title}</strong><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-[#7C7469]">{itemLabels[item.status]||item.status}</span></div>
-    <p className="mt-1 text-[11px] leading-5 text-[#7C7469]">{item.detail}</p>
-    <p className="mt-1 text-[10px] text-[#8A8176]">시도 {item.attempts||0}회 · 사용 토큰 {(item.tokensSpent||0).toLocaleString()}{item.targetFiles?.length?` · 대상 ${item.targetFiles.join(', ')}`:''}</p>
-    {item.lastError&&<p className="mt-1 break-words text-[10px] text-[#A94E30]">지난 실패: {item.lastError}</p>}
-    <details className="mt-2 text-[10px] text-[#7C7469]"><summary className="cursor-pointer">자동 점검 근거 보기</summary><pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-white p-2">{JSON.stringify(item.evidence??[],null,2)}</pre></details>
-    <div className="mt-2 flex flex-wrap gap-2">{item.status!=='done'&&item.status!=='dismissed'&&<Button size="sm" variant="secondary" disabled={busy||working} onClick={()=>void startItem(item)}>이 후보로 한 번에 수정</Button>}
-     {item.status==='open'&&<Button size="sm" variant="ghost" disabled={busy||working} onClick={()=>void dismissItem(item)}>이 후보 제외</Button>}</div>
-   </div>)}</div>
+   <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-[14px] font-bold">전수조사 · 코드 기억</h2><p className="mt-1 text-[11px] text-[#7C7469]">전체 소스를 한 번 읽어 파일·심볼·테스트·정적 발견을 저장합니다. 다음 개선은 이 기억을 다시 사용합니다.</p></div>
+    <Button size="sm" variant="secondary" disabled={busy||working} onClick={()=>void inspect()}>{index.loading?<LoaderCircle size={13} className="animate-spin"/>:<RefreshCw size={13}/>}전수조사 다시 실행</Button></div>
+   {!index.value.index?<p className="mt-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]">{index.loading||busy?'전체 소스를 읽어 인덱스를 만드는 중입니다. 모델 토큰은 쓰지 않습니다.':'아직 전수조사 인덱스가 없습니다. 위 버튼을 누르면 전체 소스를 한 번 읽고 저장합니다.'}</p>:
+    <div className="mt-3">
+     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {[{label:'파일',value:index.value.index.files},{label:'줄',value:index.value.index.totalLines},{label:'심볼',value:index.value.index.symbols},{label:'테스트',value:index.value.index.tests}].map(row=><div key={row.label} className="rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3"><p className="text-[10px] text-[#7C7469]">{row.label}</p><p className="mt-1 text-lg font-semibold text-[#3A342D]">{row.value.toLocaleString()}</p></div>)}
+     </div>
+     <p className="mt-2 text-[10px] text-[#8A8176]">이번 갱신: 변경 {index.value.index.changedFiles} · 재사용 {index.value.index.reusedFiles} · 삭제 {index.value.index.removedFiles} · {index.value.index.durationMs}ms · TODO/FIXME {index.value.index.todos}</p>
+     {index.value.index.hotspots.length>0&&<details className="mt-3 text-[11px]" open><summary className="cursor-pointer font-semibold text-[#3A342D]">정적 발견 우선순위</summary>
+      <div className="mt-2 grid gap-2">{index.value.index.hotspots.slice(0,6).map(hotspot=><div key={hotspot.path} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#E7E0D5] bg-white p-2">
+       <div><strong className="block text-[11px] text-[#3A342D]">{hotspot.path}</strong><span className="text-[10px] text-[#7C7469]">{hotspot.lines.toLocaleString()}줄 · {hotspot.reasons.join(', ')}</span></div>
+       <Button size="sm" variant="ghost" disabled={busy||working||!providerId||!model.trim()} onClick={()=>void start([hotspot.path])}>이 파일 중심으로 1회 수정</Button>
+      </div>)}</div>
+     </details>}
+    </div>}
+   <p className="mt-3 text-[10px] leading-5 text-[#8A8176]">토큰 상한은 두지 않습니다. 실제 사용량은 아래 작업 기록에 그대로 표시됩니다.</p>
   </Panel>
   {campaign&&!working&&<div className="mb-3 flex justify-end"><Button variant="ghost" onClick={()=>setSettingsOpen(v=>!v)}>{settingsOpen?'설정 닫기':'모델·작업량 바꾸기'}</Button></div>}
   {(!campaign||settingsOpen)&&<Panel className="p-5 sm:p-7">
@@ -186,8 +186,8 @@ export function SelfImprovementPage(){
    </div></div>
    <div className="mt-5"><FormField label="중점적으로 나아졌으면 하는 점 (선택)"><TextArea rows={2} value={request} onChange={e=>setRequest(e.target.value)} disabled={working||busy} placeholder="예: 기억을 더 잘하고, 같은 일을 적은 비용으로 해 줘. 비워 두어도 됩니다."/></FormField></div>
    <div className="mt-4 flex flex-wrap items-end justify-between gap-4"><FormField label="이번 작업량"><SelectInput value={budget} disabled={working||busy} onChange={e=>setBudget(Number(e.target.value))}>
-    {budgets.map((cap,index)=><option value={index} key={cap.label}>{cap.label} · 최대 {cap.seconds/60}분 / {cap.tokens.toLocaleString()}토큰</option>)}
-   </SelectInput></FormField><Button variant="primary" onClick={()=>void start()} disabled={busy||working||!providerId||!model.trim()}><Play size={15}/>발전 시작</Button></div>
+    {budgets.map((cap,index)=><option value={index} key={cap.label}>{cap.label} · 최대 {cap.seconds/60}분 · 토큰 상한 없음</option>)}
+   </SelectInput></FormField><Button variant="primary" onClick={()=>void start()} disabled={busy||working||!providerId||!model.trim()}><Play size={15}/>전수조사 후 1회 수정</Button></div>
    <p className="mt-3 text-[11px] leading-5 text-[#8A8176]">시작하면 프로그램 복사본에서 수정과 실제 비교를 실행합니다. 선택한 버전은 다음 개선에 사용되며, 이전 선택은 다음 작업에도 이어집니다. 선택을 기다리는 시간은 작업 시간에 포함하지 않습니다.</p>
   </Panel>}
   {campaign&&<Panel className="mt-4 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2">{working?<LoaderCircle size={16} className="animate-spin text-[#A94E30]"/>:<Check size={16}/>}<strong className="text-[14px]">{status}</strong></div>
