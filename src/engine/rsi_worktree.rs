@@ -355,8 +355,9 @@ pub async fn finish(
     context.checkpoint(json!({"rsiPhase":"review","rsiEvidenceId":result["id"],
         "rsiCandidateId":candidate_id}))?;
     let (status,reason)=run_status(
-        candidate_id.is_string(),all_checks_pass,source_clean,
-        &model_error,&capture_error,
+        candidate_id.is_string(),all_checks_pass,
+        unsafe_audit["passed"]==false,
+        source_clean,&model_error,&capture_error,
     );
     Ok(json!({
         "status":status,"reason":reason,
@@ -412,7 +413,7 @@ pub(crate) fn unsafe_audit_check(audit:&Value)->Value{
 /// A completed run means the model produced a patch and verification ran
 /// without error; it does NOT mean the patch improves runtime behavior.
 fn run_status(
-    has_candidate:bool,checks_passed:bool,source_clean:bool,
+    has_candidate:bool,checks_passed:bool,audit_failed:bool,source_clean:bool,
     model_error:&str,capture_error:&str,
 )->(&'static str,&'static str){
     if !source_clean {return ("needs_review","original_source_changed");}
@@ -420,6 +421,7 @@ fn run_status(
     if !capture_error.is_empty()||!has_candidate {
         return ("needs_review","no_valid_candidate");
     }
+    if audit_failed{return ("needs_review","unsafe_safety_failed");}
     if !checks_passed{return ("needs_review","build_or_typecheck_failed");}
     ("completed","candidate_compiles_not_performance_verified")
 }
@@ -427,7 +429,9 @@ fn run_status(
 /// Return a short, grounded repair instruction. Do not repeat blind model
 /// calls for provider errors, missing diffs or checkout integrity failures.
 pub fn repair_feedback(result:&Value)->Option<String>{
-    if result["status"]!="needs_review"||result["reason"]!="build_or_typecheck_failed"
+    if result["status"]!="needs_review"
+        ||!matches!(result["reason"].as_str(),
+            Some("build_or_typecheck_failed"|"unsafe_safety_failed"))
         ||result["rsi"]["sourceClean"]!=true
         ||!result["rsi"]["captureError"].as_str().unwrap_or("").is_empty()
         ||!result["rsi"]["modelError"].as_str().unwrap_or("").is_empty(){
@@ -719,15 +723,20 @@ mod tests {
     }
     #[test]
     fn failing_verification_never_completes_and_only_valid_failures_retry(){
-        assert_eq!(run_status(true,false,true,"",""),("needs_review","build_or_typecheck_failed"));
-        assert_eq!(run_status(true,true,true,"",""),("completed","candidate_compiles_not_performance_verified"));
-        assert_eq!(run_status(true,true,false,"","").0,"needs_review");
-        assert_eq!(run_status(true,true,true,"provider timeout","").0,"needs_review");
-        assert_eq!(run_status(false,true,true,"","invalid diff").0,"needs_review");
+        assert_eq!(run_status(true,false,false,true,"",""),("needs_review","build_or_typecheck_failed"));
+        assert_eq!(run_status(true,false,true,true,"",""),("needs_review","unsafe_safety_failed"));
+        assert_eq!(run_status(true,true,false,true,"",""),("completed","candidate_compiles_not_performance_verified"));
+        assert_eq!(run_status(true,true,false,false,"","").0,"needs_review");
+        assert_eq!(run_status(true,true,false,true,"provider timeout","").0,"needs_review");
+        assert_eq!(run_status(false,true,false,true,"","invalid diff").0,"needs_review");
         let failing=json!({"status":"needs_review","reason":"build_or_typecheck_failed",
             "rsi":{"sourceClean":true,"captureError":"","modelError":"",
                 "checks":[{"label":"cargo check --all-targets","passed":false,"stderr":"error[E0308]: wrong type"}]}});
         assert!(repair_feedback(&failing).unwrap().contains("error[E0308]"));
+        let unsafe_failure=json!({"status":"needs_review","reason":"unsafe_safety_failed",
+            "rsi":{"sourceClean":true,"captureError":"","modelError":"",
+                "checks":[{"label":"unsafe_safety","passed":false,"error":"unsafe 블록에 SAFETY 근거가 없습니다."}]}});
+        assert!(repair_feedback(&unsafe_failure).unwrap().contains("SAFETY"));
         let mut no_retry=failing;
         no_retry["rsi"]["modelError"]=json!("provider unavailable");
         assert!(repair_feedback(&no_retry).is_none());
