@@ -198,6 +198,57 @@ fn quotes_name(line: &str, marker: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.chars().take(180).collect())
 }
 
+fn comment_start(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut quote = false;
+    let mut escaped = false;
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        let ch = bytes[index] as char;
+        if quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' || ch == '`' {
+                quote = false;
+            }
+        } else if ch == '"' || ch == '`' {
+            quote = true;
+        } else if ch == '/' && bytes[index + 1] == b'/' {
+            return Some(index + 2);
+        } else if ch == '/' && bytes[index + 1] == b'*' {
+            return Some(index + 2);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn code_only(line: &str) -> String {
+    let mut output = String::with_capacity(line.len());
+    let mut quote = false;
+    let mut escaped = false;
+    for ch in line.chars() {
+        if quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' || ch == '`' {
+                quote = false;
+            }
+            output.push(' ');
+        } else if ch == '"' || ch == '`' {
+            quote = true;
+            output.push(' ');
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
 fn parse_file(rel: &str, content: &str) -> Value {
     let language = rel
         .rsplit_once('.')
@@ -262,10 +313,8 @@ fn parse_file(rel: &str, content: &str) -> Value {
                 }
             }
         }
-        let comment = line
-            .find("//")
-            .map(|position| &line[position + 2..])
-            .or_else(|| line.find("/*").map(|position| &line[position + 2..]))
+        let comment = comment_start(line)
+            .map(|position| &line[position..])
             .or_else(|| {
                 let trimmed = line.trim_start();
                 trimmed
@@ -284,6 +333,10 @@ fn parse_file(rel: &str, content: &str) -> Value {
         if in_tests {
             continue;
         }
+        let code = comment_start(line)
+            .map(|position| &line[..position])
+            .unwrap_or(line);
+        let code = code_only(code);
         for (key, needle) in [
             ("unwrap", ".unwrap()"),
             ("expect", ".expect("),
@@ -294,7 +347,7 @@ fn parse_file(rel: &str, content: &str) -> Value {
             ("dbg", "dbg!("),
             ("allow_dead_code", "allow(dead_code)"),
         ] {
-            let count = line.matches(needle).count() as u64;
+            let count = code.matches(needle).count() as u64;
             if count > 0 {
                 *patterns.entry(key).or_insert(0) += count;
             }
