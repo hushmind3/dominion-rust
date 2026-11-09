@@ -37,6 +37,32 @@ pub(super) fn cargo_executable() -> PathBuf {
     first_existing(candidates).unwrap_or_else(|| PathBuf::from("cargo"))
 }
 
+pub(super) fn node_executable() -> PathBuf {
+    if let Some(explicit) = std::env::var_os("DOMINION_NODE") {
+        let path = PathBuf::from(explicit);
+        if path.is_file() {
+            return path;
+        }
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut candidates = Vec::new();
+    if let Some(home) = &home {
+        candidates.push(home.join(".volta/bin/node"));
+        let nvm = home.join(".nvm/versions/node");
+        if let Ok(entries) = std::fs::read_dir(nvm) {
+            for entry in entries.flatten() {
+                candidates.push(entry.path().join("bin/node"));
+            }
+        }
+    }
+    candidates.extend([
+        PathBuf::from("/opt/homebrew/bin/node"),
+        PathBuf::from("/usr/local/bin/node"),
+        PathBuf::from("/usr/bin/node"),
+    ]);
+    first_existing(candidates).unwrap_or_else(|| PathBuf::from("node"))
+}
+
 pub(super) fn npm_executable() -> PathBuf {
     if let Some(explicit) = std::env::var_os("DOMINION_NPM") {
         let path = PathBuf::from(explicit);
@@ -510,10 +536,19 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
         "rsiCompareInFlight":true,"rsiPhase":"paired_experiment",
         "rsiCandidateId":id
     }))?;
+    let mut path_parts = Vec::<PathBuf>::new();
+    for tool in [cargo_executable(), npm_executable(), node_executable()] {
+        if let Some(parent) = tool.parent() {
+            path_parts.push(parent.to_path_buf());
+        }
+    }
+    path_parts.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+    let path = std::env::join_paths(path_parts).map_err(|e|e.to_string())?;
     let mut command=Command::new("bash");
     command.current_dir(&source).arg(&runner)
         .arg(candidate["baseCommit"].as_str().unwrap_or(""))
         .arg(&patch_file).arg(&plan_file).arg(&report_file)
+        .env("PATH", path)
         .env("RSI_BUILD_CACHE",std::fs::canonicalize(&state.config.data_dir).map_err(|e|e.to_string())?.join("rsi-paired-build").join(&context.job_id));
     let outcome=crate::engine::rsi_evolve::command(context,command,Duration::from_secs(1200)).await?;
     if !outcome.status.success() {
@@ -593,6 +628,11 @@ mod tests {
             "unexpected cargo path: {cargo:?}"
         );
         assert!(!npm_executable().as_os_str().is_empty());
+        let node = node_executable();
+        assert!(
+            node.is_file() || node == Path::new("node"),
+            "unexpected node path: {node:?}"
+        );
     }
     #[test]
     fn later_generations_see_prior_compile_failures_without_fabricated_gains(){
