@@ -343,28 +343,42 @@ fn retrieve_ranked_with_rerank(
         .as_str()
         .or_else(|| rerank["variant"].as_str())
         .unwrap_or("none");
-    // Keep corpus indices aligned with the record iteration below.
-    let corpus = records
-        .iter()
-        .map(|record| terms(record["text"].as_str().unwrap_or("")))
-        .collect::<Vec<_>>();
-    let bm25 = if rerank_strategy.starts_with("bm25") {
-        Some(bm25_scores(
-            &query_terms,
-            &corpus,
-            rerank["parameters"]["k1"].as_f64().unwrap_or(1.2),
-            rerank["parameters"]["b"].as_f64().unwrap_or(0.75),
-        ))
+    // Tokenizing every record is the expensive part of ranking, so the corpus
+    // is built only when a lexical reranker actually needs it. Corpus indices
+    // stay aligned with the record iteration below and are reused there, so a
+    // record is never tokenized twice in the same retrieval.
+    let corpus = if rerank_strategy.starts_with("bm25") {
+        Some(
+            records
+                .iter()
+                .map(|record| terms(record["text"].as_str().unwrap_or("")))
+                .collect::<Vec<_>>(),
+        )
     } else {
         None
     };
+    let bm25 = corpus.as_ref().map(|corpus| {
+        bm25_scores(
+            &query_terms,
+            corpus,
+            rerank["parameters"]["k1"].as_f64().unwrap_or(1.2),
+            rerank["parameters"]["b"].as_f64().unwrap_or(0.75),
+        )
+    });
     let mut scored = records
         .into_iter()
         .enumerate()
         .filter_map(|(record_index, record)| {
             let text = record["text"].as_str()?;
-            let memory_terms = terms(text);
-            let matched = query_terms.intersection(&memory_terms).count();
+            let extracted;
+            let memory_terms = match &corpus {
+                Some(corpus) => &corpus[record_index],
+                None => {
+                    extracted = terms(text);
+                    &extracted
+                }
+            };
+            let matched = query_terms.intersection(memory_terms).count();
             let phrase =
                 compact_query.chars().count() >= 2 && normalize(text).contains(&compact_query);
             let importance = record["importance"].as_f64().unwrap_or(0.5).clamp(0.0, 1.0);
@@ -390,6 +404,12 @@ fn retrieve_ranked_with_rerank(
                 if rerank_strategy == "bm25-importance" {
                     lexical * 2.0 + if phrase { 4.0 } else { 0.0 }
                         + importance + bonus
+                } else if always && matched == 0 && !phrase {
+                    // The BM25 path must not silently drop standing owner
+                    // preferences/procedures when the query shares no words
+                    // with them. Keep the same non-BM25 baseline for exactly
+                    // the records the filter above promised to keep.
+                    1.0 + importance + bonus
                 } else {
                     lexical * 2.0 + if phrase { 4.0 } else { 0.0 }
                 }
@@ -1947,6 +1967,41 @@ mod per_agent_memory_learning_tests {
         let ranked = retrieve(&db, &scope, "apple", 5);
         assert_eq!(ranked[0]["id"], "apple-note", "{ranked:?}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn standing_preferences_survive_bm25_rerank_limit() {
+        let db = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let scope = MemoryScope::for_session(&db, "s", Some("a"));
+        let importance = json!({"implementation":"fixed"});
+        let rerank = json!({"implementation":"bm25","parameters":{"k1":1.2,"b":0.75}});
+        db.put("memory", &json!({
+            "id":"standing","text":"답변은 짧고 정확하게 유지한다","type":"preference",
+            "importance":0.95,"scope":"agent","agentId":"a",
+            "partitionKey":scope.partition_key,"status":"active",
+            "createdAt":"2026-01-01T00:00:00Z"
+        }));
+        for index in 0..20 {
+            db.put("memory", &json!({
+                "id":format!("lexical-{index}"),
+                "text":if index % 2 == 0 {
+                    format!("database note {index}")
+                } else {
+                    format!("rollback note {index}")
+                },
+                "type":"lesson","importance":0.5,"scope":"agent","agentId":"a",
+                "partitionKey":scope.partition_key,"status":"active",
+                "createdAt":format!("2026-01-01T00:00:{index:02}Z")
+            }));
+        }
+        let ranked = retrieve_ranked_with_rerank(
+            &db, &scope, "database rollback", 3, &importance, &rerank,
+        );
+        assert!(
+            ranked.iter().any(|record| record["id"] == "standing"),
+            "standing preference was dropped by the BM25 limit: {:?}",
+            ranked.iter().map(|record| record["id"].clone()).collect::<Vec<_>>()
+        );
     }
 
     #[test]
