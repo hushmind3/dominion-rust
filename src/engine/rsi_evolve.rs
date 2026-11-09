@@ -629,7 +629,9 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
 fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
     let mut counts = BTreeMap::<String, u64>::new();
     for operation in state.store.all("execution_operation") {
-        if operation["sessionId"].as_str() != Some(session_id) {
+        if operation["sessionId"].as_str() != Some(session_id)
+            || operation["status"].as_str() != Some("completed")
+        {
             continue;
         }
         let tool = operation["tool"].as_str().unwrap_or("unknown").to_string();
@@ -1104,21 +1106,28 @@ mod tests {
             .store
             .put(
                 "execution_operation",
-                &json!({"id":"op1","sessionId":"s1","tool":"code_search"}),
+                &json!({"id":"op1","sessionId":"s1","tool":"code_search","status":"completed"}),
             )
             .unwrap();
         state
             .store
             .put(
                 "execution_operation",
-                &json!({"id":"op2","sessionId":"s1","tool":"workspace_read_range"}),
+                &json!({"id":"op2","sessionId":"s1","tool":"workspace_read_range","status":"completed"}),
             )
             .unwrap();
         state
             .store
             .put(
                 "execution_operation",
-                &json!({"id":"op3","sessionId":"s2","tool":"code_search"}),
+                &json!({"id":"op3","sessionId":"s2","tool":"code_search","status":"completed"}),
+            )
+            .unwrap();
+        state
+            .store
+            .put(
+                "execution_operation",
+                &json!({"id":"op4","sessionId":"s1","tool":"workspace_read","status":"failed"}),
             )
             .unwrap();
         let usage = session_tool_usage(&state, "s1");
