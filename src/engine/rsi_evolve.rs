@@ -632,6 +632,35 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
     text
 }
 
+fn session_research_fingerprint(state: &AppState, session_id: &str) -> String {
+    let mut parts = Vec::new();
+    for operation in state.store.all("execution_operation") {
+        if operation["sessionId"].as_str() != Some(session_id)
+            || operation["status"].as_str() != Some("completed")
+        {
+            continue;
+        }
+        let tool = operation["tool"].as_str().unwrap_or("");
+        if !matches!(
+            tool,
+            "code_search" | "workspace_read_range" | "web_search" | "http_fetch"
+        ) {
+            continue;
+        }
+        parts.push(format!("{tool}:{}", operation["arguments"]));
+    }
+    parts.sort();
+    let refs = parts.iter().map(String::as_str).collect::<Vec<_>>();
+    crate::engine::memory::stable_id(&refs)
+}
+
+/// A research-only generation may be useful even without a patch. Allow one
+/// follow-up only when the next generation actually changes its research
+/// strategy; repeated identical exploration stops immediately.
+fn should_stop_no_progress(streak: u64, research: bool, changed: bool) -> bool {
+    streak >= 2 || (streak >= 1 && (!research || !changed))
+}
+
 fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
     let mut counts = BTreeMap::<String, u64>::new();
     for operation in state.store.all("execution_operation") {
@@ -815,6 +844,9 @@ async fn run_loop(
         let tools_used = session
             .map(|session_id| session_tool_usage(&context.state, session_id))
             .unwrap_or_default();
+        let research_fingerprint = session
+            .map(|session_id| session_research_fingerprint(&context.state, session_id))
+            .unwrap_or_default();
         let capabilities_used = tools_used
             .iter()
             .filter(|row| {
@@ -841,6 +873,7 @@ async fn run_loop(
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
+            "researchFingerprint":research_fingerprint,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         let candidate_id = verified_candidate_id(&current["result"]);
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
@@ -925,14 +958,31 @@ async fn run_loop(
             .store
             .put("rsi_generation", &generation)
             .ok_or("세대 실험 증거 저장 실패")?;
+        let previous_fingerprint = record["history"]
+            .as_array()
+            .and_then(|history| history.last())
+            .and_then(|generation| generation["researchFingerprint"].as_str())
+            .map(str::to_string);
+        let current_fingerprint = generation["researchFingerprint"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         record["history"]
             .as_array_mut()
             .ok_or("세대 목록 손상")?
             .push(generation);
-        // Preserve the attempt, then stop rather than paying for unchanged
-        // restarts. The owner can start another research task with new input.
+        // A research-only generation may still be useful. Allow one follow-up
+        // only when it changes its actual research operations; repeated
+        // identical exploration stops immediately.
         let no_edit = candidate_id.is_none()
             && current["result"]["rsi"]["diffBytes"].as_u64().unwrap_or(0) == 0;
+        let research = tools_used.iter().any(|row| {
+            matches!(
+                row["tool"].as_str(),
+                Some("code_search" | "workspace_read_range" | "web_search" | "http_fetch")
+            )
+        });
+        let changed = previous_fingerprint.as_deref() != Some(current_fingerprint.as_str());
         let streak = if no_edit {
             record["noProgressStreak"].as_u64().unwrap_or(0) + 1
         } else {
@@ -942,7 +992,7 @@ async fn run_loop(
         record["activeGenerationJobId"] = Value::Null;
         elapsed(record, started);
         save(context, record)?;
-        if streak >= 1 {
+        if no_edit && should_stop_no_progress(streak, research, changed) {
             return Ok("no_progress".into());
         }
     }
@@ -1173,6 +1223,14 @@ mod tests {
             verified_candidate_id(&json!({"rsi":{"candidateId":"rsi-test","checksPassed":false}})),
             None
         );
+    }
+
+    #[test]
+    fn research_only_generations_allow_one_changed_follow_up() {
+        assert!(!should_stop_no_progress(1, true, true));
+        assert!(should_stop_no_progress(1, true, false));
+        assert!(should_stop_no_progress(1, false, true));
+        assert!(should_stop_no_progress(2, true, true));
     }
 
     #[test]
