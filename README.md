@@ -442,3 +442,9 @@ cargo test --release
 - 컨텍스트 압축 요약과 히스토리 대체
 - 로컬 GGUF 설치/가져오기/언로드
 - OAuth state 만료/재사용 차단, 자격 증명 암호화
+
+## 라이선스
+
+Copyright 2026 hushmind3.
+
+DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. 외부 라이브러리·구성요소에는 각각의 라이선스가 적용됩니다.
