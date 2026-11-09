@@ -22,6 +22,19 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Task contracts bound intent to 4096 characters. Keep the full model prompt
+/// intact but derive a bounded, content-unique value for the contract.
+fn bounded_contract_intent(input: &str) -> String {
+    if input.chars().count() <= 4096 {
+        return input.to_string();
+    }
+    format!(
+        "{} [{}]",
+        input.chars().take(4000).collect::<String>(),
+        crate::engine::memory::stable_id(&[input])
+    )
+}
+
 pub async fn run_turn(
     state: &AppState,
     request: &TurnRequest,
@@ -177,9 +190,13 @@ async fn run_turn_with_policy(
             }
         }
     }
+    // The task contract bounds intent to 4096 characters. A self-improvement
+    // prompt carries a repository index and can be much larger; keep the full
+    // prompt for the model, but derive a bounded, unique contract intent.
+    let contract_intent = bounded_contract_intent(&request.input);
     let root_spec = crate::engine::episode::RootSpec {
         task_id: &task_id,
-        intent: &request.input,
+        intent: &contract_intent,
         family: "chat",
         source: "owner",
         source_message_id: None,
@@ -5984,5 +6001,15 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn a_long_prompt_gets_a_bounded_unique_contract_intent() {
+        let input = "가".repeat(10_000);
+        let intent = bounded_contract_intent(&input);
+        assert!(intent.chars().count() <= 4096);
+        assert!(intent.ends_with(']'));
+        assert_ne!(intent, bounded_contract_intent(&format!("{input}x")));
+        assert_eq!(bounded_contract_intent("short"), "short");
     }
 }
