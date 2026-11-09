@@ -88,7 +88,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"workspace_list"|"workspace_read"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch")
+    matches!(name,"workspace_list"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch")
 }
 
 pub async fn execute(
@@ -1241,6 +1241,15 @@ mod tests {
         assert_eq!(ambiguous["occurrences"], 2, "{ambiguous}");
         assert!(result["bytes"].as_u64().unwrap() > 0);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rsi_can_read_only_a_range_or_replace_a_block() {
+        assert!(rsi_allowed("workspace_read_range"));
+        assert!(rsi_allowed("workspace_replace"));
+        assert!(rsi_allowed("workspace_write"));
+        assert!(!rsi_allowed("workspace_read"));
+        assert!(!rsi_allowed("shell_exec"));
     }
 
     #[test]
