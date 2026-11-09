@@ -82,6 +82,17 @@ pub fn parse_text_tool_calls_known(
     let mut calls = Vec::new();
     let mut cleaned = content.to_string();
 
+    // Some models emit a DSML-style block instead of native function calls.
+    // Parse it when possible, and always remove the block so a failed call is
+    // never shown to the owner as a successful answer.
+    let (dsml_calls, dsml_cleaned) = parse_dsml_tool_calls(&cleaned, known);
+    if !dsml_calls.is_empty() {
+        return (dsml_calls, dsml_cleaned);
+    }
+    if dsml_cleaned != cleaned {
+        cleaned = dsml_cleaned;
+    }
+
     // A small model often forgets the closing tag. Parse the remainder too.
     if let Some(start) = cleaned.find("<tool_call>") {
         if !cleaned[start..].contains("</tool_call>") {
@@ -246,6 +257,96 @@ fn parse_tool_value(
     arguments
         .is_object()
         .then(|| (name, arguments.to_string()))
+}
+
+fn canonical_dsml_tool(name: &str, known: &std::collections::HashSet<String>) -> Option<String> {
+    let lower = name.trim().to_lowercase();
+    let canonical = match lower.as_str() {
+        "bash" | "shell" | "sh" | "terminal" => "shell_exec",
+        "read" | "read_file" | "cat" => "workspace_read",
+        "write" | "write_file" => "workspace_write",
+        "list" | "ls" | "list_files" => "workspace_list",
+        "search" | "grep" => "shell_exec",
+        _ => lower.as_str(),
+    };
+    if known.is_empty() || known.contains(canonical) {
+        Some(canonical.to_string())
+    } else {
+        None
+    }
+}
+
+fn dsml_block_bounds(content: &str) -> Option<(usize, usize)> {
+    let invoke = content.find("invoke name=\"")?;
+    let start = content[..invoke].rfind('<').unwrap_or(invoke);
+    let end = content
+        .rfind("calls>")
+        .map(|position| position + "calls>".len())
+        .or_else(|| {
+            content
+                .rfind("invoke>")
+                .map(|position| position + "invoke>".len())
+        })?;
+    (end > start).then_some((start, end))
+}
+
+/// Parses the DSML-style call block some models emit instead of a native
+/// function call. Unknown tools are stripped but not executed.
+fn parse_dsml_tool_calls(
+    content: &str,
+    known: &std::collections::HashSet<String>,
+) -> (Vec<(String, String)>, String) {
+    let Some((start, end)) = dsml_block_bounds(content) else {
+        return (Vec::new(), content.to_string());
+    };
+    let block = &content[start..end];
+    let mut calls = Vec::new();
+    let mut cursor = 0;
+    while let Some(relative) = block[cursor..].find("invoke name=\"") {
+        let name_start = cursor + relative + "invoke name=\"".len();
+        let Some(name_end_relative) = block[name_start..].find('"') else {
+            break;
+        };
+        let name_end = name_start + name_end_relative;
+        let name = &block[name_start..name_end];
+        let after_name = name_end + 1;
+        let invoke_end = block[after_name..]
+            .find("invoke>")
+            .map(|position| after_name + position + "invoke>".len())
+            .unwrap_or(block.len());
+        let invoke = &block[after_name..invoke_end];
+        let mut arguments = serde_json::Map::new();
+        let mut parameter_cursor = 0;
+        while let Some(relative) = invoke[parameter_cursor..].find("parameter name=\"") {
+            let parameter_start =
+                parameter_cursor + relative + "parameter name=\"".len();
+            let Some(parameter_end_relative) = invoke[parameter_start..].find('"') else {
+                break;
+            };
+            let parameter_end = parameter_start + parameter_end_relative;
+            let key = &invoke[parameter_start..parameter_end];
+            let Some(gt_relative) = invoke[parameter_end..].find('>') else {
+                break;
+            };
+            let value_start = parameter_end + gt_relative + 1;
+            let value_end = invoke[value_start..]
+                .find("parameter>")
+                .map(|position| value_start + position)
+                .unwrap_or(invoke.len());
+            arguments.insert(
+                key.to_string(),
+                json!(invoke[value_start..value_end].trim()),
+            );
+            parameter_cursor = (value_end + "parameter>".len()).min(invoke.len());
+        }
+        if let Some(canonical) = canonical_dsml_tool(name, known) {
+            calls.push((canonical, Value::Object(arguments).to_string()));
+        }
+        cursor = invoke_end;
+    }
+    let mut cleaned = content.to_string();
+    cleaned.replace_range(start..end, "");
+    (calls, cleaned.trim().to_string())
 }
 
 #[derive(Default)]

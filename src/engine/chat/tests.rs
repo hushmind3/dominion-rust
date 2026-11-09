@@ -268,6 +268,28 @@ fn ignores_normal_text() {
 }
 
 #[test]
+fn parses_dsml_bash_call_and_strips_it() {
+    let text = "<｜｜DSML｜｜ calls> <｜｜DSML｜｜ invoke name=\"bash\"> <｜｜DSML｜｜ parameter name=\"command\"> ls -la </｜｜DSML｜｜ parameter> </｜｜DSML｜｜ invoke> </｜｜DSML｜｜ calls>";
+    let known = std::collections::HashSet::from(["shell_exec".to_string()]);
+    let (calls, cleaned) = super::protocol::parse_text_tool_calls_known(text, &known);
+    assert_eq!(calls.len(), 1, "{calls:?} {cleaned:?}");
+    assert_eq!(calls[0].0, "shell_exec");
+    assert!(calls[0].1.contains("ls -la"), "{calls:?}");
+    assert!(!cleaned.contains("invoke"), "{cleaned}");
+    assert!(!cleaned.contains("bash"), "{cleaned}");
+}
+
+#[test]
+fn unknown_dsml_tool_is_stripped_not_executed() {
+    let text = "<｜｜DSML｜｜ calls> <｜｜DSML｜｜ invoke name=\"unknown_tool\"> <｜｜DSML｜｜ parameter name=\"x\"> y </｜｜DSML｜｜ parameter> </｜｜DSML｜｜ invoke> </｜｜DSML｜｜ calls>";
+    let known = std::collections::HashSet::from(["shell_exec".to_string()]);
+    let (calls, cleaned) = super::protocol::parse_text_tool_calls_known(text, &known);
+    assert!(calls.is_empty(), "{calls:?}");
+    assert!(!cleaned.contains("invoke"), "{cleaned}");
+    assert!(!cleaned.contains("unknown_tool"), "{cleaned}");
+}
+
+#[test]
 fn concurrent_tool_evidence_statistics_do_not_lose_worker_updates() {
     let state = temp_state();
     std::thread::scope(|scope| {

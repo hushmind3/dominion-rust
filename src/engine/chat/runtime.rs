@@ -1067,10 +1067,14 @@ async fn run_turn_body(
             provider = selected_provider;
         }
 
+        let has_dsml_call = completion.content.contains("invoke name=\"")
+            && completion.content.contains("parameter name=\"");
         if (!request.tools_enabled || !request.tools_execution_enabled)
-            && !completion.tool_calls.is_empty()
+            && (!completion.tool_calls.is_empty() || has_dsml_call)
         {
-            return Err("도구가 비활성인 대화에서 모델이 도구 실행을 요청했습니다.".into());
+            return Err(
+                "도구가 비활성인 대화에서 모델이 도구 실행을 요청했습니다.".into(),
+            );
         }
         metadata["continuity"] = completion.continuity.clone().unwrap_or(Value::Null);
         continuation_projection = completion.projection.take();
@@ -1141,12 +1145,24 @@ async fn run_turn_body(
             completion.tool_calls.clear();
         }
 
+        if has_dsml_call && round_tools.is_empty() {
+            return Err(
+                "모델이 이번 턴에 제공되지 않은 도구를 호출하려 했습니다.".into(),
+            );
+        }
         if completion.tool_calls.is_empty()
             && request.tools_enabled
-            && provider.tool_mode != "native"
+            && (provider.tool_mode != "native" || has_dsml_call)
             && !force_final
         {
-            let (parsed, cleaned) = parse_text_tool_calls(&completion.content);
+            let known = round_tools
+                .iter()
+                .map(tool_name)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect::<std::collections::HashSet<_>>();
+            let (parsed, cleaned) =
+                super::protocol::parse_text_tool_calls_known(&completion.content, &known);
             if !parsed.is_empty() {
                 completion.content = cleaned;
                 completion.tool_calls = parsed
@@ -1157,6 +1173,13 @@ async fn run_turn_body(
                         arguments,
                     })
                     .collect();
+            } else if has_dsml_call {
+                // A malformed/unknown DSML call must not be shown as a final
+                // answer. Remove the protocol block and fail the turn.
+                completion.content = cleaned;
+                return Err(
+                    "모델이 지원되지 않는 도구 호출 형식을 출력했습니다.".into(),
+                );
             }
         }
 
@@ -2494,6 +2517,7 @@ fn room_tool_request(input: &str) -> bool {
         "열어줘", "열어봐", "보여줘", "보여 줘", "실행", "명령", "터미널",
         "빌드", "테스트", "설치", "검색", "웹",
         "http", "url", "api", "코드", "버그", "도구", "계속", "이어", "마저",
+        "결과", "가져와", "확인해", "진행해",
         "스킬", "메모리", "브라우저", "깃허브", "github", "shell", "file", "read",
         "write", "run", "search", "fetch", "install", "build", "test", "tool",
         "browser", "memory", "delegate", "task",

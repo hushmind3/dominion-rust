@@ -1097,6 +1097,16 @@ fn mention_text(input: &str) -> String {
 fn mention_boundary(ch: Option<char>) -> bool {
     ch.is_none_or(|ch| !ch.is_alphanumeric() && !matches!(ch, '_' | '-' | '.'))
 }
+fn bare_mention_follows(after: &str) -> bool {
+    if mention_boundary(after.chars().next()) {
+        return true;
+    }
+    const PARTICLES: &[&str] = &[
+        "야", "아", "님", "씨", "에게", "한테", "께", "가", "이", "는", "은", "도", "랑",
+        "와", "과", "의",
+    ];
+    PARTICLES.iter().any(|particle| after.starts_with(particle))
+}
 /// Hermes-style silence: a member may decline its turn instead of speaking.
 fn is_silence(content: &str) -> bool {
     let text = content.trim();
@@ -1135,6 +1145,24 @@ fn mentioned_agents(
                     && mention_boundary(text[position + marker.len()..].chars().next())
                 {
                     matches.push((position, marker.len(), order, id.clone(), alias.clone()));
+                }
+            }
+            // Owners often address a participant naturally ("샤르티아야",
+            // "샤르티아에게") instead of typing an @mention. Treat a bare name
+            // followed by a vocative/particle or a boundary as a direct target.
+            if alias.chars().count() < 2 {
+                continue;
+            }
+            for (position, _) in text.match_indices(&alias) {
+                if text[..position].ends_with('@') {
+                    continue;
+                }
+                if !mention_boundary(text[..position].chars().next_back()) {
+                    continue;
+                }
+                let after = &text[position + alias.len()..];
+                if bare_mention_follows(after) {
+                    matches.push((position, alias.len(), order, id.clone(), alias.clone()));
                 }
             }
         }
@@ -1284,6 +1312,30 @@ mod tests {
     }
     fn room(state: &AppState) -> Value {
         state.store.get("room", "r").unwrap()
+    }
+
+    #[test]
+    fn natural_language_vocative_targets_only_the_named_agent() {
+        let (state, dir) = test_state();
+        for (id, name) in [("s", "샤르티아"), ("a", "아인즈"), ("b", "알베도")] {
+            state
+                .store
+                .put("agent", &json!({"id":id,"name":name}));
+        }
+        let roster = vec!["s".to_string(), "a".to_string(), "b".to_string()];
+        assert_eq!(
+            mentioned_agents(&state, &roster, "샤르티아야 니가 결과를 가져와봐라").unwrap(),
+            vec!["s".to_string()]
+        );
+        assert_eq!(
+            mentioned_agents(&state, &roster, "샤르티아에게 시켜").unwrap(),
+            vec!["s".to_string()]
+        );
+        assert_eq!(
+            mentioned_agents(&state, &roster, "아인즈와 알베도가 확인해").unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
