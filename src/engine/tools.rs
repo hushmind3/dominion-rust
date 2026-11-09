@@ -90,7 +90,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"workspace_list"|"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch")
+    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch")
 }
 
 pub async fn execute(
@@ -1329,6 +1329,7 @@ mod tests {
     #[test]
     fn rsi_can_read_only_a_range_or_replace_a_block() {
         assert!(rsi_allowed("code_search"));
+        assert!(!rsi_allowed("workspace_list"));
         assert!(rsi_allowed("workspace_read_range"));
         assert!(rsi_allowed("workspace_replace"));
         assert!(rsi_allowed("workspace_write"));

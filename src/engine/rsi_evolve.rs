@@ -597,7 +597,7 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
         experience::context_block_with_manifest(state, &scope, objective);
     let mut text = String::new();
     text.push_str("\n\n## 이번 세대에서 계승된 실행 능력\n");
-    text.push_str("- `code_search(query)`: 저장된 코드 인덱스에서 파일·심볼·줄 번호를 찾습니다. 파일을 읽기 전에 사용하세요.\n");
+    text.push_str("- `code_search(query)`: 저장된 코드 인덱스에서 파일·심볼·줄 번호를 찾습니다. 이번 세대의 첫 탐색은 code_search로 시작하세요. workspace_list는 RSI에서 사용할 수 없습니다.\n");
     text.push_str("- `workspace_read_range(path, startLine, endLine)`: 필요한 줄만 읽습니다.\n");
     text.push_str("- `workspace_replace(path, oldText, newText)`: 한 구간만 수정합니다.\n");
     text.push_str("- 위 능력은 이전 세대에서 계승되었습니다. 적용 가능하면 실제로 호출하고, 적용할 수 없으면 이유를 쓰세요.\n");
