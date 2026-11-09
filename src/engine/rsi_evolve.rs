@@ -199,10 +199,26 @@ pub fn choose_domain(state: &AppState, history: &[Value], objective: &str) -> St
     select_domain(&algorithm, history, objective)
 }
 
+fn search_strategy(algorithm: &Value, mode: &str) -> Value {
+    json!({
+        "id": algorithm["id"],
+        "revision": algorithm["revision"],
+        "name": algorithm["name"],
+        "implementation": algorithm["implementation"],
+        "mode": mode,
+    })
+}
+
 /// Replays recorded generations with two search algorithms. A hit means the
 /// algorithm would have chosen the domain that later produced an accepted
 /// change in that same campaign. Sparse history is not evidence, so promotion
 /// stays disabled until at least two accepted generations exist.
+/// Replays recorded generations with two search algorithms and reports only
+/// how often each would have chosen the domain that later produced an accepted
+/// change. This is a *past successful-domain match rate*, not evidence that
+/// the candidate improves real development outcomes. The score never activates
+/// an algorithm and never promotes one; callers must use it only to decide
+/// whether a candidate is worth a bounded real trial in a scheduled generation.
 pub fn evaluate_search_algorithm(
     candidate: &Value,
     active: &Value,
@@ -229,30 +245,28 @@ pub fn evaluate_search_algorithm(
             active_hits += 1;
         }
     }
-    let accuracy = |hits: u64| {
+    let rate = |hits: u64| {
         if opportunities == 0 {
             0.0
         } else {
             hits as f64 / opportunities as f64
         }
     };
-    let candidate_accuracy = accuracy(candidate_hits);
-    let active_accuracy = accuracy(active_hits);
-    let evaluable = opportunities >= 2;
     json!({
         "kind": "selfimprove.search",
+        "metric": "past_successful_domain_match_rate",
         "candidateId": candidate["id"],
         "candidateRevision": candidate["revision"],
         "activeId": active["id"],
         "activeRevision": active["revision"],
         "decisions": history.len().saturating_sub(1),
-        "opportunities": opportunities,
-        "candidateHits": candidate_hits,
-        "activeHits": active_hits,
-        "candidateAccuracy": candidate_accuracy,
-        "activeAccuracy": active_accuracy,
-        "evaluable": evaluable,
-        "promote": evaluable && candidate_accuracy > active_accuracy + 1e-9,
+        "samples": opportunities,
+        "candidateMatches": candidate_hits,
+        "activeMatches": active_hits,
+        "candidateMatchRate": rate(candidate_hits),
+        "activeMatchRate": rate(active_hits),
+        "evaluable": opportunities >= 2,
+        "interpretation": "과거에 채택된 세대의 분야를 얼마나 맞혔는지일 뿐, 실제 개발 성과나 능력 향상의 증거가 아닙니다.",
         "source": "replay_of_recorded_rsi_generations",
         "generatedAt": chrono::Utc::now().to_rfc3339(),
     })
@@ -678,7 +692,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let mut record = json!({"id":context.job_id,"status":"running","phase":"building_generator",
         "sourceDir":source,"labDir":lab,"baseCommit":base,"headCommit":head,"sourceSnapshot":snapshot,"sourceFingerprint":fingerprint,
         "nativeApproved":true,"limits":limits,"attempts":0,"acceptedGenerations":0,"tokens":0,
-        "history":[],"algorithmEvolution":[],"activeGenerationJobId":null,"createdAt":chrono::Utc::now().to_rfc3339(),
+        "history":[],"activeGenerationJobId":null,"createdAt":chrono::Utc::now().to_rfc3339(),
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
         "productionChanged":false,"accelerationProven":false});
     save(context, &record)?;
@@ -759,7 +773,7 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
     text.push_str("- `code_search(query)`: 저장된 코드 인덱스에서 파일·심볼·줄 번호를 찾습니다. workspace_list는 RSI에서 사용할 수 없습니다.\n");
     text.push_str("- `workspace_read_range(path, startLine, endLine)`: 필요한 줄만 읽습니다.\n");
     text.push_str("- `workspace_replace(path, oldText, newText)`: 한 구간만 수정합니다.\n");
-    text.push_str("- `algorithm_propose(name, expression, description, evidence)`: 자기개선 탐색 분야를 고르는 새 계산식을 제안합니다. 엔진이 과거 세대 기록으로 평가해 엄격히 더 나은 경우에만 다음 세대에 적용합니다.\n");
+    text.push_str("- `algorithm_propose(name, expression, description, evidence)`: 자기개선 탐색 분야를 고르는 새 계산식을 제안합니다. 제안은 다음 예정된 세대에서 제한적으로 시험 사용되며, 과거 성공 분야 일치율은 참고 기록일 뿐 채택 근거가 아닙니다.\n");
     text.push_str("- 도구 사용 횟수는 새 능력 획득이나 성능 향상의 증거가 아닙니다. 근거가 없으면 변경하지 말고 종료하세요.\n");
     if let Some(algorithm) = crate::engine::algorithms::active(state, "selfimprove.search") {
         text.push_str("\n### 현재 자기개선 탐색 알고리즘\n");
@@ -771,7 +785,7 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
             algorithm["parameters"],
             algorithm["revision"].as_str().unwrap_or(""),
         ));
-        text.push_str("이 알고리즘이 다음 세대의 탐색 분야를 고릅니다. 더 나은 계산식이 있다고 판단되면 `algorithm_propose`로 제안하세요. 단순히 점수를 올리려는 식이나 근거 없는 식은 채택되지 않습니다.\n");
+        text.push_str("이 알고리즘이 다음 세대의 탐색 분야를 고릅니다. 더 나은 계산식이 있다고 판단되면 `algorithm_propose`로 제안하세요. 제안은 다음 예정된 세대에서 시험 사용되고, 실제 세대 결과가 비교 가능할 때만 유지·채택이 결정됩니다. 과거 성공 분야 일치율만으로는 채택되지 않습니다.\n");
     }
     if let Some(block) = prior_experience.filter(|block| !block.trim().is_empty()) {
         text.push_str("\n### 기존 RSI 경험·지식\n");
@@ -897,49 +911,293 @@ fn proposed_algorithms(state: &AppState, session: &str) -> Vec<Value> {
 /// Persist an evidence-based promotion. The replay corpus is the campaign's
 /// own recorded generations, so a promotion can never be justified by a
 /// candidate evaluating itself on the generation that produced it.
-fn promote_search_algorithm(
+/// Stores a proposed search algorithm as a trial candidate. The replay match
+/// rate is recorded for context only. It never activates the candidate and
+/// never replaces the globally active strategy.
+fn queue_search_trial(
     state: &AppState,
     candidate: &Value,
     active: &Value,
     prior_history: &[Value],
     objective: &str,
+    campaign_id: &str,
+    attempt: u64,
 ) -> Value {
-    let mut report =
-        evaluate_search_algorithm(candidate, active, prior_history, objective);
-    report["winner"] = candidate["id"].clone();
-    report["recommendation"] = json!(if report["promote"] == true {
-        "promote"
-    } else {
-        "keep"
+    let replay = evaluate_search_algorithm(candidate, active, prior_history, objective);
+    let existing_status = candidate["rsiTrial"]["status"].as_str().unwrap_or("");
+    if matches!(existing_status, "adopted" | "trial_rejected") {
+        return json!({
+            "status": existing_status,
+            "candidateId": candidate["id"],
+            "candidateRevision": candidate["revision"],
+            "replay": replay,
+            "alreadyResolved": true,
+        });
+    }
+    let mut record = candidate.clone();
+    let mut trial = record["rsiTrial"].clone();
+    if !trial.is_object() {
+        trial = json!({});
+    }
+    trial["status"] = json!("pending_trial");
+    trial["campaignId"] = json!(campaign_id);
+    trial["objectiveHash"] = json!(crate::engine::memory::stable_id(&[objective]));
+    trial["proposedInGeneration"] = json!(attempt);
+    trial["replay"] = replay.clone();
+    trial["trials"] = trial["trials"].clone();
+    if !trial["trials"].is_array() {
+        trial["trials"] = json!([]);
+    }
+    trial["createdAt"] = json!(trial["createdAt"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()));
+    record["rsiTrial"] = trial;
+    let saved = state.store.put("algorithm", &record);
+    if let Some(saved) = &saved {
+        state.bus.record("algorithm", saved);
+    }
+    state.store.audit(
+        "rsi.search_trial_queued",
+        json!({
+            "candidateId": candidate["id"],
+            "candidateRevision": candidate["revision"],
+            "campaignId": campaign_id,
+            "replayMatchRate": replay["candidateMatchRate"],
+            "samples": replay["samples"],
+        }),
+    );
+    json!({
+        "status": "pending_trial",
+        "candidateId": candidate["id"],
+        "candidateRevision": candidate["revision"],
+        "replay": replay,
+    })
+}
+
+/// Returns a candidate that is waiting for a real trial under the same
+/// objective. It is used only inside an already scheduled generation; the
+/// caller never creates another campaign or generation for it.
+fn pending_trial_candidate(state: &AppState, objective: &str) -> Option<Value> {
+    let objective_hash = crate::engine::memory::stable_id(&[objective]);
+    let mut candidates = state
+        .store
+        .all("algorithm")
+        .into_iter()
+        .filter(|algorithm| {
+            algorithm["kind"] == "selfimprove.search"
+                && algorithm["source"] == "rsi-generated"
+                && algorithm["rsiTrial"]["objectiveHash"] == objective_hash
+                && matches!(
+                    algorithm["rsiTrial"]["status"].as_str(),
+                    Some("pending_trial" | "pending_second_trial")
+                )
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|algorithm| {
+        algorithm["rsiTrial"]["createdAt"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
     });
-    if report["promote"] == true {
-        match crate::engine::algorithms::activate(
-            state,
-            candidate["id"].as_str().unwrap_or_default(),
-        ) {
+    candidates.into_iter().next()
+}
+
+/// Finds a prior generation that used the globally active strategy under the
+/// same generator commit and target domain. Different domains, different
+/// source revisions or a missing evaluation are not comparable.
+fn comparable_trial_baseline(prior_history: &[Value], generation: &Value) -> Option<Value> {
+    prior_history
+        .iter()
+        .rev()
+        .find(|row| {
+            row["domainSelection"].as_str() == Some("algorithm_active")
+                && row["generatorCommit"] == generation["generatorCommit"]
+                && row["domain"] == generation["domain"]
+                && row["accepted"].is_boolean()
+                && row["evaluation"].is_object()
+        })
+        .cloned()
+}
+
+fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
+    let trial_accepted = generation["accepted"] == true;
+    let baseline_accepted = baseline["accepted"] == true;
+    let trial_regressed = generation["evaluation"]["verdict"] == "regressed";
+    let trial_error = generation["error"].as_str().is_some_and(|error| !error.is_empty());
+    let tokens = generation["tokens"].as_u64().unwrap_or(0) as f64;
+    let baseline_tokens = baseline["tokens"].as_u64().unwrap_or(0) as f64;
+    let elapsed = generation["elapsedMs"].as_u64().unwrap_or(0) as f64;
+    let baseline_elapsed = baseline["elapsedMs"].as_u64().unwrap_or(0) as f64;
+    let token_ratio = if baseline_tokens > 0.0 {
+        tokens / baseline_tokens
+    } else {
+        1.0
+    };
+    let time_ratio = if baseline_elapsed > 0.0 {
+        elapsed / baseline_elapsed
+    } else {
+        1.0
+    };
+    let verdict = if trial_error || trial_regressed {
+        "rejected"
+    } else if trial_accepted && !baseline_accepted {
+        "supported"
+    } else if !trial_accepted && baseline_accepted {
+        "rejected"
+    } else if tokens > 0.0
+        && baseline_tokens > 0.0
+        && elapsed > 0.0
+        && baseline_elapsed > 0.0
+        && token_ratio <= 0.9
+        && time_ratio <= 1.1
+    {
+        "supported"
+    } else if token_ratio >= 1.25 && time_ratio >= 1.25 {
+        "rejected"
+    } else {
+        "inconclusive"
+    };
+    (
+        verdict.to_string(),
+        json!({
+            "baselineJobId": baseline["jobId"],
+            "baselineAttempt": baseline["attempt"],
+            "baselineAccepted": baseline_accepted,
+            "trialAccepted": trial_accepted,
+            "baselineVerdict": baseline["evaluation"]["verdict"],
+            "trialVerdict": generation["evaluation"]["verdict"],
+            "baselineTokens": baseline_tokens,
+            "trialTokens": tokens,
+            "tokenRatio": token_ratio,
+            "baselineElapsedMs": baseline_elapsed,
+            "trialElapsedMs": elapsed,
+            "timeRatio": time_ratio,
+            "trialError": generation["error"],
+            "reason": if trial_error {
+                "trial generation failed"
+            } else if trial_regressed {
+                "trial generation regressed"
+            } else if trial_accepted && !baseline_accepted {
+                "trial produced an accepted change where the baseline did not"
+            } else if !trial_accepted && baseline_accepted {
+                "baseline produced an accepted change where the trial did not"
+            } else if token_ratio <= 0.9 && time_ratio <= 1.1 {
+                "same acceptance with lower measured token cost"
+            } else if token_ratio >= 1.25 && time_ratio >= 1.25 {
+                "trial used more tokens and time with no better result"
+            } else {
+                "conditions or measurements do not separate the two strategies"
+            },
+        }),
+    )
+}
+
+/// Appends the real trial outcome to the candidate and, only after two
+/// independent supported trials with no rejected or inconclusive trial,
+/// activates it. A single trial, replay match, tool call or registration never
+/// counts as adoption.
+fn record_trial_outcome(
+    state: &AppState,
+    candidate_id: &str,
+    generation: &Value,
+    prior_history: &[Value],
+) -> Value {
+    let Some(mut candidate) = state.store.get("algorithm", candidate_id) else {
+        return json!({"status":"candidate_missing"});
+    };
+    if generation["domainSelection"].as_str() != Some("algorithm_trial") {
+        return json!({"status":"not_used","domainSelection":generation["domainSelection"],
+            "reason":"이 세대는 후보 전략 계산식을 실행하지 않았습니다."});
+    }
+    let Some(baseline) = comparable_trial_baseline(prior_history, generation) else {
+        let mut trial = candidate["rsiTrial"].clone();
+        trial["status"] = json!("trial_inconclusive");
+        trial["lastReason"] = json!("comparable_baseline_missing");
+        if !trial["trials"].is_array() {
+            trial["trials"] = json!([]);
+        }
+        trial["trials"].as_array_mut().unwrap().push(json!({
+            "jobId": generation["jobId"], "attempt": generation["attempt"],
+            "domain": generation["domain"], "verdict": "inconclusive",
+            "reason": "same generator commit, domain and active-strategy baseline이 없습니다.",
+            "at": chrono::Utc::now().to_rfc3339(),
+        }));
+        candidate["rsiTrial"] = trial;
+        state.store.put("algorithm", &candidate);
+        return json!({"status":"inconclusive","reason":"comparable_baseline_missing"});
+    };
+    let (verdict, comparison) = trial_verdict(generation, &baseline);
+    let mut trial = candidate["rsiTrial"].clone();
+    if !trial["trials"].is_array() {
+        trial["trials"] = json!([]);
+    }
+    let already_trialed = trial["trials"]
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| row["jobId"] == generation["jobId"]));
+    if !already_trialed {
+        trial["trials"].as_array_mut().unwrap().push(json!({
+            "jobId": generation["jobId"], "attempt": generation["attempt"],
+            "domain": generation["domain"], "verdict": verdict,
+            "comparison": comparison, "at": chrono::Utc::now().to_rfc3339(),
+        }));
+    }
+    let trials = trial["trials"].as_array().cloned().unwrap_or_default();
+    let supported = trials.iter().filter(|row| row["verdict"] == "supported").count();
+    let rejected = trials.iter().filter(|row| row["verdict"] == "rejected").count();
+    let inconclusive = trials.iter().filter(|row| row["verdict"] == "inconclusive").count();
+    let status = match verdict.as_str() {
+        "rejected" => "trial_rejected",
+        "supported" if supported >= 2 && rejected == 0 && inconclusive == 0 => "adopted",
+        "supported" => "pending_second_trial",
+        _ => "trial_inconclusive",
+    };
+    let mut status = status.to_string();
+    trial["status"] = json!(status);
+    trial["lastVerdict"] = json!(verdict);
+    trial["lastComparison"] = comparison.clone();
+    if status == "adopted" {
+        match crate::engine::algorithms::activate(state, candidate_id) {
             Ok(activated) => {
-                report["activatedId"] = activated["id"].clone();
-                report["activatedAt"] = activated["activatedAt"].clone();
-                state.store.put("algorithm_eval", &report);
-                state.bus.record("algorithm_eval", &report);
-                state.store.audit(
-                    "rsi.algorithm_promoted",
-                    json!({
-                        "candidateId": candidate["id"],
-                        "candidateRevision": candidate["revision"],
-                        "replacedId": active["id"],
-                        "opportunities": report["opportunities"],
-                        "candidateAccuracy": report["candidateAccuracy"],
-                        "activeAccuracy": report["activeAccuracy"],
-                    }),
-                );
+                trial["activatedAt"] = activated["activatedAt"].clone();
+                trial["activatedRevision"] = activated["revision"].clone();
+                // Reuse the activated record so the later save does not write
+                // the stale pre-activation status back over it.
+                candidate = activated;
             }
             Err(error) => {
-                report["promotionError"] = json!(error);
+                status = "trial_supported".to_string();
+                trial["status"] = json!(status);
+                trial["activationError"] = json!(error);
             }
         }
     }
-    report
+    candidate["rsiTrial"] = trial;
+    let saved = state.store.put("algorithm", &candidate);
+    if let Some(saved) = &saved {
+        state.bus.record("algorithm", saved);
+    }
+    state.store.audit(
+        "rsi.search_trial_result",
+        json!({
+            "candidateId": candidate_id,
+            "jobId": generation["jobId"],
+            "verdict": verdict,
+            "status": status,
+            "supportedTrials": supported,
+            "rejectedTrials": rejected,
+            "inconclusiveTrials": inconclusive,
+        }),
+    );
+    json!({
+        "status": status,
+        "verdict": verdict,
+        "candidateId": candidate_id,
+        "comparison": comparison,
+        "supportedTrials": supported,
+        "rejectedTrials": rejected,
+        "inconclusiveTrials": inconclusive,
+    })
 }
 
 /// Execute the learned inspection strategy before asking the model to discover
@@ -1128,6 +1386,21 @@ async fn run_loop(
         child_input["rsiBaseCommit"] = json!(head);
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
+        let objective = input["rsiObjective"].as_str().unwrap_or("");
+        let trial_algorithm = record["nextTrialAlgorithmId"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                pending_trial_candidate(&context.state, objective)
+                    .and_then(|algorithm| algorithm["id"].as_str().map(str::to_string))
+            });
+        if let Some(id) = trial_algorithm {
+            child_input["rsiTrialAlgorithmId"] = json!(id);
+            record["nextTrialAlgorithmId"] = json!(id);
+        } else {
+            record["nextTrialAlgorithmId"] = Value::Null;
+        }
         child_input["rsiIndexId"]=crate::engine::code_index::refresh(&context.state,&lab)?["id"].clone();
         let inherited_implementations=context.state.store.all("experience").into_iter()
             .filter(|item|item["status"]=="active" && item["partitionKey"]==research_scope(&child_input).partition_key
@@ -1224,7 +1497,7 @@ async fn run_loop(
         let mut generation = json!({"id":format!("{}-{attempt}",context.job_id),"campaignId":context.job_id,
             "attempt":attempt,"generatorCommit":head,"jobId":child_id,"tokens":tokens,
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
-            "searchAlgorithm":current["input"]["rsiSearchAlgorithm"],
+            "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
@@ -1328,36 +1601,50 @@ async fn run_loop(
         let prior_history = record["history"].as_array().cloned().unwrap_or_default();
         if let Some(session)=session {
             let proposals = proposed_algorithms(&context.state, session);
-            if !proposals.is_empty() {
-                let active = crate::engine::algorithms::active(&context.state, "selfimprove.search")
-                    .unwrap_or_else(|| json!({"id":Value::Null,"revision":Value::Null,"implementation":"failure-clusters","parameters":{}}));
-                let mut evaluations = Vec::new();
-                for candidate in proposals
-                    .iter()
-                    .filter(|candidate| candidate["kind"] == "selfimprove.search")
-                {
-                    let report = promote_search_algorithm(
-                        &context.state,
-                        candidate,
-                        &active,
-                        &prior_history,
-                        input["rsiObjective"].as_str().unwrap_or(""),
-                    );
-                    let activated = report["activatedId"].is_string();
-                    if activated {
-                        generation["algorithmPromotion"] = report.clone();
-                        if let Some(rows) = record["algorithmEvolution"].as_array_mut() {
-                            rows.push(json!({"attempt":attempt,"candidateId":candidate["id"],
-                                "revision":candidate["revision"],"replacedId":active["id"],
-                                "evaluation":report.clone()}));
-                        }
-                    }
-                    evaluations.push(report);
-                    if activated {
-                        break;
+            let active = crate::engine::algorithms::active(&context.state, "selfimprove.search")
+                .unwrap_or_else(|| json!({"id":Value::Null,"revision":Value::Null,"implementation":"failure-clusters","parameters":{}}));
+            let mut queued = Vec::new();
+            for candidate in proposals
+                .iter()
+                .filter(|candidate| candidate["kind"] == "selfimprove.search")
+            {
+                let report = queue_search_trial(
+                    &context.state,
+                    candidate,
+                    &active,
+                    &prior_history,
+                    input["rsiObjective"].as_str().unwrap_or(""),
+                    &context.job_id,
+                    attempt,
+                );
+                if report["status"] == "pending_trial" {
+                    if let Some(id) = report["candidateId"].as_str() {
+                        queued.push(id.to_string());
                     }
                 }
-                generation["algorithmCandidates"] = json!(evaluations);
+            }
+            if !queued.is_empty() {
+                generation["searchTrialsQueued"] = json!(queued);
+            }
+            record["nextTrialAlgorithmId"] = Value::Null;
+            if generation["domainSelection"].as_str() == Some("algorithm_trial") {
+                if let Some(id) = generation["searchStrategy"]["id"].as_str() {
+                    let outcome =
+                        record_trial_outcome(&context.state, id, &generation, &prior_history);
+                    // A research continuation did not run the formula. Keep the
+                    // candidate pending for the next already scheduled generation.
+                    if outcome["status"] == "not_used" {
+                        record["nextTrialAlgorithmId"] = json!(id);
+                    } else if outcome["status"] == "pending_second_trial" {
+                        record["nextTrialAlgorithmId"] = json!(id);
+                    }
+                    generation["trialOutcome"] = outcome;
+                }
+            }
+            if record["nextTrialAlgorithmId"].is_null() {
+                if let Some(id) = queued.into_iter().next() {
+                    record["nextTrialAlgorithmId"] = json!(id);
+                }
             }
         }
         record["history"]
@@ -1447,6 +1734,48 @@ pub(crate) async fn adopt(
     git(context, lab, &["rev-parse", "HEAD"]).await
 }
 
+fn select_generation_strategy(
+    state: &AppState,
+    history: &[Value],
+    objective: &str,
+    continuation: Option<String>,
+    trial_id: Option<String>,
+) -> (String, &'static str, Value) {
+    let active = crate::engine::algorithms::active(state, "selfimprove.search");
+    if let Some(domain) = continuation {
+        return (domain, "research_continuation", Value::Null);
+    }
+    if let Some(id) = trial_id {
+        if let Some(algorithm) = state.store.get("algorithm", &id).filter(|algorithm| {
+            algorithm["kind"] == "selfimprove.search"
+                && algorithm["source"] == "rsi-generated"
+                && algorithm["rsiTrial"]["status"] != "trial_rejected"
+        }) {
+            return (
+                select_domain(&algorithm, history, objective),
+                "algorithm_trial",
+                search_strategy(&algorithm, "trial"),
+            );
+        }
+        let algorithm = active
+            .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
+        let mut selected = search_strategy(&algorithm, "active");
+        selected["trialFallback"] = json!("candidate_missing_or_rejected");
+        return (
+            select_domain(&algorithm, history, objective),
+            "algorithm_active",
+            selected,
+        );
+    }
+    let algorithm =
+        active.unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
+    (
+        select_domain(&algorithm, history, objective),
+        "algorithm_active",
+        search_strategy(&algorithm, "active"),
+    )
+}
+
 /// Executes only one durable generation, without starting a server, scheduler,
 /// migrations or recovering another process's jobs in the shared ledger.
 pub async fn worker(job_id: &str) -> Result<(), String> {
@@ -1479,11 +1808,21 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .into_iter()
         .filter(|g| g["campaignId"] == campaign)
         .collect::<Vec<_>>();
+    let objective = job["input"]["rsiObjective"].as_str().unwrap_or("");
     let latest=history.iter().max_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
-    let domain = latest.filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)
-        .and_then(|g|g["domain"].as_str()).map(str::to_string).unwrap_or_else(||choose_domain(&state,&history,job["input"]["rsiObjective"].as_str().unwrap_or("")));
-    let search_algorithm = crate::engine::algorithms::active(&state, "selfimprove.search");
-    job["rsiSearchAlgorithm"] = search_algorithm.clone().unwrap_or(Value::Null);
+    let continuation = latest.filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)
+        .and_then(|g|g["domain"].as_str()).map(str::to_string);
+    let trial_id = job["input"]["rsiTrialAlgorithmId"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let (domain, domain_selection, strategy) =
+        select_generation_strategy(&state, &history, objective, continuation, trial_id);
+    job["rsiDomain"] = json!(domain);
+    job["rsiDomainSelection"] = json!(domain_selection);
+    job["rsiSearchStrategy"] = strategy.clone();
+    job["input"]["rsiDomainSelection"] = json!(domain_selection);
+    job["input"]["rsiSearchStrategy"] = strategy;
     let feedback = history
         .iter()
         .take(8)
@@ -2188,6 +2527,42 @@ mod tests {
         })
     }
 
+    fn active_generation(
+        job: &str,
+        attempt: u64,
+        domain: &str,
+        accepted: bool,
+        commit: &str,
+        tokens: u64,
+        elapsed: u64,
+    ) -> Value {
+        json!({
+            "jobId": job, "attempt": attempt, "domain": domain, "accepted": accepted,
+            "generatorCommit": commit, "domainSelection": "algorithm_active",
+            "tokens": tokens, "elapsedMs": elapsed,
+            "evaluation": {"verdict": if accepted { "improved" } else { "inconclusive" }}
+        })
+    }
+
+    fn trial_generation(
+        job: &str,
+        attempt: u64,
+        domain: &str,
+        accepted: bool,
+        commit: &str,
+        tokens: u64,
+        elapsed: u64,
+        candidate: &str,
+    ) -> Value {
+        json!({
+            "jobId": job, "attempt": attempt, "domain": domain, "accepted": accepted,
+            "generatorCommit": commit, "domainSelection": "algorithm_trial",
+            "searchStrategy": {"id": candidate, "mode": "trial"},
+            "tokens": tokens, "elapsedMs": elapsed,
+            "evaluation": {"verdict": if accepted { "improved" } else { "inconclusive" }}
+        })
+    }
+
     fn search_expression(name: &str, expression: &str) -> Value {
         json!({
             "id": format!("algorithm-{name}"),
@@ -2209,7 +2584,7 @@ mod tests {
     }
 
     #[test]
-    fn search_algorithm_promotion_requires_two_observed_accepted_generations() {
+    fn replay_reports_match_rate_only_and_never_contains_promotion() {
         let baseline = json!({"id":"baseline","revision":"b","implementation":"failure-clusters","parameters":{}});
         let candidate = search_expression("objective-first", "objectiveMatch * 10 + novelty");
         let history = vec![
@@ -2218,25 +2593,65 @@ mod tests {
             generation("context", true),
         ];
         let report = evaluate_search_algorithm(&candidate, &baseline, &history, "context");
-        assert_eq!(report["opportunities"], 2);
-        assert_eq!(report["candidateHits"], 2);
-        assert!(report["candidateAccuracy"].as_f64().unwrap() > report["activeAccuracy"].as_f64().unwrap());
-        assert_eq!(report["promote"], true);
+        assert_eq!(report["metric"], "past_successful_domain_match_rate");
+        assert_eq!(report["samples"], 2);
+        assert_eq!(report["candidateMatches"], 2);
+        assert!(report["candidateMatchRate"].as_f64().unwrap()
+            > report["activeMatchRate"].as_f64().unwrap());
+        assert!(report.get("promote").is_none());
+        assert!(report.get("recommendation").is_none());
 
         let sparse = &history[..2];
         let report = evaluate_search_algorithm(&candidate, &baseline, sparse, "context");
-        assert_eq!(report["opportunities"], 1);
+        assert_eq!(report["samples"], 1);
         assert_eq!(report["evaluable"], false);
-        assert_eq!(report["promote"], false);
     }
 
     #[test]
-    fn promoted_search_algorithm_drives_the_next_generation() {
+    fn replay_match_queues_a_trial_without_activating_it() {
         let (state, root) = state();
-        assert_eq!(
-            crate::engine::algorithms::active(&state, "selfimprove.search").unwrap()["implementation"],
-            "failure-clusters"
+        let active_before = crate::engine::algorithms::active(&state, "selfimprove.search").unwrap();
+        let candidate = crate::engine::algorithms::register(
+            &state,
+            &json!({
+                "kind":"selfimprove.search",
+                "name":"objective-first",
+                "implementation":"expression",
+                "parameters":{"expression":"objectiveMatch * 10 + novelty"},
+                "source":"rsi-generated"
+            }),
+        )
+        .unwrap();
+        let history = vec![
+            generation("context", true),
+            generation("context", true),
+            generation("context", true),
+        ];
+        let queued = queue_search_trial(
+            &state,
+            &candidate,
+            &active_before,
+            &history,
+            "context",
+            "campaign",
+            1,
         );
+        assert_eq!(queued["status"], "pending_trial");
+        assert_eq!(queued["replay"]["samples"], 2);
+        let saved = state.store.get("algorithm", candidate["id"].as_str().unwrap()).unwrap();
+        assert_eq!(saved["rsiTrial"]["status"], "pending_trial");
+        assert_eq!(
+            crate::engine::algorithms::active(&state, "selfimprove.search").unwrap()["id"],
+            active_before["id"],
+            "replay match must not replace the global strategy"
+        );
+        assert!(state.store.all("algorithm_eval").is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generation_selection_distinguishes_continuation_trial_and_active() {
+        let (state, root) = state();
         let candidate = crate::engine::algorithms::register(
             &state,
             &json!({
@@ -2249,16 +2664,116 @@ mod tests {
         )
         .unwrap();
         crate::engine::algorithms::activate(&state, candidate["id"].as_str().unwrap()).unwrap();
-        assert_eq!(choose_domain(&state, &[], "improver"), "improver");
-        assert_eq!(
-            crate::engine::algorithms::active(&state, "selfimprove.search").unwrap()["id"],
-            candidate["id"]
+        let id = candidate["id"].as_str().unwrap();
+
+        let (domain, mode, strategy) = select_generation_strategy(
+            &state,
+            &[],
+            "context",
+            Some("memory".to_string()),
+            Some(id.to_string()),
         );
+        assert_eq!(domain, "memory");
+        assert_eq!(mode, "research_continuation");
+        assert!(strategy.is_null(), "continuation did not run the formula");
+
+        let (domain, mode, strategy) =
+            select_generation_strategy(&state, &[], "context", None, Some(id.to_string()));
+        assert_eq!(domain, "context");
+        assert_eq!(mode, "algorithm_trial");
+        assert_eq!(strategy["id"], id);
+        assert_eq!(strategy["mode"], "trial");
+
+        let (_, mode, strategy) =
+            select_generation_strategy(&state, &[], "context", None, None);
+        assert_eq!(mode, "algorithm_active");
+        assert_eq!(strategy["mode"], "active");
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn proposed_algorithm_is_promoted_and_used_after_evidence() {
+    fn trial_outcome_needs_a_comparable_baseline_and_two_supported_trials() {
+        let (state2, root2) = state();
+        let (state, root) = state();
+        let active_before = crate::engine::algorithms::active(&state, "selfimprove.search").unwrap();
+        let candidate = crate::engine::algorithms::register(
+            &state,
+            &json!({
+                "kind":"selfimprove.search",
+                "name":"objective-first",
+                "implementation":"expression",
+                "parameters":{"expression":"objectiveMatch * 10 + novelty"},
+                "source":"rsi-generated"
+            }),
+        )
+        .unwrap();
+        let id = candidate["id"].as_str().unwrap();
+        queue_search_trial(
+            &state,
+            &candidate,
+            &active_before,
+            &[],
+            "context",
+            "campaign",
+            1,
+        );
+
+        let baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
+        let first = trial_generation("trial-1", 2, "context", true, "commit-1", 9_000, 900, id);
+        let outcome = record_trial_outcome(&state, id, &first, &[baseline.clone()]);
+        assert_eq!(outcome["verdict"], "supported");
+        assert_eq!(outcome["status"], "pending_second_trial");
+        assert_eq!(
+            crate::engine::algorithms::active(&state, "selfimprove.search").unwrap()["id"],
+            active_before["id"],
+            "one trial must not activate the candidate"
+        );
+
+        let second = trial_generation("trial-2", 3, "context", true, "commit-1", 9_000, 900, id);
+        let outcome = record_trial_outcome(&state, id, &second, &[baseline.clone(), first.clone()]);
+        assert_eq!(outcome["verdict"], "supported");
+        assert_eq!(outcome["status"], "adopted");
+        let saved = state.store.get("algorithm", id).unwrap();
+        assert_eq!(saved["rsiTrial"]["trials"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            crate::engine::algorithms::active(&state, "selfimprove.search").unwrap()["id"],
+            id
+        );
+
+        // A trial with no active-strategy baseline under the same commit and
+        // domain stays inconclusive and never activates.
+        let active2 = crate::engine::algorithms::active(&state2, "selfimprove.search").unwrap();
+        let candidate2 = crate::engine::algorithms::register(
+            &state2,
+            &json!({
+                "kind":"selfimprove.search","name":"objective-first-2",
+                "implementation":"expression",
+                "parameters":{"expression":"objectiveMatch * 10 + novelty"},
+                "source":"rsi-generated"
+            }),
+        )
+        .unwrap();
+        let id2 = candidate2["id"].as_str().unwrap();
+        queue_search_trial(&state2, &candidate2, &active2, &[], "context", "campaign", 1);
+        let unmatched = trial_generation("trial-x", 2, "context", true, "commit-9", 1, 1, id2);
+        let outcome = record_trial_outcome(&state2, id2, &unmatched, &[]);
+        assert_eq!(outcome["status"], "inconclusive");
+        assert_eq!(
+            crate::engine::algorithms::active(&state2, "selfimprove.search").unwrap()["id"],
+            active2["id"]
+        );
+
+        // A research continuation is not a trial even when a candidate was queued.
+        let mut continuation = trial_generation("trial-c", 2, "context", true, "commit-1", 1, 1, id);
+        continuation["domainSelection"] = json!("research_continuation");
+        let outcome = record_trial_outcome(&state2, id2, &continuation, &[]);
+        assert_eq!(outcome["status"], "not_used");
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(root2);
+    }
+
+    #[test]
+    fn proposed_algorithm_is_queued_not_activated() {
         let (state, root) = state();
         state
             .store
@@ -2289,20 +2804,55 @@ mod tests {
             .unwrap();
         let proposals = proposed_algorithms(&state, "s");
         assert_eq!(proposals.len(), 1);
-        let active = crate::engine::algorithms::active(&state, "selfimprove.search").unwrap();
+        let active_before = crate::engine::algorithms::active(&state, "selfimprove.search").unwrap();
         let history = vec![
             generation("context", true),
             generation("context", true),
             generation("context", true),
         ];
-        let report = promote_search_algorithm(&state, &proposals[0], &active, &history, "context");
-        assert_eq!(report["recommendation"], "promote");
-        assert_eq!(report["activatedId"], candidate["id"]);
-        assert_eq!(choose_domain(&state, &[], "context"), "context");
-        let evaluations = state.store.all("algorithm_eval");
-        assert!(evaluations.iter().any(|record| {
-            record["winner"] == candidate["id"] && record["recommendation"] == "promote"
-        }));
+        let queued = queue_search_trial(
+            &state,
+            &proposals[0],
+            &active_before,
+            &history,
+            "context",
+            "campaign",
+            1,
+        );
+        assert_eq!(queued["status"], "pending_trial");
+        let saved = state.store.get("algorithm", candidate["id"].as_str().unwrap()).unwrap();
+        assert_eq!(saved["rsiTrial"]["status"], "pending_trial");
+        assert_eq!(
+            crate::engine::algorithms::active(&state, "selfimprove.search").unwrap()["id"],
+            active_before["id"]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pending_trial_candidate_survives_for_a_later_scheduled_generation() {
+        let (state, root) = state();
+        let active = crate::engine::algorithms::active(&state, "selfimprove.search").unwrap();
+        let candidate = crate::engine::algorithms::register(
+            &state,
+            &json!({
+                "kind":"selfimprove.search","name":"objective-first-pending",
+                "implementation":"expression",
+                "parameters":{"expression":"objectiveMatch * 10 + novelty"},
+                "source":"rsi-generated"
+            }),
+        )
+        .unwrap();
+        queue_search_trial(&state, &candidate, &active, &[], "context", "campaign", 1);
+        assert_eq!(
+            pending_trial_candidate(&state, "context").unwrap()["id"],
+            candidate["id"],
+            "a pending candidate is reused by a later scheduled generation"
+        );
+        assert!(
+            pending_trial_candidate(&state, "a different objective").is_none(),
+            "a pending candidate is scoped to its objective"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

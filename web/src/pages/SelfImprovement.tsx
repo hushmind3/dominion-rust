@@ -11,8 +11,7 @@ type Comparison={attempt:number;candidateId:string;winner:'baseline'|'candidate'
 type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
  tokensEstimated?:boolean;
  error?:string;stopReason?:string;selectionPolicy?:string;comparison?:Comparison;
- algorithmEvolution?:{attempt:number;candidateId:string;revision:string;replacedId?:string;evaluation?:{opportunities?:number;candidateHits?:number;activeHits?:number;candidateAccuracy?:number;activeAccuracy?:number}}[];
- history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;searchAlgorithm?:{name?:string;implementation?:string}}[]}
+ history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string}}[]}
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
 function preferences():{selection:'manual'|'automatic'}{
@@ -153,8 +152,7 @@ export function SelfImprovementPage(){
     <div className="flex flex-wrap gap-2"><Button variant="ghost" onClick={backToSetup}><ArrowLeft size={14}/>돌아가기</Button><Button variant="primary" disabled={busy||!providerId||!model.trim()} onClick={()=>void start()}><Play size={14}/>이어서 발전하기</Button></div>}</div>
    <p className="mt-3 text-[12px] text-[#7C7469]">개선 시도 {campaign.attempts||0}회 <ArrowRight size={12} className="mx-1 inline"/>채택 {campaign.acceptedGenerations||0}회 · 생성에 사용한 토큰 {campaign.tokensEstimated?'약 ':''}{(campaign.tokens||0).toLocaleString()}</p>
    {activeSearch&&<div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-2 text-[11px] text-[#7C7469]"><span className="font-semibold text-[#5C544A]">탐색 알고리즘</span><span>{activeSearch.name}</span><span className="rounded bg-[#F1ECE3] px-1.5 py-0.5 text-[10px] text-[#8A8176]">{activeSearch.implementation}</span>{activeSearch.revision&&<span className="text-[10px] text-[#9C9388]">revision {activeSearch.revision.slice(0,10)}</span>}</div>}
-   {campaign.algorithmEvolution&&campaign.algorithmEvolution.length>0&&<div className="mt-2 rounded-lg border border-[#E7E0D5] bg-white px-3 py-2 text-[11px] text-[#5C544A]"><strong className="block text-[12px]">탐색 알고리즘 발전</strong>{campaign.algorithmEvolution.map(item=><p className="mt-1" key={item.candidateId}>{item.attempt}세대 · 새 알고리즘 채택 {item.revision.slice(0,10)} · 적중 {item.evaluation?.candidateHits ?? item.evaluation?.candidateAccuracy ?? '—'} / {item.evaluation?.opportunities ?? '—'}</p>)}</div>}
-   {campaign.history&&campaign.history.length>0&&<details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[#7C7469]">지난 비교 결과</summary><div className="mt-2 grid gap-2">{campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-2">{item.attempt}번째 · {item.accepted?'개선 버전 선택':item.error?'개선 효과 확인 못함':'기존 유지'}</div>)}</div></details>}
+   {campaign.history&&campaign.history.length>0&&<details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[#7C7469]">지난 비교 결과</summary><div className="mt-2 grid gap-2">{campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-2">{item.attempt}번째 · {item.accepted?'개선 버전 선택':item.error?'개선 효과 확인 못함':'기존 유지'}{item.domainSelection==='algorithm_trial'?' · 전략 시험':item.domainSelection==='research_continuation'?' · 연구 계속':''}{item.trialOutcome?.verdict?` · 시험 ${item.trialOutcome.verdict}`:''}</div>)}</div></details>}
   </Panel>}
   {campaign?.comparison&&<Results comparison={campaign.comparison} waiting={working&&campaign.phase==='waiting_for_choice'} busy={busy} onChoose={side=>void choose(side)}/>}
  </div>

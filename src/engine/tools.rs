@@ -48,7 +48,7 @@ pub fn definitions() -> Vec<Value> {
         tool("memory_store", "Save a grounded memory for this agent. Quote the user's exact words; invented facts are rejected. Shared memories are managed by the user.", object(json!({"text": text("Fact to remember, maximum 1600 characters"), "evidenceQuote": text("Exact quote from the current user message supporting the fact"), "sourceMessageId": text("Optional earlier source message ID"), "type": json!({"type":"string","enum":["fact","preference","decision","procedure","lesson"]}), "key": text("Optional stable fact key; a new value replaces the previous value for this key"), "scope": json!({"type":"string","enum":["agent"]})}), vec!["text", "evidenceQuote"])),
         tool("memory_search", "Find saved knowledge relevant to a topic", object(json!({"query": text("Search query")}), vec!["query"])),
         tool("skill_propose", "Draft a reusable skill for user review", object(json!({"name": text("Skill name"), "instructions": text("Reusable instructions")}), vec!["name", "instructions"])),
-        tool("algorithm_propose", "Propose a new self-improvement search formula. The engine replays recorded generations; only a strictly better formula is activated for the next generation.", object(json!({
+        tool("algorithm_propose", "Propose a new self-improvement search formula. It may be tried in the next scheduled generation; replay match is context only and never activates it.", object(json!({
             "name": text("Algorithm name"),
             "expression": text("Arithmetic over attempts, accepted, regressions, inconclusive, novelty, successRate, tokenCost, objectiveMatch, unresolved, exploration"),
             "description": text("Why this formula should choose better improvement targets"),
@@ -323,7 +323,7 @@ pub async fn execute(
                 "proposed": true,
                 "algorithmId": record["id"],
                 "algorithm": record,
-                "next": "엔진이 과거 세대 기록으로 평가한 뒤에만 다음 세대에 적용됩니다.",
+                "next": "다음 예정된 세대에서 제한적으로 시험 사용됩니다. 과거 일치율은 참고 기록이며 채택 근거가 아닙니다.",
             }))
         }
         "delegate_task" => delegate(ctx, args).await,
