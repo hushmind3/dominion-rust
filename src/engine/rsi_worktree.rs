@@ -454,8 +454,8 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
 pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
     let id=job["input"]["candidateId"].as_str().ok_or("비교할 후보가 없습니다.")?;
     let status=crate::engine::dev::status(&context.state).await;
-    if status["git"]!=true || status["branch"]!="dominion-sub" || status["dirty"]!=0 {
-        return Err("비교 실험은 깨끗한 dominion-sub 소스에서 시작하세요.".into());
+    if status["git"]!=true || status["branch"]!="dominion-sub" {
+        return Err("비교 실험은 dominion-sub 소스에서 시작하세요.".into());
     }
     let source=std::fs::canonicalize(status["config"]["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     compare_at(context,id,&source,&source).await
@@ -481,8 +481,8 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     if prior["candidateId"]!=candidate["id"]||prior["checksPassed"]!=true {
         return Err("컴파일 검사를 통과한 현재 실행 후보만 A/B 실험을 실행합니다.".into());
     }
-    if !git(source,&["status","--porcelain"]).await?.is_empty(){
-        return Err("비교할 기준 작업공간이 변경됐습니다.".into());
+    if !git(source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty(){
+        return Err("비교할 기준 작업공간에 추적 중인 변경이 있습니다.".into());
     }
     // Older frozen candidates remain evaluable after the checkout advances.
     // Both lab variants are created from candidate.baseCommit, never HEAD.
