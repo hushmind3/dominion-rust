@@ -22,6 +22,7 @@ const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SYMBOLS_PER_FILE: usize = 400;
 const MAP_MAX_CHARS: usize = 48_000;
 const FOCUS_MAX_CHARS: usize = 18_000;
+const PARSER_VERSION: u64 = 2;
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -465,7 +466,9 @@ pub fn refresh(state: &AppState, source: &Path) -> Result<Value, String> {
         let hash = digest(&bytes);
         let mut was_changed = false;
         let mut file = if let Some(previous) = existing.get(&relative) {
-            if previous["hash"].as_str() == Some(hash.as_str()) {
+            if previous["hash"].as_str() == Some(hash.as_str())
+                && previous["parserVersion"].as_u64() == Some(PARSER_VERSION)
+            {
                 reused += 1;
                 previous.clone()
             } else {
@@ -475,6 +478,7 @@ pub fn refresh(state: &AppState, source: &Path) -> Result<Value, String> {
                 let mut parsed = parse_file(&relative, &content);
                 parsed["hash"] = json!(hash);
                 parsed["indexId"] = json!(id);
+                parsed["parserVersion"] = json!(PARSER_VERSION);
                 parsed
             }
         } else {
@@ -484,6 +488,7 @@ pub fn refresh(state: &AppState, source: &Path) -> Result<Value, String> {
             let mut parsed = parse_file(&relative, &content);
             parsed["hash"] = json!(hash);
             parsed["indexId"] = json!(id);
+            parsed["parserVersion"] = json!(PARSER_VERSION);
             parsed
         };
         file["id"] = json!(file_id(&id, &relative));
