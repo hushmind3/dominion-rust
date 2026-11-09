@@ -48,6 +48,13 @@ fn rsi_output_allowance(spent: u64, input: u64) -> Result<u64,String> {
     Ok(remaining.min(8192))
 }
 
+/// When RSI has spent most of the turn on exploration, stop offering read
+/// tools. The model must decide: make the grounded change, or finish without
+/// one. This is a decision checkpoint, not a forced write.
+fn rsi_should_checkpoint(tool_calls: u64, remaining: u64, has_write: bool) -> bool {
+    !has_write && tool_calls >= 6 && remaining < 100_000
+}
+
 pub async fn run_turn(
     state: &AppState,
     request: &TurnRequest,
@@ -917,6 +924,7 @@ async fn run_turn_body(
     let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
+    let mut rsi_decision_checkpoint = false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1037,6 +1045,31 @@ async fn run_turn_body(
                 })
                 .unwrap_or(60_000);
             round_tools = trim_tool_definitions(round_tools, budget);
+        }
+        if session["rsiRun"]==true && !force_final && !rsi_decision_checkpoint {
+            let tool_calls = metrics.lock().unwrap().tool_calls as u64;
+            let has_write = state.store.all("execution_operation").iter().any(|operation| {
+                operation["runId"].as_str() == Some(execution_id)
+                    && operation["status"].as_str() == Some("completed")
+                    && matches!(
+                        operation["tool"].as_str(),
+                        Some("workspace_write" | "workspace_replace")
+                    )
+            });
+            let remaining = MAX_TOKENS.saturating_sub(total_tokens);
+            if rsi_should_checkpoint(tool_calls, remaining, has_write) {
+                round_tools.retain(|definition| {
+                    matches!(
+                        tool_name(definition),
+                        "workspace_write" | "workspace_replace"
+                    )
+                });
+                messages.push(json!({
+                    "role":"system",
+                    "content":"추가 탐색을 중단하세요. 지금까지의 근거로 workspace_replace 또는 workspace_write를 사용해 수정하거나, 근거가 없으면 변경 없이 최종 보고하세요. code_search와 workspace_read_range는 이번 턴에서 더 사용할 수 없습니다."
+                }));
+                rsi_decision_checkpoint = true;
+            }
         }
         let wire_messages = messages.clone();
         if session["rsiRun"]==true {
@@ -6021,6 +6054,14 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn rsi_checkpoint_allows_an_edit_or_a_no_change_finish() {
+        assert!(!rsi_should_checkpoint(5, 50_000, false));
+        assert!(!rsi_should_checkpoint(6, 100_000, false));
+        assert!(rsi_should_checkpoint(6, 99_999, false));
+        assert!(!rsi_should_checkpoint(6, 99_999, true));
     }
 
     #[test]
