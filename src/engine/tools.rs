@@ -136,6 +136,7 @@ pub async fn execute(
                 "startLine": begin.max(1),
                 "endLine": end,
                 "totalLines": lines.len(),
+                "sourceSha256":format!("{:x}",Sha256::digest(text.as_bytes())),
                 "content": numbered,
             });
             if let Some(observation) = result.get("fileObservation") {

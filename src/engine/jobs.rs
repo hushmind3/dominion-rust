@@ -541,10 +541,13 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             context.state.store.put("session",&session);
         }
     }
+    let reused_research=if let Some(worktree)=&rsi_workspace {
+        crate::engine::rsi_evolve::reuse_research(&context.state,&input,&worktree.path,&session_id)
+    }else{String::new()};
     context.checkpoint(json!({"sessionId":session_id,"promptState":{"inFlight":true}}))?;
     let request = TurnRequest {
         session_id: Some(session_id.clone()),
-        input: if rsi_workspace.is_some() { format!("{prompt}\n\n현재 대상은 별도의 Git 작업공간입니다. code_search와 workspace_read_range로 필요한 위치만 확인하세요. 개선 근거가 있을 때 workspace_replace로 수정하고, 근거가 없으면 변경 없이 종료하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.") } else { prompt },
+        input: if rsi_workspace.is_some() { format!("{prompt}{reused_research}\n\n현재 대상은 별도의 Git 작업공간입니다. code_search와 workspace_read_range로 필요한 위치만 확인하세요. 개선 근거가 있을 때 workspace_replace로 수정하고, 근거가 없으면 변경 없이 종료하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.") } else { prompt },
         agent_id: input
             .get("agentId")
             .and_then(|value| value.as_str())
@@ -606,6 +609,10 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 context,job,worktree,message,&session_id
             ).await;
         }
+        let candidate_id=finished.as_ref().ok().map(|result|result["rsi"]["candidateId"].clone()).unwrap_or(Value::Null);
+        let hypothesis=finished.as_ref().ok().map(|result|result["rsi"]["modelMessageId"].clone()).unwrap_or(Value::Null);
+        let generation=json!({"jobId":context.job_id,"candidateId":candidate_id,"accepted":false,"domain":job["rsiDomain"],"hypothesisMessageId":hypothesis});
+        crate::engine::rsi_evolve::remember_research(&context.state,&input,&generation,&session_id);
         if let Err(error)=crate::engine::rsi_worktree::cleanup(worktree).await {
             context.state.store.audit("rsi.worktree_cleanup_failed",
                 json!({"jobId":context.job_id,"error":error}));
