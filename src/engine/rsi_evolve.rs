@@ -163,7 +163,7 @@ fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f
                     + get("inconclusive") * 2.0
                     + get("novelty") * 1.5
                     + get("exploration") * 0.4
-                    + get("objectiveMatch") * 0.5
+                    + get("objectiveMatch") * 1.0
                     - get("successRate") * 0.5
                     - get("tokenCost") * 0.2,
             )
@@ -172,7 +172,9 @@ fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f
             let get = |name: &str| features.get(name).copied().unwrap_or(0.0);
             let attempts = get("attempts").max(1.0);
             let utility = get("accepted") / (1.0 + get("tokenCost") * attempts) / attempts;
-            Some(utility + get("exploration"))
+            // The user's objective outranks exploration. A goal-specific
+            // capability is selected before an unrelated unused domain.
+            Some(utility + get("exploration") + get("objectiveMatch") * 2.0)
         }
     }
 }
@@ -201,6 +203,12 @@ fn search_strategy(algorithm: &Value, mode: &str) -> Value {
         "implementation": algorithm["implementation"],
         "mode": mode,
     })
+}
+
+fn select_domain_for_state(state: &AppState, history: &[Value], objective: &str) -> String {
+    let algorithm = crate::engine::algorithms::active(state, "selfimprove.search")
+        .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
+    select_domain(&algorithm, history, objective)
 }
 
 /// Replays recorded generations with two search algorithms. A hit means the
@@ -806,8 +814,35 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
 
 fn research_scope(input:&Value)->MemoryScope {
     let source=input["rsiKnowledgeSource"].as_str().or_else(||input["rsiSourceDir"].as_str()).unwrap_or("");
+    // The campaign input can still hold the user's symlinked path while the
+    // child worktree stores the canonical path. Both must address the same
+    // research partition or inheritance silently disappears.
+    let canonical=std::fs::canonicalize(source).map(|path|path.to_string_lossy().to_string()).unwrap_or_else(|_|source.to_string());
     MemoryScope{session_id:"rsi-evolution".into(),agent_id:None,
-        partition_key:format!("rsi:{}",crate::engine::memory::stable_id(&[source]))}
+        partition_key:format!("rsi:{}",crate::engine::memory::stable_id(&[&canonical]))}
+}
+
+/// Maps a user-selected focus file to the capability domain it belongs to.
+/// This keeps work selection tied to the user's goal instead of static file
+/// size, TODO counts or audit findings.
+fn focus_domain_hint(path:&str)->&'static str {
+    let path=path.to_lowercase();
+    if path.contains("memory") { "memory" }
+    else if path.contains("chat/")||path.contains("context")||path.contains("room") { "context" }
+    else if path.contains("learning")||path.contains("experience") { "learning" }
+    else if path.starts_with("web/src")||path.contains("/pages/") { "ui" }
+    else if path.contains("rsi")||path.contains("algorithm") { "improver" }
+    else { "tools" }
+}
+
+/// The objective used for capability selection. Focus files are appended as
+/// capability words so the selected domain follows the user's actual target.
+fn selection_objective(input:&Value)->String {
+    let objective=input["rsiObjective"].as_str().unwrap_or("");
+    let hints=input["rsiFocusFiles"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).map(focus_domain_hint)
+        .collect::<Vec<_>>();
+    if hints.is_empty() { objective.to_string() } else { format!("{objective} {}",hints.join(" ")) }
 }
 
 fn research_artifacts(state:&AppState,session:&str)->Vec<Value>{
@@ -1543,6 +1578,16 @@ async fn run_loop(
         } else {
             record["nextTrialAlgorithmId"] = Value::Null;
         }
+        if let Some(domain) = record["nextDecision"]["nextDomain"]
+            .as_str()
+            .filter(|domain| DOMAINS.contains(domain))
+        {
+            child_input["rsiSelectedDomain"] = json!(domain);
+            child_input["rsiDecisionInput"] = record["nextDecision"].clone();
+        } else {
+            child_input["rsiSelectedDomain"] = Value::Null;
+            child_input["rsiDecisionInput"] = Value::Null;
+        }
         child_input["rsiIndexId"]=crate::engine::code_index::refresh(&context.state,&lab)?["id"].clone();
         let inherited_implementations=context.state.store.all("experience").into_iter()
             .filter(|item|item["status"]=="active" && item["partitionKey"]==research_scope(&child_input).partition_key
@@ -1640,6 +1685,8 @@ async fn run_loop(
             "attempt":attempt,"generatorCommit":head,"jobId":child_id,"tokens":tokens,
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
+            "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
+            "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
@@ -1789,6 +1836,11 @@ async fn run_loop(
                 }
             }
         }
+        let generation_accepted = generation["accepted"] == true;
+        let generation_knowledge = generation["knowledgeId"].clone();
+        let generation_tokens = generation["tokens"].clone();
+        let generation_elapsed = generation["elapsedMs"].clone();
+        let generation_verdict = generation["evaluation"]["verdict"].clone();
         record["history"]
             .as_array_mut()
             .ok_or("세대 목록 손상")?
@@ -1806,6 +1858,36 @@ async fn run_loop(
         };
         record["noProgressStreak"] = json!(streak);
         record["activeGenerationJobId"] = Value::Null;
+        let decision_objective = selection_objective(input);
+        let decision_history = record["history"].as_array().cloned().unwrap_or_default();
+        let decision_basis = if generation_accepted {
+            "accepted_implementation"
+        } else if new_findings > 0 {
+            "research_findings"
+        } else if no_edit {
+            "no_progress"
+        } else {
+            "implementation_not_adopted"
+        };
+        record["nextDecision"] = json!({
+            "basis": decision_basis,
+            "fromGeneration": attempt,
+            "nextDomain": select_domain_for_state(&context.state, &decision_history, &decision_objective),
+            "knowledgeId": generation_knowledge,
+            "headCommit": record["headCommit"],
+            "trialAlgorithmId": record["nextTrialAlgorithmId"],
+            "observed": {
+                "accepted": generation_accepted,
+                "tokens": generation_tokens,
+                "elapsedMs": generation_elapsed,
+                "verdict": generation_verdict,
+            },
+            "reuseDecision": match decision_basis {
+                "accepted_implementation" => "reuse_adopted_implementation",
+                "research_findings" => "reuse_research_findings",
+                _ => "continue_current_capability",
+            },
+        });
         elapsed(record, started);
         save(context, record)?;
         if no_edit && should_stop_no_progress(streak, research, changed) {
@@ -1882,6 +1964,7 @@ fn select_generation_strategy(
     objective: &str,
     continuation: Option<String>,
     trial_id: Option<String>,
+    selected_domain: Option<String>,
     generator_commit: &str,
 ) -> (String, &'static str, Value) {
     let active = crate::engine::algorithms::active(state, "selfimprove.search");
@@ -1919,6 +2002,11 @@ fn select_generation_strategy(
     }
     let algorithm =
         active.unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
+    if let Some(domain) = selected_domain.filter(|domain| DOMAINS.contains(&domain.as_str())) {
+        let mut strategy = search_strategy(&algorithm, "active");
+        strategy["decisionSource"] = json!("parent_next_decision");
+        return (domain, "algorithm_active", strategy);
+    }
     (
         select_domain(&algorithm, history, objective),
         "algorithm_active",
@@ -1958,7 +2046,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .into_iter()
         .filter(|g| g["campaignId"] == campaign)
         .collect::<Vec<_>>();
-    let objective = job["input"]["rsiObjective"].as_str().unwrap_or("");
+    let objective = selection_objective(&job["input"]);
     let latest=history.iter().max_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let continuation = latest.filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)
         .and_then(|g|g["domain"].as_str()).map(str::to_string);
@@ -1966,12 +2054,18 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .as_str()
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let selected_domain = job["input"]["rsiSelectedDomain"]
+        .as_str()
+        .filter(|domain| DOMAINS.contains(domain))
+        .map(str::to_string);
     let (domain, domain_selection, strategy) =
-        select_generation_strategy(&state, &history, objective, continuation, trial_id,
-            job["input"]["rsiGeneratorCommit"].as_str().unwrap_or(""));
+        select_generation_strategy(&state, &history, &objective, continuation, trial_id,
+            selected_domain, job["input"]["rsiGeneratorCommit"].as_str().unwrap_or(""));
     job["rsiDomain"] = json!(domain);
     job["rsiDomainSelection"] = json!(domain_selection);
     job["rsiSearchStrategy"] = strategy.clone();
+    job["rsiSelectionObjective"] = json!(objective);
+    job["rsiDecisionInput"] = job["input"]["rsiDecisionInput"].clone();
     job["input"]["rsiDomainSelection"] = json!(domain_selection);
     job["input"]["rsiSearchStrategy"] = strategy;
     let feedback = history
@@ -1988,9 +2082,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .chars()
         .take(12_000)
         .collect::<String>();
+    let focus = job["input"]["rsiFocusFiles"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).take(8).collect::<Vec<_>>().join(", ");
+    let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
-    job["input"]["prompt"]=json!(format!("{}\n이번 탐색 분야: {domain}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
+    job["input"]["prompt"]=json!(format!("{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
         job["input"]["prompt"].as_str().unwrap_or(""),feedback));
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;
     let context = JobContext::new(state.clone(), job_id.into());
@@ -2719,6 +2816,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn goal_capability_loop_inherits_research_adopts_and_applies_next_decision() {
+        let (state, root) = state();
+        let context = parent(&state);
+        let source = root.join("source");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        std::fs::write(source.join("Cargo.toml"),"[package]\nname=\"dominion-rust\"\nversion=\"0.1.0\"\nedition=\"2021\"\n[dependencies]\nserde_json=\"1\"\nsha2=\"0.10\"\nrusqlite={version=\"0.32\",features=[\"bundled\"]}\n").unwrap();
+        std::fs::write(source.join(".gitignore"), "/target\n").unwrap();
+        std::fs::write(source.join("src/main.rs"), include_str!("../../tests/fixtures/rsi-generation-worker.rs")).unwrap();
+        std::fs::write(source.join("build.rs"),r#"fn main(){let out=std::process::Command::new("git").args(["rev-parse","HEAD"]).output().unwrap();println!("cargo:rustc-env=FIXTURE_COMMIT={}",String::from_utf8_lossy(&out.stdout).trim());println!("cargo:rerun-if-env-changed=DOMINION_RSI_BUILD_COMMIT");}"#).unwrap();
+        let mut lock = Command::new("cargo");
+        lock.current_dir(&source).args(["generate-lockfile", "--offline"]);
+        let output = command(&context, lock, Duration::from_secs(30)).await.unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        git(&context, &source, &["init", "-q"]).await.unwrap();
+        git(&context, &source, &["add", "."]).await.unwrap();
+        git(&context, &source, &["-c","user.name=Test","-c","user.email=test@localhost","commit","-qm","controlled worker"]).await.unwrap();
+        let base = git(&context, &source, &["rev-parse", "HEAD"]).await.unwrap();
+        let cases=["zero_boundary","negative_one","negative_two","negative_three","positive_one","positive_two","positive_three","positive_four"]
+            .into_iter().enumerate().map(|(i,name)|json!({"id":name,"domain":if i%2==0{"boundary"}else{"retention"},"holdout":i<2,"filter":format!("cases::{name}")})).collect::<Vec<_>>();
+        context.checkpoint(json!({"input":{"rsiNativeApproved":true,"rsiSourceDir":source,"rsiBaseCommit":base,
+            "selectionPolicy":"automatic","rsiFrozenCases":cases,
+            "rsiObjective":"memory capability improvement",
+            "rsiFocusFiles":["src/engine/memory.rs"],
+            "rsiFixtureMode":"research_then_adopt",
+            "limits":{"maxAttempts":4,"tokenBudget":1000,"timeBudgetSeconds":300}}})).unwrap();
+        let job = state.store.get("job", "campaign").unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(300), run(&context, &job)).await.unwrap().unwrap();
+        let evolution = &result["evolution"];
+        assert_eq!(result["status"], "completed", "{result}");
+        assert_eq!(evolution["attempts"], 4, "{result}");
+        assert_eq!(evolution["acceptedGenerations"], 1, "{result}");
+        let history = evolution["history"].as_array().unwrap();
+        assert_eq!(history.len(), 4);
+        assert!(history[0]["candidateId"].is_null());
+        assert!(history[0]["newFindings"].as_u64().unwrap() > 0);
+        assert!(history[0]["knowledgeId"].as_str().is_some());
+        assert_eq!(history[1]["researchDelivered"], true, "next generation did not receive stored research");
+        assert_eq!(history[1]["accepted"], true, "{result}");
+        assert_eq!(history[1]["decisionInput"]["nextDomain"], "memory",
+            "the user goal did not drive the next capability selection");
+        let accepted_commit = history[1]["acceptedCommit"].as_str().unwrap();
+        assert_eq!(history[2]["generatorCommit"], accepted_commit);
+        assert_ne!(history[2]["generatorBinarySha256"], history[1]["generatorBinarySha256"]);
+        assert_eq!(history[2]["workerMarker"], "improved_execution");
+        assert!(history[2]["candidateId"].is_string());
+        assert_eq!(history[2]["accepted"], false, "a comment-only candidate must not be adopted");
+        assert!(history[2]["newFindings"].as_u64().unwrap() > 0);
+        assert!(history[2]["knowledgeId"].as_str().is_some());
+        assert_ne!(history[2]["knowledgeId"], history[0]["knowledgeId"]);
+        let inherited = &history[2]["inheritedImplementations"][0];
+        assert_eq!(inherited["status"], "loaded");
+        assert_eq!(inherited["implementation_ref"]["commit"], accepted_commit);
+        assert_eq!(history[2]["decisionInput"]["basis"], "accepted_implementation");
+        assert_eq!(history[3]["decisionInput"]["basis"], "research_findings");
+        assert_eq!(history[3]["decisionInput"]["observed"]["accepted"], false);
+        assert!(history[3]["decisionInput"]["observed"]["tokens"].is_number());
+        assert!(history[3]["decisionInput"]["observed"]["elapsedMs"].is_number());
+        assert_eq!(history[3]["domain"], history[3]["decisionInput"]["nextDomain"]);
+        assert_eq!(history[3]["searchStrategy"]["decisionSource"], "parent_next_decision",
+            "the fourth generation did not execute the parent's next decision");
+        assert_eq!(history[3]["workerMarker"], "decision_use");
+        assert_eq!(evolution["nextDecision"]["basis"], "no_progress");
+        assert_eq!(evolution["nextDecision"]["fromGeneration"], 4);
+        assert_eq!(
+            state.store.get("rsi_current", "selected-engine").unwrap()["commit"],
+            accepted_commit
+        );
+        assert_eq!(git(&context, &source, &["rev-parse", "HEAD"]).await.unwrap(), base);
+        let lab = PathBuf::from(evolution["labDir"].as_str().unwrap());
+        git(&context, &source, &["worktree", "remove", "--force", lab.to_str().unwrap()]).await.unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn generation(domain: &str, accepted: bool) -> Value {
         json!({
             "domain": domain,
@@ -2778,23 +2949,23 @@ mod tests {
     }
 
     #[test]
-    fn search_algorithm_can_choose_a_different_domain_order() {
+    fn search_selection_follows_the_user_goal_before_unrelated_domains() {
         let baseline = json!({"implementation":"failure-clusters","parameters":{}});
-        let candidate = search_expression("objective-first", "objectiveMatch * 10 + novelty");
-        assert_eq!(select_domain(&baseline, &[], "improver"), "memory");
-        assert_eq!(select_domain(&candidate, &[], "improver"), "improver");
+        assert_eq!(select_domain(&baseline, &[], "improver"), "improver");
+        assert_eq!(select_domain(&baseline, &[], "memory"), "memory");
+        assert_eq!(select_domain(&baseline, &[], "unrelated capability"), "memory");
     }
 
     #[test]
     fn replay_reports_match_rate_only_and_never_contains_promotion() {
         let baseline = json!({"id":"baseline","revision":"b","implementation":"failure-clusters","parameters":{}});
-        let candidate = search_expression("objective-first", "objectiveMatch * 10 + novelty");
+        let candidate = search_expression("accepted-first", "accepted * 10 + novelty * 0.1");
         let history = vec![
             generation("context", true),
             generation("context", true),
             generation("context", true),
         ];
-        let report = evaluate_search_algorithm(&candidate, &baseline, &history, "context");
+        let report = evaluate_search_algorithm(&candidate, &baseline, &history, "unrelated");
         assert_eq!(report["metric"], "past_successful_domain_match_rate");
         assert_eq!(report["samples"], 2);
         assert_eq!(report["candidateMatches"], 2);
@@ -2874,6 +3045,7 @@ mod tests {
             "context",
             Some("memory".to_string()),
             Some(id.to_string()),
+            None,
             "commit-1",
         );
         assert_eq!(domain, "memory");
@@ -2881,23 +3053,29 @@ mod tests {
         assert!(strategy.is_null(), "continuation did not run the formula");
 
         let (_, mode, strategy) =
-            select_generation_strategy(&state, &[], "context", None, Some(id.to_string()), "commit-1");
+            select_generation_strategy(&state, &[], "context", None, Some(id.to_string()), None, "commit-1");
         assert_eq!(mode, "algorithm_active");
         assert_eq!(strategy["trialFallback"], "unused_comparable_baseline_missing");
 
         let baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
         let (_, mode, _) = select_generation_strategy(
-            &state, &[baseline.clone()], "context", None, Some(id.to_string()), "commit-2");
+            &state, &[baseline.clone()], "context", None, Some(id.to_string()), None, "commit-2");
         assert_eq!(mode, "algorithm_active", "another generator's result is not a control");
         let (domain, mode, strategy) = select_generation_strategy(
-            &state, &[baseline], "context", None, Some(id.to_string()), "commit-1");
+            &state, &[baseline], "context", None, Some(id.to_string()), None, "commit-1");
         assert_eq!(domain, "context");
         assert_eq!(mode, "algorithm_trial");
         assert_eq!(strategy["id"], id);
         assert_eq!(strategy["mode"], "trial");
 
+        let (domain, mode, strategy) = select_generation_strategy(
+            &state, &[], "context", None, None, Some("learning".to_string()), "commit-1");
+        assert_eq!(domain, "learning");
+        assert_eq!(mode, "algorithm_active");
+        assert_eq!(strategy["decisionSource"], "parent_next_decision");
+
         let (_, mode, strategy) =
-            select_generation_strategy(&state, &[], "context", None, None, "commit-1");
+            select_generation_strategy(&state, &[], "context", None, None, None, "commit-1");
         assert_eq!(mode, "algorithm_active");
         assert_eq!(strategy["mode"], "active");
         let _ = std::fs::remove_dir_all(root);
@@ -2966,7 +3144,7 @@ mod tests {
         assert_eq!(repeated["alreadyRecorded"], true);
         assert_eq!(repeated["status"], "pending_second_trial");
         let (_, mode, strategy) = select_generation_strategy(
-            &state, &[baseline.clone(), first.clone()], "context", None, Some(id.into()), "commit-1");
+            &state, &[baseline.clone(), first.clone()], "context", None, Some(id.into()), None, "commit-1");
         assert_eq!(mode, "algorithm_active", "a second trial must not reuse the first control");
         assert_eq!(strategy["trialFallback"], "unused_comparable_baseline_missing");
         let saved = state.store.get("algorithm", id).unwrap();
@@ -2975,7 +3153,7 @@ mod tests {
 
         let baseline2 = active_generation("base-2", 3, "context", false, "commit-1", 10_000, 1_000);
         let (_, mode, _) = select_generation_strategy(
-            &state, &[baseline.clone(), first.clone(), baseline2.clone()], "context", None, Some(id.into()), "commit-1");
+            &state, &[baseline.clone(), first.clone(), baseline2.clone()], "context", None, Some(id.into()), None, "commit-1");
         assert_eq!(mode, "algorithm_trial", "a fresh control permits the pending trial");
         let second = trial_generation("trial-2", 4, "context", true, "commit-1", 9_000, 900, id);
         let outcome = record_trial_outcome(&state, id, &second, &[baseline.clone(), first.clone(), baseline2]);
