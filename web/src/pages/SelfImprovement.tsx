@@ -92,8 +92,9 @@ export function SelfImprovementPage(){
  },[jobId])
  const working=!!campaign&&!terminal(campaign.status)
  const backToSetup=()=>{
-  setCampaign(null);setJobId('');setSettingsOpen(false);setError('')
+  setSettingsOpen(true);setJobId('');setError('')
   try{localStorage.removeItem(SAVED)}catch{}
+  window.scrollTo({top:0,behavior:'smooth'})
  }
  const start=async()=>{
   if(busy||working||!providerId||!model.trim())return
@@ -126,7 +127,7 @@ export function SelfImprovementPage(){
   campaign.status==='needs_review'||campaign.status==='failed'?'이번 작업을 계속하지 못했습니다':phases[campaign.phase]||'개선을 준비하고 있습니다':''
  return <div className="mx-auto w-full max-w-[920px] px-5 py-6 sm:px-7">
   <Headline eyebrow="DOMINION" title="계속 발전하기" description="개선할 부분을 스스로 찾고, 기존 버전과 비교합니다. 어느 쪽이 더 나은지 보고 선택하세요."
-   actions={<><Button variant="ghost" onClick={backToSetup} disabled={!campaign||working}><ArrowLeft size={15}/>돌아가기</Button><Button variant="secondary" onClick={()=>{void providers.reload();void catalogue.reload()}} aria-label="새로고침"><RefreshCw size={15}/></Button></>}/>
+   actions={<Button variant="secondary" onClick={()=>{void providers.reload();void catalogue.reload()}} aria-label="새로고침"><RefreshCw size={15}/></Button>}/>
   <Notice message={error||providers.error||(campaign?.error?'이번 개선을 완료하지 못해 기존 버전을 유지했습니다. 다시 시작할 수 있습니다.':'')}/>
   {campaign&&!working&&<div className="mb-3 flex justify-end"><Button variant="ghost" onClick={()=>setSettingsOpen(v=>!v)}>{settingsOpen?'설정 닫기':'모델·작업량 바꾸기'}</Button></div>}
   {(!campaign||settingsOpen)&&<Panel className="p-5 sm:p-7">
@@ -147,7 +148,7 @@ export function SelfImprovementPage(){
   </Panel>}
   {campaign&&<Panel className="mt-4 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2">{working?<LoaderCircle size={16} className="animate-spin text-[#A94E30]"/>:<Check size={16}/>}<strong className="text-[14px]">{status}</strong></div>
    {working?<Button variant="secondary" disabled={busy} onClick={()=>void stop()}><Square size={13}/>중단</Button>:
-    <Button variant="primary" disabled={busy||!providerId||!model.trim()} onClick={()=>void start()}><Play size={14}/>이어서 발전하기</Button>}</div>
+    <div className="flex flex-wrap gap-2"><Button variant="ghost" onClick={backToSetup}><ArrowLeft size={14}/>돌아가기</Button><Button variant="primary" disabled={busy||!providerId||!model.trim()} onClick={()=>void start()}><Play size={14}/>이어서 발전하기</Button></div>}</div>
    <p className="mt-3 text-[12px] text-[#7C7469]">개선 시도 {campaign.attempts||0}회 <ArrowRight size={12} className="mx-1 inline"/>채택 {campaign.acceptedGenerations||0}회 · 생성에 사용한 토큰 {campaign.tokensEstimated?'약 ':''}{(campaign.tokens||0).toLocaleString()}</p>
    {campaign.history&&campaign.history.length>0&&<details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[#7C7469]">지난 비교 결과</summary><div className="mt-2 grid gap-2">{campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-2">{item.attempt}번째 · {item.accepted?'개선 버전 선택':item.error?'개선 효과 확인 못함':'기존 유지'}</div>)}</div></details>}
   </Panel>}
