@@ -7016,6 +7016,8 @@ fn codex_websocket_chain_reuses_identity_and_sends_only_the_new_suffix() {
     }
     let seen = requests.lock().unwrap();
     assert_eq!(seen.len(), 2, "one websocket request per turn: {seen:?}");
+    assert!(seen[0]["prompt_cache_key"].is_string(),"WebSocket must carry the HTTP cache identity");
+    assert_eq!(seen[0]["prompt_cache_key"],seen[1]["prompt_cache_key"]);
     assert!(seen[0].get("previous_response_id").is_none());
     assert_eq!(seen[1]["previous_response_id"], "resp_ws_fixture_1");
     assert_eq!(seen[1]["client_metadata"]["session_id"], seen[0]["client_metadata"]["session_id"]);

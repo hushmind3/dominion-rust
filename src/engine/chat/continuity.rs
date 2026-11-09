@@ -4,7 +4,7 @@ use super::{ProviderRef, TurnRequest};
 use crate::{engine::memory::stable_id, state::AppState};
 use serde_json::{json, Value};
 
-pub(super) struct Projection {
+pub(crate) struct Projection {
     frames: Vec<Value>,
     dependencies: Vec<Value>,
     signature: String,
@@ -22,30 +22,43 @@ fn wire_message(message: &Value) -> Value {
     value
 }
 
-fn evidence_digest(record: &Value) -> String {
+fn evidence_digest(kind: &str, record: &Value) -> String {
     // Usage counters and last-used timestamps are not semantic revisions.
     let mut meaning = serde_json::Map::new();
+    if kind=="room_state" {
+        meaning.insert("facts".into(),json!(record["facts"].as_array().into_iter().flatten()
+            .filter(|fact|fact["status"]=="active")
+            .map(|fact|json!({"id":fact["id"],"kind":fact["kind"],"text":fact["text"],"sourceMessageId":fact["sourceMessageId"]}))
+            .collect::<Vec<_>>()));
+    }
     for field in ["text","content","instructions","description","name","lesson","avoid","request",
         "principle","trigger","intervention","preconditions","exceptions","status","enabled",
         "scope","partitionKey","shareWithRooms","shareWithChannels","source","type","expiresAt",
         "agentId","sessionId","roomId","revision","verification","confidence","importance",
-        "sourceAuthors","sourceRole","sourceMessageIds","correctsMessageIds","evidenceMessageIds",
+        "sourceAuthors","sourceRole","sourceMessageIds","correctsMessageIds","evidenceMessageIds","sources","authority","outcome","supportingModels",
         "supportingCases","parameters","applicability"] {
+        // Ranking/confidence updates do not edit the memory shown to the
+        // model. Treating these as content changes could flush working views
+        // even when their remembered text and provenance were identical.
+        if matches!(kind, "memory" | "room_knowledge")
+            && matches!(field, "confidence" | "importance" | "revision" | "supportingCases") {
+            continue;
+        }
         if let Some(value) = record.get(field) { meaning.insert(field.into(),value.clone()); }
     }
     stable_id(&[&Value::Object(meaning).to_string()])
 }
 
-pub(super) fn dependencies(state: &AppState, items: &[Value]) -> Vec<Value> {
+pub(crate) fn dependencies(state: &AppState, items: &[Value]) -> Vec<Value> {
     items.iter().filter_map(|item| {
         let kind = match item["kind"].as_str()? {
             "memory"=>"memory", "experience"=>"experience", "skill"=>"skill", "improvement"=>"improvement",
             "room_knowledge"=>"room_knowledge", "room_knowledge_global"=>"experience_principle",
-            "learned_method"=>"experience_rule", _=>return None,
+            "learned_method"=>"experience_rule", "owner_state"=>"room_state", _=>return None,
         };
         let id=item["id"].as_str()?;
         let record=state.store.get(kind,id)?;
-        Some(json!({"kind":kind,"id":id,"digest":evidence_digest(&record)}))
+        Some(json!({"kind":kind,"id":id,"digest":evidence_digest(kind, &record)}))
     }).collect()
 }
 
@@ -64,7 +77,7 @@ fn frame_key(message: &Value, source: &str, index: usize) -> String {
 /// Rebuilding a sliding window on every turn changes its first user boundary,
 /// defeating prefix reuse even when the persona and cache key are identical.
 /// Keep that prefix verbatim until a bounded context epoch must be rebuilt.
-pub(super) fn project(
+pub(crate) fn project(
     state: &AppState, provider: &ProviderRef, messages: &[Value], tools: &[Value],
     session_id: &str, plan: &mut Value,
 ) -> (Vec<Value>, Option<Projection>) {
@@ -76,7 +89,9 @@ pub(super) fn project(
         .and_then(|id| state.store.get("participant_conversation", id)) else { return (clean(), None) };
     // The source is frozen by the runtime, not inferred from a mutable latest
     // owner message while another room round could already be running.
-    let signature = stable_id(&[&wire_message(&messages[0]).to_string(), &json!(tools).to_string()]);
+    // Rotate legacy batch-based views once; otherwise old aggregate evidence
+    // and the new record-based frames could coexist after an upgrade.
+    let signature = stable_id(&["record-evidence-v2", &wire_message(&messages[0]).to_string(), &json!(tools).to_string()]);
     let previous = &participant["workingView"];
     let scope=crate::engine::memory::MemoryScope::for_session(&state.store, session_id, participant["agentId"].as_str());
     let fresh_dependencies=messages[0]["_dominion_dependencies"].as_array().cloned().unwrap_or_default();
@@ -99,7 +114,7 @@ pub(super) fn project(
                         "experience_rule"=>crate::engine::experience::rule_visible(&record,&scope),
                         _=>true,
                     };
-                    !visible || json!(evidence_digest(&record)) != dependency["digest"]
+                    !visible || json!(evidence_digest(dependency["kind"].as_str().unwrap_or(""), &record)) != dependency["digest"]
                 })
         }) { Some("context_evidence_changed") }
         else if participant["lastReplyMessageId"] != plan["participantBaseReplyMessageId"] { Some("concurrent_commit") }
@@ -151,7 +166,7 @@ pub(super) fn project(
     (projected, Some(Projection { frames, dependencies, signature, epoch }))
 }
 
-pub(super) fn commit_projection(state: &AppState, plan: &Value, message: &Value, mut projection: Projection) {
+pub(crate) fn commit_projection(state: &AppState, plan: &Value, message: &Value, mut projection: Projection) {
     let Some(saved) = message["id"].as_str().and_then(|id|state.store.message(id)) else { return };
     let Some(participant_id) = plan["participantId"].as_str() else { return };
     let Some(record) = state.store.get("participant_conversation", participant_id) else { return };
@@ -164,7 +179,7 @@ pub(super) fn commit_projection(state: &AppState, plan: &Value, message: &Value,
     }));
 }
 
-pub(super) fn prepare(
+pub(crate) fn prepare(
     state: &AppState, provider: &ProviderRef, request: &TurnRequest,
     session_id: &str, instructions: &str, reasoning: &Value,
 ) -> Result<Value, String> {
@@ -210,7 +225,7 @@ pub(super) fn prepare(
 }
 
 /// Only a durably stored visible answer advances the bot's continuation cursor.
-pub(super) fn commit(state: &AppState, continuity: &Value, message: &Value) {
+pub(crate) fn commit(state: &AppState, continuity: &Value, message: &Value) {
     let Some(id) = continuity["id"].as_str() else { return };
     let Some(saved) = message["id"].as_str().and_then(|id|state.store.message(id)) else { return };
     let Some(record) = state.store.get("model_conversation", id) else { return };
@@ -251,7 +266,7 @@ fn apply_hint(body: &mut Value, plan: &Value, wire: CacheWire) -> bool {
     }
 }
 
-fn rejects_hint(status: reqwest::StatusCode, text: &str, field: &str) -> bool {
+pub(super) fn rejects_hint(status: reqwest::StatusCode, text: &str, field: &str) -> bool {
     if !matches!(status.as_u16(),400|422) {return false}
     let lower=text.to_ascii_lowercase();
     let parsed=serde_json::from_str::<Value>(text).unwrap_or(Value::Null);
@@ -260,24 +275,42 @@ fn rejects_hint(status: reqwest::StatusCode, text: &str, field: &str) -> bool {
         && ["unsupported", "not supported", "unrecognized", "unknown", "not permitted", "not allowed", "extra_forbidden", "extra inputs"].iter().any(|word|lower.contains(word))
 }
 
+fn feature_id(provider: &ProviderRef, wire: CacheWire) -> String {
+    format!("wire-{}", stable_id(&[
+        &provider.id, &provider.base_url, &provider.kind, &provider.model,
+        provider.account_id.as_deref().unwrap_or(""), wire.field(),
+    ]))
+}
+
+pub(super) fn note_hint(state: &AppState, provider: &ProviderRef, wire: CacheWire, accepted: bool, status: u16) {
+    state.store.put("provider_wire_feature", &json!({
+        "id":feature_id(provider,wire), "field":wire.field(), "accepted":accepted,
+        "observedAt":chrono::Utc::now().to_rfc3339(), "httpStatus":status,
+        "expiresAt":if accepted {Value::Null} else {json!(chrono::Utc::now().timestamp()+86400)},
+    }));
+}
+
+/// Both HTTP and WebSocket must send the same negotiated cache identity.
+pub(super) fn hinted_body(state: &AppState, provider: &ProviderRef, original: &Value, plan: &mut Value, wire: CacheWire) -> Value {
+    let known=state.store.get("provider_wire_feature", &feature_id(provider,wire));
+    let disabled=known.as_ref().is_some_and(|record|record["accepted"]==false
+        && record["expiresAt"].as_i64().is_some_and(|until|until>chrono::Utc::now().timestamp()));
+    let mut body=original.clone();
+    let hinted=!disabled && apply_hint(&mut body,plan,wire);
+    plan["cacheHint"]=json!(wire.field());
+    plan["wireHintSent"]=json!(hinted);
+    plan["cacheHintAcceptance"]=if disabled {json!(false)} else {Value::Null};
+    body
+}
+
 /// A protocol hint is negotiated once from a specific rejection, never from
 /// a model name. Failure of an optional hint must not remove conversation state.
 pub(super) async fn send(
     state:&AppState, provider:&ProviderRef, builder:reqwest::RequestBuilder,
     original:&Value, plan:&mut Value, wire:CacheWire,
 ) -> Result<reqwest::Response,String> {
-    let feature_id=format!("wire-{}",stable_id(&[
-        &provider.id,&provider.base_url,&provider.kind,&provider.model,
-        provider.account_id.as_deref().unwrap_or(""),wire.field(),
-    ]));
-    let known=state.store.get("provider_wire_feature",&feature_id);
-    let disabled=known.as_ref().is_some_and(|record|record["accepted"]==false
-        && record["expiresAt"].as_i64().is_some_and(|until|until>chrono::Utc::now().timestamp()));
-    let mut body=original.clone();
-    let mut hinted=!disabled && apply_hint(&mut body,plan,wire);
-    plan["cacheHint"]=json!(wire.field());
-    plan["wireHintSent"]=json!(hinted);
-    plan["cacheHintAcceptance"]=Value::Null;
+    let mut body=hinted_body(state,provider,original,plan,wire);
+    let mut hinted=plan["wireHintSent"]==true;
     for attempt in 1..=2 {
         plan["httpRequests"]=json!(attempt);
         let response=builder.try_clone().ok_or("모델 요청을 복제할 수 없습니다.")?
@@ -287,9 +320,7 @@ pub(super) async fn send(
             let headers=response.headers().clone();let version=response.version();
             let bytes=response.bytes().await.map_err(|e|e.to_string())?;
             if rejects_hint(status,&String::from_utf8_lossy(&bytes),wire.field()) {
-                state.store.put("provider_wire_feature",&json!({"id":feature_id,"field":wire.field(),"accepted":false,
-                    "observedAt":chrono::Utc::now().to_rfc3339(),"httpStatus":status.as_u16(),
-                    "expiresAt":chrono::Utc::now().timestamp()+86400}));
+                note_hint(state,provider,wire,false,status.as_u16());
                 body=original.clone();hinted=false;
                 plan["wireHintSent"]=json!(false);plan["cacheHintAcceptance"]=json!(false);
                 continue;
@@ -302,10 +333,8 @@ pub(super) async fn send(
         }
         if hinted && status.is_success() {
             plan["cacheHintAcceptance"]=json!(true);
-            state.store.put("provider_wire_feature",&json!({"id":feature_id,"field":wire.field(),"accepted":true,
-                "observedAt":chrono::Utc::now().to_rfc3339()}));
+            note_hint(state,provider,wire,true,status.as_u16());
         }
-        if disabled {plan["cacheHintAcceptance"]=json!(false);}
         return Ok(response)
     }
     unreachable!("one optional compatibility retry")
@@ -457,6 +486,65 @@ mod tests {
         state.store.clear_messages("s");
         project(&state,&provider,&fresh,&[],"s",&mut next);
         assert_eq!(next["workingView"]["rebaseReason"],"transcript_reset");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retrieval_batches_and_ranking_updates_do_not_resend_identical_evidence() {
+        let root=std::env::temp_dir().join(format!("dominion-evidence-delta-{}",uuid::Uuid::new_v4()));
+        let state=state(&root);
+        state.store.put("session",&json!({"id":"room:r","roomId":"r"}));
+        state.store.put("room",&json!({"id":"r","contextBudgetTokens":8000}));
+        for id in ["a","b"] {
+            state.store.put("memory",&json!({"id":id,"text":format!("FACT_{id}"),"scope":"shared","shareWithRooms":true,"status":"active","importance":0.8,"confidence":0.6}));
+        }
+        let request=TurnRequest::from_value(&json!({"input":"question","agentId":"agent"})).unwrap();
+        let provider=route();
+        let rows=|ids:&[&str]|ids.iter().map(|id|json!({"kind":"memory","id":id,"text":format!("FACT_{id}"),"sourceMessageIds":null})).collect::<Vec<_>>();
+        let messages=|source:&str,ids:&[&str]|{
+            let deps=dependencies(&state,&rows(ids));
+            let mut messages=vec![json!({"role":"system","content":"FULL_PERSONA","_dominion_source":source,"_dominion_dependencies":deps})];
+            messages.extend(super::super::room_context::evidence_frames(&rows(ids)));
+            messages.push(json!({"role":"user","content":format!("question {source}"),"_dominion_frame":source}));
+            messages
+        };
+        let mut first=prepare(&state,&provider,&request,"room:r","FULL_PERSONA",&json!({})).unwrap();
+        let (wire,pending)=project(&state,&provider,&messages("owner1",&["a"]),&[],"room:r",&mut first);
+        let reply=state.store.write_message(&json!({"session_id":"room:r","agent_id":"agent","role":"assistant","content":"chosen answer"})).unwrap();
+        commit(&state,&first,&reply);commit_projection(&state,&first,&reply,pending.unwrap());
+        state.store.patch_if("memory","a","status",&json!("active"),&json!({"importance":0.99,"confidence":0.9,"revision":"ranking-update","supportingCases":["another observation"]}));
+        let mut next=prepare(&state,&provider,&request,"room:r","FULL_PERSONA",&json!({})).unwrap();
+        let (next_wire,_)=project(&state,&provider,&messages("owner2",&["a","b"]),&[],"room:r",&mut next);
+        assert!(next["workingView"]["rebaseReason"].is_null(),"{next}");
+        assert_eq!(&next_wire[..wire.len()],wire.as_slice());
+        let text=json!(next_wire).to_string();
+        assert_eq!(text.matches("FACT_a").count(),1);
+        assert_eq!(text.matches("FACT_b").count(),1);
+        assert!(!text.contains("sourceMessageIds"),"null fields are not evidence");
+        // Changes to actual provenance and revocation still invalidate old data.
+        state.store.patch_if("memory","a","status",&json!("active"),&json!({"sourceAuthors":["a different author"]}));
+        project(&state,&provider,&messages("owner2",&["a","b"]),&[],"room:r",&mut next);
+        assert_eq!(next["workingView"]["rebaseReason"],"context_evidence_changed");
+        state.store.patch_if("memory","a","status",&json!("active"),&json!({"status":"archived"}));
+        let (revoked,_)=project(&state,&provider,&messages("owner2",&["b"]),&[],"room:r",&mut next);
+        assert!(!json!(revoked).to_string().contains("FACT_a"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejected_websocket_hint_is_also_disabled_for_http_and_expires() {
+        let root=std::env::temp_dir().join(format!("dominion-hint-{}",uuid::Uuid::new_v4()));
+        let state=state(&root);let provider=route();
+        let mut plan=json!({"cacheKey":"stable-participant-key"});
+        let original=json!({"input":[{"role":"user","content":"hello"}]});
+        let body=hinted_body(&state,&provider,&original,&mut plan,CacheWire::Key);
+        assert_eq!(body["prompt_cache_key"],"stable-participant-key");
+        note_hint(&state,&provider,CacheWire::Key,false,400);
+        let body=hinted_body(&state,&provider,&original,&mut plan,CacheWire::Key);
+        assert_eq!(body,original);assert_eq!(plan["cacheHintAcceptance"],false);
+        let id=feature_id(&provider,CacheWire::Key);
+        state.store.patch_if("provider_wire_feature",&id,"accepted",&json!(false),&json!({"expiresAt":0}));
+        assert_eq!(hinted_body(&state,&provider,&original,&mut plan,CacheWire::Key)["prompt_cache_key"],"stable-participant-key");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

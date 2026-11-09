@@ -31,6 +31,80 @@ fn metric(quality: f64, started: Instant, other: Value) {
     println!("DOMINION_RSI_METRIC {values}");
 }
 
+fn group_context_probe() -> Value {
+    use crate::engine::chat::{context_oracle as continuity, TurnRequest};
+    use continuity::compile;
+    let root=std::env::temp_dir().join(format!("dominion-group-oracle-{}",uuid::Uuid::new_v4()));
+    let config=crate::config::Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
+    let state=AppState::new(config.clone(),crate::db::Store::open(&config.db_path()).unwrap(),crate::vault::Vault::open(&config.key_path()));
+    state.store.put("session",&json!({"id":"room:r","roomId":"r"}));
+    state.store.put("room",&json!({"id":"r","contextBudgetTokens":8000,"agentIds":(0..9).map(|i|format!("agent-{i}")).collect::<Vec<_>>()}));
+    state.store.put("assistant_settings",&json!({"id":"global","instructions":"OWNER_COMMON_INSTRUCTION_VERBATIM"}));
+    for agent in 0..9 {
+        state.store.put("agent",&json!({"id":format!("agent-{agent}"),"name":format!("참가자{agent}"),"systemPrompt":format!("FULL_PERSONA_AGENT_{agent}_VERBATIM")}));
+    }
+    state.store.put("provider",&json!({"id":"fixture","name":"fixture","baseUrl":"https://fixture.invalid","model":"fixture","kind":"openai","toolMode":"native"}));
+    let route_request=TurnRequest::from_value(&json!({"input":"fixture","providerId":"fixture"})).unwrap();
+    let provider=continuity::select_provider(&state,&route_request,&json!({"id":"room:r","roomId":"r"})).unwrap();
+    let mut rounds=Vec::new();
+    for round in 0..3 {
+        for index in 0..=usize::from(round>0) {
+            state.store.put("memory",&json!({"id":format!("memory-{index}"),"text":format!("MEMORY_{index}_VERBATIM"),"type":"preference",
+                "scope":"shared","shareWithRooms":true,"status":"active","importance":0.8+f64::from(round)*0.01,
+                "confidence":0.6+f64::from(round)*0.1,"revision":format!("ranking-update-{round}")}));
+        }
+        let source=format!("owner-{round}");let input=format!("OWNER_ROUND_{round} 기억을 그대로 유지하고 답해.");
+        state.store.write_message(&json!({"id":source,"session_id":"room:r","role":"user","content":input,"metadata":{"authorKind":"owner"}})).unwrap();
+        for agent in 0..9 {
+            let agent_id=format!("agent-{agent}");
+            let request=TurnRequest::from_value(&json!({"input":input,"agentId":agent_id,"toolsEnabled":false})).unwrap();
+            let compiled=compile(&state,&request,"room:r",&source,&[],&[]).unwrap();
+            let mut messages=vec![json!({"role":"system","content":compiled.system.prompt,"_dominion_source":source,
+                "_dominion_dependencies":continuity::dependencies(&state,&compiled.system.items)})];
+            messages.extend(compiled.history);
+            let mut plan=continuity::prepare(&state,&provider,&request,"room:r",&compiled.system.prompt,&json!({})).unwrap();
+            let (wire,projection)=continuity::project(&state,&provider,&messages,&[],"room:r",&mut plan);
+            rounds.push(json!({"round":round,"agent":agent,"messages":wire,"workingView":plan["workingView"]}));
+            let reply=state.store.write_message(&json!({"session_id":"room:r","role":"assistant","agent_id":agent_id,
+                "content":format!("CHOICE_AGENT_{agent}_ROUND_{round}"),"metadata":{"replyToMessageId":source,"authorKind":"agent"}})).unwrap();
+            continuity::commit(&state,&plan,&reply);
+            continuity::commit_projection(&state,&plan,&reply,projection.unwrap());
+        }
+    }
+    let result=json!({"rounds":rounds,"transcriptCount":state.store.messages("room:r").len()});
+    drop(state);std::fs::remove_dir_all(root).unwrap();result
+}
+
+
+#[test]
+fn group_chat_context_efficiency() {
+    let started=Instant::now();
+    let observation=group_context_probe();
+    let rows=observation["rounds"].as_array().unwrap();
+    assert_eq!(rows.len(),27,"nine participants, three turns each");
+    assert_eq!(observation["transcriptCount"],30,"original owner and participant messages remain stored");
+    let mut checks=0usize;let mut passed=0usize;let mut chars=0usize;
+    for row in rows {
+        let round=row["round"].as_u64().unwrap();let agent=row["agent"].as_u64().unwrap();
+        let messages=row["messages"].as_array().unwrap();let text=json!(messages).to_string();
+        chars+=text.chars().count();
+        let persona=format!("FULL_PERSONA_AGENT_{agent}_VERBATIM");
+        let previous=format!("CHOICE_AGENT_{agent}_ROUND_{}",round.saturating_sub(1));
+        let invariants=[
+            messages[0]["content"].as_str().unwrap_or("").contains(&persona),
+            text.contains("OWNER_COMMON_INSTRUCTION_VERBATIM"),
+            text.contains(&format!("OWNER_ROUND_{round}")),
+            text.matches("MEMORY_0_VERBATIM").count()==1,
+            text.matches("MEMORY_1_VERBATIM").count()==usize::from(round>0),
+            round==0 || row["workingView"]["rebaseReason"].is_null(),
+            round==0 || messages.iter().any(|message|message["role"]=="assistant" && message["content"]==previous),
+        ];
+        checks+=invariants.len();passed+=invariants.into_iter().filter(|ok|*ok).count();
+    }
+    metric(passed as f64/checks as f64,started,json!({"contextChars":chars}));
+    assert_eq!(passed,checks,"input savings must retain identity, source, memory and committed self replies");
+}
+
 #[test]
 fn memory_ranking() {
     let (state, root) = state();

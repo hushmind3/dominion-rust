@@ -4,7 +4,7 @@
 //! early message as the conversation grows. Explicit owner facts, decisions
 //! and corrections are different — they must survive those rebases. This
 //! module keeps the owner's exact wording in a small room-level record and
-//! renders it as part of the fixed prompt, not as optional history.
+//! renders it as mandatory context, not as optional history.
 use crate::{engine::memory, state::AppState};
 use serde_json::{json, Value};
 
@@ -292,6 +292,12 @@ pub fn context_block_for_query(
     }
     selected.sort_by_key(|(index, _)| *index);
     Some(selected.into_iter().map(|(_, line)| line).collect::<Vec<_>>().join("\n"))
+}
+
+/// The room compiler keeps the query-dependent selection after the immutable
+/// identity prefix. The source record is tracked for correction/revocation.
+pub(crate) fn context_snapshot(state: &AppState, room_id: &str, query: &str) -> Option<(String, String)> {
+    context_block_for_query(state,room_id,query).map(|block|(state_id(room_id),block))
 }
 
 /// Clears the durable owner state when the room is reset.

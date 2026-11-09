@@ -19,6 +19,7 @@ pub fn metric_cases()->Vec<Value>{
         ("long-recall-quality","memory","long_owner_recall",true),
         ("planning-quality","planning","planning_quality",true),
         ("search-quality","improver","improvement_search",true),
+        ("group-chat-input-cost","context","group_chat_context_efficiency",true),
     ].into_iter().map(|(id,domain,name,holdout)|json!({
         "id":id,"domain":domain,"holdout":holdout,"filter":format!("rsi_frozen_oracle::{name}"),
         "metrics":[
@@ -29,6 +30,12 @@ pub fn metric_cases()->Vec<Value>{
         if case["id"]=="long-recall-quality"{
             case["metrics"].as_array_mut().unwrap().push(json!({"key":"contextChars","direction":"lower",
                 "minRelativeGain":0.1,"minAbsoluteGain":20.0,"maxRelativeRegression":0.1}));
+        }
+        if case["id"]=="group-chat-input-cost"{
+            case["metrics"]=json!([
+                {"key":"quality","direction":"higher","minRelativeGain":0.02},
+                {"key":"contextChars","direction":"lower","minRelativeGain":0.05,"minAbsoluteGain":50.0,"maxRelativeRegression":0.05}
+            ]);
         }
         case
     }).collect()

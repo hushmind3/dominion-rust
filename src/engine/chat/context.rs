@@ -14,7 +14,7 @@ pub(super) fn system_prompt(
 }
 
 /// Prompt text plus the exact context records that produced it.
-pub(super) struct PromptContext {
+pub(crate) struct PromptContext {
     pub prompt: String,
     /// Retrieved memory/experience context. It changes every turn, so it is
     /// sent after the stable system prefix to keep provider caches warm.

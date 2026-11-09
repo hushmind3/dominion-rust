@@ -54,7 +54,7 @@ fn stream_visible_text(
     }
 }
 
-pub(super) fn select_provider(
+pub(crate) fn select_provider(
     state: &AppState,
     request: &TurnRequest,
     session: &Value,
@@ -1347,13 +1347,14 @@ async fn stream_codex_once(
     // Prefer the incremental websocket transport: the identity/persona
     // instructions are still sent every call, but the accumulated transcript
     // is replaced by the new suffix while the connection holds the chain.
+    let ws_body=super::continuity::hinted_body(state,provider,&body,continuity,super::continuity::CacheWire::Key);
     let websocket = super::codex_ws::stream(
         state,
         provider,
         account_id,
         &access,
         continuity["transportSessionId"].as_str().unwrap_or(""),
-        &body,
+        &ws_body,
         input,
         session_id,
         tx,
@@ -1361,6 +1362,10 @@ async fn stream_codex_once(
     .await;
     match websocket {
         Ok(outcome) => {
+            if continuity["wireHintSent"]==true {
+                super::continuity::note_hint(state,provider,super::continuity::CacheWire::Key,true,200);
+                continuity["cacheHintAcceptance"]=json!(true);
+            }
             let mut completion = outcome.completion;
             fill_estimated_usage(messages,tools,&mut completion);
             continuity["incrementalTransport"] = outcome.transport;
@@ -1379,6 +1384,10 @@ async fn stream_codex_once(
             return Ok(completion);
         }
         Err(super::codex_ws::WsError::Fatal(message)) => return Err(message),
+        Err(super::codex_ws::WsError::HintRejected(reason)) => {
+            super::continuity::note_hint(state,provider,super::continuity::CacheWire::Key,false,400);
+            continuity["incrementalTransport"]=json!({"wire":"http","mode":"full-fallback","fallbackReason":reason});
+        }
         Err(super::codex_ws::WsError::Fallback(reason)) => {
             continuity["incrementalTransport"] = json!({
                 "wire":"http",

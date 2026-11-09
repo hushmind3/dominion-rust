@@ -175,6 +175,8 @@ impl Chain {
 
 #[derive(Debug)]
 pub(super) enum WsError {
+    /// A rejected optional hint must be disabled without retrying it twice.
+    HintRejected(String),
     /// The socket cannot be used for this call; retry the complete request.
     Fallback(String),
     /// The model/backend rejected the request itself; surface it like HTTP.
@@ -347,6 +349,10 @@ pub(super) async fn stream(
             guard.reset();
             Err(WsError::Fatal(message))
         }
+        Err(WsError::HintRejected(message)) => {
+            guard.reset();
+            Err(WsError::HintRejected(message))
+        }
         Err(WsError::Fallback(first_error)) => {
             guard.reset();
             // A fresh socket has no chain, so the retry must carry every item.
@@ -395,6 +401,10 @@ pub(super) async fn stream(
                 Err(WsError::Fatal(message)) => {
                     guard.reset();
                     Err(WsError::Fatal(message))
+                }
+                Err(WsError::HintRejected(message)) => {
+                    guard.reset();
+                    Err(WsError::HintRejected(message))
                 }
                 Err(WsError::Fallback(second_error)) => {
                     guard.reset();
@@ -474,7 +484,7 @@ async fn exchange(
     let result =
         receive_completion(state, socket, session_id, tx, start, &mut output_started).await;
     match result {
-        Err(WsError::Fallback(message)) if output_started => Err(WsError::Fatal(format!(
+        Err(WsError::Fallback(message) | WsError::HintRejected(message)) if output_started => Err(WsError::Fatal(format!(
             "Codex 응답 도중 연결이 끊겼습니다. 부분 응답은 자동 재시도하지 않습니다: {message}"
         ))),
         other => other,
@@ -618,11 +628,19 @@ async fn receive_completion(
                 return Ok((completion, response_id, output_items, start));
             }
             "response.failed" | "response.incomplete" => {
+                if super::continuity::rejects_hint(reqwest::StatusCode::BAD_REQUEST,
+                    &piece["response"].to_string(), "prompt_cache_key") {
+                    return Err(WsError::HintRejected("Codex 캐시 힌트가 지원되지 않습니다.".into()));
+                }
                 return Err(WsError::Fatal(
                     super::provider::codex_terminal_error(&piece).unwrap(),
                 ));
             }
             "error" => {
+                if super::continuity::rejects_hint(reqwest::StatusCode::BAD_REQUEST,
+                    &piece.to_string(), "prompt_cache_key") {
+                    return Err(WsError::HintRejected("Codex 캐시 힌트가 지원되지 않습니다.".into()));
+                }
                 let code = piece["error"]["code"].as_str().unwrap_or("");
                 let param = piece["error"]["param"].as_str().unwrap_or("");
                 let message = piece["error"]["message"].as_str().unwrap_or("알 수 없는 오류");
@@ -791,6 +809,20 @@ mod tests {
             }
         });
         (provider, rx, server)
+    }
+
+    #[tokio::test]
+    async fn unsupported_cache_hint_is_not_retried_as_a_broken_connection() {
+        let (state,root)=test_state();
+        let (provider,mut requests,server)=fixture(vec![json!({"type":"error","error":{
+            "code":"invalid_parameter","param":"prompt_cache_key","message":"prompt_cache_key is not supported"}})]).await;
+        let (tx,_)=tokio::sync::mpsc::unbounded_channel();
+        let result=stream(&state,&provider,"fixture","fixture","session",
+            &json!({"prompt_cache_key":"stable-key"}),vec![item("user","hello")],"session",&tx).await;
+        assert!(matches!(result,Err(WsError::HintRejected(_))));
+        assert_eq!(requests.recv().await.unwrap()["prompt_cache_key"],"stable-key");
+        assert!(requests.try_recv().is_err(),"do not open another socket to send the same rejected hint");
+        server.abort();std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
