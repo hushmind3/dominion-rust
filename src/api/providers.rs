@@ -52,6 +52,83 @@ fn opencode_auth() -> Option<Value> {
     })
 }
 
+
+fn opencode_go_key_in_openclaw(value: &Value) -> Option<&str> {
+    value.pointer("/env/vars/OPENCODE_API_KEY").and_then(Value::as_str)
+        .map(str::trim).filter(|key| !key.is_empty())
+}
+
+fn opencode_go_key_in_auth(value: &Value) -> Option<&str> {
+    ["opencode-go", "opencode_go"].iter().find_map(|name| {
+        let entry = value.get(*name)?;
+        if !matches!(entry["type"].as_str(), Some("api" | "wellknown")) { return None; }
+        entry["key"].as_str().map(str::trim).filter(|key| !key.is_empty())
+    })
+}
+
+/// One-time explicit import; subsequent model requests use the DOMINION vault.
+fn local_opencode_go_key() -> Option<(String, &'static str)> {
+    if let Ok(value) = std::env::var("OPENCODE_API_KEY") {
+        let value = value.trim();
+        if !value.is_empty() { return Some((value.to_string(), "environment")); }
+    }
+    if let Some(path) = home_file(".openclaw/openclaw.json") {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                if let Some(key) = opencode_go_key_in_openclaw(&value) {
+                    return Some((key.to_string(), "openclaw-local-file"));
+                }
+            }
+        }
+    }
+    if let Some(auth) = opencode_auth() {
+        if let Some(key) = opencode_go_key_in_auth(&auth) {
+            return Some((key.to_string(), "opencode-cli"));
+        }
+    }
+    None
+}
+
+fn direct_opencode_go(state: &AppState) -> Option<Value> {
+    state.store.all("provider").into_iter().find(|provider| {
+        provider["integration"] == "opencode-go"
+            || provider["baseUrl"].as_str().is_some_and(|url|
+                url.starts_with("https://opencode.ai/zen/go/v1")
+                || url.starts_with("https://opencode.ai/inference/go/openai/v1"))
+    })
+}
+
+fn import_opencode_go(state: &AppState) -> Result<Value, String> {
+    let (key, source) = local_opencode_go_key()
+        .ok_or("OpenCode Go 키가 로컬에 없습니다. API 키 직접 등록을 이용하세요.")?;
+    let previous = direct_opencode_go(state).unwrap_or(Value::Null);
+    let id = previous["id"].as_str().unwrap_or("opencode-go").to_string();
+    let record = json!({
+        "id": id,
+        "name": previous["name"].as_str().unwrap_or("OpenCode Go"),
+        "baseUrl": previous["baseUrl"].as_str().unwrap_or("https://opencode.ai/zen/go/v1"),
+        "kind": "openai",
+        "model": previous["model"].as_str().unwrap_or(""),
+        "enabled": true,
+        "local": false,
+        "integration": "opencode-go",
+        "toolMode": previous["toolMode"].as_str().unwrap_or("auto"),
+        "reflection": previous["reflection"].as_bool().unwrap_or(false),
+        "requestsPerMinute": previous["requestsPerMinute"].as_u64().unwrap_or(0)
+    });
+    state.save_secret(&format!("provider:{id}"), &key);
+    let saved = state.store.put("provider", &record)
+        .ok_or("OpenCode Go 연결 정보를 저장하지 못했습니다.")?;
+    state.store.audit("provider.credential_imported",
+        json!({"providerId":id,"source":source,"credentialCopied":true}));
+    state.bus.record("provider", &saved);
+    let mut result = public_provider(state, saved);
+    result["importedCount"] = json!(1);
+    result["credentialSource"] = json!(source);
+    result["verification"] = json!("not_tested");
+    Ok(result)
+}
+
 fn opencode_api_entries(auth: &Value) -> Vec<(String, String)> {
     auth.as_object()
         .into_iter()
@@ -376,6 +453,10 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
     let gemini = home_file(".gemini/oauth_creds.json").is_some_and(|path| path.exists());
     let opencode_auth = opencode_auth();
     let opencode = opencode_auth.is_some();
+    let go_source = local_opencode_go_key().map(|(_, source)| source);
+    let go_provider = direct_opencode_go(&state);
+    let go_connected = go_provider.as_ref().and_then(|p| p["id"].as_str())
+        .is_some_and(|id| state.store.has_secret(&format!("provider:{id}")));
     let opencode_importable = opencode_auth
         .as_ref()
         .map(|auth| {
@@ -412,6 +493,22 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
             "hint":if gemini { "Gemini CLI의 OAuth 자격 증명은 다른 앱에서 재사용할 수 없습니다. 모델 관리에서 Google Gemini API 키를 등록하세요." } else { "Gemini CLI에서 로그인하면 감지됩니다. 모델 관리에서 Google Gemini API 키를 직접 등록할 수도 있습니다." }
         },
         {
+            "id":"opencode-go",
+            "name":"OpenCode Go (API 키)",
+            "available":go_source.is_some() || go_connected,
+            "importAvailable":go_source.is_some(),
+            "supported":true,
+            "connected":go_connected,
+            "model":go_provider.as_ref().and_then(|p| p["model"].as_str()),
+            "hint":if go_connected {
+                "DOMINION에 키가 저장돼 있습니다. 실제 인증은 모델 조회로 검사하세요."
+            } else if go_source.is_some() {
+                "이 컴퓨터에 기존 OpenCode Go 키가 있습니다. 가져오면 DOMINION 금고에 별도 저장합니다."
+            } else {
+                "기존 로컬 키가 없습니다. OpenCode Go 콘솔에서 발급한 API 키를 직접 등록하세요."
+            }
+        },
+        {
             "id":"opencode",
             "name":"OpenCode (OAuth/CLI)",
             "available":opencode,
@@ -431,6 +528,7 @@ pub async fn import_cli_credential(State(state): State<AppState>, Json(body): Js
             Ok(public_provider(&state, saved))
         })(),
         "opencode" => import_opencode(&state),
+        "opencode-go" => import_opencode_go(&state),
         _ => Err("지원하지 않는 OAuth/CLI 소스입니다.".to_string()),
     };
     match result {
@@ -1256,6 +1354,7 @@ pub async fn test_provider(
         .unwrap_or("")
         .to_string();
     let cloudflare = base.contains("/client/v4/accounts/") && base.contains("/ai/v1");
+    let opencode_go = provider["integration"] == "opencode-go";
     let tested_model = if cloudflare && model.is_empty() {
         "@cf/zai-org/glm-4.7-flash".to_string()
     } else if kind == "codex" && model.is_empty() {
@@ -1313,6 +1412,10 @@ pub async fn test_provider(
                 "store":false,
                 "max_output_tokens":16
             }))
+    } else if opencode_go {
+        // No model generation is charged for this credential check.
+        client.get("https://opencode.ai/inference/go/v1/models")
+            .header("Authorization", format!("Bearer {key}"))
     } else if cloudflare {
         client
             .post(format!("{base}/chat/completions"))
@@ -1559,7 +1662,9 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
     // Cloudflare's OpenAI-compatible surface has no /models route. Its native
     // model search returns the catalogue instead.
     let cloudflare = base.contains("/client/v4/accounts/") && base.contains("/ai/v1");
-    let url = if kind == "ollama" {
+    let url = if provider["integration"] == "opencode-go" {
+        "https://opencode.ai/inference/go/v1/models".to_string()
+    } else if kind == "ollama" {
         let native = base.trim_end_matches("/v1").trim_end_matches('/');
         format!("{native}/api/tags")
     } else if cloudflare {
@@ -1601,7 +1706,8 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
             } else {
                 "data"
             };
-            let Some(items) = value[key_name].as_array() else {
+            let Some(items) = value[key_name].as_array()
+                .or_else(|| if provider["integration"] == "opencode-go" { value["models"].as_array() } else { None }) else {
                 return error(StatusCode::BAD_GATEWAY, "모델 목록 형식을 확인할 수 없습니다. 서버 주소와 API 방식을 확인하세요.");
             };
             let mut models: Vec<Value> = items.iter().filter_map(|item| {
@@ -1764,6 +1870,21 @@ mod tests {
         assert!(model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &zero, "meta/llama"));
         let paid = json!({"pricing":{"prompt":"0.000001","completion":"0.000002"}});
         assert!(!model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &paid, "meta/llama"));
+    }
+
+    #[test]
+    fn opencode_go_import_only_accepts_explicit_key_locations() {
+        assert_eq!(opencode_go_key_in_openclaw(&json!({
+            "env":{"vars":{"OPENCODE_API_KEY":"go-from-openclaw"}}
+        })), Some("go-from-openclaw"));
+        assert!(opencode_go_key_in_openclaw(&json!({"env":{"vars":{"OTHER_KEY":"not-go"}}})).is_none());
+        assert_eq!(opencode_go_key_in_auth(&json!({
+            "opencode-go":{"type":"api","key":"go-key"},
+            "opencode":{"type":"oauth","access":"private-oauth"}
+        })), Some("go-key"));
+        assert!(opencode_go_key_in_auth(&json!({
+            "opencode-go":{"type":"oauth","access":"private-oauth"}
+        })).is_none());
     }
 
     #[test]
