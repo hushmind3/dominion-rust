@@ -20,8 +20,8 @@ const INDEX_KIND: &str = "code_index";
 const FILE_KIND: &str = "code_index_file";
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SYMBOLS_PER_FILE: usize = 400;
-const MAP_MAX_CHARS: usize = 48_000;
-const FOCUS_MAX_CHARS: usize = 18_000;
+const MAP_MAX_CHARS: usize = 28_000;
+const FOCUS_MAX_CHARS: usize = 12_000;
 const PARSER_VERSION: u64 = 3;
 
 fn digest(bytes: &[u8]) -> String {
@@ -757,7 +757,7 @@ pub fn prompt_context(
             "\n### 우선 대상 파일의 실제 코드 (인덱스에서 선택됨. 전체 저장소를 다시 읽지 마세요)"
         )
         .ok();
-        for relative in selected.into_iter().take(4) {
+        for relative in selected.into_iter().take(2) {
             if !crate::engine::rsi::safe_path(&relative) {
                 continue;
             }

@@ -35,6 +35,15 @@ fn bounded_contract_intent(input: &str) -> String {
     )
 }
 
+/// RSI must start editing before the per-turn token budget is exhausted by
+/// repeated exploration. After this many successful tool calls without a
+/// write, only write tools remain available for the rest of the turn.
+const RSI_EDIT_TOOL_CALL_THRESHOLD: u64 = 4;
+
+fn rsi_should_force_edit(tool_calls: u64, has_write: bool) -> bool {
+    tool_calls >= RSI_EDIT_TOOL_CALL_THRESHOLD && !has_write
+}
+
 pub async fn run_turn(
     state: &AppState,
     request: &TurnRequest,
@@ -901,6 +910,7 @@ async fn run_turn_body(
     let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
+    let mut rsi_edit_forced = false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1027,6 +1037,30 @@ async fn run_turn_body(
                 })
                 .unwrap_or(60_000);
             round_tools = trim_tool_definitions(round_tools, budget);
+        }
+        if session["rsiRun"] == true && !force_final && !rsi_edit_forced {
+            let tool_calls = metrics.lock().unwrap().tool_calls as u64;
+            let has_write = state.store.all("execution_operation").iter().any(|operation| {
+                operation["runId"].as_str() == Some(execution_id)
+                    && operation["status"].as_str() == Some("completed")
+                    && matches!(
+                        operation["tool"].as_str(),
+                        Some("workspace_write" | "workspace_replace")
+                    )
+            });
+            if rsi_should_force_edit(tool_calls, has_write) {
+                round_tools.retain(|definition| {
+                    matches!(
+                        tool_name(definition),
+                        "workspace_write" | "workspace_replace"
+                    )
+                });
+                messages.push(json!({
+                    "role":"system",
+                    "content":"조사는 충분합니다. 이번 턴에서는 code_search와 workspace_read_range를 더 호출할 수 없습니다. 지금까지 읽은 내용과 프롬프트의 대상 코드를 사용해 workspace_replace로 실제 수정을 시작하세요. 새 파일이 아니면 workspace_write로 전체 파일을 다시 쓰지 마세요."
+                }));
+                rsi_edit_forced = true;
+            }
         }
         let wire_messages = messages.clone();
         if is_room {
@@ -6001,6 +6035,14 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn rsi_forces_an_edit_after_enough_exploration() {
+        assert!(!rsi_should_force_edit(3, false));
+        assert!(rsi_should_force_edit(4, false));
+        assert!(!rsi_should_force_edit(4, true));
+        assert!(!rsi_should_force_edit(5, true));
     }
 
     #[test]

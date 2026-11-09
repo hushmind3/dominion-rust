@@ -235,7 +235,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     }
     let autonomous = request.is_empty();
     let objective = if autonomous {
-        "저장소 전수조사 인덱스와 정적 발견을 바탕으로 개선 가치가 가장 큰 문제 하나를 고른다. 기존 기능을 유지하면서 실제로 더 정확하거나 효율적이거나 견고해지는 코드 변경을 한 번에 구현한다. 이미 구현된 기능을 중복 작성하거나 근거 없이 리팩터링하지 않는다.".to_string()
+        "저장소 전수조사 인덱스와 기존 경험을 바탕으로 실제 실행 능력 하나를 개선한다. code_search와 workspace_read_range로 필요한 부분만 확인하고, workspace_replace로 실제 코드 변경을 완료한 뒤 빌드·테스트 검증까지 진행한다. 오류 수정은 이 과정에서 필요할 때 수행한다.".to_string()
     } else {
         request.to_string()
     };
