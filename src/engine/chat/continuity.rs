@@ -313,8 +313,11 @@ pub(super) async fn send(
     let mut hinted=plan["wireHintSent"]==true;
     for attempt in 1..=2 {
         plan["httpRequests"]=json!(attempt);
-        let response=builder.try_clone().ok_or("모델 요청을 복제할 수 없습니다.")?
-            .json(&body).send().await.map_err(|e|format!("{} 연결 실패: {e}",provider.name))?;
+        let mut request=builder.try_clone().ok_or("모델 요청을 복제할 수 없습니다.")?;
+        if let Some(id)=plan["transportSessionId"].as_str() {
+            request=request.header("x-dominion-conversation",id);
+        }
+        let response=request.json(&body).send().await.map_err(|e|format!("{} 연결 실패: {e}",provider.name))?;
         let status=response.status();
         if hinted && attempt==1 && matches!(status.as_u16(),400|422) {
             let headers=response.headers().clone();let version=response.version();
@@ -401,6 +404,39 @@ mod tests {
         assert!(!rejects_hint(bad,r#"{"error":{"message":"model not supported"}}"#,"prompt_cache_key"));
         assert!(!rejects_hint(reqwest::StatusCode::UNAUTHORIZED,"prompt_cache_key not supported","prompt_cache_key"));
         assert!(!rejects_hint(reqwest::StatusCode::TOO_MANY_REQUESTS,"prompt_cache_key not supported","prompt_cache_key"));
+    }
+
+    #[tokio::test]
+    async fn stable_participant_header_survives_cache_hint_negotiation() {
+        use axum::{extract::State,http::HeaderMap,routing::post,Json,Router};
+        use std::sync::{Arc,Mutex};
+        type Seen=Arc<Mutex<Vec<String>>>;
+        async fn endpoint(State(seen):State<Seen>,headers:HeaderMap,Json(body):Json<Value>)->(axum::http::StatusCode,Json<Value>){
+            seen.lock().unwrap().push(headers["x-dominion-conversation"].to_str().unwrap().to_string());
+            if body.get("prompt_cache_key").is_some(){
+                (axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":"prompt_cache_key is unsupported"})))
+            }else{(axum::http::StatusCode::OK,Json(json!({"ok":true})))}
+        }
+        let seen:Seen=Arc::new(Mutex::new(Vec::new()));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let app=Router::new().route("/test",post(endpoint)).with_state(seen.clone());
+        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let root=std::env::temp_dir().join(format!("dominion-affinity-{}",uuid::Uuid::new_v4()));
+        let state=state(&root);let mut provider=route();provider.base_url=format!("http://{address}");
+        provider.kind="openai".into();
+        for (agent,text) in [("a","first"),("a","second"),("b","second")] {
+            let request=TurnRequest::from_value(&json!({"agentId":agent,"input":text})).unwrap();
+            let mut plan=prepare(&state,&provider,&request,"room:test","identity",&json!({})).unwrap();
+            let response=send(&state,&provider,reqwest::Client::new().post(format!("http://{address}/test")),
+                &json!({"model":"test","messages":[{"role":"user","content":text}]}),&mut plan,CacheWire::Key).await.unwrap();
+            assert!(response.status().is_success());
+        }
+        let seen=seen.lock().unwrap();
+        assert_eq!(seen.len(),4,"one negotiation retry, then no further retries");
+        assert_eq!(seen[0],seen[1]);assert_eq!(seen[1],seen[2]);
+        assert_ne!(seen[2],seen[3],"another bot must have a separate route affinity");
+        drop(seen);server.abort();let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
