@@ -57,6 +57,12 @@ pub fn definitions() -> Vec<Value> {
         tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
+        tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({
+            "name":text("Reusable method name"),
+            "description":text("Principle, source and limits of the method"),
+            "domain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
+            "verification":json!({"type":"object","description":"Existing procedure format: type=procedure, appliesTo.requestContains, nodes [{id,tool,arguments}], edges [{from,to}], after [{kind:file_equals/file_contains/file_exists/tool_called,path,text,tool}]. Arguments can bind a prior node result via $node.field. Include concrete postconditions."})
+        }), vec!["name","domain","verification"])),
         tool("delegate_task", "Delegate a self-contained task to another agent and optionally wait for its result", object(json!({
             "agentId": text("Target agent id"),
             "prompt": text("Task instructions"),
@@ -98,7 +104,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit")
+    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose")
 }
 
 pub async fn execute(
@@ -287,6 +293,7 @@ pub async fn execute(
             );
             Ok(json!({ "proposed": true, "skill": record }))
         }
+        "rsi_method_propose" => crate::engine::rsi_evolve::propose_method(ctx.state, ctx.session_id, args),
         "algorithm_propose" => {
             let session = ctx
                 .store

@@ -33,7 +33,8 @@ fn generation_count(db: &Connection, campaign: &str) -> usize {
 fn record_research_read(db: &Connection, job: &mut Value, label: &str) {
     let text = std::fs::read_to_string("src/main.rs").unwrap();
     let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
-    let numbered = text.lines().take(3).enumerate()
+    let line = text.lines().position(|line|line.starts_with("pub fn accepts")).unwrap();
+    let numbered = text.lines().enumerate().skip(line).take(1)
         .map(|(index, line)| format!("{:>5} {}\n", index + 1, line))
         .collect::<String>();
     let session = "fixture-session";
@@ -43,16 +44,16 @@ fn record_research_read(db: &Connection, job: &mut Value, label: &str) {
         "sessionId": session,
         "tool": "workspace_read_range",
         "status": "completed",
-        "arguments": {"path":"src/main.rs","startLine":1,"endLine":3},
-        "result": {"content":numbered,"startLine":1,"endLine":3,
+        "arguments": {"path":"src/main.rs","startLine":line+1,"endLine":line+1},
+        "result": {"content":numbered,"startLine":line+1,"endLine":line+1,
             "totalLines":text.lines().count(),"sourceSha256":hash}
     }));
 }
 
-fn produce_boundary_patch(db: &Connection, job: &mut Value) {
+fn produce_boundary_patch(db: &Connection, job: &mut Value, learned: Option<&str>) {
     let text = std::fs::read_to_string("src/main.rs").unwrap();
-    let old = "pub fn accepts(n: i32) -> bool { n >= 0 }";
-    let new = "pub fn accepts(n: i32) -> bool { n > 0 }";
+    let old = learned.unwrap_or("pub fn accepts(n: i32) -> bool { n >= 0 }");
+    let new = old.replace("n >= 0", "n > 0");
     let lines = text.lines().collect::<Vec<_>>();
     let changed = lines.iter().position(|value| *value == old).unwrap();
     let begin = changed.saturating_sub(3);
@@ -76,6 +77,24 @@ fn produce_boundary_patch(db: &Connection, job: &mut Value) {
     put(db, "rsi_run", &json!({"id":format!("rsi-run-{}",job["id"].as_str().unwrap()),
         "candidateId":id,"checksPassed":true,"sourceClean":true,"diffSha256":hash}));
     job["result"] = json!({"status":"completed","rsi":{"candidateId":id,"checksPassed":true,"diffBytes":patch.len()}});
+}
+
+fn learned_boundary(db: &Connection) -> Option<String> {
+    let hash = format!("{:x}",Sha256::digest(std::fs::read("src/main.rs").ok()?));
+    let mut statement = db.prepare("SELECT data FROM records WHERE kind='experience'").ok()?;
+    for row in statement.query_map([],|row|row.get::<_,String>(0)).ok()?.flatten() {
+        let value: Value = serde_json::from_str(&row).ok()?;
+        for artifact in value["researchArtifacts"].as_array().into_iter().flatten() {
+            if artifact["sourceSha256"] != hash {continue;}
+            for line in artifact["content"].as_str().unwrap_or("").lines() {
+                if let Some(start)=line.find("pub fn accepts") {
+                    let code=&line[start..];
+                    if code.contains("n >= 0") {return Some(code.to_string());}
+                }
+            }
+        }
+    }
+    None
 }
 
 fn produce_comment_patch(db: &Connection, job: &mut Value) {
@@ -134,16 +153,24 @@ fn main() {
                 job["result"] = json!({"status":"completed","rsi":{"checksPassed":false,"diffBytes":0,"fixturePhase":"research"}});
             }
             1 => {
-                let delivered = job["input"]["prompt"].as_str().unwrap_or("").contains("기존 RSI 경험·지식");
-                job["rsiResearchDelivered"] = json!(delivered);
-                if delivered {
-                    produce_boundary_patch(&db, &mut job);
+                let learned = learned_boundary(&db);
+                job["rsiResearchDelivered"] = json!(learned.is_some());
+                if let Some(code) = learned {
+                    produce_boundary_patch(&db, &mut job, Some(&code));
                     job["result"]["rsi"]["fixturePhase"] = json!("implementation");
                 } else {
                     job["result"] = json!({"status":"needs_review","rsi":{"checksPassed":false,"diffBytes":0,"fixturePhase":"research_missing"}});
                 }
             }
             2 => {
+                let boundary = accepts(0);
+                job["rsiBoundaryResult"] = json!(boundary);
+                if boundary {
+                    job["result"] = json!({"rsi":{"checksPassed":false,"fixturePhase":"old_behavior"}});
+                    job["status"] = json!("completed");
+                    put(&db,"job",&job);
+                    return;
+                }
                 record_research_read(&db, &mut job, "improved");
                 produce_comment_patch(&db, &mut job);
                 job["result"]["rsi"]["fixturePhase"] = json!("improved_execution");
@@ -155,7 +182,7 @@ fn main() {
     } else {
         job["rsiDomain"] = json!(if accepts(0) { "original_executable" } else { "improved_executable" });
         if accepts(0) {
-            produce_boundary_patch(&db, &mut job);
+            produce_boundary_patch(&db, &mut job, None);
         } else {
             job["result"] = json!({"status":"needs_review","rsi":{"checksPassed":false,"diffBytes":0}});
         }
