@@ -14,16 +14,14 @@ type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGen
  history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string}[]}
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
-function preferences():{selection:'manual'|'automatic';budget:number}{
- try{const saved=JSON.parse(localStorage.getItem(PREFERENCES)||'null');return {selection:saved?.selection==='automatic'?'automatic':'manual',budget:[0,1,2].includes(saved?.budget)?saved.budget:1}}
- catch{return {selection:'manual',budget:1}}
+function preferences():{selection:'manual'|'automatic'}{
+ try{const saved=JSON.parse(localStorage.getItem(PREFERENCES)||'null');return {selection:saved?.selection==='automatic'?'automatic':'manual'}}
+ catch{return {selection:'manual'}}
 }
 const terminal=(status:string)=>['completed','failed','cancelled','needs_review'].includes(status)
 const phases:Record<string,string>={preparing_lab:'개선 준비 중',building_generator:'선택한 버전 준비 중',
  diagnosing_and_editing:'문제를 찾고 개선하는 중',measuring:'기존 버전과 개선 버전 비교 중',
  waiting_for_choice:'어느 버전을 사용할지 선택해 주세요',selecting:'선택한 버전으로 이어가는 중'}
-const budgets=[{label:'짧게',seconds:900,tokens:50000,attempts:3},
- {label:'보통',seconds:1800,tokens:100000,attempts:10},{label:'길게',seconds:7200,tokens:300000,attempts:30}]
 const winners={candidate:'개선 버전이 우세합니다',baseline:'기존 버전이 우세합니다',inconclusive:'아직 우열을 확인하지 못했습니다'}
 function pair(comparison:Comparison,key:string){
  const rows=comparison.metrics.measurements?.flatMap(row=>row.metrics).filter(row=>row.key===key)||[]
@@ -61,14 +59,19 @@ function Results({comparison,waiting,busy,onChoose}:{comparison:Comparison;waiti
 export function SelfImprovementPage(){
  const providers=useRemote<Provider[]>('/api/providers',[])
  const catalogue=useRemote<{campaigns:Campaign[]}>('/api/rsi/campaigns',{campaigns:[]})
- const enabled=providers.value.filter(provider=>provider.enabled!==false)
+ const enabledAll=providers.value.filter(provider=>provider.enabled!==false)
+ const preferredProvider=enabledAll.find(provider=>/opencode|open code/i.test(provider.name)&&/deepseek/i.test(provider.model||''))
+  ||enabledAll.find(provider=>/opencode|open code/i.test(provider.name))
+  ||enabledAll.find(provider=>/deepseek/i.test(provider.model||''))
+  ||enabledAll[0]
+ const enabled=preferredProvider?[preferredProvider,...enabledAll.filter(provider=>provider.id!==preferredProvider.id)]:enabledAll
  const [providerId,setProviderId]=useState(''),[model,setModel]=useState('')
  const [request,setRequest]=useState(''),[selection,setSelection]=useState<'manual'|'automatic'>(()=>preferences().selection)
- const [budget,setBudget]=useState(()=>preferences().budget),[busy,setBusy]=useState(false),[error,setError]=useState('')
+ const [busy,setBusy]=useState(false),[error,setError]=useState('')
  const [settingsOpen,setSettingsOpen]=useState(true)
  const [jobId,setJobId]=useState(()=>{try{return localStorage.getItem(SAVED)||''}catch{return ''}})
  const [campaign,setCampaign]=useState<Campaign|null>(null)
- useEffect(()=>{try{localStorage.setItem(PREFERENCES,JSON.stringify({selection,budget}))}catch{}},[selection,budget])
+ useEffect(()=>{try{localStorage.setItem(PREFERENCES,JSON.stringify({selection}))}catch{}},[selection])
  useEffect(()=>{
   if(enabled.length&&!enabled.some(provider=>provider.id===providerId)){
    setProviderId(enabled[0].id);setModel(enabled[0].model||'')
@@ -99,10 +102,9 @@ export function SelfImprovementPage(){
   if(busy||working||!providerId||!model.trim())return
   setBusy(true);setError('')
   try{
-   const cap=budgets[budget]
    const job=await post<{id:string;status:string}>('/api/rsi/start',{
     providerId,model,request,mode:'continuous',confirmation:'START_RSI_EVOLUTION',
-    selectionPolicy:selection,maxAttempts:cap.attempts,timeBudgetSeconds:cap.seconds,tokenBudget:cap.tokens
+    selectionPolicy:selection,maxAttempts:1
    })
    setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setSettingsOpen(false)
    try{localStorage.setItem(SAVED,job.id)}catch{}
@@ -140,9 +142,7 @@ export function SelfImprovementPage(){
      <strong className="text-[13px]">{option.label}</strong><span className="mt-1 block text-[11px] text-[#7C7469]">{option.detail}</span></button>)}
    </div></div>
    <div className="mt-5"><FormField label="중점적으로 나아졌으면 하는 점 (선택)"><TextArea rows={2} value={request} onChange={e=>setRequest(e.target.value)} disabled={working||busy} placeholder="예: 기억을 더 잘하고, 같은 일을 적은 비용으로 해 줘. 비워 두어도 됩니다."/></FormField></div>
-   <div className="mt-4 flex flex-wrap items-end justify-between gap-4"><FormField label="이번 작업량"><SelectInput value={budget} disabled={working||busy} onChange={e=>setBudget(Number(e.target.value))}>
-    {budgets.map((cap,index)=><option value={index} key={cap.label}>{cap.label} · 최대 {cap.seconds/60}분 / {cap.tokens.toLocaleString()}토큰</option>)}
-   </SelectInput></FormField><Button variant="primary" onClick={()=>void start()} disabled={busy||working||!providerId||!model.trim()}><Play size={15}/>발전 시작</Button></div>
+   <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-[11px] leading-5 text-[#8A8176]">1회 수정 · 시간 상한 없음 · 토큰 상한 없음</p><Button variant="primary" onClick={()=>void start()} disabled={busy||working||!providerId||!model.trim()}><Play size={15}/>발전 시작</Button></div>
    <p className="mt-3 text-[11px] leading-5 text-[#8A8176]">시작하면 프로그램 복사본에서 수정과 실제 비교를 실행합니다. 선택한 버전은 다음 개선에 사용되며, 이전 선택은 다음 작업에도 이어집니다. 선택을 기다리는 시간은 작업 시간에 포함하지 않습니다.</p>
   </Panel>}
   {campaign&&<Panel className="mt-4 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2">{working?<LoaderCircle size={16} className="animate-spin text-[#A94E30]"/>:<Check size={16}/>}<strong className="text-[14px]">{status}</strong></div>

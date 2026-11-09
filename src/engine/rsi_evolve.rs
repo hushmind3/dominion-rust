@@ -40,21 +40,39 @@ pub fn limits(body: &Value) -> Result<Value, String> {
     let token_budget = match body.get("tokenBudget") {
         None | Some(Value::Null) => Value::Null,
         Some(value) => {
-            let number = value
-                .as_u64()
-                .ok_or("tokenBudget은 정수여야 합니다.")?;
+            let number = value.as_u64().ok_or("tokenBudget은 정수여야 합니다.")?;
             if number == 0 {
                 Value::Null
             } else if (1_000..=2_000_000).contains(&number) {
                 json!(number)
             } else {
-                return Err("tokenBudget 범위는 1,000~2,000,000입니다. 0 또는 생략은 상한 없음입니다.".into());
+                return Err(
+                    "tokenBudget 범위는 1,000~2,000,000입니다. 0 또는 생략은 상한 없음입니다."
+                        .into(),
+                );
+            }
+        }
+    };
+    let time_budget = match body.get("timeBudgetSeconds") {
+        None | Some(Value::Null) => Value::Null,
+        Some(value) => {
+            let number = value
+                .as_u64()
+                .ok_or("timeBudgetSeconds는 정수여야 합니다.")?;
+            if number == 0 {
+                Value::Null
+            } else if (60..=7200).contains(&number) {
+                json!(number)
+            } else {
+                return Err(
+                    "timeBudgetSeconds 범위는 60~7200입니다. 0 또는 생략은 상한 없음입니다.".into(),
+                );
             }
         }
     };
     Ok(json!({"maxAttempts":bound("maxAttempts",1,1,100)?,
         "tokenBudget":token_budget,
-        "timeBudgetSeconds":bound("timeBudgetSeconds",900,60,7200)?}))
+        "timeBudgetSeconds":time_budget}))
 }
 
 /// Explore every part of the product, then prefer strategies with measured
@@ -208,8 +226,10 @@ pub(crate) async fn command(
                         record["createdAt"].as_str().and_then(|v|chrono::DateTime::parse_from_rfc3339(v).ok())
                             .map(|v|v.with_timezone(&chrono::Utc)).unwrap_or_else(chrono::Utc::now)
                     ).num_milliseconds().max(0) as u64;
-                    if record["phase"]!="waiting_for_choice"&&active.saturating_sub(record["waitingMs"].as_u64().unwrap_or(0))
-                        >=record["limits"]["timeBudgetSeconds"].as_u64().unwrap_or(1800)*1000{
+                    if record["phase"]!="waiting_for_choice"
+                        && record["limits"]["timeBudgetSeconds"].as_u64().is_some_and(|budget|
+                            active.saturating_sub(record["waitingMs"].as_u64().unwrap_or(0)) >= budget.saturating_mul(1000))
+                    {
                         return Err("time_budget".into());
                     }
                     let active_tokens=record["activeGenerationJobId"].as_str()
@@ -586,13 +606,15 @@ async fn run_loop(
     loop {
         let remaining = record["limits"]["timeBudgetSeconds"]
             .as_u64()
-            .unwrap_or(1800)
-            .saturating_sub(
-                started
-                    .elapsed()
-                    .as_secs()
-                    .saturating_sub(record["waitingMs"].as_u64().unwrap_or(0) / 1000),
-            );
+            .map(|budget| {
+                budget.saturating_sub(
+                    started
+                        .elapsed()
+                        .as_secs()
+                        .saturating_sub(record["waitingMs"].as_u64().unwrap_or(0) / 1000),
+                )
+            })
+            .unwrap_or(u64::MAX);
         if remaining == 0 {
             return Ok("time_budget".into());
         }
@@ -627,7 +649,12 @@ async fn run_loop(
                 ])
                 .arg(&target)
                 .env("DOMINION_RSI_BUILD_COMMIT", &head);
-            let output = command(context, build, Duration::from_secs(remaining.min(600))).await?;
+            let build_timeout = if remaining == u64::MAX {
+                3600
+            } else {
+                remaining.min(600)
+            };
+            let output = command(context, build, Duration::from_secs(build_timeout)).await?;
             if !output.status.success() {
                 return Err(format!(
                     "차세대 개선기 빌드 실패: {}",
@@ -689,19 +716,21 @@ async fn run_loop(
         let worker_started = Instant::now();
         let remaining = record["limits"]["timeBudgetSeconds"]
             .as_u64()
-            .unwrap_or(1800)
-            .saturating_sub(
-                started
-                    .elapsed()
-                    .as_secs()
-                    .saturating_sub(record["waitingMs"].as_u64().unwrap_or(0) / 1000),
-            );
-        let output = command(
-            context,
-            worker,
-            Duration::from_secs(remaining.clamp(1, 900)),
-        )
-        .await;
+            .map(|budget| {
+                budget.saturating_sub(
+                    started
+                        .elapsed()
+                        .as_secs()
+                        .saturating_sub(record["waitingMs"].as_u64().unwrap_or(0) / 1000),
+                )
+            })
+            .unwrap_or(u64::MAX);
+        let worker_timeout = if remaining == u64::MAX {
+            7 * 24 * 3600
+        } else {
+            remaining.clamp(1, 900)
+        };
+        let output = command(context, worker, Duration::from_secs(worker_timeout)).await;
         let current = context
             .state
             .store
@@ -822,10 +851,7 @@ async fn run_loop(
         // returning without an actual source change. Three consecutive
         // no-edit attempts are enough evidence that this route is stuck.
         let no_edit = candidate_id.is_none()
-            && current["result"]["rsi"]["diffBytes"]
-                .as_u64()
-                .unwrap_or(0)
-                == 0;
+            && current["result"]["rsi"]["diffBytes"].as_u64().unwrap_or(0) == 0;
         let streak = if no_edit {
             record["noProgressStreak"].as_u64().unwrap_or(0) + 1
         } else {
@@ -994,7 +1020,8 @@ mod tests {
     #[test]
     fn resource_limits_reject_unbounded_or_malformed_requests() {
         assert!(limits(&json!({})).unwrap()["tokenBudget"].is_null());
-        assert!(limits(&json!({"tokenBudget":0})).unwrap()["tokenBudget"].is_null());
+        assert!(limits(&json!({})).unwrap()["timeBudgetSeconds"].is_null());
+        assert!(limits(&json!({"tokenBudget":0,"timeBudgetSeconds":0})).unwrap()["tokenBudget"].is_null());
         for body in [
             json!({"maxAttempts":0}),
             json!({"timeBudgetSeconds":999999}),

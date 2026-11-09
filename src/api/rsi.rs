@@ -382,6 +382,7 @@ mod tests {
         assert_eq!(campaign["input"]["rsiNativeApproved"],true);
         assert_eq!(campaign["input"]["selectionPolicy"],"manual");
         assert!(campaign["input"]["limits"]["tokenBudget"].is_null());
+        assert!(campaign["input"]["limits"]["timeBudgetSeconds"].is_null());
         assert_eq!(start(State(state.clone()),Json(continuous)).await.status(),StatusCode::BAD_REQUEST);
         assert_eq!(std::fs::read_to_string(checkout.join("uncommitted.txt")).unwrap(),"owner edits");
         std::fs::remove_dir_all(root).unwrap();
@@ -409,13 +410,14 @@ mod tests {
             "kind":"openai","model":"sample-model","baseUrl":"http://127.0.0.1:1/v1"}));
         let body = json!({"providerId":"test-provider","model":"sample-model",
             "mode":"continuous","confirmation":"START_RSI_EVOLUTION","selectionPolicy":"manual",
-            "focusFiles":["src/engine/rsi_evolve.rs"],"maxAttempts":1,"timeBudgetSeconds":900});
+            "focusFiles":["src/engine/rsi_evolve.rs"],"maxAttempts":1});
         let response = start(State(state.clone()), Json(body)).await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let jobs = state.store.all("job");
         let campaign = jobs.iter().find(|job|job["kind"]=="rsi_evolve").unwrap();
         assert_eq!(campaign["input"]["limits"]["maxAttempts"], 1);
         assert!(campaign["input"]["limits"]["tokenBudget"].is_null());
+        assert!(campaign["input"]["limits"]["timeBudgetSeconds"].is_null());
         assert!(campaign["input"]["rsiIndexFiles"].as_u64().unwrap_or(0) >= 3);
         assert_eq!(campaign["input"]["rsiFocusFiles"][0], "src/engine/rsi_evolve.rs");
         let prompt = campaign["input"]["prompt"].as_str().unwrap();
