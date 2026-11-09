@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react'
-import {ArrowRight,BrainCircuit,Check,LoaderCircle,Play,RefreshCw,Square} from 'lucide-react'
+import {ArrowLeft,ArrowRight,BrainCircuit,Check,LoaderCircle,Play,RefreshCw,Square} from 'lucide-react'
 import {Provider,get,post} from '../api'
 import {ModelPicker} from '../components/ModelPicker'
 import {Button,SelectInput,TextArea} from '../components/Primitives'
@@ -76,8 +76,8 @@ export function SelfImprovementPage(){
  },[providers.value,providerId])
  useEffect(()=>{
   if(!jobId&&catalogue.value.campaigns.length){
-   const latest=catalogue.value.campaigns.find(item=>!terminal(item.status))||catalogue.value.campaigns[0]
-   setJobId(latest.id)
+   const active=catalogue.value.campaigns.find(item=>!terminal(item.status))
+   if(active)setJobId(active.id)
   }
  },[jobId,catalogue.value])
  useEffect(()=>{
@@ -91,6 +91,10 @@ export function SelfImprovementPage(){
   return()=>{alive=false;window.clearInterval(timer)}
  },[jobId])
  const working=!!campaign&&!terminal(campaign.status)
+ const backToSetup=()=>{
+  setCampaign(null);setJobId('');setSettingsOpen(false);setError('')
+  try{localStorage.removeItem(SAVED)}catch{}
+ }
  const start=async()=>{
   if(busy||working||!providerId||!model.trim())return
   setBusy(true);setError('')
@@ -122,7 +126,7 @@ export function SelfImprovementPage(){
   campaign.status==='needs_review'||campaign.status==='failed'?'이번 작업을 계속하지 못했습니다':phases[campaign.phase]||'개선을 준비하고 있습니다':''
  return <div className="mx-auto w-full max-w-[920px] px-5 py-6 sm:px-7">
   <Headline eyebrow="DOMINION" title="계속 발전하기" description="개선할 부분을 스스로 찾고, 기존 버전과 비교합니다. 어느 쪽이 더 나은지 보고 선택하세요."
-   actions={<Button variant="secondary" onClick={()=>{void providers.reload();void catalogue.reload()}} aria-label="새로고침"><RefreshCw size={15}/></Button>}/>
+   actions={<><Button variant="ghost" onClick={backToSetup} disabled={!campaign||working}><ArrowLeft size={15}/>돌아가기</Button><Button variant="secondary" onClick={()=>{void providers.reload();void catalogue.reload()}} aria-label="새로고침"><RefreshCw size={15}/></Button></>}/>
   <Notice message={error||providers.error||(campaign?.error?'이번 개선을 완료하지 못해 기존 버전을 유지했습니다. 다시 시작할 수 있습니다.':'')}/>
   {campaign&&!working&&<div className="mb-3 flex justify-end"><Button variant="ghost" onClick={()=>setSettingsOpen(v=>!v)}>{settingsOpen?'설정 닫기':'모델·작업량 바꾸기'}</Button></div>}
   {(!campaign||settingsOpen)&&<Panel className="p-5 sm:p-7">
