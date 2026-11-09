@@ -65,7 +65,7 @@ export function SelfImprovementPage(){
  const [providerId,setProviderId]=useState(''),[model,setModel]=useState('')
  const [request,setRequest]=useState(''),[selection,setSelection]=useState<'manual'|'automatic'>(()=>preferences().selection)
  const [budget,setBudget]=useState(()=>preferences().budget),[busy,setBusy]=useState(false),[error,setError]=useState('')
- const [settingsOpen,setSettingsOpen]=useState(false)
+ const [settingsOpen,setSettingsOpen]=useState(true)
  const [jobId,setJobId]=useState(()=>{try{return localStorage.getItem(SAVED)||''}catch{return ''}})
  const [campaign,setCampaign]=useState<Campaign|null>(null)
  useEffect(()=>{try{localStorage.setItem(PREFERENCES,JSON.stringify({selection,budget}))}catch{}},[selection,budget])
@@ -77,7 +77,7 @@ export function SelfImprovementPage(){
  useEffect(()=>{
   if(!jobId&&catalogue.value.campaigns.length){
    const active=catalogue.value.campaigns.find(item=>!terminal(item.status))
-   if(active)setJobId(active.id)
+   setJobId((active||catalogue.value.campaigns[0]).id)
   }
  },[jobId,catalogue.value])
  useEffect(()=>{
@@ -92,8 +92,7 @@ export function SelfImprovementPage(){
  },[jobId])
  const working=!!campaign&&!terminal(campaign.status)
  const backToSetup=()=>{
-  setSettingsOpen(true);setJobId('');setError('')
-  try{localStorage.removeItem(SAVED)}catch{}
+  setSettingsOpen(true);setError('')
   window.scrollTo({top:0,behavior:'smooth'})
  }
  const start=async()=>{
