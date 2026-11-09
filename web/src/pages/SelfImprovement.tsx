@@ -60,8 +60,8 @@ function Results({comparison,waiting,busy,onChoose}:{comparison:Comparison;waiti
 export function SelfImprovementPage(){
  const providers=useRemote<Provider[]>('/api/providers',[])
  const catalogue=useRemote<{campaigns:Campaign[]}>('/api/rsi/campaigns',{campaigns:[]})
- const algorithms=useRemote<{id:string;kind:string;status:string;name:string;implementation:string;revision:string}[]>('/api/algorithms',[])
- const activeSearch=algorithms.value.find(item=>item.kind==='selfimprove.search'&&item.status==='active')
+ const algorithms=useRemote<{kinds:{kind:string;active?:{id:string;name:string;implementation:string;revision:string}}[]}>('/api/algorithms',{kinds:[]})
+ const activeSearch=algorithms.value.kinds?.find(item=>item.kind==='selfimprove.search')?.active
  const enabledAll=providers.value.filter(provider=>provider.enabled!==false)
  const preferredProvider=enabledAll.find(provider=>/opencode|open code/i.test(provider.name)&&/deepseek/i.test(provider.model||''))
   ||enabledAll.find(provider=>/opencode|open code/i.test(provider.name))
