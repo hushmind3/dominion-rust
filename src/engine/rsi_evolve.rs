@@ -1312,12 +1312,14 @@ pub(crate) fn reuse_research(state:&AppState,input:&Value,workspace:&Path,sessio
                         if content.is_empty() {
                             receipts.push(unavailable_research_receipt(receipt,"line_range_empty"));continue;
                         }
+                        let truncated=content.chars().count()>2200;
+                        let content=content.chars().take(2200).collect::<String>();
                         item["previousSourceSha256"]=artifact["sourceSha256"].clone();
                         item["sourceSha256"]=json!(digest);
                         item["content"]=json!(content);
                         item["startLine"]=json!(begin);
                         item["endLine"]=json!(end);
-                        item["truncated"]=json!(content.chars().count()>2200);
+                        item["truncated"]=json!(truncated);
                         item["refreshedAt"]=json!(chrono::Utc::now().to_rfc3339());
                         item["refreshReason"]=json!("source_changed");
                         item["refreshKind"]=json!("line_range_revalidation");
