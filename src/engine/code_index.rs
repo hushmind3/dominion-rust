@@ -22,7 +22,7 @@ const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SYMBOLS_PER_FILE: usize = 400;
 const MAP_MAX_CHARS: usize = 48_000;
 const FOCUS_MAX_CHARS: usize = 18_000;
-const PARSER_VERSION: u64 = 2;
+const PARSER_VERSION: u64 = 3;
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -263,9 +263,12 @@ fn parse_file(rel: &str, content: &str) -> Value {
     let mut patterns = BTreeMap::<&'static str, u64>::new();
     let mut test_pending = false;
     let mut in_tests = rel.starts_with("tests/")
+        || rel.contains("/tests/")
+        || rel.ends_with("/tests.rs")
         || rel.contains(".test.")
         || rel.contains(".spec.")
-        || rel.ends_with("_test.rs");
+        || rel.ends_with("_test.rs")
+        || rel.contains("_fixture");
     for (index, line) in content.lines().enumerate() {
         let trimmed = line.trim_start();
         if (trimmed.starts_with("//!") || trimmed.starts_with("///") || trimmed.starts_with("//"))
@@ -280,7 +283,7 @@ fn parse_file(rel: &str, content: &str) -> Value {
                 summary.push(text.chars().take(240).collect::<String>());
             }
         }
-        if trimmed.starts_with("#[cfg(test)]") {
+        if trimmed.starts_with("#[cfg(") && trimmed.contains("test") {
             in_tests = true;
         }
         if trimmed.starts_with("#[test")
