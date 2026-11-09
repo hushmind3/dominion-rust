@@ -90,14 +90,16 @@ export function ModelHub(){
  }
  const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':p?.integration==='opencode-go'?'opencode-go':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setDefaultModel(p?.model||'');setDefaultEffort(String(p?.reasoningEffort||''));setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setAccountId(p?.accountId||'');setTestResult(null);setError('');setModal(true)}
  const openPreset=(preset:ProviderPreset)=>{setEdit(null);setIntegration(preset.integration);setFreePreset(Boolean(preset.free&&preset.auth==='none'));setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId('');setDefaultModel('');setDefaultEffort('');setReflection(false);setRpm(preset.requestsPerMinute?String(preset.requestsPerMinute):'');setAccountId('');setTestResult(null);setError('');setModal(true)}
- const connectOpencodeGo=()=>{const existing=providers.value.find(p=>p.integration==='opencode-go'||p.baseUrl.includes('opencode.ai/zen/go'));if(existing)open(existing);else openPreset(opencodeGoPreset)}
+ const goProvider=providers.value.find(p=>p.integration==='opencode-go'||p.baseUrl.includes('opencode.ai/zen/go')||p.baseUrl.includes('opencode.ai/inference/go'))
+ const goCredential=cli.value.find(item=>item.id==='opencode-go')
+ const connectOpencodeGo=()=>{if(goProvider)open(goProvider);else openPreset(opencodeGoPreset)}
  const needsNewKey=presetMode&&!freePreset&&(!local||integration==='freellmapi')
  const testConnection=async()=>{
   if(testBusy||!baseUrl.trim())return
   setTestBusy(true);setTestResult(null)
   try{
    const result=await post<{ok:boolean;message?:string;status?:number}>(`/api/providers/${edit?.id||'new'}/test`,{
-    baseUrl:baseUrl.trim(),kind,integration,accountId:accountId.trim()||undefined,apiKey:apiKey.trim()||undefined,model:kind==='codex'?defaultModel.trim()||edit?.model:edit?.model,
+    baseUrl:baseUrl.trim(),kind,integration,accountId:accountId.trim()||undefined,apiKey:apiKey.trim()||undefined,model:defaultModel.trim()||edit?.model,
    })
    setTestResult(result.ok?{ok:true,message:t('models.testOk')}:{ok:false,message:(result.message||t('models.testFail'))+(result.status?` (HTTP ${result.status})`:'')})
   }catch(e){setTestResult({ok:false,message:(e as Error).message})}
@@ -112,7 +114,7 @@ export function ModelHub(){
    const saved=await post<Provider>('/api/providers',{
     ...edit,name:name.trim(),baseUrl:baseUrl.trim(),kind,apiKey:apiKey.trim()||undefined,local,integration,accountId:accountId.trim()||undefined,requestsPerMinute:Number(rpm)||0,
     toolMode:edit?.kind===kind?edit.toolMode:undefined,
-    reasoningEffort:defaultEffort,enabled:edit?.enabled??true,model:kind==='codex'?defaultModel.trim()||edit?.model:edit?.model,reflection,reflectionModel:reflection?modelId.trim():undefined,
+    reasoningEffort:defaultEffort,enabled:edit?.enabled??true,model:defaultModel.trim()||edit?.model,reflection,reflectionModel:reflection?modelId.trim():undefined,
    })
    providers.setValue(rows=>rows.some(p=>p.id===saved.id)?rows.map(p=>p.id===saved.id?saved:p):[...rows,saved])
    setCounts(rows=>{const next={...rows};delete next[saved.id];return next})
@@ -195,7 +197,8 @@ export function ModelHub(){
   try{
    const saved=await post<Provider&{importedCount?:number;skipped?:string[]}>('/api/providers/cli/import',{source})
    setSavedId(saved.id);await Promise.all([providers.reload(),cli.reload()]);refresh()
-   if(saved.importedCount&&saved.importedCount>1)setLoginMessage(`API 키 ${saved.importedCount}개를 가져왔습니다.`)
+   if(source==='opencode-go')setLoginMessage('OpenCode Go 키를 DOMINION에 저장했습니다. 모델을 선택하고 연결을 검사하세요.')
+   else if(saved.importedCount&&saved.importedCount>1)setLoginMessage(`API 키 ${saved.importedCount}개를 가져왔습니다.`)
   }catch(e){setError((e as Error).message)}
   finally{setOauthBusy('')}
  }
@@ -250,11 +253,21 @@ export function ModelHub(){
   {tab==='oauth'&&<section className="rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9] p-5 shadow-[0_1px_2px_rgba(36,33,29,.04)]">
    <div className="mb-4"><h2 className="m-0 text-[16px] font-bold text-[#24211D]">{t('models.oauth.title')}</h2><p className="mt-1 text-[12px] text-[#7C7469]">{t('models.oauth.desc')}</p></div>
    <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E7D9C8] bg-[#FFF9F0] px-4 py-3">
-    <div className="min-w-0 flex-1"><strong className="block text-[13px] text-[#3A342D]">OpenCode Go 직접 연결</strong><p className="mt-1 text-[11px] leading-5 text-[#8A775F]">OpenCode Go 키를 DOMINION에 저장하고 4399 shim 없이 https://opencode.ai/zen/go/v1 로 연결합니다.</p></div>
-    <Button type="button" variant="primary" size="sm" onClick={connectOpencodeGo}><KeyRound size={13}/> {providers.value.some(p=>p.integration==='opencode-go'||p.baseUrl.includes('opencode.ai/zen/go'))?'키 입력 / 설정':'직접 연결'}</Button>
+    <div className="min-w-0 flex-1">
+     <strong className="block text-[13px] text-[#3A342D]">OpenCode Go</strong>
+     <p className="mt-1 text-[11px] leading-5 text-[#8A775F]">OpenClaw·OpenCode의 기존 API 키를 한 번 가져오거나 직접 입력할 수 있습니다. 키는 DOMINION 금고에 저장하며 이후 4399 없이 호출합니다.</p>
+     <p className={'mt-1.5 text-[11px] font-semibold '+(goProvider?.hasKey?'text-emerald-700':'text-[#A05B48]')}>{goProvider?.hasKey?'DOMINION에 키 저장됨 · 모델 인증 확인 필요':goCredential?.importAvailable?'기존 키 감지됨 · 가져오기 가능':'DOMINION 키 없음 · API 키 등록 필요'}</p>
+     {goProvider&&counts[goProvider.id]?.error&&<p className="mt-1 text-[11px] text-rose-600">{counts[goProvider.id].error}</p>}
+     {goProvider&&(counts[goProvider.id]?.list.length??0)>0&&<p className="mt-1 text-[11px] text-emerald-700">인증된 모델 목록 {counts[goProvider.id].list.length}개 조회됨 · 사용 모델을 선택하세요.</p>}
+    </div>
+    <div className="flex flex-wrap items-center gap-2">
+     {goCredential?.importAvailable&&<Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli('opencode-go')}>{oauthBusy==='opencode-go'?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} 기존 키 가져오기</Button>}
+     <Button type="button" variant="primary" size="sm" onClick={connectOpencodeGo}><KeyRound size={13}/> {goProvider?'키 / 모델 설정':'API 키 직접 등록'}</Button>
+     {goProvider?.hasKey&&<Button type="button" variant="ghost" size="sm" disabled={counts[goProvider.id]?.busy} onClick={()=>void probe(goProvider)}><RefreshCw size={13}/> 모델 확인</Button>}
+    </div>
    </div>
-   <div className="grid grid-cols-1 gap-3 md:grid-cols-2">{cli.value.map(item=><div key={item.id} className="rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-4">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0 flex-1"><strong className="block text-[13px] text-[#3A342D]">{item.name}</strong><small className={'mt-1 inline-flex items-center gap-1 text-[11px] '+(item.available?'text-emerald-700':'text-[#9C9388]')}><UserRound size={12}/>{item.connected?'DOMINION 연결됨':item.available?t('models.oauth.available'):t('models.oauth.unavailable')}</small></div><div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">{item.id==='codex'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexLogin()}>{oauthBusy==='codex-login'?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {item.connected?'브라우저 재연결':t('models.oauth.browserLogin')}</Button>}{item.id==='codex'&&<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexDevice()}>{oauthBusy==='codex-device'?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {t('models.oauth.deviceLogin')}</Button>}{item.supported&&(item.importAvailable??item.available)&&<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}>{oauthBusy===item.id?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {oauthBusy===item.id?t('models.oauth.importing'):t('models.oauth.importExisting')}</Button>}{item.id==='codex'&&item.connected&&<Button type="button" variant="ghost" size="sm" onClick={()=>{setTab('providers');const p=providers.value.find(p=>p.id==='codex-oauth');if(p)void probe(p)}}><RefreshCw size={13}/> 모델 새로고침</Button>}</div></div>
+   <div className="grid grid-cols-1 gap-3 md:grid-cols-2">{cli.value.filter(item=>item.id!=='opencode-go').map(item=><div key={item.id} className="rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-4">
+    <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0 flex-1"><strong className="block text-[13px] text-[#3A342D]">{item.name}</strong><small className={'mt-1 inline-flex items-center gap-1 text-[11px] '+(item.available?'text-emerald-700':'text-[#9C9388]')}><UserRound size={12}/>{item.connected?'DOMINION 연결됨':item.available?t('models.oauth.available'):t('models.oauth.unavailable')}</small></div><div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">{item.id==='codex'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexLogin()}>{oauthBusy==='codex-login'?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {item.connected?'브라우저 재연결':t('models.oauth.browserLogin')}</Button>}{item.id==='codex'&&<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexDevice()}>{oauthBusy==='codex-device'?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {t('models.oauth.deviceLogin')}</Button>}{item.supported&&(item.importAvailable??item.available)&&<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}>{oauthBusy===item.id?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {oauthBusy===item.id?t('models.oauth.importing'):t('models.oauth.importExisting')}</Button>}{(item.id==='claude'||item.id==='gemini')&&<Button type="button" variant="secondary" size="sm" onClick={()=>openPreset(providerPresets.find(p=>p.name===(item.id==='claude'?'Anthropic':'Google Gemini'))!)}><KeyRound size={13}/> API 키 연결</Button>}{item.id==='codex'&&item.connected&&<Button type="button" variant="ghost" size="sm" onClick={()=>{setTab('providers');const p=providers.value.find(p=>p.id==='codex-oauth');if(p)void probe(p)}}><RefreshCw size={13}/> 모델 새로고침</Button>}</div></div>
     {item.accountId&&<div className="mt-3 break-all rounded-lg bg-white px-2.5 py-2 text-[10px] text-[#8A8176]">{t('models.oauth.account')} · {item.accountId}</div>}
     {item.model&&<div className="mt-1.5 text-[11px] text-[#8A8176]">{t('models.defaultModel')} · {item.model}</div>}
     <p className="mt-2 text-[11px] leading-5 text-[#9C9388]">{item.hint}</p>
@@ -307,6 +320,12 @@ export function ModelHub(){
       </FormField>}
      </details>}
     </>}
+    {kind!=='codex'&&<FormField label="기본 모델 ID" hint="키를 등록한 후 제공자 모델 목록에서 선택하거나 ID를 직접 입력하세요.">
+     <div className="grid gap-2">
+      {edit?.hasKey&&baseUrl.trim()===edit.baseUrl&&kind===edit.kind&&<ModelPicker providerId={edit.id} value={defaultModel} onChange={setDefaultModel} className="w-full"/>}
+      <TextInput value={defaultModel} onChange={e=>setDefaultModel(e.target.value)} placeholder={integration==='opencode-go'?'예: deepseek-v4.1-flash':t('models.dlg.modelIdPlaceholder')}/>
+     </div>
+    </FormField>}
     <FormField label={t('models.dlg.rpm')} hint={t('models.dlg.rpmHint')}><TextInput type="number" min={0} max={10000} value={rpm} onChange={e=>setRpm(e.target.value)} placeholder="0"/></FormField>
     {error&&<Notice message={error}/>}
     {testResult&&<div className={'rounded-xl border px-3 py-2 text-[12px] '+(testResult.ok?'border-[#CFE0CF] bg-[#F4FAF3] text-[#4F6F52]':'border-[#EAD3CB] bg-[#FFF4F0] text-[#9A5B48]')}>{testResult.message}</div>}
