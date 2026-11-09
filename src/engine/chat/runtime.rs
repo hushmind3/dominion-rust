@@ -51,8 +51,8 @@ fn rsi_output_allowance(spent: u64, input: u64) -> Result<u64,String> {
 /// When RSI has spent most of the turn on exploration, stop offering read
 /// tools. The model must decide: make the grounded change, or finish without
 /// one. This is a decision checkpoint, not a forced write.
-fn rsi_should_checkpoint(tool_calls: u64, remaining: u64, has_write: bool) -> bool {
-    !has_write && tool_calls >= 6 && remaining < 100_000
+fn rsi_should_checkpoint(tool_calls: u64, has_write: bool) -> bool {
+    !has_write && tool_calls >= 6
 }
 
 pub async fn run_turn(
@@ -505,11 +505,16 @@ async fn run_turn_body(
         request.agent_id.as_deref(),
         Some(execution_id),
     );
-    let max_rounds = budget_algorithm
+    let mut max_rounds = budget_algorithm
         .as_ref()
         .and_then(|algorithm| algorithm["parameters"]["maxRounds"].as_u64())
         .unwrap_or(MAX_ROUNDS as u64)
         .clamp(2, 24) as usize;
+    if session["rsiRun"] == true {
+        // Leave rounds after the exploration checkpoint so the model can
+        // either make the grounded edit or finish without one.
+        max_rounds = max_rounds.max(8);
+    }
     let max_tools = budget_algorithm
         .as_ref()
         .and_then(|algorithm| algorithm["parameters"]["maxTools"].as_u64())
@@ -1056,8 +1061,7 @@ async fn run_turn_body(
                         Some("workspace_write" | "workspace_replace")
                     )
             });
-            let remaining = MAX_TOKENS.saturating_sub(total_tokens);
-            if rsi_should_checkpoint(tool_calls, remaining, has_write) {
+            if rsi_should_checkpoint(tool_calls, has_write) {
                 round_tools.retain(|definition| {
                     matches!(
                         tool_name(definition),
@@ -6058,10 +6062,9 @@ mod harness_tool_selection_tests {
 
     #[test]
     fn rsi_checkpoint_allows_an_edit_or_a_no_change_finish() {
-        assert!(!rsi_should_checkpoint(5, 50_000, false));
-        assert!(!rsi_should_checkpoint(6, 100_000, false));
-        assert!(rsi_should_checkpoint(6, 99_999, false));
-        assert!(!rsi_should_checkpoint(6, 99_999, true));
+        assert!(!rsi_should_checkpoint(5, false));
+        assert!(rsi_should_checkpoint(6, false));
+        assert!(!rsi_should_checkpoint(6, true));
     }
 
     #[test]
