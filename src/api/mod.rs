@@ -82,6 +82,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/optimizers", get(experiments::optimizers))
         .route("/api/rsi", get(rsi::list).post(rsi::propose))
         .route("/api/rsi/start", post(rsi::start))
+        .route("/api/rsi/signals", get(rsi::signals))
         .route("/api/rsi/campaigns", get(rsi::campaigns))
         .route("/api/rsi/campaigns/:id/choose", post(rsi::choose))
         .route("/api/rsi/campaigns/:id", get(rsi::campaign))

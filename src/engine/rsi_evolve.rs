@@ -37,9 +37,9 @@ pub fn limits(body: &Value) -> Result<Value, String> {
             Err(format!("{key} 범위는 {min}~{max}입니다."))
         }
     };
-    Ok(json!({"maxAttempts":bound("maxAttempts",10,1,100)?,
-        "tokenBudget":bound("tokenBudget",100_000,1_000,2_000_000)?,
-        "timeBudgetSeconds":bound("timeBudgetSeconds",1800,60,7200)?}))
+    Ok(json!({"maxAttempts":bound("maxAttempts",1,1,100)?,
+        "tokenBudget":bound("tokenBudget",50_000,1_000,2_000_000)?,
+        "timeBudgetSeconds":bound("timeBudgetSeconds",900,60,7200)?}))
 }
 
 /// Explore every part of the product, then prefer strategies with measured
@@ -771,10 +771,13 @@ async fn run_loop(
                 Err(error) => generation["error"] = json!(error),
             }
         } else {
-            generation["error"] = json!(output.err().unwrap_or_else(|| current["error"]
-                .as_str()
-                .unwrap_or("유효한 변경이나 검사 통과 없음")
-                .to_string()));
+            let worker_error = output.as_ref().err().map(String::as_str);
+            let child = &current["result"]["rsi"];
+            generation["error"] = json!(worker_error
+                .or_else(|| child["modelError"].as_str())
+                .or_else(|| child["captureError"].as_str())
+                .or_else(|| current["error"].as_str())
+                .unwrap_or("유효한 변경이나 검사 통과 없음"));
         }
         generation["elapsedMs"] = json!((worker_started.elapsed().as_millis() as u64)
             .saturating_sub(
@@ -792,9 +795,26 @@ async fn run_loop(
             .as_array_mut()
             .ok_or("세대 목록 손상")?
             .push(generation);
+        // Do not spend the full attempt/token budget when the model keeps
+        // returning without an actual source change. Three consecutive
+        // no-edit attempts are enough evidence that this route is stuck.
+        let no_edit = candidate_id.is_none()
+            && current["result"]["rsi"]["diffBytes"]
+                .as_u64()
+                .unwrap_or(0)
+                == 0;
+        let streak = if no_edit {
+            record["noProgressStreak"].as_u64().unwrap_or(0) + 1
+        } else {
+            0
+        };
+        record["noProgressStreak"] = json!(streak);
         record["activeGenerationJobId"] = Value::Null;
         elapsed(record, started);
         save(context, record)?;
+        if streak >= 3 {
+            return Ok("no_progress".into());
+        }
     }
 }
 
