@@ -48,6 +48,12 @@ pub fn definitions() -> Vec<Value> {
         tool("memory_store", "Save a grounded memory for this agent. Quote the user's exact words; invented facts are rejected. Shared memories are managed by the user.", object(json!({"text": text("Fact to remember, maximum 1600 characters"), "evidenceQuote": text("Exact quote from the current user message supporting the fact"), "sourceMessageId": text("Optional earlier source message ID"), "type": json!({"type":"string","enum":["fact","preference","decision","procedure","lesson"]}), "key": text("Optional stable fact key; a new value replaces the previous value for this key"), "scope": json!({"type":"string","enum":["agent"]})}), vec!["text", "evidenceQuote"])),
         tool("memory_search", "Find saved knowledge relevant to a topic", object(json!({"query": text("Search query")}), vec!["query"])),
         tool("skill_propose", "Draft a reusable skill for user review", object(json!({"name": text("Skill name"), "instructions": text("Reusable instructions")}), vec!["name", "instructions"])),
+        tool("algorithm_propose", "Propose a new self-improvement search formula. The engine replays recorded generations; only a strictly better formula is activated for the next generation.", object(json!({
+            "name": text("Algorithm name"),
+            "expression": text("Arithmetic over attempts, accepted, regressions, inconclusive, novelty, successRate, tokenCost, objectiveMatch, unresolved, exploration"),
+            "description": text("Why this formula should choose better improvement targets"),
+            "evidence": json!({"type":"array","items":{"type":"string"},"description":"Observed failures or regressions that justify the formula"})
+        }), vec!["expression"])),
         tool("delegate_task", "Delegate a self-contained task to another agent and optionally wait for its result", object(json!({
             "agentId": text("Target agent id"),
             "prompt": text("Task instructions"),
@@ -89,7 +95,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch")
+    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose")
 }
 
 pub async fn execute(
@@ -277,6 +283,48 @@ pub async fn execute(
                 }),
             );
             Ok(json!({ "proposed": true, "skill": record }))
+        }
+        "algorithm_propose" => {
+            let session = ctx
+                .store
+                .get("session", ctx.session_id)
+                .ok_or("자기개선 세션을 찾을 수 없습니다.")?;
+            if session["rsiRun"] != true {
+                return Err("algorithm_propose는 자기개선 세대에서만 사용할 수 있습니다.".into());
+            }
+            let campaign_id = session["rsiCampaignId"]
+                .as_str()
+                .ok_or("진행 중인 자기개선 캠페인이 없습니다.")?;
+            let running = ctx.store.get("job", campaign_id).is_some_and(|job| {
+                job["kind"] == "rsi_evolve"
+                    && job["status"] == "running"
+                    && job["cancelRequested"] != true
+            });
+            if !running {
+                return Err("진행 중인 자기개선 캠페인이 없습니다.".into());
+            }
+            let expression = required_arg(args, "expression")?;
+            let name = string_arg(args, "name")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("rsi-search-expression");
+            let record = crate::engine::algorithms::register(
+                ctx.state,
+                &json!({
+                    "kind": "selfimprove.search",
+                    "name": name,
+                    "variant": name,
+                    "implementation": "expression",
+                    "parameters": {"expression": expression},
+                    "description": args["description"].as_str().unwrap_or(""),
+                    "source": "rsi-generated",
+                }),
+            )?;
+            Ok(json!({
+                "proposed": true,
+                "algorithmId": record["id"],
+                "algorithm": record,
+                "next": "엔진이 과거 세대 기록으로 평가한 뒤에만 다음 세대에 적용됩니다.",
+            }))
         }
         "delegate_task" => delegate(ctx, args).await,
         "task_status" => task_payload(ctx, args, false),
@@ -1308,8 +1356,62 @@ mod tests {
         assert!(rsi_allowed("workspace_read_range"));
         assert!(rsi_allowed("workspace_replace"));
         assert!(rsi_allowed("workspace_write"));
+        assert!(rsi_allowed("algorithm_propose"));
         assert!(!rsi_allowed("workspace_read"));
         assert!(!rsi_allowed("shell_exec"));
+    }
+
+    #[tokio::test]
+    async fn algorithm_propose_is_limited_to_running_rsi_campaigns() {
+        use crate::config::Config;
+        use crate::db::Store;
+        use crate::vault::Vault;
+        let dir = std::env::temp_dir().join(format!("dominion-alg-tool-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let state = crate::state::AppState::new(
+            config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()),
+        );
+        let ctx = ToolContext {
+            workspace: &dir,
+            store: &state.store,
+            state: &state,
+            session_id: "s",
+            agent_id: None,
+            tools_enabled: true,
+            tools_execution_enabled: true,
+        };
+        let proposal = json!({"name":"objective-first","expression":"objectiveMatch * 10 + novelty"});
+        assert!(execute(&ctx, "algorithm_propose", &proposal, "run").await.is_err());
+        state.store.put("session", &json!({"id":"s"})).unwrap();
+        assert!(execute(&ctx, "algorithm_propose", &proposal, "run").await.is_err());
+        state
+            .store
+            .put("session", &json!({"id":"s","rsiRun":true,"rsiCampaignId":"c"}))
+            .unwrap();
+        assert!(execute(&ctx, "algorithm_propose", &proposal, "run").await.is_err());
+        state
+            .store
+            .put("job", &json!({"id":"c","kind":"rsi_evolve","status":"running"}))
+            .unwrap();
+        let saved = execute(&ctx, "algorithm_propose", &proposal, "run")
+            .await
+            .unwrap();
+        assert_eq!(saved["proposed"], true);
+        assert!(state
+            .store
+            .get("algorithm", saved["algorithmId"].as_str().unwrap())
+            .is_some());
+        let invalid = json!({"expression":"unknownVariable * 2"});
+        assert!(execute(&ctx, "algorithm_propose", &invalid, "run").await.is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

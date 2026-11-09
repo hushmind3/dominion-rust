@@ -63,7 +63,7 @@ pub fn executable_kernels(kind: &str) -> &'static [&'static str] {
         "multiagent.conflict" => &["evidence-first", "owner-authority", "latest-speaker"],
         "execution.ordering" => &["as-written", "read-first"],
         "execution.parallelism" => &["concurrent", "sequential"],
-        "selfimprove.search" => &["failure-clusters", "counterexample-first"],
+        "selfimprove.search" => &["failure-clusters", "counterexample-first", "expression"],
         _ => &[],
     }
 }
@@ -72,6 +72,44 @@ pub fn kernel_exists(kind: &str, implementation: &str) -> bool {
     executable_kernels(kind)
         .iter()
         .any(|kernel| *kernel == implementation)
+}
+
+/// Features available to a model-authored `selfimprove.search` expression.
+/// The search coordinator fills exactly these names before evaluating a domain.
+pub const SELFIMPROVE_FEATURES: &[&str] = &[
+    "attempts",
+    "accepted",
+    "regressions",
+    "inconclusive",
+    "novelty",
+    "successRate",
+    "tokenCost",
+    "objectiveMatch",
+    "unresolved",
+    "exploration",
+];
+
+fn expression_sample(kind: &str) -> std::collections::BTreeMap<String, f64> {
+    let names: &[&str] = if kind == "selfimprove.search" {
+        SELFIMPROVE_FEATURES
+    } else {
+        &[
+            "discrimination",
+            "progress",
+            "cost",
+            "uncertainty",
+            "historical",
+            "unresolved",
+            "precondition",
+            "benefit",
+            "similarity",
+            "risk",
+        ]
+    };
+    names
+        .iter()
+        .map(|name| (name.to_string(), 1.0))
+        .collect()
 }
 
 pub fn kind_label(kind: &str) -> &str {
@@ -654,6 +692,13 @@ pub fn builtins() -> Vec<Value> {
             json!({"order": "frequency"}),
         ),
         builtin(
+            "selfimprove.search",
+            "counterexample-first",
+            "counterexample-first",
+            "회귀·미결 증거가 있는 분야를 먼저 재검토한다.",
+            json!({"order": "regressions"}),
+        ),
+        builtin(
             "tool.selection",
             "read-before-write",
             "read-before-write",
@@ -665,21 +710,21 @@ pub fn builtins() -> Vec<Value> {
 
 pub fn seed(state: &AppState) -> Vec<Value> {
     let mut saved = Vec::new();
+    let mut active_kinds = state
+        .store
+        .all("algorithm")
+        .into_iter()
+        .filter(|item| item["status"].as_str() == Some("active"))
+        .filter_map(|item| item["kind"].as_str().map(str::to_string))
+        .collect::<std::collections::BTreeSet<_>>();
     for mut algorithm in builtins() {
         // The first builtin of each kind is the explicit default. Later
         // activation never silently promotes another kind or another tool.
         let kind = algorithm["kind"].as_str().unwrap_or("").to_string();
-        let records = state.store.all("algorithm");
-        let kind_exists = records
-            .iter()
-            .any(|item| item["kind"].as_str() == Some(kind.as_str()));
-        let has_active = records.iter().any(|item| {
-            item["kind"].as_str() == Some(kind.as_str())
-                && item["status"].as_str() == Some("active")
-        });
-        if !kind_exists && !has_active {
+        if !active_kinds.contains(&kind) {
             algorithm["status"] = json!("active");
             algorithm["activatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            active_kinds.insert(kind);
         }
         let id = algorithm["id"].as_str().unwrap_or("").to_string();
         if state.store.get("algorithm", &id).is_none() {
@@ -1475,14 +1520,7 @@ pub fn register(state: &AppState, body: &Value) -> Result<Value, String> {
             .as_str()
             .filter(|value| !value.trim().is_empty())
             .ok_or("expression kernel requires parameters.expression")?;
-        let mut sample = std::collections::BTreeMap::new();
-        for name in [
-            "discrimination", "progress", "cost", "uncertainty", "historical",
-            "unresolved", "precondition", "benefit", "similarity", "risk",
-        ] {
-            sample.insert(name.to_string(), 1.0);
-        }
-        eval_expression(expression, &sample)?;
+        eval_expression(expression, &expression_sample(kind))?;
     }
     let variant = body["variant"].as_str().unwrap_or(implementation);
     let parameters = body["parameters"]
@@ -1889,6 +1927,33 @@ mod tests {
                 "name":"broken-formula",
                 "implementation":"expression",
                 "parameters":{"expression":"discrimination +"}
+            })
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn selfimprove_expression_uses_search_features_and_rejects_unknown_names() {
+        let (state, dir) = state();
+        let record = register(
+            &state,
+            &json!({
+                "kind":"selfimprove.search",
+                "name":"search-formula",
+                "implementation":"expression",
+                "parameters":{"expression":"accepted * 2 - tokenCost + novelty - regressions"}
+            }),
+        )
+        .unwrap();
+        assert_eq!(record["implementation"], "expression");
+        assert!(register(
+            &state,
+            &json!({
+                "kind":"selfimprove.search",
+                "name":"wrong-features",
+                "implementation":"expression",
+                "parameters":{"expression":"discrimination * 2"}
             })
         )
         .is_err());

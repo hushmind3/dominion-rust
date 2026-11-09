@@ -252,7 +252,13 @@ fn improvement_search() {
     let mut hits = 0;
     for _ in 0..5000 {
         for (history, expected) in &scenarios {
-            hits += usize::from(rsi_evolve::choose_domain(history) == *expected);
+            hits += usize::from(
+                rsi_evolve::select_domain(
+                    &json!({"implementation":"failure-clusters","parameters":{}}),
+                    history,
+                    "",
+                ) == *expected,
+            );
         }
     }
     let quality = hits as f64 / (scenarios.len() * 5000) as f64;
