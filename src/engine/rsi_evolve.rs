@@ -193,12 +193,6 @@ pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &st
     best.1.to_string()
 }
 
-pub fn choose_domain(state: &AppState, history: &[Value], objective: &str) -> String {
-    let algorithm = crate::engine::algorithms::active(state, "selfimprove.search")
-        .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
-    select_domain(&algorithm, history, objective)
-}
-
 fn search_strategy(algorithm: &Value, mode: &str) -> Value {
     json!({
         "id": algorithm["id"],
@@ -1025,6 +1019,7 @@ fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
     let baseline_accepted = baseline["accepted"] == true;
     let trial_regressed = generation["evaluation"]["verdict"] == "regressed";
     let trial_error = generation["error"].as_str().is_some_and(|error| !error.is_empty());
+    let baseline_error = baseline["error"].as_str().is_some_and(|error| !error.is_empty());
     let tokens = generation["tokens"].as_u64().unwrap_or(0) as f64;
     let baseline_tokens = baseline["tokens"].as_u64().unwrap_or(0) as f64;
     let elapsed = generation["elapsedMs"].as_u64().unwrap_or(0) as f64;
@@ -1039,7 +1034,9 @@ fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
     } else {
         1.0
     };
-    let verdict = if trial_error || trial_regressed {
+    let verdict = if trial_regressed {
+        "rejected"
+    } else if trial_error && !baseline_error {
         "rejected"
     } else if trial_accepted && !baseline_accepted {
         "supported"
@@ -1074,8 +1071,8 @@ fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
             "trialElapsedMs": elapsed,
             "timeRatio": time_ratio,
             "trialError": generation["error"],
-            "reason": if trial_error {
-                "trial generation failed"
+            "reason": if trial_error && !baseline_error {
+                "trial generation failed where the baseline did not"
             } else if trial_regressed {
                 "trial generation regressed"
             } else if trial_accepted && !baseline_accepted {
