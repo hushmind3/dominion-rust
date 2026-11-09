@@ -481,6 +481,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "nativeApproved":true,"limits":limits,"attempts":0,"acceptedGenerations":0,"tokens":0,
         "history":[],"activeGenerationJobId":null,"createdAt":chrono::Utc::now().to_rfc3339(),
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
+        "improvementItemId":input["rsiImprovementItemId"],
         "productionChanged":false,"accelerationProven":false});
     save(context, &record)?;
     let started = Instant::now();
@@ -534,6 +535,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .put("rsi_campaign", &record)
         .ok_or("최종 실험 기록 저장 실패")?;
     context.state.bus.record("rsi_campaign", &record);
+    if record["improvementItemId"].as_str().is_some() {
+        crate::engine::rsi_backlog::finish_campaign(&context.state, &record);
+    }
     // Cancellation deliberately forbids resurrecting the parent job.
     if record["status"] != "cancelled" {
         context.checkpoint(json!({"rsiEvolutionInFlight":false,"evolution":record}))?;

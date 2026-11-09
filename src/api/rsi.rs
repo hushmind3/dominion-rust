@@ -13,7 +13,28 @@ pub async fn list(State(state): State<AppState>) -> Json<Value> {
 }
 
 pub async fn signals(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({"signals": crate::engine::rsi_scan::scan(&state)}))
+    let report = crate::engine::rsi_scan::report(&state);
+    let items = crate::engine::rsi_backlog::sync_report(&state, &report);
+    Json(json!({
+        "signals": report["signals"],
+        "checks": report["checks"],
+        "checked": report["checked"],
+        "items": items,
+    }))
+}
+
+pub async fn backlog(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({"items": crate::engine::rsi_backlog::sync(&state)}))
+}
+
+pub async fn dismiss(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    match crate::engine::rsi_backlog::dismiss(&state, &id) {
+        Ok(item) => Json(item).into_response(),
+        Err(message) => error(message),
+    }
 }
 
 pub async fn one(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -166,19 +187,62 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     if !remote.is_empty() && !remote.contains("hushmind3/dominion-rust") {
         return error("현재 연결된 소스가 DOMINION Rust 저장소가 아닙니다.".into());
     }
-    let objective = body["request"].as_str().unwrap_or("").trim();
-    if objective.chars().count() > 3000 {
+    let item_id = body["improvementItemId"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !item_id.is_empty() && !continuous {
+        return error("자동 점검에서 고른 개선 후보는 자동 개선으로만 시작할 수 있습니다.".into());
+    }
+    let (improvement_item, item_context) = if item_id.is_empty() {
+        (Value::Null, String::new())
+    } else {
+        match crate::engine::rsi_backlog::context(&state, &item_id, &source) {
+            Ok((item, context)) => (item, context),
+            Err(message) => return error(message),
+        }
+    };
+    let request = body["request"].as_str().unwrap_or("").trim();
+    if request.chars().count() > 3000 {
         return error("개선 요청은 3,000자 이하로 입력하세요.".into());
     }
-    let autonomous = objective.is_empty();
-    let objective = if autonomous {
-        "DOMINION 소스와 기존 테스트·실험 기록을 스스로 조사하고 개선 가치가 큰 문제를 직접 선정한다. 기존 기능을 유지하면서 실제로 더 정확하고 효율적이거나 견고해지는 알고리즘·하네스·개선기 구조를 탐색하고, 근거가 있는 개선안 하나를 코드로 구현한다. 이미 구현된 기능을 중복 작성하거나 근거 없이 리팩터링하지 않는다."
-    } else { objective };
+    let autonomous = item_id.is_empty() && request.is_empty();
+    let objective = if item_id.is_empty() {
+        if autonomous {
+            "DOMINION 소스와 기존 테스트·실험 기록을 스스로 조사하고 개선 가치가 큰 문제를 직접 선정한다. 기존 기능을 유지하면서 실제로 더 정확하고 효율적이거나 견고해지는 알고리즘·하네스·개선기 구조를 탐색하고, 근거가 있는 개선안 하나를 코드로 구현한다. 이미 구현된 기능을 중복 작성하거나 근거 없이 리팩터링하지 않는다.".to_string()
+        } else {
+            request.to_string()
+        }
+    } else {
+        let suggested = improvement_item["suggestedRequest"]
+            .as_str()
+            .unwrap_or("자동 점검에서 찾은 개선 후보 하나를 실제 코드로 수정한다.");
+        if request.is_empty() {
+            suggested.to_string()
+        } else {
+            format!("{suggested}\n사용자 추가 지시: {request}")
+        }
+    };
     let source_dir = source.to_string_lossy().to_string();
-    let previous_evidence=crate::engine::rsi_worktree::recent_feedback(&state);
+    let previous_evidence = crate::engine::rsi_worktree::recent_feedback(&state);
+    let mode = if item_id.is_empty() {
+        if autonomous {
+            "자율 진단 및 개선"
+        } else {
+            "사용자 지정 개선"
+        }
+    } else {
+        "지속 개선 후보 1회 수정"
+    };
+    let recipe = if item_id.is_empty() {
+        "1. workspace_list로 저장소 구조를 먼저 살펴보고 실제 Rust 실행 엔진, 문맥·기억, 도구, 학습·자기개선 관련 소스와 기존 테스트의 연결 관계를 조사하세요. workspace_read로 근거가 되는 코드를 읽으세요.\n2. 실패·성능 저하·중복 계산·알고리즘 정확도·유지보수성 가운데 가장 효과가 클 수 있는 개선 후보를 우선순위로 비교하세요. 이미 있는 기능을 새로 만들지 마세요.\n3. 가장 근거가 탄탄한 변경 하나를 고르고 원인·변경 전 행동·기대되는 효과·검증 방법을 정하세요. 실질적 개선을 확인할 방법이 없으면 무리하게 코드를 바꾸지 마세요.\n4. 필요한 경우 workspace_write로 분리된 작업공간의 허용된 코드만 수정하세요. 기존 사용자 지시·페르소나·장기기억·승인·취소·복구 능력은 보존하세요.\n5. 실제 수정 여부와 검증 여부를 구분해 보고하세요. 컴파일·타입 검사와 패치 수집은 모델 종료 후 Rust 엔진이 독립 수행하므로, 이를 모델이 직접 완료했다고 주장하지 마세요.\n조사는 최대 3개 파일만 읽고, 예산의 40%를 넘기기 전에 workspace_write로 실제 수정을 시작하세요. 조사만 하다 끝내지 마세요."
+    } else {
+        "1. 아래 지속 개선 후보의 대상 파일과 코드 문맥만 읽으세요. 저장소 전체를 다시 탐색하거나 다른 개선 후보를 찾지 마세요.\n2. 후보의 근거와 지난 실패 원인을 확인하고, 이번 한 번의 시도에서 실제 원인을 고치는 가장 작은 코드 변경을 정하세요.\n3. 바로 workspace_write로 대상 파일을 수정하세요. 조사만 하고 끝내지 마세요.\n4. 기존 사용자 지시·페르소나·장기기억·승인·취소·복구 능력은 보존하세요.\n5. 실제 수정 여부와 검증 여부를 구분해 보고하세요. 컴파일·타입 검사와 패치 수집은 모델 종료 후 Rust 엔진이 독립 수행하므로, 이를 모델이 직접 완료했다고 주장하지 마세요."
+    };
     let prompt = format!(
-        "DOMINION Rust 자체 개선 작업입니다. 원본 소스는 보호되고 실행기가 생성하는 분리된 작업공간에서 수정합니다.\\n\\n원본 (읽기 참조용): {source_dir}\\n브랜치: dominion-sub\\n개선 모드: {}\\n목표: {objective}\\n\\n이전 실행의 실제 검사 증거(성능 향상과 구분):\\n{previous_evidence}\\n\\n1. workspace_list로 저장소 구조를 먼저 살펴보고 실제 Rust 실행 엔진, 문맥·기억, 도구, 학습·자기개선 관련 소스와 기존 테스트의 연결 관계를 조사하세요. workspace_read로 근거가 되는 코드를 읽으세요.\\n2. 실패·성능 저하·중복 계산·알고리즘 정확도·유지보수성 가운데 가장 효과가 클 수 있는 개선 후보를 우선순위로 비교하세요. 이미 있는 기능을 새로 만들지 마세요.\\n3. 가장 근거가 탄탄한 변경 하나를 고르고 원인·변경 전 행동·기대되는 효과·검증 방법을 정하세요. 실질적 개선을 확인할 방법이 없으면 무리하게 코드를 바꾸지 마세요.\\n4. 필요한 경우 workspace_write로 분리된 작업공간의 허용된 코드만 수정하세요. 기존 사용자 지시·페르소나·장기기억·승인·취소·복구 능력은 보존하세요.\\n5. 실제 수정 여부와 검증 여부를 구분해 보고하세요. 컴파일·타입 검사와 패치 수집은 모델 종료 후 Rust 엔진이 독립 수행하므로, 이를 모델이 직접 완료했다고 주장하지 마세요.\\n조사는 최대 3개 파일만 읽고, 예산의 40%를 넘기기 전에 workspace_write로 실제 수정을 시작하세요. 조사만 하다 끝내지 마세요.\\n절대경로 읽기·쓰기, 셸, GitHub API, 다른 에이전트는 이 작업에 사용할 수 없습니다. main 변경·커밋·푸시·병합·서버 재시작도 하지 마세요. 사용자는 JSON, Git diff, SHA를 입력하지 않습니다. 한국어로 핵심 개선 근거와 남은 검증을 간결하게 보고하세요.", if autonomous { "자율 진단 및 개선" } else { "사용자 지정 개선" }
-    ).replace("\\n", "\n");
+        "DOMINION Rust 자체 개선 작업입니다. 원본 소스는 보호되고 실행기가 생성하는 분리된 작업공간에서 수정합니다.\n\n원본 (읽기 참조용): {source_dir}\n브랜치: dominion-sub\n개선 모드: {mode}\n목표: {objective}\n\n이전 실행의 실제 검사 증거(성능 향상과 구분):\n{previous_evidence}\n\n{recipe}\n\n{item_context}\n\n절대경로 읽기·쓰기, 셸, GitHub API, 다른 에이전트는 이 작업에 사용할 수 없습니다. main 변경·커밋·푸시·병합·서버 재시작도 하지 마세요. 사용자는 JSON, Git diff, SHA를 입력하지 않습니다. 한국어로 핵심 개선 근거와 남은 검증을 간결하게 보고하세요."
+    );
     let mut input = json!({
         "prompt": prompt,
         "providerId": provider_id,
@@ -189,6 +253,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
+        "rsiImprovementItemId": if item_id.is_empty() { Value::Null } else { json!(item_id) },
         "rsiFrozenCases": [
             {"id":"memory-explicit","domain":"memory","holdout":true,
                 "filter":"engine::room_state::tests::explicit_owner_state_survives_and_a_correction_supersedes_the_old_code"},
@@ -221,12 +286,39 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         if !matches!(policy,"manual"|"automatic"){return error("선택 방식이 올바르지 않습니다.".into());}
         input["selectionPolicy"]=json!(policy);input["limits"]=limits;
         input["rsiNativeApproved"]=json!(true);
+        if !item_id.is_empty() {
+            // A basket item is explicitly a one-shot fix. Never replay it ten
+            // times just because the caller sent a larger generic budget.
+            input["limits"]["maxAttempts"] = json!(1);
+            let seconds = input["limits"]["timeBudgetSeconds"]
+                .as_u64()
+                .unwrap_or(600)
+                .min(900);
+            input["limits"]["timeBudgetSeconds"] = json!(seconds);
+        }
     }
     let mut cases=input["rsiFrozenCases"].as_array().cloned().unwrap_or_default();
     cases.extend(crate::engine::rsi_worktree::metric_cases());
     input["rsiFrozenCases"]=json!(cases);
     match crate::engine::jobs::enqueue(&state, if continuous{"rsi_evolve"}else{"prompt"}, input) {
-        Some(job) => (StatusCode::ACCEPTED, Json(job)).into_response(),
+        Some(job) => {
+            if continuous && !item_id.is_empty() {
+                let Some(job_id) = job["id"].as_str().map(str::to_string) else {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"개선 작업 ID를 받지 못했습니다."}))).into_response();
+                };
+                if let Err(message) = crate::engine::rsi_backlog::claim(&state, &item_id, &job_id) {
+                    state.store.patch_if(
+                        "job",
+                        &job_id,
+                        "status",
+                        &json!("queued"),
+                        &json!({"status":"cancelled","error":message}),
+                    );
+                    return error(message);
+                }
+            }
+            (StatusCode::ACCEPTED, Json(job)).into_response()
+        }
         None => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"자기개선 작업을 대기열에 등록하지 못했습니다."}))).into_response()
     }
 }
@@ -301,6 +393,52 @@ mod tests {
         assert!(campaign["input"]["limits"]["tokenBudget"].as_u64().unwrap()>0);
         assert_eq!(start(State(state.clone()),Json(continuous)).await.status(),StatusCode::BAD_REQUEST);
         assert_eq!(std::fs::read_to_string(checkout.join("uncommitted.txt")).unwrap(),"owner edits");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn basket_item_forces_one_attempt_and_carries_code_context() {
+        let root = std::env::temp_dir().join(format!("dominion-rsi-item-{}", uuid::Uuid::new_v4()));
+        let checkout = root.join("checkout");
+        let data = root.join("data");
+        std::fs::create_dir_all(checkout.join("src/engine")).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(checkout.join("Cargo.toml"), "[package]\nname = \"dominion\"\nversion = \"0.1.0\"\n").unwrap();
+        std::fs::write(checkout.join("src/engine/rsi.rs"), "// source\n").unwrap();
+        std::fs::write(checkout.join("src/engine/rsi_evolve.rs"),
+            "fn run_loop() {\n    let max_attempts = limits[\"maxAttempts\"];\n}\n").unwrap();
+        git(&checkout, &["init", "-q"]);
+        git(&checkout, &["checkout", "-b", "dominion-sub"]);
+        git(&checkout, &["add", "."]);
+        git(&checkout, &["-c", "user.email=ci@example.com", "-c", "user.name=CI", "commit", "-qm", "fixture"]);
+        let cfg = Config { port:0, data_dir:data.clone(), web_dir:data.join("web"), workspace:data.clone() };
+        let state = AppState::new(cfg.clone(), Store::open(&cfg.db_path()).unwrap(), Vault::open(&cfg.key_path()));
+        crate::engine::dev::save_config(&state, &json!({"sourceDir":checkout.to_str().unwrap()}));
+        state.store.put("provider", &json!({"id":"test-provider","name":"Local","enabled":true,
+            "kind":"openai","model":"sample-model","baseUrl":"http://127.0.0.1:1/v1"}));
+        state.store.put("improvement_item", &json!({
+            "id":"improvement-test","kind":"rsi_token_waste","title":"토큰 낭비",
+            "detail":"10회 시도 후 후보 0","status":"open","attempts":0,"tokensSpent":0,
+            "campaigns":[],"suggestedRequest":"한 번만 시도하고 실제 코드를 수정하세요.",
+            "targetFiles":["src/engine/rsi_evolve.rs"],"evidence":[{"campaignId":"old"}]
+        })).unwrap();
+        let body = json!({"providerId":"test-provider","model":"sample-model",
+            "mode":"continuous","confirmation":"START_RSI_EVOLUTION","selectionPolicy":"manual",
+            "improvementItemId":"improvement-test","maxAttempts":10,
+            "tokenBudget":30000,"timeBudgetSeconds":600});
+        let response = start(State(state.clone()), Json(body)).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let jobs = state.store.all("job");
+        let campaign = jobs.iter().find(|job|job["kind"]=="rsi_evolve").unwrap();
+        assert_eq!(campaign["input"]["limits"]["maxAttempts"], 1);
+        assert_eq!(campaign["input"]["rsiImprovementItemId"], "improvement-test");
+        let prompt = campaign["input"]["prompt"].as_str().unwrap();
+        assert!(prompt.contains("지속 개선 후보"));
+        assert!(prompt.contains("maxAttempts") || prompt.contains("max_attempts"));
+        let item = state.store.get("improvement_item","improvement-test").unwrap();
+        assert_eq!(item["status"], "in_progress");
+        assert_eq!(item["attempts"], 1);
+        assert_eq!(item["lastCampaignId"], campaign["id"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
