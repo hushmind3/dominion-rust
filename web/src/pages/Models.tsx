@@ -190,9 +190,9 @@ export function ModelHub(){
   if(oauthBusy)return
   setOauthBusy(source);setError('')
   try{
-   const saved=await post<Provider>('/api/providers/cli/import',{source})
-   providers.setValue(rows=>rows.some(p=>p.id===saved.id)?rows.map(p=>p.id===saved.id?saved:p):[...rows,saved])
-   setSavedId(saved.id);await cli.reload();refresh()
+   const saved=await post<Provider&{importedCount?:number;skipped?:string[]}>('/api/providers/cli/import',{source})
+   setSavedId(saved.id);await Promise.all([providers.reload(),cli.reload()]);refresh()
+   if(saved.importedCount&&saved.importedCount>1)setLoginMessage(`API 키 ${saved.importedCount}개를 가져왔습니다.`)
   }catch(e){setError((e as Error).message)}
   finally{setOauthBusy('')}
  }

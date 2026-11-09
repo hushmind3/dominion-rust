@@ -666,18 +666,20 @@ pub async fn diagnose(State(state): State<AppState>, Path(id): Path<String>) -> 
         Some("discord") => crate::engine::discord::diagnose(&state, &config).await,
         Some(kind) if crate::engine::channel_adapter::supports(kind) => {
             let public = public_channel(&state, &config);
-            let configured = public["configured"] == true;
-            return Json(json!({
-                "verified": false,
-                "configured": configured,
-                "status": public["status"],
-                "missing": public["missing"],
-                "message": if configured {
-                    "필수 설정을 확인했습니다. 이 채널의 원격 인증과 전송 결과는 아직 확인하지 않았습니다."
-                } else {
-                    "필수 설정 또는 인증 키가 비어 있습니다. 연결 설정을 확인하세요."
-                },
-            })).into_response();
+            return match crate::engine::channel_adapter::diagnose(&state, &config).await {
+                Ok(mut value) => {
+                    value["configured"] = public["configured"].clone();
+                    Json(value).into_response()
+                }
+                Err(message) => Json(json!({
+                    "verified": false,
+                    "configured": public["configured"],
+                    "status": public["status"],
+                    "missing": public["missing"],
+                    "message": message,
+                }))
+                .into_response(),
+            };
         }
         _ => return error(StatusCode::NOT_IMPLEMENTED, "이 채널의 진단을 지원하지 않습니다."),
     };

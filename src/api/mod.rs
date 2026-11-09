@@ -127,7 +127,10 @@ pub fn router(state: AppState) -> Router {
             post(system::rotate_secret_key),
         )
         .route("/api/system/backups", get(system::list_backups))
-        .route("/api/system/maintenance", post(system::maintenance))
+        .route(
+            "/api/system/maintenance",
+            get(system::maintenance_status).post(system::maintenance),
+        )
         .route("/api/system/restore", post(system::restore_backup))
         .route("/api/chat", post(chat::chat))
         .route("/api/jobs",get(jobs::list).post(jobs::create))
@@ -274,7 +277,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/oauth/:id/callback", get(oauth::callback))
         .route("/api/oauth/:id", axum::routing::delete(oauth::disconnect))
         .route("/api/youtube/status", get(compat::youtube_status))
-        .route("/api/youtube/uploads", get(compat::empty_list))
+        .route("/api/youtube/uploads", get(compat::youtube_uploads))
         .route("/api/youtube/uploads/:id", get(video::job))
         .route("/api/youtube/:action", post(compat::youtube_action))
         .route("/api/video/status", get(video::status))
@@ -284,9 +287,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/video/outputs", get(video::outputs_handler))
         .route("/api/video/locations", get(video::locations))
-        .route("/api/video/models", get(video::empty_list))
-        .route("/api/video/catalog", get(video::empty_list))
-        .route("/api/video/files", get(video::empty_list))
+        .route("/api/video/models", get(video::models))
+        .route("/api/video/catalog", get(video::catalog))
+        .route("/api/video/files", get(video::files))
         .route("/api/video/jobs/:id", get(video::job))
         .route(
             "/api/video/jobs",

@@ -279,10 +279,222 @@ pub fn start(state: AppState) {
     });
 }
 
+fn configured_base(config: &Value, key: &str, fallback: &str) -> String {
+    let value = text(config, key);
+    if value.is_empty() {
+        fallback.trim_end_matches('/').to_string()
+    } else {
+        value.trim_end_matches('/').to_string()
+    }
+}
+
+/// Performs a read-only authentication probe. No message is posted, so the
+/// owner can diagnose a live workspace without disturbing its history.
+pub async fn diagnose(state: &AppState, config: &Value) -> Result<Value, String> {
+    let kind = text(config, "kind");
+    let token = secret(state, config);
+    let client = client();
+    match kind {
+        "slack" => {
+            if token.is_empty() {
+                return Err("Slack 액세스 토큰이 없습니다.".into());
+            }
+            let base = configured_base(config, "apiBase", "https://slack.com/api");
+            let response = client
+                .post(format!("{base}/auth.test"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|error| format!("Slack 연결 실패: {error}"))?;
+            let status = response.status();
+            let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
+            if !status.is_success() || body["ok"] == false {
+                return Err(format!(
+                    "Slack 인증 실패: {}",
+                    body["error"].as_str().unwrap_or("응답을 읽을 수 없습니다.")
+                ));
+            }
+            Ok(json!({
+                "verified": true,
+                "status": "online",
+                "account": body["user"],
+                "workspace": body["team"],
+                "message": "Slack 인증과 채널 접근을 확인했습니다.",
+            }))
+        }
+        "matrix" => {
+            if token.is_empty() {
+                return Err("Matrix 액세스 토큰이 없습니다.".into());
+            }
+            let homeserver = configured_base(config, "homeserver", "");
+            let response = client
+                .get(format!("{homeserver}/_matrix/client/v3/account/whoami"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|error| format!("Matrix 연결 실패: {error}"))?;
+            let status = response.status();
+            let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
+            if !status.is_success() {
+                return Err(format!(
+                    "Matrix 인증 실패 (HTTP {status}): {}",
+                    body["errcode"].as_str().unwrap_or("응답을 읽을 수 없습니다.")
+                ));
+            }
+            Ok(json!({
+                "verified": true,
+                "status": "online",
+                "account": body["user_id"],
+                "message": "Matrix 계정과 홈서버 연결을 확인했습니다.",
+            }))
+        }
+        "whatsapp" => {
+            if token.is_empty() {
+                return Err("WhatsApp 액세스 토큰이 없습니다.".into());
+            }
+            let base = configured_base(config, "graphBase", "https://graph.facebook.com");
+            let version = text(config, "graphVersion");
+            let phone = text(config, "phoneNumberId");
+            let url = format!(
+                "{base}/{version}/{phone}?fields=id,display_phone_number,verified_name"
+            );
+            let response = client
+                .get(url)
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|error| format!("WhatsApp 연결 실패: {error}"))?;
+            let status = response.status();
+            let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
+            if !status.is_success() || body["error"].is_object() {
+                return Err(format!(
+                    "WhatsApp 인증 실패: {}",
+                    body["error"]["message"].as_str().unwrap_or("응답을 읽을 수 없습니다.")
+                ));
+            }
+            Ok(json!({
+                "verified": true,
+                "status": "online",
+                "account": body["display_phone_number"],
+                "workspace": body["verified_name"],
+                "message": "WhatsApp Business 번호와 토큰을 확인했습니다.",
+            }))
+        }
+        "line" => {
+            if token.is_empty() {
+                return Err("LINE 채널 토큰이 없습니다.".into());
+            }
+            let base = configured_base(config, "apiBase", "https://api.line.me");
+            let response = client
+                .get(format!("{base}/v2/bot/info"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|error| format!("LINE 연결 실패: {error}"))?;
+            let status = response.status();
+            let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
+            if !status.is_success() {
+                return Err(format!(
+                    "LINE 인증 실패 (HTTP {status}): {}",
+                    body["message"].as_str().unwrap_or("응답을 읽을 수 없습니다.")
+                ));
+            }
+            Ok(json!({
+                "verified": true,
+                "status": "online",
+                "account": body["userId"],
+                "workspace": body["displayName"],
+                "message": "LINE 봇 토큰과 대상 채널을 확인했습니다.",
+            }))
+        }
+        "zulip" => {
+            if token.is_empty() {
+                return Err("Zulip API 키가 없습니다.".into());
+            }
+            let site = configured_base(config, "site", "");
+            let response = client
+                .get(format!("{site}/api/v1/users/me"))
+                .basic_auth(text(config, "email"), Some(token.as_str()))
+                .send()
+                .await
+                .map_err(|error| format!("Zulip 연결 실패: {error}"))?;
+            let status = response.status();
+            let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
+            if !status.is_success() {
+                return Err(format!(
+                    "Zulip 인증 실패 (HTTP {status}): {}",
+                    body["msg"].as_str().unwrap_or("응답을 읽을 수 없습니다.")
+                ));
+            }
+            Ok(json!({
+                "verified": true,
+                "status": "online",
+                "account": body["email"],
+                "workspace": body["full_name"],
+                "message": "Zulip 계정과 스트림 접근을 확인했습니다.",
+            }))
+        }
+        "mattermost" => {
+            if token.is_empty() {
+                return Err("Mattermost 액세스 토큰이 없습니다.".into());
+            }
+            let base = configured_base(config, "baseUrl", "");
+            let response = client
+                .get(format!("{base}/api/v4/users/me"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|error| format!("Mattermost 연결 실패: {error}"))?;
+            let status = response.status();
+            let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
+            if !status.is_success() {
+                return Err(format!(
+                    "Mattermost 인증 실패 (HTTP {status}): {}",
+                    body["message"].as_str().unwrap_or("응답을 읽을 수 없습니다.")
+                ));
+            }
+            Ok(json!({
+                "verified": true,
+                "status": "online",
+                "account": body["username"],
+                "workspace": body["email"],
+                "message": "Mattermost 계정과 채널 접근을 확인했습니다.",
+            }))
+        }
+        "signal" => {
+            let base = configured_base(config, "bridgeUrl", "");
+            let mut request = client.get(format!("{base}/v1/about"));
+            if !token.is_empty() {
+                request = request.bearer_auth(&token);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|error| format!("Signal 브리지 연결 실패: {error}"))?;
+            let status = response.status();
+            let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
+            if !status.is_success() {
+                return Err(format!(
+                    "Signal 브리지 인증 실패 (HTTP {status}): {}",
+                    body["error"].as_str().unwrap_or("응답을 읽을 수 없습니다.")
+                ));
+            }
+            Ok(json!({
+                "verified": true,
+                "status": "online",
+                "account": text(config, "phoneNumber"),
+                "workspace": body["build"],
+                "message": "Signal 브리지와 등록된 번호를 확인했습니다.",
+            }))
+        }
+        _ => Err(format!("이 채널의 진단을 지원하지 않습니다: {kind}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{routing::post, Json, Router};
+    use axum::{routing::{get, post}, Json, Router};
     use std::sync::{Arc, Mutex};
 
     async fn harness(
@@ -345,6 +557,89 @@ mod tests {
         let id = send(&state, &state.store.get("channel", "binding").unwrap(), "hello").await.unwrap();
         assert_eq!(id, "post-1");
         assert_eq!(captured.lock().unwrap()[0]["channel_id"], "C1");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    async fn read_harness(
+        kind: &str,
+        route: &'static str,
+        reply: Value,
+    ) -> (AppState, std::path::PathBuf) {
+        let handler = move || {
+            let reply = reply.clone();
+            async move { Json(reply) }
+        };
+        let app = Router::new().route(route, get(handler.clone()).post(handler));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = std::env::temp_dir().join(format!("dominion-diagnose-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = AppState::new(
+            crate::config::Config {
+                port: 0, data_dir: dir.clone(), web_dir: dir.join("web"), workspace: dir.clone(),
+            },
+            crate::db::Store::open(&dir.join("db.sqlite")).unwrap(),
+            crate::vault::Vault::open(&dir.join("keys.json")),
+        );
+        state.store.put(
+            "channel",
+            &json!({"id":"binding","kind":kind,"enabled":true,"roomId":"room",
+                "homeserver":format!("http://{address}"),"site":format!("http://{address}"),
+                "bridgeUrl":format!("http://{address}"),"channelId":"C1","chatId":"C1",
+                "email":"bot@example.com","phoneNumber":"+1","phoneNumberId":"P1",
+                "graphVersion":"v23.0","apiBase":format!("http://{address}"),
+                "graphBase":format!("http://{address}"),"token":"secret"}),
+        );
+        (state, dir)
+    }
+
+    #[tokio::test]
+    async fn diagnose_probes_remote_identity_without_posting() {
+        let (state, dir) = read_harness(
+            "slack",
+            "/auth.test",
+            json!({"ok":true,"user":"U1","team":"T1"}),
+        )
+        .await;
+        let config = state.store.get("channel", "binding").unwrap();
+        let result = diagnose(&state, &config).await.unwrap();
+        assert_eq!(result["verified"], true);
+        assert_eq!(result["account"], "U1");
+        assert_eq!(result["workspace"], "T1");
+        let _ = std::fs::remove_dir_all(dir);
+
+        let (state, dir) = read_harness(
+            "zulip",
+            "/api/v1/users/me",
+            json!({"email":"bot@example.com","full_name":"Bot"}),
+        )
+        .await;
+        let config = state.store.get("channel", "binding").unwrap();
+        let result = diagnose(&state, &config).await.unwrap();
+        assert_eq!(result["verified"], true);
+        assert_eq!(result["account"], "bot@example.com");
+        let _ = std::fs::remove_dir_all(dir);
+
+        let (state, dir) = read_harness("signal", "/v1/about", json!({"build":"1.0"})).await;
+        let config = state.store.get("channel", "binding").unwrap();
+        let result = diagnose(&state, &config).await.unwrap();
+        assert_eq!(result["verified"], true);
+        assert_eq!(result["account"], "+1");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn diagnose_surfaces_platform_authentication_errors() {
+        let (state, dir) = read_harness(
+            "slack",
+            "/auth.test",
+            json!({"ok":false,"error":"invalid_auth"}),
+        )
+        .await;
+        let config = state.store.get("channel", "binding").unwrap();
+        let error = diagnose(&state, &config).await.unwrap_err();
+        assert!(error.contains("invalid_auth"), "{error}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

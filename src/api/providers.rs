@@ -36,6 +36,141 @@ fn codex_auth() -> Result<Value, String> {
     Ok(value)
 }
 
+/// OpenCode keeps reusable credentials in a per-provider auth map. Plain API
+/// keys can be imported; OAuth access tokens stay with the issuing client.
+fn opencode_auth() -> Option<Value> {
+    [
+        ".local/share/opencode/auth.json",
+        ".config/opencode/auth.json",
+    ]
+    .iter()
+    .filter_map(|relative| home_file(relative))
+    .find_map(|path| {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    })
+}
+
+fn opencode_api_entries(auth: &Value) -> Vec<(String, String)> {
+    auth.as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(provider, credential)| {
+            let kind = credential["type"].as_str().unwrap_or("");
+            if !matches!(kind, "api" | "wellknown") {
+                return None;
+            }
+            let key = credential["key"].as_str().filter(|value| !value.is_empty())?;
+            Some((provider.clone(), key.to_string()))
+        })
+        .collect()
+}
+
+fn opencode_target(id: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    match id {
+        "openai" => Some(("OpenAI", "https://api.openai.com/v1", "openai")),
+        "anthropic" => Some(("Anthropic", "https://api.anthropic.com/v1", "anthropic")),
+        "google" | "gemini" => Some((
+            "Google Gemini",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "openai",
+        )),
+        "openrouter" => Some(("OpenRouter", "https://openrouter.ai/api/v1", "openai")),
+        "deepseek" => Some(("DeepSeek", "https://api.deepseek.com/v1", "openai")),
+        "groq" => Some(("Groq", "https://api.groq.com/openai/v1", "openai")),
+        "xai" => Some(("xAI", "https://api.x.ai/v1", "openai")),
+        "mistral" => Some(("Mistral", "https://api.mistral.ai/v1", "openai")),
+        "together" => Some(("Together", "https://api.together.xyz/v1", "openai")),
+        "cerebras" => Some(("Cerebras", "https://api.cerebras.ai/v1", "openai")),
+        "fireworks" => Some((
+            "Fireworks",
+            "https://api.fireworks.ai/inference/v1",
+            "openai",
+        )),
+        "zai" | "z-ai" => Some(("z.ai", "https://api.z.ai/api/paas/v4", "openai")),
+        "moonshotai" => Some(("Moonshot", "https://api.moonshot.cn/v1", "openai")),
+        "alibaba" => Some((
+            "Alibaba DashScope",
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "openai",
+        )),
+        _ => None,
+    }
+}
+
+fn provider_slug(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+fn import_opencode(state: &AppState) -> Result<Value, String> {
+    let auth = opencode_auth()
+        .ok_or("OpenCode 인증 파일을 찾을 수 없습니다. OpenCode에서 먼저 로그인하세요.")?;
+    let entries = opencode_api_entries(&auth);
+    if entries.is_empty() {
+        return Err(
+            "OpenCode 인증 파일에 가져올 API 키가 없습니다. OAuth 자격 증명은 다른 앱으로 복사하지 않습니다."
+                .into(),
+        );
+    }
+    let mut first: Option<Value> = None;
+    let mut imported = 0usize;
+    let mut skipped = Vec::new();
+    for (provider, key) in entries {
+        let Some((name, base_url, kind)) = opencode_target(&provider) else {
+            skipped.push(provider);
+            continue;
+        };
+        let id = format!("opencode-{}", provider_slug(&provider));
+        let previous = state.store.get("provider", &id).unwrap_or(Value::Null);
+        let record = json!({
+            "id": id,
+            "name": format!("OpenCode · {name}"),
+            "baseUrl": base_url,
+            "kind": kind,
+            "model": previous["model"].as_str().unwrap_or(""),
+            "enabled": true,
+            "local": false,
+            "integration": "opencode",
+            "reflection": previous["reflection"].as_bool().unwrap_or(false),
+            "learning": previous["reflection"].as_bool().unwrap_or(false),
+            "requestsPerMinute": previous["requestsPerMinute"].as_u64().unwrap_or(0),
+        });
+        state.save_secret(&format!("provider:{id}"), &key);
+        if let Some(saved) = state.store.put("provider", &record) {
+            state.bus.record("provider", &saved);
+            if first.is_none() {
+                first = Some(public_provider(state, saved));
+            }
+            imported += 1;
+        }
+    }
+    let mut response = first.ok_or_else(|| {
+        format!(
+            "가져올 수 있는 OpenCode 제공자가 없습니다: {}",
+            skipped.join(", ")
+        )
+    })?;
+    response["importedCount"] = json!(imported);
+    response["skipped"] = json!(skipped);
+    state.store.audit(
+        "provider.saved",
+        json!({"source":"opencode-auth","imported":imported}),
+    );
+    Ok(response)
+}
+
 fn codex_model() -> String {
     if let Some(path) = codex_home_file("config.toml") {
         if let Ok(text) = std::fs::read_to_string(path) {
@@ -239,12 +374,17 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
     let connected = state.store.get("provider", "codex-oauth");
     let claude = home_file(".claude/.credentials.json").is_some_and(|path| path.exists());
     let gemini = home_file(".gemini/oauth_creds.json").is_some_and(|path| path.exists());
-    let opencode = [
-        ".local/share/opencode/auth.json",
-        ".config/opencode/auth.json",
-    ]
-    .iter()
-    .any(|path| home_file(path).is_some_and(|path| path.exists()));
+    let opencode_auth = opencode_auth();
+    let opencode = opencode_auth.is_some();
+    let opencode_importable = opencode_auth
+        .as_ref()
+        .map(|auth| {
+            opencode_api_entries(auth)
+                .into_iter()
+                .filter(|(provider, _)| opencode_target(provider).is_some())
+                .count()
+        })
+        .unwrap_or(0);
     Json(json!([
         {
             "id":"codex",
@@ -262,36 +402,39 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
             "name":"Claude Code (OAuth)",
             "available":claude,
             "supported":false,
-            "hint":if claude { "로그인 파일은 찾았지만 아직 가져오기를 지원하지 않습니다." } else { "Claude Code에서 로그인하면 감지됩니다." }
+            "hint":if claude { "Claude Code의 OAuth 자격 증명은 다른 앱에서 재사용할 수 없습니다. 모델 관리에서 Anthropic API 키를 등록하세요." } else { "Claude Code에서 로그인하면 감지됩니다. 모델 관리에서 Anthropic API 키를 직접 등록할 수도 있습니다." }
         },
         {
             "id":"gemini",
             "name":"Gemini CLI (OAuth)",
             "available":gemini,
             "supported":false,
-            "hint":if gemini { "로그인 파일은 찾았지만 아직 가져오기를 지원하지 않습니다." } else { "Gemini CLI에서 로그인하면 감지됩니다." }
+            "hint":if gemini { "Gemini CLI의 OAuth 자격 증명은 다른 앱에서 재사용할 수 없습니다. 모델 관리에서 Google Gemini API 키를 등록하세요." } else { "Gemini CLI에서 로그인하면 감지됩니다. 모델 관리에서 Google Gemini API 키를 직접 등록할 수도 있습니다." }
         },
         {
             "id":"opencode",
             "name":"OpenCode (OAuth/CLI)",
             "available":opencode,
-            "supported":false,
-            "hint":if opencode { "OpenCode 인증 파일은 찾았지만 아직 가져오기를 지원하지 않습니다." } else { "OpenCode에서 로그인하면 감지됩니다." }
+            "importAvailable":opencode_importable > 0,
+            "supported":opencode_importable > 0,
+            "hint":if opencode_importable > 0 { format!("OpenCode 인증에서 API 키 {opencode_importable}개를 가져올 수 있습니다. OAuth 자격 증명은 복사하지 않습니다.") } else if opencode { "OpenCode 인증에 가져올 API 키가 없습니다. 모델 관리에서 직접 API 키를 등록하세요.".to_string() } else { "OpenCode에서 로그인하면 감지됩니다.".to_string() }
         }
     ]))
 }
 
 pub async fn import_cli_credential(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let source = body["source"].as_str().unwrap_or("");
-    if source != "codex" {
-        return error(StatusCode::BAD_REQUEST, "지원하지 않는 OAuth/CLI 소스입니다.");
-    }
-    let auth = match codex_auth() {
-        Ok(value) => value,
-        Err(message) => return error(StatusCode::BAD_REQUEST, &message),
+    let result = match source {
+        "codex" => (|| {
+            let auth = codex_auth()?;
+            let saved = save_codex_provider(&state, &auth["tokens"], true)?;
+            Ok(public_provider(&state, saved))
+        })(),
+        "opencode" => import_opencode(&state),
+        _ => Err("지원하지 않는 OAuth/CLI 소스입니다.".to_string()),
     };
-    match save_codex_provider(&state, &auth["tokens"], true) {
-        Ok(saved) => Json(public_provider(&state, saved)).into_response(),
+    match result {
+        Ok(saved) => Json(saved).into_response(),
         Err(message) => error(StatusCode::BAD_REQUEST, &message),
     }
 }
@@ -1621,5 +1764,25 @@ mod tests {
         assert!(model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &zero, "meta/llama"));
         let paid = json!({"pricing":{"prompt":"0.000001","completion":"0.000002"}});
         assert!(!model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &paid, "meta/llama"));
+    }
+
+    #[test]
+    fn opencode_import_reads_only_plain_api_keys() {
+        let auth = json!({
+            "openrouter":{"type":"api","key":"sk-or-real"},
+            "anthropic":{"type":"oauth","access":"oauth-token","refresh":"refresh"},
+            "google":{"type":"wellknown","key":"google-key"},
+            "unknown-provider":{"type":"api","key":"unknown-key"}
+        });
+        let mut entries = opencode_api_entries(&auth);
+        entries.sort();
+        assert_eq!(entries.len(), 3);
+        assert!(entries.contains(&("openrouter".into(), "sk-or-real".into())));
+        assert!(entries.contains(&("google".into(), "google-key".into())));
+        assert!(!entries.iter().any(|(provider, _)| provider == "anthropic"));
+        assert_eq!(opencode_target("openrouter").unwrap().1, "https://openrouter.ai/api/v1");
+        assert_eq!(opencode_target("anthropic").unwrap().2, "anthropic");
+        assert!(opencode_target("unknown-provider").is_none());
+        assert_eq!(provider_slug("z-ai"), "z-ai");
     }
 }

@@ -195,6 +195,51 @@ pub async fn workflows(State(state): State<AppState>) -> Json<Value> {
     Json(json!(workflows_from_config(&video::config(&state))))
 }
 
+pub async fn models(State(state): State<AppState>) -> Json<Value> {
+    let cfg = video::config(&state);
+    let native = video::ffmpeg(&state).is_some();
+    let reachable = comfy_reachable(cfg["comfyUrl"].as_str().unwrap_or("")).await;
+    let comfy = reachable && cfg["comfyWorkflow"].is_object();
+    let mut items = vec![json!({
+        "id": "native",
+        "name": "DOMINION native (ffmpeg)",
+        "kind": "native",
+        "available": native,
+        "hint": if native { "로컬 ffmpeg으로 장면과 자막을 합성합니다." } else { "ffmpeg를 찾을 수 없습니다. 설정에서 경로를 지정하세요." },
+    })];
+    if comfy {
+        items.push(json!({
+            "id": "comfyui",
+            "name": cfg["comfyWorkflowName"].as_str().unwrap_or("ComfyUI"),
+            "kind": "comfyui",
+            "available": true,
+            "hint": "연결된 ComfyUI 워크플로로 생성합니다.",
+        }));
+    }
+    Json(json!(items))
+}
+
+pub async fn catalog(State(state): State<AppState>) -> Json<Value> {
+    let cfg = video::config(&state);
+    let native = video::ffmpeg(&state).is_some();
+    let reachable = comfy_reachable(cfg["comfyUrl"].as_str().unwrap_or("")).await;
+    let comfy = reachable && cfg["comfyWorkflow"].is_object();
+    Json(json!({
+        "models": [
+            {"id":"native","name":"DOMINION native (ffmpeg)","kind":"native","available":native},
+            {"id":"comfyui","name":cfg["comfyWorkflowName"].as_str().unwrap_or("ComfyUI"),"kind":"comfyui","available":comfy},
+        ],
+        "workflows": workflows_from_config(&cfg),
+        "engine": cfg["engine"],
+        "comfyUrl": cfg["comfyUrl"],
+        "comfyReachable": reachable,
+    }))
+}
+
+pub async fn files(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(outputs(&state)))
+}
+
 pub async fn reveal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let path = match video::output_path(&state, &id) {
         Ok(path) => path,
@@ -218,9 +263,6 @@ pub async fn reveal(State(state): State<AppState>, Path(id): Path<String>) -> Re
     }
 }
 
-pub async fn empty_list() -> Json<Value> {
-    Json(json!([]))
-}
 pub async fn not_available() -> Response {
     error(
         StatusCode::NOT_IMPLEMENTED,

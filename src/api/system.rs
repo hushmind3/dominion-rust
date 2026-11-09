@@ -361,6 +361,10 @@ pub async fn rotate_secret_key(
     }
 }
 
+pub async fn maintenance_status(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({"maintenance": state.maintenance_mode()}))
+}
+
 pub async fn maintenance(
     State(state): State<AppState>,
     Json(body): Json<Value>,

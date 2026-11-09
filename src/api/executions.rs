@@ -1,16 +1,45 @@
 use crate::state::AppState;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
 
+#[derive(Deserialize, Default)]
+pub struct Page {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
 /// Executions are engine-owned audit records. Clients may read and cancel
-/// them, never create or overwrite status/evidence.
-pub async fn list(State(state): State<AppState>) -> Json<Value> {
-    Json(json!(state.store.all("execution")))
+/// them, never create or overwrite status/evidence. The list is bounded by
+/// default because individual execution records include large evidence blobs.
+pub async fn list(State(state): State<AppState>, Query(page): Query<Page>) -> Json<Value> {
+    let mut items = state.store.all("execution");
+    items.sort_by(|a, b| {
+        b["startedAt"]
+            .as_str()
+            .or_else(|| b["createdAt"].as_str())
+            .unwrap_or("")
+            .cmp(
+                a["startedAt"]
+                    .as_str()
+                    .or_else(|| a["createdAt"].as_str())
+                    .unwrap_or(""),
+            )
+    });
+    let limit = page.limit.unwrap_or(200).clamp(1, 1000);
+    let offset = page.offset.unwrap_or(0);
+    Json(json!(
+        items
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<Value>>()
+    ))
 }
 
 pub async fn one(State(state): State<AppState>, Path(id): Path<String>) -> Response {

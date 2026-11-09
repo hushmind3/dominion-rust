@@ -9,8 +9,21 @@ use axum::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-pub async fn empty_list() -> Json<Value> {
-    Json(json!([]))
+pub async fn youtube_uploads(State(state): State<AppState>) -> Json<Value> {
+    let mut uploads = state
+        .store
+        .all("job")
+        .iter()
+        .filter(|job| job["kind"] == "youtube_upload")
+        .map(crate::engine::video::public_job)
+        .collect::<Vec<_>>();
+    uploads.sort_by(|a, b| {
+        b["createdAt"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(a["createdAt"].as_str().unwrap_or(""))
+    });
+    Json(json!(uploads))
 }
 
 pub async fn youtube_status(State(state): State<AppState>) -> Json<Value> {

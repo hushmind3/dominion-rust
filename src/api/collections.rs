@@ -252,11 +252,6 @@ pub async fn action(
                 "goal": body.get("goal").or_else(|| body.get("input")).cloned().unwrap_or(json!("")),
             }),
         ),
-        ("channel", "diagnose") => Json(json!({
-            "verified": false,
-            "message": "Rust 런타임에서는 채널 어댑터가 아직 연결되지 않았습니다.",
-        }))
-        .into_response(),
         ("skill", "export") => match state.store.get("skill", &id) {
             Some(skill) => Json(skill).into_response(),
             None => (
