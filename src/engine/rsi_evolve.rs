@@ -1016,14 +1016,22 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             methods.iter_mut().find(|m|m["id"] == receipt["methodId"] && m["revision"] == receipt["revision"])) else {continue};
         // Recovered coordinator steps must not count a completed application twice.
         if method["applications"].as_array().is_some_and(|rows|rows.iter().any(|r|r["executionId"]==receipt["executionId"])) {continue;}
-        let ok = receipt["result"]["verified"] == true && receipt["result"]["followed"] == true;
+        let result = &receipt["result"];
+        let unknown = result["unknown"] == true || result["status"] == "unknown"
+            || result["verified"] != true;
+        // One unknown condition must not hide a separately confirmed violation.
+        let violated = result["verified"] == true && (result["status"] == "violated"
+            || result["violations"].as_array().is_some_and(|rows| !rows.is_empty()));
+        let ok = !unknown && !violated && result["followed"] == true;
         let progress = generation["accepted"] == true || generation["newFindings"].as_u64().unwrap_or(0)>0;
-        method["status"] = json!(if !ok {"suspended"} else if progress {"executable"} else {"held"});
+        method["status"] = json!(if violated {"suspended"} else if ok && progress {"executable"} else {"held"});
         if ok && generation["accepted"] == true {
             method["successfulApplications"] = json!(method["successfulApplications"].as_u64().unwrap_or(0)+1);
         }
         let application = json!({"jobId":generation["jobId"],"executionId":receipt["executionId"],
-            "operationIds":receipt["operationIds"],"postconditionsPassed":ok,
+            "operationIds":receipt["operationIds"],
+            "postconditionsPassed":if !ok && !violated {Value::Null}else{json!(ok)},
+            "verificationVerdict":if violated {"violated"}else if ok {"passed"}else{"inconclusive"},
             "accepted":generation["accepted"],"newFindings":generation["newFindings"],
             "tokens":generation["tokens"],"elapsedMs":generation["elapsedMs"],
             "reuse":method["status"],"gain":"observed_association_not_causal_proof"});
@@ -3258,6 +3266,52 @@ mod tests {
             }
         }
         server.abort();
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn learned_method_unknown_verification_is_held_not_failed() {
+        let (state,root)=state();
+        let workspace=&state.config.workspace;
+        std::fs::create_dir_all(workspace.join("unreadable.txt")).unwrap();
+        std::fs::write(workspace.join("known.txt"),"ok").unwrap();
+        let evaluate=|after:Value| crate::engine::procedure::evaluate(
+            &json!({"id":"method","verification":{"type":"procedure","after":after}}),&[],workspace);
+        let unknown=evaluate(json!([{"kind":"file_equals","path":"unreadable.txt","text":"ok"}]));
+        assert_eq!(unknown["verified"],true);
+        assert_eq!(unknown["unknown"],true);
+        let mut status_only=unknown.clone();status_only["unknown"]=Value::Null;
+        let violated=evaluate(json!([{"kind":"file_equals","path":"known.txt","text":"wrong"}]));
+        let mixed=evaluate(json!([
+            {"kind":"file_equals","path":"unreadable.txt","text":"ok"},
+            {"kind":"file_equals","path":"known.txt","text":"wrong"}]));
+        assert_eq!(mixed["unknown"],true);
+        let passed=evaluate(json!([{"kind":"file_equals","path":"known.txt","text":"ok"}]));
+        for (index,(result,status,verdict,postcondition)) in [
+            (unknown,"held","inconclusive",Value::Null),
+            (status_only,"held","inconclusive",Value::Null),
+            (violated,"suspended","violated",json!(false)),
+            (mixed,"suspended","violated",json!(false)),
+            (passed,"executable","passed",json!(true)),
+        ].into_iter().enumerate() {
+            let id=format!("experience-{index}");
+            state.store.put("experience",&json!({"id":id,"executableMethods":[
+                {"id":"method","revision":"r1","status":"candidate","successfulApplications":0}]}));
+            let session=format!("s-{index}");
+            state.store.put("session",&json!({"id":session,"rsiMethodExecutions":[{
+                "methodId":"method","revision":"r1","experienceId":id,
+                "executionId":format!("exec-{index}"),"result":result}]}));
+            let generation=json!({"jobId":"child","accepted":true,"newFindings":1});
+            record_method_feedback(&state,&generation,&session);
+            record_method_feedback(&state,&generation,&session);
+            let record=state.store.get("experience",&id).unwrap();
+            let method=&record["executableMethods"][0];
+            assert_eq!(method["status"],status);
+            assert_eq!(method["applications"].as_array().unwrap().len(),1);
+            assert_eq!(method["applications"][0]["verificationVerdict"],verdict);
+            assert_eq!(method["applications"][0]["postconditionsPassed"],postcondition);
+            assert_eq!(method["successfulApplications"],usize::from(verdict=="passed"));
+        }
         let _=std::fs::remove_dir_all(root);
     }
 
