@@ -294,11 +294,13 @@ async fn run_turn_with_policy(
                         && execution["acceptanceText"].is_null())
             });
         if matches!(&result, Ok(Some(_))) && task_outcome {
-            crate::engine::learning::enqueue(
+            crate::engine::learning::enqueue_for_agent_through(
                 state,
                 &session_id,
+                request.agent_id.as_deref(),
                 request.provider_id.as_deref().unwrap_or(""),
                 request.model.as_deref().unwrap_or(""),
+                result.as_ref().ok().and_then(|message|message.as_ref()).and_then(|message|message["id"].as_str()),
             );
         }
         // A correction is worth reflecting on even when the corrective turn

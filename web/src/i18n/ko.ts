@@ -1161,6 +1161,7 @@ const ko = {
   'rooms.modelsHint': '여러 제공자의 모델을 한 번에 고를 수 있습니다.',
   'rooms.autoModels': '참가자 모델 자동 순환',
   'rooms.autoModelsDesc': '턴마다 참가자 모델을 돌려써서 호출 한도를 분산합니다.',
+  'rooms.sharedLearning': '방 공유 학습',
   'rooms.selfReview': '자기 개선',
   'rooms.autoLearn': '대화 후 기억 후보 추출',
   'rooms.autoLearnDesc': '근거가 있는 내용만 참가자별 기억으로 남깁니다.',

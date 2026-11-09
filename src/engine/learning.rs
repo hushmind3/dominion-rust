@@ -37,7 +37,7 @@ pub(crate) fn record_review(
         if inserted + updated + promoted == 0 {
             return None;
         }
-        let mut text = format!("💾 자기 개선 리뷰: 공유 지식 업데이트됨 (+{inserted}");
+        let mut text = format!("💾 방 공유 학습: 공유 지식 업데이트됨 (+{inserted}");
         if updated > 0 {
             text.push_str(&format!(" · 갱신 {updated}"));
         }
@@ -57,11 +57,11 @@ pub(crate) fn record_review(
         text.push(')');
         text
     };
-    // A room can run one learning job per participant. Debounce the visible
-    // report so nine agents finishing together do not post nine notices.
+    // Debounce repeats for the same learner, without hiding another bot's
+    // real updates behind the first participant's report.
     let state_id = format!(
         "learning-review-{}",
-        memory::stable_id(&[session_id, source])
+        memory::stable_id(&[session_id, source, agent_id.unwrap_or("room")])
     );
     let now = chrono::Utc::now();
     if let Some(previous) = state
@@ -84,15 +84,9 @@ pub(crate) fn record_review(
             "at":now.to_rfc3339(),
         }),
     );
-    let author = agent_id.map(str::to_string).or_else(|| {
-        let session = state.store.get("session", session_id)?;
-        let room = state.store.get("room", session["roomId"].as_str()?)?;
-        room["agentIds"]
-            .as_array()?
-            .first()?
-            .as_str()
-            .map(str::to_string)
-    });
+    // Room-wide knowledge has no individual author. Never attribute the
+    // team's update to whichever participant happens to be first in a roster.
+    let author = agent_id.map(str::to_string);
     let saved = state.store.write_message(&json!({
         "session_id":session_id,
         "role":"assistant",
@@ -102,6 +96,8 @@ pub(crate) fn record_review(
             "authorKind":"system",
             "kind":"learning_report",
             "source":source,
+            "learningScope":if agent_id.is_some(){"agent"}else if state.store.get("session",session_id)
+                .is_some_and(|s|s["roomId"].is_string()){"room"}else{"session"},
             "memories":memories,
             "skill":skill,
             "knowledge":knowledge.map(|(inserted,updated,promoted)| json!({
@@ -990,6 +986,25 @@ mod tests {
             .skill
             .is_none());
     }
+    #[test]
+    fn room_reviews_do_not_hide_other_learners_or_credit_the_first_member() {
+        let (state,dir)=state();
+        state.store.put("session",&json!({"id":"s","roomId":"r"}));
+        let members=(0..5).map(|_|uuid::Uuid::new_v4().to_string()).collect::<Vec<_>>();
+        state.store.put("room",&json!({"id":"r","agentIds":members}));
+        for member in &members {
+            let report=record_review(&state,"s",Some(member),"memory",1,false,None).unwrap();
+            assert_eq!(report["agent_id"],member.as_str());
+            assert_eq!(report["metadata"]["learningScope"],"agent");
+            assert!(record_review(&state,"s",Some(member),"memory",1,false,None).is_none());
+        }
+        let shared=record_review(&state,"s",None,"knowledge",0,false,Some((2,0,0))).unwrap();
+        assert!(shared["agent_id"].is_null());
+        assert_eq!(shared["metadata"]["learningScope"],"room");
+        assert_eq!(state.store.messages("s").len(),members.len()+1);
+        let _=std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn self_improvement_review_is_visible_and_deduplicated() {
         let (state, dir) = state();

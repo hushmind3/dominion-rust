@@ -7,6 +7,74 @@
 //! renders it as mandatory context, not as optional history.
 use crate::{engine::memory, state::AppState};
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, HashSet};
+
+/// A room-wide read model reduced from committed events, independent of the
+/// selected speaker and of natural-language commands. References stay in the
+/// store; the model receives the compact state, not N copies of raw history.
+pub(crate) fn conversation_context(
+    state: &AppState, room: &Value, session_id: &str, source_id: &str, prior: &[Value],
+) -> Value {
+    let members=room["agentIds"].as_array().cloned().unwrap_or_default();
+    let previous=prior.iter().rev().find(|row|row["session_id"]==session_id && row["role"]=="user");
+    let previous_id=previous.and_then(|row|row["id"].as_str());
+    let cached=&room["sharedContext"];
+    if cached["sessionId"]==session_id && cached["sourceMessageId"]==source_id && cached["memberIds"]==json!(members) {
+        return cached.clone();
+    }
+    let mut latest=BTreeMap::<String,Value>::new();
+    let mut owner=None;
+    let mut previous_replies=BTreeMap::<String,Value>::new();
+    for row in prior {
+        if row["session_id"]!=session_id || row["metadata"]["kind"]=="learning_report"
+            || row["metadata"]["authorKind"]=="system" {continue;}
+        if row["role"]=="user" {owner=row["id"].as_str();continue;}
+        if row["role"]!="assistant" || row["content"].as_str().is_none_or(|s|s.trim().is_empty())
+            || row["tool_calls"].as_array().is_some_and(|calls|!calls.is_empty()) {continue;}
+        let Some(agent)=row["agent_id"].as_str().filter(|id|members.iter().any(|m|m.as_str()==Some(id))) else {continue};
+        latest.insert(agent.into(),row.clone());
+        let reply_to=row["metadata"]["replyToMessageId"].as_str().or(owner);
+        if previous_id.is_some() && reply_to==previous_id {previous_replies.insert(agent.into(),row.clone());}
+    }
+    let mut participants=Vec::new();
+    let mut responded=Vec::new();
+    let mut missing=Vec::new();
+    let mut observed_work=Vec::new();
+    for member in &members {
+        let Some(id)=member.as_str() else {continue};
+        let name=state.store.get("agent",id).and_then(|a|a["name"].as_str().map(str::to_string)).unwrap_or_else(||id.into());
+        let reply=latest.get(id);
+        let execution=reply.and_then(|r|r["metadata"]["executionId"].as_str()).and_then(|id|state.store.get("execution",id));
+        let tool_calls=execution.as_ref().and_then(|e|e["toolCalls"].as_u64());
+        if previous_replies.contains_key(id) {responded.push(name.clone());}
+        else if previous_id.is_some(){missing.push(name.clone());}
+        if let Some(calls)=tool_calls.filter(|calls|*calls>0) {
+            observed_work.push(format!("{name}: 도구 호출 {calls}회, 결과 {}",execution.as_ref().unwrap()["taskOutcome"].as_str().unwrap_or("미확정")));
+        }
+        participants.push(json!({"agentId":id,"name":name,
+            "lastReplyMessageId":reply.map(|r|&r["id"]),
+            "lastReplyToMessageId":reply.map(|r|&r["metadata"]["replyToMessageId"]),
+            "repliedToPreviousRequest":previous_replies.contains_key(id),
+            "executionId":execution.as_ref().map(|e|&e["id"]),"toolCalls":tool_calls}));
+    }
+    let mut text=String::from("[방 공통 상태: 현재 요청 시점까지의 전체 원문 기록에서 엔진이 계산함]\n");
+    if previous.is_some() {
+        // The actual prior owner message is already selected verbatim by the
+        // compiler. Keep its reference here rather than repeat its body.
+        text.push_str(&format!("직전 요청의 응답 기록: {}/{}명. 응답함: {}. 응답 기록 없음: {}.\n",
+            responded.len(),members.len(),responded.join(", "),if missing.is_empty(){"없음".into()}else{missing.join(", ")}));
+    }else{text.push_str("이 방의 첫 주인 요청이며 이전 응답 기록은 없음.\n");}
+    text.push_str(&format!("기준 요청: {source_id}. 직전 요청: {}.\n",previous_id.unwrap_or("없음")));
+    if !observed_work.is_empty(){text.push_str(&format!("관측된 작업: {}.\n",observed_work.join("; ")));}
+    text.push_str("이후 대화는 선택된 발췌다. 발췌에 안 보인다는 이유로 미응답·부재로 판단하지 말 것. 발언과 실제 도구 실행 결과는 구분할 것.");
+    let snapshot=json!({"sessionId":session_id,"sourceMessageId":source_id,"memberIds":members,
+        "previousOwnerMessageId":previous_id,"participants":participants,"text":text,
+        "digest":memory::stable_id(&[&json!([source_id,previous_id,&participants]).to_string()])});
+    if let Some(id)=room["id"].as_str(){
+        state.store.patch_if("room",id,"id",&json!(id),&json!({"sharedContext":snapshot}));
+    }
+    snapshot
+}
 
 const MAX_ENTRIES: usize = 256;
 const MAX_CONTEXT_ENTRIES: usize = 12;
@@ -253,12 +321,19 @@ pub fn context_block_for_query(
     room_id: &str,
     query: &str,
 ) -> Option<String> {
+    context_block_at(state,room_id,query,None)
+}
+
+fn context_block_at(state:&AppState,room_id:&str,query:&str,visible:Option<&HashSet<String>>)->Option<String>{
     let record = state.store.get("room_state", &state_id(room_id))?;
     let facts = record["facts"].as_array()?;
     let mut ranked = facts
         .iter()
         .enumerate()
-        .filter(|(_, fact)| fact["status"].as_str() == Some("active"))
+        .filter(|(_,fact)|visible.is_none_or(|ids|fact["sourceMessageId"].as_str().is_some_and(|id|ids.contains(id))))
+        .filter(|(_, fact)| fact["status"].as_str() == Some("active")
+            || visible.is_some_and(|ids|fact["status"]=="superseded"
+                && fact["supersededBy"].as_str().is_some_and(|id|!ids.contains(id))))
         .filter(|(_, fact)| {
             !fact["sourceMessageId"]
                 .as_str()
@@ -294,10 +369,11 @@ pub fn context_block_for_query(
     Some(selected.into_iter().map(|(_, line)| line).collect::<Vec<_>>().join("\n"))
 }
 
-/// The room compiler keeps the query-dependent selection after the immutable
-/// identity prefix. The source record is tracked for correction/revocation.
-pub(crate) fn context_snapshot(state: &AppState, room_id: &str, query: &str) -> Option<(String, String)> {
-    context_block_for_query(state,room_id,query).map(|block|(state_id(room_id),block))
+/// All participants evaluate owner facts at the same request cursor, including
+/// when a later owner correction has already been queued in the same room.
+pub(crate) fn context_snapshot_at(state:&AppState,room_id:&str,query:&str,messages:&[Value])->Option<(String,String)>{
+    let visible=messages.iter().filter_map(|m|m["id"].as_str().map(str::to_string)).collect::<HashSet<_>>();
+    context_block_at(state,room_id,query,Some(&visible)).map(|block|(state_id(room_id),block))
 }
 
 /// Clears the durable owner state when the room is reset.
@@ -339,6 +415,60 @@ mod tests {
             "created_at": format!("2026-01-01 00:00:{:02}", id.chars().last().unwrap().to_digit(10).unwrap_or(0)),
             "metadata": {"authorKind":"owner","roomId":"r"},
         })
+    }
+
+    #[test]
+    fn shared_room_state_is_roster_driven_and_not_a_partial_speaker_window() {
+        for size in [2,5,9,17] {
+            let (state,dir)=state();
+            let room_id=uuid::Uuid::new_v4().to_string();
+            let sid=format!("room:{room_id}");
+            let members=(0..size).map(|_|uuid::Uuid::new_v4().to_string()).collect::<Vec<_>>();
+            let mut history=vec![json!({"id":"owner-1","session_id":sid,"role":"user","content":"任意の依頼"})];
+            for (index,id) in members.iter().enumerate(){
+                state.store.put("agent",&json!({"id":id,"name":format!("Member-{index}")}));
+                history.push(json!({"id":format!("reply-{index}"),"session_id":sid,"role":"assistant",
+                    "agent_id":id,"content":format!("ordinary contribution {index}"),
+                    "metadata":{"replyToMessageId":"owner-1","executionId":format!("exec-{index}")}}));
+                state.store.put("execution",&json!({"id":format!("exec-{index}"),"toolCalls":0,"taskOutcome":"answered_unverified"}));
+            }
+            // Reviews, foreign rooms and non-final tool requests are not replies.
+            history.push(json!({"id":"review","session_id":sid,"role":"assistant","agent_id":members[0],
+                "content":"review","metadata":{"kind":"learning_report"}}));
+            history.push(json!({"id":"foreign","session_id":"elsewhere","role":"user","content":"foreign request"}));
+            let room=json!({"id":room_id,"sessionId":sid,"agentIds":members});
+            state.store.put("room",&room);
+            let shared=conversation_context(&state,&room,&sid,"owner-2",&history);
+            assert_eq!(shared["participants"].as_array().unwrap().len(),size);
+            assert!(shared["participants"].as_array().unwrap().iter().all(|p|p["repliedToPreviousRequest"]==true));
+            assert_eq!(shared["previousOwnerMessageId"],"owner-1");
+            assert_eq!(shared["participants"][0]["lastReplyMessageId"],"reply-0");
+            let reloaded=state.store.get("room",&room_id).unwrap();
+            assert_eq!(conversation_context(&state,&reloaded,&sid,"owner-2",&history),shared);
+            let next=conversation_context(&state,&reloaded,&sid,"owner-3",&[history.clone(),vec![
+                json!({"id":"owner-2","session_id":sid,"role":"user","content":"another request"}),
+                json!({"id":"new-reply","session_id":sid,"role":"assistant","agent_id":members[0],
+                    "content":"done","metadata":{"replyToMessageId":"owner-2"}})
+            ]].concat());
+            assert_eq!(next["participants"].as_array().unwrap().iter().filter(|p|p["repliedToPreviousRequest"]==true).count(),1);
+            assert_ne!(next["digest"],shared["digest"]);
+            let _=std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn queued_corrections_do_not_change_an_earlier_request_snapshot() {
+        let (state,dir)=state();
+        let first=owner("m1","규칙은 변경 전 값이다. 기억해.");
+        let later=owner("m2","정정. 규칙은 변경 후 값이다.");
+        state.store.write_message(&first);state.store.write_message(&later);
+        observe_owner_message(&state,"r","room:r",&first).unwrap();
+        observe_owner_message(&state,"r","room:r",&later).unwrap();
+        let (_,before)=context_snapshot_at(&state,"r","규칙",&[first.clone()]).unwrap();
+        assert!(before.contains("변경 전"));assert!(!before.contains("변경 후"));
+        let (_,after)=context_snapshot_at(&state,"r","규칙",&[first,later]).unwrap();
+        assert!(after.contains("변경 후"));assert!(!after.contains("변경 전"));
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[test]

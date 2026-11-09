@@ -128,6 +128,37 @@ pub fn visible(record: &Value, scope: &MemoryScope) -> bool {
     }
 }
 
+/// Personal recall follows the bot across owner-operated rooms and chats.
+/// Partition-local records keep their provenance; they do not become global
+/// instructions or another participant's memory. External channels still use
+/// the explicit sharing policy rather than silently exporting conversations.
+pub(crate) fn recallable(store: &Store, record: &Value, scope: &MemoryScope) -> bool {
+    if visible(record, scope) { return true; }
+    if !retrieval_eligible(record) || record["scope"] != "agent"
+        || scope.agent_id.as_deref().filter(|id| !id.is_empty()).is_none()
+        || record["agentId"].as_str() != scope.agent_id.as_deref() {
+        return false;
+    }
+    let Some(source) = record["sessionId"].as_str().and_then(|id| store.get("session", id)) else {
+        return false;
+    };
+    let target = store.get("session", &scope.session_id).unwrap_or(Value::Null);
+    if source["channelContext"]["transport"].is_string()
+        || target["channelContext"]["transport"].is_string() { return false; }
+    // Only evidence-backed personal memories cross the room boundary.
+    // Ambiguous legacy records remain accessible in their original scope.
+    let Some(ids) = record["sourceMessageIds"].as_array().filter(|ids| !ids.is_empty()) else {
+        return false;
+    };
+    ids.iter().all(|id| id.as_str().and_then(|id| store.message(id)).is_some_and(|message| {
+        message["session_id"] == source["id"]
+            && !message["metadata"]["origin"].is_object()
+            && (message["role"] == "tool"
+                || message["role"] == "user" && (!source["roomId"].is_string()
+                    || message["metadata"]["authorKind"] == "owner"))
+    }))
+}
+
 pub fn normalize(text: &str) -> String {
     text.to_lowercase()
         .chars()
@@ -313,7 +344,7 @@ fn retrieve_ranked_with_rerank(
     let query_terms = terms(query);
     let compact_query = normalize(query);
     let mut records = store.all("memory").into_iter()
-        .filter(|record| visible(record, scope))
+        .filter(|record| recallable(store, record, scope))
         .collect::<Vec<_>>();
     records.sort_by(|a, b| {
         b.get("learnedAt")
@@ -943,7 +974,7 @@ fn importance_rank_quality(
     // estimate utility from scoped lexical evidence. Include ALL eligible
     // memories in the ideal ordering, independent of the selected reranker.
     let mut reference = store.all("memory").into_iter()
-        .filter(|record| visible(record, scope))
+        .filter(|record| recallable(store, record, scope))
         .collect::<Vec<_>>();
     reference.sort_by(|a, b| {
         b["learnedAt"].as_str().or_else(|| b["createdAt"].as_str()).unwrap_or("")
@@ -1060,6 +1091,7 @@ fn context_block_from_records(store: &Store, memories: Vec<Value>)
                 "id": memory["id"], "type": memory["type"],
                 "text": memory["text"].as_str().unwrap_or("").chars().take(600).collect::<String>(),
                 "source": memory["source"], "sourceMessageIds": memory["sourceMessageIds"],"sourceAuthors":memory["sourceAuthors"],
+                "sourceSessionId": memory["sessionId"], "sourcePartitionKey": memory["partitionKey"],
         "sourceRole": memory["sourceRole"], "verification": memory["verification"],
             })
         })
@@ -1580,7 +1612,7 @@ mod tests {
     }
 
     #[test]
-    fn room_memories_are_private_to_room_and_agent_and_require_actual_owner_source() {
+    fn room_memories_keep_provenance_and_follow_only_the_same_agent() {
         let db = store();
         db.put("session", &json!({"id":"room-s1","roomId":"room-one"}));
         db.put("session", &json!({"id":"room-s2","roomId":"room-two"}));
@@ -1620,6 +1652,25 @@ mod tests {
         assert!(!visible(&saved, &scope(&db, "room-s1", "b")));
         assert!(!visible(&saved, &scope(&db, "room-s2", "a")));
         assert!(!visible(&saved, &scope(&db, "local-s", "a")));
+        for session in ["room-s2", "local-s"] {
+            let target=scope(&db,session,"a");
+            assert!(recallable(&db,&saved,&target));
+            assert!(retrieve(&db,&target,"장기기억",10).iter().any(|record|record["id"]==saved["id"]));
+            let context=context_block(&db,&target,"장기기억").unwrap();
+            assert!(context.contains("sourceSessionId") && context.contains("room-s1"));
+        }
+        assert!(retrieve(&db,&scope(&db,"room-s2","b"),"장기기억",10).is_empty());
+        let target=scope(&db,"room-s2","a");
+        for (field,value) in [("scope",json!("session")),("status",json!("superseded")),
+            ("sourceMessageIds",json!(["missing-source"]))] {
+            let mut restricted=saved.clone();restricted[field]=value;
+            assert!(!recallable(&db,&restricted,&target));
+        }
+        db.put("session",&json!({"id":"channel","channelContext":{"transport":"discord","channelId":"private"}}));
+        assert!(!recallable(&db,&saved,&scope(&db,"channel","a")));
+        db.write_message(&json!({"id":"external","session_id":"room-s1","role":"user","content":"external quote", "metadata":{"authorKind":"owner","origin":{"kind":"discord","authorId":"outsider"}}}));
+        let mut external=saved.clone();external["sourceMessageIds"]=json!(["external"]);
+        assert!(!recallable(&db,&external,&target));
     }
 }
 

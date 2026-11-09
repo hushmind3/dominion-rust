@@ -109,7 +109,8 @@ pub(crate) fn project(
             state.store.get(dependency["kind"].as_str().unwrap_or(""),dependency["id"].as_str().unwrap_or(""))
                 .is_none_or(|record| {
                     let visible=match dependency["kind"].as_str().unwrap_or("") {
-                        "memory"|"skill"=>crate::engine::memory::visible(&record,&scope),
+                        "memory"=>crate::engine::memory::recallable(&state.store,&record,&scope),
+                        "skill"=>crate::engine::memory::visible(&record,&scope),
                         "experience"=>crate::engine::experience::visible(&record,&scope),
                         "experience_rule"=>crate::engine::experience::rule_visible(&record,&scope),
                         _=>true,
@@ -200,15 +201,25 @@ pub(crate) fn prepare(
     ]);
     let id = format!("conversation-{scope}");
     let prefix = stable_id(&[instructions, &reasoning.to_string()]);
-    let key = format!("dominion_{}", stable_id(&[&scope, &prefix]));
+    // Cache affinity belongs to the bot, not the room. Transport cursors
+    // above remain conversation-local so a cache hint cannot mix histories.
+    let identity = super::context::identity_prefix(state, request).0;
+    let affinity = stable_id(&[
+        "agent-cache-v2", request.agent_id.as_deref().unwrap_or(session_id),
+        &provider.id, &provider.base_url, &provider.model,
+        provider.account_id.as_deref().unwrap_or(""), &provider.kind,
+        &provider.reasoning_protocol, &identity,
+    ]);
+    let key = format!("dominion_{affinity}");
     let previous = state.store.get("model_conversation", &id);
-    let same_prefix = previous.as_ref().is_some_and(|record|record["cacheKey"] == key);
+    let same_prefix = previous.as_ref().is_some_and(|record|record["prefixDigest"] == prefix);
     let mut record = previous.unwrap_or_else(||json!({
         "id":id,"sessionId":session_id,"agentId":request.agent_id,
         "providerId":provider.id,"model":provider.model,
         "createdAt":chrono::Utc::now().to_rfc3339(),
     }));
     record["transportSessionId"] = json!(scope);
+    record["cacheAffinityId"] = json!(affinity);
     record["cacheKey"] = json!(key);
     record["prefixDigest"] = json!(prefix);
     record["lastRequestedAt"] = json!(chrono::Utc::now().to_rfc3339());
@@ -216,7 +227,7 @@ pub(crate) fn prepare(
         .ok_or("봇의 지속 대화 상태를 저장할 수 없습니다.")?;
     Ok(json!({
         "id":id,"participantId":participant_id,"transport":provider.kind,"mode":"prefix-reuse",
-        "transportSessionId":scope,"cacheKey":key,"prefixDigest":prefix,
+        "transportSessionId":scope,"cacheAffinityId":affinity,"cacheKey":key,"prefixDigest":prefix,
         "samePrefixAsPreviousRequest":same_prefix,
         "previousReplyMessageId":participant.get("lastReplyMessageId").unwrap_or(&record["lastReplyMessageId"]),
         "participantBaseReplyMessageId":participant["lastReplyMessageId"],
@@ -314,7 +325,7 @@ pub(super) async fn send(
     for attempt in 1..=2 {
         plan["httpRequests"]=json!(attempt);
         let mut request=builder.try_clone().ok_or("모델 요청을 복제할 수 없습니다.")?;
-        if let Some(id)=plan["transportSessionId"].as_str() {
+        if let Some(id)=plan["cacheAffinityId"].as_str().or_else(||plan["transportSessionId"].as_str()) {
             request=request.header("x-dominion-conversation",id);
         }
         let response=request.json(&body).send().await.map_err(|e|format!("{} 연결 실패: {e}",provider.name))?;
@@ -373,13 +384,26 @@ mod tests {
         let other=|provider:&ProviderRef,request:&TurnRequest,session:&str,prefix:&str|prepare(&state,provider,request,session,prefix,&json!({"effort":"low"})).unwrap();
         let mut peer=request.clone();peer.agent_id=Some("b".into());
         assert_ne!(first["cacheKey"],other(&provider,&peer,"room:one","full persona")["cacheKey"]);
-        assert_ne!(first["cacheKey"],other(&provider,&request,"room:two","full persona")["cacheKey"]);
+        let another_room = other(&provider,&request,"room:two","another room contract");
+        assert_eq!(first["cacheKey"],another_room["cacheKey"]);
+        assert_eq!(first["cacheAffinityId"],another_room["cacheAffinityId"]);
+        assert_ne!(first["participantId"],another_room["participantId"]);
+        assert_ne!(first["transportSessionId"],another_room["transportSessionId"]);
+        assert!(another_room["previousReplyMessageId"].is_null());
+        let private_chat=other(&provider,&request,"private:one","private chat contract");
+        assert_eq!(first["cacheKey"],private_chat["cacheKey"]);
+        assert!(private_chat["previousReplyMessageId"].is_null());
         for change in ["model","account","endpoint"] {
             let mut changed=provider.clone();
             match change {"model"=>changed.model="model-b".into(),"account"=>changed.account_id=Some("account-b".into()),_=>changed.base_url="https://other.test".into()}
             assert_ne!(first["cacheKey"],other(&changed,&request,"room:one","full persona")["cacheKey"]);
         }
-        assert_ne!(first["cacheKey"],other(&provider,&request,"room:one","edited persona")["cacheKey"]);
+        let changed_contract=other(&provider,&request,"room:one","edited room contract");
+        assert_eq!(first["cacheKey"],changed_contract["cacheKey"]);
+        assert_eq!(changed_contract["samePrefixAsPreviousRequest"],false);
+        state.store.put("agent",&json!({"id":"a","systemPrompt":"edited persona"}));
+        assert_ne!(first["cacheKey"],other(&provider,&request,"room:one","full persona")["cacheKey"]);
+        state.store.remove("agent","a");
         assert!(!state.store.get("model_conversation",id).unwrap().to_string().contains("never-store-this"));
         for kind in ["openai","anthropic","ollama","llamacpp","lmstudio"] {
             let mut changed=provider.clone();changed.kind=kind.into();changed.model=format!("{kind}-test");
@@ -425,9 +449,9 @@ mod tests {
         let root=std::env::temp_dir().join(format!("dominion-affinity-{}",uuid::Uuid::new_v4()));
         let state=state(&root);let mut provider=route();provider.base_url=format!("http://{address}");
         provider.kind="openai".into();
-        for (agent,text) in [("a","first"),("a","second"),("b","second")] {
+        for (agent,session,text) in [("a","room:one","first"),("a","private:two","second"),("b","room:one","second")] {
             let request=TurnRequest::from_value(&json!({"agentId":agent,"input":text})).unwrap();
-            let mut plan=prepare(&state,&provider,&request,"room:test","identity",&json!({})).unwrap();
+            let mut plan=prepare(&state,&provider,&request,session,"identity",&json!({})).unwrap();
             let response=send(&state,&provider,reqwest::Client::new().post(format!("http://{address}/test")),
                 &json!({"model":"test","messages":[{"role":"user","content":text}]}),&mut plan,CacheWire::Key).await.unwrap();
             assert!(response.status().is_success());
