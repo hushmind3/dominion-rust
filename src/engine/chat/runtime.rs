@@ -35,13 +35,17 @@ fn bounded_contract_intent(input: &str) -> String {
     )
 }
 
-/// RSI must start editing before the per-turn token budget is exhausted by
-/// repeated exploration. After this many successful tool calls without a
-/// write, only write tools remain available for the rest of the turn.
-const RSI_EDIT_TOOL_CALL_THRESHOLD: u64 = 4;
+/// Repository maps, quoted source and prior evidence are context, not tasks.
+fn task_input<'a>(session: &'a Value, input: &'a str) -> &'a str {
+    if session["rsiRun"]==true {
+        session["rsiObjective"].as_str().filter(|text|!text.trim().is_empty()).unwrap_or(input)
+    } else {input}
+}
 
-fn rsi_should_force_edit(tool_calls: u64, has_write: bool) -> bool {
-    tool_calls >= RSI_EDIT_TOOL_CALL_THRESHOLD && !has_write
+fn rsi_output_allowance(spent: u64, input: u64) -> Result<u64,String> {
+    let remaining=MAX_TOKENS.saturating_sub(spent).saturating_sub(input);
+    if remaining<256 {return Err(format!("토큰 예산({MAX_TOKENS})이 부족해 다음 호출 전에 중단했습니다."));}
+    Ok(remaining.min(8192))
 }
 
 pub async fn run_turn(
@@ -202,7 +206,7 @@ async fn run_turn_with_policy(
     // The task contract bounds intent to 4096 characters. A self-improvement
     // prompt carries a repository index and can be much larger; keep the full
     // prompt for the model, but derive a bounded, unique contract intent.
-    let contract_intent = bounded_contract_intent(&request.input);
+    let contract_intent = bounded_contract_intent(task_input(&session,&request.input));
     let root_spec = crate::engine::episode::RootSpec {
         task_id: &task_id,
         intent: &contract_intent,
@@ -386,10 +390,12 @@ async fn run_turn_body(
             .store
             .message(id)
             .and_then(|message| message["content"].as_str().map(str::to_string)),
-        None => Some(request.input.clone()),
+        None => Some(task_input(&session,&request.input).to_string()),
     };
-    let mut acceptance = if request.verification_owner.as_deref() == Some("parent") {
-        // The parent goal owns the final semantic review. The child still
+    let mut acceptance = if session["rsiRun"]==true || request.verification_owner.as_deref() == Some("parent") {
+        // RSI's independent patch verifier (or the parent goal) owns review;
+        // investigating and declining a change must not trigger forced writes.
+        // The child still
         // records operations, deterministic evidence and cancellation; it must
         // not spend a second reviewer call on a synthesized derived prompt.
         None
@@ -568,7 +574,7 @@ async fn run_turn_body(
             state,
             request,
             session_id,
-            &request.input,
+            task_input(&session,&request.input),
             Some(&strategy_candidates),
             Some(execution_id),
         );
@@ -690,7 +696,7 @@ async fn run_turn_body(
     )
     .unwrap_or(Value::Null);
     let decomposition =
-        crate::engine::decompose::decompose(&request.input, &decomposition_algorithm);
+        crate::engine::decompose::decompose(task_input(&session,&request.input), &decomposition_algorithm);
     let subtask_count = decomposition["subtasks"]
         .as_array()
         .map(Vec::len)
@@ -705,7 +711,7 @@ async fn run_turn_body(
         "kernel": decomposition["kernel"],
         "subtasks": subtask_count,
         "digest": crate::engine::memory::stable_id(&[
-            &request.input,
+            task_input(&session,&request.input),
             decomposition["kernel"].as_str().unwrap_or(""),
         ]),
     }));
@@ -722,6 +728,7 @@ async fn run_turn_body(
     if acceptance.is_some()
         && request.tools_enabled
         && source_message_id.is_none()
+        && session["rsiRun"]!=true
         && plan_requested
     {
         if let Some(plan) = action_plan(state, request, acceptance.as_ref().map(|(text, _)| text.as_str()).unwrap_or("")).await {
@@ -910,7 +917,6 @@ async fn run_turn_body(
     let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
-    let mut rsi_edit_forced = false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -995,12 +1001,6 @@ async fn run_turn_body(
         }
 
         {
-            let mut counters = metrics.lock().unwrap();
-            counters.model_calls += 1;
-            counters.iterations = round as u32 + 1;
-        }
-
-        {
             let chars: usize = messages
                 .iter()
                 .filter_map(|message| message["content"].as_str())
@@ -1038,31 +1038,12 @@ async fn run_turn_body(
                 .unwrap_or(60_000);
             round_tools = trim_tool_definitions(round_tools, budget);
         }
-        if session["rsiRun"] == true && !force_final && !rsi_edit_forced {
-            let tool_calls = metrics.lock().unwrap().tool_calls as u64;
-            let has_write = state.store.all("execution_operation").iter().any(|operation| {
-                operation["runId"].as_str() == Some(execution_id)
-                    && operation["status"].as_str() == Some("completed")
-                    && matches!(
-                        operation["tool"].as_str(),
-                        Some("workspace_write" | "workspace_replace")
-                    )
-            });
-            if rsi_should_force_edit(tool_calls, has_write) {
-                round_tools.retain(|definition| {
-                    matches!(
-                        tool_name(definition),
-                        "workspace_write" | "workspace_replace"
-                    )
-                });
-                messages.push(json!({
-                    "role":"system",
-                    "content":"조사는 충분합니다. 이번 턴에서는 code_search와 workspace_read_range를 더 호출할 수 없습니다. 지금까지 읽은 내용과 프롬프트의 대상 코드를 사용해 workspace_replace로 실제 수정을 시작하세요. 새 파일이 아니면 workspace_write로 전체 파일을 다시 쓰지 마세요."
-                }));
-                rsi_edit_forced = true;
-            }
-        }
         let wire_messages = messages.clone();
+        if session["rsiRun"]==true {
+            let input=super::room_context::input_estimate(&wire_messages,&round_tools) as u64;
+            let limit=rsi_output_allowance(total_tokens,input)?;
+            provider.max_output_tokens=Some(provider.max_output_tokens.unwrap_or(8192).min(limit));
+        }
         if is_room {
             if let Some(mut execution) = state.store.get("execution", execution_id) {
                 execution["inputContext"]["preparedInputTokensEstimate"] = json!(super::room_context::input_estimate(&wire_messages,&round_tools));
@@ -1074,6 +1055,11 @@ async fn run_turn_body(
             state,session_id,super::room_context::input_estimate(&wire_messages,&round_tools) as u64,
         )?{
             provider.max_output_tokens=Some(provider.max_output_tokens.unwrap_or(8192).min(limit));
+        }
+        {
+            let mut counters = metrics.lock().unwrap();
+            counters.model_calls += 1;
+            counters.iterations = round as u32 + 1;
         }
         let completion_result = stream_completion(
             state,
@@ -6038,11 +6024,13 @@ mod harness_tool_selection_tests {
     }
 
     #[test]
-    fn rsi_forces_an_edit_after_enough_exploration() {
-        assert!(!rsi_should_force_edit(3, false));
-        assert!(rsi_should_force_edit(4, false));
-        assert!(!rsi_should_force_edit(4, true));
-        assert!(!rsi_should_force_edit(5, true));
+    fn rsi_uses_the_objective_and_checks_budget_before_another_call() {
+        let session=json!({"rsiRun":true,"rsiObjective":"작은 능력 하나 개선"});
+        assert_eq!(task_input(&session,"quoted source and index"),"작은 능력 하나 개선");
+        assert_eq!(task_input(&json!({}),"owner input"),"owner input");
+        assert_eq!(rsi_output_allowance(240_000,9_000).unwrap(),1000);
+        assert!(rsi_output_allowance(249_000,1000).is_err());
+        assert_eq!(rsi_output_allowance(0,1000).unwrap(),8192);
     }
 
     #[test]

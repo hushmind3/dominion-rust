@@ -6577,6 +6577,66 @@ fn measure_estimate(text: &str) -> usize {
     ascii.div_ceil(4) + text.chars().count() - ascii
 }
 
+fn rsi_context_session(app:&TestApp)->Value {
+    std::fs::create_dir_all(app._root.join("src")).unwrap();
+    std::fs::write(app._root.join("src/target.rs"),"pub fn target() {}\n").unwrap();
+    let session=app.post("/api/sessions",&json!({"title":"bounded RSI context"}));
+    let c=Connection::open(app._root.join("runtime/dominion.sqlite")).unwrap();
+    let mut value=session.clone();
+    value["rsiRun"]=json!(true);value["rsiObjective"]=json!("기억 검색 개선의 근거를 확인하고, 근거가 없으면 변경 없이 보고하세요.");
+    value["rsiCodeIndexId"]=json!("fixture-index");value["rsiSourceDir"]=json!(app._root);
+    for (kind,id,data) in [
+        ("session",session["id"].as_str().unwrap(),value),
+        ("code_index","fixture-index",json!({"id":"fixture-index","sourceDir":app._root,"files":1})),
+        ("code_index_file","fixture-file",json!({"id":"fixture-file","indexId":"fixture-index","path":"src/target.rs","symbols":[{"name":"target","kind":"fn","line":1}]})),
+    ] {c.execute("INSERT OR REPLACE INTO records(kind,id,data) VALUES(?1,?2,?3)",rusqlite::params![kind,id,data.to_string()]).unwrap();}
+    session
+}
+
+#[test]
+fn rsi_context_is_not_reinterpreted_as_tasks_or_forced_into_a_write() {
+    let _serial=serial();let calls=Arc::new(std::sync::atomic::AtomicUsize::new(0));let counter=calls.clone();
+    let (port,requests)=scripted_provider(move |body|{
+        if body["stream"]!=true {return vec![json!({"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]})];}
+        let n=counter.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+        let delta=match n {
+            0=>json!({"tool_calls":(["target","fn target","target missing","missing target"].iter().enumerate().map(|(i,q)|json!({"index":i,"id":format!("search-{i}"),"type":"function","function":{"name":"code_search","arguments":json!({"query":q}).to_string()}})).collect::<Vec<_>>())}),
+            1=>json!({"tool_calls":[{"index":0,"id":"read-after-four-searches","type":"function","function":{"name":"workspace_read_range","arguments":"{\"path\":\"src/target.rs\",\"startLine\":1,\"endLine\":1}"}}]}),
+            _=>json!({"content":"근거가 없어 변경 없이 마칩니다."}),
+        };
+        vec![json!({"choices":[{"delta":delta,"finish_reason":if n<2 {"tool_calls"}else{"stop"}}],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}})]
+    });
+    let app=TestApp::new(port,"native");let session=rsi_context_session(&app);
+    let input=format!("코드와 지도는 참고 자료입니다. SOURCE_CONTEXT_ONCE\n{}",(0..800).map(|i|format!("{i}. quoted fn source_{i}() {{ unwrap(); }}\n")).collect::<String>());
+    let stream=app.chat(&json!({"sessionId":session["id"],"input":input,"toolsEnabled":true,"autoLearning":false}));
+    assert!(stream.contains("변경 없이"),"{stream}");
+    let seen=requests.lock().unwrap();assert_eq!(seen.len(),3,"no hidden planning request: {}",seen.len());
+    for body in seen.iter() {
+        assert_eq!(body["stream"],true);
+        assert_eq!(body["messages"].to_string().matches("SOURCE_CONTEXT_ONCE").count(),1);
+        assert!(body["messages"].as_array().unwrap().iter().all(|row|!row["content"].as_str().unwrap_or("").contains("조사는 충분합니다")));
+    }
+    assert!(seen[1]["tools"].as_array().unwrap().iter().any(|tool|tool["function"]["name"]=="workspace_read_range"));
+    assert_eq!(std::fs::read_to_string(app._root.join("src/target.rs")).unwrap(),"pub fn target() {}\n");
+    let c=Connection::open(app._root.join("runtime/dominion.sqlite")).unwrap();
+    let raw:String=c.query_row("SELECT data FROM records WHERE kind='execution' AND json_extract(data,'$.sessionId')=?1",[session["id"].as_str().unwrap()],|r|r.get(0)).unwrap();
+    let execution:Value=serde_json::from_str(&raw).unwrap();
+    assert!(execution["subtasks"].as_array().unwrap().len()<5,"source text is not a work list");
+    assert!(execution["plan"].is_null());assert_eq!(execution["toolCalls"],5);
+}
+
+#[test]
+fn rsi_turn_budget_blocks_the_next_request_before_spending_it() {
+    let _serial=serial();let (port,requests)=scripted_provider(|_|vec![json!({
+        "choices":[{"delta":{"tool_calls":[{"index":0,"id":"search","type":"function","function":{"name":"code_search","arguments":"{\"query\":\"target\"}"}}]},"finish_reason":"tool_calls"}],
+        "usage":{"prompt_tokens":249000,"completion_tokens":100,"total_tokens":249100}
+    })]);
+    let app=TestApp::new(port,"native");let session=rsi_context_session(&app);
+    let stream=app.chat(&json!({"sessionId":session["id"],"input":"참고 코드 ".repeat(2000),"toolsEnabled":true,"autoLearning":false}));
+    assert!(stream.contains("다음 호출 전에 중단"),"{stream}");
+    assert_eq!(requests.lock().unwrap().len(),1,"do not discover an exhausted budget after paying for another call");
+}
+
 /// Research measurement, not a behavioural guarantee: shows exactly what the
 /// harness sends per participant across three owner turns in a nine-person room.
 #[test]

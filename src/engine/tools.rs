@@ -1,7 +1,6 @@
 use crate::db::Store;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -627,71 +626,46 @@ fn search_code_index(
     if needle.is_empty() {
         return Err("code_search query는 비어 있을 수 없습니다.".into());
     }
-    let mut metas = ctx.store.all("code_index");
-    metas.sort_by(|left, right| {
-        right["generatedAt"]
-            .as_str()
-            .unwrap_or("")
-            .cmp(left["generatedAt"].as_str().unwrap_or(""))
-    });
-    let meta = metas
-        .into_iter()
-        .next()
-        .ok_or("전수조사 인덱스가 없습니다. 먼저 /api/rsi/inspect로 인덱스를 만드세요.")?;
+    let session=ctx.store.get("session",ctx.session_id).unwrap_or(Value::Null);
+    let bound=session["rsiCodeIndexId"].as_str()
+        .filter(|_|session["rsiRun"]==true)
+        .and_then(|id|ctx.store.get("code_index",id))
+        .filter(|meta|meta["sourceDir"].is_string() && meta["sourceDir"]==session["rsiSourceDir"]);
+    // Never search whichever unrelated repository happened to be indexed last.
+    let meta=match bound.or_else(||crate::engine::code_index::get(ctx.state,ctx.workspace)) {
+        Some(meta)=>meta,
+        None=>crate::engine::code_index::refresh(ctx.state,ctx.workspace)?,
+    };
     let index_id = meta["id"].as_str().unwrap_or("");
-    let mut seen = BTreeSet::new();
-    let mut matches = Vec::new();
+    let terms=needle.split_whitespace().map(|term|term.trim_matches(['`','\"','\'','(',')',',']))
+        .filter(|term|!term.is_empty() && !matches!(*term,"fn"|"pub"|"async"|"struct"|"enum"))
+        .collect::<Vec<_>>();
+    let score=|value:&str|{
+        let value=value.to_lowercase();
+        if value==needle {1000} else {
+            u64::from(value.contains(&needle))*200 + terms.iter().map(|term|
+                if value==*term {100} else {u64::from(value.contains(term))*20}).sum::<u64>()
+        }
+    };
+    let mut matches=Vec::new();
     for file in ctx.store.all("code_index_file") {
-        if file["indexId"].as_str() != Some(index_id) {
-            continue;
-        }
-        let path = file["path"].as_str().unwrap_or("");
-        if path.to_lowercase().contains(&needle) {
-            let key = format!("{path}:0:file");
-            if seen.insert(key) {
-                matches.push(json!({
-                    "path": path,
-                    "kind": "file",
-                    "name": path,
-                    "line": 1,
-                }));
-            }
-        }
+        if file["indexId"].as_str()!=Some(index_id) {continue;}
+        let path=file["path"].as_str().unwrap_or("");
+        let rank=score(path);
+        if rank>0 {matches.push((rank,json!({"path":path,"kind":"file","name":path,"line":1})));}
         for symbol in file["symbols"].as_array().into_iter().flatten() {
-            let name = symbol["name"].as_str().unwrap_or("");
-            if !name.to_lowercase().contains(&needle) {
-                continue;
-            }
-            let line = symbol["line"].as_u64().unwrap_or(0);
-            let kind = symbol["kind"].as_str().unwrap_or("symbol");
-            let key = format!("{path}:{line}:{kind}:{name}");
-            if seen.insert(key) {
-                matches.push(json!({
-                    "path": path,
-                    "kind": kind,
-                    "name": name,
-                    "line": line,
-                }));
-            }
-        }
-        if matches.len() >= limit.saturating_mul(4) {
-            break;
+            let name=symbol["name"].as_str().unwrap_or("");let rank=score(name);
+            if rank==0 {continue;}
+            matches.push((rank,json!({"path":path,"kind":symbol["kind"],"name":name,"line":symbol["line"]})));
         }
     }
-    matches.sort_by(|left, right| {
-        left["path"]
-            .as_str()
-            .cmp(&right["path"].as_str())
-            .then_with(|| left["line"].as_u64().cmp(&right["line"].as_u64()))
-    });
+    matches.sort_by(|(a,left),(b,right)|b.cmp(a)
+        .then_with(||left["path"].as_str().cmp(&right["path"].as_str()))
+        .then_with(||left["line"].as_u64().cmp(&right["line"].as_u64())));
+    matches.dedup_by(|(_,a),(_,b)|a==b);
     matches.truncate(limit);
-    Ok(json!({
-        "query": query,
-        "indexId": index_id,
-        "indexedFiles": meta["files"],
-        "matches": matches,
-        "matchCount": matches.len(),
-    }))
+    let matches=matches.into_iter().map(|(_,row)|row).collect::<Vec<_>>();
+    Ok(json!({"query":query,"indexId":index_id,"indexedFiles":meta["files"],"matchCount":matches.len(),"matches":matches}))
 }
 
 async fn replace_text(
@@ -1359,7 +1333,7 @@ mod tests {
             .store
             .put(
                 "code_index",
-                &json!({"id":"idx-test","generatedAt":"2026-11-09T00:00:00Z","files":1}),
+                &json!({"id":crate::engine::code_index::index_id(&dir.canonicalize().unwrap()),"sourceDir":dir.canonicalize().unwrap(),"generatedAt":"2026-11-09T00:00:00Z","files":1}),
             )
             .unwrap();
         state
@@ -1368,7 +1342,7 @@ mod tests {
                 "code_index_file",
                 &json!({
                     "id":"idx-test:src/engine/rsi_evolve.rs",
-                    "indexId":"idx-test",
+                    "indexId":crate::engine::code_index::index_id(&dir.canonicalize().unwrap()),
                     "path":"src/engine/rsi_evolve.rs",
                     "symbols":[
                         {"name":"run_loop","kind":"fn","line":120},
@@ -1390,6 +1364,11 @@ mod tests {
         assert_eq!(result["matchCount"], 1, "{result}");
         assert_eq!(result["matches"][0]["path"], "src/engine/rsi_evolve.rs");
         assert_eq!(result["matches"][0]["line"], 120);
+        state.store.put("code_index",&json!({"id":"foreign","sourceDir":"/another/repository","generatedAt":"2099-01-01","files":1}));
+        state.store.put("code_index_file",&json!({"id":"foreign-file","indexId":"foreign","path":"private.rs","symbols":[{"name":"run_loop","kind":"fn","line":999}]}));
+        let multi=search_code_index(&ctx,"fn run_loop record_rsi_lesson",10).unwrap();
+        assert_eq!(multi["matchCount"],2,"{multi}");
+        assert!(multi["matches"].as_array().unwrap().iter().all(|row|row["path"]!="private.rs"));
         let path_result = search_code_index(&ctx, "rsi_evolve.rs", 10).unwrap();
         assert!(path_result["matches"]
             .as_array()

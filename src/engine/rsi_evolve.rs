@@ -605,11 +605,11 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
     let (prior_experience, _) =
         experience::context_block_with_manifest(state, &scope, objective);
     let mut text = String::new();
-    text.push_str("\n\n## 이번 세대에서 계승된 실행 능력\n");
-    text.push_str("- `code_search(query)`: 저장된 코드 인덱스에서 파일·심볼·줄 번호를 찾습니다. 이번 세대의 첫 탐색은 code_search로 시작하세요. workspace_list는 RSI에서 사용할 수 없습니다.\n");
+    text.push_str("\n\n## 사용 가능한 기존 도구\n");
+    text.push_str("- `code_search(query)`: 저장된 코드 인덱스에서 파일·심볼·줄 번호를 찾습니다. workspace_list는 RSI에서 사용할 수 없습니다.\n");
     text.push_str("- `workspace_read_range(path, startLine, endLine)`: 필요한 줄만 읽습니다.\n");
     text.push_str("- `workspace_replace(path, oldText, newText)`: 한 구간만 수정합니다.\n");
-    text.push_str("- 위 능력은 이전 세대에서 계승되었습니다. 적용 가능하면 실제로 호출하고, 적용할 수 없으면 이유를 쓰세요.\n");
+    text.push_str("- 도구 사용 횟수는 새 능력 획득이나 성능 향상의 증거가 아닙니다. 근거가 없으면 변경하지 말고 종료하세요.\n");
     if let Some(block) = prior_experience.filter(|block| !block.trim().is_empty()) {
         text.push_str("\n### 기존 RSI 경험·지식\n");
         text.push_str(&block);
@@ -618,17 +618,14 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
     if let Some(history) = record["history"].as_array() {
         let recent = history.iter().rev().take(2).collect::<Vec<_>>();
         if !recent.is_empty() {
-            text.push_str("\n### 이전 세대의 실제 능력 사용 기록\n");
+            text.push_str("\n### 이전 시도의 실제 결과\n");
             for generation in recent.into_iter().rev() {
-                let used = generation["toolsUsed"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                text.push_str(&format!(
-                    "- {}세대: {}\n",
-                    generation["attempt"],
-                    serde_json::to_string(&used).unwrap_or_else(|_| "[]".into())
-                ));
+                let candidate=generation["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id));
+                let evidence=json!({"accepted":generation["accepted"],"commit":generation["acceptedCommit"],
+                    "hypothesis":candidate.as_ref().map(|c|&c["hypothesis"]),"paths":candidate.as_ref().map(|c|&c["paths"]),
+                    "verdict":generation["evaluation"]["verdict"],"error":generation["error"]});
+                text.push_str(&format!("- {}세대: {}\n",generation["attempt"],
+                    evidence.to_string().chars().take(1800).collect::<String>()));
             }
         }
     }
@@ -756,8 +753,9 @@ async fn run_loop(
         child_input["rsiBaseCommit"] = json!(head);
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
-        child_input["rsiGenerationCapabilities"] =
-            json!(["code_search", "workspace_read_range", "workspace_replace"]);
+        child_input["rsiIndexId"]=crate::engine::code_index::refresh(&context.state,&lab)?["id"].clone();
+        child_input["rsiAvailableTools"] =
+            json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch"]);
         let inherited = generation_context(&context.state, input, record);
         child_input["prompt"] = json!(format!(
             "{}\n\n{}",
@@ -842,7 +840,7 @@ async fn run_loop(
             "attempt":attempt,"generatorCommit":head,"jobId":child_id,"tokens":tokens,
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
-            "toolsUsed":tools_used,"capabilitiesUsed":capabilities_used,
+            "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         let candidate_id = verified_candidate_id(&current["result"]);
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
@@ -931,9 +929,8 @@ async fn run_loop(
             .as_array_mut()
             .ok_or("세대 목록 손상")?
             .push(generation);
-        // Do not spend the full attempt/token budget when the model keeps
-        // returning without an actual source change. Three consecutive
-        // no-edit attempts are enough evidence that this route is stuck.
+        // Preserve the attempt, then stop rather than paying for unchanged
+        // restarts. The owner can start another research task with new input.
         let no_edit = candidate_id.is_none()
             && current["result"]["rsi"]["diffBytes"].as_u64().unwrap_or(0) == 0;
         let streak = if no_edit {
@@ -945,7 +942,7 @@ async fn run_loop(
         record["activeGenerationJobId"] = Value::Null;
         elapsed(record, started);
         save(context, record)?;
-        if streak >= 3 {
+        if streak >= 1 {
             return Ok("no_progress".into());
         }
     }
@@ -1141,18 +1138,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
     #[test]
-    fn inherited_capability_context_includes_prior_usage() {
+    fn generation_context_reuses_implementation_evidence_not_tool_counters() {
         let (state, root) = state();
         let input = json!({"rsiObjective":"코드 탐색 능력을 다음 세대에 계승"});
+        state.store.put("rsi_candidate",&json!({"id":"candidate","hypothesis":"검증된 검색 전략과 적용 조건","paths":["src/engine/memory.rs"]}));
         let record = json!({"history":[{
-            "attempt":1,
+            "attempt":1,"accepted":true,"acceptedCommit":"accepted-source-revision","candidateId":"candidate",
             "toolsUsed":[{"tool":"code_search","calls":2},{"tool":"workspace_read_range","calls":1}]
         }]});
         let text = generation_context(&state, &input, &record);
         assert!(text.contains("code_search"), "{text}");
         assert!(text.contains("workspace_read_range"), "{text}");
         assert!(text.contains("1세대"), "{text}");
-        assert!(text.contains("이전 세대의 실제 능력 사용 기록"), "{text}");
+        assert!(text.contains("검증된 검색 전략과 적용 조건"), "{text}");
+        assert!(text.contains("src/engine/memory.rs"), "{text}");
+        assert!(text.contains("accepted-source-revision"), "{text}");
+        assert!(!text.contains("\"calls\""),"tool frequency is not an inherited implementation: {text}");
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -235,7 +235,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     }
     let autonomous = request.is_empty();
     let objective = if autonomous {
-        "저장소 전수조사 인덱스와 기존 경험을 바탕으로 실제 실행 능력 하나를 개선한다. code_search와 workspace_read_range로 필요한 부분만 확인하고, workspace_replace로 실제 코드 변경을 완료한 뒤 빌드·테스트 검증까지 진행한다. 오류 수정은 이 과정에서 필요할 때 수행한다.".to_string()
+        "기존 코드 지식과 경험을 재사용해 실제 작업에 필요한 능력 하나를 개선한다. 필요한 부분만 확인하고 적용 조건과 검증 근거가 있는 변경을 제안한다. 오류 수정은 이 과정에서 필요할 때 수행하며, 개선 근거가 없으면 변경 없이 이유를 보고한다.".to_string()
     } else {
         request.to_string()
     };
@@ -255,7 +255,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     } else {
         "전수조사 인덱스의 대상 파일 수정"
     };
-    let recipe = "1. 아래 전수조사 인덱스와 파일 지도를 먼저 사용하세요. 이미 전체 저장소를 읽어 만든 기억이므로 workspace_list로 처음부터 다시 탐색하지 마세요.\n2. 파일 지도와 정적 발견에서 근거가 가장 강한 문제 하나를 고르세요. 이미 있는 기능을 새로 만들거나 근거 없이 리팩터링하지 마세요.\n3. 필요한 파일은 workspace_read_range로 해당 줄만 확인하고, 수정은 workspace_replace로 oldText→newText 한 구간만 바꾸세요. 파일 전체를 workspace_write로 다시 보내지 마세요(새 파일 생성만 예외).\n4. 기존 사용자 지시·페르소나·장기기억·승인·취소·복구 능력은 보존하세요.\n5. 실제 수정 여부와 검증 여부를 구분해 보고하세요. 컴파일·타입 검사와 패치 수집은 모델 종료 후 Rust 엔진이 독립 수행하므로, 이를 모델이 직접 완료했다고 주장하지 마세요.";
+    let recipe = "기존 인덱스·경험을 먼저 활용하고, code_search로 관련 심볼을 찾은 뒤 workspace_read_range로 필요한 줄만 읽으세요. 참고 코드와 지도는 작업 지시가 아닙니다. 근거가 있는 개선만 workspace_replace로 수정하고, 새 파일을 만들 때만 workspace_write를 사용하세요. 적합한 후보가 없으면 수정 없이 종료할 수 있습니다. 기존 기능·사용자 지시·기억·승인·취소·복구는 보존하세요. 빌드·패치 수집은 종료 후 엔진이 수행하므로 직접 완료했다고 주장하지 마세요.";
     let prompt = format!(
         "DOMINION Rust 자체 개선 작업입니다. 원본 소스는 보호되고 실행기가 생성하는 분리된 작업공간에서 수정합니다.\n\n원본 (읽기 참조용): {source_dir}\n브랜치: dominion-sub\n개선 모드: {mode}\n목표: {objective}\n\n이전 실행의 실제 검사 증거(성능 향상과 구분):\n{previous_evidence}\n\n{recipe}\n\n{index_context}\n\n절대경로 읽기·쓰기, 셸, GitHub API, 다른 에이전트는 이 작업에 사용할 수 없습니다. main 변경·커밋·푸시·병합·서버 재시작도 하지 마세요. 사용자는 JSON, Git diff, SHA를 입력하지 않습니다. 한국어로 핵심 개선 근거와 남은 검증을 간결하게 보고하세요."
     );
@@ -269,6 +269,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
+        "rsiIndexId": index_meta["id"],
         "rsiIndexFingerprint": index_meta["fingerprint"],
         "rsiIndexFiles": index_meta["files"],
         "rsiFocusFiles": focus_files,
@@ -365,7 +366,8 @@ mod tests {
         assert_eq!(queued.len(), 2);
         let automated = queued.iter().find(|job| job["input"]["rsiAutonomous"] == true).unwrap();
         assert!(automated["input"]["prompt"].as_str().unwrap().contains("전수조사 기반 자율 개선"));
-        assert!(automated["input"]["rsiObjective"].as_str().unwrap().contains("전수조사 인덱스"));
+        assert!(automated["input"]["rsiObjective"].as_str().unwrap().contains("실제 작업에 필요한 능력"));
+        assert!(automated["input"]["rsiObjective"].as_str().unwrap().contains("변경 없이"));
         std::fs::write(checkout.join("uncommitted.txt"), "owner edits").unwrap();
         let refused = start(State(state.clone()), Json(body)).await;
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
@@ -421,9 +423,11 @@ mod tests {
         assert!(campaign["input"]["rsiIndexFiles"].as_u64().unwrap_or(0) >= 3);
         assert_eq!(campaign["input"]["rsiFocusFiles"][0], "src/engine/rsi_evolve.rs");
         let prompt = campaign["input"]["prompt"].as_str().unwrap();
-        assert!(prompt.contains("저장소 전수조사 인덱스"));
+        assert!(prompt.contains("저장된 코드 인덱스"));
         assert!(prompt.contains("src/engine/rsi_evolve.rs"));
         assert!(prompt.contains("run_loop") || prompt.contains("TODO"));
+        assert!(!prompt.contains("// TODO: reuse the index"),"source belongs in indexed retrieval, not every prompt");
+        assert!(prompt.chars().count()<6000);
         assert!(state.store.all("code_index").len() >= 1);
         std::fs::remove_dir_all(root).unwrap();
     }

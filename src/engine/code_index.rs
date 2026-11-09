@@ -11,7 +11,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt::Write as _,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -20,8 +19,7 @@ const INDEX_KIND: &str = "code_index";
 const FILE_KIND: &str = "code_index_file";
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SYMBOLS_PER_FILE: usize = 400;
-const MAP_MAX_CHARS: usize = 28_000;
-const FOCUS_MAX_CHARS: usize = 12_000;
+const MAP_MAX_CHARS: usize = 6_000;
 const PARSER_VERSION: u64 = 3;
 
 fn digest(bytes: &[u8]) -> String {
@@ -606,192 +604,57 @@ pub fn get(state: &AppState, source: &Path) -> Option<Value> {
     state.store.get(INDEX_KIND, &index_id(&source))
 }
 
-fn excerpt(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let mut output = String::new();
-    let mut in_code = false;
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("fn ")
-            || trimmed.starts_with("pub fn ")
-            || trimmed.starts_with("async fn ")
-            || trimmed.starts_with("pub async fn ")
-            || trimmed.starts_with("struct ")
-            || trimmed.starts_with("pub struct ")
-            || trimmed.starts_with("impl ")
-            || trimmed.starts_with("export function ")
-            || trimmed.starts_with("export const ")
-            || trimmed.starts_with("TODO")
-            || trimmed.starts_with("FIXME")
-        {
-            in_code = true;
-        }
-        if in_code {
-            output.push_str(line);
-            output.push('\n');
-        } else if output.is_empty() && trimmed.starts_with("//!") {
-            output.push_str(line);
-            output.push('\n');
-        }
-        if output.chars().count() >= max_chars {
-            output.push_str("... (이하 생략)");
-            break;
-        }
-    }
-    if output.is_empty() {
-        output = text.chars().take(max_chars).collect();
-        output.push_str("\n... (이하 생략)");
-    }
-    output
-}
-
-/// Build the reusable inspection block embedded in the RSI prompt. The map
-/// contains every source path and its symbols; full content is included only
-/// for the selected focus files.
+/// Keep the index in SQLite. Send a small navigation map, not the entire
+/// index plus arbitrary hotspot source on every model/tool round.
 pub fn prompt_context(
     state: &AppState,
     source: &Path,
     focus: &[String],
 ) -> Result<(Value, String), String> {
     let meta = refresh(state, source)?;
-    let source = source
-        .canonicalize()
-        .map_err(|_| "연결된 소스 폴더에 접근할 수 없습니다.".to_string())?;
-    let id = index_id(&source);
-    let files = index_files(state, &id);
-    let mut block = String::new();
-    writeln!(block, "## 저장소 전수조사 인덱스 (재사용됨)").ok();
-    writeln!(
-        block,
-        "- 파일 {}개 / {}줄 / 심볼 {}개 / 테스트 {}개 / TODO·FIXME {}개",
-        meta["files"], meta["totalLines"], meta["symbols"], meta["tests"], meta["todos"]
-    )
-    .ok();
-    writeln!(
-        block,
-        "- 이번 갱신: 변경 {}개, 그대로 재사용 {}개, 삭제 {}개 / {}ms",
-        meta["changedFiles"],
-        meta["reusedFiles"],
-        meta["removedFiles"],
-        meta["durationMs"].as_u64().unwrap_or(0)
-    )
-    .ok();
-    writeln!(
-        block,
-        "- 인덱스 지문: {}",
-        meta["fingerprint"].as_str().unwrap_or("")
-    )
-    .ok();
-    writeln!(block, "\n### 모듈 지도").ok();
+    let files = index_files(state, meta["id"].as_str().unwrap_or(""));
+    let mut block = format!("## 저장된 코드 인덱스\n파일 {}개 / 심볼 {}개 / 테스트 {}개. 지문 {}\n",
+        meta["files"], meta["symbols"], meta["tests"], meta["fingerprint"]);
+    block.push_str("코드와 전체 파일 지도는 DB에 있습니다. code_search로 관련 심볼·줄 번호를 찾고 workspace_read_range로 필요한 부분만 읽으세요.\n\n### 모듈 지도\n");
     for module in meta["modules"].as_array().into_iter().flatten() {
-        writeln!(
-            block,
-            "- {}: 파일 {}, {}줄, 심볼 {}, 테스트 {}",
-            module["module"].as_str().unwrap_or(""),
-            module["files"],
-            module["lines"],
-            module["symbols"],
-            module["tests"]
-        )
-        .ok();
-    }
-    writeln!(block, "\n### 파일 지도 (경로: 줄 수 · 심볼)").ok();
-    let mut map_chars = 0usize;
-    for file in &files {
-        let path = file["path"].as_str().unwrap_or("");
-        let symbols = file["symbols"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|symbol| symbol["name"].as_str())
-            .take(14)
-            .collect::<Vec<_>>()
-            .join(", ");
-        let tests = file["tests"].as_array().map(|rows| rows.len()).unwrap_or(0);
-        let line = format!(
-            "- {path} ({}줄, 테스트 {tests}): {symbols}\n",
-            file["lines"].as_u64().unwrap_or(0)
-        );
-        if map_chars + line.chars().count() > MAP_MAX_CHARS {
-            block.push_str("- ... (파일 지도 나머지 생략)\n");
-            break;
-        }
-        map_chars += line.chars().count();
+        let line=format!("- {}: 파일 {}, 심볼 {}\n", module["module"].as_str().unwrap_or(""), module["files"], module["symbols"]);
+        if block.chars().count()+line.chars().count()>MAP_MAX_CHARS {break;}
         block.push_str(&line);
     }
-    writeln!(block, "\n### 정적 발견 우선순위").ok();
-    for hotspot in meta["hotspots"].as_array().into_iter().flatten() {
-        writeln!(
-            block,
-            "- {}: {}",
-            hotspot["path"].as_str().unwrap_or(""),
-            hotspot["reasons"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|reason| reason.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-        .ok();
+    for relative in focus.iter().take(8) {
+        let Some(file)=files.iter().find(|file|file["path"].as_str()==Some(relative)) else {continue};
+        let symbols=file["symbols"].as_array().into_iter().flatten().take(14)
+            .map(|symbol|format!("{}:{}",symbol["name"].as_str().unwrap_or(""),symbol["line"]))
+            .collect::<Vec<_>>().join(", ");
+        let line=format!("\n대상 {} ({}줄, hash={}): {}\n",relative,file["lines"],file["hash"],symbols);
+        if block.chars().count()+line.chars().count()>MAP_MAX_CHARS {break;}
+        block.push_str(&line);
     }
-    let mut selected = focus
-        .iter()
-        .filter(|path| crate::engine::rsi::safe_path(path))
-        .cloned()
-        .collect::<Vec<_>>();
-    if selected.is_empty() {
-        selected = meta["hotspots"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|hotspot| hotspot["path"].as_str().map(str::to_string))
-            .take(2)
-            .collect();
-    }
-    if !selected.is_empty() {
-        writeln!(
-            block,
-            "\n### 우선 대상 파일의 실제 코드 (인덱스에서 선택됨. 전체 저장소를 다시 읽지 마세요)"
-        )
-        .ok();
-        for relative in selected.into_iter().take(2) {
-            if !crate::engine::rsi::safe_path(&relative) {
-                continue;
-            }
-            let path = source.join(&relative);
-            let Ok(canonical) = path.canonicalize() else {
-                continue;
-            };
-            if !canonical.starts_with(&source) {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&canonical) else {
-                continue;
-            };
-            writeln!(
-                block,
-                "\n#### {relative} ({}줄)\n```rust\n{}\n```",
-                text.lines().count(),
-                excerpt(&text, FOCUS_MAX_CHARS)
-            )
-            .ok();
-        }
-    }
-    writeln!(
-        block,
-        "\n### 재사용 규칙\n- 위 인덱스는 이미 전체 저장소를 읽어 만든 기억입니다. `workspace_list`로 처음부터 다시 탐색하지 마세요.\n- 대상 파일을 고를 때는 위 파일 지도와 정적 발견을 사용하세요.\n- 필요한 파일이 있으면 그 파일만 `workspace_read`로 확인하세요.\n- 이번 실행은 전수조사 결과를 재사용하는 **1회 수정**입니다."
-    )
-    .ok();
-    Ok((meta, block))
+    block.push_str("\n근거 있는 제품 능력을 개선하세요. 큰 파일·unwrap 수·TODO 개수만으로 수정 대상을 정하거나 수정 자체를 목표로 삼지 마세요. 적절한 후보가 없으면 변경 없이 이유를 보고하세요.\n");
+    Ok((meta,block))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
+
+    #[test]
+    fn rsi_navigation_reuses_the_index_without_injecting_source_or_hotspots() {
+        let (state,root)=temp_state();let source=root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        let content=format!("pub fn target() {{\n// {}\n}}\n","SOURCE_ONLY_NOT_A_TASK ".repeat(4000));
+        std::fs::write(source.join("src/large.rs"),content).unwrap();
+        let (first,overview)=prompt_context(&state,&source,&[]).unwrap();
+        assert_eq!(first["files"],1);assert!(!overview.contains("SOURCE_ONLY_NOT_A_TASK"));
+        assert!(!overview.contains("정적 발견 우선순위"));
+        let (next,focused)=prompt_context(&state,&source,&["src/large.rs".into()]).unwrap();
+        assert_eq!(next["changedFiles"],0);assert_eq!(next["reusedFiles"],1);
+        assert!(focused.contains("target:1"));assert!(focused.contains("src/large.rs"));
+        assert!(!focused.contains("SOURCE_ONLY_NOT_A_TASK"));
+        assert!(focused.chars().count()<1000);
+        let _=std::fs::remove_dir_all(root);
+    }
 
     fn temp_state() -> (AppState, PathBuf) {
         let root = std::env::temp_dir().join(format!("dominion-index-{}", uuid::Uuid::new_v4()));
@@ -838,7 +701,7 @@ mod tests {
         let third = refresh(&state, &source).unwrap();
         assert_eq!(third["changedFiles"], 1);
         assert_eq!(third["todos"], 0);
-        let (_, block) = prompt_context(&state, &source, &[]).unwrap();
+        let (_, block) = prompt_context(&state, &source, &["src/engine/rsi_evolve.rs".into()]).unwrap();
         assert!(block.contains("src/engine/rsi_evolve.rs"));
         assert!(block.contains("run_loop"));
         let _ = std::fs::remove_dir_all(root);
