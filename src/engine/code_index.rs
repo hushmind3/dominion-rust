@@ -44,13 +44,28 @@ fn is_source(path: &Path) -> bool {
     }
     matches!(
         path.extension().and_then(|value| value.to_str()),
-        Some("rs" | "ts" | "tsx" | "js" | "jsx" | "css" | "html" | "json" | "toml" | "md" | "sh")
+        Some(
+            "rs" | "ts"
+                | "tsx"
+                | "js"
+                | "jsx"
+                | "mjs"
+                | "cjs"
+                | "css"
+                | "html"
+                | "json"
+                | "toml"
+                | "md"
+                | "sh"
+                | "yml"
+                | "yaml"
+        )
     )
 }
 
 fn collect_files(source: &Path) -> Vec<PathBuf> {
     let mut roots = vec![source.join("src"), source.join("tests")];
-    for extra in ["web/src", "src-tauri/src"] {
+    for extra in ["web/src", "src-tauri/src", "scripts", ".github/workflows"] {
         let path = source.join(extra);
         if path.is_dir() {
             roots.push(path);
@@ -195,6 +210,10 @@ fn parse_file(rel: &str, content: &str) -> Value {
     let mut summary = Vec::new();
     let mut patterns = BTreeMap::<&'static str, u64>::new();
     let mut test_pending = false;
+    let mut in_tests = rel.starts_with("tests/")
+        || rel.contains(".test.")
+        || rel.contains(".spec.")
+        || rel.ends_with("_test.rs");
     for (index, line) in content.lines().enumerate() {
         let trimmed = line.trim_start();
         if (trimmed.starts_with("//!") || trimmed.starts_with("///") || trimmed.starts_with("//"))
@@ -208,6 +227,9 @@ fn parse_file(rel: &str, content: &str) -> Value {
             if !text.is_empty() {
                 summary.push(text.chars().take(240).collect::<String>());
             }
+        }
+        if trimmed.starts_with("#[cfg(test)]") {
+            in_tests = true;
         }
         if trimmed.starts_with("#[test")
             || trimmed.starts_with("#[tokio::test")
@@ -240,12 +262,27 @@ fn parse_file(rel: &str, content: &str) -> Value {
                 }
             }
         }
-        let upper = line.to_uppercase();
-        for marker in ["TODO", "FIXME", "HACK", "XXX"] {
-            if upper.contains(marker) {
-                todos.push(json!({"line":index + 1,"text":line.trim().chars().take(220).collect::<String>()}));
-                break;
+        let comment = line
+            .find("//")
+            .map(|position| &line[position + 2..])
+            .or_else(|| line.find("/*").map(|position| &line[position + 2..]))
+            .or_else(|| {
+                let trimmed = line.trim_start();
+                trimmed
+                    .strip_prefix('*')
+                    .or_else(|| trimmed.strip_prefix("# "))
+            });
+        if let Some(comment) = comment {
+            let upper = comment.to_uppercase();
+            for marker in ["TODO", "FIXME", "HACK", "XXX"] {
+                if upper.contains(marker) {
+                    todos.push(json!({"line":index + 1,"text":comment.trim().chars().take(220).collect::<String>()}));
+                    break;
+                }
             }
+        }
+        if in_tests {
+            continue;
         }
         for (key, needle) in [
             ("unwrap", ".unwrap()"),
@@ -404,9 +441,7 @@ pub fn refresh(state: &AppState, source: &Path) -> Result<Value, String> {
     }
     for path in existing.keys() {
         if !seen.contains(path) {
-            state
-                .store
-                .remove(FILE_KIND, &file_id(&id, path));
+            state.store.remove(FILE_KIND, &file_id(&id, path));
             removed += 1;
         }
     }
@@ -418,8 +453,14 @@ pub fn refresh(state: &AppState, source: &Path) -> Result<Value, String> {
     let mut hotspots = Vec::new();
     for file in &files {
         let path = file["path"].as_str().unwrap_or("");
+        if path.starts_with("tests/") {
+            continue;
+        }
         let lines = file["lines"].as_u64().unwrap_or(0);
-        let symbols = file["symbols"].as_array().map(|rows| rows.len()).unwrap_or(0) as u64;
+        let symbols = file["symbols"]
+            .as_array()
+            .map(|rows| rows.len())
+            .unwrap_or(0) as u64;
         let tests = file["tests"].as_array().map(|rows| rows.len()).unwrap_or(0) as u64;
         let todos = file["todos"].as_array().map(|rows| rows.len()).unwrap_or(0) as u64;
         symbol_total += symbols;
@@ -564,17 +605,16 @@ pub fn prompt_context(
     writeln!(
         block,
         "- 파일 {}개 / {}줄 / 심볼 {}개 / 테스트 {}개 / TODO·FIXME {}개",
-        meta["files"],
-        meta["totalLines"],
-        meta["symbols"],
-        meta["tests"],
-        meta["todos"]
+        meta["files"], meta["totalLines"], meta["symbols"], meta["tests"], meta["todos"]
     )
     .ok();
     writeln!(
         block,
         "- 이번 갱신: 변경 {}개, 그대로 재사용 {}개, 삭제 {}개 / {}ms",
-        meta["changedFiles"], meta["reusedFiles"], meta["removedFiles"], meta["durationMs"].as_u64().unwrap_or(0)
+        meta["changedFiles"],
+        meta["reusedFiles"],
+        meta["removedFiles"],
+        meta["durationMs"].as_u64().unwrap_or(0)
     )
     .ok();
     writeln!(
