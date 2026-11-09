@@ -3,7 +3,9 @@
 //! Only private detached worktrees are committed. Production refs never move.
 use crate::{
     engine::{
+        experience,
         jobs::{self, JobContext},
+        memory::MemoryScope,
         rsi_worktree, tools,
     },
     state::AppState,
@@ -11,6 +13,7 @@ use crate::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -583,6 +586,61 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     Ok(json!({"status":record["status"],"evolution":record}))
 }
 
+fn generation_context(state: &AppState, input: &Value, record: &Value) -> String {
+    let objective = input["rsiObjective"].as_str().unwrap_or("");
+    let scope = MemoryScope {
+        session_id: "rsi-evolution".into(),
+        agent_id: None,
+        partition_key: "rsi".into(),
+    };
+    let (prior_experience, _) =
+        experience::context_block_with_manifest(state, &scope, objective);
+    let mut text = String::new();
+    text.push_str("\n\n## 이번 세대에서 계승된 실행 능력\n");
+    text.push_str("- `code_search(query)`: 저장된 코드 인덱스에서 파일·심볼·줄 번호를 찾습니다. 파일을 읽기 전에 사용하세요.\n");
+    text.push_str("- `workspace_read_range(path, startLine, endLine)`: 필요한 줄만 읽습니다.\n");
+    text.push_str("- `workspace_replace(path, oldText, newText)`: 한 구간만 수정합니다.\n");
+    text.push_str("- 위 능력은 이전 세대에서 계승되었습니다. 적용 가능하면 실제로 호출하고, 적용할 수 없으면 이유를 쓰세요.\n");
+    if let Some(block) = prior_experience.filter(|block| !block.trim().is_empty()) {
+        text.push_str("\n### 기존 RSI 경험·지식\n");
+        text.push_str(&block);
+        text.push('\n');
+    }
+    if let Some(history) = record["history"].as_array() {
+        let recent = history.iter().rev().take(2).collect::<Vec<_>>();
+        if !recent.is_empty() {
+            text.push_str("\n### 이전 세대의 실제 능력 사용 기록\n");
+            for generation in recent.into_iter().rev() {
+                let used = generation["toolsUsed"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                text.push_str(&format!(
+                    "- {}세대: {}\n",
+                    generation["attempt"],
+                    serde_json::to_string(&used).unwrap_or_else(|_| "[]".into())
+                ));
+            }
+        }
+    }
+    text
+}
+
+fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
+    let mut counts = BTreeMap::<String, u64>::new();
+    for operation in state.store.all("execution_operation") {
+        if operation["sessionId"].as_str() != Some(session_id) {
+            continue;
+        }
+        let tool = operation["tool"].as_str().unwrap_or("unknown").to_string();
+        *counts.entry(tool).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(tool, calls)| json!({"tool": tool, "calls": calls}))
+        .collect()
+}
+
 async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -687,6 +745,14 @@ async fn run_loop(
         child_input["rsiBaseCommit"] = json!(head);
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
+        child_input["rsiGenerationCapabilities"] =
+            json!(["code_search", "workspace_read_range", "workspace_replace"]);
+        let inherited = generation_context(&context.state, input, record);
+        child_input["prompt"] = json!(format!(
+            "{}\n\n{}",
+            child_input["prompt"].as_str().unwrap_or(""),
+            inherited
+        ));
         let child = context
             .state
             .store
@@ -737,6 +803,19 @@ async fn run_loop(
             .get("job", child_id)
             .ok_or("세대 작업 사라짐")?;
         let session = current["sessionId"].as_str();
+        let tools_used = session
+            .map(|session_id| session_tool_usage(&context.state, session_id))
+            .unwrap_or_default();
+        let capabilities_used = tools_used
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row["tool"].as_str(),
+                    Some("code_search" | "workspace_read_range" | "workspace_replace")
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let usage = session
             .map(|s| context.state.store.session_usage(s))
             .unwrap_or(Value::Null);
@@ -752,6 +831,7 @@ async fn run_loop(
             "attempt":attempt,"generatorCommit":head,"jobId":child_id,"tokens":tokens,
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
+            "toolsUsed":tools_used,"capabilitiesUsed":capabilities_used,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         let worker_ok = output.as_ref().is_ok_and(|out| out.status.success());
         let candidate_id = current["result"]["rsi"]["candidateId"]
@@ -1017,6 +1097,54 @@ mod tests {
         state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve","status":"running","input":{"rsiNativeApproved":true}})).unwrap();
         JobContext::new(state.clone(), "campaign".into())
     }
+    #[test]
+    fn capability_usage_is_read_from_real_operation_records() {
+        let (state, root) = state();
+        state
+            .store
+            .put(
+                "execution_operation",
+                &json!({"id":"op1","sessionId":"s1","tool":"code_search"}),
+            )
+            .unwrap();
+        state
+            .store
+            .put(
+                "execution_operation",
+                &json!({"id":"op2","sessionId":"s1","tool":"workspace_read_range"}),
+            )
+            .unwrap();
+        state
+            .store
+            .put(
+                "execution_operation",
+                &json!({"id":"op3","sessionId":"s2","tool":"code_search"}),
+            )
+            .unwrap();
+        let usage = session_tool_usage(&state, "s1");
+        assert_eq!(usage.len(), 2, "{usage:?}");
+        assert!(usage.iter().any(|row| row["tool"] == "code_search"));
+        assert!(usage
+            .iter()
+            .any(|row| row["tool"] == "workspace_read_range"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn inherited_capability_context_includes_prior_usage() {
+        let (state, root) = state();
+        let input = json!({"rsiObjective":"코드 탐색 능력을 다음 세대에 계승"});
+        let record = json!({"history":[{
+            "attempt":1,
+            "toolsUsed":[{"tool":"code_search","calls":2},{"tool":"workspace_read_range","calls":1}]
+        }]});
+        let text = generation_context(&state, &input, &record);
+        assert!(text.contains("code_search"), "{text}");
+        assert!(text.contains("workspace_read_range"), "{text}");
+        assert!(text.contains("1세대"), "{text}");
+        assert!(text.contains("이전 세대의 실제 능력 사용 기록"), "{text}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn resource_limits_reject_unbounded_or_malformed_requests() {
         assert!(limits(&json!({})).unwrap()["tokenBudget"].is_null());

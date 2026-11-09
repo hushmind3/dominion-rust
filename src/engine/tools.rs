@@ -1,6 +1,7 @@
 use crate::db::Store;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -35,6 +36,7 @@ pub fn definitions() -> Vec<Value> {
         tool("workspace_list", "List files and folders in the workspace", object(json!({"path": text("Relative folder path")}), vec![])),
         tool("workspace_read", "Read a UTF-8 file from the workspace", object(json!({"path": text("Relative file path")}), vec!["path"])),
         tool("workspace_read_range", "Read only a line range from a workspace file. Use the line numbers from the repository index instead of reading a large file end to end.", object(json!({"path": text("Relative file path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1, "description":"Inclusive end line; at most 400 lines are returned"})}), vec!["path","startLine"])),
+        tool("code_search", "Search the persistent repository index for file paths, symbols and line numbers. Use this before reading a large file.", object(json!({"query": text("Function, type, path or keyword fragment"), "limit": json!({"type":"integer","minimum":1,"maximum":50})}), vec!["query"])),
         tool("workspace_replace", "Replace one exact block in a workspace file without resending the whole file (approval required). oldText must occur exactly once.", object(json!({"path": text("Relative file path"), "oldText": text("Exact existing text to replace; must occur exactly once"), "newText": text("Replacement text"), "expectedSha256": text("Optional SHA-256 observed before editing")}), vec!["path","oldText","newText"])),
         tool("workspace_write", "Write a UTF-8 file inside the workspace (approval required)", object(json!({"path": text("Relative file path"), "content": text("UTF-8 content")}), vec!["path", "content"])),
         tool("file_list", "List any folder on this computer using an absolute path", object(json!({"path": text("Absolute folder path")}), vec!["path"])),
@@ -88,7 +90,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"workspace_list"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch")
+    matches!(name,"workspace_list"|"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch")
 }
 
 pub async fn execute(
@@ -141,6 +143,11 @@ pub async fn execute(
                 output["fileObservation"] = observation.clone();
             }
             Ok(output)
+        }
+        "code_search" => {
+            let query = required_arg(args, "query")?;
+            let limit = args["limit"].as_u64().unwrap_or(20).clamp(1, 50) as usize;
+            search_code_index(ctx, &query, limit)
         }
         "workspace_replace" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
@@ -609,6 +616,82 @@ async fn observed_read(ctx: &ToolContext<'_>, path: &Path, run_id: &str) -> Resu
         "sha256": format!("{:x}", Sha256::digest(text.as_bytes())),
     });
     Ok(result)
+}
+
+fn search_code_index(
+    ctx: &ToolContext<'_>,
+    query: &str,
+    limit: usize,
+) -> Result<Value, String> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Err("code_search query는 비어 있을 수 없습니다.".into());
+    }
+    let mut metas = ctx.store.all("code_index");
+    metas.sort_by(|left, right| {
+        right["generatedAt"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(left["generatedAt"].as_str().unwrap_or(""))
+    });
+    let meta = metas
+        .into_iter()
+        .next()
+        .ok_or("전수조사 인덱스가 없습니다. 먼저 /api/rsi/inspect로 인덱스를 만드세요.")?;
+    let index_id = meta["id"].as_str().unwrap_or("");
+    let mut seen = BTreeSet::new();
+    let mut matches = Vec::new();
+    for file in ctx.store.all("code_index_file") {
+        if file["indexId"].as_str() != Some(index_id) {
+            continue;
+        }
+        let path = file["path"].as_str().unwrap_or("");
+        if path.to_lowercase().contains(&needle) {
+            let key = format!("{path}:0:file");
+            if seen.insert(key) {
+                matches.push(json!({
+                    "path": path,
+                    "kind": "file",
+                    "name": path,
+                    "line": 1,
+                }));
+            }
+        }
+        for symbol in file["symbols"].as_array().into_iter().flatten() {
+            let name = symbol["name"].as_str().unwrap_or("");
+            if !name.to_lowercase().contains(&needle) {
+                continue;
+            }
+            let line = symbol["line"].as_u64().unwrap_or(0);
+            let kind = symbol["kind"].as_str().unwrap_or("symbol");
+            let key = format!("{path}:{line}:{kind}:{name}");
+            if seen.insert(key) {
+                matches.push(json!({
+                    "path": path,
+                    "kind": kind,
+                    "name": name,
+                    "line": line,
+                }));
+            }
+        }
+        if matches.len() >= limit.saturating_mul(4) {
+            break;
+        }
+    }
+    matches.sort_by(|left, right| {
+        left["path"]
+            .as_str()
+            .cmp(&right["path"].as_str())
+            .then_with(|| left["line"].as_u64().cmp(&right["line"].as_u64()))
+    });
+    matches.truncate(limit);
+    Ok(json!({
+        "query": query,
+        "indexId": index_id,
+        "indexedFiles": meta["files"],
+        "matches": matches,
+        "matchCount": matches.len(),
+    }))
 }
 
 async fn replace_text(
@@ -1245,11 +1328,74 @@ mod tests {
 
     #[test]
     fn rsi_can_read_only_a_range_or_replace_a_block() {
+        assert!(rsi_allowed("code_search"));
         assert!(rsi_allowed("workspace_read_range"));
         assert!(rsi_allowed("workspace_replace"));
         assert!(rsi_allowed("workspace_write"));
         assert!(!rsi_allowed("workspace_read"));
         assert!(!rsi_allowed("shell_exec"));
+    }
+
+    #[tokio::test]
+    async fn code_search_finds_indexed_symbols_and_paths() {
+        use crate::config::Config;
+        use crate::db::Store;
+        use crate::vault::Vault;
+        let dir = std::env::temp_dir().join(format!("dominion-code-search-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0,
+            data_dir: dir.clone(),
+            web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let state = crate::state::AppState::new(
+            config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()),
+        );
+        state
+            .store
+            .put(
+                "code_index",
+                &json!({"id":"idx-test","generatedAt":"2026-11-09T00:00:00Z","files":1}),
+            )
+            .unwrap();
+        state
+            .store
+            .put(
+                "code_index_file",
+                &json!({
+                    "id":"idx-test:src/engine/rsi_evolve.rs",
+                    "indexId":"idx-test",
+                    "path":"src/engine/rsi_evolve.rs",
+                    "symbols":[
+                        {"name":"run_loop","kind":"fn","line":120},
+                        {"name":"record_rsi_lesson","kind":"fn","line":900}
+                    ]
+                }),
+            )
+            .unwrap();
+        let ctx = ToolContext {
+            workspace: &dir,
+            store: &state.store,
+            state: &state,
+            session_id: "s",
+            agent_id: None,
+            tools_enabled: true,
+            tools_execution_enabled: true,
+        };
+        let result = search_code_index(&ctx, "run_loop", 10).unwrap();
+        assert_eq!(result["matchCount"], 1, "{result}");
+        assert_eq!(result["matches"][0]["path"], "src/engine/rsi_evolve.rs");
+        assert_eq!(result["matches"][0]["line"], 120);
+        let path_result = search_code_index(&ctx, "rsi_evolve.rs", 10).unwrap();
+        assert!(path_result["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "file"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
