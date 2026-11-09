@@ -3,8 +3,8 @@ import {Archive, Check, KeyRound, RefreshCw, RotateCcw, ShieldAlert, TriangleAle
 import {post} from '../../api'
 import {Button, TextInput} from '../../components/Primitives'
 import {Action, Notice, Panel, StateTag, Subheading, useRemote} from '../../components/UI'
-import {t} from '../../i18n'
-type Backup = {name: string; path: string; bytes: number; encrypted: boolean}
+import {formatDateTime, t} from '../../i18n'
+type Backup = {name: string; path: string; bytes: number; encrypted: boolean; modifiedAt?: string}
 type KeyStatus = {activeVersion?: number; versions?: number[]; error?: string}
 type SecretStatus = {previousKeys?: number; oldKeyFiles?: string[]; error?: string}
 type MaintenanceState = {maintenance: boolean}
@@ -143,7 +143,7 @@ export function BackupPanel() {
       {backups.value.length ? <div className="mt-2 grid gap-2">
         {backups.value.map(backup => <label key={backup.name} className={'flex min-w-0 flex-wrap items-center gap-3 rounded-xl border px-3 py-2 text-[11px] ' + (selected === backup.name ? 'border-[#C7B18F] bg-[#F2EADF]' : 'border-[#EFE9DF] bg-white')}>
           <TextInput type="radio" name="backup" disabled={!backup.encrypted} checked={selected === backup.name} onChange={() => { setSelected(backup.name); setConfirm(false) }}/>
-          <span className="min-w-0 flex-1"><strong className="block break-all text-[11px] text-[#3A342D]">{backup.name}</strong><small className="text-[10px] text-[#9C9388]">{formatBytes(backup.bytes)} · {backup.encrypted ? t('ops.backup.encrypted') : t('ops.backup.plain')}</small></span>
+          <span className="min-w-0 flex-1"><strong className="block break-all text-[11px] text-[#3A342D]">{backup.name}</strong><small className="text-[10px] text-[#9C9388]">{formatBytes(backup.bytes)} · {backup.modifiedAt ? formatDateTime(backup.modifiedAt) : ''} · {backup.encrypted ? t('ops.backup.encrypted') : t('ops.backup.plain')}</small></span>
         </label>)}
       </div> : <p className="mt-2 text-[11px] text-[#9C9388]">{t('ops.backup.noFiles')}</p>}
       <div className="mt-3 rounded-xl border border-[#EED9CC] bg-[#F7E8E1] p-3">

@@ -278,18 +278,29 @@ pub async fn list_backups(State(state): State<AppState>) -> Json<Value> {
                 })
                 .filter_map(|path| {
                     let name = path.file_name()?.to_str()?.to_string();
-                    let bytes = std::fs::metadata(&path).ok()?.len();
+                    let metadata = std::fs::metadata(&path).ok()?;
+                    let bytes = metadata.len();
+                    let modified = metadata
+                        .modified()
+                        .ok()
+                        .map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339());
                     Some(json!({
                         "name": name,
                         "path": path.to_string_lossy(),
                         "bytes": bytes,
                         "encrypted": path.extension().and_then(|value| value.to_str()) == Some("enc"),
+                        "modifiedAt": modified,
                     }))
                 })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    items.sort_by(|a, b| b["name"].as_str().cmp(&a["name"].as_str()));
+    items.sort_by(|a, b| {
+        b["modifiedAt"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(a["modifiedAt"].as_str().unwrap_or(""))
+    });
     Json(json!(items))
 }
 
