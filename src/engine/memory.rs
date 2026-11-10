@@ -2,7 +2,7 @@
 //! No embedding service or external agent runtime is needed.
 use crate::db::Store;
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Upper bound for a single retrieval. Callers that need a narrower prompt
 /// apply their own token budget after this candidate stage.
@@ -132,31 +132,65 @@ pub fn visible(record: &Value, scope: &MemoryScope) -> bool {
 /// Partition-local records keep their provenance; they do not become global
 /// instructions or another participant's memory. External channels still use
 /// the explicit sharing policy rather than silently exporting conversations.
+// Cross-room recall used to fetch the same target/source session and evidence
+// separately for EVERY candidate memory. Cache the immutable documents for
+// this retrieval only; no stale cache survives a turn or a correction.
+#[derive(Default)]
+struct RecallCache {
+    sessions: HashMap<String, Option<Value>>,
+    messages: HashMap<String, Option<Value>>,
+}
+
+impl RecallCache {
+    fn session<'a>(&'a mut self, store: &Store, id: &str) -> Option<&'a Value> {
+        self.sessions.entry(id.to_string())
+            .or_insert_with(|| store.get("session", id)).as_ref()
+    }
+
+    fn message<'a>(&'a mut self, store: &Store, id: &str) -> Option<&'a Value> {
+        self.messages.entry(id.to_string())
+            .or_insert_with(|| store.message(id)).as_ref()
+    }
+}
+
 pub(crate) fn recallable(store: &Store, record: &Value, scope: &MemoryScope) -> bool {
+    recallable_cached(store, record, scope, &mut RecallCache::default())
+}
+
+fn recallable_cached(
+    store: &Store, record: &Value, scope: &MemoryScope, cache: &mut RecallCache,
+) -> bool {
     if visible(record, scope) { return true; }
     if !retrieval_eligible(record) || record["scope"] != "agent"
         || scope.agent_id.as_deref().filter(|id| !id.is_empty()).is_none()
         || record["agentId"].as_str() != scope.agent_id.as_deref() {
         return false;
     }
-    let Some(source) = record["sessionId"].as_str().and_then(|id| store.get("session", id)) else {
-        return false;
+    let Some(source_id) = record["sessionId"].as_str() else { return false };
+    let (source_identity, source_is_room, source_is_remote) = {
+        let Some(source) = cache.session(store, source_id) else { return false };
+        (source["id"].as_str().unwrap_or("").to_string(),
+         source["roomId"].is_string(),
+         source["channelContext"]["transport"].is_string())
     };
-    let target = store.get("session", &scope.session_id).unwrap_or(Value::Null);
-    if source["channelContext"]["transport"].is_string()
-        || target["channelContext"]["transport"].is_string() { return false; }
-    // Only evidence-backed personal memories cross the room boundary.
-    // Ambiguous legacy records remain accessible in their original scope.
+    let target_is_remote = cache.session(store, &scope.session_id)
+        .is_some_and(|target| target["channelContext"]["transport"].is_string());
+    if source_is_remote || target_is_remote { return false; }
+
+    // Only evidence-backed owner/tool memories cross room boundaries. Never
+    // turn another bot's statement or an external message into owner evidence.
     let Some(ids) = record["sourceMessageIds"].as_array().filter(|ids| !ids.is_empty()) else {
         return false;
     };
-    ids.iter().all(|id| id.as_str().and_then(|id| store.message(id)).is_some_and(|message| {
-        message["session_id"] == source["id"]
-            && !message["metadata"]["origin"].is_object()
-            && (message["role"] == "tool"
-                || message["role"] == "user" && (!source["roomId"].is_string()
-                    || message["metadata"]["authorKind"] == "owner"))
-    }))
+    ids.iter().all(|value| value.as_str()
+        .and_then(|id| cache.message(store, id))
+        .is_some_and(|message| {
+            message["session_id"] == source_identity
+                && !message["metadata"]["origin"].is_object()
+                && (message["role"] == "tool"
+                    || message["role"] == "user"
+                        && (!source_is_room || message["metadata"]["authorKind"] == "owner"))
+        }))
 }
 
 pub fn normalize(text: &str) -> String {
@@ -343,9 +377,55 @@ fn retrieve_ranked_with_rerank(
 ) -> Vec<Value> {
     let query_terms = terms(query);
     let compact_query = normalize(query);
-    let mut records = store.all("memory").into_iter()
-        .filter(|record| recallable(store, record, scope))
+    let mut cache = RecallCache::default();
+    let all_records = store.all("memory");
+    let mut records = all_records.iter()
+        .filter(|record| recallable_cached(store, record, scope, &mut cache))
+        .cloned()
         .collect::<Vec<_>>();
+    // Compression archives evidence without deleting it. A summary may omit
+    // the one term the owner later asks for; reopen only archived originals
+    // whose own evidence matches BETTER than the currently visible summary.
+    // The active summary must authorize access, and every original must pass
+    // the same visibility/provenance checks after a temporary lifecycle override.
+    let summaries = records.iter()
+        .filter(|record| record["source"] == "compression"
+            && record["status"] == "active")
+        .filter_map(|record| record["id"].as_str().map(|id| (id.to_string(), record.clone())))
+        .collect::<HashMap<_, _>>();
+    let mut restored = 0usize;
+    for original in &all_records {
+        if restored >= MAX_RETRIEVAL_CANDIDATES || query_terms.is_empty()
+            || original["status"] != "archived"
+            || original["archiveReason"] != "extractive compression; original evidence preserved"
+        { continue; }
+        let Some(parent_id) = original["compressedInto"].as_str() else { continue; };
+        let Some(summary) = summaries.get(parent_id) else { continue; };
+        if !summary["compressedFrom"].as_array()
+            .is_some_and(|ids| ids.contains(&original["id"]))
+        { continue; }
+        if !["scope", "partitionKey", "agentId", "sessionId", "sourceAuthorKey", "type"]
+            .iter().all(|key| original[*key] == summary[*key])
+        { continue; }
+        let original_text = original["text"].as_str().unwrap_or("");
+        let original_terms = terms(original_text);
+        let summary_terms = terms(summary["text"].as_str().unwrap_or(""));
+        if query_terms.intersection(&original_terms).count()
+            <= query_terms.intersection(&summary_terms).count()
+        { continue; }
+        let mut eligibility_check = original.clone();
+        eligibility_check["status"] = json!("active");
+        if !recallable_cached(store, &eligibility_check, scope, &mut cache) {
+            continue;
+        }
+        // Return the original archived identity and evidence, not a fabricated
+        // new memory or a durable status change. The selection manifest can
+        // now attribute this recall to the actual source.
+        let mut recovered = original.clone();
+        recovered["retrievalSource"] = json!("compressed_archive");
+        records.push(recovered);
+        restored += 1;
+    }
     records.sort_by(|a, b| {
         b.get("learnedAt")
             .unwrap_or(&b["createdAt"])
@@ -1851,6 +1931,32 @@ mod per_agent_memory_learning_tests {
     }
 
     #[test]
+    fn cached_cross_room_recall_never_promotes_peer_or_external_evidence() {
+        let (state, dir) = state();
+        let db = &state.store;
+        db.put("session", &json!({"id":"origin","roomId":"r1"}));
+        db.put("session", &json!({"id":"dest","roomId":"r2"}));
+        db.put("session", &json!({"id":"remote","channelContext":{"transport":"telegram"}}));
+        db.write_message(&json!({"id":"owner-msg","session_id":"origin","role":"user",
+            "content":"검증된 owner 내용","metadata":{"authorKind":"owner"}}));
+        db.write_message(&json!({"id":"peer-msg","session_id":"origin","role":"user",
+            "content":"봇 주장","metadata":{"authorKind":"agent"}}));
+        for (id, evidence) in [("allowed","owner-msg"),("blocked","peer-msg")] {
+            db.put("memory", &json!({"id":id,"text":"호출 증거 회상",
+                "scope":"agent","agentId":"a","sessionId":"origin",
+                "partitionKey":"[\"room\",\"r1\"]",
+                "status":"active","sourceMessageIds":[evidence]}));
+        }
+        let local = MemoryScope::for_session(db, "dest", Some("a"));
+        let rows = retrieve(db, &local, "호출 증거", 10);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["id"], "allowed");
+        let remote = MemoryScope::for_session(db, "remote", Some("a"));
+        assert!(retrieve(db, &remote, "호출 증거", 10).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn retrieval_honors_the_requested_candidate_pool_above_twenty() {
         let (state, dir) = state();
         state
@@ -2089,6 +2195,67 @@ mod per_agent_memory_learning_tests {
         }
         assert_eq!(learning_sweep(&state), 0, "idle sweep re-compressed");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn compressed_archive_recall_recovers_omitted_detail_without_unarchiving() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "archive-reader", Some("agent-a"));
+        let old = "2020-01-01T00:00:00Z";
+        state.store.put("memory", &json!({
+            "id":"compression-summary","source":"compression","scope":"global",
+            "partitionKey":"local","agentId":"agent-a","sourceAuthorKey":"owner",
+            "sessionId":null,"type":"fact","text":"배포 관련 요약",
+            "compressedFrom":["original-detail"],"status":"active","importance":0.35,
+            "createdAt":old,"learnedAt":old
+        }));
+        state.store.put("memory", &json!({
+            "id":"original-detail","scope":"global","partitionKey":"local",
+            "agentId":"agent-a","sourceAuthorKey":"owner","sessionId":null,
+            "type":"fact","text":"cerulean comet checksum: 7F22",
+            "status":"archived","compressedInto":"compression-summary",
+            "archiveReason":"extractive compression; original evidence preserved",
+            "importance":0.32,"createdAt":old,"learnedAt":old,
+            "evidenceMessageIds":["original-message"]
+        }));
+        let retrieved = retrieve(&state.store, &scope, "cerulean comet checksum", 6);
+        assert_eq!(retrieved.first().map(|m|m["id"].as_str()),Some(Some("original-detail")),
+            "archived exact evidence must be reachable when a lossy summary omitted the answer");
+        assert_eq!(retrieved[0]["retrievalSource"],"compressed_archive");
+        assert_eq!(state.store.get("memory","original-detail").unwrap()["status"],"archived",
+            "retrieval must never silently unarchive or mutate evidence");
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn compressed_archive_recall_never_crosses_provenance_or_visibility() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "archive-reader", Some("agent-a"));
+        let old = "2020-01-01T00:00:00Z";
+        state.store.put("memory",&json!({
+            "id":"public-summary","source":"compression","scope":"global",
+            "partitionKey":"local","agentId":"agent-a","sourceAuthorKey":"owner",
+            "sessionId":null,"type":"fact","text":"일반 공개 요약",
+            "compressedFrom":["wrong-partition","disabled-original","unlinked-original"],
+            "status":"active","createdAt":old
+        }));
+        for (id, partition, enabled, compression_id) in [
+            ("wrong-partition","private-other-room",true,"public-summary"),
+            ("disabled-original","local",false,"public-summary"),
+            ("unlinked-original","local",true,"another-summary"),
+        ] {
+            state.store.put("memory",&json!({
+                "id":id,"scope":"global","partitionKey":partition,
+                "agentId":"agent-a","sourceAuthorKey":"owner","sessionId":null,
+                "type":"fact","text":"private-archive-needle",
+                "status":"archived","enabled":enabled,"compressedInto":compression_id,
+                "archiveReason":"extractive compression; original evidence preserved",
+                "createdAt":old
+            }));
+        }
+        assert!(retrieve(&state.store,&scope,"private-archive-needle",6).is_empty(),
+            "an accessible summary must not launder an inaccessible archived record");
+        let _=std::fs::remove_dir_all(dir);
     }
 
     fn set_rerank(store: &Store, implementation: &str) {
