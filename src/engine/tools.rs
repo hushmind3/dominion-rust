@@ -48,11 +48,11 @@ pub fn definitions() -> Vec<Value> {
         tool("memory_store", "Save a grounded memory for this agent. Quote the user's exact words; invented facts are rejected. Shared memories are managed by the user.", object(json!({"text": text("Fact to remember, maximum 1600 characters"), "evidenceQuote": text("Exact quote from the current user message supporting the fact"), "sourceMessageId": text("Optional earlier source message ID"), "type": json!({"type":"string","enum":["fact","preference","decision","procedure","lesson"]}), "key": text("Optional stable fact key; a new value replaces the previous value for this key"), "scope": json!({"type":"string","enum":["agent"]})}), vec!["text", "evidenceQuote"])),
         tool("memory_search", "Find saved knowledge relevant to a topic", object(json!({"query": text("Search query")}), vec!["query"])),
         tool("skill_propose", "Draft a reusable skill for user review", object(json!({"name": text("Skill name"), "instructions": text("Reusable instructions")}), vec!["name", "instructions"])),
-        tool("algorithm_propose", "Propose a new self-improvement search formula. It may be tried in the next scheduled generation; replay match is context only and never activates it.", object(json!({
+        tool("algorithm_propose", "Propose domain selection and optional source-targeting formulas. Trial is independent and does not activate a proposal.", object(json!({
             "name": text("Algorithm name"),
-            "expression": text("Domain search arithmetic: attempts, accepted, regressions, inconclusive, novelty, successRate, tokenCost, objectiveMatch, unresolved, exploration"),
-            "targetExpression": text("Optional source discovery arithmetic: pathEvidence, symbolEvidence, summaryEvidence, bodyEvidence, novelty, sourceCost. Can explore beyond lexical matches; must be valid at zero evidence."),
-            "description": text("Why these formulas should discover better improvement targets"),
+            "expression": text("Domain score over attempts, accepted, regressions, inconclusive, novelty, successRate, usefulGenerations, barrenRate, tokenCost, objectiveMatch, unresolved, exploration"),
+            "targetExpression": text("Optional file score over pathEvidence, symbolEvidence, summaryEvidence, bodyEvidence, productiveEvidence, domainEvidence, repeatPenalty, novelty, sourceCost"),
+            "description": text("Why this formula should choose better improvement targets"),
             "evidence": json!({"type":"array","items":{"type":"string"},"description":"Observed failures or regressions that justify the formula"})
         }), vec!["expression"])),
         tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
@@ -104,6 +104,28 @@ pub fn requires_approval(name: &str) -> bool {
     )
 }
 
+/// Inclusive 1-based source ranges. Out-of-bounds reads are empty, never
+/// silently substituted with the last line: stale RSI source indices must not
+/// cause the generator to reason from or edit an unrelated source location.
+fn numbered_workspace_range(text:&str,start:u64,requested_end:u64,line_cap:usize)->Value {
+    let lines=text.lines().collect::<Vec<_>>();
+    let begin=usize::try_from(start.saturating_sub(1))
+        .unwrap_or(usize::MAX).min(lines.len());
+    let end=usize::try_from(requested_end).unwrap_or(usize::MAX)
+        .min(lines.len()).max(begin).min(begin.saturating_add(line_cap));
+    let mut numbered=String::new();
+    for (offset,line) in lines[begin..end].iter().enumerate() {
+        numbered.push_str(&format!("{:>5} {}\n",begin+offset+1,line));
+    }
+    json!({
+        "startLine":start,
+        "endLine":if end>begin {end as u64}else{start.saturating_sub(1)},
+        "totalLines":lines.len(),
+        "outOfRange":start>lines.len() as u64,
+        "content":numbered,
+    })
+}
+
 pub fn rsi_allowed(name:&str)->bool{
     matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose")
 }
@@ -140,24 +162,12 @@ pub async fn execute(
             let requested_end = args["endLine"].as_u64().unwrap_or(start.saturating_add(199));
             let result = observed_read(ctx, &path, run_id).await?;
             let text = result["content"].as_str().unwrap_or_default();
-            let lines = text.lines().collect::<Vec<_>>();
-            let begin = (start as usize).min(lines.len());
             // RSI generations must leave budget for the edit. A 400-line read
             // can consume most of the remaining campaign budget on its own.
             let line_cap = if isolated_rsi { 120 } else { 400 };
-            let end = (requested_end as usize).min(lines.len()).max(begin).min(begin.saturating_add(line_cap));
-            let mut numbered = String::new();
-            for (offset, line) in lines[begin.saturating_sub(1)..end].iter().enumerate() {
-                numbered.push_str(&format!("{:>5} {}\n", begin + offset, line));
-            }
-            let mut output = json!({
-                "path": result["path"],
-                "startLine": begin.max(1),
-                "endLine": end,
-                "totalLines": lines.len(),
-                "sourceSha256":format!("{:x}",Sha256::digest(text.as_bytes())),
-                "content": numbered,
-            });
+            let mut output = numbered_workspace_range(text, start, requested_end, line_cap);
+            output["path"] = result["path"].clone();
+            output["sourceSha256"] = json!(format!("{:x}",Sha256::digest(text.as_bytes())));
             if let Some(observation) = result.get("fileObservation") {
                 output["fileObservation"] = observation.clone();
             }
@@ -322,8 +332,8 @@ pub async fn execute(
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("rsi-search-expression");
             let mut parameters=json!({"expression":expression});
-            if let Some(target)=args.get("targetExpression") {
-                parameters["targetExpression"]=target.clone();
+            if let Some(target_expression)=args["targetExpression"].as_str() {
+                parameters["targetExpression"]=json!(target_expression);
             }
             let record = crate::engine::algorithms::register(
                 ctx.state,
@@ -1267,6 +1277,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_range_reads_are_one_based_and_never_replay_the_last_line() {
+        let source="alpha\nbeta\ngamma\n";
+        let single=numbered_workspace_range(source,1,1,120);
+        assert_eq!(single["content"],"    1 alpha\n");
+        assert_eq!(single["startLine"],1);
+        assert_eq!(single["endLine"],1);
+
+        let middle=numbered_workspace_range(source,2,3,120);
+        assert_eq!(middle["content"],"    2 beta\n    3 gamma\n");
+        assert_eq!(middle["endLine"],3);
+
+        let missing=numbered_workspace_range(source,100,120,120);
+        assert_eq!(missing["content"],"");
+        assert_eq!(missing["outOfRange"],true);
+        assert_eq!(missing["startLine"],100);
+        assert_eq!(missing["endLine"],99);
+
+        let backwards=numbered_workspace_range(source,3,2,120);
+        assert_eq!(backwards["content"],"");
+        assert_eq!(backwards["outOfRange"],false);
+
+        let beyond=numbered_workspace_range(source,u64::MAX,u64::MAX,120);
+        assert_eq!(beyond["content"],"");
+        assert_eq!(beyond["outOfRange"],true);
+        let cap=numbered_workspace_range(source,1,3,2);
+        assert_eq!(cap["endLine"],2);
+        assert_eq!(cap["content"],"    1 alpha\n    2 beta\n");
+        assert_eq!(numbered_workspace_range("",1,50,120)["content"],"");
+    }
+
+    #[test]
     fn workspace_paths_cannot_escape() {
         let dir = std::env::temp_dir().join(format!("dominion-ws-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
@@ -1442,21 +1483,20 @@ mod tests {
             .store
             .get("algorithm", saved["algorithmId"].as_str().unwrap())
             .is_some());
-        let source_policy=json!({"name":"cross-module-research",
-            "expression":"exploration + objectiveMatch",
-            "targetExpression":"novelty + bodyEvidence - sourceCost"});
-        let selection=execute(&ctx,"algorithm_propose",&source_policy,"run").await.unwrap();
-        let saved_policy=state.store.get("algorithm",
-            selection["algorithmId"].as_str().unwrap()).unwrap();
-        assert_eq!(saved_policy["parameters"]["targetExpression"],
-            "novelty + bodyEvidence - sourceCost");
-        let invalid_target=json!({"name":"broken-source-research",
-            "expression":"objectiveMatch",
-            "targetExpression":"1 / pathEvidence"});
-        assert!(execute(&ctx,"algorithm_propose",&invalid_target,"run").await.is_err(),
-            "an invalid zero-evidence expression cannot enter the trial queue");
         let invalid = json!({"expression":"unknownVariable * 2"});
         assert!(execute(&ctx, "algorithm_propose", &invalid, "run").await.is_err());
+        let both = execute(&ctx, "algorithm_propose", &json!({
+            "name":"domain-and-target-v1",
+            "expression":"objectiveMatch * 6 + exploration",
+            "targetExpression":"pathEvidence * 2 + symbolEvidence - repeatPenalty"
+        }), "run").await.unwrap();
+        assert_eq!(both["proposed"],true);
+        assert_eq!(both["algorithm"]["parameters"]["targetExpression"],
+            "pathEvidence * 2 + symbolEvidence - repeatPenalty");
+        assert_eq!(both["algorithm"]["status"],"available");
+        assert!(execute(&ctx,"algorithm_propose",&json!({
+            "expression":"novelty","targetExpression":"untrusted_system_call"
+        }),"run").await.is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 
