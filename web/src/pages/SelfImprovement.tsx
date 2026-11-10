@@ -82,6 +82,7 @@ export function SelfImprovementPage(){
  const enabled=enabledAll
  const [providerId,setProviderId]=useState(()=>preferences().providerId),[model,setModel]=useState(()=>preferences().model)
  const [workload,setWorkload]=useState<Workload>(()=>preferences().workload)
+ const [modelChanged,setModelChanged]=useState(false)
  const budget=workloads[workload]
  const [request,setRequest]=useState(''),[selection,setSelection]=useState<'manual'|'automatic'>(()=>preferences().selection)
  const [busy,setBusy]=useState(false),[error,setError]=useState('')
@@ -111,6 +112,11 @@ export function SelfImprovementPage(){
   void refresh();const timer=window.setInterval(()=>void refresh(),1500)
   return()=>{alive=false;window.clearInterval(timer)}
  },[jobId])
+ useEffect(()=>{
+  if(!modelChanged&&campaign?.providerId&&campaign.model&&enabled.some(p=>p.id===campaign.providerId)){
+   setProviderId(campaign.providerId);setModel(campaign.model)
+  }
+ },[campaign?.id,campaign?.providerId,campaign?.model,providers.value,modelChanged])
  const installId=campaign?.installJobId||install?.id
  useEffect(()=>{
   if(!installId)return
@@ -138,7 +144,7 @@ export function SelfImprovementPage(){
     providerId,model,...(continuing&&campaign?{continueFrom:campaign.id}:{request}),mode:'continuous',confirmation:'START_RSI_EVOLUTION',
     selectionPolicy:selection,maxAttempts:budget.maxAttempts,tokenBudget:budget.tokenBudget,timeBudgetSeconds:budget.timeBudgetSeconds
    })
-   setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setInstall(null);setSettingsOpen(false)
+   setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setInstall(null);setModelChanged(false);setSettingsOpen(false)
    try{localStorage.setItem(SAVED,job.id)}catch{}
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
@@ -174,9 +180,9 @@ export function SelfImprovementPage(){
   {campaign&&!working&&<div className="mb-3 flex justify-end"><Button variant="ghost" onClick={()=>setSettingsOpen(v=>!v)}>{settingsOpen?'설정 닫기':'모델 바꾸기'}</Button></div>}
   {(!campaign||settingsOpen)&&<Panel className="p-5 sm:p-7">
    <div className="mb-5 flex items-center gap-3"><BrainCircuit size={25} className="text-[#A94E30]"/><div><h2 className="font-bold">더 나은 버전이 다음 개선을 이어갑니다</h2><p className="mt-1 text-[12px] text-[#7C7469]">코딩 없이 모델과 선택 방식만 고르면 됩니다.</p></div></div>
-   <div className="grid gap-3 sm:grid-cols-2"><FormField label="연결된 서비스"><SelectInput value={providerId} disabled={working||busy} onChange={e=>{setProviderId(e.target.value);setModel(enabled.find(p=>p.id===e.target.value)?.model||'')}}>
+   <div className="grid gap-3 sm:grid-cols-2"><FormField label="연결된 서비스"><SelectInput value={providerId} disabled={working||busy} onChange={e=>{setModelChanged(true);setProviderId(e.target.value);setModel(enabled.find(p=>p.id===e.target.value)?.model||'')}}>
     {!enabled.length&&<option value="">먼저 모델을 연결해 주세요</option>}{enabled.map(provider=><option key={provider.id} value={provider.id}>{provider.name}</option>)}
-   </SelectInput></FormField><FormField label="개선을 맡길 모델"><ModelPicker providerId={providerId} value={model} onChange={setModel} disabled={working||busy}/></FormField></div>
+   </SelectInput></FormField><FormField label="개선을 맡길 모델"><ModelPicker providerId={providerId} value={model} onChange={value=>{setModelChanged(true);setModel(value)}} disabled={working||busy}/></FormField></div>
    <div className="mt-5"><p className="mb-2 text-[12px] font-semibold">비교 후 누가 선택할까요?</p><div className="grid grid-cols-2 gap-2">
     {([{id:'manual',label:'내가 선택',detail:'결과를 보고 버튼으로 고릅니다'},{id:'automatic',label:'우세한 쪽 자동 선택',detail:'확인된 개선만 이어서 사용합니다'}] as const).map(option=><button type="button" key={option.id} aria-pressed={selection===option.id}
      disabled={working||busy} onClick={()=>setSelection(option.id)} className={'rounded-xl border p-3 text-left disabled:opacity-60 '+(selection===option.id?'border-[#C96442] bg-[#F9EDE6]':'border-[#E7E0D5] bg-white')}>
