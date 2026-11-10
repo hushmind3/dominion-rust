@@ -1653,8 +1653,11 @@ fn autonomous_search_hypothesis(history:&[Value])->Option<Value> {
 /// candidate. The generated strategy is claimed through the same durable
 /// search-trial mechanism as a model-authored proposal.
 fn propose_autonomous_search_trial(
-    state:&AppState,history:&[Value],objective:&str,campaign_id:&str,attempt:u64
+    state:&AppState,history:&[Value],objective:&str,campaign_id:&str,attempt:u64,auto_focus:bool
 )->Value {
+    if !auto_focus && eligible_domains(objective).len()==1 {
+        return json!({"status":"user_pinned_search_target"});
+    }
     if state.store.all("algorithm").iter().any(|row|
         row["kind"]=="selfimprove.search"
         && row["rsiTrial"]["campaignId"]==campaign_id) {
@@ -1663,6 +1666,12 @@ fn propose_autonomous_search_trial(
     let Some(mut hypothesis)=autonomous_search_hypothesis(history) else {
         return json!({"status":"insufficient_failure_evidence"});
     };
+    if !auto_focus {
+        if let Some(parameters)=hypothesis["parameters"].as_object_mut() {
+            parameters.remove("targetExpression");
+        }
+        hypothesis["hypothesisEvidence"]["targetMode"]=json!("owner_pinned");
+    }
     // A rejected policy must alter the *next* search hypothesis instead of
     // causing the same formula to be registered again across new campaigns.
     let prior_rejections=state.store.all("algorithm").into_iter()
@@ -1934,7 +1943,8 @@ fn record_trial_outcome(
     if candidate["parameters"]["targetExpression"].is_string() {
         let selection=&generation["focusSelection"];
         let rows=selection["candidates"].as_array();
-        let executed=selection["source"]=="indexed_evidence"
+        let executed=matches!(selection["source"].as_str(),
+                Some("indexed_evidence"|"descendant_indexed_evidence"))
             && selection["policyRevision"]==candidate["revision"]
             && rows.is_some_and(|rows|!rows.is_empty()
                 && rows.iter().all(|row|row["scoring"]=="expression"
@@ -2761,7 +2771,8 @@ async fn run_loop(
                 let synthesized=propose_autonomous_search_trial(
                     &context.state,&observed,
                     input["rsiObjective"].as_str().unwrap_or(""),
-                    &context.job_id,attempt);
+                    &context.job_id,attempt,
+                    current["input"]["rsiAutoFocus"]==true);
                 if synthesized["status"]=="pending_trial" {
                     if let Some(id)=synthesized["candidateId"].as_str() {
                         queued.push(id.to_string());
@@ -3284,7 +3295,7 @@ mod tests {
         assert_eq!(candidate["implementation"],"expression");
         assert!(valid_domain_scores(&candidate,&history,"").is_some());
         let report=propose_autonomous_search_trial(
-            &state,&history,"","campaign-synth",3);
+            &state,&history,"","campaign-synth",3,true);
         assert_eq!(report["status"],"pending_trial","{report}");
         assert_eq!(report["origin"],"engine_synthesized_failure_hypothesis");
         assert_eq!(report["hypothesisEvidence"]["repeatedFiles"],1);
@@ -3292,12 +3303,12 @@ mod tests {
         assert_eq!(saved["rsiTrial"]["status"],"pending_trial");
         assert_ne!(saved["status"],"active","a synthesized hypothesis must not auto-promote");
         let repeated=propose_autonomous_search_trial(
-            &state,&history,"","campaign-synth",4);
+            &state,&history,"","campaign-synth",4,true);
         assert_eq!(repeated["status"],"existing_trial");
         // A later campaign may independently examine the same formula. It
         // cannot steal the first candidate's comparison or trial ownership.
         let next=propose_autonomous_search_trial(
-            &state,&history,"","campaign-next",3);
+            &state,&history,"","campaign-next",3,true);
         assert_eq!(next["status"],"pending_trial","{next}");
         assert_ne!(next["candidateId"],report["candidateId"]);
         let next_candidate=state.store.get("algorithm",next["candidateId"].as_str().unwrap()).unwrap();
@@ -3306,6 +3317,24 @@ mod tests {
             &state,&history,"",None,Some(saved["id"].as_str().unwrap().into()),None,"base-1");
         assert_eq!(mode,"algorithm_active","the first comparison collects a baseline control");
         assert!(DOMAINS.contains(&domain.as_str()));
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn synthesis_does_not_override_explicit_owner_source_targets() {
+        let (state,root)=state();
+        let history=(0..2).map(|i|json!({"id":format!("failure-{i}"),
+            "accepted":false,"tokens":7000,"newFindings":0,"candidateId":null,
+            "focusFiles":["src/engine/tools.rs"]})).collect::<Vec<_>>();
+        let blocked=propose_autonomous_search_trial(
+            &state,&history,"브라우저 도구","owner-fixed",2,false);
+        assert_eq!(blocked["status"],"user_pinned_search_target");
+        let multi=propose_autonomous_search_trial(
+            &state,&history,"","owner-multi",2,false);
+        assert_eq!(multi["status"],"pending_trial","{multi}");
+        let candidate=state.store.get("algorithm",multi["candidateId"].as_str().unwrap()).unwrap();
+        assert!(candidate["parameters"]["targetExpression"].is_null(),
+            "owner pinned source must remain under owner control");
         let _=std::fs::remove_dir_all(root);
     }
 
