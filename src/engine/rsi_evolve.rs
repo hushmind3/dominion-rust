@@ -943,24 +943,39 @@ fn choose_focus_files(
     let domain=input["rsiTargetDomain"].as_str().unwrap_or("");
     let objective=input["rsiObjective"].as_str().unwrap_or("");
     let mut failures=BTreeMap::<String,u64>::new();
+    let mut successes=BTreeMap::<String,u64>::new();
     let mut seen=BTreeSet::<String>::new();
-    let mut count=0usize;
     let mut consider=|generation:&Value,cross_campaign:bool|{
-        if generation["accepted"]==true || generation["candidateId"].is_string() ||
-            generation["newFindings"].as_u64().unwrap_or(0)>0 {return;}
+        let candidate=generation["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id))
+            .filter(|candidate|generation["accepted"]==true
+                && candidate["status"]=="verified"
+                && candidate["evaluation"]["metrics"]["eligible"]==true);
+        let failed=generation["accepted"]!=true
+            && generation["candidateId"].is_null()
+            && generation["newFindings"].as_u64().unwrap_or(0)==0;
+        if !failed && candidate.is_none() {return;}
         let id=generation["id"].as_str().unwrap_or("");
         if !id.is_empty() && !seen.insert(id.to_string()) {return;}
         for path in generation["focusFiles"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-            if cross_campaign {
-                let earlier=generation["focusSelection"]["candidates"].as_array()
-                    .into_iter().flatten().find(|row|row["path"]==path);
-                let Some(earlier_hash)=earlier.and_then(|row|row["sourceHash"].as_str()) else {continue};
-                let current=crate::engine::code_index::indexed_source_hash(state,index_id,path);
-                if current.as_deref()!=Some(earlier_hash) {continue;}
+            let earlier=generation["focusSelection"]["candidates"].as_array()
+                .into_iter().flatten().find(|row|row["path"]==path);
+            let pre_hash=earlier.and_then(|row|row["sourceHash"].as_str());
+            let accepted_hash=generation["acceptedSourceHashes"][path].as_str();
+            let current=crate::engine::code_index::indexed_source_hash(state,index_id,path);
+            if cross_campaign && ![pre_hash,accepted_hash].into_iter().flatten()
+                    .any(|hash|current.as_deref()==Some(hash)) {continue;}
+            let credited=candidate.as_ref().is_some_and(|candidate|
+                candidate["paths"].as_array().is_some_and(|paths|
+                    paths.iter().any(|item|item.as_str()==Some(path))))
+                && [pre_hash,accepted_hash].into_iter().flatten()
+                    .any(|hash|current.as_deref()==Some(hash));
+            if credited {
+                *successes.entry(path.to_lowercase()).or_default()+=1;
+            } else if failed {
+                *failures.entry(path.to_lowercase()).or_default()+=1;
             }
-            *failures.entry(path.to_lowercase()).or_default()+=1;
         }
-        count+=1;
     };
     for generation in history.iter().rev().take(8) {consider(generation,false);}
     // Reuse only the same repository partition and same owner objective.
@@ -974,9 +989,8 @@ fn choose_focus_files(
         .collect::<Vec<_>>();
     prior.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     for generation in prior.iter().take(8) {consider(generation,true);}
-    let _=count;
-    crate::engine::code_index::rank_focus_files(
-        state,index_id,objective,domain,&failures,policy,2
+    crate::engine::code_index::rank_focus_files_with_feedback(
+        state,index_id,objective,domain,&failures,&successes,policy,2
     )
 }
 
@@ -2268,6 +2282,19 @@ async fn run_loop(
                     generation["selection"] = json!(choice);
                     if eligible && choice == "candidate" {
                         let commit = adopt(context, &lab, &candidate, &head).await?;
+                        // A success signal is useful only for the actual file
+                        // changed by a verified candidate, at an exact revision.
+                        // Save post-adoption hashes for subsequent generations.
+                        let mut accepted_hashes=serde_json::Map::new();
+                        for path in candidate["paths"].as_array().into_iter().flatten()
+                            .filter_map(Value::as_str) {
+                            if !crate::engine::rsi::safe_path(path) {continue;}
+                            if let Ok(bytes)=std::fs::read(lab.join(path)) {
+                                accepted_hashes.insert(path.to_string(),
+                                    json!(format!("{:x}",Sha256::digest(&bytes))));
+                            }
+                        }
+                        generation["acceptedSourceHashes"]=Value::Object(accepted_hashes);
                         generation["accepted"] = json!(true);
                         generation["acceptedCommit"] = json!(commit);
                         record["headCommit"] = json!(commit);
@@ -2925,6 +2952,56 @@ mod tests {
             "focusFiles":["src/engine/search_first.rs"]})];
         assert_eq!(choose_focus_files(&state,&input,&useful,None)[0]["path"],
             "src/engine/search_first.rs");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verified_success_becomes_revision_scoped_target_learning_not_a_patch_counter() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let beta=root.join("src/beta.rs");
+        for name in ["alpha","beta"] {
+            std::fs::write(root.join("src").join(format!("{name}.rs")),
+                "fn search_dispatch() { println!(\"search\"); }\n").unwrap();
+        }
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let input=json!({"rsiIndexId":index["id"],"rsiKnowledgeSource":root,
+            "rsiObjective":"search dispatch","rsiTargetDomain":"tools"});
+        let initial=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(initial[0]["path"],"src/alpha.rs");
+        let selected_beta=crate::engine::code_index::rank_focus_files(
+            &state,index["id"].as_str().unwrap(),"search dispatch","tools",
+            &BTreeMap::new(),None,2).into_iter()
+            .find(|v|v["path"]=="src/beta.rs").unwrap();
+        state.store.put("rsi_candidate",&json!({
+            "id":"verified-patch","status":"verified",
+            "paths":["src/beta.rs"],
+            "evaluation":{"metrics":{"eligible":true}}
+        })).unwrap();
+        state.store.put("rsi_generation",&json!({
+            "id":"prior-success","knowledgePartition":research_scope(&input).partition_key,
+            "objectiveId":crate::engine::memory::stable_id(&["search dispatch"]),
+            "accepted":true,"candidateId":"verified-patch","newFindings":0,
+            "focusFiles":["src/beta.rs"],"focusSelection":{"candidates":[selected_beta.clone()]},
+            "createdAt":"2026-11-10T00:00:00Z"
+        })).unwrap();
+        let learned=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(learned[0]["path"],"src/beta.rs");
+        assert_eq!(learned[0]["evidence"]["priorProductive"],1.0);
+        std::fs::write(&beta,"fn search_dispatch() { println!(\"new revision\"); }\n").unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        let stale=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(stale[0]["path"],"src/alpha.rs");
+        assert_eq!(stale[0]["evidence"]["priorProductive"],0.0);
+        // A falsely declared acceptance must not contribute feedback.
+        state.store.put("rsi_candidate",&json!({
+            "id":"verified-patch","status":"rejected",
+            "paths":["src/beta.rs"],"evaluation":{"metrics":{"eligible":false}}
+        })).unwrap();
+        std::fs::write(&beta,"fn search_dispatch() { println!(\"search\"); }\n").unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        let unverified=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(unverified[0]["path"],"src/alpha.rs");
         let _=std::fs::remove_dir_all(root);
     }
 
