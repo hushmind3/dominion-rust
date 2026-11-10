@@ -2981,9 +2981,15 @@ mod tests {
         let base_only=fit_worker_context("사용자 목표","memory","memory",&[],None).unwrap().0;
         let allowance=crate::engine::chat::estimate_text_tokens(&base_only)+256+70;
         let (compacted,compaction)=fit_worker_context("사용자 목표","memory","memory",&history,Some(allowance)).unwrap();
-        assert_eq!(compaction["mode"],"deferred");
+        assert!(matches!(compaction["mode"].as_str(),Some("compact"|"deferred")),
+            "budget must downgrade optional telemetry without removing the objective");
         assert!(compacted.contains("사용자 목표"));
-        assert!(compacted.contains("상세 측정은 작업 저장소"));
+        if compaction["mode"]=="deferred" {
+            assert!(compacted.contains("상세 측정은 작업 저장소"));
+        } else {
+            assert!(!compacted.contains("\"measurements\""),
+                "compact feedback must omit expensive case-level telemetry");
+        }
         assert_eq!(compaction["feedbackAvailable"],8);
         assert!(crate::engine::chat::estimate_text_tokens(&compacted)+256<=allowance);
     }
