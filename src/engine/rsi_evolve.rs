@@ -722,6 +722,16 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     if git(context, &source, &["rev-parse", "HEAD"]).await? != base {
         return Err("원본 소스가 시작 시점과 다릅니다. 다시 시작하세요.".into());
     }
+    let source_branch=git(context,&source,&["symbolic-ref","--quiet","--short","HEAD"])
+        .await.unwrap_or_default();
+    // Bind campaigns started on a named experiment branch to that branch.
+    // Legacy runs begun from a detached or non-work checkout may still be
+    // explicitly staged to a work branch after all lineage checks.
+    let source_branch=if rsi_worktree::is_work_branch(&source_branch) {
+        json!(source_branch)
+    } else {
+        Value::Null
+    };
     let limits = limits(&input["limits"])?;
     let parent = context.state.config.data_dir.join("rsi-labs");
     std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
@@ -796,7 +806,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }
     }
     let mut record = json!({"id":context.job_id,"status":"running","phase":"building_generator",
-        "sourceDir":source,"labDir":lab,"baseCommit":base,"headCommit":head,"sourceSnapshot":snapshot,"sourceFingerprint":fingerprint,
+        "sourceDir":source,"sourceBranch":source_branch,"labDir":lab,"baseCommit":base,"headCommit":head,"sourceSnapshot":snapshot,"sourceFingerprint":fingerprint,
         "objective":input["rsiObjective"],"providerId":input["providerId"],"model":input["model"],
         "continuedFrom":input["rsiContinueFrom"],"nextDecision":input["rsiPreviousDecision"],
         "nativeApproved":true,"limits":limits,"attempts":0,"acceptedGenerations":0,"tokens":0,
@@ -4043,7 +4053,7 @@ mod tests {
         git(&context,&source,&["update-ref","refs/heads/main",&base]).await.unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
         assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap_err().contains("dominion-sub"),"main must never be an application target");
-        git(&context,&source,&["checkout","-b","dominion-sub"]).await.unwrap();
+        git(&context,&source,&["checkout","-b","dominion-sub1"]).await.unwrap();
         std::fs::write(source.join("my-research.txt"),"keep my unrelated research").unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
         context.checkpoint(json!({"status":"completed"})).unwrap();
@@ -4060,6 +4070,7 @@ mod tests {
         // No new model generation is needed merely to publish that selection.
         let applied=rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap();
         assert_eq!(applied["commit"],accepted_commit);
+        assert_eq!(applied["branch"],"dominion-sub1");
         assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.is_ok(),"retry must not apply twice");
         assert_eq!(std::fs::read_to_string(source.join("my-research.txt")).unwrap(),"keep my unrelated research");
         let rev=|reference:&str|String::from_utf8(std::process::Command::new("git").current_dir(&source)
