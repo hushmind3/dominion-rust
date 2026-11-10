@@ -1902,6 +1902,68 @@ fn generation_fits_remaining_budget(record:&Value,input:&Value)->bool {
     prompt_fits_remaining_budget(record,input["prompt"].as_str().unwrap_or(""))
 }
 
+/// Keep the user's instruction and verified inter-generation evidence intact.
+/// Source excerpts and the search/read ledger can be reconstructed with the
+/// available indexed tools, so they are the first to leave a tight prompt.
+fn fit_generation_context(
+    record:&Value, base:&str, evidence:&str, research_reads:&str, source_excerpt:&str
+) -> Option<(String,Value)> {
+    for (mode,reads,source) in [
+        ("full",research_reads,source_excerpt),
+        ("source_on_demand",research_reads,""),
+        ("source_and_reads_on_demand","",""),
+    ] {
+        let text=format!("{base}\n\n{evidence}{reads}{source}");
+        if prompt_fits_remaining_budget(record,&text) {
+            return Some((text,json!({
+                "mode":mode,
+                "sourceExcerptDeferred":!source_excerpt.is_empty() && source.is_empty(),
+                "researchReadLedgerDeferred":!research_reads.is_empty() && reads.is_empty(),
+                "evidencePreserved":true,
+                "estimatedInputTokens":crate::engine::chat::estimate_text_tokens(&text)
+            })));
+        }
+    }
+    None
+}
+
+/// The native worker adds the actual chosen domain and its recent measurements
+/// after the parent has prepared its prompt. Recheck the resulting full input
+/// against the inherited campaign allowance before any model request.
+/// Only optional telemetry is compacted; neither the goal nor already selected
+/// proven experience is silently dropped.
+fn fit_worker_context(
+    base:&str,domain:&str,capability:&str,history:&[Value],remaining:Option<u64>
+) -> Result<(String,Value),String> {
+    let directive=format!(
+        "\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요."
+    );
+    let rich=history.iter().take(8).cloned().collect::<Vec<_>>();
+    let compact=history.iter().take(2).map(|row|json!({
+        "domain":row["domain"],"accepted":row["accepted"],
+        "verdict":row["verdict"],"tokens":row["tokens"],
+        "elapsedMs":row["elapsedMs"],"error":row["error"]
+    })).collect::<Vec<_>>();
+    for (mode,rows) in [("full",rich),("compact",compact),("deferred",Vec::new())] {
+        let mut prompt=format!("{base}{directive}");
+        if !rows.is_empty() {
+            prompt.push_str("\n이 실험 계보의 과거 결과: ");
+            prompt.push_str(&json!(rows).to_string());
+        } else if !history.is_empty() {
+            prompt.push_str("\n과거 세대의 상세 측정은 작업 저장소에 보존되어 있습니다. 필요한 근거는 기록에서 조회하세요.");
+        }
+        let estimated=crate::engine::chat::estimate_text_tokens(&prompt);
+        if remaining.is_none_or(|budget| estimated.saturating_add(256)<=budget) {
+            return Ok((prompt,json!({
+                "mode":mode,"feedbackRows":rows.len(),
+                "feedbackAvailable":history.len(),
+                "estimatedInputTokens":estimated
+            })));
+        }
+    }
+    Err("rsi_token_budget: 목표와 검증된 핵심 문맥을 유지할 최소 입력 예산이 부족합니다.".into())
+}
+
 fn should_stop_no_progress(streak: u64, research: bool, changed: bool) -> bool {
     streak>=1 && (!research || !changed)
 }
@@ -2087,25 +2149,22 @@ async fn run_loop(
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
-        child_input["prompt"] = json!(format!(
-            "{}\n\n{}{}{}",
-            child_input["prompt"].as_str().unwrap_or(""),
-            inherited,
-            digest,
-            focus
-        ));
-        // Record prompt composition so real-model savings can be measured
-        // separately from completion tokens and tool-call counts.
-        child_input["rsiFocusContextChars"] = json!(focus.chars().count());
-        child_input["rsiPromptContextChars"] = json!(child_input["prompt"]
-            .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
-        // A generation prepends verified research, selected implementations
-        // and focused source after the first budget gate. Check the actual
-        // composed input before launching the native model worker, otherwise
-        // the budget may be exhausted on context alone.
-        if !prompt_fits_remaining_budget(record,child_input["prompt"].as_str().unwrap_or("")) {
+        let Some((composed,context_plan))=fit_generation_context(
+            record,child_input["prompt"].as_str().unwrap_or(""),&inherited,&digest,&focus
+        ) else {
             return Ok("token_budget".into());
-        }
+        };
+        child_input["prompt"]=json!(composed);
+        child_input["rsiContextPlan"]=context_plan.clone();
+        child_input["rsiRemainingCampaignTokens"]=record["limits"]["tokenBudget"].as_u64()
+            .map(|budget|budget.saturating_sub(record["tokens"].as_u64().unwrap_or(0)))
+            .map_or(Value::Null,|tokens|json!(tokens));
+        // Record what was actually injected, not an excerpt omitted for budget.
+        child_input["rsiFocusContextChars"]=json!(
+            if context_plan["sourceExcerptDeferred"]==true {0} else {focus.chars().count()}
+        );
+        child_input["rsiPromptContextChars"]=json!(child_input["prompt"]
+            .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
         let child = context
             .state
             .store
@@ -2190,6 +2249,8 @@ async fn run_loop(
                 "calls":usage["calls"],"estimatedCalls":usage["estimatedCalls"]},
             "sourceContextChars":current["input"]["rsiFocusContextChars"],
             "totalPromptChars":current["input"]["rsiPromptContextChars"],
+            "contextPlan":current["input"]["rsiContextPlan"],
+            "workerContextPlan":current["rsiWorkerContextPlan"],
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
@@ -2616,27 +2677,25 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiDecisionInput"] = job["input"]["rsiDecisionInput"].clone();
     job["input"]["rsiDomainSelection"] = json!(domain_selection);
     job["input"]["rsiSearchStrategy"] = strategy;
-    let feedback = history
-        .iter().rev()
-        .take(8)
-        .map(|row| {
-            json!({"domain":row["domain"],"accepted":row["accepted"],
-        "tokens":row["tokens"],"elapsedMs":row["elapsedMs"],"verdict":row["evaluation"]["verdict"],
-        "measurements":row["evaluation"]["metrics"]["measurements"],"error":row["error"]})
-        })
-        .collect::<Vec<_>>();
-    let feedback = json!(feedback)
-        .to_string()
-        .chars()
-        .take(12_000)
-        .collect::<String>();
+    let feedback = history.iter().rev().take(8).map(|row|json!({
+        "domain":row["domain"],"accepted":row["accepted"],
+        "tokens":row["tokens"],"elapsedMs":row["elapsedMs"],
+        "verdict":row["evaluation"]["verdict"],
+        "measurements":row["evaluation"]["metrics"]["measurements"],
+        "error":row["error"]
+    })).collect::<Vec<_>>();
     let focus = job["input"]["rsiFocusFiles"].as_array().into_iter().flatten()
         .filter_map(Value::as_str).take(8).collect::<Vec<_>>().join(", ");
     let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
-    job["input"]["prompt"]=json!(format!("{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
-        job["input"]["prompt"].as_str().unwrap_or(""),feedback));
+    let (full_prompt,worker_plan)=fit_worker_context(
+        job["input"]["prompt"].as_str().unwrap_or(""),&domain,&capability,
+        &feedback,job["input"]["rsiRemainingCampaignTokens"].as_u64()
+    )?;
+    job["input"]["prompt"]=json!(full_prompt);
+    job["input"]["rsiWorkerContextPlan"]=worker_plan.clone();
+    job["rsiWorkerContextPlan"]=worker_plan;
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;
     let context = JobContext::new(state.clone(), job_id.into());
     let result = jobs::run_prompt(&context, &job).await;
@@ -2808,6 +2867,46 @@ mod tests {
         assert!(text.contains("fn a() {}"));
         assert!(text.contains("대상 파일 전체"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tight_context_budget_defers_recoverable_source_not_verified_evidence() {
+        let record=json!({"limits":{"tokenBudget":1600},"tokens":0});
+        let source="fn expensive() {}\n".repeat(3000);
+        let evidence="검증된 채택 증거와 계보를 보존합니다.";
+        let (prompt,plan)=fit_generation_context(&record,"사용자 목표",evidence,"검색 기록",&source).unwrap();
+        assert!(prompt.contains("사용자 목표"));
+        assert!(prompt.contains(evidence));
+        assert!(!prompt.contains("fn expensive()"));
+        assert_eq!(plan["sourceExcerptDeferred"],true);
+        assert_eq!(plan["evidencePreserved"],true);
+        assert!(prompt_fits_remaining_budget(&record,&prompt));
+        let impossible=json!({"limits":{"tokenBudget":1000},"tokens":990});
+        assert!(fit_generation_context(&impossible,"사용자 목표",evidence,"검색 기록",&source).is_none());
+    }
+
+    #[test]
+    fn native_worker_rechecks_full_context_and_preserves_valid_feedback_json() {
+        let history=(0..8).map(|i|json!({
+            "domain":"memory","accepted":i==0,"verdict":"improved",
+            "tokens":1200,"elapsedMs":100,"error":Value::Null,
+            "measurements":[{"id":format!("case-{i}"),"notes":"x".repeat(4000)}]
+        })).collect::<Vec<_>>();
+        let (full,plan)=fit_worker_context("사용자 목표","memory","memory",&history,None).unwrap();
+        assert_eq!(plan["mode"],"full");
+        let suffix=full.split("이 실험 계보의 과거 결과: ").nth(1).unwrap();
+        let parsed:Value=serde_json::from_str(suffix).unwrap();
+        assert_eq!(parsed.as_array().unwrap().len(),8,"never cut a JSON receipt mid-record");
+        let minimum=fit_worker_context("사용자 목표","memory","memory",&history,Some(50));
+        assert!(minimum.unwrap_err().starts_with("rsi_token_budget:"));
+        let base_only=fit_worker_context("사용자 목표","memory","memory",&[],None).unwrap().0;
+        let allowance=crate::engine::chat::estimate_text_tokens(&base_only)+256+70;
+        let (compacted,compaction)=fit_worker_context("사용자 목표","memory","memory",&history,Some(allowance)).unwrap();
+        assert_eq!(compaction["mode"],"deferred");
+        assert!(compacted.contains("사용자 목표"));
+        assert!(compacted.contains("상세 측정은 작업 저장소"));
+        assert_eq!(compaction["feedbackAvailable"],8);
+        assert!(crate::engine::chat::estimate_text_tokens(&compacted)+256<=allowance);
     }
 
     #[test]
