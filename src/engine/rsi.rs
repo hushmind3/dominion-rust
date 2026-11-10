@@ -415,6 +415,14 @@ mod tests {
         assert!(evaluate(&state,id,&result).is_err());
         let evaluated=evaluate(&state,id,&report(&record)).unwrap();
         assert_eq!(evaluated["status"],"verified");
+        let evidence = evaluated["evaluation"]["metrics"]["holdoutEvidence"].as_array().unwrap();
+        assert_eq!(evidence.len(),3);
+        assert_eq!(evidence[0]["domain"],"memory");
+        assert_eq!(evidence[0]["baselinePass"],false);
+        assert_eq!(evidence[0]["candidatePass"],true);
+        assert_eq!(evidence[0]["improved"],true);
+        assert_eq!(evidence[1]["domain"],"other");
+        assert_eq!(evidence[1]["improved"],false);
         assert!(decide(&state,id,&json!({"action":"approve","confirmation":"APPROVE","baseCommit":base(),"patchSha256":"wrong"})).is_err());
         assert_eq!(decide(&state,id,&json!({"action":"approve","confirmation":"APPROVE",
             "baseCommit":base(),"patchSha256":record["patchSha256"],"operator":"owner"})).unwrap()["status"],"approved_for_merge");
