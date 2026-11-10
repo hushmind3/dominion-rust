@@ -210,12 +210,22 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     }
     Ok(Worktree{source,path,base:base.to_string()})
 }
+pub fn is_rsi_work_branch(branch:&str)->bool {
+    if branch=="dominion-sub" {return true;}
+    let Some(suffix)=branch.strip_prefix("dominion-sub") else{return false;};
+    !suffix.is_empty() && suffix.len()<=2 && !suffix.starts_with('0')
+        && suffix.bytes().all(|ch|ch.is_ascii_digit())
+}
+
 fn classify(patch:&str)->&'static str {
     if patch.lines().any(|line|line.starts_with("diff --git ")
         && (line.contains("src/engine/rsi.rs ")
             || line.contains("src/engine/rsi_worktree.rs ")
             || line.contains("src/engine/rsi_evolve.rs ")
             || line.contains("src/engine/rsi_metrics.rs ")
+            || line.contains("src/engine/algorithms.rs ")
+            || line.contains("src/engine/algorithm_eval.rs ")
+            || line.contains("src/engine/policy_patch.rs ")
             || line.contains("src/api/rsi.rs "))) {
         "improver"
     } else if patch.lines().filter(|line|line.starts_with("diff --git "))
@@ -761,6 +771,14 @@ pub async fn cleanup(worktree:&Worktree)->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn search_algorithm_mutation_is_classified_as_self_improver() {
+        let patch="diff --git a/src/engine/algorithms.rs b/src/engine/algorithms.rs\n--- a/src/engine/algorithms.rs\n+++ b/src/engine/algorithms.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(classify(patch),"improver");
+        assert!(is_rsi_work_branch("dominion-sub2"));
+        assert!(!is_rsi_work_branch("dominion-champion"));
+    }
+
     #[test]
     fn rsi_resolves_cargo_even_with_a_minimal_service_path() {
         let cargo = cargo_executable();
