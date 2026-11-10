@@ -2689,10 +2689,22 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
-    let (full_prompt,worker_plan)=fit_worker_context(
+    let (full_prompt,worker_plan)=match fit_worker_context(
         job["input"]["prompt"].as_str().unwrap_or(""),&domain,&capability,
         &feedback,job["input"]["rsiRemainingCampaignTokens"].as_u64()
-    )?;
+    ) {
+        Ok(context)=>context,
+        Err(error)=>{
+            // Persist the exact preflight failure before the child exits, so
+            // the parent stops this campaign as token_budget instead of
+            // leaving a running child and classifying it as no_progress.
+            job["status"]=json!("failed");
+            job["error"]=json!(error);
+            job["result"]=json!({"rsi":{"modelError":error}});
+            state.store.put("job",&job).ok_or("세대 예산 중단 기록 실패")?;
+            return Err(error);
+        }
+    };
     job["input"]["prompt"]=json!(full_prompt);
     job["input"]["rsiWorkerContextPlan"]=worker_plan.clone();
     job["rsiWorkerContextPlan"]=worker_plan;
