@@ -1477,6 +1477,13 @@ fn queue_search_trial(
     campaign_id: &str,
     attempt: u64,
 ) -> Value {
+    // The proposer can hold a stale copy after another campaign has already
+    // registered the same content-addressed algorithm. Resolve current trial
+    // ownership from durable state before checking or updating it.
+    let latest=candidate["id"].as_str()
+        .and_then(|id|state.store.get("algorithm",id))
+        .unwrap_or_else(||candidate.clone());
+    let candidate=&latest;
     let replay = evaluate_search_algorithm(candidate, active, prior_history, objective);
     let existing_status = candidate["rsiTrial"]["status"].as_str().unwrap_or("");
     if matches!(existing_status, "adopted" | "trial_rejected") {
