@@ -1161,83 +1161,6 @@ fn output_payload(output: &std::process::Output) -> Value {
     })
 }
 
-const MAX_HTTP_RESPONSE_BYTES: usize = 512 * 1024;
-const MAX_HTTP_REDIRECTS: usize = 3;
-
-fn public_ip(ip: std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
-    match ip {
-        IpAddr::V4(v4) => {
-            let [a, b, c, _] = v4.octets();
-            !(v4.is_private() || v4.is_loopback() || v4.is_link_local()
-                || v4.is_unspecified() || v4.is_multicast() || v4.is_broadcast()
-                || v4.is_documentation() || a == 0 || a >= 224
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 192 && b == 0 && c == 0)
-                || (a == 198 && (b == 18 || b == 19)))
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return public_ip(IpAddr::V4(v4));
-            }
-            let octets = v6.octets();
-            !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast()
-                || v6.is_unique_local() || v6.is_unicast_link_local()
-                || (octets[0] == 0x20 && octets[1] == 0x01
-                    && octets[2] == 0x0d && octets[3] == 0xb8))
-        }
-    }
-}
-
-fn validate_public_http_url(url: &reqwest::Url) -> Result<(String, u16), String> {
-    if !matches!(url.scheme(), "https" | "http") {
-        return Err("Only HTTP(S) URLs are allowed".into());
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("URL credentials are not allowed".into());
-    }
-    let host = url.host_str().ok_or("URL host is missing")?
-        .trim_matches(['[', ']']).to_ascii_lowercase();
-    if host == "localhost" || host.ends_with(".localhost")
-        || host.ends_with(".local") || host.ends_with(".internal")
-        || (!host.contains('.') && host.parse::<std::net::IpAddr>().is_err())
-    {
-        return Err("Local and internal HTTP hosts are not allowed".into());
-    }
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if !public_ip(ip) {
-            return Err("Private and non-public IP addresses are not allowed".into());
-        }
-    }
-    let port = url.port_or_known_default().ok_or("Unknown HTTP port")?;
-    Ok((host, port))
-}
-
-async fn resolve_public_target(url: &reqwest::Url) -> Result<(String, std::net::SocketAddr), String> {
-    let (host, port) = validate_public_http_url(url)?;
-    let resolved = tokio::net::lookup_host((host.as_str(), port))
-        .await.map_err(|error| format!("HTTP DNS lookup failed: {error}"))?
-        .collect::<Vec<_>>();
-    if resolved.is_empty() || resolved.iter().any(|address| !public_ip(address.ip())) {
-        return Err("HTTP DNS resolved to a private or non-public address".into());
-    }
-    Ok((host, resolved[0]))
-}
-
-async fn bounded_http_body(mut response: reqwest::Response) -> Result<String, String> {
-    if response.content_length().is_some_and(|n| n > MAX_HTTP_RESPONSE_BYTES as u64) {
-        return Err("HTTP response exceeds the 512 KiB limit".into());
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
-        if chunk.len() > MAX_HTTP_RESPONSE_BYTES.saturating_sub(bytes.len()) {
-            return Err("HTTP response exceeds the 512 KiB limit".into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
-}
-
 // Public Internet fetches must not become an unintended gateway into the
 // machine running DOMINION. Deliberate local service access uses dedicated
 // tools; this arbitrary-URL reader is external-only.
@@ -1633,16 +1556,16 @@ mod tests {
             "file:///etc/passwd", "http://user:password@example.org/",
         ] {
             let parsed = reqwest::Url::parse(url).unwrap();
-            assert!(validate_public_http_url(&parsed).is_err(), "{url}");
+            assert!(validate_public_fetch_url(&parsed).is_err(), "{url}");
         }
         for url in ["https://example.com/", "https://1.1.1.1/"] {
-            assert!(validate_public_http_url(&reqwest::Url::parse(url).unwrap()).is_ok(), "{url}");
+            assert!(validate_public_fetch_url(&reqwest::Url::parse(url).unwrap()).is_ok(), "{url}");
         }
         // A public server can redirect to an internal host: the next hop
         // is checked with the same validation instead of being followed.
         let redirected = reqwest::Url::parse("https://example.com/").unwrap()
             .join("http://127.0.0.1:4317/private").unwrap();
-        assert!(validate_public_http_url(&redirected).is_err());
+        assert!(validate_public_fetch_url(&redirected).is_err());
     }
 
     #[test]
