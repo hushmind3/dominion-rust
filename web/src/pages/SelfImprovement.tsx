@@ -9,8 +9,12 @@ type Measurement={id:string;metrics:{key:string;baseline:number;candidate:number
 type Comparison={attempt:number;candidateId:string;winner:'baseline'|'candidate'|'inconclusive';
  canSelectCandidate:boolean;selected?:string;metrics:{pairedCases:number;regressions:number;measurements?:Measurement[]}}
 type InstallJob={id:string;status:string;error?:string;result?:{installed?:string}}
+type GenerationPlan={source?:string;generatorCommit?:string;domain?:string;selection?:string;
+ rankedFiles?:{path:string;score?:number;reason?:string;sourceHash?:string}[]}
 type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
  objective?:string;providerId?:string;model?:string;headCommit?:string;baseCommit?:string;sourceSnapshot?:boolean;
+ sourceBranch?:string;maxVerifiedStreak?:number;metaTransferProven?:boolean;capabilityDemonstrated?:boolean;
+ nextGenerationPlan?:GenerationPlan;
  continuedFrom?:string;selectedVersionRunning?:boolean;installJobId?:string;
  limits?:{maxAttempts?:number;tokenBudget?:number;timeBudgetSeconds?:number};
  application?:{commit?:string;requiresRebuild?:boolean;restartRequested?:boolean};
@@ -38,7 +42,8 @@ const stops:Record<string,string>={attempt_limit:'선택한 작업량을 마쳤�
 const terminal=(status:string)=>['completed','failed','cancelled','needs_review'].includes(status)
 const phases:Record<string,string>={preparing_lab:'개선 준비 중',building_generator:'선택한 버전 준비 중',
  diagnosing_and_editing:'문제를 찾고 개선하는 중',measuring:'기존 버전과 개선 버전 비교 중',
- waiting_for_choice:'어느 버전을 사용할지 선택해 주세요',selecting:'선택한 버전으로 이어가는 중'}
+ waiting_for_choice:'어느 버전을 사용할지 선택해 주세요',selecting:'선택한 버전으로 이어가는 중',
+ planning_next_generator:'개선된 실행기가 다음 목표와 소스를 직접 고르는 중'}
 const winners={candidate:'개선 버전이 우세합니다',baseline:'기존 버전이 우세합니다',inconclusive:'아직 우열을 확인하지 못했습니다'}
 function pair(comparison:Comparison,key:string){
  const rows=comparison.metrics.measurements?.flatMap(row=>row.metrics).filter(row=>row.key===key)||[]
@@ -199,6 +204,20 @@ export function SelfImprovementPage(){
    {campaign.objective&&<p className="mt-3 text-[13px] leading-6 text-[#5C544A]">목표: {campaign.objective}</p>}
    <p className="mt-3 text-[12px] text-[#7C7469]">개선 시도 {campaign.attempts||0}회 <ArrowRight size={12} className="mx-1 inline"/>채택 {campaign.acceptedGenerations||0}회 · 생성에 사용한 토큰 {campaign.tokensEstimated?'약 ':''}{(campaign.tokens||0).toLocaleString()}</p>
    <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">{[{label:'새 연구 근거',value:research},{label:'검증·선택한 코드',value:adopted},{label:'선택 버전으로 후속 실행',value:inherited},{label:'저장된 방법의 실제 실행',value:executedMethods}].map(item=><div key={item.label} className="rounded-lg bg-[#FAF7F1] p-3"><span className="block text-[#7C7469]">{item.label}</span><strong className="mt-1 block text-lg">{item.value}</strong></div>)}</div>
+   <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-3">
+    <div className="rounded-lg border border-[#E7E0D5] p-3"><span className="block text-[#7C7469]">연속 검증된 세대</span><strong className="mt-1 block text-lg">{campaign.maxVerifiedStreak||0}회</strong></div>
+    <div className="rounded-lg border border-[#E7E0D5] p-3"><span className="block text-[#7C7469]">도메인 간 성능 전이</span><strong className="mt-1 block text-[13px]">{campaign.metaTransferProven?'사례별 측정 근거 있음':'아직 실측 근거 없음'}</strong></div>
+    <div className="col-span-2 rounded-lg border border-[#E7E0D5] p-3 sm:col-span-1"><span className="block text-[#7C7469]">재귀 개선 능력</span><strong className="mt-1 block text-[13px]">{campaign.capabilityDemonstrated?'연속 3세대와 전이 검증':'아직 검증 기준 미충족'}</strong></div>
+   </div>
+   {campaign.nextGenerationPlan?.source==='compiled_generator_plan_v1'&&<details className="mt-3 rounded-xl border border-[#E7E0D5] bg-[#FFFCF7] p-3 text-[12px]">
+    <summary className="cursor-pointer font-semibold">차세대 실행기가 선택한 연구 대상 · {campaign.nextGenerationPlan.domain||'미지정'}</summary>
+    <p className="mt-2 text-[#7C7469]">생성 실행기: {campaign.nextGenerationPlan.generatorCommit?.slice(0,10)||'—'} · 방식: {campaign.nextGenerationPlan.selection||'—'} · 모델 호출 전에 고른 근거입니다.</p>
+    {campaign.nextGenerationPlan.rankedFiles?.length?
+      <ul className="mt-2 grid gap-1">{campaign.nextGenerationPlan.rankedFiles.map((row,index)=>
+       <li key={row.path||index} className="break-all rounded-lg bg-[#FAF7F1] px-3 py-2">{row.path}
+        {typeof row.score==='number'?<span className="ml-2 text-[#7C7469]">점수 {row.score.toFixed(2)}</span>:null}</li>
+      )}</ul>:<p className="mt-2 text-[#7C7469]">명시된 파일 후보가 없습니다. 새 코드 위치는 에이전트가 도구로 탐색합니다.</p>}
+   </details>}
    {!working&&campaign.stopReason&&<p className="mt-3 text-[12px] text-[#7C7469]">{stops[campaign.stopReason]||campaign.stopReason}</p>}
    {!working&&hasSelected&&<div className="mt-4 rounded-xl border border-[#D9E3D3] bg-[#F2F6EF] p-4"><p className="text-[13px] font-semibold">{campaign.selectedVersionRunning?'검증한 버전이 현재 4317에서 실행 중입니다':installing?'검증본을 빌드하고 있습니다':install?.status==='completed'?'빌드 완료 · 서버 재연결 확인 중':'선택한 개선본을 실제 사용하는 프로그램에 반영할 수 있습니다'}</p><p className="mt-1 text-[12px] text-[#7C7469]">{campaign.sourceSnapshot?'작업 시작 시 미저장 코드가 있었습니다. 파일을 보존하기 위해 자동 반영은 제한합니다.':'작업 브랜치만 반영하며 메인과 다른 서비스의 설정은 유지합니다.'}</p>{!campaign.selectedVersionRunning&&!campaign.sourceSnapshot&&<Button className="mt-3" variant="primary" disabled={busy||installing} onClick={()=>void apply()}>{installing?<LoaderCircle size={14} className="animate-spin"/>:<Download size={14}/>}검증본을 4317에 반영</Button>}</div>}
    {activeSearch&&<div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-2 text-[11px] text-[#7C7469]"><span className="font-semibold text-[#5C544A]">다음 연구를 고르는 방식</span><span>{activeSearch.name}</span></div>}
