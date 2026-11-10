@@ -1915,12 +1915,13 @@ fn fit_generation_context(
     ] {
         let text=format!("{base}\n\n{evidence}{reads}{source}");
         if prompt_fits_remaining_budget(record,&text) {
+            let estimated=crate::engine::chat::estimate_text_tokens(&text);
             return Some((text,json!({
                 "mode":mode,
                 "sourceExcerptDeferred":!source_excerpt.is_empty() && source.is_empty(),
                 "researchReadLedgerDeferred":!research_reads.is_empty() && reads.is_empty(),
                 "evidencePreserved":true,
-                "estimatedInputTokens":crate::engine::chat::estimate_text_tokens(&text)
+                "estimatedInputTokens":estimated
             })));
         }
     }
