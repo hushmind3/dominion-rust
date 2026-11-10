@@ -3634,6 +3634,35 @@ mod tests {
     }
 
     #[test]
+    fn rejected_patch_revisits_its_changed_source_not_an_unrelated_file() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for name in ["alpha","beta","gamma"] {
+            std::fs::write(root.join("src").join(format!("{name}.rs")),
+                "fn search_dispatch() { /* same relevant implementation */ }\n").unwrap();
+        }
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let input=json!({"rsiIndexId":index["id"],"rsiKnowledgeSource":root,
+            "rsiObjective":"search dispatch","rsiTargetDomain":"tools",
+            "rsiGeneratorCommit":"base-sha"});
+        state.store.put("rsi_candidate",&json!({"id":"failed-patch","status":"inconclusive",
+            "baseCommit":"base-sha","paths":["src/gamma.rs"]})).unwrap();
+        let history=vec![json!({"id":"prior","jobId":"failed-worker",
+            "domain":"tools","candidateId":"failed-patch",
+            "accepted":false,"evaluation":{"verdict":"inconclusive"}})];
+        assert_eq!(improvement_directive(&history)["mode"],"revise_candidate");
+        let chosen=choose_focus_files(&state,&input,&history,None);
+        assert_eq!(chosen[0]["path"],"src/gamma.rs",
+            "The next generation must investigate its actual failed patch first");
+        let mut changed=input;
+        changed["rsiGeneratorCommit"]=json!("new-source-commit");
+        let invalidated=choose_focus_files(&state,&changed,&history,None);
+        assert_eq!(invalidated[0]["path"],"src/alpha.rs",
+            "Do not attribute failure to unrelated revised source state");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn learned_plan_is_measured_by_actual_edits_not_prompt_delivery() {
         let delivered=json!({"mode":"implement_research",
             "sourceGenerationId":"prior",
