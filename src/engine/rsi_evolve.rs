@@ -2909,6 +2909,99 @@ pub(crate) async fn adopt(
     git(context, lab, &["rev-parse", "HEAD"]).await
 }
 
+/// Derive an executable next-generation intent from observed outcomes.
+/// Merely recording research is not progress: the following worker receives
+/// a concrete implementation target, and repeated failed implementations
+/// force a different hypothesis instead of another read-only research round.
+fn improvement_directive(history:&[Value]) -> Value {
+    let Some(last)=history.last() else {
+        return json!({"mode":"discover","sourceGenerationId":null,
+            "reason":"no_recorded_generation","attemptedAgain":false});
+    };
+    let previous_mode=last["improvementDirective"]["mode"].as_str().unwrap_or("");
+    let verdict=last["evaluation"]["verdict"].as_str().unwrap_or("");
+    let has_patch=last["candidateId"].is_string();
+    let new_findings=last["newFindings"].as_u64().unwrap_or(0);
+    let mode=if last["accepted"]==true {
+        "extend_verified_capability"
+    } else if matches!(verdict,"regressed"|"build_failed") {
+        if previous_mode=="repair_counterexample" {"change_approach"}
+        else {"repair_counterexample"}
+    } else if has_patch {
+        if matches!(previous_mode,"revise_candidate"|"repair_counterexample") {
+            "change_approach"
+        } else {
+            "revise_candidate"
+        }
+    } else if new_findings>0 {
+        if previous_mode=="implement_research" {
+            "change_approach"
+        } else {
+            "implement_research"
+        }
+    } else {
+        "change_approach"
+    };
+    let measured_failures=last["evaluation"]["metrics"]["measurements"].as_array()
+        .into_iter().flatten()
+        .filter(|measurement|measurement["holdout"]==true
+            && (measurement["candidatePass"]==false
+                || measurement["metrics"].as_array().is_some_and(|rows|
+                    rows.iter().any(|row|row["regressed"]==true))))
+        .filter_map(|row|row["id"].as_str())
+        .take(8).collect::<Vec<_>>();
+    json!({
+        "mode":mode,
+        "sourceGenerationId":last["id"],
+        "sourceJobId":last["jobId"],
+        "domain":last["domain"],
+        "candidateId":last["candidateId"],
+        "evidenceHashes":last["knowledgeArtifactHashes"].as_array().map(|rows|
+            rows.iter().take(8).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "failureCaseIds":measured_failures,
+        "previousVerdict":last["evaluation"]["verdict"],
+        "previousError":last["error"].as_str().unwrap_or("").chars().take(600).collect::<String>(),
+        "previousFocusFiles":last["focusFiles"].as_array().map(|rows|
+            rows.iter().take(4).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "attemptedAgain":matches!(previous_mode,"implement_research"|"revise_candidate"|"repair_counterexample"),
+        "newFindings":new_findings
+    })
+}
+
+/// The directive is a real control input. It changes the worker's required
+/// sequence of work and (through choose_focus_files) its source candidates.
+fn improvement_work_contract(directive:&Value) -> &'static str {
+    match directive["mode"].as_str().unwrap_or("discover") {
+        "implement_research" => "이번 세대는 연구 반복이 아니라 구현 단계입니다. 이전 세대에서 읽고 저장한 원본 근거를 재사용하여 소스의 구체적인 변경을 만들고 검증 사례를 실행하세요. 같은 소스 검색·자료 요약만으로 끝내지 마세요. 구현 근거가 없으면 실패 원인을 남기세요.",
+        "repair_counterexample" => "이전 후보는 검증에서 실패했습니다. 실패한 holdout 사례와 코드 차이를 먼저 확인하고 그 실패 원인을 해결하는 별도의 수정을 시험하세요. 과거 패치를 그대로 반복하지 마세요.",
+        "revise_candidate" => "이전 수정은 채택되지 않았습니다. 실제 실패하거나 미측정된 사례를 확인하고 가설·수정 위치를 바꿔 새 후보를 평가하세요. 이전 후보의 성공을 가정하지 마세요.",
+        "change_approach" => "같은 접근의 반복이 성과를 내지 못했습니다. 이전에 시도한 파일·가설·실패 원인을 근거로 다른 코드 위치나 구현 전략을 선택하여 변경과 검증을 시도하세요. 반복 연구만 하는 것은 실패입니다.",
+        "extend_verified_capability" => "이전 세대에서 검증된 구현이 있습니다. 그 코드를 다시 만드는 대신 계승된 실행기의 개선 방법으로 새로운 결함이나 다른 능력을 찾아 독립적으로 검증하세요.",
+        _ => "시스템의 실제 실패 원인을 찾고, 수정 가설과 검사 가능한 비교 사례를 만든 뒤 구현하고 비교하세요. 추측이나 연구 목록은 채택 성과가 아닙니다.",
+    }
+}
+
+/// Aggregate observed gains and costs per action. These are measurements of
+/// campaign throughput, not causal attribution or a proxy for improvement.
+fn improvement_action_results(history:&[Value]) -> Vec<Value> {
+    let mut rows=BTreeMap::<String,(u64,u64,u64,u64)>::new();
+    for generation in history {
+        let mode=generation["improvementDirective"]["mode"].as_str().unwrap_or("legacy");
+        let entry=rows.entry(mode.to_string()).or_default();
+        entry.0+=1;
+        if generation["accepted"]==true && generation["pairedRevalidated"]==true {
+            entry.1+=1;
+        }
+        entry.2+=generation["newFindings"].as_u64().unwrap_or(0);
+        entry.3+=generation["tokens"].as_u64().unwrap_or(0);
+    }
+    rows.into_iter().map(|(mode,(attempts,adoptions,findings,tokens))|json!({
+        "mode":mode,"attempts":attempts,"verifiedAdoptions":adoptions,
+        "newFindings":findings,"tokens":tokens,
+        "adoptionsPer100kTokens":if tokens>0 {100000.0*adoptions as f64/tokens as f64} else {0.0}
+    })).collect()
+}
+
 // A generation's research continuation must be decided identically by the
 // coordinator (which chooses source files) and by the native child worker
 // (which actually runs the algorithm). Otherwise a trial policy can appear
@@ -2916,7 +3009,10 @@ pub(crate) async fn adopt(
 fn research_continuation(history: &[Value]) -> Option<String> {
     history.last()
         .filter(|row| row["candidateId"].is_null()
-            && row["newFindings"].as_u64().unwrap_or(0) > 0)
+            && row["newFindings"].as_u64().unwrap_or(0) > 0
+            // A follow-up that already tried to implement the findings
+            // must change approach, even if it found additional sources.
+            && row["improvementDirective"]["mode"]!="implement_research")
         .and_then(|row| row["domain"].as_str())
         .filter(|domain| DOMAINS.contains(domain))
         .map(str::to_string)
@@ -3042,6 +3138,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "indexId":campaign["planIndexId"],
         "domain":domain,"selection":selection,"strategy":strategy,
         "targetPlan":target_plan,
+        "improvementDirective":improvement_directive(&history),
         "rankedFiles":ranked
     }))
 }
