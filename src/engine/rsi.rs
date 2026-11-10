@@ -382,6 +382,33 @@ pub fn confirm_deployment(
     Ok(saved)
 }
 
+/// Recalculate claimed recursive gains from the server's frozen paired-run receipt.
+/// A summary row, claimed domain, or adoption flag is not experimental proof.
+fn measured_capability_metrics(state:&AppState,candidate:&Value)->Option<Value> {
+    let id=candidate["id"].as_str()?;
+    let evaluation=&candidate["evaluation"];
+    let receipt=state.store.all("rsi_pair").into_iter().find(|row|
+        row["candidateId"]==id
+            && row["evidenceSha256"]==evaluation["evidenceSha256"]
+            && row["report"]["reportSha256"]==evaluation["reportSha256"])?;
+    let report=&receipt["report"];
+    if report["baseCommit"]!=candidate["baseCommit"]
+        || report["patchSha256"]!=candidate["patchSha256"]
+        || report["oracleVersion"]!=candidate["oracleVersion"]
+        || report["baselineBuildOk"]!=true || report["candidateBuildOk"]!=true {
+        return None;
+    }
+    let plan=candidate["cases"].as_array()?;
+    let measured=report["cases"].as_array()?;
+    let recomputed=evaluate_cases(plan,measured,candidate["target"].as_str()?).ok()?;
+    if recomputed["eligible"]!=true || recomputed["verdict"]!="improved"
+        || receipt["metrics"]!=recomputed || receipt["verdict"]!=recomputed["verdict"]
+        || evaluation["metrics"]!=recomputed || evaluation["verdict"]!=recomputed["verdict"] {
+        return None;
+    }
+    Some(recomputed)
+}
+
 /// A successful patch is not proof that a system can improve its own
 /// improvement mechanism. Require a verified meta holdout gain followed by a
 /// verified cross-domain gain from the newly compiled descendant generator.
@@ -402,6 +429,7 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
             chain.clear(); continue;
         };
         let evaluation=&candidate["evaluation"];
+        let Some(measured)=measured_capability_metrics(state,&candidate) else {chain.clear();continue;};
         let Some(commit)=generation["acceptedCommit"].as_str().filter(|v|sha(v)) else {
             chain.clear();continue;
         };
@@ -412,9 +440,9 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
             v.len()==64 && v.bytes().all(|byte|byte.is_ascii_hexdigit()));
         let verified=candidate["status"]=="verified"
             && evaluation["source"]=="server_invoked_local_paired_git_worktrees"
-            && evaluation["metrics"]["eligible"]==true
-            && evaluation["metrics"]["regressions"]==0
-            && evaluation["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)>0
+            && measured["eligible"]==true
+            && measured["regressions"]==0
+            && measured["improvedHoldouts"].as_u64().unwrap_or(0)>0
             && evidence.is_some()
             && generation["evaluation"]["evidenceSha256"]==evaluation["evidenceSha256"]
             && candidate["experimentAdoption"]["commit"]==generation["acceptedCommit"]
@@ -423,12 +451,12 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
         if chain.last().is_some_and(|(prior,_,_,_)|prior!=generator) {chain.clear();}
         // Domains are frozen in the evaluation plan and earned only by paired
         // baseline/candidate holdout measurements, not inferred from target labels.
-        let improved_domains=evaluation["metrics"]["improvedHoldoutDomains"]
+        let improved_domains=measured["improvedHoldoutDomains"]
             .as_array().into_iter().flatten()
             .filter_map(Value::as_str).map(str::to_string)
             .collect::<BTreeSet<_>>();
         let meta=candidate["target"]=="improver"
-            && evaluation["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0
+            && measured["metaHoldoutGains"].as_u64().unwrap_or(0)>0
             && improved_domains.contains("improver");
         let target=candidate["target"].as_str().unwrap_or("").to_string();
         chain.push((commit.to_string(),meta,target,improved_domains));
@@ -528,19 +556,49 @@ mod tests {
             let id=format!("proof-{i}");
             let evaluation_id=format!("eval-{i}");
             let target=if i==0{"improver"}else{"harness"};
+            // Frozen inputs differ from the measured report. The improver's
+            // first gain changes its own search mechanism; subsequent child
+            // generators show actual cross-domain gains.
+            let plan=(0..8).map(|case|json!({
+                "id":format!("case-{case}"),
+                "domain":if case==0{"improver"}else if case==1{"memory"}else if case==2{"planning"}else{"memory"},
+                "holdout":case<3,
+                "metrics":[{"key":"quality","direction":"higher","minRelativeGain":0.05}]
+            })).collect::<Vec<_>>();
+            let measured=(0..8).map(|case|{
+                let improved=if i==0 {case==0||case==1} else if i==1 {case==1} else {case==2};
+                json!({"id":format!("case-{case}"),"baselinePass":true,"candidatePass":true,
+                    "metrics":{"quality":{"baseline":0.5,"candidate":if improved{0.8}else{0.5}}}})
+            }).collect::<Vec<_>>();
+            let metrics=evaluate_cases(&plan,&measured,target).unwrap();
+            assert_eq!(metrics["eligible"],true);
+            let report=json!({"baseCommit":revisions[i],"patchSha256":"b".repeat(64),
+                "oracleVersion":"frozen-v1","reportSha256":"a".repeat(64),
+                "baselineBuildOk":true,"candidateBuildOk":true,"cases":measured});
             state.store.put("rsi_candidate",&json!({"id":id,"status":"verified","target":target,
-                "baseCommit":revisions[i],"experimentAdoption":{"commit":revisions[i+1]},
+                "baseCommit":revisions[i],"patchSha256":"b".repeat(64),
+                "oracleVersion":"frozen-v1","cases":plan,
+                "experimentAdoption":{"commit":revisions[i+1]},
                 "evaluation":{"id":evaluation_id,"source":"server_invoked_local_paired_git_worktrees",
-                    "evidenceSha256":"a".repeat(64),
-                    "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":1,
-                        "metaHoldoutGains":if i==0{1}else{0},
-                        "improvedHoldoutDomains":if i==0 {json!(["improver","memory"])}
-                            else if i==1 {json!(["memory"])} else {json!(["planning"])}}}}));
+                    "evidenceSha256":"a".repeat(64),"reportSha256":"a".repeat(64),
+                    "verdict":"improved","metrics":metrics}}));
+            state.store.put("rsi_pair",&json!({"id":format!("receipt-{i}"),
+                "candidateId":id,"evidenceSha256":"a".repeat(64),
+                "verdict":"improved","metrics":metrics,"report":report}));
             history.push(json!({"accepted":true,"candidateId":id,
                 "generatorCommit":revisions[i],"acceptedCommit":revisions[i+1],
                 "evaluation":{"evidenceSha256":"a".repeat(64)}}));
         }
         assert!(capability_proven(&state,&history),"validated meta improvement followed by verified transfer");
+        // A missing independent receipt or a rewritten measurement cannot
+        // be compensated for with a truthful-looking aggregate.
+        let valid_receipt=state.store.get("rsi_pair","receipt-2").unwrap();
+        let mut forged_receipt=valid_receipt.clone();
+        forged_receipt["report"]["cases"][2]["metrics"]["quality"]["candidate"]=json!(0.5);
+        state.store.put("rsi_pair",&forged_receipt);
+        assert!(!capability_proven(&state,&history),"altered frozen measurements must fail proof");
+        state.store.put("rsi_pair",&valid_receipt);
+
         // A later patch in the same previously improved domain is not transfer.
         let mut same_domain=state.store.get("rsi_candidate","proof-2").unwrap();
         same_domain["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
