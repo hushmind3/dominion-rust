@@ -12,6 +12,8 @@ const MODEL_KIND: &str = "model_job";
 const EXTERNAL_KIND: &str = "external_model";
 pub static RUNTIME_CHANGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static DOWNLOAD_COMMIT: Mutex<()> = Mutex::new(());
+// Registration and resume must claim file destinations as one operation.
+static DOWNLOAD_REGISTRATION: Mutex<()> = Mutex::new(());
 static ACTIVE_DOWNLOADS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
 
 fn active_downloads() -> &'static Mutex<std::collections::HashSet<String>> {
@@ -2015,6 +2017,17 @@ pub fn jobs(state: &AppState) -> Vec<Value> {
     state.store.all(MODEL_KIND)
 }
 
+/// File claims are based on actual destinations, not just job IDs or option names.
+fn download_targets(job: &Value) -> std::collections::HashSet<PathBuf> {
+    let Some(root)=job["targetDir"].as_str().filter(|root|!root.is_empty()) else {
+        return std::collections::HashSet::new();
+    };
+    job["files"].as_array().into_iter().flatten()
+        .filter_map(|file|file["path"].as_str().filter(|path|safe_relative(path)))
+        .map(|path|PathBuf::from(root).join(path))
+        .collect()
+}
+
 /// Streams a GGUF file from Hugging Face and records progress as a job.
 pub fn start_download(state: AppState, repo: String, option: String) -> Result<Value, String> {
     start_download_with(state, repo, option, "gguf".into(), Vec::new())
@@ -2036,18 +2049,13 @@ pub fn start_download_with(
     if option.is_empty() {
         return Err("다운로드할 배포 형식을 선택하세요.".into());
     }
-    for existing in state.store.all(MODEL_KIND) {
-        if existing["repo"].as_str() == Some(repo.as_str())
-            && existing["optionId"].as_str() == Some(option.as_str())
-            && matches!(existing["status"].as_str(), Some("downloading" | "paused"))
-        {
-            return Ok(existing);
-        }
-    }
     let files = if format == "mlx" {
-        let files = requested_files
-            .into_iter()
-            .filter(|path| safe_relative(path))
+        if requested_files.iter().any(|path|!safe_relative(path)) {
+            return Err("MLX 모델 파일 경로가 올바르지 않습니다.".into());
+        }
+        let mut unique=std::collections::HashSet::new();
+        let files = requested_files.into_iter()
+            .filter(|path|unique.insert(path.clone()))
             .collect::<Vec<_>>();
         if files.is_empty()
             || !files.iter().any(|path| path == "config.json")
@@ -2064,6 +2072,27 @@ pub fn start_download_with(
         vec![file]
     };
     let dir = target_root(&state, format, &repo);
+    let targets=files.iter().map(|path|dir.join(path))
+        .collect::<std::collections::HashSet<_>>();
+    // Check + write are serialized; otherwise two simultaneous requests can
+    // both observe an empty job list and overwrite the same .part file.
+    let _registration=DOWNLOAD_REGISTRATION.lock()
+        .map_err(|_|"모델 다운로드 등록 상태를 읽지 못했습니다.".to_string())?;
+    let workers=active_downloads().lock()
+        .map_err(|_|"실행 중인 모델 다운로드를 확인하지 못했습니다.".to_string())?
+        .clone();
+    for existing in state.store.all(MODEL_KIND) {
+        let is_claimed=matches!(existing["status"].as_str(),Some("downloading"|"paused"))
+            || existing["id"].as_str().is_some_and(|id|workers.contains(id));
+        if !is_claimed {continue;}
+        let used=download_targets(&existing);
+        let same_option=existing["repo"]==repo && existing["format"]==format
+            && existing["optionId"]==option;
+        if same_option && used==targets {return Ok(existing);}
+        if same_option || !targets.is_disjoint(&used) {
+            return Err("같은 모델 파일을 사용하는 다운로드가 이미 진행 중이거나 일시 중지됐습니다. 기존 작업을 완료하거나 취소하세요.".into());
+        }
+    }
     let mut total = 0u64;
     let mut entries = Vec::new();
     for path in &files {
@@ -2460,11 +2489,17 @@ pub fn resume_job(state: &AppState, id: &str) -> Option<Value> {
     if !matches!(status, "paused" | "failed" | "cancelled") {
         return None;
     }
-    if active_downloads()
-        .lock()
-        .map(|active| active.contains(id))
-        .unwrap_or(false)
-    {
+    // Resume must use the same file-ownership gate as initial registration.
+    let _registration=DOWNLOAD_REGISTRATION.lock().ok()?;
+    let running=active_downloads().lock().ok()?.clone();
+    if running.contains(id) {return None;}
+    let targets=download_targets(&job);
+    if state.store.all(MODEL_KIND).iter().any(|other| {
+        other["id"]!=id
+            && (matches!(other["status"].as_str(),Some("downloading"|"paused"))
+                || other["id"].as_str().is_some_and(|other_id|running.contains(other_id)))
+            && !download_targets(other).is_disjoint(&targets)
+    }) {
         return None;
     }
     let saved = state.store.patch_if(
@@ -2525,6 +2560,53 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         (AppState::new(config, store, vault), dir)
+    }
+
+    #[test]
+    fn download_claims_prevent_cross_option_file_collisions_without_network_calls() {
+        let (state,dir)=temp_state();
+        let root=target_root(&state,"gguf","owner/model");
+        let original=state.store.put(MODEL_KIND,&json!({
+            "repo":"owner/model","optionId":"weights/model.Q4.gguf","format":"gguf",
+            "status":"downloading","targetDir":root.to_string_lossy(),
+            "files":[{"path":"weights/model.Q4.gguf","downloaded":0,"total":0}]
+        })).unwrap();
+        let repeated=start_download_with(state.clone(),"owner/model".into(),
+            "weights/model.Q4.gguf".into(),"gguf".into(),vec![]).unwrap();
+        assert_eq!(repeated["id"],original["id"],"identical request must be idempotent");
+        let overlapping=start_download_with(state.clone(),"owner/model".into(),
+            "/weights/model.Q4.gguf".into(),"gguf".into(),vec![]);
+        assert!(overlapping.is_err(),"different option IDs must not own the same file");
+        assert_eq!(state.store.all(MODEL_KIND).len(),1);
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mlx_shards_are_owned_once_across_download_and_resume() {
+        let (state,dir)=temp_state();
+        let root=target_root(&state,"mlx","owner/model");
+        let occupied=state.store.put(MODEL_KIND,&json!({
+            "repo":"owner/model","optionId":"first","format":"mlx",
+            "status":"paused","targetDir":root.to_string_lossy(),
+            "files":[{"path":"config.json"},{"path":"model.safetensors"}]
+        })).unwrap();
+        let duplicate=start_download_with(state.clone(),"owner/model".into(),
+            "second".into(),"mlx".into(),
+            vec!["config.json".into(),"model.safetensors".into()]);
+        assert!(duplicate.is_err(),"separate MLX options cannot claim shared shards");
+        let competing=state.store.put(MODEL_KIND,&json!({
+            "repo":"owner/model","optionId":"third","format":"mlx",
+            "status":"failed","targetDir":root.to_string_lossy(),
+            "files":[{"path":"model.safetensors"}]
+        })).unwrap();
+        assert!(resume_job(&state,competing["id"].as_str().unwrap()).is_none(),
+            "failed job cannot resume into another job's partial file");
+        assert_eq!(state.store.get(MODEL_KIND,occupied["id"].as_str().unwrap()).unwrap()["status"],"paused");
+        let unsafe_file=start_download_with(state.clone(),"owner/model".into(),
+            "unsafe".into(),"mlx".into(),
+            vec!["config.json".into(),"../model.safetensors".into()]);
+        assert!(unsafe_file.is_err());
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[test]
