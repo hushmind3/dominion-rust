@@ -669,6 +669,14 @@ fn focus_terms(objective:&str,domain:&str)->Vec<String> {
         ("비용", &["cost","budget","usage"][..]),
         ("대화", &["chat","room","conversation"][..]),
         ("메신저", &["telegram","discord","channel","messenger"][..]),
+        ("텔레그램", &["telegram"][..]),
+        ("디스코드", &["discord"][..]),
+        ("슬랙", &["slack"][..]),
+        ("왓츠앱", &["whatsapp"][..]),
+        ("모델", &["model","provider","inference"][..]),
+        ("허깅페이스", &["huggingface","hugging_face"][..]),
+        ("브라우저", &["browser"][..]),
+        ("도구", &["tools","tool"][..]),
         ("화면", &["ui","page","component"][..]),
     ] {
         if lower.contains(word) {

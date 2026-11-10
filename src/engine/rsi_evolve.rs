@@ -26,7 +26,7 @@ fn objective_matches(domain: &str, objective: &str) -> bool {
     // A memory/context/learning retrieval request should not be converted
     // into a general tools task merely because it contains "검색"/"search".
     if domain=="tools" {
-        let explicit=["도구","브라우저","외부 연결","tools","tool","browser"].iter()
+        let explicit=["도구","브라우저","외부 연결","모델","메신저","텔레그램","디스코드","슬랙","왓츠앱","허깅페이스","tools","tool","browser"].iter()
             .any(|word| text.split(|ch:char|!ch.is_alphanumeric()&&ch!='_')
                 .any(|token|token==*word) || text.contains(word) && !word.is_ascii());
         let specific=["memory","context","learning"].iter()
@@ -37,7 +37,7 @@ fn objective_matches(domain: &str, objective: &str) -> bool {
         "memory" => &["기억", "회상", "메모리", "memory", "recall"],
         "context" => &["대화", "문맥", "컨텍스트", "토큰", "캐시", "context", "chat", "token", "cache"],
         "learning" => &["학습", "지식", "경험", "learning", "knowledge", "experience"],
-        "tools" => &["도구", "검색", "외부 연결", "브라우저", "tools", "tool", "search", "browser"],
+        "tools" => &["도구", "검색", "외부 연결", "브라우저", "모델", "메신저", "텔레그램", "디스코드", "슬랙", "왓츠앱", "허깅페이스", "tools", "tool", "search", "browser", "provider", "model", "telegram", "discord", "slack", "whatsapp"],
         "ui" => &["화면", "버튼", "사용성", "인터페이스", "ui", "interface"],
         "improver" => &["자기개선", "자기 개선", "알고리즘", "연구 전략", "improver", "rsi", "algorithm"],
         _ => &[],
@@ -2799,6 +2799,8 @@ mod tests {
         assert_eq!(select_domain(&algorithm,&history,"기억 검색 최적화"),"memory");
         assert_eq!(select_domain(&algorithm,&history,"대화 문맥 검색"),"context");
         assert_eq!(select_domain(&algorithm,&history,"브라우저 검색 도구"),"tools");
+        assert_eq!(select_domain(&algorithm,&history,"텔레그램 메신저 연결"),"tools");
+        assert_eq!(select_domain(&algorithm,&history,"로컬 모델 다운로드"),"tools");
         assert_eq!(select_domain(&algorithm,&history,"학습 기록 검색"),"learning");
         // With no owner scope, productive low-cost work should beat repeated
         // barren token spend when comparing the two domains directly.
@@ -2858,6 +2860,17 @@ mod tests {
         let ui=choose_focus_files(&state,&json!({"rsiIndexId":index["id"],
             "rsiObjective":"room panel UI","rsiTargetDomain":"ui"}),&[],None);
         assert_eq!(ui[0]["path"],"web/src/RoomPanel.tsx");
+        std::fs::write(root.join("src/engine/telegram.rs"),
+            "fn connect_telegram() {}\n").unwrap();
+        std::fs::write(root.join("src/engine/models.rs"),
+            "fn download_model() {}\n").unwrap();
+        let extended=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let messenger=choose_focus_files(&state,&json!({"rsiIndexId":extended["id"],
+            "rsiObjective":"텔레그램 연결","rsiTargetDomain":"tools"}),&[],None);
+        assert_eq!(messenger[0]["path"],"src/engine/telegram.rs");
+        let models=choose_focus_files(&state,&json!({"rsiIndexId":extended["id"],
+            "rsiObjective":"로컬 모델 다운로드","rsiTargetDomain":"tools"}),&[],None);
+        assert_eq!(models[0]["path"],"src/engine/models.rs");
         let no_match=choose_focus_files(&state,&json!({"rsiIndexId":index["id"],
             "rsiObjective":"quantumqzx uniquezzz","rsiTargetDomain":""}),&[],None);
         assert!(no_match.is_empty(),"an unknown goal must trigger discovery, not a forced source");
