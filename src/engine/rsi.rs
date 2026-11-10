@@ -381,7 +381,9 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
     let mut chain:Vec<(String,bool,bool)>=Vec::new();
     for generation in history {
         if generation["accepted"]!=true {
-            if generation["evaluation"].is_object() {chain.clear();}
+            // A research-only or failed generation also interrupts a
+            // consecutive adoption chain, even without an evaluation report.
+            chain.clear();
             continue;
         }
         let Some(candidate)=generation["candidateId"].as_str()
@@ -516,6 +518,10 @@ mod tests {
                 "evaluation":{"evidenceSha256":"a".repeat(64)}}));
         }
         assert!(capability_proven(&state,&history),"validated meta improvement followed by verified transfer");
+        let mut interrupted=history.clone();
+        interrupted.insert(1,json!({"accepted":false,"reason":"research_only"}));
+        assert!(!capability_proven(&state,&interrupted),
+            "a generation without a patch must break the consecutive adoption chain");
         let shared_fingerprint="b".repeat(64);
         let origin=json!({"sourceDir":"/tmp/dominion-sub4","sourceBranch":"dominion-sub4",
             "baseCommit":revisions[0],"sourceFingerprint":shared_fingerprint});
