@@ -2356,7 +2356,7 @@ async fn run_loop(
         let mut evidence_history=record["history"].as_array().cloned().unwrap_or_default();
         evidence_history.push(generation.clone());
         record["capabilityDemonstrated"]=json!(max_streak>=3 &&
-            rsi::capability_proven(&context.state,&evidence_history));
+            crate::engine::rsi::capability_proven(&context.state,&evidence_history));
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
