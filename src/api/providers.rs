@@ -471,7 +471,8 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
     let claude = claude_cli_authenticated().await;
     let gemini = home_file(".gemini/oauth_creds.json").is_some_and(|path| path.exists());
     let opencode_auth = opencode_auth();
-    let opencode = opencode_auth.as_ref().and_then(Value::as_object).is_some_and(|entries| !entries.is_empty());
+    let opencode = super::cli_oauth::credential_verified("opencode").await
+        || opencode_auth.as_ref().and_then(Value::as_object).is_some_and(|entries| !entries.is_empty());
     let go_source = local_opencode_go_key().map(|(_, source)| source);
     let go_provider = direct_opencode_go(&state);
     let go_connected = go_provider.as_ref().and_then(|p| p["id"].as_str())

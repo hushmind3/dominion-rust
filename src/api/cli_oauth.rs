@@ -67,6 +67,32 @@ fn authorization_url(text:&str)->Option<String>{
     }
     None
 }
+/// Check CLI-owned authentication without reading or copying OAuth secrets.
+pub(super) async fn credential_verified(source:&str)->bool{
+    if source=="gemini"{
+        return home().and_then(|h|std::fs::read(h.join(".gemini/oauth_creds.json")).ok())
+            .and_then(|raw|serde_json::from_slice::<Value>(&raw).ok())
+            .is_some_and(|v|v["access_token"].as_str().is_some()||v["refresh_token"].as_str().is_some());
+    }
+    let name=match source{"claude"=>"claude","opencode"=>"opencode",_=>return false};
+    let Some(exe)=binary(name)else{return false;};
+    let args:&[&str]=if source=="claude"{&["auth","status","--json"]}else{&["auth","list","--format","json"]};
+    let output=tokio::time::timeout(Duration::from_secs(5),Command::new(exe).args(args).kill_on_drop(true).output()).await;
+    let Ok(Ok(output))=output else{return false;};
+    if !output.status.success(){return false;}
+    let Ok(value)=serde_json::from_slice::<Value>(&output.stdout)else{return false;};
+    if source=="claude"{
+        return value["loggedIn"].as_bool()==Some(true);
+    }
+    // OpenCode 2 stores auth in SQLite. Ask its CLI rather than guessing
+    // from the mere existence of the database.
+    if let Some(array)=value.as_array(){return !array.is_empty();}
+    if let Some(array)=value["accounts"].as_array(){return !array.is_empty();}
+    if let Some(array)=value["connections"].as_array(){return !array.is_empty();}
+    if let Some(array)=value["providers"].as_array(){return !array.is_empty();}
+    value.as_object().is_some_and(|entries|!entries.is_empty())
+}
+
 async fn state(source:&str,login:&Arc<Login>)->Value{
     let p=login.progress.lock().await;
     json!({"source":source,"status":p.phase,"message":p.message,"url":p.url,"requiresInput":p.phase=="input"})
@@ -160,7 +186,7 @@ pub async fn start(Path(source):Path<String>,Json(body):Json<StartBody>)->Respon
             tokio::select!{
                 exit=child.wait()=>{
                     match exit{
-                        Ok(exit) if exit.success()&&credential_marker(&kind).is_some()=>set_phase(&current,"completed","CLI 인증이 저장됐습니다. 모델 연결 상태는 별도로 확인하세요.").await,
+                        Ok(exit) if exit.success()&&credential_verified(&kind).await=>set_phase(&current,"completed","CLI 인증이 확인됐습니다. 모델 연결 상태는 별도로 확인하세요.").await,
                         Ok(exit)=>set_phase(&current,"failed",&format!("로그인 완료 정보를 찾지 못했습니다 (종료 상태: {exit}).")).await,
                         Err(e)=>set_phase(&current,"failed",&format!("CLI 인증 오류: {e}")).await
                     };break;
@@ -169,9 +195,9 @@ pub async fn start(Path(source):Path<String>,Json(body):Json<StartBody>)->Respon
                 _=&mut timeout=>{let _=child.kill().await;set_phase(&current,"failed","로그인 시간이 10분을 초과했습니다.").await;break;},
                 _=tick.tick()=>{
                     let after=credential_marker(&kind);
-                    if after.is_some()&&after!=before{
+                    if after.is_some()&&after!=before&&credential_verified(&kind).await{
                         let _=child.kill().await;
-                        set_phase(&current,"completed","CLI 인증 정보가 저장됐습니다.").await;
+                        set_phase(&current,"completed","CLI 인증이 확인됐습니다.").await;
                         break;
                     }
                 }
