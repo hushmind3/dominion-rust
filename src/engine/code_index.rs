@@ -20,7 +20,7 @@ const FILE_KIND: &str = "code_index_file";
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SYMBOLS_PER_FILE: usize = 400;
 const MAP_MAX_CHARS: usize = 6_000;
-const PARSER_VERSION: u64 = 4;
+const PARSER_VERSION: u64 = 5;
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -281,6 +281,36 @@ fn source_without_comments(line: &str, in_block: &mut bool) -> String {
     out
 }
 
+/// Match complete source identifiers, not arbitrary substrings. CamelCase,
+/// snake_case, punctuation and acronym-to-word transitions are normalized
+/// identically for user objectives and code evidence. In particular, "auth"
+/// must not match "unauthorized" and "search" must not match "unsearchable".
+fn lexical_terms(text: &str) -> BTreeSet<String> {
+    let chars=text.chars().collect::<Vec<_>>();
+    let mut terms=BTreeSet::new();
+    let mut current=String::new();
+    for (index,ch) in chars.iter().copied().enumerate() {
+        if !ch.is_alphanumeric() {
+            if !current.is_empty() {terms.insert(current.to_lowercase());current.clear();}
+            continue;
+        }
+        let previous=index.checked_sub(1).and_then(|i|chars.get(i)).copied();
+        let next=chars.get(index+1).copied();
+        let camel=ch.is_uppercase() && (
+            previous.is_some_and(|p|p.is_lowercase() || p.is_ascii_digit())
+            || (previous.is_some_and(|p|p.is_uppercase())
+                && next.is_some_and(char::is_lowercase))
+        );
+        if camel && !current.is_empty() {
+            terms.insert(current.to_lowercase());
+            current.clear();
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {terms.insert(current.to_lowercase());}
+    terms
+}
+
 fn parse_file(rel: &str, content: &str) -> Value {
     let language = rel
         .rsplit_once('.')
@@ -374,9 +404,9 @@ fn parse_file(rel: &str, content: &str) -> Value {
         }
         // Include identifiers and string-literal vocabulary, not comments.
         let code = source_without_comments(line, &mut in_block_comment);
-        for word in code.split(|ch: char| !ch.is_alphanumeric()) {
+        for word in lexical_terms(&code) {
             if (3..=80).contains(&word.chars().count()) {
-                body_terms.insert(word.to_lowercase());
+                body_terms.insert(word);
             }
         }
         let code = code_only(&code);
@@ -691,10 +721,8 @@ pub fn indexed_source_hash(state:&AppState,index_id:&str,path:&str)->Option<Stri
 /// Shared goal vocabulary for file navigation and source-span selection.
 /// No source file names are embedded in the vocabulary.
 fn focus_terms(objective:&str,domain:&str)->Vec<String> {
-    let mut query = objective.to_lowercase()
-        .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
-        .filter(|word| word.chars().count() >= 2)
-        .map(str::to_string).collect::<Vec<_>>();
+    let mut query = lexical_terms(objective).into_iter()
+        .filter(|word|word.chars().count()>=2).collect::<Vec<_>>();
     // Language bridge is vocabulary, not a file selection table. Paths,
     // symbols and documentation decide which concrete implementation is read.
     let lower = objective.to_lowercase();
@@ -784,13 +812,16 @@ pub fn rank_focus_files_with_feedback(
     if files.is_empty() {return Vec::new();}
 
     let fields=files.iter().map(|file| {
-        let path=file["path"].as_str().unwrap_or("").to_lowercase();
+        let path=lexical_terms(file["path"].as_str().unwrap_or(""));
         let symbols=file["symbols"].as_array().into_iter().flatten()
             .filter_map(|item|item["name"].as_str())
-            .collect::<Vec<_>>().join(" ").to_lowercase();
+            .flat_map(lexical_terms).collect::<BTreeSet<_>>();
         let summary=file["summary"].as_array().into_iter().flatten()
-            .filter_map(Value::as_str).collect::<Vec<_>>().join(" ").to_lowercase();
-        let body=file["bodyLexicon"].as_str().unwrap_or("").to_lowercase();
+            .filter_map(Value::as_str).flat_map(lexical_terms)
+            .collect::<BTreeSet<_>>();
+        // Persisted lexicon is already normalized and sorted by parser V5.
+        let body=file["bodyLexicon"].as_str().unwrap_or("").split_whitespace()
+            .map(str::to_string).collect::<BTreeSet<_>>();
         (path,symbols,summary,body)
     }).collect::<Vec<_>>();
 
@@ -820,9 +851,14 @@ pub fn rank_focus_files_with_feedback(
         let domain_evidence=if !domain.is_empty()
             && (path.contains(domain)||symbols.contains(domain)) {1.0} else {0.0};
         let evidence=path_evidence+symbol_evidence+summary_evidence+body_evidence+domain_evidence;
-        if evidence==0.0 {continue;}
-        let prior=prior_unproductive.get(path).copied().unwrap_or(0) as f64;
-        let successful=prior_productive.get(path).copied().unwrap_or(0) as f64;
+        // The builtin navigator remains evidence-gated. A model-authored
+        // targetExpression is allowed to explore sources with zero lexical
+        // overlap: otherwise the AI can change the score but not the search
+        // space, preventing novel harness architecture improvements.
+        if evidence==0.0 && target_expression.is_none() {continue;}
+        let path_key=file["path"].as_str().unwrap_or("").to_lowercase();
+        let prior=prior_unproductive.get(path_key.as_str()).copied().unwrap_or(0) as f64;
+        let successful=prior_productive.get(path_key.as_str()).copied().unwrap_or(0) as f64;
         let productive_evidence=successful.ln_1p();
         let source_cost=(file["bytes"].as_u64().unwrap_or(0) as f64/8_192.0).min(100.0);
         let features=BTreeMap::from([
@@ -852,6 +888,7 @@ pub fn rank_focus_files_with_feedback(
             "sourceHash":file["hash"],
             "score":score,
             "baselineScore":default,
+            "lexicalEvidencePresent":evidence>0.0,
             "evidence":{"path":path_evidence,"symbols":symbol_evidence,
                 "summary":summary_evidence,"body":body_evidence,"domain":domain_evidence,
                 "priorUnproductive":prior,"priorProductive":successful,
@@ -869,6 +906,10 @@ pub fn rank_focus_files_with_feedback(
     // of arbitrary scores and fallback scores. One runtime failure invalidates
     // the formula for the whole indexed source decision.
     if let Some(error)=policy_invalid {
+        // Invalid formulas must recover the exact builtin candidate pool as
+        // well as its scores. Never promote an ungrounded exploration target
+        // merely because its experimental formula failed to execute.
+        ranked.retain(|row|row["lexicalEvidencePresent"]==true);
         for row in &mut ranked {
             row["score"]=row["baselineScore"].clone();
             row["scoring"]=json!("corpus-evidence");
@@ -1068,6 +1109,61 @@ mod tests {
             &empty,&learned,Some(&control),2);
         assert_eq!(trial[0]["path"],"src/alpha.rs",
             "an evolvable formula still controls the final file selection");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ai_target_policy_can_explore_sources_outside_the_builtin_keyword_pool() {
+        let (state,root)=temp_state();
+        let source=root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        std::fs::write(source.join("src/opaque.rs"),
+            "fn iterate() { println!(\"unrelated\"); }\n").unwrap();
+        std::fs::write(source.join("src/neutral.rs"),
+            "fn dispatch() { println!(\"generic task\"); }\n").unwrap();
+        let index=refresh(&state,&source).unwrap();
+        let id=index["id"].as_str().unwrap();
+        let empty=BTreeMap::new();
+        let objective="entirely novel architecture";
+        assert!(rank_focus_files(&state,id,objective,"",&empty,None,2).is_empty(),
+            "builtin still uses evidence gate to avoid guessing files");
+        let explorer=json!({"revision":"exploration-1",
+            "parameters":{"targetExpression":"novelty - sourceCost"}});
+        let selected=rank_focus_files(&state,id,objective,"",
+            &empty,Some(&explorer),2);
+        assert_eq!(selected.len(),2,
+            "user-model exploration must not inherit the built-in lexical filter");
+        assert!(selected.iter().all(|row|row["scoring"]=="expression"
+            && row["lexicalEvidencePresent"]==false));
+        let broken=json!({"revision":"broken-1",
+            "parameters":{"targetExpression":"1 / pathEvidence"}});
+        assert!(rank_focus_files(&state,id,objective,"",
+            &empty,Some(&broken),2).is_empty(),
+            "invalid trial must restore builtin *pool*, not only scores");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_targeting_ignores_embedded_substring_noise_and_resolves_identifiers() {
+        let (state,root)=temp_state();
+        let source=root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        std::fs::write(source.join("src/unsearchable.rs"),
+            "fn unsearchable() { println!(\"unsearchable\"); }\n").unwrap();
+        std::fs::write(source.join("src/unranked.rs"),
+            "fn unranked() { println!(\"unranked\"); }\n").unwrap();
+        std::fs::write(source.join("src/opaque.rs"),
+            "fn searchHandler() { println!(\"search\"); }\nfn BM25Ranker() {}\n").unwrap();
+        let index=refresh(&state,&source).unwrap();
+        let id=index["id"].as_str().unwrap();
+        let search=rank_focus_files(&state,id,"search","",&BTreeMap::new(),None,8);
+        assert_eq!(search.len(),1,"substring decoys must not be treated as evidence: {search:?}");
+        assert_eq!(search[0]["path"],"src/opaque.rs");
+        let rank=rank_focus_files(&state,id,"bm25","",&BTreeMap::new(),None,8);
+        assert_eq!(rank.len(),1);
+        assert_eq!(rank[0]["path"],"src/opaque.rs");
+        let noise=rank_focus_files(&state,id,"rank","",&BTreeMap::new(),None,8);
+        assert!(noise.is_empty(),"rank cannot match unranked or ranker as a substring");
         let _=std::fs::remove_dir_all(root);
     }
 
