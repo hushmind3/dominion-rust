@@ -312,6 +312,7 @@ pub async fn finish(
         // NOT a claim that baseline/candidate paired tests have been run.
         let proposal=json!({
             "target":classify(&patch),"baseCommit":worktree.base,
+            "sourceBranch":input["rsiSourceBranch"].as_str().unwrap_or("dominion-sub"),
             "patch":patch,"hypothesis":hypothesis,
             "cases":input["rsiFrozenCases"],"oracleVersion":"rsi-worktree-v2",
             "generatorModel":input["model"],"generatorEffort":input["reasoningEffort"],

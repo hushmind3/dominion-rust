@@ -123,7 +123,17 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
         .ok_or("후보 등록 전에 고정된 oracleVersion이 필요합니다.")?;
     let patch_hash = digest(patch);
     let plan_hash=digest(&json!({"cases":cases,"oracleVersion":oracle_version}).to_string());
-    let id = format!("rsi-{}", digest(&format!("{base}:{target}:{patch_hash}:{plan_hash}")));
+    // Identical source trees can be checked out on several independent
+    // experimental branches. Do not merge their candidate ledgers by hash.
+    // Legacy unscoped proposals retain their original identity.
+    let source_branch=body["sourceBranch"].as_str()
+        .filter(|s|!s.is_empty() && s.len()<=160 && !s.chars().any(char::is_control));
+    let mut identity=format!("{base}:{target}:{patch_hash}:{plan_hash}");
+    if let Some(branch)=source_branch {
+        identity.push_str(":branch:");
+        identity.push_str(branch);
+    }
+    let id = format!("rsi-{}", digest(&identity));
     if let Some(existing) = state.store.get("rsi_candidate", &id) {
         return Ok(existing);
     }
@@ -136,6 +146,9 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
         {
             return Err("실제 배포를 기록한 개선기만 다음 세대 개선기의 부모가 될 수 있습니다.".into());
         }
+        if previous["sourceBranch"].as_str()!=source_branch {
+            return Err("개선기 계보를 다른 작업 브랜치로 옮길 수 없습니다.".into());
+        }
         if body["generatorSourceCommit"] != previous["deployment"]["commitSha"] {
             return Err("다음 개선기를 실행한 소스 커밋을 부모의 배포 revision과 연결하세요.".into());
         }
@@ -144,7 +157,8 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
         .and_then(|row| row["revision"].as_str().map(str::to_string));
     let now = chrono::Utc::now().to_rfc3339();
     let record = json!({
-        "id":id, "target":target, "baseCommit":base, "patchSha256":patch_hash,
+        "id":id, "target":target, "baseCommit":base, "sourceBranch":source_branch,
+        "patchSha256":patch_hash,
         "patch":patch, "paths":paths, "hypothesis":hypothesis,
         "cases":cases, "oracleVersion":oracle_version,
         "status":"proposed", "createdAt":now,
@@ -392,6 +406,21 @@ mod tests {
             "baselineBuildOk":true,"candidateBuildOk":true,
             "cases":(0..8).map(|i|json!({"id":format!("case-{i}"),"baselinePass":i!=0,"candidatePass":true})).collect::<Vec<_>>()})
     }
+    #[test]
+    fn identical_patches_on_sibling_branches_have_independent_candidate_ids() {
+        let (state,root)=state();
+        let mut a=proposal("harness");a["sourceBranch"]=json!("dominion-sub3");
+        let mut b=a.clone();b["sourceBranch"]=json!("dominion-sub4");
+        let first=propose(&state,&a).unwrap();
+        let second=propose(&state,&b).unwrap();
+        assert_ne!(first["id"],second["id"]);
+        assert_eq!(first["sourceBranch"],"dominion-sub3");
+        assert_eq!(second["sourceBranch"],"dominion-sub4");
+        assert_eq!(propose(&state,&a).unwrap()["id"],first["id"]);
+        assert_eq!(state.store.all("rsi_candidate").len(),2);
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn paired_results_cannot_be_approved_without_evidence_and_frozen_revision() {
         let (state,root)=state();
