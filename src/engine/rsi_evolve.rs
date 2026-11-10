@@ -749,6 +749,16 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         )
         .map_err(|e| e.to_string())?;
     }
+    let mut accepted_streak_seed = 0u64;
+    let mut max_streak_seed = 0u64;
+    if lineage["reused"] == true {
+        if let Some(prior_id) = input["rsiContinueFrom"].as_str() {
+            if let Some(prior) = context.state.store.get("rsi_campaign", prior_id) {
+                accepted_streak_seed = prior["acceptedStreak"].as_u64().unwrap_or(0);
+                max_streak_seed = prior["maxAcceptedStreak"].as_u64().unwrap_or(0);
+            }
+        }
+    }
     let mut record = json!({"id":context.job_id,"status":"running","phase":"building_generator",
         "sourceDir":source,"labDir":lab,"baseCommit":base,"headCommit":head,"sourceSnapshot":snapshot,"sourceFingerprint":fingerprint,
         "objective":input["rsiObjective"],"providerId":input["providerId"],"model":input["model"],
@@ -757,7 +767,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "history":[],"activeGenerationJobId":null,"createdAt":chrono::Utc::now().to_rfc3339(),
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
         "lineage":lineage,
-        "acceptedStreak":0,"maxAcceptedStreak":0,"capabilityDemonstrated":false,
+        "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,"capabilityDemonstrated":max_streak_seed>=3,
         "productionChanged":false,"accelerationProven":false});
     save(context, &record)?;
     let started = Instant::now();
@@ -2216,13 +2226,21 @@ async fn run_loop(
         elapsed(record, started);
         save(context, record)?;
         if let Some(reason)=stopped {return Ok(reason.into());}
-        if let Some(error)=current["result"]["rsi"]["modelError"].as_str() {
+        if let Some(error)=generation_model_error(&current) {
             return Err(error.to_string());
         }
         if no_edit && should_stop_no_progress(streak, research, changed) {
             return Ok("no_progress".into());
         }
     }
+}
+
+/// Empty strings are not model errors; a research-only generation sets the
+/// field to "" and must not abort the whole campaign.
+fn generation_model_error(current: &Value) -> Option<&str> {
+    current["result"]["rsi"]["modelError"]
+        .as_str()
+        .filter(|error| !error.trim().is_empty())
 }
 
 pub(crate) async fn adopt(
@@ -3362,6 +3380,17 @@ mod tests {
             "revision": format!("revision-{name}"),
             "parameters": {"expression": expression}
         })
+    }
+
+    #[test]
+    fn empty_model_error_does_not_abort_a_campaign() {
+        assert_eq!(generation_model_error(&json!({"result":{"rsi":{"modelError":""}}})), None);
+        assert_eq!(generation_model_error(&json!({"result":{"rsi":{"modelError":"  "}}})), None);
+        assert_eq!(generation_model_error(&json!({"result":{"rsi":{}}})), None);
+        assert_eq!(
+            generation_model_error(&json!({"result":{"rsi":{"modelError":"rsi_token_budget: stop"}}})),
+            Some("rsi_token_budget: stop")
+        );
     }
 
     #[tokio::test]
