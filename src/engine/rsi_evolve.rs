@@ -2539,10 +2539,8 @@ async fn run_loop(
         let generation_accepted = generation["accepted"] == true;
         let accepted_streak = if generation_accepted {
             record["acceptedStreak"].as_u64().unwrap_or(0) + 1
-        } else if generation["evaluation"].is_object() {
-            0
         } else {
-            record["acceptedStreak"].as_u64().unwrap_or(0)
+            0
         };
         record["acceptedStreak"] = json!(accepted_streak);
         let max_streak = record["maxAcceptedStreak"]
@@ -2554,10 +2552,8 @@ async fn run_loop(
         // adopted patches whose comparison was inconclusive or regressed.
         let verified_streak = if generation_is_verified(&generation) {
             record["verifiedStreak"].as_u64().unwrap_or(0) + 1
-        } else if generation["evaluation"].is_object() {
-            0
         } else {
-            record["verifiedStreak"].as_u64().unwrap_or(0)
+            0
         };
         record["verifiedStreak"] = json!(verified_streak);
         let verified_max = record["maxVerifiedStreak"]
@@ -2798,7 +2794,9 @@ pub fn verified_capability_streak(history: &[Value]) -> (u64, u64) {
         if generation_is_verified(generation) {
             streak += 1;
             max = max.max(streak);
-        } else if generation["evaluation"].is_object() {
+        } else {
+            // An intervening research-only, failed or inconclusive generation
+            // breaks an *uninterrupted* verified adoption lineage.
             streak = 0;
         }
     }
@@ -4407,6 +4405,16 @@ mod tests {
         let regressed=json!({"accepted":true,"evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":1}}});
         assert_eq!(verified_capability_streak(&[verified.clone(),verified.clone(),verified.clone()]),(3,3));
         assert_eq!(verified_capability_streak(&[verified.clone(),regressed.clone()]),(0,1));
+        let research_only=json!({"accepted":false,"newFindings":5,"evaluation":null});
+        assert_eq!(verified_capability_streak(&[
+            verified.clone(),research_only.clone(),verified.clone()
+        ]),(1,1),"Research-only generations interrupt consecutive verified adoption");
+        assert_eq!(verified_capability_streak(&[
+            verified.clone(),research_only.clone(),verified.clone(),verified.clone()
+        ]),(2,2),"Research-only generations must not be skipped in max streak");
+        assert_eq!(verified_capability_streak(&[
+            verified.clone(),research_only,verified.clone(),verified.clone(),verified.clone()
+        ]),(3,3),"New independent uninterrupted streaks still count");
         assert_eq!(verified_capability_streak(&[json!({"accepted":true})]),(0,0));
         assert!(target_plan_mismatch("rsi_target_plan_mismatch: mismatch"));
         assert!(!target_plan_mismatch("rsi_token_budget"));
