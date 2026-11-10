@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const API: &str = "https://discord.com/api/v10";
-pub const MAX_PARTICIPANTS: usize = 9;
+pub const MAX_PARTICIPANTS: usize = crate::engine::rooms::MAX_PARTICIPANTS;
 const MAX_BACKLOG: usize = 2000;
 const MAX_BOT_REPLIES_PER_MINUTE: usize = 2;
 
@@ -76,7 +76,7 @@ pub fn validate(state: &AppState, config: &Value) -> Result<(), String> {
             .and_then(Value::as_array)
             .ok_or("회의실 참가자가 없습니다.")?;
         if participants.is_empty() || participants.len() > MAX_PARTICIPANTS {
-            return Err("Discord 회의실은 1~9명의 에이전트를 지원합니다.".into());
+            return Err(format!("Discord 회의실은 1~{MAX_PARTICIPANTS}명의 에이전트를 지원합니다."));
         }
         if participants.iter().any(|id| {
             id.as_str()
@@ -617,7 +617,7 @@ fn participants(state: &AppState, config: &Value, message: &Value) -> Result<Vec
     let mut seen = std::collections::HashSet::new();
     agents.retain(|id| seen.insert(id.clone()));
     if agents.is_empty() || agents.len() > MAX_PARTICIPANTS {
-        return Err("Discord 회의실에는 1~9명을 설정하세요.".into());
+        return Err(format!("Discord 회의실에는 1~{MAX_PARTICIPANTS}명을 설정하세요."));
     }
     let content = text(message, "content").to_lowercase();
     let named = agents
