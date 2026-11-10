@@ -4983,7 +4983,7 @@ mod tests {
             "kind":"selfimprove.search","name":"invalid-live-target",
             "implementation":"expression","source":"rsi-generated",
             "parameters":{"expression":"objectiveMatch + exploration",
-                "targetExpression":"1 / pathEvidence"}
+                "targetExpression":"1 / (pathEvidence - 2)"}
         })).unwrap();
         let id=candidate["id"].as_str().unwrap();
         let generation=json!({"jobId":"live-trial","attempt":2,
