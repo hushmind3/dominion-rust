@@ -638,6 +638,126 @@ pub fn prompt_context(
     Ok((meta,block))
 }
 
+
+/// Deterministic, budget-aware source targeting. Score evidence in symbol
+/// bodies (not just names), penalize ubiquitous words, then diffuse the best
+/// evidence by one edge across observed calls. An approximate graph is enough
+/// for navigation; it is never treated as a verified runtime dependency.
+fn rank_focus_symbols(
+    objective: &str, domain: &str, symbols: &[Value],
+    tests: Option<&Vec<Value>>, lines: &[&str],
+) -> Vec<(f64, usize, String)> {
+    let goal = objective.to_lowercase();
+    let mut terms = goal
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .filter(|word| word.len() >= 3)
+        .map(str::to_string).collect::<Vec<_>>();
+    for (keyword, additions) in [
+        ("기억", &["memory", "recall", "retrieve", "rank", "rerank"][..]),
+        ("검색", &["search", "retrieve", "rank", "bm25"][..]),
+        ("망각", &["forget", "decay", "sweep"][..]),
+        ("압축", &["compact", "compress", "summary"][..]),
+        ("문맥", &["context", "continuity", "prompt"][..]),
+        ("토큰", &["token", "budget", "usage"][..]),
+        ("비용", &["cost", "usage", "budget", "cache"][..]),
+        ("학습", &["learning", "learn", "distill", "experience"][..]),
+        ("개선", &["improve", "evolve", "search", "select"][..]),
+        ("선택", &["select", "rank", "score"][..]),
+    ] {
+        if goal.contains(keyword) {
+            terms.extend(additions.iter().map(|value| value.to_string()));
+        }
+    }
+    if terms.is_empty() {
+        terms.extend(match domain {
+            "memory" => vec!["retrieve", "memory", "rerank"],
+            "context" => vec!["context", "continuity", "prompt"],
+            "learning" => vec!["learn", "experience", "distill"],
+            "improver" => vec!["select", "search", "evolve", "compare"],
+            "tools" => vec!["execute", "tool", "dispatch"],
+            _ => Vec::new(),
+        }.into_iter().map(str::to_string));
+    }
+    terms.retain(|term| !matches!(term.as_str(), "the"|"and"|"with"|"for"|"from"|"that"|"this"|"fn"|"src"|"engine"));
+    terms.sort(); terms.dedup();
+    terms.truncate(24);
+    if terms.is_empty() { return Vec::new(); }
+
+    // Each indexed symbol becomes a node. Its evidence span stops at the next
+    // declared symbol and cannot reach into an unrelated test function.
+    let nodes = symbols.iter().filter_map(|item| {
+        let name = item["name"].as_str()?;
+        if tests.is_some_and(|rows| rows.iter().any(|test| test.as_str()==Some(name))) {
+            return None;
+        }
+        let line = item["line"].as_u64()? as usize;
+        if line == 0 || line > lines.len() { return None; }
+        let end = symbols.iter()
+            .filter_map(|next| next["line"].as_u64().map(|value| value as usize))
+            .filter(|next| *next > line)
+            .min().unwrap_or(lines.len()+1)
+            .saturating_sub(1).min(lines.len());
+        Some((name.to_string(), line, lines[line-1..end].join("\n").to_lowercase()))
+    }).collect::<Vec<_>>();
+    if nodes.is_empty() { return Vec::new(); }
+
+    // IDF prevents common library words from overwhelming rare target evidence.
+    let mut base = vec![0.0f64;nodes.len()];
+    for term in &terms {
+        let documents = nodes.iter().filter(|(name,_,body)|
+            name.to_lowercase().contains(term) || body.contains(term)).count();
+        if documents == 0 { continue; }
+        let idf = ((nodes.len() as f64 + 1.0)/(documents as f64 + 1.0)).ln()+1.0;
+        for (index,(name,_,body)) in nodes.iter().enumerate() {
+            if name.to_lowercase().contains(term) { base[index] += 5.0*idf; }
+            else if body.contains(term) { base[index] += 1.5*idf; }
+        }
+    }
+
+    // Approximate static call graph from identifier immediately followed by
+    // '('. This is bounded to one hop and does not require additional LLM calls.
+    let mut owners = BTreeMap::<&str,Vec<usize>>::new();
+    for (index,(name,_,_)) in nodes.iter().enumerate() {
+        owners.entry(name.as_str()).or_default().push(index);
+    }
+    let mut links = vec![BTreeSet::<usize>::new();nodes.len()];
+    for (index,(_,_,body)) in nodes.iter().enumerate() {
+        let bytes=body.as_bytes();
+        let mut cursor=0usize;
+        while cursor<bytes.len() {
+            if !bytes[cursor].is_ascii_alphabetic() && bytes[cursor]!=b'_' {
+                cursor+=1; continue;
+            }
+            let start=cursor;cursor+=1;
+            while cursor<bytes.len() && (bytes[cursor].is_ascii_alphanumeric()||bytes[cursor]==b'_') {
+                cursor+=1;
+            }
+            let mut tail=cursor;
+            while tail<bytes.len() && bytes[tail].is_ascii_whitespace() { tail+=1; }
+            if tail>=bytes.len() || bytes[tail]!=b'(' { continue; }
+            if let Some(targets)=owners.get(&body[start..cursor]) {
+                for target in targets {
+                    if *target!=index {
+                        links[index].insert(*target);
+                        links[*target].insert(index);
+                    }
+                }
+            }
+        }
+    }
+    let mut ranked = nodes.iter().enumerate().filter_map(|(index,(name,line,body))| {
+        let related=links[index].iter().map(|peer|base[*peer]).fold(0.0f64,f64::max);
+        // A call relationship is a clue, never stronger than direct evidence.
+        let evidence=base[index]+0.45*related;
+        if evidence<=0.0 {return None;}
+        let bounded_chars=body.chars().count().min(10_000) as f64;
+        let cost=1.0 + 0.12*(bounded_chars/3_000.0);
+        Some((evidence/cost,*line,name.clone()))
+    }).collect::<Vec<_>>();
+    ranked.sort_by(|a,b| b.0.total_cmp(&a.0).then_with(||a.1.cmp(&b.1)));
+    ranked
+}
+
 /// Returns compact, source-hash-verified RSI context instead of repeatedly
 /// sending an entire large source file to the model on every tool round.
 pub fn bounded_focus_context(
@@ -658,54 +778,10 @@ pub fn bounded_focus_context(
             "\n### 대상 파일 전체: {path} ({size}자, 소스 해시 검증)\n원문의 정확한 oldText로 workspace_replace를 사용하세요.\n~~~\n{content}\n~~~\n"
         ));
     }
-    let objective = objective.to_lowercase();
-    let mut hints = objective
-        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-        .filter(|word| word.len() >= 3)
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    for (keyword, additions) in [
-        ("기억", &["memory", "recall", "retrieve", "rank", "rerank"][..]),
-        ("검색", &["search", "retrieve", "rank", "bm25"][..]),
-        ("망각", &["forget", "decay", "sweep"][..]),
-        ("압축", &["compact", "compress", "summary"][..]),
-        ("문맥", &["context", "continuity", "prompt"][..]),
-        ("토큰", &["token", "budget", "usage"][..]),
-        ("비용", &["cost", "usage", "budget", "cache"][..]),
-        ("학습", &["learning", "learn", "distill", "experience"][..]),
-        ("개선", &["improve", "evolve", "search", "select"][..]),
-        ("선택", &["select", "rank", "score"][..]),
-    ] {
-        if objective.contains(keyword) {
-            hints.extend(additions.iter().map(|value| value.to_string()));
-        }
-    }
-    if hints.is_empty() {
-        hints.extend(match domain {
-            "memory" => vec!["retrieve", "memory", "rerank"],
-            "context" => vec!["context", "continuity", "prompt"],
-            "learning" => vec!["learn", "experience", "distill"],
-            "improver" => vec!["select", "search", "evolve", "compare"],
-            "tools" => vec!["execute", "tool", "dispatch"],
-            _ => Vec::new(),
-        }.into_iter().map(str::to_string));
-    }
-    hints.sort();
-    hints.dedup();
     let symbols = indexed["symbols"].as_array()?;
     let tests = indexed["tests"].as_array();
-    let mut ranked = symbols.iter().filter_map(|item| {
-        let name = item["name"].as_str()?;
-        if tests.is_some_and(|rows| rows.iter().any(|test| test.as_str() == Some(name))) {
-            return None;
-        }
-        let line = item["line"].as_u64()? as usize;
-        let lower = name.to_lowercase();
-        let score = hints.iter().filter(|hint| lower.contains(hint.as_str())).count();
-        (score > 0 && line > 0).then(|| (score, line, name.to_string()))
-    }).collect::<Vec<_>>();
-    ranked.sort_by(|a,b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     let lines = content.lines().collect::<Vec<_>>();
+    let ranked = rank_focus_symbols(objective, domain, symbols, tests, &lines);
     let mut result = format!(
         "\n### 대상 파일 발췌: {path} (전체 {size}자, 소스 해시 검증)\n전체 파일이 아닙니다. 정확히 일치하는 코드만 수정하고 누락된 부분은 workspace_read_range로 확인하세요.\n"
     );
@@ -740,6 +816,33 @@ mod tests {
     use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
 
+
+
+    #[test]
+    fn rsi_ranking_uses_body_evidence_and_callers_not_only_function_names() {
+        let (state, root) = temp_state();
+        let source = root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        let mut code = (0..180).map(|n|
+            format!("fn unrelated_{n}() {{ println!(\"unrelated\"); }}\n")
+        ).collect::<String>();
+        // Neither function name contains the goal's term, but one function's
+        // body has goal evidence and the second calls it.
+        code.push_str("fn opaque_worker() {\n    let bm25 = \"BODY_EVIDENCE_MARKER\";\n    println!(\"{bm25}\");\n}\n");
+        code.push_str("fn caller_dispatch() {\n    opaque_worker(); // CALL_EDGE_MARKER\n}\n");
+        std::fs::write(source.join("src/graph.rs"),&code).unwrap();
+        let meta = refresh(&state,&source).unwrap();
+        let first = bounded_focus_context(&state,&source,meta["id"].as_str().unwrap(),
+            "src/graph.rs","BM25 scoring","memory").unwrap();
+        assert!(first.contains("BODY_EVIDENCE_MARKER"),"body terms must retrieve hidden implementations: {first}");
+        assert!(first.contains("CALL_EDGE_MARKER"),"call graph should bring in the caller: {first}");
+        assert!(!first.contains("fn unrelated_0()"),"unrelated source must remain out of context");
+        assert!(first.chars().count()<8_100);
+        let second = bounded_focus_context(&state,&source,meta["id"].as_str().unwrap(),
+            "src/graph.rs","BM25 scoring","memory").unwrap();
+        assert_eq!(first,second,"ranking must be replay-deterministic");
+        let _=std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn bounded_focus_prefers_relevant_spans_without_full_file_retransmission() {

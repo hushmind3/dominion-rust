@@ -121,6 +121,8 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
         .iter()
         .map(|row| row["tokens"].as_u64().unwrap_or(0))
         .sum::<u64>() as f64;
+    let informative = rows.iter().filter(|row| row["candidateId"].is_string()
+        || row["newFindings"].as_u64().unwrap_or(0)>0).count() as f64;
     let success_rate = if attempts == 0.0 { 0.0 } else { accepted / attempts };
     let token_cost = if attempts == 0.0 {
         0.0
@@ -154,6 +156,7 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
         ("inconclusive".to_string(), inconclusive),
         ("novelty".to_string(), if attempts == 0.0 { 1.0 } else { 0.0 }),
         ("successRate".to_string(), success_rate),
+        ("informativeRate".to_string(), if attempts==0.0 {0.0} else {informative/attempts}),
         ("tokenCost".to_string(), token_cost),
         ("objectiveMatch".to_string(), objective_match),
         ("unresolved".to_string(), unresolved),
@@ -186,11 +189,22 @@ fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f
         }
         _ => {
             let get = |name: &str| features.get(name).copied().unwrap_or(0.0);
-            let attempts = get("attempts").max(1.0);
-            let utility = get("accepted") / (1.0 + get("tokenCost") * attempts) / attempts;
-            // The user's objective outranks exploration. A goal-specific
-            // capability is selected before an unrelated unused domain.
-            Some(utility + get("exploration") + get("objectiveMatch") * 2.0)
+            // Conservative yield-per-token policy. A research-only result
+            // carries weak information but cannot masquerade as an adoption.
+            // Expensive, barren repetitions lose priority to unexplored work;
+            // explicit owner goals take precedence over exploration bonuses.
+            let observed = get("attempts");
+            let posterior = (get("accepted") + 0.5) / (observed + 2.0);
+            let useful = get("informativeRate").clamp(0.0,1.0);
+            let cost = get("tokenCost").max(0.0);
+            let regressed = get("regressions").max(0.0);
+            let yield_per_cost = (3.0*posterior + 0.4*useful) / (1.0 + cost);
+            let risk = 0.45*regressed / (observed + 1.0);
+            let barren = if observed > 0.0 {
+                (1.0-useful)*(cost/(1.0+cost))*0.6
+            } else {0.0};
+            Some(yield_per_cost - risk - barren
+                + 0.65*get("exploration") + 6.0*get("objectiveMatch"))
         }
     }
 }
@@ -2713,6 +2727,25 @@ mod tests {
         let continued = research_digest(&state, &json!({"rsiContinueFrom":"digest-prior"}), &json!({"history":[]}));
         assert!(continued.contains("src/engine/memory.rs 10-20"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+
+    #[test]
+    fn default_search_learns_from_unproductive_token_cost_but_respects_owner_goal() {
+        let algorithm=json!({"implementation":"failure-clusters"});
+        let history=json!([
+            {"domain":"memory","tokens":100_000,"accepted":false,"candidateId":null,"newFindings":0},
+            {"domain":"memory","tokens":100_000,"accepted":false,"candidateId":null,"newFindings":0},
+            {"domain":"learning","tokens":3_000,"accepted":true,"candidateId":"a","newFindings":1},
+            {"domain":"learning","tokens":2_000,"accepted":true,"candidateId":"b","newFindings":1}
+        ]);
+        let rows=history.as_array().unwrap();
+        let expensive=search_features(rows,"memory","");
+        let productive=search_features(rows,"learning","");
+        assert!(score_domain(&algorithm,&productive)>score_domain(&algorithm,&expensive),
+            "verified low-cost changes must outrank repeated empty expensive searches");
+        assert_eq!(select_domain(&algorithm,rows,"기억 검색 정확도"),"memory",
+            "owner's explicit target must outrank unrelated prior wins");
     }
 
     #[test]
