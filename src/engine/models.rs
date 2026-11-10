@@ -1437,7 +1437,24 @@ pub fn remove_installed(state: &AppState, id: &str) -> Result<(), String> {
         std::fs::remove_dir_all(path).map_err(|error| error.to_string())?;
     } else {
         let path = managed_model_path(state, id).ok_or("DOMINION이 관리하는 모델 파일을 찾을 수 없습니다.")?;
-        std::fs::remove_file(path).map_err(|error| error.to_string())?;
+        if let Some((prefix, number, total)) = gguf_shard_parts(&path.to_string_lossy()) {
+            if number != 1 {
+                return Err("분할 GGUF 모델은 첫 조각에서 제거해야 합니다.".into());
+            }
+            // Delete the full model, not just shard one. Otherwise gigabytes
+            // remain orphaned on disk but disappear from the installed list.
+            let parts = (1..=total)
+                .map(|index| PathBuf::from(format!("{prefix}-{index:05}-of-{total:05}.gguf")))
+                .collect::<Vec<_>>();
+            if !parts.iter().all(|part| part.is_file()) {
+                return Err("분할 GGUF 조각이 누락되어 모델을 제거할 수 없습니다.".into());
+            }
+            for part in parts {
+                std::fs::remove_file(part).map_err(|error| error.to_string())?;
+            }
+        } else {
+            std::fs::remove_file(path).map_err(|error| error.to_string())?;
+        }
     }
     state.bus.record(EXTERNAL_KIND, &json!({"id":id}));
     Ok(())
@@ -2815,6 +2832,20 @@ mod tests {
             vec!["Q4/model-00002-of-00003.gguf".into()]).is_err());
         assert!(validated_gguf_files("simple-Q8_0.gguf",
             vec!["simple-Q8_0.gguf".into(),"another.gguf".into()]).is_err());
+    }
+
+    #[test]
+    fn removing_split_gguf_cleans_up_every_shard() {
+        let (state, dir) = temp_state();
+        let model_dir = models_dir(&state).join("split");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for part in 1..=3 {
+            std::fs::write(model_dir.join(format!("model-{part:05}-of-00003.gguf")), b"x").unwrap();
+        }
+        assert_eq!(installed(&state).iter().filter(|m| m["format"] == "gguf").count(), 1);
+        remove_installed(&state, "split/model-00001-of-00003.gguf").unwrap();
+        assert!(std::fs::read_dir(&model_dir).unwrap().next().is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
