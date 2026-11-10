@@ -2197,6 +2197,17 @@ fn valid_hf_revision(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// Keep partial downloads from different immutable snapshots independent.
+/// A cancelled build A must never be appended to by resumed build B.
+fn partial_download_path(target: &Path, revision: &str) -> PathBuf {
+    let suffix = if valid_hf_revision(revision) {
+        format!(".part.{revision}")
+    } else {
+        ".part".to_string()
+    };
+    PathBuf::from(format!("{}{}", target.display(), suffix))
+}
+
 pub fn start_download_with(
     state: AppState,
     repo: String,
@@ -2259,7 +2270,7 @@ pub fn start_download_at_revision(
     let mut entries = Vec::new();
     for path in &files {
         let target = dir.join(path);
-        let partial = PathBuf::from(format!("{}.part", target.display()));
+        let partial = partial_download_path(&target, revision);
         let downloaded = if target.is_file() {
             std::fs::metadata(&target).map(|meta| meta.len()).unwrap_or(0)
         } else {
@@ -2448,7 +2459,7 @@ async fn download_worker(state: AppState, job_id: String) {
             let hash_ok = remote_sha.as_deref().is_none_or(|sha| {
                 file_sha256(&target).is_ok_and(|actual| actual == sha)
             });
-            if size == 0 || (expected > 0 && size != expected) || !hash_ok {
+            if size == 0 || expected == 0 || size != expected || !hash_ok {
                 let _ = std::fs::remove_file(&target);
             } else {
                 files[index]["downloaded"] = json!(size);
@@ -2460,7 +2471,7 @@ async fn download_worker(state: AppState, job_id: String) {
                 continue;
             }
         }
-        let partial = PathBuf::from(format!("{}.part", target.display()));
+        let partial = partial_download_path(&target, &revision);
         let existing = std::fs::metadata(&partial).map(|meta| meta.len()).unwrap_or(0);
         let url = format!("https://huggingface.co/{repo}/resolve/{revision}/{path}?download=true");
         let mut request = client.get(&url).timeout(Duration::from_secs(3600));
@@ -2997,6 +3008,18 @@ mod tests {
         assert_eq!(model["bytes"], 7);
         assert!(register_local(&state, &second.to_string_lossy()).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn different_snapshot_downloads_never_share_partial_bytes() {
+        let target = PathBuf::from("/tmp/weights.gguf");
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        let first = partial_download_path(&target, &a);
+        let second = partial_download_path(&target, &b);
+        assert_ne!(first, second);
+        assert_eq!(first, PathBuf::from(format!("/tmp/weights.gguf.part.{a}")));
+        assert_eq!(partial_download_path(&target, "main"), PathBuf::from("/tmp/weights.gguf.part"));
     }
 
     #[test]
