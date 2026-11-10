@@ -78,6 +78,22 @@ mod settings_tests {
             assistant_settings(State(state.clone())).await.0["instructions"],
             "주인 공통 지침"
         );
+        let bad=save_owner_profile(
+            State(state.clone()),Json(json!({"name":"주인","avatar":"javascript:alert(1)"}))
+        ).await;
+        assert_eq!(bad.status(),StatusCode::BAD_REQUEST);
+        let empty=save_owner_profile(
+            State(state.clone()),Json(json!({"name":"주인","avatar":""}))
+        ).await;
+        assert_eq!(empty.status(),StatusCode::OK);
+        let stored=owner_profile(State(state.clone())).await.0;
+        assert_eq!(stored["name"],"주인");
+        assert_eq!(stored["avatar"],"");
+        // A profile persists through the same Store used by other views.
+        assert_eq!(state.store.get("owner_profile","global").unwrap()["name"],"주인");
+        assert!(!super::super::settings::valid_profile_avatar(
+            "data:image/png;base64,SGVsbG8="
+        ));
         let _ = std::fs::remove_dir_all(&state.config.data_dir);
     }
 }

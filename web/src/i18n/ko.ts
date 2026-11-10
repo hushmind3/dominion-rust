@@ -96,6 +96,7 @@ const ko = {
   'memory.expires': '만료',
   'memory.empty': '이 조건에 해당하는 기억이 없습니다.',
   'memory.loading': '기억을 불러오는 중…',
+  'memory.showMore': '기억 더 보기 · {count}건 남음',
   'memory.saved': '기억을 저장했습니다.',
   'memory.records': '경험, 개선안, 알고리즘과 실험 기록',
   'memory.growth': '성장 · 전이 현황',

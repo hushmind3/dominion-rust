@@ -1,4 +1,5 @@
 import {TokenUsage} from '../components/TokenUsage'
+import {OwnerAvatar,useOwnerProfile} from '../components/OwnerProfile'
 import {createPortal} from 'react-dom'
 import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
 import {FormEvent,useEffect,useMemo,useRef,useState,type KeyboardEvent} from 'react'
@@ -437,9 +438,10 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  </div>
 }
 function Message({message,agentName,showReasoning}:{message:ChatMessage;agentName?:string;showReasoning?:boolean}){
+ const {profile}=useOwnerProfile()
  const [open,setOpen]=useState(true);const human=message.role==='user';
  return <div className={'flex min-w-0 items-start gap-3 '+(human?'':'')} data-message>
-  <div className={'grid size-9 shrink-0 place-items-center rounded-xl '+(human?'bg-[#E9E2D7] text-[#4A443C]':'bg-[#F7E8E1] text-[#A94E30]')}>{human?'U':<Sparkles size={17}/>}</div>
+  {human?<OwnerAvatar profile={profile}/>:<div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#A94E30]"><Sparkles size={17}/></div>}
   <div className="relative min-w-0 flex-1">
    <div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#4A443C]">{human?t('ui.you'):agentName||'DOMINION'}{!human&&<TokenUsage usage={message.metadata?.usage} className="ml-auto rounded border border-[#E7DDCC] bg-[#F7F1E6] px-1.5 py-0.5 text-[9px] font-medium text-[#8A775F]"/>}</div>
    {showReasoning&&message.reasoning&&<details className="mb-3 max-h-56 overflow-y-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#7C7469]" open={open}><summary className="cursor-pointer select-none" onClick={e=>{e.preventDefault();setOpen(v=>!v)}}><BrainCircuit size={14} className="inline"/> {t('chat.reasoningProcess',{count:message.reasoning.length.toLocaleString()})} <ChevronRight size={13} className="inline"/></summary><div className="mt-2 whitespace-pre-wrap">{message.reasoning}</div></details>}

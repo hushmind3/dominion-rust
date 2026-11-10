@@ -179,6 +179,15 @@ async fn git(dir:&Path, args:&[&str])->Result<String,String>{
 fn valid_sha(value:&str)->bool {
     value.len()==40 && value.bytes().all(|byte|byte.is_ascii_hexdigit())
 }
+/// Only disposable RSI work branches are eligible for source application.
+/// The champion and main refs are intentionally never mutation targets.
+pub fn is_rsi_work_branch(branch:&str)->bool {
+    if branch=="dominion-sub" {return true;}
+    let Some(suffix)=branch.strip_prefix("dominion-sub") else{return false;};
+    !suffix.is_empty() && suffix.len()<=2 && !suffix.starts_with('0')
+        && suffix.bytes().all(|ch|ch.is_ascii_digit())
+}
+
 pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     let base=input["rsiBaseCommit"].as_str().filter(|v|valid_sha(v))
         .ok_or("자기개선 시작 시 기준 Git 커밋이 고정되지 않았습니다.")?;
@@ -188,8 +197,12 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
         return Err("DOMINION 소스가 아닙니다.".into());
     }
     let campaign=crate::engine::rsi_evolve::campaign_source(&context.state,input,&source,base);
-    if !campaign && !is_work_branch(git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?.trim()) {
-        return Err("원본 소스 브랜치가 dominion-sub 작업 브랜치가 아닙니다.".into());
+    if !campaign {
+        let actual=git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?;
+        let expected=input["rsiSourceBranch"].as_str().unwrap_or("dominion-sub");
+        if !is_rsi_work_branch(expected) || actual.trim()!=expected {
+            return Err("원본 RSI 작업 브랜치가 시작 시점과 다릅니다.".into());
+        }
     }
     if git(&source,&["rev-parse","HEAD"]).await?.trim()!=base {
         return Err("작업을 기다리는 동안 원본 커밋이 바뀌었습니다. 다시 시작하세요.".into());
@@ -299,6 +312,7 @@ pub async fn finish(
         // NOT a claim that baseline/candidate paired tests have been run.
         let proposal=json!({
             "target":classify(&patch),"baseCommit":worktree.base,
+            "sourceBranch":input["rsiSourceBranch"].as_str().unwrap_or("dominion-sub"),
             "patch":patch,"hypothesis":hypothesis,
             "cases":input["rsiFrozenCases"],"oracleVersion":"rsi-worktree-v2",
             "generatorModel":input["model"],"generatorEffort":input["reasoningEffort"],
@@ -307,6 +321,7 @@ pub async fn finish(
         match rsi::propose(&context.state,&proposal) {
             Ok(mut candidate)=>{
                 candidate["rsiJobId"]=json!(context.job_id);
+                candidate["sourceBranch"]=json!(input["rsiSourceBranch"].as_str().unwrap_or("dominion-sub"));
                 candidate["origin"]="model_driven_detached_worktree".into();
                 candidate["pairedComparisonComplete"]=json!(false);
                 candidate["reviewRequired"]=json!(true);
@@ -490,10 +505,11 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
         return Err("패치 해시가 저장된 값과 다릅니다.".into());
     }
     let status=crate::engine::dev::status(state).await;
-    let branch=status["branch"].as_str().unwrap_or("");
-    if status["git"]!=true || !is_work_branch(branch)
+    let source_branch=candidate["sourceBranch"].as_str().unwrap_or("dominion-sub").to_string();
+    if !is_rsi_work_branch(&source_branch)
+        || status["git"]!=true || status["branch"].as_str()!=Some(source_branch.as_str())
         || status["dirty"]!=0 || status["commit"]!=candidate["baseCommit"] {
-        return Err("원본 작업 브랜치가 기준과 다르거나 수정 중이므로 적용하지 않았습니다.".into());
+        return Err("원본 작업 브랜치가 후보 생성 브랜치와 다르거나 수정 중이므로 적용하지 않았습니다.".into());
     }
     let remote=status["remote"].as_str().unwrap_or("");
     if !remote.is_empty() && !remote.contains("hushmind3/dominion-rust") {
@@ -522,7 +538,7 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
     candidate["status"]=json!("applied_to_sub");
     candidate["manualApplication"]=json!({
         "mode":if verified{"explicit_verified_paired_application"}else{"explicit_trial_without_paired_proof"},
-        "appliedAt":now,"sourceCommit":status["commit"],
+        "appliedAt":now,"sourceCommit":status["commit"],"branch":source_branch,
         "requiresRebuild":true,"requiresCommit":true,"autoDeployed":false
     });
     evidence["manuallyApplied"]=json!(true);
@@ -556,8 +572,10 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     let source=std::fs::canonicalize(campaign["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     let status=crate::engine::dev::status(state).await;
     let configured=status["config"]["sourceDir"].as_str().and_then(|s|std::fs::canonicalize(s).ok());
-    if configured.as_ref()!=Some(&source) || !is_work_branch(status["branch"].as_str().unwrap_or("")) {
-        return Err("연결된 dominion-sub 작업 브랜치에만 적용합니다.".into());
+    let source_branch=campaign["sourceBranch"].as_str().unwrap_or("dominion-sub").to_string();
+    if !is_rsi_work_branch(&source_branch) || configured.as_ref()!=Some(&source)
+        || status["branch"]!=source_branch {
+        return Err("dominion-sub 계열의 해당 캠페인 원본 브랜치에만 적용할 수 있습니다.".into());
     }
     if !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
         return Err("미저장 코드를 보존했습니다. 현재 소스를 정리한 뒤 반영하세요.".into());
@@ -609,12 +627,12 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     }
     if commits.is_empty() {return Err("적용할 검증 변경이 없습니다.".into());}
     if git(&source,&["rev-parse","HEAD"]).await?!=base
-        || git(&source,&["symbolic-ref","--quiet","HEAD"]).await?!="refs/heads/dominion-sub"
+        || git(&source,&["symbolic-ref","--quiet","HEAD"]).await?!=format!("refs/heads/{source_branch}")
         || !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
         return Err("적용 직전에 작업 브랜치나 소스가 바뀌었습니다.".into());
     }
     git(&source,&["-c","core.hooksPath=","merge","--ff-only","--no-edit",expected]).await?;
-    let application=json!({"commit":expected,"branch":"dominion-sub","sourceDir":source,
+    let application=json!({"commit":expected,"branch":source_branch,"sourceDir":source,
         "requiresRebuild":true,"productionDeployed":false,"appliedAt":chrono::Utc::now().to_rfc3339()});
     campaign["application"]=application.clone();
     state.store.put("rsi_campaign",&campaign).ok_or("소스 반영 후 기록 저장 실패")?;
@@ -626,12 +644,21 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
 /// Execute the existing paired-runner against the frozen baseline and the
 /// exact model patch. Tests run on the operator's host: Git worktrees provide
 /// source isolation, NOT an OS security sandbox. Never call this from a model.
+fn paired_compare_source_matches(status: &Value, candidate: &Value) -> bool {
+    let branch = status["branch"].as_str().unwrap_or("");
+    let candidate_branch = candidate["sourceBranch"].as_str().unwrap_or("dominion-sub");
+    status["git"] == true
+        && is_rsi_work_branch(branch)
+        && branch == candidate_branch
+}
+
 pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
     let id=job["input"]["candidateId"].as_str().ok_or("비교할 후보가 없습니다.")?;
+    let candidate=context.state.store.get("rsi_candidate",id)
+        .ok_or("비교할 후보 기록이 없습니다.")?;
     let status=crate::engine::dev::status(&context.state).await;
-    let branch=status["branch"].as_str().unwrap_or("");
-    if status["git"]!=true || !is_work_branch(branch) {
-        return Err("비교 실험은 dominion-sub 소스에서 시작하세요.".into());
+    if !paired_compare_source_matches(&status,&candidate) {
+        return Err("독립 비교는 후보를 생성한 동일한 dominion-sub 계열 작업 브랜치에서만 시작하세요.".into());
     }
     let source=std::fs::canonicalize(status["config"]["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     compare_at(context,id,&source,&source).await
@@ -731,15 +758,22 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     state.store.put("rsi_candidate",&updated)
         .ok_or("A/B 평가 후보 갱신에 실패했습니다.")?;
     state.store.put("rsi_evaluation",&updated["evaluation"]);
+    // Each frozen evaluation has its own permanent receipt. A campaign may
+    // compare multiple revisions, and retrying inconclusive candidates must
+    // never destroy earlier evidence.
+    let evaluation_id=updated["evaluation"]["id"].as_str()
+        .ok_or("독립 A/B 평가 식별자가 없습니다.")?;
     let receipt=json!({
-        "id":format!("rsi-pair-{}",context.job_id),
+        "id":format!("rsi-pair-{evaluation_id}"),
+        "evaluationId":evaluation_id,
         "candidateId":id,"jobId":context.job_id,
         "report":report,"verdict":verdict,"metrics":metrics,
         "evidenceSha256":evidence_sha,
         "runner":"local_gitrepo_not_os_sandbox",
         "createdAt":chrono::Utc::now().to_rfc3339()
     });
-    state.store.put("rsi_pair",&receipt);
+    state.store.put("rsi_pair",&receipt)
+        .ok_or("독립 비교 증거를 영구 저장하지 못했습니다.")?;
     let origin_id=format!("rsi-run-{}",candidate["rsiJobId"].as_str().unwrap_or(""));
     if let Some(mut origin)=state.store.get("rsi_run",&origin_id) {
         origin["paired"]=json!({"verdict":verdict,"metrics":metrics,
@@ -803,6 +837,40 @@ mod tests {
         assert!(!prompt.contains("실제 성능 향상 검증"));
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn paired_comparison_requires_the_candidates_original_experimental_branch() {
+        for branch in ["dominion-sub", "dominion-sub2", "dominion-sub3", "dominion-sub4"] {
+            assert!(paired_compare_source_matches(
+                &json!({"git":true,"branch":branch}),
+                &json!({"sourceBranch":branch})
+            ), "{branch} must be allowed to run paired comparison");
+        }
+        assert!(!paired_compare_source_matches(
+            &json!({"git":true,"branch":"dominion-sub4"}),
+            &json!({"sourceBranch":"dominion-sub3"})
+        ), "sibling candidates cannot be judged on the wrong branch");
+        for branch in ["main", "champion", "dominion-champion", "dominion-sub4-extra"] {
+            assert!(!paired_compare_source_matches(
+                &json!({"git":true,"branch":branch}),
+                &json!({"sourceBranch":branch})
+            ), "{branch} is not an experimental branch");
+        }
+        assert!(!paired_compare_source_matches(
+            &json!({"git":false,"branch":"dominion-sub4"}),
+            &json!({"sourceBranch":"dominion-sub4"})
+        ));
+    }
+    #[test]
+    fn source_application_is_limited_to_explicit_rsi_work_branches() {
+        for branch in ["dominion-sub","dominion-sub2","dominion-sub3","dominion-sub4","dominion-sub10"] {
+            assert!(is_rsi_work_branch(branch), "{branch} should be a safe experimental branch");
+        }
+        for branch in ["main","dominion-champion","dominion-sub0","dominion-sub04",
+            "dominion-subx","dominion-sub4-extra","dominion-sub100","dominion-sub/4",""] {
+            assert!(!is_rsi_work_branch(branch), "{branch} must not be an RSI publishing target");
+        }
+    }
+
     #[test]
     fn classification_covers_the_improver_harness_and_algorithm(){
         assert_eq!(classify("diff --git a/src/engine/rsi.rs b/src/engine/rsi.rs\n"),"improver");

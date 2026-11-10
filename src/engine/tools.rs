@@ -48,9 +48,10 @@ pub fn definitions() -> Vec<Value> {
         tool("memory_store", "Save a grounded memory for this agent. Quote the user's exact words; invented facts are rejected. Shared memories are managed by the user.", object(json!({"text": text("Fact to remember, maximum 1600 characters"), "evidenceQuote": text("Exact quote from the current user message supporting the fact"), "sourceMessageId": text("Optional earlier source message ID"), "type": json!({"type":"string","enum":["fact","preference","decision","procedure","lesson"]}), "key": text("Optional stable fact key; a new value replaces the previous value for this key"), "scope": json!({"type":"string","enum":["agent"]})}), vec!["text", "evidenceQuote"])),
         tool("memory_search", "Find saved knowledge relevant to a topic", object(json!({"query": text("Search query")}), vec!["query"])),
         tool("skill_propose", "Draft a reusable skill for user review", object(json!({"name": text("Skill name"), "instructions": text("Reusable instructions")}), vec!["name", "instructions"])),
-        tool("algorithm_propose", "Propose a new self-improvement search formula. It may be tried in the next scheduled generation; replay match is context only and never activates it.", object(json!({
+        tool("algorithm_propose", "Propose domain selection and optional source-targeting formulas. Trial is independent and does not activate a proposal.", object(json!({
             "name": text("Algorithm name"),
-            "expression": text("Arithmetic over attempts, accepted, regressions, inconclusive, novelty, successRate, tokenCost, objectiveMatch, unresolved, exploration"),
+            "expression": text("Domain score over attempts, accepted, regressions, inconclusive, novelty, successRate, usefulGenerations, barrenRate, tokenCost, objectiveMatch, unresolved, exploration"),
+            "targetExpression": text("Optional file score over pathEvidence, symbolEvidence, summaryEvidence, bodyEvidence, productiveEvidence, domainEvidence, repeatPenalty, novelty, sourceCost"),
             "description": text("Why this formula should choose better improvement targets"),
             "evidence": json!({"type":"array","items":{"type":"string"},"description":"Observed failures or regressions that justify the formula"})
         }), vec!["expression"])),
@@ -320,6 +321,10 @@ pub async fn execute(
             let name = string_arg(args, "name")
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("rsi-search-expression");
+            let mut parameters=json!({"expression":expression});
+            if let Some(target_expression)=args["targetExpression"].as_str() {
+                parameters["targetExpression"]=json!(target_expression);
+            }
             let record = crate::engine::algorithms::register(
                 ctx.state,
                 &json!({
@@ -327,7 +332,7 @@ pub async fn execute(
                     "name": name,
                     "variant": name,
                     "implementation": "expression",
-                    "parameters": {"expression": expression},
+                    "parameters": parameters,
                     "description": args["description"].as_str().unwrap_or(""),
                     "source": "rsi-generated",
                 }),
@@ -1439,6 +1444,18 @@ mod tests {
             .is_some());
         let invalid = json!({"expression":"unknownVariable * 2"});
         assert!(execute(&ctx, "algorithm_propose", &invalid, "run").await.is_err());
+        let both = execute(&ctx, "algorithm_propose", &json!({
+            "name":"domain-and-target-v1",
+            "expression":"objectiveMatch * 6 + exploration",
+            "targetExpression":"pathEvidence * 2 + symbolEvidence - repeatPenalty"
+        }), "run").await.unwrap();
+        assert_eq!(both["proposed"],true);
+        assert_eq!(both["algorithm"]["parameters"]["targetExpression"],
+            "pathEvidence * 2 + symbolEvidence - repeatPenalty");
+        assert_eq!(both["algorithm"]["status"],"available");
+        assert!(execute(&ctx,"algorithm_propose",&json!({
+            "expression":"novelty","targetExpression":"untrusted_system_call"
+        }),"run").await.is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 
