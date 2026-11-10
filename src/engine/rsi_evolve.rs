@@ -1617,6 +1617,36 @@ fn record_trial_outcome(
             "verdict":previous["verdict"],"comparison":previous["comparison"],
             "alreadyRecorded":true});
     }
+    // A targetExpression is not a successful trial just because the model
+    // produced a patch. It must have actually scored source candidates at its
+    // registered revision, with no per-file or global formula fallback.
+    if candidate["parameters"]["targetExpression"].is_string() {
+        let selection=&generation["focusSelection"];
+        let rows=selection["candidates"].as_array();
+        let executed=selection["source"]=="indexed_evidence"
+            && selection["policyRevision"]==candidate["revision"]
+            && rows.is_some_and(|rows|!rows.is_empty()
+                && rows.iter().all(|row|row["scoring"]=="expression"
+                    && row["policyError"].is_null()));
+        if !executed {
+            let mut trial=candidate["rsiTrial"].clone();
+            if !trial["trials"].is_array() {trial["trials"]=json!([]);}
+            trial["status"]=json!("trial_inconclusive");
+            trial["lastReason"]=json!("target_formula_not_executed");
+            trial["trials"].as_array_mut().unwrap().push(json!({
+                "jobId":generation["jobId"],"attempt":generation["attempt"],
+                "verdict":"inconclusive","reason":"target_formula_not_executed",
+                "at":chrono::Utc::now().to_rfc3339()
+            }));
+            candidate["rsiTrial"]=trial;
+            state.store.put("algorithm",&candidate);
+            state.store.audit("rsi.search_trial_invalid_target",
+                json!({"candidateId":candidate_id,"jobId":generation["jobId"],
+                    "reason":"target_formula_not_executed"}));
+            return json!({"status":"inconclusive",
+                "reason":"target_formula_not_executed"});
+        }
+    }
     let Some(baseline) = comparable_trial_baseline(prior_history, generation, &candidate) else {
         let mut trial = candidate["rsiTrial"].clone();
         trial["status"] = json!("trial_inconclusive");
@@ -4301,6 +4331,34 @@ mod tests {
         assert_eq!(mode,"algorithm_active");
         assert_eq!(strategy["trialFallback"],
             "candidate_expression_invalid_for_runtime_features");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_target_formula_cannot_count_as_improved_search_or_activate_itself() {
+        let (state,root)=state();
+        let before=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"invalid-live-target",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"objectiveMatch + exploration",
+                "targetExpression":"1 / pathEvidence"}
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap();
+        let generation=json!({"jobId":"live-trial","attempt":2,
+            "domainSelection":"algorithm_trial","domain":"memory",
+            "focusSelection":{"source":"indexed_evidence",
+                "policyRevision":candidate["revision"],
+                "candidates":[{"scoring":"corpus-evidence",
+                    "policyError":"division_by_zero"}]},
+            "accepted":true,"tokens":1000,"elapsedMs":100,
+            "evaluation":{"verdict":"improved"}});
+        let outcome=record_trial_outcome(&state,id,&generation,&[]);
+        assert_eq!(outcome["reason"],"target_formula_not_executed");
+        let saved=state.store.get("algorithm",id).unwrap();
+        assert_eq!(saved["rsiTrial"]["status"],"trial_inconclusive");
+        assert_eq!(crate::engine::algorithms::active(&state,"selfimprove.search").unwrap()["id"],
+            before["id"],"a fallback score must not be credited to an AI-authored formula");
         let _=std::fs::remove_dir_all(root);
     }
 
