@@ -89,17 +89,28 @@ export function ModelHub(){
  const [cliModelCatalog,setCliModelCatalog]=useState<Record<string,string[]>>({})
  const [cliModelSelection,setCliModelSelection]=useState<Record<string,string>>({})
  const [cliModelBusy,setCliModelBusy]=useState('')
+ const cliModelRequested=useRef(new Set<string>())
  const fetchCliModels=async(source:string)=>{
   const providerId='cli-'+source
   setCliModelBusy(source)
   try{
    const rows=await get<{id:string}[]>('/api/providers/'+providerId+'/models')
    const available=rows.map(r=>r.id).filter(Boolean)
-   setCliModelCatalog(old=>({...old,[source]:available}))
-   if(available.length)setCliModelSelection(old=>({...old,[source]:old[source]&&available.includes(old[source])?old[source]:available[0]}))
+   const defaultChoice=source==='gemini'?'auto':'default'
+   const options=[defaultChoice,...available.filter(model=>model!==defaultChoice)]
+   setCliModelCatalog(old=>({...old,[source]:options}))
+   setCliModelSelection(old=>({...old,[source]:old[source]&&options.includes(old[source])?old[source]:defaultChoice}))
   }catch(e){setError((e as Error).message)}
   finally{setCliModelBusy('')}
  }
+ useEffect(()=>{
+  if(tab!=='oauth')return
+  for(const item of cli.value){
+   if(!item.connected||!['claude','gemini','opencode'].includes(item.id)||cliModelRequested.current.has(item.id))continue
+   cliModelRequested.current.add(item.id)
+   void fetchCliModels(item.id)
+  }
+ },[tab,cli.value])
  const saveCliModel=async(source:string)=>{
   const model=cliModelSelection[source]
   if(!model)return

@@ -502,8 +502,8 @@ pub async fn set_cli_model(State(state): State<AppState>,Path(source): Path<Stri
 pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
     let codex = codex_auth().ok();
     let connected = state.store.get("provider", "codex-oauth");
-    let claude = claude_cli_authenticated().await;
-    let gemini = home_file(".gemini/oauth_creds.json").is_some_and(|path| path.exists());
+    let claude = super::cli_oauth::credential_verified("claude").await;
+    let gemini = super::cli_oauth::credential_verified("gemini").await;
     let opencode_auth = opencode_auth();
     let opencode = super::cli_oauth::credential_verified("opencode").await
         || opencode_auth.as_ref().and_then(Value::as_object).is_some_and(|entries| !entries.is_empty());
@@ -546,7 +546,7 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
             "loginMethod":"browser-cli",
             "available":claude,
             "supported":false,
-            "hint":if claude { "Claude Code CLI 로그인 감지됨. DOMINION 모델 실행에는 Anthropic API 연결이 별도로 필요합니다." } else { "로그인을 누르면 Claude Code 공식 인증을 시작합니다. DOMINION 모델 실행에는 API 연결이 필요합니다." }
+            "hint":if claude { "Claude Code 인증 확인됨. DOMINION에서 계정 모델을 선택해 바로 대화할 수 있습니다." } else { "브라우저 로그인을 완료하면 모델이 DOMINION에 연결됩니다." }
         },
         {
             "id":"gemini",
@@ -557,7 +557,7 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
             "loginMethod":"browser-cli",
             "available":gemini,
             "supported":false,
-            "hint":if gemini { "Gemini CLI 로그인 감지됨. DOMINION 모델 실행에는 Gemini API 연결이 별도로 필요합니다." } else { "로그인을 누르면 Gemini CLI 공식 인증을 시작합니다. DOMINION 모델 실행에는 API 연결이 필요합니다." }
+            "hint":if gemini { "Gemini CLI 로그인 확인됨. 기본 모델을 선택해 DOMINION에서 대화할 수 있습니다." } else { "브라우저 로그인 후 Gemini CLI 모델이 DOMINION에 연결됩니다." }
         },
         {
             "id":"opencode-go",
@@ -587,7 +587,7 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
             "available":opencode,
             "importAvailable":opencode_importable > 0,
             "supported":opencode_importable > 0,
-            "hint":if opencode_importable > 0 { format!("OpenCode CLI에서 인증된 API 키 {opencode_importable}개를 DOMINION으로 가져올 수 있습니다. OAuth 로그인은 CLI에서 유지됩니다.") } else if opencode { "OpenCode CLI 인증이 감지됐습니다. DOMINION 모델 사용에는 API 키가 별도로 필요할 수 있습니다.".to_string() } else { "로그인을 누르면 OpenCode 인증 메뉴가 열립니다.".to_string() }
+            "hint":if opencode { "OpenCode 인증을 확인했습니다. 사용 가능한 모델을 선택하면 DOMINION에서 실행됩니다.".to_string() } else if opencode_importable > 0 { format!("기존 OpenCode API 키 {opencode_importable}개를 가져올 수 있습니다.") } else { "브라우저 로그인 후 모델을 선택하세요.".to_string() }
         }
     ]))
 }
