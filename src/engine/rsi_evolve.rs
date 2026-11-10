@@ -866,6 +866,23 @@ fn verified_candidate_id(result: &Value) -> Option<&str> {
         .filter(|_| result["rsi"]["checksPassed"] == true)
 }
 
+/// Resume a pending candidate from a predecessor only when the new
+/// campaign proves an identical source snapshot, branch, and inherited head.
+fn matching_prior_campaign(state:&AppState,input:&Value,record:&Value)->Option<Value> {
+    if record["lineage"]["reused"]!=true {return None;}
+    let prior_id=input["rsiContinueFrom"].as_str()?;
+    let prior=state.store.get("rsi_campaign",prior_id)?;
+    let selected=record["lineage"]["selectedCommit"].as_str()?;
+    if prior["headCommit"].as_str()!=Some(selected)
+        || record["sourceDir"]!=prior["sourceDir"]
+        || record["sourceBranch"]!=prior["sourceBranch"]
+        || record["baseCommit"]!=prior["baseCommit"]
+        || record["sourceFingerprint"]!=prior["sourceFingerprint"]
+        || !lineage_fingerprint_valid(record["sourceFingerprint"].as_str().unwrap_or(""))
+    {return None;}
+    Some(prior)
+}
+
 /// Collect the exact files, ranges and searches earlier generations already
 /// looked at. Without this, every generation starts from scratch and burns
 /// tokens re-reading the same source.
@@ -1416,6 +1433,12 @@ fn queue_search_trial(
     campaign_id: &str,
     attempt: u64,
 ) -> Value {
+    // Content-derived algorithm IDs are global. Reload current ownership
+    // before writing; a stale proposal must not steal a sibling's trial.
+    let latest = candidate["id"].as_str()
+        .and_then(|id| state.store.get("algorithm", id))
+        .unwrap_or_else(|| candidate.clone());
+    let candidate = &latest;
     let replay = evaluate_search_algorithm(candidate, active, prior_history, objective);
     let existing_status = candidate["rsiTrial"]["status"].as_str().unwrap_or("");
     if matches!(existing_status, "adopted" | "trial_rejected") {
@@ -1426,6 +1449,25 @@ fn queue_search_trial(
             "replay": replay,
             "alreadyResolved": true,
         });
+    }
+    if let Some(owner) = candidate["rsiTrial"]["campaignId"].as_str() {
+        if owner != campaign_id {
+            return json!({"status":"owned_by_other_campaign",
+                "candidateId":candidate["id"],"ownerCampaignId":owner});
+        }
+    }
+    // The synthetic registration sample does not guarantee that division
+    // or normalization works on the actual generation feature vector.
+    if scored_domains(candidate, prior_history, objective).is_none() {
+        let mut inconclusive = candidate.clone();
+        inconclusive["rsiTrial"] = json!({
+            "status":"trial_inconclusive","campaignId":campaign_id,
+            "objectiveHash":crate::engine::memory::stable_id(&[objective]),
+            "lastReason":"candidate_expression_invalid_for_runtime_features"
+        });
+        state.store.put("algorithm",&inconclusive);
+        return json!({"status":"trial_inconclusive","candidateId":candidate["id"],
+            "reason":"candidate_expression_invalid_for_runtime_features"});
     }
     let mut record = candidate.clone();
     let mut trial = record["rsiTrial"].clone();
@@ -1471,7 +1513,9 @@ fn queue_search_trial(
 /// Returns a candidate that is waiting for a real trial under the same
 /// objective. It is used only inside an already scheduled generation; the
 /// caller never creates another campaign or generation for it.
-fn pending_trial_candidate(state: &AppState, objective: &str) -> Option<Value> {
+fn pending_trial_candidate(
+    state: &AppState, objective: &str, allowed_campaigns: &[String],
+) -> Option<Value> {
     let objective_hash = crate::engine::memory::stable_id(&[objective]);
     let mut candidates = state
         .store
@@ -1481,6 +1525,8 @@ fn pending_trial_candidate(state: &AppState, objective: &str) -> Option<Value> {
             algorithm["kind"] == "selfimprove.search"
                 && algorithm["source"] == "rsi-generated"
                 && algorithm["rsiTrial"]["objectiveHash"] == objective_hash
+                && algorithm["rsiTrial"]["campaignId"].as_str().is_some_and(|id|
+                    allowed_campaigns.iter().any(|allowed| allowed == id))
                 && matches!(
                     algorithm["rsiTrial"]["status"].as_str(),
                     Some("pending_trial" | "pending_second_trial")
@@ -2153,14 +2199,21 @@ async fn run_loop(
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
         let objective = input["rsiObjective"].as_str().unwrap_or("");
-        let trial_algorithm = record["nextTrialAlgorithmId"]
-            .as_str()
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                pending_trial_candidate(&context.state, objective)
-                    .and_then(|algorithm| algorithm["id"].as_str().map(str::to_string))
-            });
+        let mut allowed_campaigns = vec![context.job_id.to_string()];
+        if let Some(prior)=matching_prior_campaign(&context.state,input,record) {
+            if let Some(id)=prior["id"].as_str() { allowed_campaigns.push(id.to_string()); }
+        }
+        // An old queued candidate may have been replaced or claimed by a
+        // sibling while the coordinator was rebuilding the next worker.
+        let trial_algorithm = record["nextTrialAlgorithmId"].as_str()
+            .filter(|id| !id.is_empty())
+            .and_then(|id| context.state.store.get("algorithm",id))
+            .filter(|algorithm| algorithm["rsiTrial"]["campaignId"]
+                .as_str().is_some_and(|id|allowed_campaigns.iter().any(|owned|owned==id)))
+            .and_then(|algorithm|algorithm["id"].as_str().map(str::to_string))
+            .or_else(|| pending_trial_candidate(&context.state,objective,&allowed_campaigns)
+                .and_then(|algorithm|algorithm["id"].as_str().map(str::to_string)));
+        child_input["rsiAllowedTrialCampaigns"]=json!(allowed_campaigns);
         if let Some(id) = trial_algorithm {
             child_input["rsiTrialAlgorithmId"] = json!(id);
             record["nextTrialAlgorithmId"] = json!(id);
@@ -2202,7 +2255,9 @@ async fn run_loop(
                 && row["newFindings"].as_u64().unwrap_or(0)>0)
             .and_then(|row|row["domain"].as_str())
             .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
-        let trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
+        let trial=child_input["rsiTrialAlgorithmId"].as_str()
+            .filter(|_|child_input["rsiAllowedTrialCampaigns"].is_array())
+            .map(str::to_string);
         let suggested=child_input["rsiSelectedDomain"].as_str().map(str::to_string);
         let (target_domain, target_selection, target_strategy)=select_generation_strategy(
             &context.state,&history,&target_objective,continuation,trial,suggested,&head);
@@ -2858,10 +2913,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let latest=history.iter().max_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let continuation = latest.filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)
         .and_then(|g|g["domain"].as_str()).map(str::to_string);
-    let trial_id = job["input"]["rsiTrialAlgorithmId"]
-        .as_str()
+    let trial_id = job["input"]["rsiTrialAlgorithmId"].as_str()
         .filter(|value| !value.is_empty())
-        .map(str::to_string);
+        .and_then(|id|state.store.get("algorithm",id))
+        .filter(|algorithm|algorithm["rsiTrial"]["campaignId"].as_str()
+            .is_some_and(|owner|job["input"]["rsiAllowedTrialCampaigns"]
+                .as_array().is_some_and(|ids|ids.iter().any(|id|id.as_str()==Some(owner)))))
+        .and_then(|algorithm|algorithm["id"].as_str().map(str::to_string));
     let selected_domain = job["input"]["rsiSelectedDomain"]
         .as_str()
         .filter(|domain| DOMAINS.contains(domain))
