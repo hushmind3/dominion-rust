@@ -1994,6 +1994,13 @@ fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Each campaign keeps its compiled generator. Two concurrent campaigns
+/// must never replace one another's process between identity check and spawn.
+fn generator_target_dir(data_dir:&Path, campaign_id:&str) -> PathBuf {
+    let safe_id=crate::engine::memory::stable_id(&[campaign_id]);
+    data_dir.join("rsi-build").join("generator").join(format!("campaign-{safe_id}"))
+}
+
 async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -2002,12 +2009,7 @@ async fn run_loop(
 ) -> Result<String, String> {
     let input = &job["input"];
     let lab = PathBuf::from(record["labDir"].as_str().ok_or("실험 경로 없음")?);
-    let target = context
-        .state
-        .config
-        .data_dir
-        .join("rsi-build")
-        .join("generator");
+    let target=generator_target_dir(&context.state.config.data_dir,&context.job_id);
     std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
     let target = std::fs::canonicalize(target).map_err(|e| e.to_string())?;
     let binary = target
@@ -4658,6 +4660,18 @@ mod tests {
         );
         assert!(state.store.all("algorithm_eval").is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_campaigns_cannot_overwrite_another_generators_binary() {
+        let root=PathBuf::from("/tmp/dominion-generator-build-test");
+        let first=generator_target_dir(&root,"campaign-one");
+        let second=generator_target_dir(&root,"campaign-two");
+        assert_ne!(first,second);
+        assert!(first.starts_with(root.join("rsi-build/generator")));
+        assert!(second.starts_with(root.join("rsi-build/generator")));
+        assert_eq!(first,generator_target_dir(&root,"campaign-one"));
+        assert!(!generator_target_dir(&root,"../main").to_string_lossy().contains("../main"));
     }
 
     #[test]
