@@ -2052,6 +2052,11 @@ async fn run_loop(
             digest,
             focus
         ));
+        // Record prompt composition so real-model savings can be measured
+        // separately from completion tokens and tool-call counts.
+        child_input["rsiFocusContextChars"] = json!(focus.chars().count());
+        child_input["rsiPromptContextChars"] = json!(child_input["prompt"]
+            .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
         let child = context
             .state
             .store
@@ -2132,6 +2137,10 @@ async fn run_loop(
             .saturating_add(tokens));
         let mut generation = json!({"id":format!("{}-{attempt}",context.job_id),"campaignId":context.job_id,
             "attempt":attempt,"generatorCommit":head,"jobId":child_id,"tokens":tokens,
+            "tokenUsage":{"promptTokens":usage["promptTokens"],"completionTokens":usage["completionTokens"],
+                "calls":usage["calls"],"estimatedCalls":usage["estimatedCalls"]},
+            "sourceContextChars":current["input"]["rsiFocusContextChars"],
+            "totalPromptChars":current["input"]["rsiPromptContextChars"],
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],

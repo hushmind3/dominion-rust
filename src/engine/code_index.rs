@@ -746,7 +746,7 @@ mod tests {
         let (state, root) = temp_state();
         let source = root.join("repo");
         std::fs::create_dir_all(source.join("src")).unwrap();
-        let mut code = (0..80).map(|n| format!("fn unrelated_{n}() {{ println!(\"nope\"); }}\n")).collect::<String>();
+        let mut code = (0..180).map(|n| format!("fn unrelated_{n}() {{ println!(\"nope\"); }}\n")).collect::<String>();
         code.push_str("fn retrieve_memory() {\n    let target = \"RELEVANT_MARKER\";\n    println!(\"{target}\");\n}\n");
         code.push_str(&(0..100).map(|n| format!("fn tail_{n}() {{}}\n")).collect::<String>());
         std::fs::write(source.join("src/memory.rs"), &code).unwrap();
