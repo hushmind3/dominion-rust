@@ -3531,6 +3531,78 @@ mod tests {
     }
 
     #[test]
+    fn research_generations_become_implementation_then_switch_hypothesis_on_failure() {
+        let research=json!({"id":"gen-1","jobId":"j1","domain":"tools",
+            "accepted":false,"candidateId":null,"newFindings":2,
+            "knowledgeArtifactHashes":["evidence-1"],"focusFiles":["src/tools.rs"]});
+        let directive=improvement_directive(&[research.clone()]);
+        assert_eq!(directive["mode"],"implement_research");
+        assert_eq!(directive["sourceGenerationId"],"gen-1");
+        assert_eq!(directive["evidenceHashes"],json!(["evidence-1"]));
+        assert!(improvement_work_contract(&directive).contains("구현 단계"));
+        assert_eq!(research_continuation(&[research.clone()]),Some("tools".to_string()));
+        let implementation_failed=json!({"id":"gen-2","jobId":"j2",
+            "domain":"tools","accepted":false,"candidateId":null,"newFindings":1,
+            "improvementDirective":directive});
+        let revised=improvement_directive(&[research.clone(),implementation_failed.clone()]);
+        assert_eq!(revised["mode"],"change_approach");
+        assert_eq!(research_continuation(&[research,implementation_failed]),None,
+            "A second research-only generation must not silently trigger a third");
+        let regression=json!({"id":"gen-r","jobId":"jr","domain":"tools",
+            "accepted":false,"candidateId":"patch-1",
+            "evaluation":{"verdict":"regressed"}});
+        let repair=improvement_directive(&[regression.clone()]);
+        assert_eq!(repair["mode"],"repair_counterexample");
+        let mut repeated=regression;
+        repeated["improvementDirective"]=repair;
+        assert_eq!(improvement_directive(&[repeated])["mode"],"change_approach");
+        let adopted=json!({"id":"gen-good","jobId":"jg","accepted":true,
+            "pairedRevalidated":true,"tokens":4000,"newFindings":1,
+            "improvementDirective":{"mode":"implement_research"}});
+        assert_eq!(improvement_directive(&[adopted.clone()])["mode"],
+            "extend_verified_capability");
+        let stats=improvement_action_results(&[adopted]);
+        assert_eq!(stats[0]["verifiedAdoptions"],1);
+        assert_eq!(stats[0]["adoptionsPer100kTokens"],25.0);
+    }
+
+    #[test]
+    fn newly_researched_current_source_becomes_first_implementation_target() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for name in ["alpha","beta","gamma"] {
+            std::fs::write(root.join("src").join(format!("{name}.rs")),
+                "fn search_dispatch() { /* same relevant implementation */ }\n").unwrap();
+        }
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let input=json!({"rsiIndexId":index["id"],"rsiKnowledgeSource":root,
+            "rsiObjective":"search dispatch","rsiTargetDomain":"tools"});
+        let initial=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(initial[0]["path"],"src/alpha.rs");
+        let path="src/gamma.rs";
+        let hash=crate::engine::code_index::indexed_source_hash(&state,
+            index["id"].as_str().unwrap(),path).unwrap();
+        state.store.put("experience",&json!({"id":"research-saved",
+            "status":"active","generationJobId":"first-worker",
+            "partitionKey":research_scope(&input).partition_key,
+            "researchArtifacts":[{"tool":"workspace_read_range",
+                "path":path,"sourceSha256":hash}]})).unwrap();
+        let research=json!({"id":"first","jobId":"first-worker",
+            "domain":"tools","candidateId":null,"accepted":false,
+            "newFindings":1});
+        let chosen=choose_focus_files(&state,&input,&[research.clone()],None);
+        assert_eq!(chosen[0]["path"],path,
+            "Actual research must change the next source choice rather than just the prompt");
+        std::fs::write(root.join(path),
+            "fn search_dispatch() { /* new revision invalidates prior evidence */ }\n").unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        let refreshed=choose_focus_files(&state,&input,&[research],None);
+        assert_ne!(refreshed[0]["path"],path,
+            "Stale research must not be preferred after the source changes");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn repeated_unproductive_targeting_downranks_the_failed_source() {
         let (state,root)=state();
         std::fs::create_dir_all(root.join("src/engine")).unwrap();
