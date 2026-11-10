@@ -31,10 +31,10 @@ struct Profile {
 }
 
 fn source_root() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".hermes/profiles")
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".dominion/personas")
 }
 fn cached_avatar_root() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".openclaw/avatars")
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".dominion/avatars")
 }
 fn valid_avatar_basename(name: &str) -> bool {
     !name.is_empty()

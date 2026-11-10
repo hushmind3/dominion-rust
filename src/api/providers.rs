@@ -53,11 +53,6 @@ fn opencode_auth() -> Option<Value> {
 }
 
 
-fn opencode_go_key_in_openclaw(value: &Value) -> Option<&str> {
-    value.pointer("/env/vars/OPENCODE_API_KEY").and_then(Value::as_str)
-        .map(str::trim).filter(|key| !key.is_empty())
-}
-
 fn opencode_go_key_in_auth(value: &Value) -> Option<&str> {
     ["opencode-go", "opencode_go"].iter().find_map(|name| {
         let entry = value.get(*name)?;
@@ -71,15 +66,6 @@ fn local_opencode_go_key() -> Option<(String, &'static str)> {
     if let Ok(value) = std::env::var("OPENCODE_API_KEY") {
         let value = value.trim();
         if !value.is_empty() { return Some((value.to_string(), "environment")); }
-    }
-    if let Some(path) = home_file(".openclaw/openclaw.json") {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                if let Some(key) = opencode_go_key_in_openclaw(&value) {
-                    return Some((key.to_string(), "openclaw-local-file"));
-                }
-            }
-        }
     }
     if let Some(auth) = opencode_auth() {
         if let Some(key) = opencode_go_key_in_auth(&auth) {
@@ -1626,8 +1612,8 @@ async fn codex_models_live(
     if access.is_empty() { return Err("Codex OAuth 연결 토큰이 없습니다.".into()); }
     // Codex requires client_version. An absent query gives HTTP 400; using
     // only a stale installed CLI's version hides newer account models.
-    // Query the full account catalog first (Hermes uses the same 99.0.0
-    // compatibility value), then retry with the installed CLI's version.
+    // Query the full account catalog first with a generic compatibility
+    // version, then retry with the installed CLI's version.
     let mut versions = vec!["99.0.0".to_string()];
     let cli_version = tokio::time::timeout(Duration::from_secs(3),
         tokio::process::Command::new("codex").arg("--version").output()
@@ -1963,10 +1949,6 @@ mod tests {
 
     #[test]
     fn opencode_go_import_only_accepts_explicit_key_locations() {
-        assert_eq!(opencode_go_key_in_openclaw(&json!({
-            "env":{"vars":{"OPENCODE_API_KEY":"go-from-openclaw"}}
-        })), Some("go-from-openclaw"));
-        assert!(opencode_go_key_in_openclaw(&json!({"env":{"vars":{"OTHER_KEY":"not-go"}}})).is_none());
         assert_eq!(opencode_go_key_in_auth(&json!({
             "opencode-go":{"type":"api","key":"go-key"},
             "opencode":{"type":"oauth","access":"private-oauth"}

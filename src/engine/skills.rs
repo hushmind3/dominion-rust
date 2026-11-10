@@ -17,8 +17,8 @@ pub fn roots(state: &AppState) -> Vec<(String, PathBuf)> {
             PathBuf::from(&home).join(".dominion/skills"),
         ),
         (
-            "OpenClaw plugin".to_string(),
-            PathBuf::from(&home).join(".openclaw/plugin-skills"),
+            "플러그인".to_string(),
+            state.config.data_dir.join("plugins"),
         ),
     ]
 }

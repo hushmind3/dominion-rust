@@ -1107,7 +1107,7 @@ fn bare_mention_follows(after: &str) -> bool {
     ];
     PARTICLES.iter().any(|particle| after.starts_with(particle))
 }
-/// Hermes-style silence: a member may decline its turn instead of speaking.
+/// Optional silence: a member may decline its turn instead of speaking.
 fn is_silence(content: &str) -> bool {
     let text = content.trim();
     text.is_empty()

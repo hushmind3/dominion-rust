@@ -788,10 +788,10 @@ export function ExtensionsPage() {
           <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
             <div>
               <h3 className="m-0 text-[15px] font-bold text-[#24211D]">
-                {t('ext.openclawTitle')}
+                {t('ext.pluginSkillsTitle')}
               </h3>
               <p className="mt-1 text-[11px] text-[#8A8176]">
-                {t('ext.openclawDesc')}{" "}
+                {t('ext.pluginSkillsDesc')}{" "}
                 {t('ext.foundCount', { count: catalogSkills.value.total })} ·{" "}
                 {catalogSkills.value.updatedAt
                   ? new Date(catalogSkills.value.updatedAt).toLocaleTimeString(loc === 'en' ? 'en-US' : 'ko-KR')
