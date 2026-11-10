@@ -25,6 +25,9 @@ export function ModelExplorer(){
  const [runtimes,setRuntimes]=useState<any[]>([])
  const [q,setQ]=useState('')
  const [format,setFormat]=useState(()=>/Mac/i.test(navigator.platform)?'mlx':'gguf')
+ const [chatOnly,setChatOnly]=useState(false)
+ const [maxParams,setMaxParams]=useState('')
+ const [sort,setSort]=useState<'downloads'|'likes'|'lastModified'>('downloads')
  const [catalog,setCatalog]=useState<Catalog[]>([])
  const [limit,setLimit]=useState(80)
  const [selected,setSelected]=useState('')
@@ -66,14 +69,14 @@ export function ModelExplorer(){
   const timer=setTimeout(async()=>{
    setLoading(true)
    try{
-    const data=await get<Catalog[]>('/api/model-library/catalog?'+new URLSearchParams({q,limit:String(limit),format}),controller.signal)
+    const data=await get<Catalog[]>('/api/model-library/catalog?'+new URLSearchParams({q,limit:String(limit),format,sort,chatOnly:String(chatOnly),...(maxParams?{maxParams}:{})}),controller.signal)
     if(!controller.signal.aborted){setCatalog(data);setSelected(s=>data.some(m=>m.id===s)?s:'');setError('')}
-   }catch(e){if(!controller.signal.aborted)setError((e as Error).message)}
+   }catch(e){if(!controller.signal.aborted){setCatalog([]);setSelected('');setError((e as Error).message)}}
    finally{if(!controller.signal.aborted)setLoading(false)}
   },300)
   return()=>{controller.abort();clearTimeout(timer)}
- },[view,q,limit,format])
- useEffect(()=>{setLimit(80)},[q])
+ },[view,q,limit,format,sort,chatOnly,maxParams])
+ useEffect(()=>{setLimit(80)},[q,format,sort,chatOnly,maxParams])
  useEffect(()=>{
   if(view!=='search'||!selected){setDetail(null);setVariant('');return}
   const controller=new AbortController()
@@ -183,7 +186,7 @@ export function ModelExplorer(){
    <div className="min-w-0 border-b border-[#E7E0D5] lg:border-b-0 lg:border-r">
     <div className="border-b border-[#EFE9DF] p-4">
      <div className="flex h-11 items-center gap-2 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] px-3 focus-within:border-[#C96442]"><Search size={17} className="text-[#A79C8E]"/><input value={q} onChange={e=>setQ(e.target.value)} placeholder={t("models.searchPlaceholder")} className="h-full w-full min-w-0 bg-transparent text-[14px] outline-none placeholder:text-[#A79C8E]"/>{q&&<button type="button" aria-label={t('models.ui.clearSearch')} onClick={()=>setQ('')} className="rounded p-1 text-[#A79C8E] hover:bg-[#F3EEE5]"><X size={14}/></button>}</div>
-     <div className="mt-3 flex flex-wrap items-center gap-1.5">{[{id:'all',label:t('models.all')},{id:'gguf',label:'GGUF'},{id:'mlx',label:'MLX'}].map(item=><Button key={item.id} variant={format===item.id?'primary':'ghost'} onClick={()=>setFormat(item.id)} className="!px-3 !py-1.5 !text-[12px]">{item.label}</Button>)}{format==='mlx'&&<span className="ml-1 rounded bg-[#F7E8E1] px-2 py-0.5 text-[10px] font-semibold text-[#A94E30]">{t('models.recommended')}</span>}<Button variant="primary" disabled title={unsupported} className="!px-3 !py-1.5 !text-[12px]">{t('models.chatOnly')}</Button><SelectInput aria-label={t('models.size')} value="" disabled title={unsupported} className="!w-auto !py-1.5 !text-[12px]"><option value="">{t('models.sizeAll')}</option><option value="1">{t('models.ui.sizeMax',{n:1})}</option><option value="2">{t('models.ui.sizeMax',{n:2})}</option><option value="3">{t('models.ui.sizeMax',{n:3})}</option><option value="4">{t('models.ui.sizeMax',{n:4})}</option><option value="8">{t('models.ui.sizeMax',{n:8})}</option></SelectInput><SelectInput aria-label={t('models.sort')} value="downloads" disabled title={unsupported} className="!ml-auto !w-auto !py-1.5 !text-[12px]"><option value="downloads">{t('models.sort.downloads')}</option><option value="likes">{t('models.sort.likes')}</option><option value="lastModified">{t('models.sort.updated')}</option><option value="params">{t('models.sort.params')}</option></SelectInput></div>
+     <div className="mt-3 flex flex-wrap items-center gap-1.5">{[{id:'all',label:t('models.all')},{id:'gguf',label:'GGUF'},{id:'mlx',label:'MLX'}].map(item=><Button key={item.id} variant={format===item.id?'primary':'ghost'} onClick={()=>setFormat(item.id)} className="!px-3 !py-1.5 !text-[12px]">{item.label}</Button>)}{format==='mlx'&&<span className="ml-1 rounded bg-[#F7E8E1] px-2 py-0.5 text-[10px] font-semibold text-[#A94E30]">{t('models.recommended')}</span>}<Button variant={chatOnly?'primary':'ghost'} aria-pressed={chatOnly} onClick={()=>setChatOnly(value=>!value)} className="!px-3 !py-1.5 !text-[12px]">{t('models.chatOnly')}</Button><SelectInput aria-label={t('models.size')} value={maxParams} onChange={e=>setMaxParams(e.target.value)} className="!w-auto !py-1.5 !text-[12px]"><option value="">{t('models.sizeAll')}</option><option value="1">{t('models.ui.sizeMax',{n:1})}</option><option value="2">{t('models.ui.sizeMax',{n:2})}</option><option value="3">{t('models.ui.sizeMax',{n:3})}</option><option value="4">{t('models.ui.sizeMax',{n:4})}</option><option value="8">{t('models.ui.sizeMax',{n:8})}</option></SelectInput><SelectInput aria-label={t('models.sort')} value={sort} onChange={e=>setSort(e.target.value as typeof sort)} className="!ml-auto !w-auto !py-1.5 !text-[12px]"><option value="downloads">{t('models.sort.downloads')}</option><option value="likes">{t('models.sort.likes')}</option><option value="lastModified">{t('models.sort.updated')}</option></SelectInput></div>
      <div className="mt-2 flex items-center justify-between text-[11px] text-[#8A8176]"><span>{loading?t('models.searching'):t('models.resultCount',{count:catalog.length})}</span><span>{t('models.realtime')}</span></div>
     </div>
     <div ref={catalogueScroll} className="max-h-[610px] overflow-y-auto overscroll-contain">

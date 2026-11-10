@@ -16,7 +16,11 @@ pub async fn catalog(Query(query): Query<HashMap<String, String>>) -> Response {
         .get("limit")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(40);
-    match models::catalog(&search, limit, &format).await {
+    let sort = query.get("sort").map(String::as_str).unwrap_or("downloads");
+    let max_params = query.get("maxParams")
+        .and_then(|value| value.parse::<usize>().ok());
+    let chat_only = query.get("chatOnly").is_some_and(|value| value == "true");
+    match models::catalog_with_filters(&search, limit, &format, sort, max_params, chat_only).await {
         Ok(items) => Json(json!(items)).into_response(),
         Err(error) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))).into_response(),
     }

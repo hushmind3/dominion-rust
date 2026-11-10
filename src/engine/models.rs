@@ -1961,34 +1961,54 @@ pub fn unload(state: &AppState) -> Value {
 }
 
 /// Hugging Face search, mapped to the shape the model explorer expects.
+
+#[allow(dead_code)]
 pub async fn catalog(query: &str, limit: usize, format: &str) -> Result<Vec<Value>, String> {
+    catalog_with_filters(query, limit, format, "downloads", None, false).await
+}
+
+pub async fn catalog_with_filters(
+    query: &str, limit: usize, format: &str, sort: &str,
+    max_params: Option<usize>, chat_only: bool,
+) -> Result<Vec<Value>, String> {
+    let sort = match sort {
+        "likes" => "likes",
+        "lastModified" => "lastModified",
+        _ => "downloads",
+    };
     if format == "all" {
         let limit = limit.clamp(1, 100);
         let (gguf, mlx) = tokio::join!(
-            catalog_filtered(query, limit, "gguf"),
-            catalog_filtered(query, limit, "mlx")
+            catalog_filtered(query, limit, "gguf", sort, max_params, chat_only),
+            catalog_filtered(query, limit, "mlx", sort, max_params, chat_only)
         );
         let mut items = gguf.unwrap_or_default();
         items.extend(mlx.unwrap_or_default());
         let mut seen = std::collections::HashSet::new();
         items.retain(|item| {
-            item["id"]
-                .as_str()
-                .is_some_and(|id| seen.insert(id.to_string()))
+            item["id"].as_str().is_some_and(|id| seen.insert(id.to_string()))
         });
         items.sort_by(|a, b| {
-            b["downloads"]
-                .as_u64()
-                .unwrap_or(0)
-                .cmp(&a["downloads"].as_u64().unwrap_or(0))
+            let order = match sort {
+                "likes" => b["likes"].as_u64().unwrap_or(0)
+                    .cmp(&a["likes"].as_u64().unwrap_or(0)),
+                "lastModified" => b["updatedAt"].as_str().unwrap_or("")
+                    .cmp(a["updatedAt"].as_str().unwrap_or("")),
+                _ => b["downloads"].as_u64().unwrap_or(0)
+                    .cmp(&a["downloads"].as_u64().unwrap_or(0)),
+            };
+            order.then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
         });
         items.truncate(limit);
         return Ok(items);
     }
-    catalog_filtered(query, limit, format).await
+    catalog_filtered(query, limit, format, sort, max_params, chat_only).await
 }
 
-async fn catalog_filtered(query: &str, limit: usize, format: &str) -> Result<Vec<Value>, String> {
+fn hf_catalog_url(
+    query: &str, limit: usize, format: &str, sort: &str,
+    max_params: Option<usize>, chat_only: bool,
+) -> Result<reqwest::Url, String> {
     let mut url = reqwest::Url::parse("https://huggingface.co/api/models")
         .map_err(|error| error.to_string())?;
     {
@@ -1996,12 +2016,25 @@ async fn catalog_filtered(query: &str, limit: usize, format: &str) -> Result<Vec
         if !query.trim().is_empty() {
             pairs.append_pair("search", query.trim());
         }
-        pairs
-            .append_pair("filter", if format == "mlx" { "mlx" } else { "gguf" })
-            .append_pair("sort", "downloads")
-            .append_pair("direction", "-1")
-            .append_pair("limit", &limit.clamp(1, 100).to_string());
+        pairs.append_pair("filter", if format == "mlx" { "mlx" } else { "gguf" });
+        pairs.append_pair("sort", sort);
+        pairs.append_pair("direction", "-1");
+        pairs.append_pair("limit", &limit.clamp(1, 100).to_string());
+        if let Some(max) = max_params.filter(|n| [1, 2, 3, 4, 8].contains(n)) {
+            pairs.append_pair("num_parameters", &format!("max:{max}B"));
+        }
+        if chat_only {
+            pairs.append_pair("pipeline_tag", "text-generation");
+        }
     }
+    Ok(url)
+}
+
+async fn catalog_filtered(
+    query: &str, limit: usize, format: &str, sort: &str,
+    max_params: Option<usize>, chat_only: bool,
+) -> Result<Vec<Value>, String> {
+    let url = hf_catalog_url(query, limit, format, sort, max_params, chat_only)?;
     let response = reqwest::Client::new()
         .get(url)
         .timeout(Duration::from_secs(20))
@@ -2741,6 +2774,20 @@ mod tests {
             mlx_models_root(&state).join("owner/model")
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hf_catalog_filters_are_server_side_and_preserve_sorting() {
+        let url = hf_catalog_url("Qwen", 80, "gguf", "likes", Some(4), true).unwrap();
+        let values = url.query_pairs().into_owned().collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(values.get("search").map(String::as_str), Some("Qwen"));
+        assert_eq!(values.get("sort").map(String::as_str), Some("likes"));
+        assert_eq!(values.get("filter").map(String::as_str), Some("gguf"));
+        assert_eq!(values.get("num_parameters").map(String::as_str), Some("max:4B"));
+        assert_eq!(values.get("pipeline_tag").map(String::as_str), Some("text-generation"));
+        let without = hf_catalog_url("", 3, "mlx", "downloads", None, false).unwrap();
+        assert!(!without.as_str().contains("num_parameters"));
+        assert!(!without.as_str().contains("pipeline_tag"));
     }
 
     #[test]
