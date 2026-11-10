@@ -4439,6 +4439,10 @@ mod tests {
         assert!(history[0]["candidateId"].is_null());
         assert!(history[0]["newFindings"].as_u64().unwrap() > 0);
         assert!(history[0]["knowledgeId"].as_str().is_some());
+        assert_eq!(history[0]["improvementDirective"]["mode"],"discover");
+        assert_eq!(history[1]["improvementDirective"]["mode"],"implement_research",
+            "A new discovery must produce an implementation directive, not another research-only plan");
+        assert_eq!(history[1]["improvementDirective"]["sourceJobId"],history[0]["jobId"]);
         assert_eq!(history[1]["researchDelivered"], true, "next generation did not receive stored research");
         assert_eq!(history[1]["accepted"], true, "{result}");
         assert_eq!(history[1]["decisionInput"]["nextDomain"], "memory",
@@ -4447,6 +4451,7 @@ mod tests {
         assert_eq!(history[2]["generatorCommit"], accepted_commit);
         assert_ne!(history[2]["generatorBinarySha256"], history[1]["generatorBinarySha256"]);
         assert_eq!(history[2]["workerMarker"], "improved_execution");
+        assert_eq!(history[2]["improvementDirective"]["mode"],"extend_verified_capability");
         assert_eq!(history[2]["boundaryResult"], false, "the rebuilt function must actually execute");
         assert!(history[2]["candidateId"].is_string());
         assert_eq!(history[2]["accepted"], false, "a comment-only candidate must not be adopted");
@@ -4458,6 +4463,9 @@ mod tests {
         assert_eq!(inherited["implementation_ref"]["commit"], accepted_commit);
         assert_eq!(history[2]["decisionInput"]["basis"], "accepted_implementation");
         assert_eq!(history[3]["decisionInput"]["basis"], "research_findings");
+        assert_eq!(history[3]["improvementDirective"]["mode"],"revise_candidate");
+        assert!(evolution["improvementActionResults"].as_array().is_some(),
+            "Every campaign must retain measured strategy outcomes");
         assert_eq!(history[3]["decisionInput"]["observed"]["accepted"], false);
         assert!(history[3]["decisionInput"]["observed"]["tokens"].is_number());
         assert!(history[3]["decisionInput"]["observed"]["elapsedMs"].is_number());
