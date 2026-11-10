@@ -686,6 +686,12 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     if git(context, &source, &["rev-parse", "HEAD"]).await? != base {
         return Err("원본 소스가 시작 시점과 다릅니다. 다시 시작하세요.".into());
     }
+    if let Some(branch)=input["rsiSourceBranch"].as_str(){
+        if !rsi_worktree::is_rsi_work_branch(branch)
+            || git(context,&source,&["rev-parse","--abbrev-ref","HEAD"]).await?!=branch {
+            return Err("개선 시작 시 선택한 작업 브랜치가 변경되었습니다.".into());
+        }
+    }
     let limits = limits(&input["limits"])?;
     let parent = context.state.config.data_dir.join("rsi-labs");
     std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
@@ -760,7 +766,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }
     }
     let mut record = json!({"id":context.job_id,"status":"running","phase":"building_generator",
-        "sourceDir":source,"labDir":lab,"baseCommit":base,"headCommit":head,"sourceSnapshot":snapshot,"sourceFingerprint":fingerprint,
+        "sourceDir":source,"sourceBranch":input["rsiSourceBranch"],"labDir":lab,"baseCommit":base,"headCommit":head,"sourceSnapshot":snapshot,"sourceFingerprint":fingerprint,
         "objective":input["rsiObjective"],"providerId":input["providerId"],"model":input["model"],
         "continuedFrom":input["rsiContinueFrom"],"nextDecision":input["rsiPreviousDecision"],
         "nativeApproved":true,"limits":limits,"attempts":0,"acceptedGenerations":0,"tokens":0,

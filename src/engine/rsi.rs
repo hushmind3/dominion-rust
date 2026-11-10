@@ -216,6 +216,9 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     let ready = plan.len() >= MIN_PAIRED_CASES
         && holdouts >= 2
         && gains + metric_gains > 0
+        // Training-only improvements do not establish generalization. The
+        // frozen held-out suite must itself improve without regressions.
+        && improved_holdouts > 0
         && losses + metric_losses == 0
         && (target != "improver"
             || (holdout_domains.len() >= 2 && improved_holdouts > 0
@@ -465,6 +468,29 @@ mod tests {
         })).unwrap()["status"],"reported_deployed");
         child["generatorSourceCommit"]=json!(deployed);
         assert_eq!(propose(&state,&child).unwrap()["lineageGeneration"],2);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn training_only_gain_does_not_pass_unchanged_holdouts() {
+        let (state, root)=state();
+        let mut p=proposal("harness");
+        // The first three cases were train-only, leaving two fixed holdouts.
+        for i in 0..3 {p["cases"][i]["holdout"]=json!(false);}
+        for i in 3..5 {p["cases"][i]["holdout"]=json!(true);}
+        let candidate=propose(&state,&p).unwrap();
+        let mut measured=report(&candidate);
+        for row in measured["cases"].as_array_mut().unwrap() {
+            row["baselinePass"]=json!(true);
+            row["candidatePass"]=json!(true);
+        }
+        // A successful change to a public/training test with no improvement
+        // on either held-out test must not become a verified RSI improvement.
+        measured["cases"][0]["baselinePass"]=json!(false);
+        let result=evaluate(&state,candidate["id"].as_str().unwrap(),&measured).unwrap();
+        assert_eq!(result["status"],"inconclusive");
+        assert_eq!(result["evaluation"]["metrics"]["improvedHoldouts"],0);
+        assert_eq!(result["evaluation"]["metrics"]["gains"],1);
         let _=std::fs::remove_dir_all(root);
     }
 
