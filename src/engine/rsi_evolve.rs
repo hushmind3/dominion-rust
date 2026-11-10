@@ -2147,6 +2147,12 @@ async fn run_loop(
         let parent_domain=child_input["rsiSelectedDomain"].as_str().map(str::to_string);
         let native_planning=child_input["model"].as_str().is_some_and(|model|!model.is_empty())
             && child_input["providerId"].as_str().is_some_and(|provider|!provider.is_empty());
+        if native_planning {
+            // The previous generation's nextDomain is useful evidence, not an
+            // instruction that freezes a new generator's source-level policy.
+            // Its rationale remains in rsiDecisionInput for inspection.
+            child_input["rsiSelectedDomain"]=Value::Null;
+        }
         // Legacy, model-free native fixtures use the deterministic coordinator
         // plan. A real model generation instead delegates planning and file
         // ranking to its own newly built executable before spending tokens.
@@ -4682,12 +4688,15 @@ mod tests {
             "status":"running","cancelRequested":false,
             "input":{"rsiObjective":"Improve memory retrieval","rsiFocusFiles":["src/engine/memory.rs"]}}));
         let mut campaign=json!({"id":"native-plan","headCommit":commit,"history":[],
-            "planAttempt":1,"planSelectedDomain":"memory",
+            "planAttempt":1,"planSelectedDomain":null,
+            "nextDecision":{"nextDomain":"tools","basis":"parent_recommendation"},
             "planTrialAlgorithmId":null,"planIndexId":"index-revision"});
         state.store.put("rsi_campaign",&campaign);
         let job=state.store.get("job","native-plan").unwrap();
         let plan=native_generation_plan(&state,&campaign,&job,&commit).unwrap();
         assert_eq!(plan["domain"],"memory");
+        assert_ne!(plan["domain"],campaign["nextDecision"]["nextDomain"],
+            "The improved generator must be free to revise its parent's recommendation");
         assert_eq!(plan["source"],"compiled_generator_plan_v1");
         assert_eq!(plan["targetPlan"]["generatorCommit"],commit);
         assert_eq!(plan["rankedFiles"],json!([]));
