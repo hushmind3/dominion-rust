@@ -165,7 +165,7 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
     Ok(saved)
 }
 
-fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Value, String> {
+pub(crate) fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Value, String> {
     if plan.len() != measured.len() {
         return Err("실험 사례 수가 고정 계획과 일치하지 않습니다.".into());
     }
@@ -420,7 +420,7 @@ fn verified_holdout_domains(metrics:&Value)->Option<BTreeSet<String>> {
 /// metrics and extracted holdout labels must agree with this source record.
 /// Each candidate owns its receipt; campaign-job IDs are not unique across
 /// generations and would overwrite previously adopted evidence.
-fn verified_pair_receipt(state: &AppState, candidate: &Value) -> bool {
+pub(crate) fn verified_pair_receipt(state: &AppState, candidate: &Value) -> bool {
     let Some(id) = candidate["id"].as_str() else { return false; };
     let Some(receipt) = state.store.get("rsi_pair", &format!("rsi-pair-{id}")) else {
         return false;

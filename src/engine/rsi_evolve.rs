@@ -121,6 +121,22 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
         .iter()
         .map(|row| row["tokens"].as_u64().unwrap_or(0))
         .sum::<u64>() as f64;
+    let useful = rows.iter().filter(|row|row["accepted"]==true
+        || row["newFindings"].as_u64().unwrap_or(0)>0).count() as f64;
+    let verified=rows.iter().filter(|row|row["evidenceVerified"]==true)
+        .collect::<Vec<_>>();
+    let verified_outcomes=verified.len() as f64;
+    let holdout_gains=verified.iter()
+        .map(|row|row["verifiedHoldoutGains"].as_u64().unwrap_or(0).min(64))
+        .sum::<u64>() as f64;
+    let verified_tokens=verified.iter()
+        .map(|row|row["tokens"].as_u64().unwrap_or(0).max(1000))
+        .sum::<u64>() as f64;
+    // Robust to single low-token anomalies; this is an observed payoff for
+    // target selection, NOT causal attribution of algorithm quality.
+    let gain_efficiency=if verified_tokens>0.0 {
+        (holdout_gains*10_000.0/verified_tokens).min(8.0)
+    } else {0.0};
     let success_rate = if attempts == 0.0 { 0.0 } else { accepted / attempts };
     let token_cost = if attempts == 0.0 {
         0.0
@@ -154,6 +170,11 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
         ("inconclusive".to_string(), inconclusive),
         ("novelty".to_string(), if attempts == 0.0 { 1.0 } else { 0.0 }),
         ("successRate".to_string(), success_rate),
+        ("usefulGenerations".to_string(), useful),
+        ("barrenRate".to_string(), if attempts>0.0 {(attempts-useful)/attempts} else {0.0}),
+        ("verifiedOutcomes".to_string(), verified_outcomes),
+        ("holdoutGains".to_string(), holdout_gains),
+        ("gainPer10kTokens".to_string(), gain_efficiency),
         ("tokenCost".to_string(), token_cost),
         ("objectiveMatch".to_string(), objective_match),
         ("unresolved".to_string(), unresolved),
@@ -190,7 +211,15 @@ fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f
             let utility = get("accepted") / (1.0 + get("tokenCost") * attempts) / attempts;
             // The user's objective outranks exploration. A goal-specific
             // capability is selected before an unrelated unused domain.
-            Some(utility + get("exploration") + get("objectiveMatch") * 2.0)
+            // Two equally accepted patches can differ substantially in actual
+            // frozen holdout gain. Prefer the empirically productive domain
+            // while keeping explicit owner goals and exploration intact.
+            let measured_payoff=if get("verifiedOutcomes")>0.0 {
+                (get("holdoutGains")/(get("verifiedOutcomes")+1.0)).min(4.0)*0.75
+                    + get("gainPer10kTokens").min(4.0)*0.30
+            }else{0.0};
+            Some(utility + measured_payoff + get("exploration")
+                + get("objectiveMatch") * 2.0)
         }
     }
 }
@@ -239,10 +268,38 @@ fn search_strategy(algorithm: &Value, mode: &str) -> Value {
     })
 }
 
+/// Only raw, candidate-scoped, locally revalidated paired receipts may be
+/// used as positive exploration rewards. A forged summary, replay match or
+/// failed generation never gets a measured reward.
+fn history_with_verified_payoffs(state:&AppState,history:&[Value])->Vec<Value>{
+    let mut seen=BTreeSet::new();
+    history.iter().map(|row|{
+        let mut enriched=row.clone();
+        enriched["evidenceVerified"]=json!(false);
+        enriched["verifiedHoldoutGains"]=json!(0);
+        if row["accepted"]!=true {return enriched;}
+        let Some(id)=row["candidateId"].as_str().filter(|id|seen.insert(id.to_string())) else {
+            return enriched;
+        };
+        let Some(candidate)=state.store.get("rsi_candidate",id) else {return enriched;};
+        let valid=candidate["status"]=="verified"
+            && candidate["baseCommit"]==row["generatorCommit"]
+            && candidate["experimentAdoption"]["commit"]==row["acceptedCommit"]
+            && candidate["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+            && candidate["evaluation"]["metrics"]["eligible"]==true
+            && crate::engine::rsi::verified_pair_receipt(state,&candidate);
+        if valid {
+            enriched["evidenceVerified"]=json!(true);
+            enriched["verifiedHoldoutGains"]=candidate["evaluation"]["metrics"]["improvedHoldouts"].clone();
+        }
+        enriched
+    }).collect()
+}
+
 fn select_domain_for_state(state: &AppState, history: &[Value], objective: &str) -> String {
     let algorithm = crate::engine::algorithms::active(state, "selfimprove.search")
         .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
-    select_domain(&algorithm, history, objective)
+    select_domain(&algorithm, &history_with_verified_payoffs(state,history), objective)
 }
 
 /// Replays recorded generations with two search algorithms. A hit means the
@@ -1100,6 +1157,39 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
                 text.push_str(&format!("- {}세대: {}\n",generation["attempt"],
                     evidence.to_string().chars().take(1800).collect::<String>()));
             }
+        }
+        // Make failure feedback actionable rather than another inert memory:
+        // the next model receives the previous hypothesis, its measured
+        // verdict, and an explicit requirement to change the experiment.
+        let selected=input["rsiTargetDomain"].as_str().unwrap_or("");
+        if let Some(failure)=history.iter().rev().find(|row|
+            row["domain"]==selected && row["accepted"]!=true) {
+            let error=failure["error"].as_str().unwrap_or("")
+                .chars().take(300).collect::<String>();
+            let verdict=failure["evaluation"]["verdict"].as_str().unwrap_or("unmeasured");
+            let hypothesis=failure["candidateId"].as_str()
+                .and_then(|id|state.store.get("rsi_candidate",id))
+                .and_then(|c|c["hypothesis"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            text.push_str("\n### 실패를 반영한 다음 개선 실험\n");
+            text.push_str(&format!("- 이전 동일 분야 실패: verdict={verdict}; error={}\n",
+                if error.is_empty(){"실측된 진전 없음"}else{&error}));
+            if !hypothesis.is_empty(){
+                text.push_str(&format!("- 검증에 실패한 이전 가설: {}\n",
+                    hypothesis.chars().take(280).collect::<String>()));
+            }
+            text.push_str("- 이전 가설·변경을 그대로 반복하지 말고 실패 원인을 먼저 특정하세요. 수정 범위·가설·기대하는 작업 성능 지표를 바꾼 실험을 수행하세요. 조사 결과가 없다면 새 발견을 만들어내지 마세요.\n");
+        }
+        let verified=history_with_verified_payoffs(state,history);
+        let measured=verified.iter().rev().filter(|row|row["evidenceVerified"]==true)
+            .take(3).map(|row|json!({"domain":row["domain"],
+                "verifiedHoldoutGains":row["verifiedHoldoutGains"],
+                "tokens":row["tokens"],"acceptedCommit":row["acceptedCommit"]}))
+            .collect::<Vec<_>>();
+        if !measured.is_empty() {
+            text.push_str("\n### 후속 세대에 계승할 검증된 성과\n");
+            text.push_str(&json!(measured).to_string());
+            text.push_str("\n이 성과는 검증된 과거 기록이며 새 전략의 인과적 우월성을 증명하지 않습니다. 효과가 있었던 지점을 재사용하거나 다른 분야에 전이하는 새 가설을 시험하세요.\n");
         }
     }
     text
@@ -2839,6 +2929,10 @@ fn select_generation_strategy(
     selected_domain: Option<String>,
     generator_commit: &str,
 ) -> (String, &'static str, Value) {
+    // Use the same candidate-scoped raw evaluation evidence when the rebuilt
+    // child worker chooses a domain. Do not let stale claim fields steer it.
+    let history_enriched=history_with_verified_payoffs(state,history);
+    let history=&history_enriched;
     let active = crate::engine::algorithms::active(state, "selfimprove.search");
     if let Some(domain) = continuation {
         return (domain, "research_continuation", Value::Null);

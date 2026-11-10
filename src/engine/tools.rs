@@ -50,7 +50,7 @@ pub fn definitions() -> Vec<Value> {
         tool("skill_propose", "Draft a reusable skill for user review", object(json!({"name": text("Skill name"), "instructions": text("Reusable instructions")}), vec!["name", "instructions"])),
         tool("algorithm_propose", "Propose a new self-improvement search formula. It may be tried in the next scheduled generation; replay match is context only and never activates it.", object(json!({
             "name": text("Algorithm name"),
-            "expression": text("Arithmetic over attempts, accepted, regressions, inconclusive, novelty, successRate, tokenCost, objectiveMatch, unresolved, exploration"),
+            "expression": text("Arithmetic over attempts, accepted, regressions, inconclusive, novelty, successRate, usefulGenerations, barrenRate, verifiedOutcomes, holdoutGains, gainPer10kTokens, tokenCost, objectiveMatch, unresolved, exploration"),
             "targetExpression": text("Optional source-file ranking formula using pathEvidence, symbolEvidence, bodyEvidence, novelty, repeatPenalty, sourceCost and other validated source features"),
             "description": text("Why this formula should choose better improvement targets"),
             "evidence": json!({"type":"array","items":{"type":"string"},"description":"Observed failures or regressions that justify the formula"})
