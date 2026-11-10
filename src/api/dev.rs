@@ -87,13 +87,13 @@ pub async fn preview(State(state): State<AppState>, Path(action): Path<String>) 
     }
 }
 
-pub async fn update(Json(_body): Json<Value>) -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "error": "업데이트 적용은 데스크톱 셸의 설치 기능이 필요합니다. Rust 웹 모드에서는 지원하지 않습니다.",
-            "ported": false,
-        })),
-    )
-        .into_response()
+pub async fn update_status(State(state): State<AppState>) -> Json<Value> {
+    Json(dev::update_status(&state).await)
+}
+
+pub async fn update(State(state): State<AppState>, Json(_body): Json<Value>) -> Response {
+    match dev::start_update_job(state) {
+        Ok(job) => Json(job).into_response(),
+        Err(message) => (StatusCode::CONFLICT, Json(json!({"error":message}))).into_response(),
+    }
 }

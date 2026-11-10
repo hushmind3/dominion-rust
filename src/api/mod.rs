@@ -272,7 +272,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/dev/diff", get(dev::diff))
         .route("/api/dev/jobs/:id", get(dev::get_job))
         .route("/api/dev/preview/:action", post(dev::preview))
-        .route("/api/dev/update", post(dev::update))
+        .route("/api/dev/update", get(dev::update_status).post(dev::update))
         .route("/api/dev/:kind", post(dev::start_job))
         .route("/api/oauth/providers", get(oauth::providers))
         .route("/api/oauth/connections", get(channels::connections))

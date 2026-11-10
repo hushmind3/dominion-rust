@@ -14,6 +14,7 @@ type DevStatus={
 }
 type DevJob={id:string;kind:string;status:string;logs:string[];error?:string;result?:any}
 type DiffResult={changes:{path:string;status:string;patch:string}[];count:number;truncated:boolean}
+type UpdateStatus={supported:boolean;available:boolean;local?:string;remote?:string;reason?:string;installMode?:string}
 
 const terminal=(status:string)=>['completed','failed'].includes(status)
 const fmtBytes=(bytes=0)=>bytes>=1024**3?(bytes/1024**3).toFixed(1)+' GB':bytes>=1024**2?Math.round(bytes/1024**2)+' MB':'0 MB'
@@ -21,6 +22,7 @@ const fmtBytes=(bytes=0)=>bytes>=1024**3?(bytes/1024**3).toFixed(1)+' GB':bytes>
 export function DeveloperPage(){
  const loc=useLocale()
  const status=useRemote<DevStatus>('/api/dev/status',{config:{sourceDir:'',repoUrl:'',branch:'main',previewPort:5174},exists:false,nodeModules:false,git:false,preview:{status:'stopped',url:''},platform:'',arch:'',installedExe:''})
+ const updates=useRemote<UpdateStatus>('/api/dev/update',{supported:false,available:false})
  const [sourceDir,setSourceDir]=useState(''),[repoUrl,setRepoUrl]=useState(''),[branch,setBranch]=useState('main')
  const [job,setJob]=useState<DevJob|null>(null),[jobId,setJobId]=useState('')
  const [diff,setDiff]=useState<DiffResult|null>(null),[commitMessage,setCommitMessage]=useState('')
@@ -28,9 +30,15 @@ export function DeveloperPage(){
  useEffect(()=>{setSourceDir(status.value.config.sourceDir||'');setRepoUrl(status.value.config.repoUrl||'');setBranch(status.value.config.branch||'main')},[status.value.config.sourceDir,status.value.config.repoUrl,status.value.config.branch])
  useEffect(()=>{
   if(!jobId)return
+  let failedPolls=0
   const timer=setInterval(async()=>{
-   try{const next=await get<DevJob>('/api/dev/jobs/'+jobId);setJob(next);if(terminal(next.status)){clearInterval(timer);setBusy('');void status.reload();if(next.status==='completed'){setMessage(next.kind==='commit'&&typeof next.result?.oid==='string'?t('dev.commitDone',{oid:next.result.oid.slice(0,12)}):t('dev.jobDone',{kind:next.kind}));if(next.kind==='commit')setCommitMessage('');void loadDiff()}else setError(next.error||t('dev.jobFailed'))}}
-   catch(e){clearInterval(timer);setBusy('');setError((e as Error).message)}
+   try{const next=await get<DevJob>('/api/dev/jobs/'+jobId);setJob(next);if(terminal(next.status)){clearInterval(timer);setBusy('');void status.reload();if(next.kind==='update')void updates.reload();if(next.status==='completed'){setMessage(next.kind==='commit'&&typeof next.result?.oid==='string'?t('dev.commitDone',{oid:next.result.oid.slice(0,12)}):t('dev.jobDone',{kind:next.kind}));if(next.kind==='commit')setCommitMessage('');void loadDiff()}else setError(next.error||t('dev.jobFailed'))}}
+   catch(e){
+    // Replacing the running binary briefly drops the HTTP connection.
+    // Keep the job visible and resume polling after the LaunchAgent restarts.
+    if(job?.kind==='update'&&++failedPolls<90){setMessage('엔진 재시작 중입니다. 연결이 돌아오면 업데이트 결과를 확인합니다.');return}
+    clearInterval(timer);setBusy('');setError((e as Error).message)
+   }
   },1200)
   return()=>clearInterval(timer)
  },[jobId])
@@ -62,6 +70,11 @@ export function DeveloperPage(){
   const message=commitMessage.trim();
   if(!message){setError(t('dev.commitMessageRequired'));return}
   await run('commit',{message});
+ }
+ const requestUpdate=()=>{
+  if(busy||!updates.value.supported)return
+  if(!window.confirm('DOMINION을 업데이트하고 재시작합니다. 실행 중인 작업이 있다면 완료한 뒤 진행하세요.'))return
+  void run('update')
  }
  const s=status.value
  return <div className="mx-auto w-full max-w-[1280px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
@@ -100,6 +113,18 @@ export function DeveloperPage(){
     </Panel>
    </div>
    <div className="grid min-w-0 gap-4">
+    <Panel className="min-w-0 p-5">
+     <Subheading title="DOMINION 업데이트" extra={<Button variant="ghost" size="sm" onClick={()=>void updates.reload()}><RefreshCw size={14}/> 최신 버전 확인</Button>}/>
+     <p className="text-[12px] leading-5 text-[#6F675D]">Mac 소스 설치 환경에서는 업데이트 확인부터 빌드·재시작까지 앱 안에서 처리합니다. 기존 사용자 데이터와 연결 설정은 유지합니다.</p>
+     <div className="mt-3 grid gap-1 text-[11px] text-[#8A8176]">
+      {updates.value.local&&<div>실행 버전 · {updates.value.local.slice(0,12)}</div>}
+      {updates.value.remote&&<div>최신 버전 · {updates.value.remote.slice(0,12)}</div>}
+      {updates.value.reason&&<div className="text-[#A05B48]">{updates.value.reason}</div>}
+      {updates.value.available&&<div className="font-semibold text-emerald-700">새 버전 사용 가능</div>}
+      {!updates.value.available&&updates.value.supported&&!updates.value.reason&&<div>현재 최신 소스입니다.</div>}
+     </div>
+     <div className="mt-3"><Button variant="primary" disabled={Boolean(busy)||!updates.value.supported} onClick={requestUpdate}><RefreshCw size={14}/> {busy==='update'?'업데이트 진행 중':updates.value.available?'업데이트 및 재시작':'재빌드 및 재시작'}</Button></div>
+    </Panel>
     <Panel className="min-w-0 p-5">
      <Subheading title={t('dev.logs')} extra={<Terminal size={18}/>}/>
      {job?<div><div className="mb-2 flex items-center gap-2"><StateTag online={job.status==='completed'}>{job.status}</StateTag><span className="text-[11px] text-[#8A8176]">{job.kind}</span></div><pre className="max-h-[520px] min-h-40 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-[#24211D] p-3 text-[10px] leading-5 text-[#E7E0D5]">{job.logs.join('\n')||t('dev.waitingLogs')}</pre></div>:<p className="text-[11px] text-[#8A8176]">{t('dev.logsHint')}</p>}
