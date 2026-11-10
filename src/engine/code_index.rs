@@ -804,6 +804,7 @@ pub fn rank_focus_files_with_feedback(
     let target_expression=algorithm.and_then(|value|value["parameters"]["targetExpression"].as_str());
 
     let mut ranked=Vec::new();
+    let mut policy_invalid:Option<String>=None;
     for (file,(path,symbols,summary,body)) in files.iter().zip(fields.iter()) {
         let mut path_evidence=0.0;
         let mut symbol_evidence=0.0;
@@ -850,6 +851,7 @@ pub fn rank_focus_files_with_feedback(
             "path":file["path"],
             "sourceHash":file["hash"],
             "score":score,
+            "baselineScore":default,
             "evidence":{"path":path_evidence,"symbols":symbol_evidence,
                 "summary":summary_evidence,"body":body_evidence,"domain":domain_evidence,
                 "priorUnproductive":prior,"priorProductive":successful,
@@ -857,8 +859,21 @@ pub fn rank_focus_files_with_feedback(
             "policyRevision":algorithm.map(|policy|policy["revision"].clone()).unwrap_or(Value::Null),
             "scoring":if target_expression.is_some() && policy_error.is_none() {"expression"} else {"corpus-evidence"}
         });
-        if let Some(error)=policy_error {record["policyError"]=json!(error);}
+        if let Some(error)=policy_error {
+            policy_invalid.get_or_insert_with(||error.clone());
+            record["policyError"]=json!(error);
+        }
         ranked.push(record);
+    }
+    // A candidate expression is a single algorithm, not a per-file mixture
+    // of arbitrary scores and fallback scores. One runtime failure invalidates
+    // the formula for the whole indexed source decision.
+    if let Some(error)=policy_invalid {
+        for row in &mut ranked {
+            row["score"]=row["baselineScore"].clone();
+            row["scoring"]=json!("corpus-evidence");
+            row["policyError"]=json!(error);
+        }
     }
     ranked.sort_by(|left,right|
         right["score"].as_f64().unwrap_or(0.0).total_cmp(&left["score"].as_f64().unwrap_or(0.0))
@@ -989,6 +1004,35 @@ mod tests {
     use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
 
+
+    #[test]
+    fn invalid_target_expression_falls_back_for_all_files_not_a_mixed_ranking() {
+        let (state,root)=temp_state();
+        let source=root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        std::fs::write(source.join("src/memory.rs"),
+            "fn memory_dispatch() { println!(\"memory\"); }\n").unwrap();
+        std::fs::write(source.join("src/opaque.rs"),
+            "fn memory_dispatch() { println!(\"memory\"); }\n").unwrap();
+        let index=refresh(&state,&source).unwrap();
+        let id=index["id"].as_str().unwrap();
+        let empty=BTreeMap::new();
+        let baseline=rank_focus_files(&state,id,"memory dispatch","memory",&empty,None,2);
+        let malformed=json!({"revision":"trial","parameters":{
+            "targetExpression":"1 / pathEvidence"
+        }});
+        let fallback=rank_focus_files(&state,id,"memory dispatch","memory",
+            &empty,Some(&malformed),2);
+        assert_eq!(fallback.iter().map(|row|&row["path"]).collect::<Vec<_>>(),
+            baseline.iter().map(|row|&row["path"]).collect::<Vec<_>>());
+        assert_eq!(fallback.len(),2);
+        for row in &fallback {
+            assert_eq!(row["scoring"],"corpus-evidence");
+            assert!(row["policyError"].as_str().is_some());
+            assert_eq!(row["score"],row["baselineScore"]);
+        }
+        let _=std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn verified_productive_feedback_changes_target_ranking_without_hardcoded_paths() {
