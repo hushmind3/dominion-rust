@@ -75,12 +75,24 @@ fn local_opencode_go_key() -> Option<(String, &'static str)> {
     None
 }
 
+fn official_opencode_go_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.starts_with("https://opencode.ai/zen/go")
+        || trimmed == "https://opencode.ai/inference/go"
+        || trimmed == "https://opencode.ai/inference/go/v1"
+    {
+        "https://opencode.ai/inference/go/openai/v1".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn direct_opencode_go(state: &AppState) -> Option<Value> {
     state.store.all("provider").into_iter().find(|provider| {
         provider["integration"] == "opencode-go"
             || provider["baseUrl"].as_str().is_some_and(|url|
-                url.starts_with("https://opencode.ai/zen/go/v1")
-                || url.starts_with("https://opencode.ai/inference/go/openai/v1"))
+                url.starts_with("https://opencode.ai/inference/go/openai/v1")
+                || url.starts_with("https://opencode.ai/zen/go/v1"))
     })
 }
 
@@ -92,7 +104,7 @@ fn import_opencode_go(state: &AppState) -> Result<Value, String> {
     let record = json!({
         "id": id,
         "name": previous["name"].as_str().unwrap_or("OpenCode Go"),
-        "baseUrl": previous["baseUrl"].as_str().unwrap_or("https://opencode.ai/zen/go/v1"),
+        "baseUrl": previous["baseUrl"].as_str().unwrap_or("https://opencode.ai/inference/go/openai/v1"),
         "kind": "openai",
         "model": previous["model"].as_str().unwrap_or(""),
         "enabled": true,
@@ -1085,6 +1097,7 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
         .trim()
         .trim_end_matches('/')
         .to_string();
+    let base_url = official_opencode_go_url(&base_url);
     if base_url.is_empty() {
         return error(
             StatusCode::BAD_REQUEST,
@@ -1945,6 +1958,22 @@ mod tests {
         assert!(model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &zero, "meta/llama"));
         let paid = json!({"pricing":{"prompt":"0.000001","completion":"0.000002"}});
         assert!(!model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &paid, "meta/llama"));
+    }
+
+    #[test]
+    fn opencode_go_urls_normalize_to_official_base() {
+        for input in [
+            "https://opencode.ai/zen/go",
+            "https://opencode.ai/zen/go/v1",
+            "https://opencode.ai/inference/go",
+            "https://opencode.ai/inference/go/v1",
+        ] {
+            assert_eq!(official_opencode_go_url(input), "https://opencode.ai/inference/go/openai/v1");
+        }
+        assert_eq!(
+            official_opencode_go_url("https://opencode.ai/inference/go/anthropic/v1"),
+            "https://opencode.ai/inference/go/anthropic/v1"
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const UPSTREAM: &str = "https://opencode.ai/zen/go/v1";
+const UPSTREAM: &str = "https://opencode.ai/inference/go/openai/v1";
 
 #[derive(Clone)]
 struct Shim {
@@ -24,7 +24,7 @@ struct Shim {
 
 /// OpenAI-compatible local proxy for the OpenCode Go endpoint.
 ///
-/// DOMINION -> http://127.0.0.1:4399/v1 -> https://opencode.ai/zen/go/v1
+/// DOMINION -> http://127.0.0.1:4399/v1 -> https://opencode.ai/inference/go/openai/v1
 /// Streams the upstream response through unchanged.
 pub async fn run(port: u16) -> Result<(), String> {
     let key = api_key()?;

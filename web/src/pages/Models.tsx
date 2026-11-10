@@ -22,7 +22,7 @@ type FreeCatalogProvider={providerId:string;providerName:string;reachable:boolea
 type FreeCatalog={status?:string;updatedAt?:string;providers:FreeCatalogProvider[];counts?:{free:number;paid:number;unknown:number}}
 type Tab='providers'|'catalog'|'local'|'oauth'
 
-const opencodeGoPreset:ProviderPreset={name:'OpenCode Go',baseUrl:'https://opencode.ai/zen/go/v1',kind:'openai',local:false,category:'cloud',integration:'opencode-go'}
+const opencodeGoPreset:ProviderPreset={name:'OpenCode Go',baseUrl:'https://opencode.ai/inference/go/openai/v1',kind:'openai',local:false,category:'cloud',integration:'opencode-go'}
 
 const providerPresets:ProviderPreset[]=[
  // Free tiers and local gateways. Keys are still required where the provider asks for one.

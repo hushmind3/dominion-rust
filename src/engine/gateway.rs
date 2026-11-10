@@ -131,14 +131,26 @@ fn default_reasoning_protocol(provider: &Value, kind: &str, model: &str, id: &st
 pub fn resolved_base_url(provider: &Value) -> String {
     let raw = provider["baseUrl"].as_str().unwrap_or("");
     let account = provider["accountId"].as_str().unwrap_or("").trim();
-    if account.is_empty() {
+    let resolved = if account.is_empty() {
         raw.trim_end_matches('/').to_string()
     } else {
         raw.replace("ACCOUNT_ID", account)
             .replace("{accountId}", account)
             .trim_end_matches('/')
             .to_string()
+    };
+    // OpenCode Go publishes its OpenAI-compatible base under
+    // /inference/go/openai/v1. Older records still carry /zen/go/v1, so
+    // every route resolves to the documented URL.
+    if provider["integration"].as_str() == Some("opencode-go") {
+        if resolved.starts_with("https://opencode.ai/zen/go")
+            || resolved == "https://opencode.ai/inference/go"
+            || resolved == "https://opencode.ai/inference/go/v1"
+        {
+            return "https://opencode.ai/inference/go/openai/v1".to_string();
+        }
     }
+    resolved
 }
 
 /// Builds a route from a provider record. Disabled providers and providers
