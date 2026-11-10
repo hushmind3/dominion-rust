@@ -1532,7 +1532,13 @@ fn queue_search_trial(
             "campaignId":campaign_id,
             "objectiveHash":crate::engine::memory::stable_id(&[objective]),
             "lastReason":"candidate_expression_invalid_for_runtime_features"});
-        state.store.put("algorithm",&rejected);
+        let id=candidate["id"].as_str().unwrap_or("");
+        let changed=state.store.patch_if("algorithm",id,"rsiTrial",
+            &candidate["rsiTrial"],&json!({"rsiTrial":rejected["rsiTrial"]}));
+        if changed.is_none() {
+            return json!({"status":"concurrent_claim_lost","candidateId":candidate["id"],
+                "reason":"another campaign modified the candidate during validation"});
+        }
         return json!({"status":"trial_inconclusive",
             "candidateId":candidate["id"],
             "reason":"candidate_expression_invalid_for_runtime_features"});
@@ -1556,10 +1562,18 @@ fn queue_search_trial(
         .map(str::to_string)
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()));
     record["rsiTrial"] = trial;
-    let saved = state.store.put("algorithm", &record);
-    if let Some(saved) = &saved {
-        state.bus.record("algorithm", saved);
-    }
+    // Compare-and-patch under one SQLite connection lock. The prior
+    // campaign check is advisory; the CAS is the actual ownership barrier.
+    let id=candidate["id"].as_str().unwrap_or("");
+    let Some(saved)=state.store.patch_if("algorithm",id,"rsiTrial",
+        &candidate["rsiTrial"],&json!({"rsiTrial":record["rsiTrial"]})) else {
+        let latest=state.store.get("algorithm",id).unwrap_or(Value::Null);
+        return json!({"status":"concurrent_claim_lost",
+            "candidateId":candidate["id"],
+            "ownerCampaignId":latest["rsiTrial"]["campaignId"],
+            "reason":"trial ownership changed before atomic claim"});
+    };
+    state.bus.record("algorithm",&saved);
     state.store.audit(
         "rsi.search_trial_queued",
         json!({
@@ -4917,6 +4931,24 @@ mod tests {
             "newFindings":0,"accepted":false}));
         assert!(research_continuation(&failed).is_none(),
             "stale research must not force continuation");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn campaign_trial_claim_never_steals_an_existing_owner() {
+        let (state,root)=state();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"atomic-claim-test",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"objectiveMatch + exploration"}
+        })).unwrap();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let first=queue_search_trial(&state,&candidate,&active,&[],"context","campaign-a",1);
+        assert_eq!(first["status"],"pending_trial");
+        let other=queue_search_trial(&state,&candidate,&active,&[],"context","campaign-b",1);
+        assert_eq!(other["status"],"owned_by_other_campaign");
+        let saved=state.store.get("algorithm",candidate["id"].as_str().unwrap()).unwrap();
+        assert_eq!(saved["rsiTrial"]["campaignId"],"campaign-a");
         let _=std::fs::remove_dir_all(root);
     }
 
