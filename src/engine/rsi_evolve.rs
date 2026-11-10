@@ -2607,6 +2607,14 @@ async fn run_loop(
                             }
                         }
                         generation["acceptedSourceHashes"]=Value::Object(accepted_hashes);
+                        // Keep the server-verified immutable evaluation in the
+                        // durable generation, so archiving the candidate index
+                        // cannot erase already earned recursive proof.
+                        generation["acceptedProof"]=json!({
+                            "candidateId":id,"status":candidate["status"],
+                            "target":candidate["target"],"baseCommit":candidate["baseCommit"],
+                            "adoptedCommit":commit,"evaluation":candidate["evaluation"]
+                        });
                         generation["accepted"] = json!(true);
                         generation["acceptedCommit"] = json!(commit);
                         record["headCommit"] = json!(commit);
