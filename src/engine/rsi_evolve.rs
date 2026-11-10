@@ -960,41 +960,32 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
 /// Autonomous generations without an explicit focus file still need the
 /// source in the prompt. Pick one or two domain-relevant files so the model
 /// does not spend its budget searching for them.
-fn auto_focus_files(lab: &std::path::Path, input: &Value) -> Vec<String> {
-    let domain = input["rsiSelectedDomain"]
-        .as_str()
-        .or_else(|| input["rsiDomain"].as_str())
-        .unwrap_or("");
-    let objective = input["rsiObjective"].as_str().unwrap_or("").to_lowercase();
-    let candidates: &[&str] = match domain {
-        "memory" => &["src/engine/memory.rs"],
-        "context" => &[
-            "src/engine/chat/continuity.rs",
-            "src/engine/chat/room_context.rs",
-        ],
-        "learning" => &["src/engine/experience.rs"],
-        "tools" => &["src/engine/tools.rs"],
-        "improver" => &["src/engine/rsi_evolve.rs", "src/engine/rsi.rs"],
-        _ if objective.contains("기억") || objective.contains("memory") => {
-            &["src/engine/memory.rs"]
-        }
-        _ if objective.contains("문맥") || objective.contains("context") => {
-            &["src/engine/chat/continuity.rs"]
-        }
-        _ => &[],
-    };
-    candidates
-        .iter()
-        .filter(|path| {
-            let full = lab.join(path);
-            full.is_file()
-                && std::fs::metadata(&full)
-                    .map(|meta| meta.len() <= 2 * 1024 * 1024)
-                    .unwrap_or(false)
-        })
-        .take(2)
-        .map(|path| path.to_string())
-        .collect()
+fn auto_focus_files(state:&AppState,lab:&std::path::Path,input:&Value)->Vec<String> {
+    let Some(index_id)=input["rsiIndexId"].as_str() else {return Vec::new()};
+    let domain=input["rsiPlannedFocusDomain"].as_str()
+        .or_else(||input["rsiSelectedDomain"].as_str())
+        .or_else(||input["rsiDomain"].as_str()).unwrap_or("");
+    let objective=input["rsiObjective"].as_str().unwrap_or("");
+    // The next generation may deliberately trial a new file-target policy.
+    // Reuse the actual persisted candidate; the index only supplies measured
+    // source features and does not prescribe which files may be explored.
+    let trial=input["rsiTrialAlgorithmId"].as_str()
+        .and_then(|id|state.store.get("algorithm",id))
+        .filter(|policy|policy["kind"]=="selfimprove.search");
+    let active=crate::engine::algorithms::active(state,"selfimprove.search");
+    let policy=trial.as_ref().or(active.as_ref());
+    crate::engine::code_index::rank_source_targets(
+        state,index_id,objective,domain,policy,8
+    ).into_iter()
+    .filter_map(|row|{
+        let path=row["path"].as_str()?;
+        let expected=row["sourceHash"].as_str()?;
+        let bytes=std::fs::read(lab.join(path)).ok()?;
+        if bytes.len()>2*1024*1024 ||
+            format!("{:x}",Sha256::digest(&bytes))!=expected {return None;}
+        Some(path.to_string())
+    })
+    .take(2).collect()
 }
 
 fn focus_file_context(state: &AppState, record: &Value, input: &Value) -> String {
@@ -2171,6 +2162,24 @@ async fn run_loop(
             child_input["rsiSelectedDomain"] = Value::Null;
             child_input["rsiDecisionInput"] = Value::Null;
         }
+        // Compute the child's actual strategy on the same frozen history used
+        // by the worker. This source plan is a navigation hint, never a forced
+        // worker decision: descendants retain control of their own strategy.
+        let mut source_history=context.state.store.all("rsi_generation").into_iter()
+            .filter(|entry|entry["campaignId"]==context.job_id)
+            .collect::<Vec<_>>();
+        source_history.sort_by_key(|entry|entry["attempt"].as_u64().unwrap_or(0));
+        let continuation=source_history.last()
+            .filter(|entry|entry["candidateId"].is_null()
+                && entry["newFindings"].as_u64().unwrap_or(0)>0)
+            .and_then(|entry|entry["domain"].as_str()).map(str::to_string);
+        let selected=child_input["rsiSelectedDomain"].as_str()
+            .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
+        let trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
+        let (planned_domain,_,_)=select_generation_strategy(&context.state,
+            &source_history,&selection_objective(&child_input),continuation,
+            trial,selected,&head);
+        child_input["rsiPlannedFocusDomain"]=json!(planned_domain);
         child_input["rsiIndexId"]=crate::engine::code_index::refresh(&context.state,&lab)?["id"].clone();
         let inherited_candidates=context.state.store.all("experience").into_iter()
             .filter(|item|item["status"]=="active" && item["partitionKey"]==research_scope(&child_input).partition_key
@@ -2193,7 +2202,7 @@ async fn run_loop(
             .as_array()
             .is_none_or(|files| files.is_empty())
         {
-            child_input["rsiFocusFiles"] = json!(auto_focus_files(&lab, &child_input));
+            child_input["rsiFocusFiles"] = json!(auto_focus_files(&context.state,&lab,&child_input));
         }
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
@@ -2918,20 +2927,43 @@ mod tests {
     }
 
     #[test]
-    fn auto_focus_files_picks_existing_domain_sources() {
-        let root = std::env::temp_dir().join(format!("auto-focus-{}", uuid::Uuid::new_v4()));
+    fn autonomous_source_targeting_discovers_new_files_without_a_static_domain_list() {
+        let (state,root)=state();
         std::fs::create_dir_all(root.join("src/engine")).unwrap();
-        std::fs::write(root.join("src/engine/memory.rs"), "fn a() {}\n").unwrap();
-        assert_eq!(
-            auto_focus_files(&root, &json!({"rsiSelectedDomain":"memory"})),
-            vec!["src/engine/memory.rs".to_string()]
-        );
-        assert!(auto_focus_files(&root, &json!({"rsiSelectedDomain":"tools"})).is_empty());
-        assert_eq!(
-            auto_focus_files(&root, &json!({"rsiObjective":"기억 검색 비용을 줄여"})),
-            vec!["src/engine/memory.rs".to_string()]
-        );
-        let _ = std::fs::remove_dir_all(root);
+        std::fs::write(root.join("src/engine/memory.rs"),
+            "fn retrieve_memory() {}\n").unwrap();
+        std::fs::write(root.join("src/engine/opaque.rs"),
+            "fn novelPlanner() { let candidate_selection = 1; }\n").unwrap();
+        let meta=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let input=json!({"rsiIndexId":meta["id"],"rsiPlannedFocusDomain":"memory",
+            "rsiObjective":"기억 검색 속도 개선"});
+        let first=auto_focus_files(&state,&root,&input);
+        assert!(first.contains(&"src/engine/memory.rs".to_string()),
+            "a matching source must be selected from the actual index");
+        let novel=json!({"rsiIndexId":meta["id"],
+            "rsiObjective":"novelPlanner algorithm"});
+        assert_eq!(auto_focus_files(&state,&root,&novel)[0],"src/engine/opaque.rs",
+            "model must find unfamiliar modules, not just known domain filenames");
+        let missing=json!({"rsiIndexId":meta["id"],
+            "rsiObjective":"entirely unobserved concept"});
+        assert!(auto_focus_files(&state,&root,&missing).is_empty(),
+            "builtin navigation does not guess unobserved sources");
+        let proposal=json!({"id":"novel-policy","kind":"selfimprove.search",
+            "revision":"trial-1","parameters":{
+                "targetExpression":"novelty - sourceCost"
+            }});
+        state.store.put("algorithm",&proposal);
+        let extended=json!({"rsiIndexId":meta["id"],
+            "rsiObjective":"entirely unobserved concept",
+            "rsiTrialAlgorithmId":"novel-policy"});
+        let novel_targets=auto_focus_files(&state,&root,&extended);
+        assert_eq!(novel_targets.len(),2,
+            "an executable model-authored policy can explore all indexed sources");
+        std::fs::write(root.join("src/engine/memory.rs"),"fn changed() {}\n").unwrap();
+        let stale=auto_focus_files(&state,&root,&input);
+        assert!(!stale.contains(&"src/engine/memory.rs".to_string()),
+            "an indexed hash must be reverified before injecting source text");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
