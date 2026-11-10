@@ -2229,10 +2229,14 @@ pub fn start_download_at_revision(
     for existing in state.store.all(MODEL_KIND) {
         if existing["repo"].as_str() == Some(repo.as_str())
             && existing["optionId"].as_str() == Some(option.as_str())
-            && existing["revision"].as_str().unwrap_or("main") == revision
             && matches!(existing["status"].as_str(), Some("downloading" | "paused"))
         {
-            return Ok(existing);
+            if existing["revision"].as_str().unwrap_or("main") == revision {
+                return Ok(existing);
+            }
+            // Two revisions of the same file share a .part destination.
+            // Do not start concurrent writers into the same download target.
+            return Err("이 모델의 다른 버전 다운로드가 진행 중입니다. 기존 작업을 먼저 완료하거나 취소하세요.".into());
         }
     }
     let files = if format == "mlx" {
