@@ -2398,8 +2398,12 @@ async fn run_loop(
                         .store
                         .get("rsi_candidate", id)
                         .ok_or("후보 소실")?;
+                    let evidence_valid=crate::engine::rsi::verify_paired_receipt(
+                        &context.state,&candidate).is_ok();
+                    generation["pairedRevalidated"]=json!(evidence_valid);
                     let eligible = candidate["status"] == "verified"
-                        && candidate["evaluation"]["metrics"]["eligible"] == true;
+                        && candidate["evaluation"]["metrics"]["eligible"] == true
+                        && evidence_valid;
                     let winner = if eligible {
                         "candidate"
                     } else if candidate["status"] == "rejected" {
@@ -2429,6 +2433,7 @@ async fn run_loop(
                         generation["acceptedSourceHashes"]=Value::Object(accepted_hashes);
                         generation["accepted"] = json!(true);
                         generation["acceptedCommit"] = json!(commit);
+                        generation["candidateTarget"]=candidate["target"].clone();
                         record["headCommit"] = json!(commit);
                         record["acceptedGenerations"] =
                             json!(record["acceptedGenerations"].as_u64().unwrap_or(0) + 1);
@@ -2651,7 +2656,10 @@ pub fn generation_is_verified(generation: &Value) -> bool {
         return false;
     }
     let metrics = &generation["evaluation"]["metrics"];
-    metrics["eligible"] == true
+    generation["pairedRevalidated"]==true
+        && generation["evaluation"]["candidateStatus"]=="verified"
+        && generation["evaluation"]["measurementScope"]=="frozen_native_cases_only"
+        && metrics["eligible"] == true
         && metrics["holdoutCases"].as_u64().unwrap_or(0) >= 2
         && metrics["regressions"].as_u64().unwrap_or(0) == 0
 }
@@ -2737,7 +2745,7 @@ fn generation_meta_transfer_proven(generation: &Value) -> bool {
     let cross_domain_gain = tested_domains.contains(source_domain)
         && improved_domains.iter().any(|domain| *domain != source_domain);
     let improver_gain = improver_holdout_gain
-        && metrics["metaGains"].as_u64().unwrap_or(0) > 0;
+        && metrics["metaHoldoutGains"].as_u64().unwrap_or(0) > 0;
     cross_domain_gain || improver_gain
 }
 
@@ -2801,6 +2809,7 @@ pub(crate) async fn adopt(
     base: &str,
 ) -> Result<String, String> {
     if candidate["status"] != "verified"
+        || crate::engine::rsi::verify_paired_receipt(&context.state,candidate).is_err()
         || candidate["evaluation"]["metrics"]["eligible"] != true
         || candidate["evaluation"]["source"] != "server_invoked_local_paired_git_worktrees"
         || candidate["baseCommit"] != base
@@ -4292,7 +4301,7 @@ mod tests {
             "metricGains":0,"metricRegressions":0,"improved":improved
         });
         let verified = |memory_gain: bool, context_gain: bool| json!({
-            "accepted":true,"domain":"memory",
+            "accepted":true,"pairedRevalidated":true,"domain":"memory",
             "evaluation":{"candidateStatus":"verified",
                 "measurementScope":"frozen_native_cases_only",
                 "evidenceSha256":"a".repeat(64),
@@ -4324,13 +4333,13 @@ mod tests {
         assert!(!meta_transfer_proven(&[unproven]),
             "A claimed improvement without a paired receipt is not proof");
 
-        let improver_gain = json!({"accepted":true,"domain":"memory",
+        let improver_gain = json!({"accepted":true,"pairedRevalidated":true,"domain":"memory",
             "evaluation":{"candidateStatus":"verified",
                 "measurementScope":"frozen_native_cases_only",
                 "evidenceSha256":"b".repeat(64),
                 "metrics":{"eligible":true,"holdoutCases":2,"regressions":0,
                     "holdoutDomains":["improver","memory"],"improvedHoldouts":1,
-                    "metaGains":1,"holdoutEvidence":[
+                    "metaGains":1,"metaHoldoutGains":1,"holdoutEvidence":[
                         holdout("a","memory",false),
                         {"id":"b","domain":"improver","baselinePass":true,
                          "candidatePass":true,"metricGains":1,"metricRegressions":0,
@@ -4341,7 +4350,9 @@ mod tests {
 
     #[test]
     fn verified_capability_requires_measured_holdout_evidence() {
-        let verified=json!({"accepted":true,"evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":0}}});
+        let verified=json!({"accepted":true,"pairedRevalidated":true,"evaluation":{
+            "candidateStatus":"verified","measurementScope":"frozen_native_cases_only",
+            "metrics":{"eligible":true,"holdoutCases":2,"regressions":0}}});
         let regressed=json!({"accepted":true,"evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":1}}});
         assert_eq!(verified_capability_streak(&[verified.clone(),verified.clone(),verified.clone()]),(3,3));
         assert_eq!(verified_capability_streak(&[verified.clone(),regressed.clone()]),(0,1));
