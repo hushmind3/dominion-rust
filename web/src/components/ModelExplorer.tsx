@@ -50,9 +50,13 @@ export function ModelExplorer(){
  useEffect(()=>{
   let live=true;
   let timer:ReturnType<typeof setTimeout>;
-  const update=async()=>{await refresh();if(live)timer=setTimeout(update,1800)};
+  // Local model state changes slowly; ten seconds is enough and hidden tabs
+  // stop polling entirely. Focus triggers an immediate refresh.
+  const update=async()=>{if(!document.hidden)await refresh();if(live)timer=setTimeout(update,10000)};
+  const onVisible=()=>{if(!document.hidden)void refresh()};
+  document.addEventListener('visibilitychange',onVisible);
   void update();
-  return()=>{live=false;clearTimeout(timer)};
+  return()=>{live=false;clearTimeout(timer);document.removeEventListener('visibilitychange',onVisible)};
  },[refresh])
  useLayoutEffect(()=>{if(detailScroll.current)detailScroll.current.scrollTop=0},[selected])
  useLayoutEffect(()=>{if(catalogueScroll.current)catalogueScroll.current.scrollTop=0},[q])

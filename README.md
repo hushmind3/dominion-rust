@@ -60,13 +60,13 @@ web/                 React 프론트엔드 (Vite)
 
 ```
 React (Vite build) → Rust Axum :4317 → Rust engine → SQLite / tools
-                                            ↘ Rust gateway :4399 → 모델 API
+                                            ↘ 모델 API (HTTPS 직접 연결)
                                             ↘ llama.cpp :4319 (로컬 GGUF)
 ```
 
 - `4317`: DOMINION Rust 엔진·API
-- `4399`: **Rust** OpenCode Go 게이트웨이 (`dominion-rust --shim`)
 - `4319`: Rust가 관리하는 llama.cpp (로컬 모델을 쓸 때만)
+- 모델 요청은 별도 게이트웨이 프로세스 없이 제공자 API로 직접 나갑니다.
 - Node는 `vite build`용 개발 도구로만 사용합니다.
 
 ## 실행
@@ -205,13 +205,13 @@ npm start            # release Rust 엔진과 화면 실행
 
 ```
 React (Vite build) → Rust Axum :4317 → Rust engine → SQLite / tools
-                                            ↘ Rust gateway :4399 → 모델 API
+                                            ↘ 모델 API (HTTPS 직접 연결)
                                             ↘ llama.cpp :4319 (로컬 GGUF)
 ```
 
 - `4317`: DOMINION Rust 엔진·API
-- `4399`: **Rust** OpenCode Go 게이트웨이 (`dominion-rust --shim`)
 - `4319`: Rust가 관리하는 llama.cpp (로컬 모델을 쓸 때만)
+- 모델 요청은 별도 게이트웨이 프로세스 없이 제공자 API로 직접 나갑니다.
 - Node는 `vite build`용 개발 도구로만 사용합니다.
 
 ## 실행 제한·취소
