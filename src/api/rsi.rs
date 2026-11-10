@@ -59,8 +59,11 @@ async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
 }
 
 pub async fn list(State(state): State<AppState>) -> Json<Value> {
+    let campaigns=state.store.all("rsi_campaign").into_iter().take(20)
+        .map(|mut record| {apply_capability(&state,&mut record);record})
+        .collect::<Vec<_>>();
     Json(json!({"version":"rsi-v2","candidates":engine::list(&state),
-        "campaigns":state.store.all("rsi_campaign").into_iter().take(20).collect::<Vec<_>>(),
+        "campaigns":campaigns,
         "minPairedCases":engine::MIN_PAIRED_CASES}))
 }
 
@@ -171,11 +174,11 @@ pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Respo
 }
 
 pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
-    let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|record|{
+    let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|mut record|{
         let job=record["id"].as_str().and_then(|id|state.store.get("job",id)).unwrap_or(Value::Null);
-        let (_,max_streak)=accepted_streak(&record);
+        apply_capability(&state,&mut record);
         json!({"id":record["id"],"phase":record["phase"],
-            "maxAcceptedStreak":max_streak,"capabilityDemonstrated":max_streak>=3,
+            "maxAcceptedStreak":record["maxAcceptedStreak"],"capabilityDemonstrated":record["capabilityDemonstrated"],
             "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
     }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
@@ -551,6 +554,33 @@ mod tests {
 #[cfg(test)]
 mod capability_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn every_campaign_listing_requires_verified_meta_transfer() {
+        use crate::{config::Config,db::Store,vault::Vault};
+        let root=std::env::temp_dir().join(format!("dominion-campaign-proof-{}",uuid::Uuid::new_v4()));
+        let config=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
+        state.store.put("rsi_campaign",&json!({
+            "id":"claim-only","status":"completed","maxAcceptedStreak":3,
+            "acceptedStreak":3,"capabilityDemonstrated":true,
+            "history":[{"accepted":true},{"accepted":true},{"accepted":true}]
+        })).unwrap();
+        state.store.put("job",&json!({"id":"claim-only","kind":"rsi_evolve","status":"completed"})).unwrap();
+        let summary=campaigns(State(state.clone())).await.0;
+        assert_eq!(summary["campaigns"][0]["maxAcceptedStreak"],3);
+        assert_eq!(summary["campaigns"][0]["capabilityDemonstrated"],false,
+            "campaign summary must not advertise unverified intelligence amplification");
+        let full=list(State(state.clone())).await.0;
+        assert_eq!(full["campaigns"][0]["capabilityDemonstrated"],false,
+            "legacy campaign list must not leak stale capability claims");
+        let detail=campaign(State(state.clone()),Path("claim-only".into())).await;
+        let body=axum::body::to_bytes(detail.into_body(),usize::MAX).await.unwrap();
+        let detail:Value=serde_json::from_slice(&body).unwrap();
+        assert_eq!(detail["capabilityDemonstrated"],false,
+            "detail and list endpoints must agree on the evidence gate");
+        let _=std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn capability_requires_three_consecutive_accepts() {
