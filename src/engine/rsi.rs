@@ -211,7 +211,13 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
             meta_gains += mg;
             if planned["holdout"] == true { meta_holdout_gains += mg; }
         }
-        measurements.push(json!({"id":id,"metrics":detail}));
+        // Persist the exact paired result, not just a success summary. The
+        // recursive proof verifier must be able to independently recompute
+        // which frozen holdout and domain actually improved.
+        measurements.push(json!({
+            "id":id,"domain":planned["domain"],"holdout":planned["holdout"],
+            "baselinePass":before,"candidatePass":after,"metrics":detail
+        }));
         if planned["holdout"] == true {
             holdouts += 1;
             holdout_domains.insert(planned["domain"].as_str().unwrap_or("").to_string());
@@ -224,10 +230,11 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     let ready = plan.len() >= MIN_PAIRED_CASES
         && holdouts >= 2
         && gains + metric_gains > 0
+        && improved_holdouts > 0
         && losses + metric_losses == 0
         && (target != "improver"
             || (holdout_domains.len() >= 2 && improved_holdouts > 0
-                && (!plan.iter().any(|p|p["domain"]=="improver" && p["metrics"].as_array().is_some_and(|m|!m.is_empty())) || meta_gains>0)));
+                && (!plan.iter().any(|p|p["domain"]=="improver" && p["metrics"].as_array().is_some_and(|m|!m.is_empty())) || meta_holdout_gains>0)));
     Ok(json!({
         "pairedCases":plan.len(),"holdoutCases":holdouts,
         "holdoutDomains":holdout_domains.into_iter().collect::<Vec<_>>(),
@@ -360,6 +367,54 @@ pub fn confirm_deployment(
     Ok(saved)
 }
 
+/// Verify a self-improvement report from its immutable per-case receipts.
+/// A candidate-controlled summary (domain list/counts) is never proof on its
+/// own, even when the evaluation source and evidence hash are syntactically
+/// valid. Missing legacy receipts intentionally remain unproven.
+fn verified_holdout_domains(metrics:&Value)->Option<BTreeSet<String>> {
+    let rows=metrics["measurements"].as_array()?;
+    let mut seen=BTreeSet::new();
+    let mut domains=BTreeSet::new();
+    let mut improved_rows=0u64;
+    let mut meta_gains=0u64;
+    for row in rows {
+        let id=row["id"].as_str().filter(|s|!s.is_empty())?;
+        if !seen.insert(id.to_string()) {return None;}
+        let domain=row["domain"].as_str().filter(|s|!s.is_empty())?;
+        let holdout=row["holdout"].as_bool()?;
+        let before=row["baselinePass"].as_bool()?;
+        let after=row["candidatePass"].as_bool()?;
+        let detail=row["metrics"].as_array()?;
+        // Metrics are valid only for cases where both binaries passed.
+        let mut improved_metrics=0u64;
+        for metric in detail {
+            let improved=metric["improved"].as_bool()?;
+            let regressed=metric["regressed"].as_bool()?;
+            if regressed {return None;}
+            if improved && (!before || !after) {return None;}
+            improved_metrics+=u64::from(improved);
+        }
+        if holdout {
+            if (!before && after) || improved_metrics>0 {
+                improved_rows+=1;
+                domains.insert(domain.to_string());
+            }
+            if domain=="improver" {
+                meta_gains=meta_gains.saturating_add(improved_metrics);
+            }
+        }
+    }
+    let claimed=metrics["improvedHoldoutDomains"].as_array()?
+        .iter().map(|value|value.as_str().filter(|s|!s.is_empty())
+            .map(str::to_string)).collect::<Option<BTreeSet<String>>>()?;
+    if domains.is_empty() || domains!=claimed
+        || metrics["improvedHoldouts"].as_u64()?!=improved_rows
+        || metrics["metaHoldoutGains"].as_u64()?!=meta_gains {
+        return None;
+    }
+    Some(domains)
+}
+
 /// Three accepted patches alone do not demonstrate recursive intelligence.
 /// Require exact generator succession, independently measured holdout gains,
 /// a self-improver change, and subsequent transfer into another capability.
@@ -393,10 +448,9 @@ pub fn capability_proven(state: &AppState, history: &[Value]) -> bool {
         if chain.last().is_some_and(|(prior,_,_)|prior!=generator) {
             chain.clear();
         }
-        let improved = evaluation["metrics"]["improvedHoldoutDomains"]
-            .as_array().into_iter().flatten()
-            .filter_map(Value::as_str).map(str::to_string)
-            .collect::<BTreeSet<_>>();
+        let Some(improved)=verified_holdout_domains(&evaluation["metrics"]) else {
+            chain.clear(); continue;
+        };
         let meta = candidate["target"] == "improver"
             && evaluation["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0) > 0
             && improved.contains("improver");
