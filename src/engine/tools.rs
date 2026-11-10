@@ -141,7 +141,10 @@ pub async fn execute(
             let text = result["content"].as_str().unwrap_or_default();
             let lines = text.lines().collect::<Vec<_>>();
             let begin = (start as usize).min(lines.len());
-            let end = (requested_end as usize).min(lines.len()).max(begin).min(begin.saturating_add(400));
+            // RSI generations must leave budget for the edit. A 400-line read
+            // can consume most of the remaining campaign budget on its own.
+            let line_cap = if isolated_rsi { 120 } else { 400 };
+            let end = (requested_end as usize).min(lines.len()).max(begin).min(begin.saturating_add(line_cap));
             let mut numbered = String::new();
             for (offset, line) in lines[begin.saturating_sub(1)..end].iter().enumerate() {
                 numbered.push_str(&format!("{:>5} {}\n", begin + offset, line));
