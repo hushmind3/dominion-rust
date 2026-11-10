@@ -726,6 +726,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let mut lineage = json!({
         "selectedCommit": Value::Null,
         "sameSource": false,
+        "sameBranch": false,
         "sameBase": false,
         "fingerprintValid": false,
         "fingerprintMatch": false,
@@ -733,6 +734,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     });
     if let Some(selected) = context.state.store.get("rsi_current", "selected-engine") {
         let same_source = selected["sourceDir"].as_str() == source.to_str();
+        let same_branch = selected["sourceBranch"] == input["rsiSourceBranch"]
+            && input["rsiSourceBranch"].as_str().is_some_and(|s| !s.is_empty());
         let same_base = selected["sourceBaseCommit"].as_str() == Some(base);
         let selected_fingerprint = selected["sourceFingerprint"].as_str().unwrap_or("");
         let fingerprint_valid = lineage_fingerprint_valid(selected_fingerprint);
@@ -740,12 +743,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         lineage = json!({
             "selectedCommit": selected["commit"],
             "sameSource": same_source,
+            "sameBranch": same_branch,
             "sameBase": same_base,
             "fingerprintValid": fingerprint_valid,
             "fingerprintMatch": fingerprint_match,
             "reused": false
         });
-        if same_source && same_base && fingerprint_match {
+        if same_source && same_branch && same_base && fingerprint_match {
             if let Some(commit) = selected["commit"]
                 .as_str()
                 .filter(|s| s.len() == 40 && s.bytes().all(|c| c.is_ascii_hexdigit()))
@@ -772,20 +776,27 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     if lineage["reused"] == true {
         if let Some(prior_id) = input["rsiContinueFrom"].as_str() {
             if let Some(prior) = context.state.store.get("rsi_campaign", prior_id) {
-                accepted_streak_seed = prior["acceptedStreak"].as_u64().unwrap_or(0);
-                max_streak_seed = prior["maxAcceptedStreak"].as_u64().unwrap_or(0);
+                if prior["headCommit"] == head
+                    && prior["sourceDir"] == json!(source)
+                    && prior["sourceBranch"] == input["rsiSourceBranch"]
+                    && prior["baseCommit"] == base
+                    && prior["sourceFingerprint"] == fingerprint {
+                    accepted_streak_seed = prior["acceptedStreak"].as_u64().unwrap_or(0);
+                    max_streak_seed = prior["maxAcceptedStreak"].as_u64().unwrap_or(0);
+                }
             }
         }
     }
     let mut record = json!({"id":context.job_id,"status":"running","phase":"building_generator",
-        "sourceDir":source,"labDir":lab,"baseCommit":base,"headCommit":head,"sourceSnapshot":snapshot,"sourceFingerprint":fingerprint,
+        "sourceDir":source,"sourceBranch":input["rsiSourceBranch"],
+        "labDir":lab,"baseCommit":base,"headCommit":head,"sourceSnapshot":snapshot,"sourceFingerprint":fingerprint,
         "objective":input["rsiObjective"],"providerId":input["providerId"],"model":input["model"],
         "continuedFrom":input["rsiContinueFrom"],"nextDecision":input["rsiPreviousDecision"],
         "nativeApproved":true,"limits":limits,"attempts":0,"acceptedGenerations":0,"tokens":0,
         "history":[],"activeGenerationJobId":null,"createdAt":chrono::Utc::now().to_rfc3339(),
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
         "lineage":lineage,
-        "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,"capabilityDemonstrated":max_streak_seed>=3,
+        "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,"capabilityDemonstrated":false,
         "productionChanged":false,"accelerationProven":false});
     save(context, &record)?;
     let started = Instant::now();
@@ -2304,7 +2315,8 @@ async fn run_loop(
                             .put("rsi_candidate", &saved)
                             .ok_or("채택 기록 저장 실패")?;
                         context.state.store.put("rsi_current",&json!({"id":"selected-engine","commit":commit,
-                            "sourceDir":record["sourceDir"],"sourceBaseCommit":record["baseCommit"],
+                            "sourceDir":record["sourceDir"],"sourceBranch":record["sourceBranch"],
+                            "sourceBaseCommit":record["baseCommit"],
                             "sourceFingerprint":record["sourceFingerprint"],"campaignId":context.job_id,
                             "candidateId":id,"selectedAt":chrono::Utc::now().to_rfc3339()})).ok_or("선택한 개선기 저장 실패")?;
                     }
@@ -2397,10 +2409,10 @@ async fn run_loop(
         let generation_accepted = generation["accepted"] == true;
         let accepted_streak = if generation_accepted {
             record["acceptedStreak"].as_u64().unwrap_or(0) + 1
-        } else if generation["evaluation"].is_object() {
-            0
         } else {
-            record["acceptedStreak"].as_u64().unwrap_or(0)
+            // Research-only or failed generations interrupt a consecutive
+            // adoption chain, even when no evaluation was produced.
+            0
         };
         record["acceptedStreak"] = json!(accepted_streak);
         let max_streak = record["maxAcceptedStreak"]
@@ -2410,7 +2422,11 @@ async fn run_loop(
         record["maxAcceptedStreak"] = json!(max_streak);
         // Three consecutive adopted generations are the documented threshold
         // for calling the capability demonstrated, not a single lucky patch.
-        record["capabilityDemonstrated"] = json!(max_streak >= 3);
+        let mut evidence_record=record.clone();
+        evidence_record["history"].as_array_mut()
+            .ok_or("세대 이력 손상")?.push(generation.clone());
+        record["capabilityDemonstrated"] = json!(max_streak >= 3
+            && crate::engine::rsi::campaign_capability_proven(&context.state,&evidence_record));
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
