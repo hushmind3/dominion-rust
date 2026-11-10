@@ -151,6 +151,21 @@ pub fn eval_expression(
     expression: &str,
     variables: &std::collections::BTreeMap<String, f64>,
 ) -> Result<f64, String> {
+    // Model-authored expressions are bounded before recursive descent.
+    if expression.chars().count()>512 {
+        return Err("expression exceeds the 512-character limit".into());
+    }
+    let mut depth=0usize;
+    for ch in expression.chars() {
+        if ch=='(' {
+            depth+=1;
+            if depth>32 {return Err("expression nesting exceeds 32 levels".into());}
+        } else if ch==')' {
+            if depth==0 {return Err("unbalanced expression brackets".into());}
+            depth-=1;
+        }
+    }
+    if depth!=0 {return Err("unbalanced expression brackets".into());}
     struct Parser<'a> {
         chars: Vec<char>,
         index: usize,
@@ -253,6 +268,7 @@ pub fn eval_expression(
     if parser.peek().is_some() {
         return Err("trailing tokens in expression".into());
     }
+    if !value.is_finite() {return Err("non-finite expression result".into());}
     Ok(value)
 }
 
@@ -1522,6 +1538,27 @@ pub fn register(state: &AppState, body: &Value) -> Result<Value, String> {
             .ok_or("expression kernel requires parameters.expression")?;
         eval_expression(expression, &expression_sample(kind))?;
     }
+    // Domain selection and file discovery are distinct policy outputs. A
+    // model can evolve both, but target expressions must be executable for
+    // positive *and* zero-evidence files before entering a real trial.
+    if let Some(raw)=body["parameters"].get("targetExpression") {
+        if kind!="selfimprove.search" || implementation!="expression" {
+            return Err("targetExpression requires an executable selfimprove.search expression".into());
+        }
+        let expression=raw.as_str().filter(|text|!text.trim().is_empty())
+            .ok_or("targetExpression must be a non-empty expression string")?;
+        let sample=std::collections::BTreeMap::from([
+            ("pathEvidence".to_string(),1.0),
+            ("symbolEvidence".to_string(),1.0),
+            ("summaryEvidence".to_string(),1.0),
+            ("bodyEvidence".to_string(),1.0),
+            ("novelty".to_string(),1.0),
+            ("sourceCost".to_string(),1.0),
+        ]);
+        eval_expression(expression,&sample)?;
+        let zero=sample.keys().map(|key|(key.clone(),0.0)).collect();
+        eval_expression(expression,&zero)?;
+    }
     let variant = body["variant"].as_str().unwrap_or(implementation);
     let parameters = body["parameters"]
         .as_object()
@@ -1958,6 +1995,36 @@ mod tests {
         )
         .is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn model_created_source_targeting_is_checked_before_trial_registration() {
+        let (state,dir)=state();
+        let policy=json!({"kind":"selfimprove.search","name":"bounded-target-exploration",
+            "implementation":"expression","parameters":{
+                "expression":"novelty + exploration - tokenCost",
+                "targetExpression":"novelty + bodyEvidence - sourceCost"
+            }});
+        let saved=register(&state,&policy).unwrap();
+        assert_eq!(saved["parameters"]["targetExpression"],
+            "novelty + bodyEvidence - sourceCost");
+        let bad=json!({"kind":"selfimprove.search","name":"broken-target",
+            "implementation":"expression","parameters":{
+                "expression":"novelty",
+                "targetExpression":"1 / pathEvidence"
+            }});
+        assert!(register(&state,&bad).is_err(),
+            "zero lexical evidence must not trigger a queued-but-broken target policy");
+        let bad=json!({"kind":"selfimprove.search","name":"unknown-feature",
+            "implementation":"expression","parameters":{
+                "expression":"novelty",
+                "targetExpression":"notAFeature + 1"
+            }});
+        assert!(register(&state,&bad).is_err());
+        let nested=format!("{}1{}","(".repeat(33),")".repeat(33));
+        assert!(eval_expression(&nested,&std::collections::BTreeMap::new()).is_err());
+        assert!(eval_expression(&"1 + ".repeat(200),&std::collections::BTreeMap::new()).is_err());
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[test]
