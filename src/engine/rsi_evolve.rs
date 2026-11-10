@@ -2197,8 +2197,12 @@ fn generation_fits_remaining_budget(record:&Value,input:&Value)->bool {
     })
 }
 
-fn should_stop_no_progress(streak: u64, research: bool, changed: bool) -> bool {
-    streak>=1 && (!research || !changed)
+/// One empty generation cannot end an autonomous improvement campaign.
+/// Permit a bounded correction and a pending self-synthesized search trial,
+/// but do not pay endlessly for identical research without source changes.
+fn should_stop_no_progress(streak: u64, research: bool, changed: bool, trial_pending:bool) -> bool {
+    if research && changed {return false;}
+    streak>=2 && (!trial_pending || streak>=4)
 }
 
 fn new_research_findings(state:&AppState,input:&Value,job_id:&str,hashes:&[Value],history:&[Value])->usize{
@@ -2805,7 +2809,14 @@ async fn run_loop(
         if let Some(error)=generation_model_error(&current) {
             return Err(error.to_string());
         }
-        if no_edit && should_stop_no_progress(streak, research, changed) {
+        let trial_pending=record["nextTrialAlgorithmId"].as_str().is_some_and(|id|
+            context.state.store.get("algorithm",id)
+                .is_some_and(|algorithm|matches!(algorithm["rsiTrial"]["status"].as_str(),
+                    Some("pending_trial"|"pending_second_trial"))))
+            || pending_trial_candidate(&context.state,
+                input["rsiObjective"].as_str().unwrap_or(""),
+                &allowed_trial_campaigns(&context.state,input,record,&context.job_id)).is_some();
+        if no_edit && should_stop_no_progress(streak, research, changed,trial_pending) {
             return Ok("no_progress".into());
         }
     }
@@ -3236,7 +3247,7 @@ mod tests {
             "status":"active","generationJobId":"current-worker","researchArtifacts":artifacts}));
         let hashes=artifacts.iter().map(|a|a["hash"].clone()).collect::<Vec<_>>();
         assert_eq!(new_research_findings(&state,&input,"current-worker",&hashes,&[]),1,"worker pre-save must not erase its own progress");
-        assert!(!should_stop_no_progress(1,true,true));
+        assert!(!should_stop_no_progress(1,true,true,false));
         assert_eq!(new_research_findings(&state,&input,"next-worker",&hashes,&[]),0,"re-proposing the same program is not new research");
         let _=std::fs::remove_dir_all(root);
     }
@@ -3640,12 +3651,17 @@ mod tests {
 
     #[test]
     fn research_continues_for_new_findings_not_for_new_query_spellings() {
-        assert!(!should_stop_no_progress(1, true, true));
-        assert!(should_stop_no_progress(1, true, false));
-        assert!(should_stop_no_progress(1, false, true));
-        assert!(!should_stop_no_progress(2, true, true));
-        assert!(!should_stop_no_progress(3, true, true));
-        assert!(should_stop_no_progress(3, true, false));
+        assert!(!should_stop_no_progress(1,true,true,false));
+        assert!(!should_stop_no_progress(1,true,false,false),
+            "first unproductive generation is diagnosed, not terminal");
+        assert!(!should_stop_no_progress(1,false,true,false));
+        assert!(!should_stop_no_progress(2,true,true,false));
+        assert!(should_stop_no_progress(2,true,false,false));
+        assert!(!should_stop_no_progress(2,true,false,true),
+            "pending search trial must be allowed to run");
+        assert!(should_stop_no_progress(4,false,false,true),
+            "repeated stalled controls cannot consume an unbounded campaign");
+        assert!(!should_stop_no_progress(3,true,true,false));
     }
 
     #[test]
