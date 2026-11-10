@@ -2809,6 +2809,38 @@ mod tests {
     }
 
     #[test]
+    fn generated_target_expression_actually_changes_file_selection() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::write(root.join("src/engine/memory_first.rs"),
+            "fn memory_dispatch() {}\n").unwrap();
+        std::fs::write(root.join("src/engine/memory_second.rs"),
+            format!("fn memory_dispatch() {{}}\n{}", "// non-goal padding\n".repeat(45))).unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let input=json!({"rsiIndexId":index["id"],"rsiObjective":"memory dispatch",
+            "rsiTargetDomain":"memory"});
+        let baseline=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(baseline[0]["path"],"src/engine/memory_first.rs");
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"runtime-target-formula","implementation":"expression",
+            "parameters":{"expression":"objectiveMatch","targetExpression":"sourceCost"}
+        })).unwrap();
+        assert_eq!(candidate["status"],"available");
+        let trial=choose_focus_files(&state,&input,&[],Some(&candidate));
+        assert_eq!(trial[0]["path"],"src/engine/memory_second.rs",
+            "a model-authored formula must change an actual selection, not just be stored");
+        assert_eq!(trial[0]["scoring"],"expression");
+        // A malformed runtime candidate does not fail a generation or make
+        // non-finite ordering decisions. It is surfaced as policyError.
+        let mut corrupt=candidate.clone();
+        corrupt["parameters"]["targetExpression"]=json!("sourceCost / (novelty - novelty)");
+        let safe=choose_focus_files(&state,&input,&[],Some(&corrupt));
+        assert_eq!(safe[0]["path"],"src/engine/memory_first.rs");
+        assert!(safe[0]["policyError"].as_str().is_some());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn auto_targeting_uses_current_index_and_never_requires_a_fixed_filename() {
         let (state,root)=state();
         std::fs::create_dir_all(root.join("src/engine")).unwrap();
