@@ -2196,6 +2196,13 @@ async fn run_loop(
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
         let original = child_input["prompt"].as_str().unwrap_or("");
+        // Preserve the unmixed prompt parts so an evolved descendant worker
+        // can replan without inheriting a stale source excerpt or a stale
+        // coordinator-selected file as apparent evidence.
+        child_input["rsiPromptBase"]=json!(original);
+        child_input["rsiPromptEvidence"]=json!(inherited);
+        child_input["rsiPromptResearch"]=json!(digest);
+        child_input["rsiSourceAdvanced"]=json!(head != record["baseCommit"].as_str().unwrap_or(""));
         let model_bound = child_input["model"].as_str().is_some_and(|m| !m.is_empty())
             && child_input["providerId"].as_str().is_some_and(|p| !p.is_empty());
         // Re-evaluate the ACTUAL complete parent prompt before any paid model
@@ -2311,6 +2318,7 @@ async fn run_loop(
             "totalPromptChars":current["input"]["rsiPromptContextChars"],
             "focusFiles":current["input"]["rsiFocusFiles"],
             "focusSelection":current["input"]["rsiFocusSelection"],
+            "targetReplan":current["rsiTargetReplan"],
             "knowledgePartition":research_scope(&current["input"]).partition_key,
             "objectiveId":crate::engine::memory::stable_id(&[
                 current["input"]["rsiObjective"].as_str().unwrap_or("")]),
@@ -2640,6 +2648,84 @@ pub(crate) async fn adopt(
     git(context, lab, &["rev-parse", "HEAD"]).await
 }
 
+/// The coordinator's guess is auditable; a rebuilt descendant's policy
+/// may select a different domain and must then recompute its source evidence.
+fn generation_target_plan(domain:&str,selection:&str,strategy:&Value,commit:&str)->Value {
+    json!({"domain":domain,"selection":selection,"strategy":strategy,"generatorCommit":commit})
+}
+
+fn reconcile_descendant_target(
+    state:&AppState,job:&mut Value,history:&[Value],
+    domain:&str,selection:&str,strategy:&Value,commit:&str
+)->Result<bool,String>{
+    let proposed=generation_target_plan(domain,selection,strategy,commit);
+    let old=job["input"]["rsiTargetPlan"].clone();
+    if old==proposed {return Ok(false);}
+    if !old.is_object() {return Err("차세대 대상 재계획의 기존 근거가 없습니다.".into());}
+    let base=job["input"]["rsiPromptBase"].as_str()
+        .ok_or("차세대 재계획에 필요한 원본 지시문이 없습니다.")?.to_string();
+    let inherited=job["input"]["rsiPromptEvidence"].as_str().unwrap_or("").to_string();
+    let research=job["input"]["rsiPromptResearch"].as_str().unwrap_or("").to_string();
+    job["input"]["rsiTargetDomain"]=json!(domain);
+    if job["input"]["rsiAutoFocus"]==true {
+        let path=job["input"]["rsiSourceDir"].as_str()
+            .ok_or("차세대 소스 경로 없음")?;
+        let source=PathBuf::from(path);
+        let index=crate::engine::code_index::refresh(state,&source)?;
+        job["input"]["rsiIndexId"]=index["id"].clone();
+        let policy=strategy["id"].as_str()
+            .and_then(|id|state.store.get("algorithm",id))
+            .or_else(||crate::engine::algorithms::active(state,"selfimprove.search"));
+        let ranked=choose_focus_files(state,&job["input"],history,policy.as_ref());
+        let selected=ranked.iter().filter_map(|row|row["path"].as_str())
+            .map(str::to_string).collect::<Vec<_>>();
+        job["input"]["rsiFocusFiles"]=json!(selected);
+        job["input"]["rsiFocusSelection"]=json!({
+            "source":"descendant_indexed_evidence","domain":domain,
+            "candidates":ranked,
+            "policyRevision":policy.as_ref().map(|a|a["revision"].clone()),
+            "sourceIndexId":index["id"]
+        });
+    }
+    let path=job["input"]["rsiSourceDir"].as_str()
+        .ok_or("차세대 소스 경로 없음")?;
+    let focus=focus_file_context(state,&json!({"labDir":path}),&job["input"]);
+    let bound=job["input"]["model"].as_str().is_some_and(|s|!s.is_empty())
+        && job["input"]["providerId"].as_str().is_some_and(|s|!s.is_empty());
+    let variants=[
+        ("full",format!("{base}\n\n{inherited}{research}{focus}"),false,false),
+        ("source_on_demand",format!("{base}\n\n{inherited}{research}"),true,false),
+        ("research_on_demand",format!("{base}\n\n{inherited}"),true,true),
+    ];
+    let remaining=job["input"]["rsiRemainingCampaignTokens"].as_u64();
+    let Some((mode,prompt,source_deferred,research_deferred))=variants.into_iter()
+        .find(|(_,prompt,_,_)| !bound || remaining.is_none_or(|available|
+            crate::engine::chat::estimate_text_tokens(prompt).saturating_add(256)<=available))
+    else {return Err("rsi_token_budget: 차세대 재계획 입력 예산 부족".into())};
+    job["input"]["prompt"]=json!(prompt);
+    job["input"]["rsiPromptContextChars"]=json!(prompt.chars().count());
+    job["input"]["rsiFocusContextChars"]=json!(
+        if source_deferred {0}else{focus.chars().count()});
+    job["input"]["rsiContextPlan"]=json!({
+        "mode":mode,"sourceExcerptDeferred":source_deferred && !focus.is_empty(),
+        "researchReadLedgerDeferred":research_deferred && !research.is_empty(),
+        "evidencePreserved":true
+    });
+    job["input"]["rsiTargetPlan"]=proposed.clone();
+    if job["input"]["rsiDecisionInput"].is_object() {
+        job["input"]["rsiDecisionInput"]["nextDomain"]=json!(domain);
+        job["input"]["rsiDecisionInput"]["decisionSource"]=json!("descendant_worker");
+    }
+    let receipt=json!({
+        "coordinatorPlan":old,"descendantPlan":proposed,
+        "sourceIndexId":job["input"]["rsiIndexId"],
+        "reason":"descendant_authoritative_selection"
+    });
+    job["rsiTargetReplan"]=receipt.clone();
+    job["input"]["rsiTargetReplan"]=receipt;
+    Ok(true)
+}
+
 fn select_generation_strategy(
     state: &AppState,
     history: &[Value],
@@ -2741,9 +2827,33 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .as_str()
         .filter(|domain| DOMAINS.contains(domain))
         .map(str::to_string);
-    let (domain, domain_selection, strategy) =
-        select_generation_strategy(&state, &history, &objective, continuation, trial_id,
-            selected_domain, job["input"]["rsiGeneratorCommit"].as_str().unwrap_or(""));
+    let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
+    let (mut domain, mut domain_selection, mut strategy)=select_generation_strategy(
+        &state,&history,&objective,continuation.clone(),trial_id.clone(),
+        selected_domain.clone(),&commit);
+    // An adopted binary can revise its own targeting logic. Keep the original
+    // parent decision unless the recompiled generator reaches a different
+    // conclusion on the same durable history and objective.
+    if job["input"]["rsiSourceAdvanced"]==true
+        && job["input"]["rsiAutoFocus"]==true && continuation.is_none()
+        && selected_domain.is_some() {
+        let fresh=select_generation_strategy(&state,&history,&objective,
+            None,trial_id,None,&commit);
+        if fresh.0!=domain {
+            (domain,domain_selection,strategy)=fresh;
+            strategy["decisionSource"]=json!("descendant_algorithm");
+        }
+    }
+    if let Err(error)=reconcile_descendant_target(&state,&mut job,&history,
+        &domain,domain_selection,&strategy,&commit) {
+        if error.starts_with("rsi_token_budget:") {
+            job["status"]=json!("failed");
+            job["error"]=json!(error);
+            job["result"]=json!({"rsi":{"modelError":error}});
+            state.store.put("job",&job).ok_or("세대 예산 중단 기록 실패")?;
+        }
+        return Err(error);
+    }
     job["rsiDomain"] = json!(domain);
     job["rsiDomainSelection"] = json!(domain_selection);
     job["rsiSearchStrategy"] = strategy.clone();
