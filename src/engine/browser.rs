@@ -580,6 +580,7 @@ mod tests {
             &json!({ "index": input, "text": "dominion" }),
             &dir,
             &dir,
+            "dashboard",
         )
         .await
         .unwrap();
