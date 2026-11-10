@@ -16,7 +16,9 @@ fn accepted_streak(record: &Value) -> (u64, u64) {
         if generation["accepted"] == true {
             streak += 1;
             max = max.max(streak);
-        } else if generation["evaluation"].is_object() {
+        } else {
+            // Research-only attempts are part of the generation sequence.
+            // A gap is not a consecutive adoption.
             streak = 0;
         }
     }
@@ -559,6 +561,13 @@ mod capability_tests {
             {"accepted":true,"evaluation":{}}
         ]});
         assert_eq!(accepted_streak(&partial), (1, 2));
+        let gap = json!({"history":[
+            {"accepted":true,"evaluation":{}},
+            {"accepted":false,"newFindings":3,"evaluation":null},
+            {"accepted":true,"evaluation":{}}
+        ]});
+        assert_eq!(accepted_streak(&gap), (1,1),
+            "Research-only generations must not be skipped between adoptions");
         let mut derived = partial.clone();
         apply_capability(&mut derived);
         assert_eq!(derived["capabilityDemonstrated"], false);
