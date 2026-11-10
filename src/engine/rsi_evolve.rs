@@ -2197,9 +2197,11 @@ async fn run_loop(
                 .is_none_or(|path|!crate::engine::rsi::safe_path(path))) {
                 return Err("차세대 실행기의 소스 후보 경로가 유효하지 않습니다.".into());
             }
+            let selected_domain=domain.to_string();
+            let selected_mode=selection.to_string();
             record["nextGenerationPlan"]=plan;
             save(context,record)?;
-            (domain.to_string(),selection.to_string(),strategy,Some(rows))
+            (selected_domain,selected_mode,strategy,Some(rows))
         } else {
             let (domain,selection,strategy)=select_generation_strategy(
                 &context.state,&recorded_history,&target_objective,
@@ -2209,6 +2211,11 @@ async fn run_loop(
         child_input["rsiTargetDomain"]=json!(target_domain);
         child_input["rsiTargetPlan"]=generation_target_plan(
             &target_domain,&target_selection,&target_strategy,&head);
+        child_input["rsiNativePlan"]=if native_planning {
+            record["nextGenerationPlan"].clone()
+        } else {
+            Value::Null
+        };
         let target_policy=target_strategy["id"].as_str()
             .and_then(|id|context.state.store.get("algorithm",id))
             .or_else(||crate::engine::algorithms::active(&context.state,"selfimprove.search"));
@@ -2349,6 +2356,7 @@ async fn run_loop(
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
+            "nativePlan":current["input"]["rsiNativePlan"],
             "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
             "boundaryResult":current["rsiBoundaryResult"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
@@ -2963,6 +2971,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
     } else {
         Vec::new()
     };
+    let target_plan=generation_target_plan(&domain,selection,&strategy,binary_commit);
     Ok(json!({
         "source":"compiled_generator_plan_v1",
         "generatorCommit":binary_commit,
@@ -2971,7 +2980,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "objectiveId":crate::engine::memory::stable_id(&[&objective]),
         "indexId":campaign["planIndexId"],
         "domain":domain,"selection":selection,"strategy":strategy,
-        "targetPlan":generation_target_plan(&domain,selection,&strategy,binary_commit),
+        "targetPlan":target_plan,
         "rankedFiles":ranked
     }))
 }
