@@ -44,7 +44,7 @@ export function WorkspaceSidebar({page,open,collapsed,online,running,pending,onN
   </aside>
  </>
 }
-export function WorkspaceHeader({page,online,collapsed,onMenu,onSearch}:{page:PageId;online:boolean;collapsed:boolean;onMenu:()=>void;onSearch:()=>void}){
+export function WorkspaceHeader({page,online,collapsed,build,onMenu,onSearch}:{page:PageId;online:boolean;collapsed:boolean;build?:{branch:string;commit:string}|null;onMenu:()=>void;onSearch:()=>void}){
  useLocale()
  const selected=items.find(x=>x.id===page)
  return <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-[#E7E0D5] bg-[#FFFDF9]/90 px-6 backdrop-blur-md">
@@ -56,6 +56,7 @@ export function WorkspaceHeader({page,online,collapsed,onMenu,onSearch}:{page:Pa
   <div className="flex items-center gap-3">
    <Button variant="bare" type="button" onClick={onSearch} className="flex h-9 items-center gap-2 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] px-3.5 text-[12px] text-[#7C7469] transition-colors hover:border-[#D8CFC2] hover:bg-[#F3EEE5]"><Search size={14}/><span className="hidden sm:inline">{t('shell.quickNav')}</span><kbd className="hidden text-[10px] md:inline">⌘K</kbd></Button>
    <span className={'hidden items-center gap-1.5 text-[11px] sm:inline-flex '+(online?'text-emerald-700':'text-rose-600')}><i className={'size-1.5 rounded-full '+(online?'bg-emerald-500':'bg-rose-500')}/>{online?t('shell.connected'):t('shell.disconnected')}</span>
+    {build?.branch&&build.branch!=='unknown'&&<span className="hidden max-w-[185px] truncate rounded-md border border-[#E7E0D5] bg-[#F7F3EC] px-2 py-1 text-[10px] font-mono text-[#8A8176] lg:block" title={build.branch+' · '+build.commit}>{build.branch.replace(/^dominion-/,'')} · {build.commit.slice(0,7)}</span>}
     <OwnerProfileEditor compact/>
   </div>
  </header>
