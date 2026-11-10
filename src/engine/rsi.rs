@@ -533,6 +533,26 @@ mod tests {
             "cases":(0..8).map(|i|json!({"id":format!("case-{i}"),"baselinePass":i!=0,"candidatePass":true})).collect::<Vec<_>>()})
     }
     #[test]
+    fn train_only_improvement_cannot_claim_holdout_generalization() {
+        let plan=(0..8).map(|i|json!({
+            "id":format!("case-{i}"),"domain":"memory",
+            "holdout":i<2
+        })).collect::<Vec<_>>();
+        let measured=(0..8).map(|i|json!({
+            "id":format!("case-{i}"),
+            "baselinePass":i!=3,"candidatePass":true
+        })).collect::<Vec<_>>();
+        let metrics=evaluate_cases(&plan,&measured,"memory").unwrap();
+        assert_eq!(metrics["gains"],1);
+        assert_eq!(metrics["improvedHoldouts"],0);
+        assert_eq!(metrics["eligible"],false);
+        assert_eq!(metrics["verdict"],"inconclusive");
+        let mut claimed=metrics;
+        claimed["improvedHoldoutDomains"]=json!(["memory"]);
+        assert!(verified_holdout_domains(&claimed).is_none());
+    }
+
+    #[test]
     fn recursive_proof_needs_real_meta_transfer_not_three_adoption_flags() {
         let (state,root)=state();
         let revisions=["a".repeat(40),"b".repeat(40),"c".repeat(40),"d".repeat(40)];
@@ -550,7 +570,13 @@ mod tests {
                     "evidenceSha256":"e".repeat(64),
                     "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":1,
                         "metaHoldoutGains":if i==0 {1} else {0},
-                        "improvedHoldoutDomains":[improvement_domain]}
+                        "improvedHoldoutDomains":[improvement_domain],
+                        "measurements":[{"id":format!("holdout-{i}"),
+                            "domain":improvement_domain,"holdout":true,
+                            "baselinePass":i==0,"candidatePass":true,
+                            "metrics":if i==0 {json!([{"improved":true,"regressed":false}])}
+                                else {json!([])}
+                        }]}
                 }
             });
             state.store.put("rsi_candidate",&candidate).unwrap();
@@ -563,6 +589,24 @@ mod tests {
         broken[1]=json!({"accepted":false});
         assert!(!capability_proven(&state,&broken),
             "failed research generation must break recursive capability proof");
+        let mut forged=state.store.get("rsi_candidate","proof-1").unwrap();
+        forged["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["tools"]);
+        state.store.put("rsi_candidate",&forged).unwrap();
+        assert!(!capability_proven(&state,&history),
+            "summary domain cannot override concrete frozen holdout measurements");
+        forged["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
+        forged["evaluation"]["metrics"]["improvedHoldouts"]=json!(2);
+        state.store.put("rsi_candidate",&forged).unwrap();
+        assert!(!capability_proven(&state,&history),
+            "summary improvement count must match actual measured rows");
+        forged["evaluation"]["metrics"]["improvedHoldouts"]=json!(1);
+        forged["evaluation"]["metrics"]["measurements"][0]["domain"]=json!("tools");
+        state.store.put("rsi_candidate",&forged).unwrap();
+        assert!(!capability_proven(&state,&history),
+            "holdout domain receipts must be consistent with their published summary");
+        forged["evaluation"]["metrics"]["measurements"][0]["domain"]=json!("memory");
+        state.store.put("rsi_candidate",&forged).unwrap();
+        assert!(capability_proven(&state,&history));
         let mut mislabeled=state.store.get("rsi_candidate","proof-0").unwrap();
         mislabeled["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
         state.store.put("rsi_candidate",&mislabeled).unwrap();
