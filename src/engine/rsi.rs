@@ -259,6 +259,54 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     }))
 }
 
+/// Recalculate adoption eligibility from the individual original paired-run
+/// report. A mutable eligibility summary (or a copied receipt hash) is never
+/// sufficient to authorize source installation or a new RSI generation.
+pub(crate) fn verify_paired_receipt(state:&AppState, candidate:&Value)->Result<Value,String> {
+    let invalid=||"동결된 원본 paired-run 측정과 채택 기록이 일치하지 않습니다.".to_string();
+    if candidate["status"]!="verified"
+        || candidate["evaluation"]["status"]!="verified"
+        || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees" {
+        return Err(invalid());
+    }
+    let candidate_id=candidate["id"].as_str().ok_or_else(invalid)?;
+    let evaluation_id=candidate["evaluation"]["id"].as_str().ok_or_else(invalid)?;
+    let proof=candidate["evaluation"]["evidenceSha256"].as_str().ok_or_else(invalid)?;
+    if proof.len()!=64 || !proof.bytes().all(|byte|byte.is_ascii_hexdigit()) {
+        return Err(invalid());
+    }
+    let patch=candidate["patch"].as_str().ok_or_else(invalid)?;
+    if digest(patch)!=candidate["patchSha256"] { return Err(invalid()); }
+    let receipts=state.store.all("rsi_pair").into_iter()
+        .filter(|row|row["candidateId"]==candidate_id
+            && row["evaluationId"]==evaluation_id)
+        .collect::<Vec<_>>();
+    if receipts.len()!=1 { return Err(invalid()); }
+    let receipt=&receipts[0];
+    if receipt["runner"]!="local_gitrepo_not_os_sandbox"
+        || receipt["evidenceSha256"]!=proof
+        || receipt["report"]["reportSha256"]!=proof
+        || receipt["report"]["baseCommit"]!=candidate["baseCommit"]
+        || receipt["report"]["patchSha256"]!=candidate["patchSha256"]
+        || receipt["report"]["oracleVersion"]!=candidate["oracleVersion"]
+        || receipt["report"]["baselineBuildOk"]!=true
+        || receipt["report"]["candidateBuildOk"]!=true
+        || receipt["verdict"]!="improved"
+        || candidate["evaluation"]["verdict"]!="improved"
+        || candidate["evaluation"]["reportSha256"]!=proof
+    { return Err(invalid()); }
+    let plan=candidate["cases"].as_array().ok_or_else(invalid)?;
+    let cases=receipt["report"]["cases"].as_array().ok_or_else(invalid)?;
+    let measured=evaluate_cases(plan,cases,candidate["target"].as_str().unwrap_or(""))
+        .map_err(|_|invalid())?;
+    if measured["eligible"]!=true
+        || measured["verdict"]!="improved"
+        || receipt["metrics"]!=measured
+        || candidate["evaluation"]["metrics"]!=measured
+    {return Err(invalid());}
+    Ok(measured)
+}
+
 pub fn evaluate(state: &AppState, id: &str, body: &Value) -> Result<Value, String> {
     let mut record = state.store.get("rsi_candidate", id).ok_or("후보를 찾을 수 없습니다.")?;
     if record["status"] != "proposed" && record["status"] != "inconclusive" {
@@ -455,6 +503,37 @@ mod tests {
         assert!(evaluate(&state,record["id"].as_str().unwrap(),&result).is_err());
         let _=std::fs::remove_dir_all(root);
     }
+    #[test]
+    fn paired_receipt_replay_rejects_forged_summary_and_missing_holdout_gain() {
+        let (state,root)=state();
+        let proposal=propose(&state,&proposal("harness")).unwrap();
+        let id=proposal["id"].as_str().unwrap();
+        let raw=report(&proposal);
+        let mut candidate=evaluate(&state,id,&raw).unwrap();
+        candidate["evaluation"]["source"]=json!("server_invoked_local_paired_git_worktrees");
+        candidate["evaluation"]["evidenceSha256"]=raw["reportSha256"].clone();
+        state.store.put("rsi_candidate",&candidate);
+        let receipt_id="paired-replay-fixture";
+        state.store.put("rsi_pair",&json!({"id":receipt_id,
+            "candidateId":id,"evaluationId":candidate["evaluation"]["id"],
+            "report":raw,"verdict":"improved",
+            "metrics":candidate["evaluation"]["metrics"],
+            "evidenceSha256":candidate["evaluation"]["evidenceSha256"],
+            "runner":"local_gitrepo_not_os_sandbox"}));
+        let valid=verify_paired_receipt(&state,&candidate).unwrap();
+        assert_eq!(valid["improvedHoldouts"],1);
+        let mut forged=candidate.clone();
+        forged["evaluation"]["metrics"]["improvedHoldouts"]=json!(99);
+        assert!(verify_paired_receipt(&state,&forged).is_err(),
+            "A persisted summary is not a sufficient promotion receipt");
+        let mut altered=state.store.get("rsi_pair",receipt_id).unwrap();
+        altered["report"]["cases"][0]["baselinePass"]=json!(true);
+        state.store.put("rsi_pair",&altered);
+        assert!(verify_paired_receipt(&state,&candidate).is_err(),
+            "Individual baseline rows must be rechecked before promotion");
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn training_only_improvement_never_promotes_a_candidate() {
         let (state,root)=state();
