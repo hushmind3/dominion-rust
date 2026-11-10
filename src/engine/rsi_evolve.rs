@@ -837,6 +837,66 @@ fn verified_candidate_id(result: &Value) -> Option<&str> {
         .filter(|_| result["rsi"]["checksPassed"] == true)
 }
 
+/// Collect the exact files, ranges and searches earlier generations already
+/// looked at. Without this, every generation starts from scratch and burns
+/// tokens re-reading the same source.
+fn research_digest(state: &AppState, record: &Value) -> String {
+    let mut reads = BTreeSet::new();
+    let mut searches = BTreeSet::new();
+    let executions = state.store.all("execution");
+    let operations = state.store.all("execution_operation");
+    for generation in record["history"].as_array().cloned().unwrap_or_default() {
+        let Some(job_id) = generation["jobId"].as_str() else { continue };
+        let Some(session_id) = state
+            .store
+            .get("job", job_id)
+            .and_then(|job| job["sessionId"].as_str().map(str::to_string))
+        else {
+            continue;
+        };
+        for execution in &executions {
+            if execution["sessionId"].as_str() != Some(session_id.as_str()) {
+                continue;
+            }
+            let Some(run_id) = execution["id"].as_str() else { continue };
+            for operation in &operations {
+                if operation["runId"].as_str() != Some(run_id) {
+                    continue;
+                }
+                match operation["tool"].as_str() {
+                    Some("workspace_read_range") => {
+                        let path = operation["arguments"]["path"].as_str().unwrap_or("");
+                        if path.is_empty() {
+                            continue;
+                        }
+                        let start = operation["arguments"]["startLine"].as_u64().unwrap_or(0);
+                        let end = operation["arguments"]["endLine"].as_u64().unwrap_or(0);
+                        reads.insert(format!("{path} {start}-{end}"));
+                    }
+                    Some("code_search") => {
+                        if let Some(query) = operation["arguments"]["query"].as_str() {
+                            searches.insert(query.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if reads.is_empty() && searches.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from("\n### 이미 확인한 범위 (다시 읽지 마세요)\n");
+    for item in reads.iter().take(30) {
+        text.push_str(&format!("- 읽음: {item}\n"));
+    }
+    for query in searches.iter().take(15) {
+        text.push_str(&format!("- 검색함: \"{query}\"\n"));
+    }
+    text.push_str("위 파일·구간은 이전 세대에서 이미 확인했습니다. 같은 곳을 다시 읽지 말고, 필요한 정확한 블록만 확인한 뒤 바로 수정하세요.\n");
+    text
+}
+
 fn generation_context(state: &AppState, input: &Value, record: &Value) -> String {
     let objective = input["rsiObjective"].as_str().unwrap_or("");
     let scope = research_scope(input);
@@ -1909,10 +1969,12 @@ async fn run_loop(
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
         let inherited = generation_context(&context.state, input, record);
+        let digest = research_digest(&context.state, record);
         child_input["prompt"] = json!(format!(
-            "{}\n\n{}",
+            "{}\n\n{}{}",
             child_input["prompt"].as_str().unwrap_or(""),
-            inherited
+            inherited,
+            digest
         ));
         let child = context
             .state
@@ -2542,6 +2604,28 @@ mod tests {
             .any(|row| row["tool"] == "workspace_read_range"));
         let _ = std::fs::remove_dir_all(root);
     }
+    #[test]
+    fn research_digest_lists_ranges_already_read() {
+        let (state, root) = state();
+        state
+            .store
+            .put("job", &json!({"id":"digest-job","sessionId":"digest-session"}));
+        state
+            .store
+            .put("execution", &json!({"id":"digest-run","sessionId":"digest-session"}));
+        state.store.put(
+            "execution_operation",
+            &json!({"id":"digest-op","runId":"digest-run","tool":"workspace_read_range","status":"completed",
+                "arguments":{"path":"src/engine/memory.rs","startLine":10,"endLine":20}}),
+        );
+        let record = json!({"history":[{"jobId":"digest-job"}]});
+        let text = research_digest(&state, &record);
+        assert!(text.contains("src/engine/memory.rs 10-20"));
+        assert!(text.contains("다시 읽지 마세요"));
+        assert_eq!(research_digest(&state, &json!({"history":[]})), "");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn generation_context_reuses_implementation_evidence_not_tool_counters() {
         let (state, root) = state();
