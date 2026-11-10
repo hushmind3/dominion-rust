@@ -415,6 +415,40 @@ fn verified_holdout_domains(metrics:&Value)->Option<BTreeSet<String>> {
     Some(domains)
 }
 
+/// Recompute the candidate's complete paired evaluation from the original
+/// frozen case plan and preserved per-case raw measurements. The final
+/// metrics and extracted holdout labels must agree with this source record.
+/// Each candidate owns its receipt; campaign-job IDs are not unique across
+/// generations and would overwrite previously adopted evidence.
+fn verified_pair_receipt(state: &AppState, candidate: &Value) -> bool {
+    let Some(id) = candidate["id"].as_str() else { return false; };
+    let Some(receipt) = state.store.get("rsi_pair", &format!("rsi-pair-{id}")) else {
+        return false;
+    };
+    let evaluation = &candidate["evaluation"];
+    let report = &receipt["report"];
+    let Some(plan) = candidate["cases"].as_array() else { return false; };
+    let Some(measured) = report["cases"].as_array() else { return false; };
+    if receipt["candidateId"] != candidate["id"]
+        || receipt["runner"] != "local_gitrepo_not_os_sandbox"
+        || receipt["evidenceSha256"] != evaluation["evidenceSha256"]
+        || report["reportSha256"] != receipt["evidenceSha256"]
+        || report["baseCommit"] != candidate["baseCommit"]
+        || report["patchSha256"] != candidate["patchSha256"]
+        || report["oracleVersion"] != candidate["oracleVersion"]
+        || report["baselineBuildOk"] != true || report["candidateBuildOk"] != true
+    { return false; }
+    let Ok(recalculated) = evaluate_cases(
+        plan, measured, candidate["target"].as_str().unwrap_or("")) else {
+        return false;
+    };
+    recalculated["eligible"] == true
+        && recalculated == evaluation["metrics"]
+        && recalculated == receipt["metrics"]
+        && recalculated["verdict"] == evaluation["verdict"]
+        && recalculated["verdict"] == receipt["verdict"]
+}
+
 /// Three accepted patches alone do not demonstrate recursive intelligence.
 /// Require exact generator succession, independently measured holdout gains,
 /// a self-improver change, and subsequent transfer into another capability.
@@ -444,7 +478,9 @@ pub fn capability_proven(state: &AppState, history: &[Value]) -> bool {
             && generation["evaluation"]["evidenceSha256"] == evaluation["evidenceSha256"]
             && candidate["experimentAdoption"]["commit"] == generation["acceptedCommit"]
             && candidate["baseCommit"] == generation["generatorCommit"];
-        if !verified { chain.clear(); continue; }
+        if !verified || !verified_pair_receipt(state,&candidate) {
+            chain.clear(); continue;
+        }
         if chain.last().is_some_and(|(prior,_,_)|prior!=generator) {
             chain.clear();
         }
@@ -560,26 +596,44 @@ mod tests {
         for i in 0..3 {
             let id=format!("proof-{i}");
             let improvement_domain=if i==0 {"improver"} else if i==1 {"memory"} else {"context"};
+            let target=if i==0 {"improver"} else {"harness"};
+            let plan=(0..8).map(|n|json!({
+                "id":format!("case-{n}"),"domain":if n==1 {"control"} else {improvement_domain},
+                "holdout":n<3,
+                "metrics":if i==0 && n==0 {json!([{"key":"quality","direction":"higher",
+                    "minRelativeGain":0.05,"minAbsoluteGain":0.0,"maxRelativeRegression":0.0}])}
+                    else {json!([])}
+            })).collect::<Vec<_>>();
+            let raw=(0..8).map(|n|json!({
+                "id":format!("case-{n}"),"baselinePass":i==0 || n!=0,
+                "candidatePass":true,
+                "metrics":if i==0 && n==0 {
+                    json!({"quality":{"baseline":0.4,"candidate":0.8}})
+                } else {json!({})}
+            })).collect::<Vec<_>>();
+            let metrics=evaluate_cases(&plan,&raw,target).unwrap();
+            assert_eq!(metrics["eligible"],true);
+            let evidence_sha="e".repeat(64);
+            let report=json!({"baseCommit":revisions[i],"patchSha256":"p".repeat(64),
+                "oracleVersion":"frozen-v1","reportSha256":evidence_sha,
+                "baselineBuildOk":true,"candidateBuildOk":true,
+                "cases":raw});
             let candidate=json!({
-                "id":id,"status":"verified",
-                "target":if i==0 {"improver"} else {"harness"},
-                "baseCommit":revisions[i],
+                "id":id,"status":"verified","target":target,"cases":plan,
+                "baseCommit":revisions[i],"patchSha256":"p".repeat(64),
+                "oracleVersion":"frozen-v1",
                 "experimentAdoption":{"commit":revisions[i+1]},
-                "evaluation":{
-                    "source":"server_invoked_local_paired_git_worktrees",
-                    "evidenceSha256":"e".repeat(64),
-                    "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":1,
-                        "metaHoldoutGains":if i==0 {1} else {0},
-                        "improvedHoldoutDomains":[improvement_domain],
-                        "measurements":[{"id":format!("holdout-{i}"),
-                            "domain":improvement_domain,"holdout":true,
-                            "baselinePass":i==0,"candidatePass":true,
-                            "metrics":if i==0 {json!([{"improved":true,"regressed":false}])}
-                                else {json!([])}
-                        }]}
-                }
+                "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                    "evidenceSha256":evidence_sha,"verdict":metrics["verdict"],
+                    "metrics":metrics}
             });
             state.store.put("rsi_candidate",&candidate).unwrap();
+            state.store.put("rsi_pair",&json!({
+                "id":format!("rsi-pair-{id}"),"candidateId":id,
+                "runner":"local_gitrepo_not_os_sandbox",
+                "evidenceSha256":evidence_sha,"report":report,
+                "verdict":metrics["verdict"],"metrics":metrics
+            })).unwrap();
             history.push(json!({"accepted":true,"candidateId":id,
                 "generatorCommit":revisions[i],"acceptedCommit":revisions[i+1],
                 "evaluation":{"evidenceSha256":"e".repeat(64)}}));
@@ -607,6 +661,18 @@ mod tests {
         forged["evaluation"]["metrics"]["measurements"][0]["domain"]=json!("memory");
         state.store.put("rsi_candidate",&forged).unwrap();
         assert!(capability_proven(&state,&history));
+        let mut pair=state.store.get("rsi_pair","rsi-pair-proof-1").unwrap();
+        pair["report"]["cases"][0]["candidatePass"]=json!(false);
+        state.store.put("rsi_pair",&pair).unwrap();
+        assert!(!capability_proven(&state,&history),
+            "modified raw measurements cannot support a previously accepted improvement");
+        pair["report"]["cases"][0]["candidatePass"]=json!(true);
+        state.store.put("rsi_pair",&pair).unwrap();
+        assert!(capability_proven(&state,&history));
+        pair["candidateId"]=json!("proof-2");
+        state.store.put("rsi_pair",&pair).unwrap();
+        assert!(!capability_proven(&state,&history),
+            "a candidate cannot borrow another candidate's receipt");
         let mut mislabeled=state.store.get("rsi_candidate","proof-0").unwrap();
         mislabeled["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
         state.store.put("rsi_candidate",&mislabeled).unwrap();

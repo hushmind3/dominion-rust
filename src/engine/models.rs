@@ -2752,6 +2752,9 @@ pub fn pause_job(state: &AppState, id: &str) -> bool {
 }
 
 pub fn resume_job(state: &AppState, id: &str) -> Option<Value> {
+    // Serialize resume with new registrations; otherwise a stopped job can
+    // reacquire a destination already assigned to another download.
+    let _registration = DOWNLOAD_START_LOCK.lock().ok()?;
     let job = state.store.get(MODEL_KIND, id)?;
     let status = job["status"].as_str().unwrap_or("");
     if !matches!(status, "paused" | "failed" | "cancelled") {
@@ -2760,9 +2763,29 @@ pub fn resume_job(state: &AppState, id: &str) -> Option<Value> {
     if active_downloads()
         .lock()
         .map(|active| active.contains(id))
-        .unwrap_or(false)
+        .unwrap_or(true)
     {
         return None;
+    }
+    let target_dir=job["targetDir"].as_str().filter(|root|!root.is_empty())?;
+    let own_paths=job["files"].as_array()?
+        .iter().filter_map(|row|row["path"].as_str())
+        .filter(|path|safe_relative(path))
+        .map(|path|Path::new(target_dir).join(path))
+        .collect::<std::collections::HashSet<_>>();
+    if own_paths.is_empty() {return None;}
+    let others=state.store.all(MODEL_KIND);
+    for other in others.iter().filter(|other|other["id"].as_str()!=Some(id)) {
+        let other_active=matches!(other["status"].as_str(),Some("downloading"|"paused"))
+            || other["id"].as_str().is_some_and(|other_id|
+                active_downloads().lock().map(|active|active.contains(other_id)).unwrap_or(true));
+        if !other_active {continue;}
+        let overlapping=other["targetDir"].as_str().filter(|root|!root.is_empty())
+            .is_some_and(|root|other["files"].as_array().into_iter().flatten()
+                .filter_map(|row|row["path"].as_str())
+                .filter(|path|safe_relative(path))
+                .any(|path|own_paths.contains(&Path::new(root).join(path))));
+        if overlapping {return None;}
     }
     let saved = state.store.patch_if(
         MODEL_KIND,
@@ -3156,6 +3179,26 @@ mod tests {
         assert!(err.contains("동일한 대상 파일"),"{err}");
         assert_eq!(state.store.all(MODEL_KIND).len(),1);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resume_cannot_take_files_owned_by_another_active_download() {
+        let (state,root)=temp_state();
+        let target=target_root(&state,"mlx","owner/model");
+        let old=state.store.put(MODEL_KIND,&json!({
+            "repo":"owner/model","optionId":"old-selection","status":"cancelled",
+            "format":"mlx","targetDir":target.to_string_lossy(),
+            "files":[{"path":"config.json"},{"path":"model.safetensors"}]
+        })).unwrap();
+        let conflict=state.store.put(MODEL_KIND,&json!({
+            "repo":"owner/model","optionId":"active-selection","status":"paused",
+            "format":"mlx","targetDir":target.to_string_lossy(),
+            "files":[{"path":"model.safetensors"}]
+        })).unwrap();
+        assert!(resume_job(&state,old["id"].as_str().unwrap()).is_none());
+        assert_eq!(state.store.get(MODEL_KIND,old["id"].as_str().unwrap()).unwrap()["status"],"cancelled");
+        assert_eq!(state.store.get(MODEL_KIND,conflict["id"].as_str().unwrap()).unwrap()["status"],"paused");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
