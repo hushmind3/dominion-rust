@@ -2199,6 +2199,17 @@ async fn run_loop(
                 || plan["targetPlan"]!=expected_target {
                 return Err("차세대 계획과 동결된 세대 계보·인덱스·revision이 다릅니다.".into());
             }
+            let directive=&plan["improvementDirective"];
+            let last_id=recorded_history.last().map(|row|row["id"].clone())
+                .unwrap_or(Value::Null);
+            if !directive.is_object()
+                || directive["sourceGenerationId"]!=last_id
+                || !matches!(directive["mode"].as_str(),
+                    Some("discover"|"implement_research"|"repair_counterexample"|
+                         "revise_candidate"|"change_approach"|"extend_verified_capability"))
+            {
+                return Err("차세대 실행기의 실패 학습·개선 지시가 세대 이력과 일치하지 않습니다.".into());
+            }
             let rows=plan["rankedFiles"].as_array()
                 .ok_or("차세대 실행기의 소스 탐색 결과가 배열이 아닙니다.")?.clone();
             if rows.len()>2 || rows.iter().any(|row|row["path"].as_str()
@@ -2217,6 +2228,11 @@ async fn run_loop(
             (domain,selection.to_string(),strategy,None)
         };
         child_input["rsiTargetDomain"]=json!(target_domain);
+        child_input["rsiImprovementDirective"]=if native_planning {
+            record["nextGenerationPlan"]["improvementDirective"].clone()
+        } else {
+            improvement_directive(&recorded_history)
+        };
         child_input["rsiTargetPlan"]=generation_target_plan(
             &target_domain,&target_selection,&target_strategy,&head);
         child_input["rsiNativePlan"]=if native_planning {
@@ -2365,6 +2381,7 @@ async fn run_loop(
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
             "nativePlan":current["input"]["rsiNativePlan"],
+            "improvementDirective":current["input"]["rsiImprovementDirective"],
             "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
             "boundaryResult":current["rsiBoundaryResult"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
@@ -2563,6 +2580,7 @@ async fn run_loop(
         record["maxVerifiedStreak"] = json!(verified_max);
         let mut history_now = record["history"].as_array().cloned().unwrap_or_default();
         history_now.push(generation.clone());
+        record["improvementActionResults"]=json!(improvement_action_results(&history_now));
         let proven_history=revalidated_history(&context.state,&history_now);
         let (proven_streak,proven_max)=verified_capability_streak(&proven_history);
         record["verifiedStreak"]=json!(proven_streak);
@@ -3205,6 +3223,18 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let (domain, domain_selection, strategy) =
         select_generation_strategy(&state, &history, &objective, continuation, trial_id,
             selected_domain, commit);
+    // The improved generator must execute the same action it planned before
+    // the model call. Reject an outdated or injected retry directive.
+    let expected_directive=improvement_directive(&history);
+    if job["input"]["rsiImprovementDirective"].is_object()
+        && job["input"]["rsiImprovementDirective"]!=expected_directive {
+        return Err("rsi_improvement_directive_mismatch: 개선 행동과 세대 이력이 일치하지 않습니다.".into());
+    }
+    let directive=if job["input"]["rsiImprovementDirective"].is_object() {
+        job["input"]["rsiImprovementDirective"].clone()
+    } else {
+        expected_directive
+    };
     // Parent has already spent tokens selecting the source and building prompt
     // evidence. A changed/incorrect selection is a failed checkpoint, not
     // permission to run a different strategy under a misleading provenance.
@@ -3239,8 +3269,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
-    job["input"]["prompt"]=json!(format!("{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
-        job["input"]["prompt"].as_str().unwrap_or(""),feedback));
+    job["input"]["prompt"]=json!(format!("{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}\n\n### 이번 세대의 개선 실행 방식\n{}\n근거가 되는 실제 세대 기록: {}\n이번 작업에서 코드 변경과 검증 여부를 분명히 기록하세요.",
+        job["input"]["prompt"].as_str().unwrap_or(""),feedback,
+        improvement_work_contract(&directive),directive));
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;
     let context = JobContext::new(state.clone(), job_id.into());
     let result = jobs::run_prompt(&context, &job).await;
