@@ -565,7 +565,7 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     let status=crate::engine::dev::status(state).await;
     let configured=status["config"]["sourceDir"].as_str().and_then(|s|std::fs::canonicalize(s).ok());
     let source_branch=campaign["sourceBranch"].as_str().unwrap_or("dominion-sub").to_string();
-    if !is_rsi_work_branch(source_branch) || configured.as_ref()!=Some(&source)
+    if !is_rsi_work_branch(&source_branch) || configured.as_ref()!=Some(&source)
         || status["branch"]!=source_branch {
         return Err("dominion-sub 계열의 해당 캠페인 원본 브랜치에만 적용할 수 있습니다.".into());
     }
