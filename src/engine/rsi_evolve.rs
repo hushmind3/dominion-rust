@@ -1038,6 +1038,24 @@ fn choose_focus_files(
     let objective=if input["rsiAutonomous"]==true {
         domain
     } else {input["rsiObjective"].as_str().unwrap_or("")};
+    // Novel research is valuable, but repeatedly studying the same unchanged
+    // file without producing a patch is not evidence that it is the best
+    // *next implementation target*. Keep the knowledge; explore alternatives.
+    let exhausted_focus=if history.len()>=2 {
+        let newest=&history[history.len()-1];
+        let previous=&history[history.len()-2];
+        let no_patch=|row:&Value|row["accepted"]!=true
+            && row["candidateId"].is_null()
+            && row["newFindings"].as_u64().unwrap_or(0)>0;
+        if no_patch(newest) && no_patch(previous)
+            && newest["domain"]==previous["domain"] {
+            newest["focusFiles"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str)
+                .filter(|path|previous["focusFiles"].as_array().is_some_and(|files|
+                    files.iter().any(|entry|entry.as_str()==Some(path))))
+                .map(str::to_string).collect::<BTreeSet<_>>()
+        } else {BTreeSet::new()}
+    } else {BTreeSet::new()};
     let mut failures=BTreeMap::<String,u64>::new();
     let mut successes=BTreeMap::<String,u64>::new();
     let mut seen=BTreeSet::<String>::new();
@@ -1050,7 +1068,9 @@ fn choose_focus_files(
         let failed=generation["accepted"]!=true
             && generation["candidateId"].is_null()
             && generation["newFindings"].as_u64().unwrap_or(0)==0;
-        if !failed && candidate.is_none() {return;}
+        let overexplored=!cross_campaign && generation==history.last().unwrap_or(&Value::Null)
+            && !exhausted_focus.is_empty();
+        if !failed && !overexplored && candidate.is_none() {return;}
         let id=generation["id"].as_str().unwrap_or("");
         if !id.is_empty() && !seen.insert(id.to_string()) {return;}
         for path in generation["focusFiles"].as_array().into_iter().flatten().filter_map(Value::as_str) {
@@ -1077,7 +1097,8 @@ fn choose_focus_files(
                 || (pre_hash.is_none() && !cross_campaign && current.is_some());
             if credited {
                 *successes.entry(path.to_lowercase()).or_default()+=1;
-            } else if failed && failed_revision_matches {
+            } else if failed_revision_matches
+                && (failed || (overexplored && exhausted_focus.contains(path))) {
                 *failures.entry(path.to_lowercase()).or_default()+=1;
             }
         }
@@ -3724,6 +3745,34 @@ mod tests {
             "focusFiles":["src/engine/search_first.rs"]})];
         assert_eq!(choose_focus_files(&state,&input,&useful,None)[0]["path"],
             "src/engine/search_first.rs");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repeated_novel_research_without_a_patch_explores_another_source() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        for name in ["search_first.rs","search_second.rs"] {
+            std::fs::write(root.join("src/engine").join(name),
+                "fn search_dispatch() { /* equally viable implementation */ }\n").unwrap();
+        }
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let input=json!({"rsiIndexId":index["id"],
+            "rsiObjective":"search dispatch","rsiTargetDomain":"tools"});
+        let initial=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(initial[0]["path"],"src/engine/search_first.rs");
+        let one=vec![json!({"id":"r1","domain":"tools","accepted":false,
+            "candidateId":null,"newFindings":1,
+            "focusFiles":["src/engine/search_first.rs"]})];
+        assert_eq!(choose_focus_files(&state,&input,&one,None)[0]["path"],
+            "src/engine/search_first.rs","one useful research turn is not failure");
+        let mut repeated=one;
+        repeated.push(json!({"id":"r2","domain":"tools","accepted":false,
+            "candidateId":null,"newFindings":2,
+            "focusFiles":["src/engine/search_first.rs"]}));
+        assert_eq!(choose_focus_files(&state,&input,&repeated,None)[0]["path"],
+            "src/engine/search_second.rs",
+            "two unimplemented research turns must create a new implementation opportunity");
         let _=std::fs::remove_dir_all(root);
     }
 
