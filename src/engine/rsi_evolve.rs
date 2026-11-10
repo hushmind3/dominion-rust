@@ -1052,7 +1052,7 @@ fn choose_focus_files(
             newest["focusFiles"].as_array().into_iter().flatten()
                 .filter_map(Value::as_str)
                 .filter(|path|previous["focusFiles"].as_array().is_some_and(|files|
-                    files.iter().any(|entry|entry.as_str()==Some(path))))
+                    files.iter().any(|entry|entry.as_str()==Some(*path))))
                 .map(str::to_string).collect::<BTreeSet<_>>()
         } else {BTreeSet::new()}
     } else {BTreeSet::new()};
