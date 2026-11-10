@@ -2960,7 +2960,7 @@ mod tests {
         let suffix=full.split("이 실험 계보의 과거 결과: ").nth(1).unwrap();
         let parsed:Value=serde_json::from_str(suffix).unwrap();
         assert_eq!(parsed.as_array().unwrap().len(),8,"never cut a JSON receipt mid-record");
-        assert!(!full.contains("\\"notes\\""),"untrusted verbose fields must not consume the next generation");
+        assert!(!full.contains("\"notes\""),"untrusted verbose fields must not consume the next generation");
         assert!(full.chars().count()<12_000,"structured case summaries must stay bounded");
         let minimum=fit_worker_context("사용자 목표","memory","memory",&history,Some(50));
         assert!(minimum.unwrap_err().starts_with("rsi_token_budget:"));
