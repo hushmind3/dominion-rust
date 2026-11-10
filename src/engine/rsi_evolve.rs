@@ -914,14 +914,38 @@ fn choose_focus_files(
     let domain=input["rsiTargetDomain"].as_str().unwrap_or("");
     let objective=input["rsiObjective"].as_str().unwrap_or("");
     let mut failures=BTreeMap::<String,u64>::new();
-    for generation in history.iter().rev().take(8) {
-        if generation["accepted"]==true ||
-            generation["candidateId"].is_string() ||
-            generation["newFindings"].as_u64().unwrap_or(0)>0 {continue;}
+    let mut seen=BTreeSet::<String>::new();
+    let mut count=0usize;
+    let mut consider=|generation:&Value,cross_campaign:bool|{
+        if generation["accepted"]==true || generation["candidateId"].is_string() ||
+            generation["newFindings"].as_u64().unwrap_or(0)>0 {return;}
+        let id=generation["id"].as_str().unwrap_or("");
+        if !id.is_empty() && !seen.insert(id.to_string()) {return;}
         for path in generation["focusFiles"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            if cross_campaign {
+                let earlier=generation["focusSelection"]["candidates"].as_array()
+                    .into_iter().flatten().find(|row|row["path"]==path);
+                let Some(earlier_hash)=earlier.and_then(|row|row["sourceHash"].as_str()) else {continue};
+                let current=crate::engine::code_index::indexed_source_hash(state,index_id,path);
+                if current.as_deref()!=Some(earlier_hash) {continue;}
+            }
             *failures.entry(path.to_lowercase()).or_default()+=1;
         }
-    }
+        count+=1;
+    };
+    for generation in history.iter().rev().take(8) {consider(generation,false);}
+    // Reuse only the same repository partition and same owner objective.
+    // Comparing source hashes prevents stale failures from poisoning a new
+    // revision, while cross-campaign records survive process restarts.
+    let partition=research_scope(input).partition_key;
+    let objective_id=crate::engine::memory::stable_id(&[objective]);
+    let mut prior=state.store.all("rsi_generation").into_iter()
+        .filter(|generation|generation["knowledgePartition"]==partition &&
+            generation["objectiveId"]==objective_id)
+        .collect::<Vec<_>>();
+    prior.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
+    for generation in prior.iter().take(8) {consider(generation,true);}
+    let _=count;
     crate::engine::code_index::rank_focus_files(
         state,index_id,objective,domain,&failures,policy,2
     )
@@ -2153,6 +2177,10 @@ async fn run_loop(
             "attempt":attempt,"generatorCommit":head,"jobId":child_id,"tokens":tokens,
             "focusFiles":current["input"]["rsiFocusFiles"],
             "focusSelection":current["input"]["rsiFocusSelection"],
+            "knowledgePartition":research_scope(&current["input"]).partition_key,
+            "objectiveId":crate::engine::memory::stable_id(&[
+                current["input"]["rsiObjective"].as_str().unwrap_or("")
+            ]),
             "tokenUsage":{"promptTokens":usage["promptTokens"],"completionTokens":usage["completionTokens"],
                 "calls":usage["calls"],"estimatedCalls":usage["estimatedCalls"]},
             "sourceContextChars":current["input"]["rsiFocusContextChars"],
@@ -2777,6 +2805,39 @@ mod tests {
             "focusFiles":["src/engine/search_first.rs"]})];
         assert_eq!(choose_focus_files(&state,&input,&useful,None)[0]["path"],
             "src/engine/search_first.rs");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_campaign_target_failures_are_reused_only_at_same_source_revision() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let first=root.join("src/search_first.rs");
+        let second=root.join("src/search_second.rs");
+        std::fs::write(&first,"fn search_dispatch() { /* scan alpha */ }\n").unwrap();
+        std::fs::write(&second,"fn search_dispatch() { /* scan alpha */ }\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let input=json!({"rsiIndexId":index["id"],"rsiKnowledgeSource":root,
+            "rsiObjective":"search dispatch","rsiTargetDomain":"tools"});
+        let initial=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(initial[0]["path"],"src/search_first.rs");
+        let prior=json!({"id":"persisted-prior","knowledgePartition":research_scope(&input).partition_key,
+            "objectiveId":crate::engine::memory::stable_id(&["search dispatch"]),
+            "accepted":false,"candidateId":null,"newFindings":0,
+            "focusFiles":["src/search_first.rs"],
+            "focusSelection":{"candidates":initial},
+            "createdAt":"2026-11-10T00:00:00Z"});
+        state.store.put("rsi_generation",&prior).unwrap();
+        let learned=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(learned[0]["path"],"src/search_second.rs",
+            "the later campaign should not re-spend its tokens on the same unproductive target");
+        // Same-length edit is a different revision, so old failure evidence
+        // can no longer drive the new source choice.
+        std::fs::write(&first,"fn search_dispatch() { /* scan bravo */ }\n").unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        let refreshed=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(refreshed[0]["path"],"src/search_first.rs",
+            "stale failure evidence must not penalize changed code");
         let _=std::fs::remove_dir_all(root);
     }
 

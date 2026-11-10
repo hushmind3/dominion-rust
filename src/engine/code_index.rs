@@ -639,6 +639,13 @@ pub fn prompt_context(
 }
 
 
+/// Exposes the exact indexed revision for evidence reuse across campaigns.
+/// A prior unsuccessful target is never penalized after its source changes.
+pub fn indexed_source_hash(state:&AppState,index_id:&str,path:&str)->Option<String>{
+    state.store.get(FILE_KIND,&file_id(index_id,path))?["hash"]
+        .as_str().map(str::to_string)
+}
+
 /// Rank implementation files from the actual code index, not a fixed table of
 /// paths. The ranking is deterministic, model-free, and remains bounded by the
 /// indexed source snapshot. A model-authored targeting expression can replace
@@ -758,6 +765,7 @@ pub fn rank_focus_files(
         };
         let mut record=json!({
             "path":file["path"],
+            "sourceHash":file["hash"],
             "score":score,
             "evidence":{"path":path_evidence,"symbols":symbol_evidence,
                 "summary":summary_evidence,"domain":domain_evidence,
