@@ -1080,6 +1080,53 @@ fn focus_file_context(state: &AppState, record: &Value, input: &Value) -> String
     }
     text
 }
+/// Convert observed generation failure into a concrete next implementation
+/// attempt. Every diagnostic comes from a stored job/paired report rather
+/// than invented advice. This is fed to the *next built generator*, including
+/// small local models that cannot infer their previous tool failure.
+fn grounded_next_experiment(state:&AppState,history:&[Value])->Option<String> {
+    let latest=history.last()?;
+    if latest["accepted"]==true {return None;}
+    let mut details=Vec::<String>::new();
+    let files=latest["focusFiles"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).filter(|p|crate::engine::rsi::safe_path(p))
+        .take(2).collect::<Vec<_>>();
+    let job=latest["jobId"].as_str().and_then(|id|state.store.get("job",id));
+    let run=latest["jobId"].as_str().and_then(|id|state.store.get("rsi_run",&format!("rsi-run-{id}")));
+    if let Some(run)=run.as_ref() {
+        let failed=run["checks"].as_array().into_iter().flatten()
+            .filter(|check|check["passed"]==false)
+            .take(2).map(|check|{
+                let label=check["label"].as_str().unwrap_or("검증");
+                let stderr=check["stderr"].as_str().or_else(||check["error"].as_str()).unwrap_or("");
+                format!("{label}: {}",stderr.chars().rev().take(1100)
+                    .collect::<String>().chars().rev().collect::<String>())
+            }).collect::<Vec<_>>();
+        details.extend(failed);
+        if !details.is_empty() {
+            return Some(format!("\\n### 다음 세대의 실험 과제 — 이전 빌드 실패\\n이전 패치는 채택되지 않았습니다. 기준 커밋에서 아래 오류의 원인을 수정하는 최소 변경을 다시 구현하고, 기존 테스트를 통과시키세요. 무관한 파일을 넓게 수정하지 마세요.\\n{}\\n",details.join("\\n")));
+        }
+        if run["captureError"].as_str().is_some_and(|error|error.contains("실제 소스 파일을 변경하지")) {
+            let focus=if files.is_empty(){"인덱스에서 확인한 실제 구현 파일".to_string()}else{files.join(", ")};
+            return Some(format!(
+                "\\n### 다음 세대의 실험 과제 — 구현 미수행\\n이전 세대는 소스 변경 없이 종료됐습니다. 이미 조사한 {focus}에서 확인한 근거에 따라 1개 구체적인 수정 가설을 선택하고, 실제 파일 수정 도구를 실행해 변경 증거를 남기세요. 새로운 설명·검색만 반복하지 마세요. 수정 후 성공 기준은 독립 평가 결과로 결정됩니다.\\n"
+            ));
+        }
+    }
+    if latest["evaluation"]["verdict"]=="regressed" {
+        let cases=latest["evaluation"]["metrics"]["measurements"].as_array().into_iter().flatten()
+            .filter(|row| row["baselinePass"]==true && row["candidatePass"]==false
+                || row["metrics"].as_array().is_some_and(|ms|ms.iter().any(|m|m["regressed"]==true)))
+            .filter_map(|row|row["id"].as_str()).take(4).collect::<Vec<_>>();
+        return Some(format!(
+            "\\n### 다음 세대의 실험 과제 — 동결 평가 퇴보\\n이전 접근은 회귀를 만들었습니다. 영향을 받은 측정 사례: {}. 실패한 변경을 단순 반복하지 말고 다른 원인 가설과 수정 대상을 선택하세요. 회귀를 없애고 실제 held-out 개선을 만들어야 합니다.\\n",
+            if cases.is_empty(){"개별 행 없음".to_string()}else{cases.join(", ")}
+        ));
+    }
+    let _=job;
+    None
+}
+
 fn generation_context(state: &AppState, input: &Value, record: &Value) -> String {
     let objective = input["rsiObjective"].as_str().unwrap_or("");
     let scope = research_scope(input);
@@ -1117,6 +1164,11 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
                 text.push_str(&format!("- {}세대: {}\n",generation["attempt"],
                     evidence.to_string().chars().take(1800).collect::<String>()));
             }
+        }
+    }
+    if let Some(history)=record["history"].as_array() {
+        if let Some(experiment)=grounded_next_experiment(state,history) {
+            text.push_str(&experiment);
         }
     }
     text
@@ -3170,6 +3222,34 @@ mod tests {
         state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve","status":"running","input":{"rsiNativeApproved":true}})).unwrap();
         JobContext::new(state.clone(), "campaign".into())
     }
+    #[test]
+    fn failed_generation_yields_specific_next_edit_not_generic_research() {
+        let (state,root)=state();
+        state.store.put("rsi_run",&json!({
+            "id":"rsi-run-child-1","jobId":"child-1",
+            "captureError":"모델이 실제 소스 파일을 변경하지 않았습니다.","checks":[]
+        }));
+        let generation=json!({"jobId":"child-1","accepted":false,
+            "focusFiles":["src/engine/memory.rs"]});
+        let directive=grounded_next_experiment(&state,&[generation.clone()]).unwrap();
+        assert!(directive.contains("src/engine/memory.rs"));
+        assert!(directive.contains("실제 파일 수정 도구"));
+        state.store.put("rsi_run",&json!({
+            "id":"rsi-run-child-1","jobId":"child-1",
+            "checks":[{"label":"cargo check --all-targets","passed":false,
+                "stderr":"error[E0308]: mismatched types in memory.rs"}]
+        }));
+        let repair=grounded_next_experiment(&state,&[generation.clone()]).unwrap();
+        assert!(repair.contains("error[E0308]"),"{repair}");
+        assert!(!repair.contains("수정 도구"),"compiler diagnostics take priority over no-patch advice");
+        let holdout=json!({"accepted":false,"evaluation":{"verdict":"regressed","metrics":{
+            "measurements":[{"id":"long-recall-quality","baselinePass":true,"candidatePass":false}]
+        }}});
+        let remedy=grounded_next_experiment(&state,&[holdout]).unwrap();
+        assert!(remedy.contains("long-recall-quality"));
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn autonomous_search_synthesizes_executable_new_policy_from_wasted_generations() {
         let (state,root)=state();
