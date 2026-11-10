@@ -9,7 +9,9 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -19,10 +21,27 @@ struct Session {
     profile: PathBuf,
 }
 
-static SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
+// Each conversation/agent owns a distinct Chrome process and profile.
+static SESSIONS: OnceLock<tokio::sync::Mutex<HashMap<String, Session>>> = OnceLock::new();
+static ACTION_LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
 
-fn session() -> &'static Mutex<Option<Session>> {
-    SESSION.get_or_init(|| Mutex::new(None))
+fn sessions() -> &'static tokio::sync::Mutex<HashMap<String, Session>> {
+    SESSIONS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+fn owner_key(data_dir: &Path, session_id: &str, agent_id: Option<&str>) -> String {
+    format!("{:x}", Sha256::digest(format!(
+        "{}\u{0}{}\u{0}{}", data_dir.display(), session_id,
+        agent_id.unwrap_or("default")
+    ).as_bytes()))
+}
+
+fn action_lock(owner: &str) -> Arc<tokio::sync::Mutex<()>> {
+    ACTION_LOCKS.get_or_init(|| Mutex::new(HashMap::new())).lock()
+        .expect("browser action locks poisoned")
+        .entry(owner.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
 }
 
 fn chrome_bin() -> Option<PathBuf> {
@@ -89,19 +108,18 @@ async fn wait_for_port(profile: &Path, child: &mut Child) -> Result<u16, String>
     }
 }
 
-async fn ensure_session(data_dir: &Path) -> Result<u16, String> {
-    if let Ok(mut guard) = session().lock() {
-        if let Some(existing) = guard.as_mut() {
-            if existing.child.try_wait().ok().flatten().is_none() {
-                return Ok(existing.port);
-            }
-            *guard = None;
+async fn ensure_session(data_dir: &Path, owner: &str) -> Result<u16, String> {
+    let mut guard = sessions().lock().await;
+    if let Some(existing) = guard.get_mut(owner) {
+        if existing.child.try_wait().ok().flatten().is_none() {
+            return Ok(existing.port);
         }
+        guard.remove(owner);
     }
     let bin = chrome_bin().ok_or(
         "Chrome 또는 Chromium을 찾을 수 없습니다. DOMINION_CHROME 환경 변수로 실행 파일을 지정할 수 있습니다.",
     )?;
-    let profile = data_dir.join("browser-profile");
+    let profile = data_dir.join("browser-profiles").join(owner);
     std::fs::create_dir_all(&profile).map_err(|error| error.to_string())?;
     let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
     let mut child = Command::new(&bin)
@@ -131,13 +149,7 @@ async fn ensure_session(data_dir: &Path) -> Result<u16, String> {
             return Err(error);
         }
     };
-    if let Ok(mut guard) = session().lock() {
-        *guard = Some(Session {
-            child,
-            port,
-            profile,
-        });
-    }
+    guard.insert(owner.to_string(), Session { child, port, profile });
     Ok(port)
 }
 
@@ -403,15 +415,13 @@ async fn screenshot(ws_url: &str, workspace: &Path) -> Result<Value, String> {
     }))
 }
 
-fn close_session() -> Value {
+async fn close_session(owner: &str) -> Value {
     let mut closed = false;
-    if let Ok(mut guard) = session().lock() {
-        if let Some(mut current) = guard.take() {
-            let _ = current.child.kill();
-            let _ = current.child.wait();
-            let _ = std::fs::remove_file(current.profile.join("DevToolsActivePort"));
-            closed = true;
-        }
+    if let Some(mut current) = sessions().lock().await.remove(owner) {
+        let _ = current.child.kill();
+        let _ = current.child.wait();
+        let _ = std::fs::remove_file(current.profile.join("DevToolsActivePort"));
+        closed = true;
     }
     json!({ "closed": closed })
 }
@@ -424,18 +434,34 @@ pub async fn execute(
     data_dir: &Path,
     workspace: &Path,
 ) -> Result<Value, String> {
+    execute_for_actor(action, args, data_dir, workspace, "local", None).await
+}
+
+/// Isolate the browser by session and effective agent, not by global process.
+/// A same-actor action gate preserves click/observe ordering without blocking
+/// different agents from operating their own Chrome processes concurrently.
+pub async fn execute_for_actor(
+    action: &str,
+    args: &Value,
+    data_dir: &Path,
+    workspace: &Path,
+    session_id: &str,
+    agent_id: Option<&str>,
+) -> Result<Value, String> {
+    let owner = owner_key(data_dir, session_id, agent_id);
+    let gate = action_lock(&owner);
+    let _serial = gate.lock().await;
     match action {
         "status" => {
             let mut running = false;
             let mut port = None;
-            if let Ok(mut guard) = session().lock() {
-                if let Some(current) = guard.as_mut() {
-                    if current.child.try_wait().ok().flatten().is_none() {
-                        running = true;
-                        port = Some(current.port);
-                    } else {
-                        *guard = None;
-                    }
+            let mut guard = sessions().lock().await;
+            if let Some(current) = guard.get_mut(&owner) {
+                if current.child.try_wait().ok().flatten().is_none() {
+                    running = true;
+                    port = Some(current.port);
+                } else {
+                    guard.remove(&owner);
                 }
             }
             return Ok(json!({
@@ -445,10 +471,10 @@ pub async fn execute(
                 "browser": chrome_bin().map(|path| path.to_string_lossy().to_string()),
             }));
         }
-        "close" => return Ok(close_session()),
+        "close" => return Ok(close_session(&owner).await),
         _ => {}
     }
-    let port = ensure_session(data_dir).await?;
+    let port = ensure_session(data_dir, &owner).await?;
     let target = page_target(port).await?;
     let ws_url = target["webSocketDebuggerUrl"]
         .as_str()
@@ -487,6 +513,18 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_and_session_browser_owners_are_distinct() {
+        let dir = Path::new("/tmp/dominion-browser-owner");
+        let owner_a = owner_key(dir, "conversation", Some("agent-a"));
+        let owner_b = owner_key(dir, "conversation", Some("agent-b"));
+        let other_session = owner_key(dir, "conversation-2", Some("agent-a"));
+        assert_eq!(owner_a, owner_key(dir, "conversation", Some("agent-a")));
+        assert_ne!(owner_a, owner_b);
+        assert_ne!(owner_a, other_session);
+        assert_eq!(owner_a.len(), 64);
+    }
 
     #[test]
     fn element_script_quotes_the_index() {
