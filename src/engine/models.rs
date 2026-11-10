@@ -2193,6 +2193,10 @@ pub fn start_download(state: AppState, repo: String, option: String) -> Result<V
 /// Starts a GGUF or multi-file MLX download. The job stores a repo-scoped
 /// target directory and a per-file list so resume never has to guess which
 /// bytes are already on disk.
+fn valid_hf_revision(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 pub fn start_download_with(
     state: AppState,
     repo: String,
@@ -2200,7 +2204,23 @@ pub fn start_download_with(
     format: String,
     requested_files: Vec<String>,
 ) -> Result<Value, String> {
+    start_download_at_revision(state, repo, option, format, requested_files, None)
+}
+
+/// Pin a single immutable Hugging Face commit for every shard and resume.
+pub fn start_download_at_revision(
+    state: AppState,
+    repo: String,
+    option: String,
+    format: String,
+    requested_files: Vec<String>,
+    revision: Option<&str>,
+) -> Result<Value, String> {
     let repo = safe_repo(&repo)?;
+    let revision = revision.filter(|value| !value.is_empty()).unwrap_or("main");
+    if revision != "main" && !valid_hf_revision(revision) {
+        return Err("Hugging Face 모델 버전이 올바른 커밋 해시가 아닙니다.".into());
+    }
     let format = if format == "mlx" { "mlx" } else { "gguf" };
     let option = option.trim().to_string();
     if option.is_empty() {
@@ -2209,6 +2229,7 @@ pub fn start_download_with(
     for existing in state.store.all(MODEL_KIND) {
         if existing["repo"].as_str() == Some(repo.as_str())
             && existing["optionId"].as_str() == Some(option.as_str())
+            && existing["revision"].as_str().unwrap_or("main") == revision
             && matches!(existing["status"].as_str(), Some("downloading" | "paused"))
         {
             return Ok(existing);
@@ -2248,6 +2269,7 @@ pub fn start_download_with(
         &json!({
             "repo": repo,
             "optionId": option,
+            "revision": revision,
             "format": format,
             "status": "downloading",
             "downloaded": total,
@@ -2326,8 +2348,9 @@ fn file_sha256(path: &Path) -> Result<String, String> {
 async fn hf_blob_metadata(
     client: &reqwest::Client,
     repo: &str,
+    revision: &str,
 ) -> std::collections::HashMap<String, (u64, Option<String>)> {
-    let url = format!("https://huggingface.co/api/models/{repo}?blobs=true");
+    let url = format!("https://huggingface.co/api/models/{repo}/revision/{revision}?blobs=true");
     let Ok(response) = client.get(url).timeout(Duration::from_secs(20)).send().await else {
         return Default::default();
     };
@@ -2379,6 +2402,9 @@ async fn download_worker(state: AppState, job_id: String) {
         return;
     };
     let repo = job["repo"].as_str().unwrap_or("").to_string();
+    let revision = job["revision"].as_str()
+        .filter(|value| valid_hf_revision(value))
+        .unwrap_or("main").to_string();
     let format = job["format"].as_str().unwrap_or("gguf").to_string();
     let dir = PathBuf::from(job["targetDir"].as_str().unwrap_or(""));
     let mut files = job["files"].as_array().cloned().unwrap_or_default();
@@ -2391,7 +2417,7 @@ async fn download_worker(state: AppState, job_id: String) {
         return;
     }
     let client = reqwest::Client::new();
-    let blobs = hf_blob_metadata(&client, &repo).await;
+    let blobs = hf_blob_metadata(&client, &repo, &revision).await;
     for index in 0..files.len() {
         if job_status(&state, &job_id) != "downloading" {
             return;
@@ -2432,7 +2458,7 @@ async fn download_worker(state: AppState, job_id: String) {
         }
         let partial = PathBuf::from(format!("{}.part", target.display()));
         let existing = std::fs::metadata(&partial).map(|meta| meta.len()).unwrap_or(0);
-        let url = format!("https://huggingface.co/{repo}/resolve/main/{path}?download=true");
+        let url = format!("https://huggingface.co/{repo}/resolve/{revision}/{path}?download=true");
         let mut request = client.get(&url).timeout(Duration::from_secs(3600));
         if existing > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
@@ -2967,6 +2993,15 @@ mod tests {
         assert_eq!(model["bytes"], 7);
         assert!(register_local(&state, &second.to_string_lossy()).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hugging_face_snapshot_requires_an_immutable_commit_hash() {
+        assert!(valid_hf_revision("0123456789abcdef0123456789abcdef01234567"));
+        assert!(!valid_hf_revision("main"));
+        assert!(!valid_hf_revision("../main"));
+        assert!(!valid_hf_revision("0123456789abcdef0123456789abcdef0123456/"));
+        assert!(!valid_hf_revision("0123456789abcdef0123456789abcdef0123456z"));
     }
 
     #[test]
