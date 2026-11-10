@@ -967,6 +967,8 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
                 if operation["runId"].as_str() != Some(run_id) {
                     continue;
                 }
+                // Only completed tool calls count as already inspected evidence.
+                if operation["status"] != "completed" { continue; }
                 match operation["tool"].as_str() {
                     Some("workspace_read_range") => {
                         let path = operation["arguments"]["path"].as_str().unwrap_or("");
@@ -1172,6 +1174,7 @@ fn research_scope(input:&Value)->MemoryScope {
 /// size, TODO counts or audit findings.
 fn focus_domain_hint(path:&str)->&'static str {
     let path=path.to_lowercase();
+    if path.starts_with("web/src/") { return "ui"; }
     if path.contains("memory") { "memory" }
     else if path.contains("chat/")||path.contains("context")||path.contains("room") { "context" }
     else if path.contains("learning")||path.contains("experience") { "learning" }
@@ -1748,7 +1751,10 @@ fn record_trial_outcome(
     if candidate["parameters"]["targetExpression"].is_string() {
         let selection=&generation["focusSelection"];
         let rows=selection["candidates"].as_array();
-        let executed=selection["source"]=="indexed_evidence"
+        let source_verified=matches!(selection["source"].as_str(),
+            Some("indexed_evidence" | "descendant_indexed_evidence"));
+        let executed=source_verified
+            && selection["sourceIndexId"].as_str().is_some_and(|id|!id.is_empty())
             && selection["policyRevision"]==candidate["revision"]
             && rows.is_some_and(|rows|!rows.is_empty()
                 && rows.iter().all(|row|row["scoring"]=="expression"
@@ -1878,17 +1884,21 @@ fn record_trial_outcome(
 
 /// Re-reads only the stored line range from the current source and formats it
 /// exactly like `workspace_read_range`. It does not fabricate a model read.
-fn numbered_source_range(text: &str, start: u64, end: u64) -> (String, u64, u64) {
+fn numbered_source_range(text: &str, start: u64, requested_end: u64) -> (String, u64, u64) {
     let lines = text.lines().collect::<Vec<_>>();
-    let begin = (start.max(1) as usize).min(lines.len());
-    let end = (end.max(start) as usize)
-        .min(lines.len())
-        .min(begin.saturating_add(400));
-    let mut numbered = String::new();
-    for (offset, line) in lines[begin.saturating_sub(1)..end].iter().enumerate() {
-        numbered.push_str(&format!("{:>5} {}\n", begin + offset, line));
+    let requested_start = start.max(1);
+    // Never reuse the last line when the historical starting line is past EOF.
+    let first = usize::try_from(requested_start.saturating_sub(1)).unwrap_or(usize::MAX);
+    if first >= lines.len() {
+        return (String::new(), requested_start, requested_start.saturating_sub(1));
     }
-    (numbered, begin as u64, end as u64)
+    let last = usize::try_from(requested_end.max(requested_start))
+        .unwrap_or(usize::MAX).min(lines.len()).min(first.saturating_add(400));
+    let mut numbered = String::new();
+    for (offset, line) in lines[first..last].iter().enumerate() {
+        numbered.push_str(&format!("{:>5} {}\n", first + offset + 1, line));
+    }
+    (numbered, requested_start, last as u64)
 }
 
 fn unavailable_research_receipt(mut receipt: Value, reason: &str) -> Value {
@@ -1944,18 +1954,26 @@ pub(crate) fn reuse_research(state:&AppState,input:&Value,workspace:&Path,sessio
                         receipt["sourceValidity"]=json!("hash_verified_current_source");
                         receipt["hypothesisValidity"]=json!("prior_hypothesis_unverified");
                     } else {
-                        let (Some(start),Some(end))=(artifact["startLine"].as_u64(),artifact["endLine"].as_u64()) else{
+                        let (Some(start),Some(requested_end))=(artifact["startLine"].as_u64(),artifact["endLine"].as_u64()) else{
                             receipts.push(unavailable_research_receipt(receipt,"line_range_missing"));continue;
                         };
                         let Ok(text)=std::str::from_utf8(&bytes) else{
                             receipts.push(unavailable_research_receipt(receipt,"source_not_utf8"));continue;
                         };
-                        let (content,begin,end)=numbered_source_range(text,start,end);
+                        let (content,begin,end)=numbered_source_range(text,start,requested_end);
                         if content.is_empty() {
                             receipts.push(unavailable_research_receipt(receipt,"line_range_empty"));continue;
                         }
                         let truncated=content.chars().count()>2200;
                         let content=content.chars().take(2200).collect::<String>();
+                        item["originalStartLine"]=artifact["originalStartLine"].as_u64()
+                            .map_or_else(||artifact["startLine"].clone(),|v|json!(v));
+                        item["originalEndLine"]=artifact["originalEndLine"].as_u64()
+                            .map_or_else(||artifact["endLine"].clone(),|v|json!(v));
+                        receipt["requestedStartLine"]=json!(start);
+                        receipt["requestedEndLine"]=json!(requested_end);
+                        receipt["revalidatedStartLine"]=json!(begin);
+                        receipt["revalidatedEndLine"]=json!(end);
                         item["previousSourceSha256"]=artifact["sourceSha256"].clone();
                         item["sourceSha256"]=json!(digest);
                         item["content"]=json!(content);
@@ -2398,11 +2416,10 @@ async fn run_loop(
             ) else {return Ok("token_budget".into())};
             prepared
         } else {
-            (format!("{}\n\n{}{}{}",child_input["prompt"].as_str().unwrap_or(""),
-                inherited,digest,focus),json!({
-                "mode":"full","sourceExcerptDeferred":false,
-                "researchReadLedgerDeferred":false,"evidencePreserved":true
-            }))
+            let Some(prepared)=fit_generation_context(
+                record,child_input["prompt"].as_str().unwrap_or(""),&inherited,&digest,&focus
+            ) else {return Ok("token_budget".into())};
+            prepared
         };
         child_input["prompt"]=json!(composed);
         child_input["rsiContextPlan"]=context_plan.clone();
@@ -2973,10 +2990,10 @@ fn reconcile_descendant_target(
         fit_generation_context(&ledger,&base,&inherited,&research,&focus)
             .ok_or("rsi_token_budget: 차세대 재계획 문맥이 잔여 예산을 초과합니다.")?
     } else {
-        (format!("{base}\n\n{inherited}{research}{focus}"),json!({
-            "mode":"full","sourceExcerptDeferred":false,
-            "researchReadLedgerDeferred":false,"evidencePreserved":true
-        }))
+        let remaining=job["input"]["rsiRemainingCampaignTokens"].clone();
+        let ledger=json!({"limits":{"tokenBudget":remaining},"tokens":0});
+        fit_generation_context(&ledger,&base,&inherited,&research,&focus)
+            .ok_or("rsi_token_budget: 차세대 재계획 문맥이 잔여 예산을 초과합니다.")?
     };
     job["input"]["prompt"]=json!(composed);
     job["input"]["rsiContextPlan"]=plan.clone();
@@ -2985,11 +3002,20 @@ fn reconcile_descendant_target(
         if plan["sourceExcerptDeferred"]==true {0}else{focus.chars().count()}
     );
     job["input"]["rsiTargetPlan"]=executed.clone();
+    let coordinator_decision=job["input"]["rsiDecisionInput"].clone();
     if job["input"]["rsiDecisionInput"].is_object() {
         job["input"]["rsiDecisionInput"]["nextDomain"]=json!(domain);
         job["input"]["rsiDecisionInput"]["decisionSource"]=json!("descendant_worker");
+        job["input"]["rsiDecisionInput"]["basis"]=json!("descendant_authoritative_replan");
+        job["input"]["rsiDecisionInput"]["observed"]=json!({
+            "selectedDomain":domain,"selection":selection,
+            "strategyRevision":strategy["revision"],
+            "sourceIndexId":job["input"]["rsiIndexId"]
+        });
     }
     let receipt=json!({
+        "coordinatorDecisionInput":coordinator_decision,
+        "descendantDecisionInput":job["input"]["rsiDecisionInput"],
         "coordinatorPlan":prior,"descendantPlan":executed,
         "generatorCommit":commit,"sourceIndexId":job["input"]["rsiIndexId"],
         "reason":"descendant_authoritative_selection"
@@ -3048,8 +3074,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // Child-authoritative decision: source targeting and the prompt are rebuilt
     // whenever the descendant's policy disagrees with the frozen coordinator.
     // The old plan is preserved as an audit receipt, never silently relabelled.
-    reconcile_descendant_target(&state,&mut job,&history,
-        &domain,domain_selection,&strategy,&commit)?;
+    if let Err(error)=reconcile_descendant_target(&state,&mut job,&history,
+        &domain,domain_selection,&strategy,&commit) {
+        job["status"]=json!("failed");
+        job["error"]=json!(error);
+        job["result"]=json!({"rsi":{"modelError":error,"phase":"descendant_replan"}});
+        state.store.put("job",&job).ok_or("차세대 재계획 실패 기록 저장 실패")?;
+        return Err(error);
+    }
     job["rsiDomain"] = json!(domain);
     job["rsiDomainSelection"] = json!(domain_selection);
     job["rsiSearchStrategy"] = strategy.clone();
@@ -3213,6 +3245,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
     #[test]
+    fn research_ranges_past_eof_do_not_replay_last_source_line() {
+        let (value,begin,end)=numbered_source_range("one\ntwo\nthree\n",100,120);
+        assert!(value.is_empty());
+        assert_eq!((begin,end),(100,99));
+        let (value,begin,end)=numbered_source_range("one\ntwo\nthree\n",2,120);
+        assert_eq!((begin,end),(2,3));
+        assert!(value.contains("    2 two"));
+        assert!(!value.contains("one"));
+    }
+
+    #[test]
+    fn memory_page_is_ui_not_memory_kernel() {
+        assert_eq!(focus_domain_hint("web/src/pages/Memory.tsx"),"ui");
+        assert_eq!(focus_domain_hint("src/engine/memory.rs"),"memory");
+    }
+
+    #[test]
     fn research_digest_lists_ranges_already_read() {
         let (state, root) = state();
         state
@@ -3230,6 +3279,13 @@ mod tests {
         let text = research_digest(&state, &json!({}), &record);
         assert!(text.contains("src/engine/memory.rs 10-20"));
         assert!(text.contains("다시 읽지 마세요"));
+        let mut failed=state.store.get("execution_operation","digest-op").unwrap();
+        failed["status"]=json!("failed");
+        state.store.put("execution_operation",&failed).unwrap();
+        assert_eq!(research_digest(&state,&json!({}),&record),"",
+            "failed source reading cannot be inherited as inspected evidence");
+        failed["status"]=json!("completed");
+        state.store.put("execution_operation",&failed).unwrap();
         assert_eq!(research_digest(&state, &json!({}), &json!({"history":[]})), "");
         // Only the verified selected lineage may inherit source-specific reads.
         let source="a".repeat(40);let fingerprint="b".repeat(64);
