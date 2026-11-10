@@ -2067,16 +2067,34 @@ async fn run_loop(
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
-        child_input["prompt"] = json!(format!(
-            "{}\n\n{}{}{}",
-            child_input["prompt"].as_str().unwrap_or(""),
-            inherited,
-            digest,
-            focus
-        ));
-        // Record prompt composition so real-model savings can be measured
-        // separately from completion tokens and tool-call counts.
-        child_input["rsiFocusContextChars"] = json!(focus.chars().count());
+        let original = child_input["prompt"].as_str().unwrap_or("");
+        let model_bound = child_input["model"].as_str().is_some_and(|m| !m.is_empty())
+            && child_input["providerId"].as_str().is_some_and(|p| !p.is_empty());
+        // Re-evaluate the ACTUAL complete parent prompt before any paid model
+        // call. A large saved research ledger must not silently consume the
+        // budget and leave the next generation unable to start.
+        let variants = [
+            ("full", format!("{original}\n\n{inherited}{digest}{focus}"), false, false),
+            ("source_on_demand", format!("{original}\n\n{inherited}{digest}"), true, false),
+            ("research_on_demand", format!("{original}\n\n{inherited}"), true, true),
+        ];
+        let Some((mode, composed, defer_focus, defer_research)) = variants.into_iter()
+            .find(|(_, text, _, _)| {
+                !model_bound || generation_fits_remaining_budget(
+                    record, &json!({"prompt":text}))
+            }) else { return Ok("token_budget".into()); };
+        child_input["prompt"] = json!(composed);
+        child_input["rsiContextPlan"] = json!({
+            "mode":mode,"sourceExcerptDeferred":defer_focus && !focus.is_empty(),
+            "researchReadLedgerDeferred":defer_research && !digest.is_empty(),
+            "evidencePreserved":true
+        });
+        child_input["rsiRemainingCampaignTokens"] = record["limits"]["tokenBudget"]
+            .as_u64()
+            .map(|budget| budget.saturating_sub(record["tokens"].as_u64().unwrap_or(0)))
+            .map_or(Value::Null, |tokens| json!(tokens));
+        // Account only for source context that was ACTUALLY delivered.
+        child_input["rsiFocusContextChars"] = json!(if defer_focus {0} else {focus.chars().count()});
         child_input["rsiPromptContextChars"] = json!(child_input["prompt"]
             .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
         let child = context
