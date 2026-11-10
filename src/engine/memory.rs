@@ -2497,8 +2497,8 @@ mod regression_memory_visibility_tests {
 
     #[test]
     fn compressed_memory_restores_only_matched_scoped_original_evidence() {
-        let db=store();
-        let scope=scope(&db,"s","a");
+        let db=Store::open(std::path::Path::new(":memory:")).unwrap();
+        let scope=MemoryScope::for_session(&db,"s",Some("a"));
         let summary_id="summary-archive";
         let common=json!({"scope":"agent","agentId":"a","partitionKey":scope.partition_key,
             "sessionId":"s","sourceAuthorKey":"owner","type":"fact"});
