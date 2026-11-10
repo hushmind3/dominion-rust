@@ -47,7 +47,7 @@ pub async fn owner_profile(State(state): State<AppState>) -> Json<Value> {
         .unwrap_or_else(default_owner_profile))
 }
 
-fn valid_profile_avatar(value: &str) -> bool {
+pub(crate) fn valid_profile_avatar(value: &str) -> bool {
     use base64::Engine as _;
     if value.is_empty() { return true; }
     let Some((kind, encoded)) = value.split_once(";base64,") else { return false; };
