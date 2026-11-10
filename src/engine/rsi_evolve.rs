@@ -4130,7 +4130,7 @@ mod tests {
         git(&context,&source,&["update-ref","refs/heads/main",&base]).await.unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
         assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap_err().contains("dominion-sub"),"main must never be an application target");
-        git(&context,&source,&["checkout","-b","dominion-sub"]).await.unwrap();
+        git(&context,&source,&["checkout","-b","dominion-sub2"]).await.unwrap();
         std::fs::write(source.join("my-research.txt"),"keep my unrelated research").unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
         context.checkpoint(json!({"status":"completed"})).unwrap();
@@ -4147,6 +4147,7 @@ mod tests {
         // No new model generation is needed merely to publish that selection.
         let applied=rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap();
         assert_eq!(applied["commit"],accepted_commit);
+        assert_eq!(applied["branch"],"dominion-sub2");
         assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.is_ok(),"retry must not apply twice");
         assert_eq!(std::fs::read_to_string(source.join("my-research.txt")).unwrap(),"keep my unrelated research");
         let rev=|reference:&str|String::from_utf8(std::process::Command::new("git").current_dir(&source)
