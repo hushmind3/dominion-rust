@@ -23,6 +23,16 @@ pub const DOMAINS: &[&str] = &["memory", "tools", "context", "learning", "ui", "
 
 fn objective_matches(domain: &str, objective: &str) -> bool {
     let text = objective.to_lowercase();
+    // A memory/context/learning retrieval request should not be converted
+    // into a general tools task merely because it contains "검색"/"search".
+    if domain=="tools" {
+        let explicit=["도구","브라우저","외부 연결","tools","tool","browser"].iter()
+            .any(|word| text.split(|ch:char|!ch.is_alphanumeric()&&ch!='_')
+                .any(|token|token==*word) || text.contains(word) && !word.is_ascii());
+        let specific=["memory","context","learning"].iter()
+            .any(|kind|objective_matches(kind,objective));
+        if specific && !explicit {return false;}
+    }
     let aliases: &[&str] = match domain {
         "memory" => &["기억", "회상", "메모리", "memory", "recall"],
         "context" => &["대화", "문맥", "컨텍스트", "토큰", "캐시", "context", "chat", "token", "cache"],
@@ -121,6 +131,10 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
         .iter()
         .map(|row| row["tokens"].as_u64().unwrap_or(0))
         .sum::<u64>() as f64;
+    let useful=rows.iter().filter(|row|row["accepted"]==true ||
+        row["candidateId"].is_string() || row["newFindings"].as_u64().unwrap_or(0)>0)
+        .count() as f64;
+    let barren_rate=if attempts==0.0 {0.0}else{1.0-useful/attempts};
     let success_rate = if attempts == 0.0 { 0.0 } else { accepted / attempts };
     let token_cost = if attempts == 0.0 {
         0.0
@@ -154,6 +168,8 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
         ("inconclusive".to_string(), inconclusive),
         ("novelty".to_string(), if attempts == 0.0 { 1.0 } else { 0.0 }),
         ("successRate".to_string(), success_rate),
+        ("usefulGenerations".to_string(),useful),
+        ("barrenRate".to_string(),barren_rate),
         ("tokenCost".to_string(), token_cost),
         ("objectiveMatch".to_string(), objective_match),
         ("unresolved".to_string(), unresolved),
@@ -186,18 +202,31 @@ fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f
         }
         _ => {
             let get = |name: &str| features.get(name).copied().unwrap_or(0.0);
-            let attempts = get("attempts").max(1.0);
-            let utility = get("accepted") / (1.0 + get("tokenCost") * attempts) / attempts;
-            // The user's objective outranks exploration. A goal-specific
-            // capability is selected before an unrelated unused domain.
-            Some(utility + get("exploration") + get("objectiveMatch") * 2.0)
+            // Posterior success probability remains defined with no trials.
+            // Expensive, barren research lowers priority; real accepted code
+            // changes matter more than merely producing new text findings.
+            // Domain ranking can still be replaced by a model-authored formula.
+            let tries=get("attempts");
+            let posterior=(get("accepted")+0.5)/(tries+2.0);
+            let useful=get("usefulGenerations")/(tries+1.0);
+            let cost=get("tokenCost").max(0.0);
+            let penalty=get("barrenRate")*cost/(1.0+cost);
+            Some(3.0*posterior/(1.0+cost)+0.25*useful
+                +get("exploration")-penalty
+                +get("objectiveMatch")*2.0)
         }
     }
 }
 
 pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &str) -> String {
     let mut best = (f64::NEG_INFINITY, DOMAINS[0]);
-    for domain in DOMAINS {
+    // Scope is an owner constraint, not a tweakable reward. An explicit goal
+    // is evaluated only among the matching capabilities; open-ended evolution
+    // still explores all domains.
+    let matching=DOMAINS.iter().copied().filter(|domain|objective_matches(domain,objective))
+        .collect::<Vec<_>>();
+    let eligible=if matching.is_empty(){DOMAINS.to_vec()}else{matching};
+    for domain in eligible {
         let features = search_features(history, domain, objective);
         let Some(score) = score_domain(algorithm, &features) else {
             continue;
@@ -2757,6 +2786,26 @@ mod tests {
         let continued = research_digest(&state, &json!({"rsiContinueFrom":"digest-prior"}), &json!({"history":[]}));
         assert!(continued.contains("src/engine/memory.rs 10-20"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn owner_goal_constrains_domain_even_when_another_domain_is_new_or_profitable() {
+        let algorithm=json!({"implementation":"failure-clusters"});
+        let history=vec![
+            json!({"domain":"memory","accepted":false,"candidateId":null,"tokens":80_000,"newFindings":0}),
+            json!({"domain":"memory","accepted":false,"candidateId":null,"tokens":70_000,"newFindings":0}),
+            json!({"domain":"learning","accepted":true,"candidateId":"c","tokens":3_000,"newFindings":1})
+        ];
+        assert_eq!(select_domain(&algorithm,&history,"기억 검색 최적화"),"memory");
+        assert_eq!(select_domain(&algorithm,&history,"대화 문맥 검색"),"context");
+        assert_eq!(select_domain(&algorithm,&history,"브라우저 검색 도구"),"tools");
+        assert_eq!(select_domain(&algorithm,&history,"학습 기록 검색"),"learning");
+        // With no owner scope, productive low-cost work should beat repeated
+        // barren token spend when comparing the two domains directly.
+        let productive=search_features(&history,"learning","");
+        let expensive=search_features(&history,"memory","");
+        assert!(score_domain(&algorithm,&productive)>score_domain(&algorithm,&expensive));
+        assert!(expensive["barrenRate"]>0.9);
     }
 
     #[test]

@@ -83,6 +83,8 @@ pub const SELFIMPROVE_FEATURES: &[&str] = &[
     "inconclusive",
     "novelty",
     "successRate",
+    "usefulGenerations",
+    "barrenRate",
     "tokenCost",
     "objectiveMatch",
     "unresolved",
