@@ -379,7 +379,7 @@ pub async fn update_status(state: &AppState) -> Value {
             if sha.len()!=40 {
                 return json!({"supported":true,"available":false,"local":local,"reason":"원격 버전 정보를 읽지 못했습니다."});
             }
-            json!({"supported":true,"available":sha!=local,"local":local,"remote":sha,"installMode":"source"})
+            json!({"supported":true,"available":sha!=local,"local":local,"remote":sha,"running":option_env!("DOMINION_BUILD_COMMIT").unwrap_or("unknown"),"installMode":"source"})
         }
         _ => json!({"supported":true,"available":false,"local":local,"reason":"업데이트 서버에 연결할 수 없습니다. 인터넷 연결을 확인하세요."})
     }

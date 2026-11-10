@@ -4,7 +4,7 @@ import {Button} from './Primitives'
 import {Panel,Subheading,useRemote} from './UI'
 import {get,post} from '../api'
 
-type VersionInfo={supported:boolean;available:boolean;local?:string;remote?:string;reason?:string}
+type VersionInfo={supported:boolean;available:boolean;local?:string;remote?:string;running?:string;reason?:string}
 type Job={id:string;kind:string;status:string;error?:string;logs?:string[]}
 
 export function AppUpdatePanel(){
@@ -53,7 +53,9 @@ export function AppUpdatePanel(){
   <Subheading title="업데이트" extra={<Button type="button" size="sm" variant="ghost" disabled={busy} onClick={()=>void version.reload()}><RefreshCw size={14}/> 확인</Button>}/>
   <p className="text-[12px] leading-5 text-[#6F675D]">가능한 설치 환경에서는 최신 버전 확인부터 설치와 재시작까지 앱 안에서 처리합니다.</p>
   <div className="mt-3 grid gap-1.5 text-[11px] text-[#8A8176]">
-   {version.value.local&&<span>현재 버전 · {version.value.local.slice(0,12)}</span>}
+   {version.value.running&&<span>실행 엔진 · {version.value.running.slice(0,12)}</span>}
+   {version.value.local&&<span>소스 버전 · {version.value.local.slice(0,12)}</span>}
+   {version.value.running&&version.value.local&&version.value.running!==version.value.local&&<strong className="text-[#A05B48]">업데이트된 소스를 실행하려면 재빌드가 필요합니다.</strong>}
    {version.value.remote&&<span>최신 버전 · {version.value.remote.slice(0,12)}</span>}
    {version.value.reason&&<span className="text-[#A05B48]">{version.value.reason}</span>}
    {version.value.available&&<strong className="text-emerald-700">설치할 새 버전이 있습니다.</strong>}

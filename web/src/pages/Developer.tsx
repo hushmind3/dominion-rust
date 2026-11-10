@@ -14,7 +14,7 @@ type DevStatus={
 }
 type DevJob={id:string;kind:string;status:string;logs:string[];error?:string;result?:any}
 type DiffResult={changes:{path:string;status:string;patch:string}[];count:number;truncated:boolean}
-type UpdateStatus={supported:boolean;available:boolean;local?:string;remote?:string;reason?:string;installMode?:string}
+type UpdateStatus={supported:boolean;available:boolean;local?:string;remote?:string;running?:string;reason?:string;installMode?:string}
 
 const terminal=(status:string)=>['completed','failed'].includes(status)
 const fmtBytes=(bytes=0)=>bytes>=1024**3?(bytes/1024**3).toFixed(1)+' GB':bytes>=1024**2?Math.round(bytes/1024**2)+' MB':'0 MB'
@@ -117,7 +117,9 @@ export function DeveloperPage(){
      <Subheading title="DOMINION 업데이트" extra={<Button variant="ghost" size="sm" onClick={()=>void updates.reload()}><RefreshCw size={14}/> 최신 버전 확인</Button>}/>
      <p className="text-[12px] leading-5 text-[#6F675D]">Mac 소스 설치 환경에서는 업데이트 확인부터 빌드·재시작까지 앱 안에서 처리합니다. 기존 사용자 데이터와 연결 설정은 유지합니다.</p>
      <div className="mt-3 grid gap-1 text-[11px] text-[#8A8176]">
-      {updates.value.local&&<div>실행 버전 · {updates.value.local.slice(0,12)}</div>}
+      {updates.value.running&&<div>현재 실행 중 · {updates.value.running.slice(0,12)}</div>}
+      {updates.value.local&&<div>소스 버전 · {updates.value.local.slice(0,12)}</div>}
+      {updates.value.running&&updates.value.local&&updates.value.running!==updates.value.local&&<div className="text-[#A05B48]">소스와 실행 엔진의 버전이 다릅니다. 재빌드가 필요합니다.</div>}
       {updates.value.remote&&<div>최신 버전 · {updates.value.remote.slice(0,12)}</div>}
       {updates.value.reason&&<div className="text-[#A05B48]">{updates.value.reason}</div>}
       {updates.value.available&&<div className="font-semibold text-emerald-700">새 버전 사용 가능</div>}
