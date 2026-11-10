@@ -4,7 +4,7 @@ use crate::state::AppState;
 use serde_json::{json, Value};
 use std::collections::{HashSet, VecDeque};
 
-const MAX_PARTICIPANTS: usize = 32;
+pub const MAX_PARTICIPANTS: usize = 32;
 /// Safety ceiling only. The room's own rounds/maxTurns decide the budget;
 /// operators can raise this without a code change.
 fn max_turns_ceiling() -> usize {
