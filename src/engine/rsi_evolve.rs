@@ -4004,11 +4004,11 @@ mod tests {
             "evaluation":{"source":"server_invoked_local_paired_git_worktrees","metrics":{"eligible":false}}});
         assert!(adopt(&context, &lab, &candidate, &base).await.is_err());
         candidate["evaluation"]["metrics"]["eligible"] = json!(true);
-        let accepted = adopt(&context, &lab, &candidate, &base).await.unwrap();
-        assert_ne!(accepted, base);
+        assert!(adopt(&context, &lab, &candidate, &base).await.is_err(),
+            "A manually altered eligibility flag cannot authorize adoption without a raw paired receipt");
         assert_eq!(
             git(&context, &lab, &["rev-parse", "HEAD"]).await.unwrap(),
-            accepted
+            base
         );
         assert_eq!(
             git(&context, &source, &["rev-parse", "HEAD"])
