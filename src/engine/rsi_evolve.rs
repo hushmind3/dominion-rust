@@ -4191,7 +4191,7 @@ mod tests {
         // explicit product action. Untracked research and main are preserved.
         git(&context,&source,&["update-ref","refs/heads/main",&base]).await.unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
-        assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap_err().contains("dominion-sub"),"main must never be an application target");
+        assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap_err().contains("작업 브랜치"),"main must never be an application target");
         git(&context,&source,&["checkout","-b","dominion-sub1"]).await.unwrap();
         std::fs::write(source.join("my-research.txt"),"keep my unrelated research").unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
