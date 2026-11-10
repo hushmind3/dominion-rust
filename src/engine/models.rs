@@ -3000,6 +3000,27 @@ mod tests {
     }
 
     #[test]
+    fn competing_model_revisions_cannot_share_one_partial_file() {
+        let (state, dir) = temp_state();
+        let previous = "a".repeat(40);
+        let requested = "b".repeat(40);
+        state.store.put(MODEL_KIND, &json!({
+            "repo": "owner/model", "optionId": "model.gguf",
+            "revision": previous, "status": "paused"
+        }));
+        let error = start_download_at_revision(
+            state.clone(), "owner/model".into(), "model.gguf".into(),
+            "gguf".into(), Vec::new(), Some(&requested)
+        ).unwrap_err();
+        assert!(error.contains("다른 버전"), "{error}");
+        assert!(start_download_at_revision(
+            state, "owner/model".into(), "model.gguf".into(),
+            "gguf".into(), Vec::new(), Some("bad/revision")
+        ).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn hugging_face_snapshot_requires_an_immutable_commit_hash() {
         assert!(valid_hf_revision("0123456789abcdef0123456789abcdef01234567"));
         assert!(!valid_hf_revision("main"));
