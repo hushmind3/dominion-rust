@@ -176,11 +176,13 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     let mut candidate_successes = 0usize;
     let mut holdouts = 0usize;
     let mut improved_holdouts = 0usize;
+    let mut improved_holdout_domains = BTreeSet::new();
     let mut holdout_domains = BTreeSet::new();
     let mut metric_gains = 0;
     let mut metric_losses = 0;
     let mut measurements = Vec::new();
     let mut meta_gains = 0;
+    let mut meta_holdout_gains = 0;
     for measurement in measured {
         let id = measurement["id"].as_str().ok_or("측정 사례 id가 없습니다.")?;
         let Some(planned) = plan.iter().find(|row| row["id"] == id) else {
@@ -205,12 +207,18 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
         let mg = if before && after { mg } else { 0 };
         metric_gains += mg;
         metric_losses += ml;
-        if planned["domain"] == "improver" { meta_gains += mg; }
+        if planned["domain"] == "improver" {
+            meta_gains += mg;
+            if planned["holdout"] == true { meta_holdout_gains += mg; }
+        }
         measurements.push(json!({"id":id,"metrics":detail}));
         if planned["holdout"] == true {
             holdouts += 1;
             holdout_domains.insert(planned["domain"].as_str().unwrap_or("").to_string());
-            if (!before && after) || mg > 0 { improved_holdouts += 1; }
+            if (!before && after) || mg > 0 {
+                improved_holdouts += 1;
+                improved_holdout_domains.insert(planned["domain"].as_str().unwrap_or("").to_string());
+            }
         }
     }
     let ready = plan.len() >= MIN_PAIRED_CASES
@@ -223,9 +231,11 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     Ok(json!({
         "pairedCases":plan.len(),"holdoutCases":holdouts,
         "holdoutDomains":holdout_domains.into_iter().collect::<Vec<_>>(),
+        "improvedHoldoutDomains":improved_holdout_domains.into_iter().collect::<Vec<_>>(),
         "baselineSuccesses":baseline_successes,"candidateSuccesses":candidate_successes,
         "gains":gains,"regressions":losses+metric_losses,"improvedHoldouts":improved_holdouts,
-        "metricGains":metric_gains,"metricRegressions":metric_losses,"metaGains":meta_gains,"measurements":measurements,
+        "metricGains":metric_gains,"metricRegressions":metric_losses,
+        "metaGains":meta_gains,"metaHoldoutGains":meta_holdout_gains,"measurements":measurements,
         "eligible":ready,
         "verdict":if losses+metric_losses>0 {"regressed"} else if ready {"improved"} else {"inconclusive"}
     }))
@@ -348,6 +358,85 @@ pub fn confirm_deployment(
     state.store.audit("rsi.deployment_reported",json!({"id":id,"commitSha":commit}));
     state.bus.record("rsi_candidate",&saved);
     Ok(saved)
+}
+
+/// Three accepted patches alone do not demonstrate recursive intelligence.
+/// Require exact generator succession, independently measured holdout gains,
+/// a self-improver change, and subsequent transfer into another capability.
+pub fn capability_proven(state: &AppState, history: &[Value]) -> bool {
+    let mut chain: Vec<(String, bool, BTreeSet<String>)> = Vec::new();
+    for generation in history {
+        if generation["accepted"] != true { chain.clear(); continue; }
+        let Some(candidate) = generation["candidateId"].as_str()
+            .and_then(|id| state.store.get("rsi_candidate", id)) else {
+                chain.clear(); continue;
+            };
+        let Some(commit) = generation["acceptedCommit"].as_str().filter(|s|sha(s)) else {
+            chain.clear(); continue;
+        };
+        let Some(generator) = generation["generatorCommit"].as_str().filter(|s|sha(s)) else {
+            chain.clear(); continue;
+        };
+        let evaluation = &candidate["evaluation"];
+        let evidence = evaluation["evidenceSha256"].as_str().is_some_and(|h|
+            h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit()));
+        let verified = candidate["status"] == "verified"
+            && evaluation["source"] == "server_invoked_local_paired_git_worktrees"
+            && evaluation["metrics"]["eligible"] == true
+            && evaluation["metrics"]["regressions"] == 0
+            && evaluation["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0) > 0
+            && evidence
+            && generation["evaluation"]["evidenceSha256"] == evaluation["evidenceSha256"]
+            && candidate["experimentAdoption"]["commit"] == generation["acceptedCommit"]
+            && candidate["baseCommit"] == generation["generatorCommit"];
+        if !verified { chain.clear(); continue; }
+        if chain.last().is_some_and(|(prior,_,_)|prior!=generator) {
+            chain.clear();
+        }
+        let improved = evaluation["metrics"]["improvedHoldoutDomains"]
+            .as_array().into_iter().flatten()
+            .filter_map(Value::as_str).map(str::to_string)
+            .collect::<BTreeSet<_>>();
+        let meta = candidate["target"] == "improver"
+            && evaluation["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0) > 0
+            && improved.contains("improver");
+        chain.push((commit.to_string(),meta,improved));
+        if chain.len() >= 3 && chain.windows(3).any(|window|
+            window.iter().enumerate().any(|(i,(_,meta,domains))|
+                *meta && window[i+1..].iter().any(|(_,_,successor_domains)|
+                    successor_domains.iter().any(|domain|
+                        domain!="improver" && !domains.contains(domain)))))
+        { return true; }
+    }
+    false
+}
+
+/// A continued campaign may inherit proof only from the same source snapshot,
+/// work branch and selected descendant. A reused goal label proves nothing.
+pub fn campaign_capability_proven(state:&AppState, campaign:&Value)->bool {
+    let mut segments = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut current=campaign.clone();
+    for _ in 0..32 {
+        let Some(id)=current["id"].as_str() else {break};
+        if !seen.insert(id.to_string()) {break;}
+        segments.push(current["history"].as_array().cloned().unwrap_or_default());
+        if current["lineage"]["reused"]!=true {break;}
+        let Some(prior)=current["continuedFrom"].as_str()
+            .and_then(|id|state.store.get("rsi_campaign",id)) else {break};
+        let selected=current["lineage"]["selectedCommit"].as_str().unwrap_or("");
+        let hash=current["sourceFingerprint"].as_str().unwrap_or("");
+        if !sha(selected) || prior["headCommit"]!=selected
+            || current["sourceDir"]!=prior["sourceDir"]
+            || current["sourceBranch"]!=prior["sourceBranch"]
+            || current["baseCommit"]!=prior["baseCommit"]
+            || prior["sourceFingerprint"]!=hash
+            || !crate::engine::rsi_evolve::lineage_fingerprint_valid(hash)
+        {break;}
+        current=prior;
+    }
+    segments.reverse();
+    capability_proven(state,&segments.into_iter().flatten().collect::<Vec<_>>())
 }
 
 pub fn list(state: &AppState) -> Vec<Value> {
