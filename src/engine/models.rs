@@ -2189,6 +2189,16 @@ pub fn jobs(state: &AppState) -> Vec<Value> {
 }
 
 /// Streams a GGUF file from Hugging Face and records progress as a job.
+fn download_targets(job: &Value) -> std::collections::HashSet<PathBuf> {
+    let Some(root) = job["targetDir"].as_str().filter(|root| !root.is_empty()) else {
+        return std::collections::HashSet::new();
+    };
+    job["files"].as_array().into_iter().flatten()
+        .filter_map(|file| file["path"].as_str().filter(|path| safe_relative(path)))
+        .map(|path| PathBuf::from(root).join(path))
+        .collect()
+}
+
 pub fn start_download(state: AppState, repo: String, option: String) -> Result<Value, String> {
     start_download_with(state, repo, option, "gguf".into(), Vec::new())
 }
@@ -2754,11 +2764,20 @@ pub fn resume_job(state: &AppState, id: &str) -> Option<Value> {
     if !matches!(status, "paused" | "failed" | "cancelled") {
         return None;
     }
-    if active_downloads()
-        .lock()
-        .map(|active| active.contains(id))
-        .unwrap_or(false)
-    {
+    // Use the same registration lock for both new and resumed downloads.
+    // A paused job must never resume over an active writer's target file.
+    let _registration = DOWNLOAD_REGISTRATION.lock().ok()?;
+    let running = active_downloads().lock().ok()?.clone();
+    if running.contains(id) {
+        return None;
+    }
+    let targets = download_targets(&job);
+    if targets.is_empty() || state.store.all(MODEL_KIND).iter().any(|other| {
+        other["id"] != id
+            && (matches!(other["status"].as_str(), Some("downloading" | "paused"))
+                || other["id"].as_str().is_some_and(|other_id| running.contains(other_id)))
+            && !download_targets(other).is_disjoint(&targets)
+    }) {
         return None;
     }
     let saved = state.store.patch_if(
@@ -2819,6 +2838,28 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         (AppState::new(config, store, vault), dir)
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_overlapping_target_while_another_download_owns_it() {
+        let (state, dir) = temp_state();
+        let root = target_root(&state, "gguf", "owner/model");
+        let paused = state.store.put(MODEL_KIND, &json!({
+            "repo":"owner/model","optionId":"model.Q4.gguf",
+            "format":"gguf","status":"paused","targetDir":root.to_string_lossy(),
+            "files":[{"path":"model.Q4.gguf","downloaded":0,"total":0}]
+        })).unwrap();
+        let active = state.store.put(MODEL_KIND, &json!({
+            "repo":"owner/model","optionId":"different-option",
+            "format":"gguf","status":"downloading","targetDir":root.to_string_lossy(),
+            "files":[{"path":"model.Q4.gguf","downloaded":0,"total":0}]
+        })).unwrap();
+        let paused_id = paused["id"].as_str().unwrap();
+        assert!(resume_job(&state, paused_id).is_none(),
+            "resume must not create two writers for the same model file");
+        assert_eq!(state.store.get(MODEL_KIND, paused_id).unwrap()["status"], "paused");
+        assert_eq!(state.store.get(MODEL_KIND, active["id"].as_str().unwrap()).unwrap()["status"], "downloading");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
