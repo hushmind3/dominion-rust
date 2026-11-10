@@ -8,9 +8,23 @@ const root=process.env.RSI_TEMP;
 const plan=JSON.parse(fs.readFileSync(process.env.RSI_PLAN,'utf8'));
 const hash=data=>crypto.createHash('sha256').update(data).digest('hex');
 const logs=[];
+// Candidate build scripts and test binaries must not inherit arbitrary
+// production API keys/tokens from the outer coordinator environment.
+// This is environment hygiene, not a process/filesystem/OS sandbox.
+const allowedEnvironment=[
+ 'PATH','HOME','USER','LOGNAME','LANG','LC_ALL','TMPDIR','TMP','TEMP',
+ 'CARGO_HOME','RUSTUP_HOME','RUSTUP_TOOLCHAIN','CARGO_BUILD_TARGET',
+ 'SDKROOT','MACOSX_DEPLOYMENT_TARGET','CC','CXX','AR','LD',
+ 'PKG_CONFIG_PATH','PKG_CONFIG_LIBDIR','PKG_CONFIG_SYSROOT_DIR',
+ 'CMAKE_PREFIX_PATH','CI','RSI_TEMP','RSI_PLAN','RSI_BASE_SHA',
+ 'RSI_REPORT','RSI_PATCH','RSI_BUILD_CACHE'
+];
+const childEnvironment=Object.fromEntries(allowedEnvironment
+ .filter(key=>typeof process.env[key]==='string')
+ .map(key=>[key,process.env[key]]));
 const run=(exe,args,cwd)=>{
  const result=spawnSync(exe,args,{cwd,encoding:'utf8',timeout:360000,maxBuffer:8*1024*1024,
-  env:{...process.env,CARGO_TARGET_DIR:path.join(process.env.RSI_BUILD_CACHE||path.join(root,'build'),path.basename(cwd))}});
+  env:{...childEnvironment,CARGO_TARGET_DIR:path.join(process.env.RSI_BUILD_CACHE||path.join(root,'build'),path.basename(cwd))}});
  const text=(result.stdout||'')+'\n'+(result.stderr||'');
  logs.push(text.slice(-80000));
  return {ok:result.status===0&&!result.error,text,stdout:result.stdout||''};
