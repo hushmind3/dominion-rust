@@ -1882,6 +1882,56 @@ fn generation_fits_remaining_budget(record:&Value,input:&Value)->bool {
     })
 }
 
+/// Never splice a fixed number of characters out of serialized JSON:
+/// an incomplete receipt wastes model tokens and can corrupt later feedback.
+/// Shrink OPTIONAL telemetry as a whole and keep the objective and directive.
+fn fit_worker_prompt(
+    base: &str, domain: &str, capability: &str, history: &[Value],
+    remaining_tokens: Option<u64>,
+) -> Result<(String, Value), String> {
+    let directive = format!(
+        "\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요."
+    );
+    let full = history.iter().rev().take(8).map(|row| {
+        let cases = row["evaluation"]["metrics"]["measurements"].as_array()
+            .into_iter().flatten().filter(|case|case["metrics"].as_array()
+                .is_some_and(|metrics|metrics.iter().any(|m|
+                    m["improved"]==true || m["regressed"]==true)))
+            .take(3).cloned().collect::<Vec<_>>();
+        json!({
+            "domain":row["domain"],"accepted":row["accepted"],
+            "tokens":row["tokens"],"elapsedMs":row["elapsedMs"],
+            "verdict":row["evaluation"]["verdict"],"measurements":cases,
+            "error":row["error"].as_str().map(|error|
+                error.chars().take(240).collect::<String>())
+        })
+    }).collect::<Vec<_>>();
+    let compact = history.iter().rev().take(2).map(|row|json!({
+        "domain":row["domain"],"accepted":row["accepted"],
+        "tokens":row["tokens"],"verdict":row["evaluation"]["verdict"],
+        "error":row["error"].as_str().map(|error|
+            error.chars().take(120).collect::<String>())
+    })).collect::<Vec<_>>();
+    for (mode, rows) in [("full",full),("compact",compact),("deferred",Vec::new())] {
+        let mut prompt = format!("{base}{directive}");
+        if !rows.is_empty() {
+            prompt.push_str("\n이 실험 계보의 과거 결과: ");
+            prompt.push_str(&json!(rows).to_string());
+        } else if !history.is_empty() {
+            prompt.push_str("\n과거 세대의 상세 지표는 작업 저장소에 보존되어 있습니다.");
+        }
+        let estimate = crate::engine::chat::estimate_text_tokens(&prompt);
+        if remaining_tokens.is_none_or(|limit|estimate.saturating_add(256)<=limit) {
+            return Ok((prompt,json!({
+                "mode":mode,"feedbackRows":rows.len(),
+                "availableRows":history.len(),"estimatedInputTokens":estimate,
+                "ownerObjectivePreserved":true
+            })));
+        }
+    }
+    Err("rsi_token_budget: 목표와 핵심 지시문을 유지할 입력 예산이 부족합니다.".into())
+}
+
 fn should_stop_no_progress(streak: u64, research: bool, changed: bool) -> bool {
     streak>=1 && (!research || !changed)
 }
@@ -2603,27 +2653,29 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiDecisionInput"] = job["input"]["rsiDecisionInput"].clone();
     job["input"]["rsiDomainSelection"] = json!(domain_selection);
     job["input"]["rsiSearchStrategy"] = strategy;
-    let feedback = history
-        .iter().rev()
-        .take(8)
-        .map(|row| {
-            json!({"domain":row["domain"],"accepted":row["accepted"],
-        "tokens":row["tokens"],"elapsedMs":row["elapsedMs"],"verdict":row["evaluation"]["verdict"],
-        "measurements":row["evaluation"]["metrics"]["measurements"],"error":row["error"]})
-        })
-        .collect::<Vec<_>>();
-    let feedback = json!(feedback)
-        .to_string()
-        .chars()
-        .take(12_000)
-        .collect::<String>();
     let focus = job["input"]["rsiFocusFiles"].as_array().into_iter().flatten()
         .filter_map(Value::as_str).take(8).collect::<Vec<_>>().join(", ");
     let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
-    job["input"]["prompt"]=json!(format!("{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
-        job["input"]["prompt"].as_str().unwrap_or(""),feedback));
+    let prepared = fit_worker_prompt(
+        job["input"]["prompt"].as_str().unwrap_or(""), &domain, &capability,
+        &history, job["input"]["rsiRemainingCampaignTokens"].as_u64()
+    );
+    let (prompt, plan) = match prepared {
+        Ok(value) => value,
+        Err(error) => {
+            // Persist preflight as a real budget stop. The parent can conclude
+            // without paying for a doomed model call or launching a new step.
+            job["status"]=json!("failed");
+            job["error"]=json!(error);
+            job["result"]=json!({"rsi":{"modelError":error}});
+            state.store.put("job",&job).ok_or("세대 예산 중단 기록 실패")?;
+            return Err(error);
+        }
+    };
+    job["input"]["prompt"]=json!(prompt);
+    job["rsiWorkerContextPlan"]=plan;
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;
     let context = JobContext::new(state.clone(), job_id.into());
     let result = jobs::run_prompt(&context, &job).await;
@@ -3711,6 +3763,30 @@ mod tests {
         assert_eq!(select_domain(&candidate,&[],"자기개선 알고리즘"),"improver");
         let history=vec![json!({"domain":"memory","accepted":true,"tokens":1})];
         assert_eq!(select_domain(&candidate,&history,"화면 버튼 개선"),"ui");
+    }
+
+    #[test]
+    fn worker_feedback_is_valid_json_and_compacts_before_token_overflow() {
+        let prior=vec![json!({
+            "domain":"memory","accepted":false,"tokens":20_000,
+            "error":"too much telemetry ".repeat(2000),
+            "evaluation":{"verdict":"inconclusive","metrics":{
+                "measurements":[{"id":"quality","metrics":[{"improved":true,"regressed":false}]}]
+            }}
+        })];
+        let (minimal,_) = fit_worker_prompt("owner objective","memory","memory",&[],None).unwrap();
+        let max_tokens=crate::engine::chat::estimate_text_tokens(&minimal)+256+16;
+        let (prompt,plan)=fit_worker_prompt("owner objective","memory","memory",&prior,
+            Some(max_tokens)).unwrap();
+        assert!(prompt.starts_with("owner objective"));
+        assert_ne!(plan["mode"],"full");
+        assert!(crate::engine::chat::estimate_text_tokens(&prompt)+256<=max_tokens);
+        assert!(fit_worker_prompt("owner objective","memory","memory",&prior,Some(1))
+            .unwrap_err().starts_with("rsi_token_budget:"));
+        let (unbounded,_) = fit_worker_prompt("owner objective","memory","memory",&prior,None).unwrap();
+        let json_text=unbounded.split("이 실험 계보의 과거 결과: ").nth(1).unwrap();
+        assert!(serde_json::from_str::<Value>(json_text).unwrap().is_array(),
+            "feedback must be complete, parsable JSON rather than truncated bytes");
     }
 
     #[test]
