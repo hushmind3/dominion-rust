@@ -24,17 +24,13 @@ fn accepted_streak(record: &Value) -> (u64, u64) {
 }
 
 fn apply_capability(record: &mut Value) {
-    let (streak, max) = if record["maxAcceptedStreak"].is_u64() {
-        (
-            record["acceptedStreak"].as_u64().unwrap_or(0),
-            record["maxAcceptedStreak"].as_u64().unwrap_or(0),
-        )
-    } else {
-        accepted_streak(record)
-    };
+    let (streak, max) = accepted_streak(record);
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
-    record["capabilityDemonstrated"] = json!(max >= 3);
+    let history = record["history"].as_array().cloned().unwrap_or_default();
+    let (_, verified) = crate::engine::rsi_evolve::verified_capability_streak(&history);
+    record["maxVerifiedStreak"] = json!(verified);
+    record["capabilityDemonstrated"] = json!(verified >= 3);
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
@@ -173,8 +169,10 @@ pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
     let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|record|{
         let job=record["id"].as_str().and_then(|id|state.store.get("job",id)).unwrap_or(Value::Null);
         let (_,max_streak)=accepted_streak(&record);
+        let history=record["history"].as_array().cloned().unwrap_or_default();
+        let (_,verified)=crate::engine::rsi_evolve::verified_capability_streak(&history);
         json!({"id":record["id"],"phase":record["phase"],
-            "maxAcceptedStreak":max_streak,"capabilityDemonstrated":max_streak>=3,
+            "maxAcceptedStreak":max_streak,"maxVerifiedStreak":verified,"capabilityDemonstrated":verified>=3,
             "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
     }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
@@ -562,12 +560,15 @@ mod capability_tests {
         apply_capability(&mut derived);
         assert_eq!(derived["capabilityDemonstrated"], false);
 
-        let full = json!({"history":[
-            {"accepted":true},{"accepted":true},{"accepted":true}
-        ]});
+        let verified = json!({"accepted":true,"evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":0}}});
+        let full = json!({"history":[verified.clone(),verified.clone(),verified.clone()]});
         let mut derived = full.clone();
         apply_capability(&mut derived);
         assert_eq!(derived["maxAcceptedStreak"], 3);
         assert_eq!(derived["capabilityDemonstrated"], true);
+        let unmeasured = json!({"history":[{"accepted":true},{"accepted":true},{"accepted":true}]});
+        let mut derived = unmeasured.clone();
+        apply_capability(&mut derived);
+        assert_eq!(derived["capabilityDemonstrated"], false, "adoption alone is not proof");
     }
 }

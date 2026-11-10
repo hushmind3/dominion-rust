@@ -2461,9 +2461,22 @@ async fn run_loop(
             .unwrap_or(0)
             .max(accepted_streak);
         record["maxAcceptedStreak"] = json!(max_streak);
-        // Three consecutive adopted generations are the documented threshold
-        // for calling the capability demonstrated, not a single lucky patch.
-        record["capabilityDemonstrated"] = json!(max_streak >= 3);
+        // Capability requires measured held-out evidence, not a streak of
+        // adopted patches whose comparison was inconclusive or regressed.
+        let verified_streak = if generation_is_verified(&generation) {
+            record["verifiedStreak"].as_u64().unwrap_or(0) + 1
+        } else if generation["evaluation"].is_object() {
+            0
+        } else {
+            record["verifiedStreak"].as_u64().unwrap_or(0)
+        };
+        record["verifiedStreak"] = json!(verified_streak);
+        let verified_max = record["maxVerifiedStreak"]
+            .as_u64()
+            .unwrap_or(0)
+            .max(verified_streak);
+        record["maxVerifiedStreak"] = json!(verified_max);
+        record["capabilityDemonstrated"] = json!(verified_max >= 3);
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
@@ -2524,6 +2537,15 @@ async fn run_loop(
         save(context, record)?;
         if let Some(reason)=stopped {return Ok(reason.into());}
         if let Some(error)=generation_model_error(&current) {
+            if target_plan_mismatch(error) {
+                let mismatches = record["targetPlanMismatches"].as_u64().unwrap_or(0) + 1;
+                record["targetPlanMismatches"] = json!(mismatches);
+                save(context, record)?;
+                if mismatches >= 3 {
+                    return Ok("target_plan_mismatch_limit".into());
+                }
+                continue;
+            }
             return Err(error.to_string());
         }
         if no_edit && should_stop_no_progress(streak, research, changed) {
@@ -2534,6 +2556,38 @@ async fn run_loop(
 
 /// Empty strings are not model errors; a research-only generation sets the
 /// field to "" and must not abort the whole campaign.
+/// A verified generation is an adopted one whose paired comparison was
+/// eligible, used at least two holdout cases and produced no regression.
+pub fn generation_is_verified(generation: &Value) -> bool {
+    if generation["accepted"] != true {
+        return false;
+    }
+    let metrics = &generation["evaluation"]["metrics"];
+    metrics["eligible"] == true
+        && metrics["holdoutCases"].as_u64().unwrap_or(0) >= 2
+        && metrics["regressions"].as_u64().unwrap_or(0) == 0
+}
+
+/// Longest run of verified adopted generations. Capability is derived from
+/// measured evidence, not from the accepted counter alone.
+pub fn verified_capability_streak(history: &[Value]) -> (u64, u64) {
+    let mut streak = 0u64;
+    let mut max = 0u64;
+    for generation in history {
+        if generation_is_verified(generation) {
+            streak += 1;
+            max = max.max(streak);
+        } else if generation["evaluation"].is_object() {
+            streak = 0;
+        }
+    }
+    (streak, max)
+}
+
+fn target_plan_mismatch(error: &str) -> bool {
+    error.starts_with("rsi_target_plan_mismatch")
+}
+
 fn generation_model_error(current: &Value) -> Option<&str> {
     current["result"]["rsi"]["modelError"]
         .as_str()
@@ -3957,6 +4011,17 @@ mod tests {
             "revision": format!("revision-{name}"),
             "parameters": {"expression": expression}
         })
+    }
+
+    #[test]
+    fn verified_capability_requires_measured_holdout_evidence() {
+        let verified=json!({"accepted":true,"evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":0}}});
+        let regressed=json!({"accepted":true,"evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":1}}});
+        assert_eq!(verified_capability_streak(&[verified.clone(),verified.clone(),verified.clone()]),(3,3));
+        assert_eq!(verified_capability_streak(&[verified.clone(),regressed.clone()]),(0,1));
+        assert_eq!(verified_capability_streak(&[json!({"accepted":true})]),(0,0));
+        assert!(target_plan_mismatch("rsi_target_plan_mismatch: mismatch"));
+        assert!(!target_plan_mismatch("rsi_token_budget"));
     }
 
     #[test]
