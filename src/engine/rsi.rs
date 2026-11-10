@@ -444,8 +444,21 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
             continue;
         }
         let Some(candidate)=generation["candidateId"].as_str()
-            .and_then(|id|state.store.get("rsi_candidate",id)) else {
-            chain.clear(); continue;
+            .and_then(|id|state.store.get("rsi_candidate",id))
+            .or_else(|| {
+                // The index record may have been archived. Accept only the
+                // evidence receipt written at the time of actual adoption.
+                let proof=&generation["acceptedProof"];
+                (proof["candidateId"]==generation["candidateId"]
+                    && proof["adoptedCommit"]==generation["acceptedCommit"]
+                    && proof["baseCommit"]==generation["generatorCommit"]
+                    && proof["status"]=="verified")
+                .then(||json!({"status":proof["status"],"target":proof["target"],
+                    "baseCommit":proof["baseCommit"],
+                    "experimentAdoption":{"commit":proof["adoptedCommit"]},
+                    "evaluation":proof["evaluation"]}))
+            }) else {
+            chain.clear();continue;
         };
         let evaluation=&candidate["evaluation"];
         let Some(commit)=generation["acceptedCommit"].as_str().filter(|v|sha(v)) else {
@@ -508,16 +521,23 @@ pub fn campaign_capability_proven(state: &AppState, campaign: &Value) -> bool {
         let Some(prior) = state.store.get("rsi_campaign", prior_id) else {break};
         let selected = current["lineage"]["selectedCommit"].as_str().unwrap_or("");
         let fingerprint = current["sourceFingerprint"].as_str().unwrap_or("");
+        let same_base=current["baseCommit"]==prior["baseCommit"]
+            && current["sourceFingerprint"]==prior["sourceFingerprint"];
+        // A newly chosen descendant may become the next campaign's starting
+        // source revision. Its fingerprint changes, but the selected commit
+        // must be the exact head previously adopted by this lineage.
+        let advanced_base=current["baseCommit"].as_str()==Some(selected)
+            && prior["headCommit"].as_str()==Some(selected);
         let same_origin = current["sourceDir"] == prior["sourceDir"]
             && current["sourceBranch"] == prior["sourceBranch"]
-            && current["baseCommit"] == prior["baseCommit"];
+            && (same_base||advanced_base);
         if !same_origin
             || !sha(selected)
             || prior["headCommit"].as_str() != Some(selected)
             || fingerprint.len() != 64
             || !fingerprint.bytes().all(|b|b.is_ascii_hexdigit())
             || fingerprint == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-            || prior["sourceFingerprint"].as_str() != Some(fingerprint) {
+            || (!advanced_base && prior["sourceFingerprint"].as_str() != Some(fingerprint)) {
             break;
         }
         current = prior;
@@ -591,11 +611,20 @@ mod tests {
                             {"id":format!("control-{i}"),"domain":"other",
                                 "holdout":true,"baselinePass":true,"candidatePass":true,"metrics":[]}
                         ]}}}));
+            let saved=state.store.get("rsi_candidate",&id).unwrap();
             history.push(json!({"accepted":true,"candidateId":id,
                 "generatorCommit":revisions[i],"acceptedCommit":revisions[i+1],
-                "evaluation":{"evidenceSha256":"a".repeat(64)}}));
+                "evaluation":{"evidenceSha256":"a".repeat(64)},
+                "acceptedProof":{"candidateId":id,"status":"verified","target":target,
+                    "baseCommit":revisions[i],"adoptedCommit":revisions[i+1],
+                    "evaluation":saved["evaluation"]}}));
         }
         assert!(capability_proven(&state,&history),"validated meta improvement followed by verified transfer");
+        let retained=state.store.get("rsi_candidate","proof-1").unwrap();
+        assert!(state.store.remove("rsi_candidate","proof-1"));
+        assert!(capability_proven(&state,&history),
+            "archiving the candidate index cannot erase durable adopted evidence");
+        state.store.put("rsi_candidate",&retained).unwrap();
         let mut forged=state.store.get("rsi_candidate","proof-2").unwrap();
         forged["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["unmeasured-domain"]);
         state.store.put("rsi_candidate",&forged).unwrap();
@@ -637,6 +666,11 @@ mod tests {
         next["history"]=json!(history[2..].to_vec());
         assert!(campaign_capability_proven(&state,&next),
             "three proven descendants may span two campaigns on the same source lineage");
+        let mut advanced=next.clone();
+        advanced["baseCommit"]=json!(revisions[2]);
+        advanced["sourceFingerprint"]=json!("c".repeat(64));
+        assert!(campaign_capability_proven(&state,&advanced),
+            "a continued campaign may start from the previously selected descendant");
         let mut unrelated=next.clone();
         unrelated["sourceBranch"]=json!("dominion-sub3");
         assert!(!campaign_capability_proven(&state,&unrelated),
