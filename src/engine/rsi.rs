@@ -21,8 +21,15 @@ fn sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// Frozen evaluation answers are not model research material. This boundary
+/// applies both to indexed discovery and to direct workspace tool requests.
+pub(crate) fn hidden_rsi_oracle_path(path:&str)->bool {
+    std::path::Path::new(path).ends_with("src/engine/rsi_oracle_fixture.rs")
+}
+
 pub(crate) fn safe_path(path: &str) -> bool {
-    !path.contains('\\')
+    !hidden_rsi_oracle_path(path)
+        && !path.contains('\\')
         && !path.starts_with('/')
         && !path.split('/').any(|part|part.is_empty() || part.starts_with('.'))
         && (path.starts_with("src/")
@@ -503,6 +510,15 @@ mod tests {
         assert!(evaluate(&state,record["id"].as_str().unwrap(),&result).is_err());
         let _=std::fs::remove_dir_all(root);
     }
+    #[test]
+    fn frozen_oracle_source_is_not_exposed_as_a_candidate_patch() {
+        assert!(hidden_rsi_oracle_path("src/engine/rsi_oracle_fixture.rs"));
+        assert!(hidden_rsi_oracle_path("/repo/src/engine/rsi_oracle_fixture.rs"));
+        assert!(!hidden_rsi_oracle_path("src/engine/rsi.rs"));
+        assert!(!safe_path("src/engine/rsi_oracle_fixture.rs"));
+        assert!(safe_path("src/engine/rsi.rs"));
+    }
+
     #[test]
     fn paired_receipt_replay_rejects_forged_summary_and_missing_holdout_gain() {
         let (state,root)=state();
