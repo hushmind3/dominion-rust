@@ -34,6 +34,10 @@ pub fn index_id(source: &Path) -> String {
 }
 
 fn is_source(path: &Path) -> bool {
+    // Evaluator internals must never appear in a model's source map.
+    if crate::engine::rsi::sealed_measurement_path(&path.to_string_lossy()) {
+        return false;
+    }
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
