@@ -924,7 +924,15 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
         generations.extend(prior["history"].as_array().cloned().unwrap_or_default());
     }
     generations.extend(record["history"].as_array().cloned().unwrap_or_default());
+    // Read offsets and indexed symbol positions belong to an exact source
+    // revision. Never advise the descendant to skip source regions that were
+    // inspected before an accepted patch shifted the file.
+    let current_revision=record["headCommit"].as_str().filter(|commit|!commit.is_empty());
     for generation in generations {
+        if current_revision.is_some()
+            && generation["generatorCommit"].as_str()!=current_revision {
+            continue;
+        }
         let Some(job_id) = generation["jobId"].as_str() else { continue };
         let Some(session_id) = state
             .store
@@ -1479,18 +1487,18 @@ fn queue_search_trial(
     // The synthetic registration sample is not equivalent to live feature
     // values. Do not queue an expression which already fails on real history.
     if valid_domain_scores(candidate,prior_history,objective).is_none() {
-        let mut invalid=candidate.clone();
-        invalid["rsiTrial"]=json!({"status":"trial_inconclusive",
+        let invalid=json!({"status":"trial_inconclusive",
             "campaignId":campaign_id,
             "objectiveHash":crate::engine::memory::stable_id(&[objective]),
             "lastReason":"candidate_expression_invalid_for_runtime_features"});
-        state.store.put("algorithm",&invalid);
-        return json!({"status":"trial_inconclusive",
+        let saved=candidate["id"].as_str().and_then(|id|
+            state.store.patch_if("algorithm",id,"rsiTrial",&candidate["rsiTrial"],
+                &json!({"rsiTrial":invalid})));
+        return json!({"status":if saved.is_some(){"trial_inconclusive"}else{"trial_conflict"},
             "candidateId":candidate["id"],
             "reason":"candidate_expression_invalid_for_runtime_features"});
     }
-    let mut record = candidate.clone();
-    let mut trial = record["rsiTrial"].clone();
+    let mut trial = candidate["rsiTrial"].clone();
     if !trial.is_object() {
         trial = json!({});
     }
@@ -1507,11 +1515,16 @@ fn queue_search_trial(
         .as_str()
         .map(str::to_string)
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()));
-    record["rsiTrial"] = trial;
-    let saved = state.store.put("algorithm", &record);
-    if let Some(saved) = &saved {
-        state.bus.record("algorithm", saved);
-    }
+    // One SQLite compare-and-swap owns the transition, even when multiple
+    // agents propose the same content-addressed algorithm simultaneously.
+    let saved=candidate["id"].as_str().and_then(|id|
+        state.store.patch_if("algorithm",id,"rsiTrial",&candidate["rsiTrial"],
+            &json!({"rsiTrial":trial})));
+    let Some(saved)=saved else {
+        return json!({"status":"trial_conflict","candidateId":candidate["id"],
+            "reason":"candidate_changed_before_claim"});
+    };
+    state.bus.record("algorithm",&saved);
     state.store.audit(
         "rsi.search_trial_queued",
         json!({
@@ -3066,14 +3079,20 @@ mod tests {
         // descendant. The ID alone is not a source-lineage receipt.
         let prior=json!({"id":"digest-prior","sourceDir":"/repo","sourceBranch":"dominion-sub2",
             "baseCommit":"a".repeat(40),"sourceFingerprint":"b".repeat(64),
-            "headCommit":"c".repeat(40),"history":[{"jobId":"digest-job"}]});
+            "headCommit":"c".repeat(40),"history":[{
+                "jobId":"digest-job","generatorCommit":"c".repeat(40)}]});
         state.store.put("rsi_campaign",&prior);
         let current=json!({"history":[],"sourceDir":"/repo","sourceBranch":"dominion-sub2",
             "baseCommit":"a".repeat(40),"sourceFingerprint":"b".repeat(64),
+            "headCommit":"c".repeat(40),
             "lineage":{"reused":true,"selectedCommit":"c".repeat(40)}});
         let previous=json!({"rsiContinueFrom":"digest-prior"});
         let continued=research_digest(&state,&previous,&current);
         assert!(continued.contains("src/engine/memory.rs 10-20"));
+        let mut revised=current.clone();
+        revised["headCommit"]=json!("d".repeat(40));
+        assert!(!research_digest(&state,&previous,&revised).contains("src/engine/memory.rs 10-20"),
+            "read offsets from an old source revision must not suppress new inspections");
         let mut foreign=current.clone();
         foreign["sourceBranch"]=json!("dominion-sub3");
         assert!(!research_digest(&state,&previous,&foreign).contains("src/engine/memory.rs 10-20"),
