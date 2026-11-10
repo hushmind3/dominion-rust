@@ -38,7 +38,7 @@ pub(crate) fn sealed_measurement_path(path:&str)->bool {
 
 pub(crate) fn safe_path(path: &str) -> bool {
     !sealed_measurement_path(path)
-    !path.contains('\\')
+        && !path.contains('\\')
         && !path.starts_with('/')
         && !path.split('/').any(|part|part.is_empty() || part.starts_with('.'))
         && (path.starts_with("src/")
