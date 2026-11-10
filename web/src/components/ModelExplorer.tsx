@@ -57,9 +57,26 @@ export function ModelExplorer(){
   // stop polling entirely. Focus triggers an immediate refresh.
   const update=async()=>{if(!document.hidden)await refresh();if(live)timer=setTimeout(update,10000)};
   const onVisible=()=>{if(!document.hidden)void refresh()};
+  // The Rust event stream reports model download progress and runtime state.
+  // Throttle event-triggered refreshes instead of waiting for the 10-second
+  // fallback poll or starting one request per incoming download chunk.
+  let eventTimer:ReturnType<typeof setTimeout>|undefined;
+  const onChange=()=>{
+   if(document.hidden||eventTimer)return;
+   eventTimer=setTimeout(()=>{
+    eventTimer=undefined;
+    if(live&&!document.hidden)void refresh();
+   },800);
+  };
   document.addEventListener('visibilitychange',onVisible);
+  window.addEventListener('dominion-refresh',onChange);
   void update();
-  return()=>{live=false;clearTimeout(timer);document.removeEventListener('visibilitychange',onVisible)};
+  return()=>{
+   live=false;
+   clearTimeout(timer);clearTimeout(eventTimer);
+   document.removeEventListener('visibilitychange',onVisible);
+   window.removeEventListener('dominion-refresh',onChange);
+  };
  },[refresh])
  useLayoutEffect(()=>{if(detailScroll.current)detailScroll.current.scrollTop=0},[selected])
  useLayoutEffect(()=>{if(catalogueScroll.current)catalogueScroll.current.scrollTop=0},[q])
