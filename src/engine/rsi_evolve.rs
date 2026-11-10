@@ -131,9 +131,23 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
         .iter()
         .map(|row| row["tokens"].as_u64().unwrap_or(0))
         .sum::<u64>() as f64;
+    // Producing an unverified patch is not progress. Count either a selected
+    // implementation or research that added genuinely new findings.
     let useful=rows.iter().filter(|row|row["accepted"]==true ||
-        row["candidateId"].is_string() || row["newFindings"].as_u64().unwrap_or(0)>0)
+        row["newFindings"].as_u64().unwrap_or(0)>0)
         .count() as f64;
+    // Learn from independent measured improvements, not patch counts or a
+    // self-reported outcome. Keep all spent tokens in the denominator so
+    // expensive failed attempts reduce the observed reward per token.
+    let holdout_gains=rows.iter().filter(|row|
+        row["accepted"]==true
+        && row["evaluation"]["metrics"]["eligible"]==true
+        && row["evaluation"]["metrics"]["regressions"].as_u64()==Some(0))
+        .map(|row|row["evaluation"]["metrics"]["improvedHoldouts"]
+            .as_u64().unwrap_or(0).min(16) as f64)
+        .sum::<f64>();
+    let holdout_yield=holdout_gains/(attempts+1.0);
+    let gain_per_10k_tokens=holdout_gains/(1.0+tokens/10_000.0);
     let barren_rate=if attempts==0.0 {0.0}else{1.0-useful/attempts};
     let success_rate = if attempts == 0.0 { 0.0 } else { accepted / attempts };
     let token_cost = if attempts == 0.0 {
@@ -181,6 +195,8 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
         ("usefulGenerations".to_string(),useful),
         ("barrenRate".to_string(),barren_rate),
         ("tokenCost".to_string(), token_cost),
+        ("holdoutYield".to_string(),holdout_yield),
+        ("gainPer10kTokens".to_string(),gain_per_10k_tokens),
         ("objectiveMatch".to_string(), objective_match),
         ("unresolved".to_string(), unresolved),
         ("exploration".to_string(), exploration),
@@ -221,8 +237,13 @@ fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f
             let useful=get("usefulGenerations")/(tries+1.0);
             let cost=get("tokenCost").max(0.0);
             let penalty=get("barrenRate")*cost/(1.0+cost);
+            // When two domains have the same adoption rate, prefer the one
+            // whose independently measured improvement is larger and cheaper.
+            // A fixed cap prevents one easy benchmark from starving exploration.
+            let outcome_reward=0.55*get("holdoutYield").min(3.0)
+                +0.45*get("gainPer10kTokens").min(3.0);
             Some(3.0*posterior/(1.0+cost)+0.25*useful
-                +get("exploration")-penalty
+                +get("exploration")-penalty+outcome_reward
                 +get("objectiveMatch")*2.0)
         }
     }
@@ -3486,6 +3507,58 @@ mod tests {
             assert_eq!(select_domain(&algorithm,&empty,objective),domain,
                 "specific goal must outrank generic search: {objective}");
         }
+    }
+
+
+    #[test]
+    fn search_uses_verified_holdout_gain_per_token_not_only_patch_count() {
+        let algorithm=json!({"implementation":"failure-clusters"});
+        // Identical accepted counts, attempted work and token costs: the
+        // old selector tied these domains and chose the first by ordering.
+        // The improved selector must learn that learning produced more
+        // independently validated held-out gains at the same cost.
+        let history=vec![
+            json!({"domain":"memory","tokens":10_000,"accepted":true,
+                "evaluation":{"metrics":{"eligible":true,"regressions":0,
+                    "improvedHoldouts":1}}}),
+            json!({"domain":"learning","tokens":10_000,"accepted":true,
+                "evaluation":{"metrics":{"eligible":true,"regressions":0,
+                    "improvedHoldouts":6}}})
+        ];
+        let low=search_features(&history,"memory","");
+        let high=search_features(&history,"learning","");
+        assert_eq!(low["accepted"],high["accepted"]);
+        assert_eq!(low["tokenCost"],high["tokenCost"]);
+        assert!(high["gainPer10kTokens"]>low["gainPer10kTokens"]);
+        assert!(score_domain(&algorithm,&high)>score_domain(&algorithm,&low));
+        assert_eq!(select_domain(&algorithm,&history,""),"learning");
+        // A model-authored executable search policy can use the same measured
+        // features instead of being locked to Rust's default coefficients.
+        let expression=json!({"implementation":"expression","parameters":{
+            "expression":"gainPer10kTokens + holdoutYield"}});
+        assert_eq!(select_domain(&expression,&history,""),"learning");
+    }
+
+    #[test]
+    fn failed_patches_do_not_become_useful_training_examples() {
+        let history=vec![
+            json!({"domain":"memory","tokens":60_000,"accepted":false,
+                "candidateId":"unverified-patch","newFindings":0}),
+            json!({"domain":"learning","tokens":4_000,"accepted":false,
+                "candidateId":null,"newFindings":2})
+        ];
+        let no_progress=search_features(&history,"memory","");
+        let research=search_features(&history,"learning","");
+        assert_eq!(no_progress["usefulGenerations"],0.0);
+        assert_eq!(no_progress["barrenRate"],1.0);
+        assert_eq!(research["usefulGenerations"],1.0);
+        assert_eq!(research["barrenRate"],0.0);
+        // Unverified candidate claims, even with huge invented gains, must
+        // not be rewarded as a validated improvement.
+        let forged=vec![json!({"domain":"memory","tokens":1_000,
+            "accepted":false,"evaluation":{"metrics":{"eligible":true,
+                "regressions":0,"improvedHoldouts":200}}})];
+        assert_eq!(search_features(&forged,"memory","")["gainPer10kTokens"],0.0);
     }
 
     #[test]
