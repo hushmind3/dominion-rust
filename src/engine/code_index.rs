@@ -768,9 +768,18 @@ pub fn bounded_focus_context(
     const MAX_CONTEXT_CHARS: usize = 8_000;
     const MAX_SPAN_CHARS: usize = 3_000;
     const MAX_SPAN_LINES: usize = 100;
-    let indexed = state.store.get(FILE_KIND, &file_id(index_id, path))?;
-    let bytes = std::fs::read(source.join(path)).ok()?;
-    if indexed["hash"].as_str()? != digest(&bytes) { return None; }
+    // Never fail silently: a missing index entry or a stale hash must tell the
+    // model to read the exact range instead of leaving it without a target.
+    let Some(indexed) = state.store.get(FILE_KIND, &file_id(index_id, path)) else {
+        return Some(format!("\n### 대상 파일: {path}\n색인에 이 파일이 없어 발췌를 만들지 못했습니다. workspace_read_range로 필요한 구간을 확인하세요.\n"));
+    };
+    let Ok(bytes) = std::fs::read(source.join(path)) else {
+        return Some(format!("\n### 대상 파일: {path}\n파일을 읽지 못했습니다. workspace_read_range로 필요한 구간을 확인하세요.\n"));
+    };
+    let hash = digest(&bytes);
+    if indexed["hash"].as_str() != Some(hash.as_str()) {
+        return Some(format!("\n### 대상 파일: {path}\n색인과 현재 파일 해시가 달라 발췌를 제공하지 않습니다. workspace_read_range로 필요한 구간을 확인하세요.\n"));
+    }
     let content = String::from_utf8(bytes).ok()?;
     let size = content.chars().count();
     if size <= WHOLE_FILE_CHARS {
@@ -819,6 +828,22 @@ mod tests {
 
 
     #[test]
+    fn stale_or_missing_index_tells_the_model_to_read_the_range() {
+        let (state, root) = temp_state();
+        let source = root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        std::fs::write(source.join("src/a.rs"), "fn a() {}\n").unwrap();
+        let meta = refresh(&state, &source).unwrap();
+        let id = meta["id"].as_str().unwrap();
+        std::fs::write(source.join("src/a.rs"), "fn a() { let x = 1; }\n").unwrap();
+        let stale = bounded_focus_context(&state, &source, id, "src/a.rs", "a", "memory").unwrap();
+        assert!(stale.contains("해시가 달라"), "{stale}");
+        assert!(stale.contains("workspace_read_range"), "{stale}");
+        let missing = bounded_focus_context(&state, &source, id, "src/missing.rs", "a", "memory").unwrap();
+        assert!(missing.contains("색인에 이 파일이 없어"), "{missing}");
+    }
+
+    #[test]
     fn rsi_ranking_uses_body_evidence_and_callers_not_only_function_names() {
         let (state, root) = temp_state();
         let source = root.join("repo");
@@ -860,8 +885,10 @@ mod tests {
         assert!(!excerpt.contains("fn unrelated_0()"));
         assert!(excerpt.chars().count() < 8_100);
         std::fs::write(source.join("src/memory.rs"), format!("{code}\n// changed")).unwrap();
-        assert!(bounded_focus_context(&state, &source, meta["id"].as_str().unwrap(),
-            "src/memory.rs", "기억 검색", "memory").is_none());
+        let stale = bounded_focus_context(&state, &source, meta["id"].as_str().unwrap(),
+            "src/memory.rs", "기억 검색", "memory").unwrap();
+        assert!(stale.contains("해시가 달라"), "a stale index must not fail silently: {stale}");
+        assert!(stale.contains("workspace_read_range"));
         let _ = std::fs::remove_dir_all(root);
     }
 
