@@ -1193,6 +1193,14 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
             }
         }
     }
+    // Carry research into an implementation attempt, not another note-taking
+    // cycle. The evaluator still determines whether the patch helps.
+    if history.len()>=2 && history.iter().rev().take(2).all(|generation|
+        generation["accepted"]!=true && generation["candidateId"].is_null()
+            && generation["newFindings"].as_u64().unwrap_or(0)>0)
+    {
+        text.push_str("\n### 연구에서 실행으로 전환\n직전 2세대는 새로운 조사 결과만 남겼습니다. 이미 확보한 소스와 증거를 재사용해 이번에는 작고 검증 가능한 코드 변경을 우선하세요. 추가 조사·제안만 반복하지 말고, 막힌다면 정확히 어떤 실행 또는 검증 조건이 부족한지 남기세요.\n");
+    }
     text
 }
 
@@ -2974,12 +2982,20 @@ pub(crate) async fn adopt(
 // (which actually runs the algorithm). Otherwise a trial policy can appear
 // in focusSelection even though no trial was executed.
 fn research_continuation(history: &[Value]) -> Option<String> {
-    history.last()
-        .filter(|row| row["candidateId"].is_null()
-            && row["newFindings"].as_u64().unwrap_or(0) > 0)
-        .and_then(|row| row["domain"].as_str())
-        .filter(|domain| DOMAINS.contains(domain))
-        .map(str::to_string)
+    let last=history.last()?;
+    let domain=last["domain"].as_str().filter(|domain| DOMAINS.contains(domain))?;
+    let useful_research=|row:&Value| {
+        row["domain"]==domain && row["accepted"]!=true
+            && row["candidateId"].is_null()
+            && row["newFindings"].as_u64().unwrap_or(0)>0
+    };
+    if !useful_research(last) { return None; }
+    // Permit one follow-up to reuse research, then return to an execution
+    // decision: an endless series of new notes is not a code improvement.
+    if history.iter().rev().take_while(|row|useful_research(row)).take(2).count()>1 {
+        return None;
+    }
+    Some(domain.to_string())
 }
 
 fn generation_target_plan(domain: &str, selection: &str, strategy: &Value, commit: &str) -> Value {
@@ -2996,9 +3012,8 @@ fn select_generation_strategy(
     generator_commit: &str,
 ) -> (String, &'static str, Value) {
     let active = crate::engine::algorithms::active(state, "selfimprove.search");
-    if let Some(domain) = continuation {
-        return (domain, "research_continuation", Value::Null);
-    }
+    // Never starve an already queued improver experiment with more research.
+    // Both parent and descendant run this identical decision function.
     if let Some(id) = trial_id {
         if let Some(algorithm) = state.store.get("algorithm", &id).filter(|algorithm| {
             algorithm["kind"] == "selfimprove.search"
@@ -3041,6 +3056,9 @@ fn select_generation_strategy(
             "algorithm_active",
             selected,
         );
+    }
+    if let Some(domain) = continuation {
+        return (domain, "research_continuation", Value::Null);
     }
     let algorithm =
         active.unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
@@ -5174,17 +5192,34 @@ mod tests {
         let plan=generation_target_plan(&parent_domain,parent_mode,&parent_strategy,"commit-1");
         assert_eq!(plan,generation_target_plan(
             &worker_domain,worker_mode,&worker_strategy,"commit-1"));
-        assert_eq!(plan["domain"],"memory");
-        assert_eq!(plan["selection"],"research_continuation");
-        assert!(plan["strategy"].is_null(),"trial formula was not run");
-        assert_ne!(plan,generation_target_plan(
-            "context","algorithm_trial",&proposed,"commit-1"));
+        assert_eq!(plan["selection"],"algorithm_active");
+        assert_eq!(plan["strategy"]["controlForCandidateId"],id,
+            "queued experiment must get a matching baseline instead of research-only loop");
+        assert_ne!(plan["domain"],"memory",
+            "an existing trial overrides research-only continuation");
         let mut failed=history.clone();
         failed.push(json!({"attempt":3,"domain":"memory","candidateId":null,
             "newFindings":0,"accepted":false}));
         assert!(research_continuation(&failed).is_none(),
             "stale research must not force continuation");
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn productive_research_forces_at_most_one_continuation() {
+        let mut history=vec![json!({"domain":"memory","accepted":false,
+            "candidateId":null,"newFindings":3})];
+        assert_eq!(research_continuation(&history).as_deref(),Some("memory"));
+        history.push(json!({"domain":"memory","accepted":false,
+            "candidateId":null,"newFindings":2}));
+        assert_eq!(research_continuation(&history),None,
+            "repeated research must give a turn to implementation");
+        history.push(json!({"domain":"memory","accepted":false,
+            "candidateId":null,"newFindings":1}));
+        assert_eq!(research_continuation(&history),None);
+        history.push(json!({"domain":"tools","accepted":false,
+            "candidateId":null,"newFindings":1}));
+        assert_eq!(research_continuation(&history).as_deref(),Some("tools"));
     }
 
     #[test]
@@ -5282,9 +5317,10 @@ mod tests {
             None,
             "commit-1",
         );
-        assert_eq!(domain, "memory");
-        assert_eq!(mode, "research_continuation");
-        assert!(strategy.is_null(), "continuation did not run the formula");
+        assert_eq!(domain, "context");
+        assert_eq!(mode, "algorithm_active");
+        assert_eq!(strategy["trialFallback"], "unused_comparable_baseline_missing",
+            "queued trial cannot be indefinitely postponed by research");
 
         let (_, mode, strategy) =
             select_generation_strategy(&state, &[], "context", None, Some(id.to_string()), None, "commit-1");
