@@ -478,7 +478,7 @@ fn ensure_cli_provider(state:&AppState,source:&str,authenticated:bool)->bool{
    _=>return false
   };
   let record=json!({"id":id,"name":name,"baseUrl":format!("cli://{source}"),
-      "kind":"cli","model":default_model,"enabled":true,"local":true,
+      "kind":"cli","model":default_model,"enabled":true,"local":false,
       "toolMode":"compat","reasoningProtocol":"openai"});
   if let Some(saved)=state.store.put("provider",&record){state.bus.record("provider",&saved);}
  }

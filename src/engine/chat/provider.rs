@@ -725,7 +725,7 @@ async fn stream_completion_once_body(
         completed.completion_tokens=completion_tokens;
         completed.usage=prompt_tokens+completion_tokens;
         completed.first_delta_ms=Some(started.elapsed().as_millis() as u64);
-        crate::engine::gateway::record_usage_tokens(state,&provider.id,&provider.model,true,"chat",Some(session_id),
+        crate::engine::gateway::record_usage_tokens(state,&provider.id,&provider.model,false,"chat",Some(session_id),
             prompt_tokens,completion_tokens,completed.usage,true);
         return Ok(completed);
     }

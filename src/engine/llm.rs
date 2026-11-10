@@ -23,7 +23,7 @@ async fn try_complete(
         ]).await?;
         let prompt_tokens=(system.len()+prompt.len()).div_ceil(4) as u64;
         let output_tokens=text.len().div_ceil(4) as u64;
-        gateway::record_usage_tokens(state,&route.id,&route.model,true,"helper",session_id,
+        gateway::record_usage_tokens(state,&route.id,&route.model,false,"helper",session_id,
             prompt_tokens,output_tokens,prompt_tokens+output_tokens,true);
         return Ok(text);
     }
