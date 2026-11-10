@@ -146,6 +146,11 @@ fn make_process(exe:&FilePath,args:&[String])->Command{
     #[cfg(windows)]
     let mut p={let mut c=Command::new(exe);c.args(args);c};
     if let Some(h)=home(){p.current_dir(h);}
+    // launchd on macOS often has /usr/bin only: npm/bun CLI shims must still find node.
+    let mut paths=vec![PathBuf::from("/opt/homebrew/bin"),PathBuf::from("/usr/local/bin")];
+    if let Some(h)=home(){paths.insert(0,h.join(".bun/bin"));paths.insert(0,h.join(".local/bin"));}
+    if let Some(old)=std::env::var_os("PATH"){paths.extend(std::env::split_paths(&old));}
+    if let Ok(joined)=std::env::join_paths(paths){p.env("PATH",joined);}
     p.env("TERM","xterm-256color").env("COLUMNS","240").env("NO_COLOR","1");
     p.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     p
