@@ -195,18 +195,36 @@ fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f
     }
 }
 
+fn candidate_domains(objective: &str) -> Vec<&'static str> {
+    // Explicit capability requests are constraints, not small bonuses that
+    // another domain can override through unrelated historical successes.
+    // An empty objective is an intentional open-ended survey of all domains.
+    let matching = DOMAINS.iter().copied()
+        .filter(|domain| objective_matches(domain, objective))
+        .collect::<Vec<_>>();
+    if matching.is_empty() { DOMAINS.to_vec() } else { matching }
+}
+
+fn scored_domains(
+    algorithm: &Value, history: &[Value], objective: &str,
+) -> Option<Vec<(&'static str, f64)>> {
+    candidate_domains(objective).into_iter().map(|domain| {
+        score_domain(algorithm, &search_features(history, domain, objective))
+            .filter(|score| score.is_finite())
+            .map(|score| (domain, score))
+    }).collect()
+}
+
 pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &str) -> String {
-    let mut best = (f64::NEG_INFINITY, DOMAINS[0]);
-    for domain in DOMAINS {
-        let features = search_features(history, domain, objective);
-        let Some(score) = score_domain(algorithm, &features) else {
-            continue;
-        };
-        // Strict comparison keeps the declared DOMAINS order as the stable
-        // tie-breaker, so evaluation replays are deterministic.
-        if score > best.0 {
-            best = (score, domain);
-        }
+    // An AI-authored expression can be invalid on real data despite passing
+    // registration's representative sample. Fall back to a COMPLETE known
+    // policy, rather than silently choosing the first domain ("memory").
+    let scores = scored_domains(algorithm, history, objective)
+        .or_else(|| scored_domains(&json!({"implementation":"failure-clusters"}),
+            history, objective)).unwrap_or_default();
+    let mut best = (f64::NEG_INFINITY, candidate_domains(objective)[0]);
+    for (domain, score) in scores {
+        if score > best.0 { best = (score, domain); }
     }
     best.1.to_string()
 }
@@ -1033,7 +1051,11 @@ fn focus_domain_hint(path:&str)->&'static str {
 /// The objective used for capability selection. Focus files are appended as
 /// capability words so the selected domain follows the user's actual target.
 fn selection_objective(input:&Value)->String {
-    let objective=input["rsiObjective"].as_str().unwrap_or("");
+    // Autonomous campaigns contain a generic system-written recipe with
+    // words like "knowledge"/"experience". They are NOT owner constraints:
+    // using them as a domain selector permanently biases free exploration.
+    let objective=if input["rsiAutonomous"]==true {""}
+        else {input["rsiObjective"].as_str().unwrap_or("")};
     let hints=input["rsiFocusFiles"].as_array().into_iter().flatten()
         .filter_map(Value::as_str).map(focus_domain_hint)
         .collect::<Vec<_>>();
@@ -3637,6 +3659,40 @@ mod tests {
         assert!(lineage_fingerprint_valid(&first));
         assert!(!lineage_fingerprint_valid(empty_hash));
         assert!(!lineage_fingerprint_valid(""));
+    }
+
+    #[test]
+    fn autonomous_objective_is_open_ended_while_explicit_goals_are_respected() {
+        let generated=json!({
+            "rsiAutonomous":true,
+            "rsiObjective":"기존 코드 지식과 경험을 재사용해 실제 작업에 필요한 능력 하나를 개선한다",
+            "rsiFocusFiles":[]
+        });
+        assert_eq!(selection_objective(&generated),"");
+        assert_eq!(candidate_domains(&selection_objective(&generated)),DOMAINS);
+        let explicit=json!({
+            "rsiAutonomous":false,
+            "rsiObjective":"자기개선 알고리즘 검색을 개선",
+            "rsiFocusFiles":[]
+        });
+        let eligible=candidate_domains(&selection_objective(&explicit));
+        assert!(eligible.contains(&"improver"));
+        assert!(!eligible.contains(&"ui"));
+        assert!(!eligible.contains(&"memory"));
+        let latest=json!({"rsiAutonomous":true,"rsiFocusFiles":["src/engine/memory.rs"]});
+        assert!(selection_objective(&latest).contains("memory"),
+            "explicit focus files retain their intended capability even for open objectives");
+    }
+
+    #[test]
+    fn invalid_generated_search_expression_cannot_redirect_an_explicit_goal() {
+        let candidate=json!({"implementation":"expression","parameters":{
+            "expression":"unknownRuntimeFeature + 1"
+        }});
+        assert_eq!(select_domain(&candidate,&[],"브라우저 도구 연결"),"tools");
+        assert_eq!(select_domain(&candidate,&[],"자기개선 알고리즘"),"improver");
+        let history=vec![json!({"domain":"memory","accepted":true,"tokens":1})];
+        assert_eq!(select_domain(&candidate,&history,"화면 버튼 개선"),"ui");
     }
 
     #[test]
