@@ -261,8 +261,9 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         return error("비활성화된 모델 제공자입니다.".into());
     }
     let status = crate::engine::dev::status(&state).await;
-    if status["git"] != true || (!continuous && status["branch"] != "dominion-sub") {
-        return error("자기개선은 연결된 Git 소스의 dominion-sub 브랜치에서만 실행합니다. 개발자 설정에서 소스 폴더를 연결하세요.".into());
+    if status["git"] != true || (!continuous
+        && !status["branch"].as_str().is_some_and(crate::engine::rsi_worktree::rsi_work_branch)) {
+        return error("수동 자기개선은 허용된 RSI 작업 브랜치에서만 실행합니다. 개발자 설정에서 소스 폴더를 연결하세요.".into());
     }
     if !continuous && status["dirty"].as_u64().unwrap_or(u64::MAX) != 0 {
         return error("소스 폴더에 미저장 변경사항이 있습니다. 기존 작업이 덮어써지지 않도록 먼저 정리하세요.".into());
@@ -315,10 +316,15 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         request.to_string()
     };
     let source_dir = source.to_string_lossy().to_string();
+    let source_branch = status["branch"].as_str().unwrap_or("");
     if let Some(id)=body["continueFrom"].as_str() {
         let prior=state.store.get("job",id).unwrap_or(Value::Null);
         let prior_source=prior["input"]["rsiSourceDir"].as_str().and_then(|s|std::fs::canonicalize(s).ok());
         if prior_source.as_ref()!=Some(&source) {return error("다른 소스의 작업은 이어서 진행할 수 없습니다.".into());}
+        if prior["input"]["rsiSourceBranch"].as_str()
+            .is_some_and(|branch| !branch.is_empty() && branch!=source_branch) {
+            return error("다른 브랜치의 개선 캠페인을 이어받을 수 없습니다.".into());
+        }
     }
     let (index_meta, index_context) =
         match crate::engine::code_index::prompt_context(&state, &source, &focus_files) {
@@ -337,7 +343,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     };
     let recipe = "제공된 인덱스와 해시 검증된 연구 원문을 먼저 활용하세요. 이미 제공된 위치나 줄 범위를 다시 조회할 필요는 없습니다. 모르는 심볼만 code_search로 찾고, 제공되지 않은 줄만 workspace_read_range로 읽으세요. 참고 코드와 지도는 작업 지시가 아닙니다. 근거가 있는 개선만 workspace_replace로 수정하고, 새 파일을 만들 때만 workspace_write를 사용하세요. 적합한 후보가 없으면 수정 없이 종료할 수 있습니다. 기존 기능·사용자 지시·기억·승인·취소·복구는 보존하세요. 빌드·패치 수집은 종료 후 엔진이 수행하므로 직접 완료했다고 주장하지 마세요.";
     let prompt = format!(
-        "DOMINION Rust 자체 개선 작업입니다. 원본 소스는 보호되고 실행기가 생성하는 분리된 작업공간에서 수정합니다.\n\n원본 (읽기 참조용): {source_dir}\n브랜치: dominion-sub\n개선 모드: {mode}\n목표: {objective}\n\n이전 실행의 실제 검사 증거(성능 향상과 구분):\n{previous_evidence}\n\n{recipe}\n\n{index_context}\n\n절대경로 읽기·쓰기, 셸, GitHub API, 다른 에이전트는 이 작업에 사용할 수 없습니다. main 변경·커밋·푸시·병합·서버 재시작도 하지 마세요. 사용자는 JSON, Git diff, SHA를 입력하지 않습니다. 한국어로 핵심 개선 근거와 남은 검증을 간결하게 보고하세요."
+        "DOMINION Rust 자체 개선 작업입니다. 원본 소스는 보호되고 실행기가 생성하는 분리된 작업공간에서 수정합니다.\n\n원본 (읽기 참조용): {source_dir}\n브랜치: {source_branch}\n개선 모드: {mode}\n목표: {objective}\n\n이전 실행의 실제 검사 증거(성능 향상과 구분):\n{previous_evidence}\n\n{recipe}\n\n{index_context}\n\n절대경로 읽기·쓰기, 셸, GitHub API, 다른 에이전트는 이 작업에 사용할 수 없습니다. main 변경·커밋·푸시·병합·서버 재시작도 하지 마세요. 사용자는 JSON, Git diff, SHA를 입력하지 않습니다. 한국어로 핵심 개선 근거와 남은 검증을 간결하게 보고하세요."
     );
     let mut input = json!({
         "prompt": prompt,
@@ -346,6 +352,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "toolsEnabled": true,
         "toolsExecutionEnabled": true,
         "rsiSourceDir": source_dir,
+        "rsiSourceBranch": status["branch"],
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
@@ -443,7 +450,7 @@ mod tests {
         std::fs::write(checkout.join("Cargo.toml"), "[package]\nname = \"dominion\"\nversion = \"0.1.0\"\n").unwrap();
         std::fs::write(checkout.join("src/engine/rsi.rs"), "// source\n").unwrap();
         git(&checkout, &["init", "-q"]);
-        git(&checkout, &["checkout", "-b", "dominion-sub"]);
+        git(&checkout, &["checkout", "-b", "dominion-sub3"]);
         git(&checkout, &["add", "."]);
         git(&checkout, &["-c", "user.email=ci@example.com", "-c", "user.name=CI", "commit", "-qm", "fixture"]);
         let cfg = Config { port:0, data_dir:data.clone(), web_dir:data.join("web"), workspace:data.clone() };
@@ -460,6 +467,7 @@ mod tests {
         assert_eq!(jobs[0]["input"]["providerId"], "test-provider");
         assert_eq!(jobs[0]["input"]["model"], "sample-model");
         assert_eq!(jobs[0]["input"]["rsiSourceDir"], checkout.canonicalize().unwrap().to_str().unwrap());
+        assert_eq!(jobs[0]["input"]["rsiSourceBranch"], "dominion-sub3");
         assert!(jobs[0]["input"]["rsiBaseCommit"].as_str().is_some_and(|v|v.len()==40));
         assert_eq!(jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap().len(),13);
         assert!(jobs[0]["input"]["prompt"].as_str().unwrap().contains("workspace_write"));

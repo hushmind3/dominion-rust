@@ -10,6 +10,12 @@ use tokio::process::Command;
 const GIT_LIMIT: Duration = Duration::from_secs(30);
 const CHECK_LIMIT: Duration = Duration::from_secs(360);
 
+/// A branch must be an explicitly owned RSI work checkout, never main or a
+/// sibling competitor's source. Preserve the legacy dominion-sub checkout.
+pub(crate) fn rsi_work_branch(branch: &str) -> bool {
+    matches!(branch, "dominion-sub" | "dominion-sub3")
+}
+
 /// launchd starts the engine with a minimal PATH that often omits
 /// `~/.cargo/bin` and Homebrew. Resolve the tool explicitly so RSI can build
 /// even when the service environment is narrower than the user's shell.
@@ -188,8 +194,8 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
         return Err("DOMINION 소스가 아닙니다.".into());
     }
     let campaign=crate::engine::rsi_evolve::campaign_source(&context.state,input,&source,base);
-    if !campaign && git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?.trim()!="dominion-sub" {
-        return Err("원본 소스 브랜치가 dominion-sub가 아닙니다.".into());
+    if !campaign && !rsi_work_branch(git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?.trim()) {
+        return Err("원본 소스가 허용된 RSI 작업 브랜치가 아닙니다.".into());
     }
     if git(&source,&["rev-parse","HEAD"]).await?.trim()!=base {
         return Err("작업을 기다리는 동안 원본 커밋이 바뀌었습니다. 다시 시작하세요.".into());
@@ -493,9 +499,14 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
         return Err("패치 해시가 저장된 값과 다릅니다.".into());
     }
     let status=crate::engine::dev::status(state).await;
-    if status["git"]!=true || status["branch"]!="dominion-sub"
+    if status["git"]!=true || !status["branch"].as_str().is_some_and(rsi_work_branch)
         || status["dirty"]!=0 || status["commit"]!=candidate["baseCommit"] {
         return Err("원본 작업 브랜치가 기준과 다르거나 수정 중이므로 적용하지 않았습니다.".into());
+    }
+    if state.store.get("job",&job_id)
+        .and_then(|job|job["input"]["rsiSourceBranch"].as_str().map(str::to_string))
+        .is_some_and(|branch|status["branch"]!=branch) {
+        return Err("후보를 생성한 소스 브랜치와 현재 적용 브랜치가 다릅니다.".into());
     }
     let remote=status["remote"].as_str().unwrap_or("");
     if !remote.is_empty() && !remote.contains("hushmind3/dominion-rust") {
@@ -551,8 +562,12 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     let source=std::fs::canonicalize(campaign["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     let status=crate::engine::dev::status(state).await;
     let configured=status["config"]["sourceDir"].as_str().and_then(|s|std::fs::canonicalize(s).ok());
-    if configured.as_ref()!=Some(&source) || status["branch"]!="dominion-sub" {
-        return Err("연결된 dominion-sub 작업 브랜치에만 적용합니다.".into());
+    let work_branch=status["branch"].as_str().filter(|branch|rsi_work_branch(branch))
+        .ok_or("허용된 RSI 작업 브랜치에서만 적용합니다.")?;
+    if configured.as_ref()!=Some(&source)
+        || campaign["sourceBranch"].as_str()
+            .is_some_and(|branch| !branch.is_empty() && branch!=work_branch) {
+        return Err("캠페인 원본 브랜치와 연결된 작업 브랜치가 다릅니다.".into());
     }
     if !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
         return Err("미저장 코드를 보존했습니다. 현재 소스를 정리한 뒤 반영하세요.".into());
@@ -604,12 +619,12 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     }
     if commits.is_empty() {return Err("적용할 검증 변경이 없습니다.".into());}
     if git(&source,&["rev-parse","HEAD"]).await?!=base
-        || git(&source,&["symbolic-ref","--quiet","HEAD"]).await?!="refs/heads/dominion-sub"
+        || git(&source,&["symbolic-ref","--quiet","HEAD"]).await?!=format!("refs/heads/{work_branch}")
         || !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
         return Err("적용 직전에 작업 브랜치나 소스가 바뀌었습니다.".into());
     }
     git(&source,&["-c","core.hooksPath=","merge","--ff-only","--no-edit",expected]).await?;
-    let application=json!({"commit":expected,"branch":"dominion-sub","sourceDir":source,
+    let application=json!({"commit":expected,"branch":work_branch,"sourceDir":source,
         "requiresRebuild":true,"productionDeployed":false,"appliedAt":chrono::Utc::now().to_rfc3339()});
     campaign["application"]=application.clone();
     state.store.put("rsi_campaign",&campaign).ok_or("소스 반영 후 기록 저장 실패")?;
@@ -624,8 +639,8 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
 pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
     let id=job["input"]["candidateId"].as_str().ok_or("비교할 후보가 없습니다.")?;
     let status=crate::engine::dev::status(&context.state).await;
-    if status["git"]!=true || status["branch"]!="dominion-sub" {
-        return Err("비교 실험은 dominion-sub 소스에서 시작하세요.".into());
+    if status["git"]!=true || !status["branch"].as_str().is_some_and(rsi_work_branch) {
+        return Err("비교 실험은 허용된 RSI 작업 브랜치에서 시작하세요.".into());
     }
     let source=std::fs::canonicalize(status["config"]["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     compare_at(context,id,&source,&source).await
@@ -832,6 +847,11 @@ mod tests {
     fn requires_complete_sha(){
         assert!(valid_sha("1234567890abcdef1234567890abcdef12345678"));
         assert!(!valid_sha("bad"));
+        assert!(rsi_work_branch("dominion-sub3"));
+        assert!(rsi_work_branch("dominion-sub"));
+        for forbidden in ["main","dominion-champion","dominion-sub1","dominion-sub2","dominion-sub4","dominion-sub3-other"] {
+            assert!(!rsi_work_branch(forbidden), "다른 브랜치에 적용하면 안 됩니다: {forbidden}");
+        }
     }
 
     #[cfg(unix)]
@@ -854,7 +874,7 @@ mod tests {
         std::fs::write(source.join("src/engine/rsi.rs"),"// source\n").unwrap();
         std::fs::write(source.join("web/src/pages/Demo.tsx"),"export const version = 1\n").unwrap();
         git_local(&source,&["init","-q"]);
-        git_local(&source,&["checkout","-b","dominion-sub"]);
+        git_local(&source,&["checkout","-b","dominion-sub3"]);
         git_local(&source,&["add","."]);
         git_local(&source,&["-c","user.email=ci@example.com","-c","user.name=CI","commit","-qm","base"]);
         let base=git_local(&source,&["rev-parse","HEAD"]);

@@ -51,6 +51,7 @@ pub fn definitions() -> Vec<Value> {
         tool("algorithm_propose", "Propose a new self-improvement search formula. It may be tried in the next scheduled generation; replay match is context only and never activates it.", object(json!({
             "name": text("Algorithm name"),
             "expression": text("Arithmetic over attempts, accepted, regressions, inconclusive, novelty, successRate, tokenCost, objectiveMatch, unresolved, exploration"),
+            "targetExpression": text("Optional source-file ranking formula using pathEvidence, symbolEvidence, bodyEvidence, novelty, repeatPenalty, sourceCost and other validated source features"),
             "description": text("Why this formula should choose better improvement targets"),
             "evidence": json!({"type":"array","items":{"type":"string"},"description":"Observed failures or regressions that justify the formula"})
         }), vec!["expression"])),
@@ -320,6 +321,12 @@ pub async fn execute(
             let name = string_arg(args, "name")
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("rsi-search-expression");
+            let mut parameters = json!({"expression": expression});
+            if let Some(target) = args["targetExpression"].as_str() {
+                parameters["targetExpression"] = json!(target);
+            } else if !args["targetExpression"].is_null() {
+                return Err("targetExpression은 계산식 문자열이어야 합니다.".into());
+            }
             let record = crate::engine::algorithms::register(
                 ctx.state,
                 &json!({
@@ -327,7 +334,7 @@ pub async fn execute(
                     "name": name,
                     "variant": name,
                     "implementation": "expression",
-                    "parameters": {"expression": expression},
+                    "parameters": parameters,
                     "description": args["description"].as_str().unwrap_or(""),
                     "source": "rsi-generated",
                 }),
@@ -1429,6 +1436,9 @@ mod tests {
             .store
             .put("job", &json!({"id":"c","kind":"rsi_evolve","status":"running"}))
             .unwrap();
+        let schema = definitions().into_iter()
+            .find(|tool| tool["function"]["name"] == "algorithm_propose").unwrap();
+        assert!(schema["function"]["parameters"]["properties"]["targetExpression"].is_object());
         let saved = execute(&ctx, "algorithm_propose", &proposal, "run")
             .await
             .unwrap();
@@ -1437,6 +1447,14 @@ mod tests {
             .store
             .get("algorithm", saved["algorithmId"].as_str().unwrap())
             .is_some());
+        let source_rule = json!({"name":"source-ranker","expression":"objectiveMatch + novelty",
+            "targetExpression":"pathEvidence * 3 + bodyEvidence - repeatPenalty - sourceCost"});
+        let ranked = execute(&ctx, "algorithm_propose", &source_rule, "run").await.unwrap();
+        assert_eq!(ranked["algorithm"]["parameters"]["targetExpression"],
+            source_rule["targetExpression"]);
+        let invalid_target = json!({"expression":"novelty",
+            "targetExpression":"invalidSourceFeature + pathEvidence"});
+        assert!(execute(&ctx, "algorithm_propose", &invalid_target, "run").await.is_err());
         let invalid = json!({"expression":"unknownVariable * 2"});
         assert!(execute(&ctx, "algorithm_propose", &invalid, "run").await.is_err());
         let _ = std::fs::remove_dir_all(dir);
