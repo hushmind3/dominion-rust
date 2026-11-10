@@ -1650,6 +1650,46 @@ fn comparable_trial_baseline(
         .cloned()
 }
 
+/// Trial success requires matched frozen evaluation receipts, not two
+/// unrelated accepted flags. This compares the same task and generator input
+/// under the existing sequential research loop; it is not a randomized A/B.
+fn trial_paired_holdout_effect(generation:&Value,baseline:&Value)->Option<(u64,u64)> {
+    for field in ["generatorCommit","objectiveId","campaignId"] {
+        let identity=generation[field].as_str().filter(|value|!value.is_empty())?;
+        if baseline[field].as_str()!=Some(identity) {return None;}
+    }
+    if generation["domain"]!=baseline["domain"]
+        || generation["generatorModel"]!=baseline["generatorModel"]
+        || generation["generatorProviderId"]!=baseline["generatorProviderId"] {
+        return None;
+    }
+    let measured=generation["evaluation"]["metrics"]["measurements"].as_array()?;
+    let control=baseline["evaluation"]["metrics"]["measurements"].as_array()?;
+    if measured.len()<8 || measured.len()!=control.len() {return None;}
+    let mut seen=BTreeSet::new();
+    let mut holdouts=0u64;
+    let mut wins=0u64;
+    let mut losses=0u64;
+    for row in measured {
+        let id=row["id"].as_str().filter(|value|!value.is_empty())?;
+        if !seen.insert(id.to_string()) {return None;}
+        let prior=control.iter().find(|item|item["id"]==id)?;
+        let held=row["holdout"].as_bool()?;
+        let before=row["baselinePass"].as_bool()?;
+        let after=row["candidatePass"].as_bool()?;
+        let prior_after=prior["candidatePass"].as_bool()?;
+        if prior["holdout"]!=held || prior["baselinePass"]!=before
+            || prior["domain"]!=row["domain"] {return None;}
+        if held {
+            holdouts+=1;
+            if after&&!prior_after {wins+=1;}
+            if !after&&prior_after {losses+=1;}
+        }
+    }
+    if holdouts<2 {return None;}
+    Some((wins,losses))
+}
+
 fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
     let trial_accepted = generation["accepted"] == true;
     let baseline_accepted = baseline["accepted"] == true;
@@ -1670,13 +1710,17 @@ fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
     } else {
         1.0
     };
+    let paired=trial_paired_holdout_effect(generation,baseline);
+    let (holdout_wins,holdout_losses)=paired.unwrap_or((0,0));
     let verdict = if trial_regressed {
         "rejected"
     } else if trial_error && !baseline_error {
         "rejected"
-    } else if trial_error {
+    } else if trial_error || paired.is_none() {
         "inconclusive"
-    } else if trial_accepted && !baseline_accepted {
+    } else if holdout_losses>0 {
+        "rejected"
+    } else if trial_accepted && holdout_wins>0 {
         "supported"
     } else if !trial_accepted && baseline_accepted {
         "rejected"
@@ -1702,6 +1746,9 @@ fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
             "baselineAttempt": baseline["attempt"],
             "baselineAccepted": baseline_accepted,
             "trialAccepted": trial_accepted,
+            "matchedHoldoutReceipts":paired.is_some(),
+            "holdoutWinsAgainstControl":holdout_wins,
+            "holdoutLossesAgainstControl":holdout_losses,
             "baselineVerdict": baseline["evaluation"]["verdict"],
             "trialVerdict": generation["evaluation"]["verdict"],
             "baselineTokens": baseline_tokens,
@@ -1717,12 +1764,16 @@ fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
                 "trial generation regressed"
             } else if trial_error {
                 "both generations failed; lower cost is not successful improvement"
-            } else if trial_accepted && !baseline_accepted {
-                "trial produced an accepted change where the baseline did not"
+            } else if paired.is_none() {
+                "same-source and frozen holdout receipts are missing or inconsistent"
+            } else if holdout_losses>0 {
+                "trial regressed against control on held-out cases"
+            } else if trial_accepted && holdout_wins>0 {
+                "trial improved frozen holdouts against control"
             } else if !trial_accepted && baseline_accepted {
                 "baseline produced an accepted change where the trial did not"
             } else if verdict == "supported" {
-                "both generations produced accepted changes with lower measured token cost"
+                "same holdout results with lower measured token cost"
             } else if token_ratio >= 1.25 && time_ratio >= 1.25 {
                 "trial used more tokens and time with no better result"
             } else {
@@ -4573,9 +4624,16 @@ mod tests {
     ) -> Value {
         json!({
             "jobId": job, "attempt": attempt, "domain": domain, "accepted": accepted,
+            "campaignId":"controlled-test","objectiveId":"controlled-goal",
+            "generatorModel":"fixture-model","generatorProviderId":"fixture-provider",
             "generatorCommit": commit, "domainSelection": "algorithm_active",
             "tokens": tokens, "elapsedMs": elapsed,
-            "evaluation": {"verdict": if accepted { "improved" } else { "inconclusive" }}
+            "evaluation": {"verdict": if accepted { "improved" } else { "inconclusive" },
+                "metrics":{"measurements":(0..8).map(|i|json!({
+                    "id":format!("held-{i}"),"domain":domain,"holdout":i<3,
+                    "baselinePass":true,"candidatePass":accepted||i!=0,
+                    "metrics":[]
+                })).collect::<Vec<_>>()}}
         })
     }
 
@@ -4591,10 +4649,17 @@ mod tests {
     ) -> Value {
         json!({
             "jobId": job, "attempt": attempt, "domain": domain, "accepted": accepted,
+            "campaignId":"controlled-test","objectiveId":"controlled-goal",
+            "generatorModel":"fixture-model","generatorProviderId":"fixture-provider",
             "generatorCommit": commit, "domainSelection": "algorithm_trial",
             "searchStrategy": {"id": candidate, "mode": "trial"},
             "tokens": tokens, "elapsedMs": elapsed,
-            "evaluation": {"verdict": if accepted { "improved" } else { "inconclusive" }}
+            "evaluation": {"verdict": if accepted { "improved" } else { "inconclusive" },
+                "metrics":{"measurements":(0..8).map(|i|json!({
+                    "id":format!("held-{i}"),"domain":domain,"holdout":i<3,
+                    "baselinePass":true,"candidatePass":accepted||i!=0,
+                    "metrics":[]
+                })).collect::<Vec<_>>()}}
         })
     }
 
@@ -5105,6 +5170,21 @@ mod tests {
         assert_eq!(mode, "algorithm_active");
         assert_eq!(strategy["mode"], "active");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_goal_or_unpaired_search_trials_cannot_gain_promotion_credit() {
+        let baseline=active_generation("base",1,"context",false,"commit-1",10000,1000);
+        let mut trial=trial_generation("trial",2,"context",true,"commit-1",5000,500,"algorithm");
+        assert_eq!(trial_verdict(&trial,&baseline).0,"supported");
+        trial["objectiveId"]=json!("unrelated-goal");
+        assert_eq!(trial_verdict(&trial,&baseline).0,"inconclusive");
+        trial["objectiveId"]=json!("controlled-goal");
+        trial["generatorModel"]=json!("different-model");
+        assert_eq!(trial_verdict(&trial,&baseline).0,"inconclusive");
+        trial["generatorModel"]=json!("fixture-model");
+        trial["evaluation"]["metrics"]["measurements"][0]["baselinePass"]=json!(false);
+        assert_eq!(trial_verdict(&trial,&baseline).0,"inconclusive");
     }
 
     #[test]
