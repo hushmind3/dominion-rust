@@ -892,13 +892,17 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
     let executions = state.store.all("execution");
     let operations = state.store.all("execution_operation");
     let mut generations = Vec::new();
-    if let Some(prior_id) = input["rsiContinueFrom"].as_str() {
-        if let Some(prior) = state.store.get("rsi_campaign", prior_id) {
-            generations.extend(prior["history"].as_array().cloned().unwrap_or_default());
-        }
+    if let Some(prior) = matching_prior_campaign(state,input,record) {
+        generations.extend(prior["history"].as_array().cloned().unwrap_or_default());
     }
     generations.extend(record["history"].as_array().cloned().unwrap_or_default());
+    // Read offsets are source-revision specific. Reusing an old range after a
+    // successfully adopted patch can skip the new implementation entirely.
+    let revision=record["headCommit"].as_str().filter(|s|!s.is_empty());
     for generation in generations {
+        if revision.is_some() && generation["generatorCommit"].as_str()!=revision {
+            continue;
+        }
         let Some(job_id) = generation["jobId"].as_str() else { continue };
         let Some(session_id) = state
             .store
@@ -3116,10 +3120,31 @@ mod tests {
         assert!(text.contains("src/engine/memory.rs 10-20"));
         assert!(text.contains("다시 읽지 마세요"));
         assert_eq!(research_digest(&state, &json!({}), &json!({"history":[]})), "");
-        // A continuation must also see the previous campaign's reads.
-        state.store.put("rsi_campaign", &json!({"id":"digest-prior","history":[{"jobId":"digest-job"}]}));
-        let continued = research_digest(&state, &json!({"rsiContinueFrom":"digest-prior"}), &json!({"history":[]}));
+        // An arbitrary continuation label must NOT import sibling evidence.
+        let head="a".repeat(40);
+        let fingerprint="f".repeat(64);
+        state.store.put("rsi_campaign",&json!({
+            "id":"digest-prior","headCommit":head,"sourceDir":"source-a",
+            "sourceBranch":"dominion-sub3","baseCommit":"base",
+            "sourceFingerprint":fingerprint,
+            "history":[{"jobId":"digest-job","generatorCommit":head}]
+        }));
+        let requested=json!({"rsiContinueFrom":"digest-prior"});
+        assert_eq!(research_digest(&state,&requested,&json!({"history":[]})),"",
+            "goal matching alone must never import another campaign's reads");
+        let verified=json!({
+            "sourceDir":"source-a","sourceBranch":"dominion-sub3",
+            "baseCommit":"base","sourceFingerprint":fingerprint,
+            "headCommit":head,
+            "lineage":{"reused":true,"selectedCommit":head},
+            "history":[]
+        });
+        let continued=research_digest(&state,&requested,&verified);
         assert!(continued.contains("src/engine/memory.rs 10-20"));
+        let mut updated=verified;
+        updated["headCommit"]=json!("b".repeat(40));
+        assert_eq!(research_digest(&state,&requested,&updated),"",
+            "source offsets from earlier revisions must be re-read");
         let _ = std::fs::remove_dir_all(root);
     }
 
