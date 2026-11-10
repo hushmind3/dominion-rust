@@ -1012,14 +1012,17 @@ fn choose_focus_files(
     // rediscovering it. No stale path or hash is allowed to steer the model.
     let followup=improvement_directive(history);
     let implementing=followup["mode"]=="implement_research";
+    let revising=matches!(followup["mode"].as_str(),
+        Some("repair_counterexample"|"revise_candidate"));
     let mut ranked=crate::engine::code_index::rank_focus_files_with_feedback(
         state,index_id,objective,domain,&failures,&successes,policy,
-        if implementing {12} else {2}
+        if implementing || revising {12} else {2}
     );
+    let mut preferred=BTreeSet::<String>::new();
     if implementing {
         let previous_job=followup["sourceJobId"].as_str().unwrap_or("");
         let partition=research_scope(input).partition_key;
-        let verified_sources=state.store.all("experience").into_iter()
+        preferred.extend(state.store.all("experience").into_iter()
             .filter(|item|item["generationJobId"]==previous_job
                 && item["partitionKey"]==partition && item["status"]=="active")
             .flat_map(|item|item["researchArtifacts"].as_array().cloned().unwrap_or_default())
@@ -1031,13 +1034,30 @@ fn choose_focus_files(
                     return None;
                 }
                 Some(path.to_string())
-            }).collect::<BTreeSet<_>>();
-        if !verified_sources.is_empty() {
-            // Preserve the existing evidence ranking among equally supported
-            // sources; only prefer proven fresh research over unstudied files.
-            ranked.sort_by_key(|row|!verified_sources.contains(
-                row["path"].as_str().unwrap_or("")));
+            }));
+    }
+    if revising {
+        // The parent worktree still uses the rejected candidate's baseline.
+        // Revisit those exact patched files rather than a generic top-ranking
+        // file. A new source revision invalidates the association.
+        if let Some(candidate)=followup["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id)) {
+            let current_commit=input["rsiGeneratorCommit"].as_str().unwrap_or("");
+            if !current_commit.is_empty() && candidate["baseCommit"]==current_commit {
+                for path in candidate["paths"].as_array().into_iter().flatten()
+                    .filter_map(Value::as_str).filter(|path|crate::engine::rsi::safe_path(path)) {
+                    if crate::engine::code_index::indexed_source_hash(state,index_id,path).is_some() {
+                        preferred.insert(path.to_string());
+                    }
+                }
+            }
         }
+    }
+    if !preferred.is_empty() {
+        // Preserve the evidence ranking among equally supported sources;
+        // prefer the actual researched/rejected file only if still indexed.
+        ranked.sort_by_key(|row|!preferred.contains(
+            row["path"].as_str().unwrap_or("")));
     }
     ranked.truncate(2);
     ranked
