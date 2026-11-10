@@ -382,6 +382,52 @@ pub fn confirm_deployment(
     Ok(saved)
 }
 
+/// Recompute the claimed domain transfer from immutable per-case paired receipts.
+/// Missing legacy detail is unproven, never silently upgraded to a pass.
+fn verified_holdout_domains(metrics:&Value)->Option<BTreeSet<String>> {
+    let rows=metrics["measurements"].as_array()?;
+    let mut seen=BTreeSet::new();
+    let mut domains=BTreeSet::new();
+    let mut improved_rows=0u64;
+    let mut holdout_rows=0u64;
+    let mut meta_gains=0u64;
+    for row in rows {
+        let id=row["id"].as_str().filter(|value|!value.is_empty())?;
+        if !seen.insert(id.to_string()) { return None; }
+        let domain=row["domain"].as_str().filter(|value|!value.is_empty())?;
+        let holdout=row["holdout"].as_bool()?;
+        let before=row["baselinePass"].as_bool()?;
+        let after=row["candidatePass"].as_bool()?;
+        let details=row["metrics"].as_array()?;
+        if before && !after { return None; }
+        let mut improved_metrics=0u64;
+        for detail in details {
+            let improved=detail["improved"].as_bool()?;
+            if detail["regressed"].as_bool()? { return None; }
+            if improved && (!before || !after) { return None; }
+            improved_metrics+=u64::from(improved);
+        }
+        if holdout {
+            holdout_rows+=1;
+            if (!before && after) || improved_metrics>0 {
+                improved_rows+=1;
+                domains.insert(domain.to_string());
+            }
+            if domain=="improver" { meta_gains+=improved_metrics; }
+        }
+    }
+    let claimed=metrics["improvedHoldoutDomains"].as_array()?
+        .iter().map(|value|value.as_str().filter(|value|!value.is_empty())
+            .map(str::to_string)).collect::<Option<BTreeSet<_>>>()?;
+    if holdout_rows<2 || domains.is_empty() || domains!=claimed
+        || metrics["holdoutCases"].as_u64()?!=holdout_rows
+        || metrics["improvedHoldouts"].as_u64()?!=improved_rows
+        || metrics["metaHoldoutGains"].as_u64()?!=meta_gains {
+        return None;
+    }
+    Some(domains)
+}
+
 /// A successful patch is not proof that a system can improve its own
 /// improvement mechanism. Require a verified meta holdout gain followed by a
 /// verified cross-domain gain from the newly compiled descendant generator.
@@ -423,10 +469,9 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
         if chain.last().is_some_and(|(prior,_,_,_)|prior!=generator) {chain.clear();}
         // Domains are frozen in the evaluation plan and earned only by paired
         // baseline/candidate holdout measurements, not inferred from target labels.
-        let improved_domains=evaluation["metrics"]["improvedHoldoutDomains"]
-            .as_array().into_iter().flatten()
-            .filter_map(Value::as_str).map(str::to_string)
-            .collect::<BTreeSet<_>>();
+        let Some(improved_domains)=verified_holdout_domains(&evaluation["metrics"]) else {
+            chain.clear();continue;
+        };
         let meta=candidate["target"]=="improver"
             && evaluation["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0
             && improved_domains.contains("improver");
@@ -434,11 +479,13 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
         chain.push((commit.to_string(),meta,target,improved_domains));
         // Prove a distinct, newly improved frozen domain after the meta gain.
         // Improving memory twice cannot masquerade as transfer to planning.
-        if chain.len()>=3 && chain.windows(3).any(|window|
-            window.iter().enumerate().any(|(index,(_,meta,_,meta_domains))|
-                *meta && window[index+1..].iter().any(|(_,_,target,domains)|
-                    target!="improver" && domains.iter().any(|domain|
-                        domain!="improver" && !meta_domains.contains(domain))))) {
+        // A later descendant may demonstrate transfer after more than three
+        // generations. The chain must be consecutive and verified, but the
+        // meta gain and its cross-domain consequence need not be adjacent.
+        if chain.len()>=3 && chain.iter().enumerate().any(|(index,(_,meta,_,meta_domains))|
+            *meta && chain[index+1..].iter().any(|(_,_,target,domains)|
+                target!="improver" && domains.iter().any(|domain|
+                    domain!="improver" && !meta_domains.contains(domain)))) {
             return true;
         }
     }
@@ -532,15 +579,30 @@ mod tests {
                 "baseCommit":revisions[i],"experimentAdoption":{"commit":revisions[i+1]},
                 "evaluation":{"id":evaluation_id,"source":"server_invoked_local_paired_git_worktrees",
                     "evidenceSha256":"a".repeat(64),
-                    "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":1,
-                        "metaHoldoutGains":if i==0{1}else{0},
-                        "improvedHoldoutDomains":if i==0 {json!(["improver","memory"])}
-                            else if i==1 {json!(["memory"])} else {json!(["planning"])}}}}));
+                    "metrics":{"eligible":true,"regressions":0,"holdoutCases":2,
+                        "improvedHoldouts":1,"metaHoldoutGains":if i==0{1}else{0},
+                        "improvedHoldoutDomains":if i==0 {json!(["improver"])}
+                            else if i==1 {json!(["memory"])} else {json!(["planning"])},
+                        "measurements":[
+                            {"id":format!("measured-{i}"),
+                                "domain":if i==0{"improver"}else if i==1{"memory"}else{"planning"},
+                                "holdout":true,"baselinePass":i==0,"candidatePass":true,
+                                "metrics":if i==0{json!([{"improved":true,"regressed":false}])}else{json!([])}},
+                            {"id":format!("control-{i}"),"domain":"other",
+                                "holdout":true,"baselinePass":true,"candidatePass":true,"metrics":[]}
+                        ]}}}));
             history.push(json!({"accepted":true,"candidateId":id,
                 "generatorCommit":revisions[i],"acceptedCommit":revisions[i+1],
                 "evaluation":{"evidenceSha256":"a".repeat(64)}}));
         }
         assert!(capability_proven(&state,&history),"validated meta improvement followed by verified transfer");
+        let mut forged=state.store.get("rsi_candidate","proof-2").unwrap();
+        forged["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["unmeasured-domain"]);
+        state.store.put("rsi_candidate",&forged).unwrap();
+        assert!(!capability_proven(&state,&history),
+            "a forged summary cannot override the frozen paired case receipts");
+        forged["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["planning"]);
+        state.store.put("rsi_candidate",&forged).unwrap();
         // A later patch in the same previously improved domain is not transfer.
         let mut same_domain=state.store.get("rsi_candidate","proof-2").unwrap();
         same_domain["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
