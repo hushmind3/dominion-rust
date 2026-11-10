@@ -35,7 +35,7 @@ fn apply_capability(state:&AppState,record: &mut Value) {
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
     record["capabilityDemonstrated"] = json!(max >= 3 &&
-        engine::capability_proven(state,record["history"].as_array().map(Vec::as_slice).unwrap_or(&[])));
+        engine::campaign_capability_proven(state,record));
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
