@@ -479,6 +479,45 @@ mod tests {
             "cases":(0..8).map(|i|json!({"id":format!("case-{i}"),"baselinePass":i!=0,"candidatePass":true})).collect::<Vec<_>>()})
     }
     #[test]
+    fn recursive_proof_needs_real_meta_transfer_not_three_adoption_flags() {
+        let (state,root)=state();
+        let revisions=["a".repeat(40),"b".repeat(40),"c".repeat(40),"d".repeat(40)];
+        let mut history=Vec::new();
+        for i in 0..3 {
+            let id=format!("proof-{i}");
+            let improvement_domain=if i==0 {"improver"} else if i==1 {"memory"} else {"context"};
+            let candidate=json!({
+                "id":id,"status":"verified",
+                "target":if i==0 {"improver"} else {"harness"},
+                "baseCommit":revisions[i],
+                "experimentAdoption":{"commit":revisions[i+1]},
+                "evaluation":{
+                    "source":"server_invoked_local_paired_git_worktrees",
+                    "evidenceSha256":"e".repeat(64),
+                    "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":1,
+                        "metaHoldoutGains":if i==0 {1} else {0},
+                        "improvedHoldoutDomains":[improvement_domain]}
+                }
+            });
+            state.store.put("rsi_candidate",&candidate).unwrap();
+            history.push(json!({"accepted":true,"candidateId":id,
+                "generatorCommit":revisions[i],"acceptedCommit":revisions[i+1],
+                "evaluation":{"evidenceSha256":"e".repeat(64)}}));
+        }
+        assert!(capability_proven(&state,&history));
+        let mut broken=history.clone();
+        broken[1]=json!({"accepted":false});
+        assert!(!capability_proven(&state,&broken),
+            "failed research generation must break recursive capability proof");
+        let mut mislabeled=state.store.get("rsi_candidate","proof-0").unwrap();
+        mislabeled["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
+        state.store.put("rsi_candidate",&mislabeled).unwrap();
+        assert!(!capability_proven(&state,&history),
+            "a meta improvement without an improver holdout is insufficient");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn paired_results_cannot_be_approved_without_evidence_and_frozen_revision() {
         let (state,root)=state();
         let record=propose(&state,&proposal("improver")).unwrap();
