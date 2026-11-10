@@ -933,6 +933,17 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
     text
 }
 
+/// The stored objective id must match the query actually used for source
+/// selection. Autonomous campaigns rank by the selected capability domain,
+/// not the generic system-generated instruction.
+fn target_focus_objective(input:&Value)->&str {
+    if input["rsiAutonomous"]==true {
+        input["rsiTargetDomain"].as_str().unwrap_or("")
+    } else {
+        input["rsiObjective"].as_str().unwrap_or("")
+    }
+}
+
 /// The domain score and the source target score are separate decisions.
 /// A failed research-only generation only down-ranks its previous files; it
 /// does not erase a verified source observation or count as an adopted patch.
@@ -944,9 +955,7 @@ fn choose_focus_files(
     // Autonomous RSI is not a learning-domain request just because its
     // generic instruction mentions knowledge or experience. Use the chosen
     // capability as the file query; explicit owner goals retain their text.
-    let objective=if input["rsiAutonomous"]==true {
-        domain
-    } else {input["rsiObjective"].as_str().unwrap_or("")};
+    let objective=target_focus_objective(input);
     let mut failures=BTreeMap::<String,u64>::new();
     let mut successes=BTreeMap::<String,u64>::new();
     let mut seen=BTreeSet::<String>::new();
@@ -2321,7 +2330,7 @@ async fn run_loop(
             "targetReplan":current["rsiTargetReplan"],
             "knowledgePartition":research_scope(&current["input"]).partition_key,
             "objectiveId":crate::engine::memory::stable_id(&[
-                current["input"]["rsiObjective"].as_str().unwrap_or("")]),
+                target_focus_objective(&current["input"])]),
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
@@ -3165,6 +3174,10 @@ mod tests {
         let index=crate::engine::code_index::refresh(&state,&root).unwrap();
         let input=json!({"rsiIndexId":index["id"],"rsiTargetDomain":"memory",
             "rsiObjective":"bm25","rsiKnowledgeSource":root});
+        let autonomous=json!({"rsiAutonomous":true,"rsiTargetDomain":"tools",
+            "rsiObjective":"knowledge experience generic default"});
+        assert_eq!(target_focus_objective(&autonomous),"tools");
+        assert_eq!(target_focus_objective(&input),"bm25");
         let ranked=choose_focus_files(&state,&input,&[],None);
         assert_eq!(ranked[0]["path"],"src/engine/opaque.rs");
         let explorer=json!({"revision":"new-source-space",
