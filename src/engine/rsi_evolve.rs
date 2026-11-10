@@ -1125,10 +1125,12 @@ fn research_scope(input:&Value)->MemoryScope {
 /// size, TODO counts or audit findings.
 fn focus_domain_hint(path:&str)->&'static str {
     let path=path.to_lowercase();
-    if path.contains("memory") { "memory" }
+    // An explicitly selected front-end file remains a UI target even when a
+    // page name contains memory, context, learning or an agent name.
+    if path.starts_with("web/src/")||path.contains("/pages/") { "ui" }
+    else if path.contains("memory") { "memory" }
     else if path.contains("chat/")||path.contains("context")||path.contains("room") { "context" }
     else if path.contains("learning")||path.contains("experience") { "learning" }
-    else if path.starts_with("web/src")||path.contains("/pages/") { "ui" }
     else if path.contains("rsi")||path.contains("algorithm") { "improver" }
     else { "tools" }
 }
