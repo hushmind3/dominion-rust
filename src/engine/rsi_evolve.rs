@@ -129,10 +129,20 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
     } else {
         (tokens / attempts) / 10_000.0
     };
-    let objective_match = if objective_matches(domain, objective) {
-        1.0
-    } else {
+    // "기억 검색" is a memory goal, not a general tools-search goal.
+    // Treat generic search as a weak secondary signal when a more specific
+    // capability is explicit; a real browser/tool request still scores fully.
+    let text=objective.to_lowercase();
+    let specific_search_owner=["memory","context","learning"].iter().any(|owner|
+        objective_matches(owner,objective));
+    let explicit_tool_request=["도구","브라우저","외부 연결","tools","tool","browser"].iter().any(|name|
+        text.contains(name));
+    let objective_match = if !objective_matches(domain,objective) {
         0.0
+    } else if domain=="tools" && specific_search_owner && !explicit_tool_request {
+        0.2
+    } else {
+        1.0
     };
     let unresolved = if rows
         .last()
@@ -2729,6 +2739,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+
+    #[test]
+    fn general_search_does_not_steal_specific_retrieval_goals() {
+        let empty:Vec<Value>=Vec::new();
+        let algorithm=json!({"implementation":"failure-clusters"});
+        for (objective,domain) in [
+            ("기억 검색", "memory"),
+            ("대화 문맥 검색", "context"),
+            ("학습 기록 검색", "learning"),
+            ("브라우저 검색 도구", "tools"),
+        ] {
+            assert_eq!(select_domain(&algorithm,&empty,objective),domain,
+                "specific goal must outrank generic search: {objective}");
+        }
+    }
 
     #[test]
     fn default_search_learns_from_unproductive_token_cost_but_respects_owner_goal() {
