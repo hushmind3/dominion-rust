@@ -3032,15 +3032,15 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // The parent's next-domain hint must never override the domain selected
     // by the actual descendant binary. Explicit owner scope is enforced by
     // selection_objective() and eligible_domains() instead.
-    let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("");
+    let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
     let (domain, domain_selection, strategy) =
         select_generation_strategy(&state, &history, &objective, continuation, trial_id,
-            None, commit);
+            None, &commit);
     // Child-authoritative decision: source targeting and the prompt are rebuilt
     // whenever the descendant's policy disagrees with the frozen coordinator.
     // The old plan is preserved as an audit receipt, never silently relabelled.
     reconcile_descendant_target(&state,&mut job,&history,
-        &domain,domain_selection,&strategy,commit)?;
+        &domain,domain_selection,&strategy,&commit)?;
     job["rsiDomain"] = json!(domain);
     job["rsiDomainSelection"] = json!(domain_selection);
     job["rsiSearchStrategy"] = strategy.clone();
