@@ -119,6 +119,15 @@ pub async fn execute(
     if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
     }
+    if isolated_rsi && matches!(name,
+        "workspace_read_range" | "workspace_write" | "workspace_replace") {
+        let requested=args["path"].as_str().ok_or("경로가 필요합니다.")?;
+        let canonical=resolve_workspace(ctx.workspace,requested)?;
+        if crate::engine::rsi::hidden_rsi_oracle_path(
+            &canonical.to_string_lossy()) {
+            return Err("자기개선 모델은 동결 평가 오라클 원문에 접근할 수 없습니다.".into());
+        }
+    }
     if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace") {
         let path=args["path"].as_str().unwrap_or("");
         if !crate::engine::rsi::safe_path(path) {
@@ -730,6 +739,10 @@ fn search_code_index(
     for file in ctx.store.all("code_index_file") {
         if file["indexId"].as_str()!=Some(index_id) {continue;}
         let path=file["path"].as_str().unwrap_or("");
+        if session["rsiRun"]==true
+            && crate::engine::rsi::hidden_rsi_oracle_path(path) {
+            continue;
+        }
         let rank=score(path);
         if rank>0 {matches.push((rank,json!({"path":path,"kind":"file","name":path,"line":1})));}
         for symbol in file["symbols"].as_array().into_iter().flatten() {
@@ -1392,6 +1405,8 @@ mod tests {
         assert!(rsi_allowed("unsafe_audit"));
         assert!(!rsi_allowed("workspace_read"));
         assert!(!rsi_allowed("shell_exec"));
+        assert!(crate::engine::rsi::hidden_rsi_oracle_path(
+            "src/engine/rsi_oracle_fixture.rs"));
     }
 
     #[tokio::test]
