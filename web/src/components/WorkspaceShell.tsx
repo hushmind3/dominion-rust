@@ -1,4 +1,5 @@
 import {useEffect,useMemo,useState} from 'react'
+import {OwnerProfileEditor} from './OwnerProfile'
 import {Activity,Blocks,BookOpenText,Bot,ChevronDown,ChevronRight,Clapperboard,Code2,Command,CommandIcon,Cpu,House,Layers3,Menu,MessageSquare,PanelLeftClose,RadioTower,Search,Settings2,UsersRound,Workflow,Plus,BrainCircuit} from 'lucide-react'
 import {Button,TextInput} from './Primitives'
 import {t,type LocaleKey,useLocale} from '../i18n'
@@ -35,6 +36,7 @@ export function WorkspaceSidebar({page,open,collapsed,online,running,pending,onN
      </Button>})}</div>}
     </section>})}
    </nav>
+   <OwnerProfileEditor/>
    <div className="flex h-14 shrink-0 items-center gap-2.5 border-t border-[#E0D8CC] px-5">
     <span className={'size-2 rounded-full '+(online?'bg-emerald-500':'bg-rose-400')}/>
     <span className="text-[11px] text-[#6F675D]">{online?t('shell.engineConnected'):t('shell.engineDisconnected')}</span>
