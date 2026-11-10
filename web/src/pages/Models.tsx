@@ -6,13 +6,14 @@ import {FormField,Notice,refresh,useRemote} from '../components/UI'
 import {DialogBackdrop,DialogPanel} from '../components/Dialog'
 import {ModelExplorer} from '../components/ModelExplorer'
 import {ModelPicker} from '../components/ModelPicker'
+import {OAuthConnectionCard} from '../components/OAuthConnectionCard'
 import {ReasoningSelect} from '../components/ReasoningSelect'
 import {useProviderModels} from '../hooks/useProviderModels'
 import {t,useLocale} from '../i18n'
 
 type PresetCategory='free'|'cloud'|'local'
 type ProviderPreset={name:string;baseUrl:string;kind:string;local:boolean;integration?:'freellmapi'|'opencode-go';free?:boolean;requestsPerMinute?:number;category:PresetCategory;auth?:'key'|'none';note?:string}
-type CliCredential={id:string;name:string;available:boolean;supported:boolean;connected?:boolean;importAvailable?:boolean;accountId?:string;model?:string;hint?:string}
+type CliCredential={id:string;name:string;available:boolean;supported:boolean;connected?:boolean;importAvailable?:boolean;accountId?:string;model?:string;hint?:string;loginSupported?:boolean;loginMethod?:'browser'|'terminal'|'api-key'}
 type CatalogProvider={id:string;name:string;api:string;models:number;env?:string[];doc?:string}
 type CatalogResponse={providers:CatalogProvider[];cached?:boolean;error?:string}
 type FreeCatalogModel={id:string;free?:boolean|null;freeStatus?:string;freeSource?:string}
@@ -80,6 +81,7 @@ export function ModelHub(){
  const freeCatalog=useRemote<FreeCatalog>('/api/providers/free-catalog',{providers:[]})
  const [freeBusy,setFreeBusy]=useState(false)
  const [oauthBusy,setOauthBusy]=useState('')
+ const [cliPolling,setCliPolling]=useState('')
  const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[defaultModel,setDefaultModel]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
  const [defaultEffort,setDefaultEffort]=useState('')
  const editModels=useProviderModels(modal&&edit?edit.id:'')
@@ -91,7 +93,6 @@ export function ModelHub(){
  const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':p?.integration==='opencode-go'?'opencode-go':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setDefaultModel(p?.model||'');setDefaultEffort(String(p?.reasoningEffort||''));setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setAccountId(p?.accountId||'');setTestResult(null);setError('');setModal(true)}
  const openPreset=(preset:ProviderPreset)=>{setEdit(null);setIntegration(preset.integration);setFreePreset(Boolean(preset.free&&preset.auth==='none'));setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId('');setDefaultModel('');setDefaultEffort('');setReflection(false);setRpm(preset.requestsPerMinute?String(preset.requestsPerMinute):'');setAccountId('');setTestResult(null);setError('');setModal(true)}
  const goProvider=providers.value.find(p=>p.integration==='opencode-go'||p.baseUrl.includes('opencode.ai/zen/go')||p.baseUrl.includes('opencode.ai/inference/go'))
- const goCredential=cli.value.find(item=>item.id==='opencode-go')
  const connectOpencodeGo=()=>{if(goProvider)open(goProvider);else openPreset(opencodeGoPreset)}
  const needsNewKey=presetMode&&!freePreset&&(!local||integration==='freellmapi')
  const testConnection=async()=>{
@@ -184,6 +185,34 @@ export function ModelHub(){
   },1500)
   return()=>{alive=false;clearInterval(timer)}
  },[loginPending])
+ const startCliLogin=async(source:string)=>{
+  if(oauthBusy)return
+  setOauthBusy('login-'+source);setError('');setLoginMessage('')
+  try{
+   const started=await post<{message:string}>('/api/providers/cli/'+encodeURIComponent(source)+'/login',{})
+   setLoginMessage(started.message)
+   setCliPolling(source)
+  }catch(e){setError((e as Error).message)}
+  finally{setOauthBusy('')}
+ }
+ useEffect(()=>{
+  if(!cliPolling)return
+  let live=true
+  let checks=0
+  const timer=setInterval(()=>{
+   void get<CliCredential[]>('/api/providers/cli').then(rows=>{
+    if(!live)return
+    cli.setValue(rows)
+    if(rows.find(row=>row.id===cliPolling)?.available){
+     setCliPolling('')
+     setLoginMessage('CLI 로그인 정보가 감지되었습니다. DOMINION에서 모델을 사용하려면 별도 API 연결 상태도 확인하세요.')
+    }
+   }).catch(()=>{})
+   checks++
+   if(checks>=120&&live)setCliPolling('')
+  },3000)
+  return()=>{live=false;clearInterval(timer)}
+ },[cliPolling])
  const refreshFreeCatalog=async()=>{
   if(freeBusy)return
   setFreeBusy(true);setError('')
@@ -252,26 +281,29 @@ export function ModelHub(){
 
   {tab==='oauth'&&<section className="rounded-2xl border border-[#E7E0D5] bg-[#FFFDF9] p-5 shadow-[0_1px_2px_rgba(36,33,29,.04)]">
    <div className="mb-4"><h2 className="m-0 text-[16px] font-bold text-[#24211D]">{t('models.oauth.title')}</h2><p className="mt-1 text-[12px] text-[#7C7469]">{t('models.oauth.desc')}</p></div>
-   <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E7D9C8] bg-[#FFF9F0] px-4 py-3">
-    <div className="min-w-0 flex-1">
-     <strong className="block text-[13px] text-[#3A342D]">OpenCode Go</strong>
-     <p className="mt-1 text-[11px] leading-5 text-[#8A775F]">OpenClaw·OpenCode의 기존 API 키를 한 번 가져오거나 직접 입력할 수 있습니다. 키는 DOMINION 금고에 저장하며 이후 4399 없이 호출합니다.</p>
-     <p className={'mt-1.5 text-[11px] font-semibold '+(goProvider?.hasKey?'text-emerald-700':'text-[#A05B48]')}>{goProvider?.hasKey?'DOMINION에 키 저장됨 · 모델 인증 확인 필요':goCredential?.importAvailable?'기존 키 감지됨 · 가져오기 가능':'DOMINION 키 없음 · API 키 등록 필요'}</p>
-     {goProvider&&counts[goProvider.id]?.error&&<p className="mt-1 text-[11px] text-rose-600">{counts[goProvider.id].error}</p>}
-     {goProvider&&(counts[goProvider.id]?.list.length??0)>0&&<p className="mt-1 text-[11px] text-emerald-700">인증된 모델 목록 {counts[goProvider.id].list.length}개 조회됨 · 사용 모델을 선택하세요.</p>}
-    </div>
-    <div className="flex flex-wrap items-center gap-2">
-     {goCredential?.importAvailable&&<Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli('opencode-go')}>{oauthBusy==='opencode-go'?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} 기존 키 가져오기</Button>}
-     <Button type="button" variant="primary" size="sm" onClick={connectOpencodeGo}><KeyRound size={13}/> {goProvider?'키 / 모델 설정':'API 키 직접 등록'}</Button>
-     {goProvider?.hasKey&&<Button type="button" variant="ghost" size="sm" disabled={counts[goProvider.id]?.busy} onClick={()=>void probe(goProvider)}><RefreshCw size={13}/> 모델 확인</Button>}
-    </div>
+   <div className="grid grid-cols-1 items-stretch gap-3 md:grid-cols-2">
+    {cli.value.map(item=><OAuthConnectionCard
+     key={item.id}
+     title={item.name}
+     status={item.connected?'DOMINION 연결됨':item.available?'CLI 로그인 확인':'로그인 필요'}
+     statusTone={item.connected?'connected':item.available?'available':'disconnected'}
+     accountId={item.accountId}
+     model={item.model}
+     hint={item.hint}
+    >
+     {item.id==='codex'&&<>
+      <Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexLogin()}><LogIn size={13}/> {item.connected?'재로그인':'브라우저 로그인'}</Button>
+      <Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexDevice()}><KeyRound size={13}/> 기기 코드 로그인</Button>
+     </>}
+     {item.loginMethod==='terminal'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCliLogin(item.id)}>{oauthBusy==='login-'+item.id?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {item.available?'재로그인':'로그인'}</Button>}
+     {item.id==='opencode-go'&&<Button type="button" variant="primary" size="sm" onClick={connectOpencodeGo}><KeyRound size={13}/> {goProvider?'키 / 모델 설정':'API 키 연결'}</Button>}
+     {item.supported&&(item.importAvailable??item.available)&&<Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}><KeyRound size={13}/> {item.id==='opencode-go'?'기존 키 가져오기':'기존 인증 가져오기'}</Button>}
+     {(item.id==='claude'||item.id==='gemini')&&<Button type="button" variant="secondary" size="sm" onClick={()=>openPreset(providerPresets.find(p=>p.name===(item.id==='claude'?'Anthropic':'Google Gemini'))!)}><KeyRound size={13}/> API 키 연결</Button>}
+     {item.id==='codex'&&item.connected&&<Button type="button" variant="ghost" size="sm" onClick={()=>{setTab('providers');const p=providers.value.find(p=>p.id==='codex-oauth');if(p)void probe(p)}}><RefreshCw size={13}/> 모델 확인</Button>}
+     {item.id==='opencode-go'&&goProvider?.hasKey&&<Button type="button" variant="ghost" size="sm" disabled={counts[goProvider.id]?.busy} onClick={()=>void probe(goProvider)}><RefreshCw size={13}/> 모델 확인</Button>}
+     <Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void cli.reload()}><RefreshCw size={13}/> 상태 새로고침</Button>
+    </OAuthConnectionCard>)}
    </div>
-   <div className="grid grid-cols-1 gap-3 md:grid-cols-2">{cli.value.filter(item=>item.id!=='opencode-go').map(item=><div key={item.id} className="rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-4">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0 flex-1"><strong className="block text-[13px] text-[#3A342D]">{item.name}</strong><small className={'mt-1 inline-flex items-center gap-1 text-[11px] '+(item.available?'text-emerald-700':'text-[#9C9388]')}><UserRound size={12}/>{item.connected?'DOMINION 연결됨':item.available?t('models.oauth.available'):t('models.oauth.unavailable')}</small></div><div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">{item.id==='codex'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexLogin()}>{oauthBusy==='codex-login'?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {item.connected?'브라우저 재연결':t('models.oauth.browserLogin')}</Button>}{item.id==='codex'&&<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexDevice()}>{oauthBusy==='codex-device'?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {t('models.oauth.deviceLogin')}</Button>}{item.supported&&(item.importAvailable??item.available)&&<Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}>{oauthBusy===item.id?<RefreshCw size={13} className="animate-spin"/>:<KeyRound size={13}/>} {oauthBusy===item.id?t('models.oauth.importing'):t('models.oauth.importExisting')}</Button>}{(item.id==='claude'||item.id==='gemini')&&<Button type="button" variant="secondary" size="sm" onClick={()=>openPreset(providerPresets.find(p=>p.name===(item.id==='claude'?'Anthropic':'Google Gemini'))!)}><KeyRound size={13}/> API 키 연결</Button>}{item.id==='codex'&&item.connected&&<Button type="button" variant="ghost" size="sm" onClick={()=>{setTab('providers');const p=providers.value.find(p=>p.id==='codex-oauth');if(p)void probe(p)}}><RefreshCw size={13}/> 모델 새로고침</Button>}</div></div>
-    {item.accountId&&<div className="mt-3 break-all rounded-lg bg-white px-2.5 py-2 text-[10px] text-[#8A8176]">{t('models.oauth.account')} · {item.accountId}</div>}
-    {item.model&&<div className="mt-1.5 text-[11px] text-[#8A8176]">{t('models.defaultModel')} · {item.model}</div>}
-    <p className="mt-2 text-[11px] leading-5 text-[#9C9388]">{item.hint}</p>
-   </div>)}</div>
    {deviceCode&&<div className="mt-3 rounded-xl border border-[#E7D9C8] bg-[#FFF9F0] px-4 py-3"><div className="text-[11px] text-[#8A775F]">{t('models.oauth.deviceHint')}</div><div className="my-2 font-mono text-[26px] font-bold tracking-[.18em] text-[#A94E30]">{deviceCode.userCode}</div><a className="text-[11px] font-semibold text-[#C96442] hover:underline" href={deviceCode.verificationUrl} target="_blank" rel="noreferrer">{t('models.oauth.openDevice')}</a></div>}
    {loginPending&&!deviceCode&&<p className="mt-3 rounded-xl border border-[#E7E0DF] bg-[#F7F1E6] px-3 py-2 text-[11px] text-[#7C7469]">{t('models.oauth.loginHint')}{loginUrl&&<> · <a className="font-semibold text-[#C96442] hover:underline" href={loginUrl} target="_blank" rel="noreferrer">{t('models.oauth.openBrowser')}</a></>}</p>}
    {loginMessage&&<p className="mt-3 rounded-xl border border-[#CFE0CF] bg-[#F4FAF3] px-3 py-2 text-[11px] text-[#4F6F52]">{loginMessage}</p>}
