@@ -504,9 +504,9 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
         return Err("패치 해시가 저장된 값과 다릅니다.".into());
     }
     let status=crate::engine::dev::status(state).await;
-    let source_branch=candidate["sourceBranch"].as_str().unwrap_or("dominion-sub");
-    if !is_rsi_work_branch(source_branch)
-        || status["git"]!=true || status["branch"]!=source_branch
+    let source_branch=candidate["sourceBranch"].as_str().unwrap_or("dominion-sub").to_string();
+    if !is_rsi_work_branch(&source_branch)
+        || status["git"]!=true || status["branch"].as_str()!=Some(source_branch.as_str())
         || status["dirty"]!=0 || status["commit"]!=candidate["baseCommit"] {
         return Err("원본 작업 브랜치가 후보 생성 브랜치와 다르거나 수정 중이므로 적용하지 않았습니다.".into());
     }
@@ -564,7 +564,7 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     let source=std::fs::canonicalize(campaign["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     let status=crate::engine::dev::status(state).await;
     let configured=status["config"]["sourceDir"].as_str().and_then(|s|std::fs::canonicalize(s).ok());
-    let source_branch=campaign["sourceBranch"].as_str().unwrap_or("dominion-sub");
+    let source_branch=campaign["sourceBranch"].as_str().unwrap_or("dominion-sub").to_string();
     if !is_rsi_work_branch(source_branch) || configured.as_ref()!=Some(&source)
         || status["branch"]!=source_branch {
         return Err("dominion-sub 계열의 해당 캠페인 원본 브랜치에만 적용할 수 있습니다.".into());
