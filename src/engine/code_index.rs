@@ -646,19 +646,9 @@ pub fn indexed_source_hash(state:&AppState,index_id:&str,path:&str)->Option<Stri
         .as_str().map(str::to_string)
 }
 
-/// Rank implementation files from the actual code index, not a fixed table of
-/// paths. The ranking is deterministic, model-free, and remains bounded by the
-/// indexed source snapshot. A model-authored targeting expression can replace
-/// the scoring equation without replacing the Rust harness.
-pub fn rank_focus_files(
-    state: &AppState,
-    index_id: &str,
-    objective: &str,
-    domain: &str,
-    prior_unproductive: &BTreeMap<String, u64>,
-    algorithm: Option<&Value>,
-    limit: usize,
-) -> Vec<Value> {
+/// Shared goal vocabulary for file navigation and source-span selection.
+/// No source file names are embedded in the vocabulary.
+fn focus_terms(objective:&str,domain:&str)->Vec<String> {
     let mut query = objective.to_lowercase()
         .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
         .filter(|word| word.chars().count() >= 2)
@@ -691,6 +681,23 @@ pub fn rank_focus_files(
         "improve"|"improvement"|"fix"|"code"|"function"|"dominion"));
     query.sort();
     query.dedup();
+    query
+}
+
+/// Rank implementation files from the actual code index, not a fixed table of
+/// paths. The ranking is deterministic, model-free, and remains bounded by the
+/// indexed source snapshot. A model-authored targeting expression can replace
+/// the scoring equation without replacing the Rust harness.
+pub fn rank_focus_files(
+    state: &AppState,
+    index_id: &str,
+    objective: &str,
+    domain: &str,
+    prior_unproductive: &BTreeMap<String, u64>,
+    algorithm: Option<&Value>,
+    limit: usize,
+) -> Vec<Value> {
+    let query=focus_terms(objective,domain);
     if query.is_empty() || limit == 0 {return Vec::new();}
 
     let files=index_files(state,index_id).into_iter()
@@ -783,6 +790,53 @@ pub fn rank_focus_files(
     ranked
 }
 
+/// Score actual function bodies and their one-hop callers. The graph is a
+/// deterministic navigation hint, not proof of runtime control flow.
+fn rank_focus_spans(
+    symbols:&[Value],tests:Option<&Vec<Value>>,lines:&[&str],terms:&[String]
+)->Vec<(f64,usize,usize,String)> {
+    let nodes=symbols.iter().filter_map(|item|{
+        let name=item["name"].as_str()?;
+        if tests.is_some_and(|rows|rows.iter().any(|test|test.as_str()==Some(name))){
+            return None;
+        }
+        let line=item["line"].as_u64()? as usize;
+        if line==0 || line>lines.len(){return None;}
+        let end=symbols.iter().filter_map(|row|row["line"].as_u64().map(|n|n as usize))
+            .filter(|next|*next>line).min().unwrap_or(lines.len()+1)
+            .saturating_sub(1).min(lines.len());
+        let body=lines[line-1..end].iter().take(450).copied()
+            .collect::<Vec<_>>().join("\n").to_lowercase();
+        Some((name.to_string(),line,end,body))
+    }).collect::<Vec<_>>();
+    let mut evidence=vec![0.0;nodes.len()];
+    for term in terms{
+        let df=nodes.iter().filter(|(name,_,_,body)|
+            name.to_lowercase().contains(term)||body.contains(term)).count();
+        if df==0{continue;}
+        let idf=((nodes.len() as f64+1.0)/(df as f64+1.0)).ln()+1.0;
+        for (i,(name,_,_,body)) in nodes.iter().enumerate(){
+            if name.to_lowercase().contains(term){evidence[i]+=4.0*idf;}
+            if body.contains(term){evidence[i]+=idf;}
+        }
+    }
+    let mut ranking=Vec::new();
+    for (i,(name,line,end,body)) in nodes.iter().enumerate(){
+        let mut neighbor=0.0f64;
+        // Reads only the already indexed functions; no new LLM call is needed.
+        for (other,(other_name,_,_,_)) in nodes.iter().enumerate(){
+            if i==other || other_name.len()<4 || evidence[other]==0.0 {continue;}
+            if body.contains(&format!("{}(",other_name.to_lowercase())){
+                neighbor=neighbor.max(evidence[other]);
+            }
+        }
+        let score=evidence[i]+0.45*neighbor;
+        if score>0.0{ranking.push((score,*line,*end,name.clone()));}
+    }
+    ranking.sort_by(|a,b|b.0.total_cmp(&a.0).then_with(||a.1.cmp(&b.1)));
+    ranking
+}
+
 /// Returns compact, source-hash-verified RSI context instead of repeatedly
 /// sending an entire large source file to the model on every tool round.
 pub fn bounded_focus_context(
@@ -803,65 +857,19 @@ pub fn bounded_focus_context(
             "\n### 대상 파일 전체: {path} ({size}자, 소스 해시 검증)\n원문의 정확한 oldText로 workspace_replace를 사용하세요.\n~~~\n{content}\n~~~\n"
         ));
     }
-    let objective = objective.to_lowercase();
-    let mut hints = objective
-        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-        .filter(|word| word.len() >= 3)
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    for (keyword, additions) in [
-        ("기억", &["memory", "recall", "retrieve", "rank", "rerank"][..]),
-        ("검색", &["search", "retrieve", "rank", "bm25"][..]),
-        ("망각", &["forget", "decay", "sweep"][..]),
-        ("압축", &["compact", "compress", "summary"][..]),
-        ("문맥", &["context", "continuity", "prompt"][..]),
-        ("토큰", &["token", "budget", "usage"][..]),
-        ("비용", &["cost", "usage", "budget", "cache"][..]),
-        ("학습", &["learning", "learn", "distill", "experience"][..]),
-        ("개선", &["improve", "evolve", "search", "select"][..]),
-        ("선택", &["select", "rank", "score"][..]),
-    ] {
-        if objective.contains(keyword) {
-            hints.extend(additions.iter().map(|value| value.to_string()));
-        }
-    }
-    if hints.is_empty() {
-        hints.extend(match domain {
-            "memory" => vec!["retrieve", "memory", "rerank"],
-            "context" => vec!["context", "continuity", "prompt"],
-            "learning" => vec!["learn", "experience", "distill"],
-            "improver" => vec!["select", "search", "evolve", "compare"],
-            "tools" => vec!["execute", "tool", "dispatch"],
-            _ => Vec::new(),
-        }.into_iter().map(str::to_string));
-    }
-    hints.sort();
-    hints.dedup();
     let symbols = indexed["symbols"].as_array()?;
     let tests = indexed["tests"].as_array();
-    let mut ranked = symbols.iter().filter_map(|item| {
-        let name = item["name"].as_str()?;
-        if tests.is_some_and(|rows| rows.iter().any(|test| test.as_str() == Some(name))) {
-            return None;
-        }
-        let line = item["line"].as_u64()? as usize;
-        let lower = name.to_lowercase();
-        let score = hints.iter().filter(|hint| lower.contains(hint.as_str())).count();
-        (score > 0 && line > 0).then(|| (score, line, name.to_string()))
-    }).collect::<Vec<_>>();
-    ranked.sort_by(|a,b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     let lines = content.lines().collect::<Vec<_>>();
+    let terms=focus_terms(objective,domain);
+    let ranked=rank_focus_spans(symbols,tests,&lines,&terms);
     let mut result = format!(
         "\n### 대상 파일 발췌: {path} (전체 {size}자, 소스 해시 검증)\n전체 파일이 아닙니다. 정확히 일치하는 코드만 수정하고 누락된 부분은 workspace_read_range로 확인하세요.\n"
     );
     let mut included = 0usize;
-    for (_, line, name) in ranked {
+    for (_, line, symbol_end, name) in ranked {
         if included >= 3 || line > lines.len() { break; }
         let start = line - 1;
-        let next = symbols.iter()
-            .filter_map(|item| item["line"].as_u64().map(|n| n as usize))
-            .filter(|n| *n > line).min().unwrap_or(lines.len() + 1);
-        let end = next.saturating_sub(1).min(lines.len()).min(start + MAX_SPAN_LINES);
+        let end=symbol_end.min(lines.len()).min(start+MAX_SPAN_LINES);
         let mut body = String::new();
         let mut last = start;
         for (offset, row) in lines[start..end].iter().enumerate() {
@@ -885,6 +893,25 @@ mod tests {
     use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
 
+
+    #[test]
+    fn bounded_focus_discovers_opaque_function_body_and_its_caller() {
+        let (state,root)=temp_state();
+        let source=root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        let mut code=(0..180).map(|i|format!("fn neutral_{i}() {{}}\n")).collect::<String>();
+        code.push_str("fn hidden_worker() {\n    let x = \"BM25_SIGNAL_VISIBLE\";\n    println!(\"{x}\");\n}\n");
+        code.push_str("fn caller_entrypoint() {\n    hidden_worker(); // DEPENDENT_CALLER_VISIBLE\n}\n");
+        std::fs::write(source.join("src/opaque.rs"),&code).unwrap();
+        let meta=refresh(&state,&source).unwrap();
+        let excerpt=bounded_focus_context(&state,&source,meta["id"].as_str().unwrap(),
+            "src/opaque.rs","bm25 retrieval","memory").unwrap();
+        assert!(excerpt.contains("BM25_SIGNAL_VISIBLE"),"{excerpt}");
+        assert!(excerpt.contains("DEPENDENT_CALLER_VISIBLE"),"{excerpt}");
+        assert!(!excerpt.contains("fn neutral_0()"),"{excerpt}");
+        assert!(excerpt.chars().count()<8_100);
+        let _=std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn bounded_focus_prefers_relevant_spans_without_full_file_retransmission() {
