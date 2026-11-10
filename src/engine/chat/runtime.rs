@@ -69,6 +69,12 @@ fn rsi_checkpoint_tool(name: &str) -> bool {
     )
 }
 
+/// Query-based tool discovery must not shrink the RSI toolset: a generation
+/// needs read, search and replace together to produce a grounded patch.
+fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
+    !is_room && !rsi_run
+}
+
 pub async fn run_turn(
     state: &AppState,
     request: &TurnRequest,
@@ -558,7 +564,7 @@ async fn run_turn_body(
             state, "tool.discovery", request.agent_id.as_deref(), Some(execution_id),
         ).unwrap_or(Value::Null)
     };
-    if !is_room {
+    if tool_discovery_applies(is_room, session["rsiRun"] == true) {
         tool_definitions = select_tool_definitions(tool_definitions, &request.input, &discovery);
     }
     if session["rsiRun"]==true {
@@ -6085,6 +6091,9 @@ mod harness_tool_selection_tests {
         for name in ["shell_exec", "file_write", "web_search"] {
             assert!(!rsi_checkpoint_tool(name), "{name} must not stay available");
         }
+        assert!(tool_discovery_applies(false, false));
+        assert!(!tool_discovery_applies(true, false));
+        assert!(!tool_discovery_applies(false, true), "RSI must keep its full allowed toolset");
     }
 
     #[test]
