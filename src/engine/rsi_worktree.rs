@@ -589,6 +589,7 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
             && c["status"]=="verified" && c["evaluation"]["metrics"]["eligible"]==true
             && c["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees")
             .ok_or("검증되지 않은 커밋이 섞여 있어 적용하지 않았습니다.")?;
+        rsi::verify_paired_receipt(state,candidate)?;
         let parent=git(&source,&["rev-parse",&format!("{commit}^")]).await?;
         if candidate["baseCommit"]!=parent {return Err("검증한 기준과 채택 계보가 다릅니다.".into());}
         let patch=candidate["patch"].as_str().ok_or("검증 패치 없음")?;
@@ -741,6 +742,7 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     let receipt=json!({
         "id":format!("rsi-pair-{}",context.job_id),
         "candidateId":id,"jobId":context.job_id,
+        "evaluationId":updated["evaluation"]["id"],
         "report":report,"verdict":verdict,"metrics":metrics,
         "evidenceSha256":evidence_sha,
         "runner":"local_gitrepo_not_os_sandbox",
