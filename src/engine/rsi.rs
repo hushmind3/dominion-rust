@@ -21,8 +21,25 @@ fn sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// Frozen evaluator sources must not become generator input or a proposed patch.
+/// This is a local worker boundary, not secrecy for publicly hosted files.
+pub(crate) fn frozen_evaluator_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let normalized = normalized.trim_start_matches("./");
+    const FROZEN: [&str; 4] = [
+        "src/engine/rsi_oracle_fixture.rs",
+        "src/engine/rsi_metrics.rs",
+        "scripts/rsi-measure.mjs",
+        "tests/fixtures/rsi-generation-worker.rs",
+    ];
+    FROZEN.iter().any(|protected| {
+        normalized == *protected || normalized.ends_with(&format!("/{protected}"))
+    })
+}
+
 pub(crate) fn safe_path(path: &str) -> bool {
-    !path.contains('\\')
+    !frozen_evaluator_path(path)
+        && !path.contains('\\')
         && !path.starts_with('/')
         && !path.split('/').any(|part|part.is_empty() || part.starts_with('.'))
         && (path.starts_with("src/")
@@ -559,6 +576,27 @@ pub fn one(state: &AppState, id: &str) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn frozen_evaluator_files_are_neither_read_targets_nor_patch_targets() {
+        for path in [
+            "src/engine/rsi_oracle_fixture.rs",
+            "./src/engine/rsi_metrics.rs",
+            "/private/worktree/scripts/rsi-measure.mjs",
+            "tests/fixtures/rsi-generation-worker.rs",
+        ] {
+            assert!(super::frozen_evaluator_path(path), "{path}");
+        }
+        for path in [
+            "src/engine/rsi_oracle_fixture.rs",
+            "src/engine/rsi_metrics.rs",
+            "tests/fixtures/rsi-generation-worker.rs",
+        ] {
+            assert!(!super::safe_path(path), "{path}");
+        }
+        assert!(super::safe_path("src/engine/memory.rs"));
+        assert!(super::safe_path("src/engine/rsi_evolve.rs"));
+        assert!(!super::frozen_evaluator_path("src/engine/rsi_evolve.rs"));
+    }
     use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
     fn state() -> (AppState, std::path::PathBuf) {
