@@ -970,7 +970,8 @@ fn choose_focus_files(
                 && candidate["evaluation"]["metrics"]["eligible"]==true);
         let failed=generation["accepted"]!=true
             && generation["candidateId"].is_null()
-            && generation["newFindings"].as_u64().unwrap_or(0)==0;
+            && (generation["newFindings"].as_u64().unwrap_or(0)==0
+                || generation["improvementDirective"]["mode"]=="implement_research");
         if !failed && candidate.is_none() {return;}
         let id=generation["id"].as_str().unwrap_or("");
         if !id.is_empty() && !seen.insert(id.to_string()) {return;}
@@ -1006,9 +1007,40 @@ fn choose_focus_files(
         .collect::<Vec<_>>();
     prior.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     for generation in prior.iter().take(8) {consider(generation,true);}
-    crate::engine::code_index::rank_focus_files_with_feedback(
-        state,index_id,objective,domain,&failures,&successes,policy,2
-    )
+    // If a prior generation produced real source evidence but no patch,
+    // target that exact still-current source before spending more model calls
+    // rediscovering it. No stale path or hash is allowed to steer the model.
+    let followup=improvement_directive(history);
+    let implementing=followup["mode"]=="implement_research";
+    let mut ranked=crate::engine::code_index::rank_focus_files_with_feedback(
+        state,index_id,objective,domain,&failures,&successes,policy,
+        if implementing {12} else {2}
+    );
+    if implementing {
+        let previous_job=followup["sourceJobId"].as_str().unwrap_or("");
+        let partition=research_scope(input).partition_key;
+        let verified_sources=state.store.all("experience").into_iter()
+            .filter(|item|item["generationJobId"]==previous_job
+                && item["partitionKey"]==partition && item["status"]=="active")
+            .flat_map(|item|item["researchArtifacts"].as_array().cloned().unwrap_or_default())
+            .filter_map(|artifact|{
+                let path=artifact["path"].as_str()?;
+                let hash=artifact["sourceSha256"].as_str()?;
+                if !crate::engine::rsi::safe_path(path)
+                    || crate::engine::code_index::indexed_source_hash(state,index_id,path).as_deref()!=Some(hash) {
+                    return None;
+                }
+                Some(path.to_string())
+            }).collect::<BTreeSet<_>>();
+        if !verified_sources.is_empty() {
+            // Preserve the existing evidence ranking among equally supported
+            // sources; only prefer proven fresh research over unstudied files.
+            ranked.sort_by_key(|row|!verified_sources.contains(
+                row["path"].as_str().unwrap_or("")));
+        }
+    }
+    ranked.truncate(2);
+    ranked
 }
 
 /// Empty focus is meaningful: the model searches the index instead of being
@@ -2580,8 +2612,8 @@ async fn run_loop(
         record["maxVerifiedStreak"] = json!(verified_max);
         let mut history_now = record["history"].as_array().cloned().unwrap_or_default();
         history_now.push(generation.clone());
-        record["improvementActionResults"]=json!(improvement_action_results(&history_now));
         let proven_history=revalidated_history(&context.state,&history_now);
+        record["improvementActionResults"]=json!(improvement_action_results(&proven_history));
         let (proven_streak,proven_max)=verified_capability_streak(&proven_history);
         record["verifiedStreak"]=json!(proven_streak);
         record["maxVerifiedStreak"]=json!(proven_max);
