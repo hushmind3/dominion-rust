@@ -1100,7 +1100,12 @@ fn focus_domain_hint(path:&str)->&'static str {
 /// The objective used for capability selection. Focus files are appended as
 /// capability words so the selected domain follows the user's actual target.
 fn selection_objective(input:&Value)->String {
-    let objective=input["rsiObjective"].as_str().unwrap_or("");
+    // An empty owner request starts autonomous exploration. Its generic
+    // instructional prompt describes knowledge and experience, but is NOT a
+    // user-selected learning domain. Preserve explicit owner objectives and
+    // explicitly selected files as scope constraints.
+    let objective=if input["rsiAutonomous"]==true {""}
+        else {input["rsiObjective"].as_str().unwrap_or("")};
     // Auto-discovered files must not feed their own inferred domain back into
     // selection. Only the user's explicit focus can constrain the objective.
     let hints=if input["rsiAutoFocus"]==true {Vec::new()} else {
@@ -3237,6 +3242,23 @@ mod tests {
         let input=json!({"rsiObjective":"기억 검색","rsiAutoFocus":true,
             "rsiFocusFiles":["src/engine/tools.rs"]});
         assert_eq!(selection_objective(&input),"기억 검색");
+    }
+
+    #[test]
+    fn autonomous_campaign_ignores_generic_prompt_domain_words() {
+        let input=json!({"rsiAutonomous":true,
+            "rsiObjective":"기존 코드 지식과 경험을 재사용해 실제 작업에 필요한 능력 하나를 개선한다",
+            "rsiAutoFocus":true,"rsiFocusFiles":["src/engine/memory.rs"]});
+        let scope=selection_objective(&input);
+        assert_eq!(scope,"");
+        assert_eq!(eligible_domains(&scope),DOMAINS.to_vec(),
+            "generic bootstrap words must not constrain autonomous domain discovery");
+        let explicit=json!({"rsiAutonomous":false,"rsiObjective":"학습 기록 검색"});
+        assert_eq!(eligible_domains(&selection_objective(&explicit)),vec!["learning"]);
+        let focus=json!({"rsiAutonomous":true,"rsiObjective":"기본 목표",
+            "rsiFocusFiles":["web/src/pages/Memory.tsx"]});
+        assert_eq!(eligible_domains(&selection_objective(&focus)),vec!["ui"],
+            "owner-selected source files still constrain the candidate domain");
     }
 
     #[test]
