@@ -1038,14 +1038,23 @@ fn choose_focus_files(
             let current=crate::engine::code_index::indexed_source_hash(state,index_id,path);
             if cross_campaign && ![pre_hash,accepted_hash].into_iter().flatten()
                     .any(|hash|current.as_deref()==Some(hash)) {continue;}
+            // A verified improvement belongs to the post-adoption source,
+            // not the original file the model chose to inspect. A revert
+            // must revoke positive feedback even if the old hash matches.
             let credited=candidate.as_ref().is_some_and(|candidate|
                 candidate["paths"].as_array().is_some_and(|paths|
                     paths.iter().any(|item|item.as_str()==Some(path))))
-                && [pre_hash,accepted_hash].into_iter().flatten()
-                    .any(|hash|current.as_deref()==Some(hash));
+                && accepted_hash.is_some() && current.as_deref()==accepted_hash;
+            // Failed exploration is also revision-specific. A later patch
+            // must not keep punishing a file whose content has changed.
+            // Legacy local observations without a recorded hash can still
+            // be used within the same campaign for backward compatibility.
+            let failed_revision_matches=pre_hash
+                .is_some_and(|hash|current.as_deref()==Some(hash))
+                || (pre_hash.is_none() && !cross_campaign && current.is_some());
             if credited {
                 *successes.entry(path.to_lowercase()).or_default()+=1;
-            } else if failed {
+            } else if failed && failed_revision_matches {
                 *failures.entry(path.to_lowercase()).or_default()+=1;
             }
         }
@@ -3450,9 +3459,10 @@ mod tests {
         let (state,root)=state();
         std::fs::create_dir_all(root.join("src")).unwrap();
         let beta=root.join("src/beta.rs");
+        let original="fn search_dispatch() { println!(\"search\"); }\n";
+        let improved="fn search_dispatch() { println!(\"search improved\"); }\n";
         for name in ["alpha","beta"] {
-            std::fs::write(root.join("src").join(format!("{name}.rs")),
-                "fn search_dispatch() { println!(\"search\"); }\n").unwrap();
+            std::fs::write(root.join("src").join(format!("{name}.rs")),original).unwrap();
         }
         let index=crate::engine::code_index::refresh(&state,&root).unwrap();
         let input=json!({"rsiIndexId":index["id"],"rsiKnowledgeSource":root,
@@ -3463,6 +3473,11 @@ mod tests {
             &state,index["id"].as_str().unwrap(),"search dispatch","tools",
             &BTreeMap::new(),None,2).into_iter()
             .find(|v|v["path"]=="src/beta.rs").unwrap();
+        std::fs::write(&beta,improved).unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        let accepted_hash=crate::engine::code_index::indexed_source_hash(
+            &state,index["id"].as_str().unwrap(),"src/beta.rs").unwrap();
+        assert_ne!(selected_beta["sourceHash"],accepted_hash);
         state.store.put("rsi_candidate",&json!({
             "id":"verified-patch","status":"verified",
             "paths":["src/beta.rs"],
@@ -3473,22 +3488,29 @@ mod tests {
             "objectiveId":crate::engine::memory::stable_id(&["search dispatch"]),
             "accepted":true,"candidateId":"verified-patch","newFindings":0,
             "focusFiles":["src/beta.rs"],"focusSelection":{"candidates":[selected_beta.clone()]},
+            "acceptedSourceHashes":{"src/beta.rs":accepted_hash},
             "createdAt":"2026-11-10T00:00:00Z"
         })).unwrap();
         let learned=choose_focus_files(&state,&input,&[],None);
         assert_eq!(learned[0]["path"],"src/beta.rs");
         assert_eq!(learned[0]["evidence"]["priorProductive"],1.0);
+        std::fs::write(&beta,original).unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        let reverted=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(reverted[0]["path"],"src/alpha.rs",
+            "reverting to the pre-patch version must not earn a success reward");
+        assert_eq!(reverted.iter().find(|row|row["path"]=="src/beta.rs").unwrap()
+            ["evidence"]["priorProductive"],0.0);
         std::fs::write(&beta,"fn search_dispatch() { println!(\"new revision\"); }\n").unwrap();
         crate::engine::code_index::refresh(&state,&root).unwrap();
         let stale=choose_focus_files(&state,&input,&[],None);
-        assert_eq!(stale[0]["path"],"src/alpha.rs");
         assert_eq!(stale[0]["evidence"]["priorProductive"],0.0);
         // A falsely declared acceptance must not contribute feedback.
         state.store.put("rsi_candidate",&json!({
             "id":"verified-patch","status":"rejected",
             "paths":["src/beta.rs"],"evaluation":{"metrics":{"eligible":false}}
         })).unwrap();
-        std::fs::write(&beta,"fn search_dispatch() { println!(\"search\"); }\n").unwrap();
+        std::fs::write(&beta,improved).unwrap();
         crate::engine::code_index::refresh(&state,&root).unwrap();
         let unverified=choose_focus_files(&state,&input,&[],None);
         assert_eq!(unverified[0]["path"],"src/alpha.rs");
