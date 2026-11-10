@@ -3614,6 +3614,34 @@ mod tests {
     }
 
     #[test]
+    fn learned_plan_is_measured_by_actual_edits_not_prompt_delivery() {
+        let delivered=json!({"mode":"implement_research",
+            "sourceGenerationId":"prior",
+            "previousFocusFiles":["src/prior.rs"]});
+        let mut no_action=json!({"id":"followup","jobId":"worker",
+            "accepted":false,"candidateId":null,"newFindings":3,
+            "improvementDirective":delivered,
+            "focusFiles":["src/prior.rs"],"toolsUsed":[{"tool":"code_search","calls":8}]});
+        let ignored=improvement_action_observation(&no_action,0);
+        assert_eq!(ignored["status"],"not_followed",
+            "Eight more searches do not mean the model implemented its learned strategy");
+        no_action["improvementActionObservation"]=ignored;
+        assert_eq!(improvement_directive(&[no_action.clone()])["mode"],"change_approach");
+        let attempted=improvement_action_observation(&json!({
+            "accepted":false,"candidateId":null,
+            "improvementDirective":no_action["improvementDirective"],
+            "toolsUsed":[{"tool":"workspace_replace","calls":1}],
+            "newFindings":0}),8);
+        assert_eq!(attempted["followed"],true);
+        assert_eq!(attempted["status"],"attempted");
+        let selected=improvement_action_observation(&json!({
+            "accepted":true,"candidateId":"paired-1",
+            "improvementDirective":{"mode":"implement_research"},
+            "toolsUsed":[]}),0);
+        assert_eq!(selected["status"],"verified_adoption");
+    }
+
+    #[test]
     fn newly_researched_current_source_becomes_first_implementation_target() {
         let (state,root)=state();
         std::fs::create_dir_all(root.join("src")).unwrap();
