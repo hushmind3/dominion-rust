@@ -660,6 +660,7 @@ pub fn prompt_context(
     block.push_str("코드 원문은 DB의 위치 정보로 찾아 필요한 줄만 읽으세요. 아래 대상 심볼에 이미 있는 위치를 다시 검색할 필요는 없습니다.\n");
     let per_file=(MAP_MAX_CHARS.saturating_sub(block.chars().count()+400))/focus.len().clamp(1,8);
     for relative in focus.iter().take(8) {
+        if crate::engine::rsi::hidden_rsi_oracle_path(relative) {continue;}
         let Some(file)=files.iter().find(|file|file["path"].as_str()==Some(relative)) else {continue};
         let mut line=format!("\n대상 {} ({}줄): ",relative,file["lines"]);
         for symbol in file["symbols"].as_array().into_iter().flatten()
@@ -778,6 +779,7 @@ pub fn rank_focus_files_with_feedback(
                 && !path.contains(".test.")
                 && !path.contains(".spec.")
                 && !path.contains("_fixture.")
+                && !crate::engine::rsi::hidden_rsi_oracle_path(path)
                 && file["bytes"].as_u64().unwrap_or(0)<=2*1024*1024
         })
         .collect::<Vec<_>>();
@@ -942,6 +944,7 @@ pub fn bounded_focus_context(
     const MAX_CONTEXT_CHARS: usize = 8_000;
     const MAX_SPAN_CHARS: usize = 3_000;
     const MAX_SPAN_LINES: usize = 100;
+    if crate::engine::rsi::hidden_rsi_oracle_path(path) {return None;}
     // Never fail silently: a missing index entry or a stale hash must tell the
     // model to read the exact range instead of leaving it without a target.
     let Some(indexed) = state.store.get(FILE_KIND, &file_id(index_id, path)) else {
