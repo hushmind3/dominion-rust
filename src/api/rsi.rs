@@ -32,7 +32,7 @@ fn apply_capability(record: &mut Value) {
     let meta = crate::engine::rsi_evolve::meta_transfer_proven(&history);
     record["maxVerifiedStreak"] = json!(verified);
     record["metaTransferProven"] = json!(meta);
-    record["capabilityDemonstrated"] = json!(verified >= 3 && meta);
+    record["capabilityDemonstrated"] = json!(crate::engine::rsi_evolve::capability_demonstrated(&history));
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
@@ -175,7 +175,7 @@ pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
         let (_,verified)=crate::engine::rsi_evolve::verified_capability_streak(&history);
         let meta=crate::engine::rsi_evolve::meta_transfer_proven(&history);
         json!({"id":record["id"],"phase":record["phase"],
-            "maxAcceptedStreak":max_streak,"maxVerifiedStreak":verified,"metaTransferProven":meta,"capabilityDemonstrated":verified>=3&&meta,
+            "maxAcceptedStreak":max_streak,"maxVerifiedStreak":verified,"metaTransferProven":meta,"capabilityDemonstrated":crate::engine::rsi_evolve::capability_demonstrated(&history),
             "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
     }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
@@ -563,7 +563,17 @@ mod capability_tests {
         apply_capability(&mut derived);
         assert_eq!(derived["capabilityDemonstrated"], false);
 
-        let verified = json!({"accepted":true,"domain":"memory","evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":0,"holdoutDomains":["memory","context"],"improvedHoldouts":1,"metaGains":1}}});
+        let verified = json!({"accepted":true,"domain":"memory","evaluation":{
+            "candidateStatus":"verified","measurementScope":"frozen_native_cases_only",
+            "evidenceSha256":"a".repeat(64),
+            "metrics":{"eligible":true,"holdoutCases":2,"regressions":0,
+                "holdoutDomains":["context","memory"],"improvedHoldouts":1,"metaGains":0,
+                "holdoutEvidence":[
+                    {"id":"a","domain":"memory","baselinePass":true,"candidatePass":true,
+                        "metricGains":0,"metricRegressions":0,"improved":false},
+                    {"id":"b","domain":"context","baselinePass":false,"candidatePass":true,
+                        "metricGains":0,"metricRegressions":0,"improved":true}
+                ]}}});
         let full = json!({"history":[verified.clone(),verified.clone(),verified.clone()]});
         let mut derived = full.clone();
         apply_capability(&mut derived);
