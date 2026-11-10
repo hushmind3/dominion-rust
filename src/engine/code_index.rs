@@ -747,6 +747,23 @@ pub fn rank_focus_files(
     algorithm: Option<&Value>,
     limit: usize,
 ) -> Vec<Value> {
+    rank_focus_files_with_feedback(state,index_id,objective,domain,
+        prior_unproductive,&BTreeMap::new(),algorithm,limit)
+}
+
+/// Evidence from previously verified, source-revision-matched improvements
+/// is a learned ranking feature. Merely producing a patch or text finding
+/// never counts as a success, and the AI can change the scoring expression.
+pub fn rank_focus_files_with_feedback(
+    state: &AppState,
+    index_id: &str,
+    objective: &str,
+    domain: &str,
+    prior_unproductive: &BTreeMap<String, u64>,
+    prior_productive: &BTreeMap<String, u64>,
+    algorithm: Option<&Value>,
+    limit: usize,
+) -> Vec<Value> {
     let query=focus_terms(objective,domain);
     if query.is_empty() || limit == 0 {return Vec::new();}
 
@@ -804,6 +821,8 @@ pub fn rank_focus_files(
         let evidence=path_evidence+symbol_evidence+summary_evidence+body_evidence+domain_evidence;
         if evidence==0.0 {continue;}
         let prior=prior_unproductive.get(path).copied().unwrap_or(0) as f64;
+        let successful=prior_productive.get(path).copied().unwrap_or(0) as f64;
+        let productive_evidence=successful.ln_1p();
         let source_cost=(file["bytes"].as_u64().unwrap_or(0) as f64/8_192.0).min(100.0);
         let features=BTreeMap::from([
             ("pathEvidence".to_string(),path_evidence),
@@ -812,11 +831,13 @@ pub fn rank_focus_files(
             ("bodyEvidence".to_string(),body_evidence),
             ("domainEvidence".to_string(),domain_evidence),
             ("repeatPenalty".to_string(),prior.min(10.0)),
+            ("productiveEvidence".to_string(),productive_evidence),
             ("novelty".to_string(),1.0/(1.0+prior)),
             ("sourceCost".to_string(),source_cost),
         ]);
         let default=3.0*path_evidence+symbol_evidence+0.5*summary_evidence+
-            0.8*body_evidence+domain_evidence-0.8*prior.min(10.0)-0.15*source_cost;
+            0.8*body_evidence+domain_evidence+1.8*productive_evidence
+            -0.8*prior.min(10.0)-0.15*source_cost;
         let attempted=target_expression.map(|expression|
             crate::engine::algorithms::eval_expression(expression,&features));
         let (score,policy_error)=match attempted {
@@ -831,7 +852,8 @@ pub fn rank_focus_files(
             "score":score,
             "evidence":{"path":path_evidence,"symbols":symbol_evidence,
                 "summary":summary_evidence,"body":body_evidence,"domain":domain_evidence,
-                "priorUnproductive":prior,"sourceCost":source_cost},
+                "priorUnproductive":prior,"priorProductive":successful,
+                "sourceCost":source_cost},
             "policyRevision":algorithm.map(|policy|policy["revision"].clone()).unwrap_or(Value::Null),
             "scoring":if target_expression.is_some() && policy_error.is_none() {"expression"} else {"corpus-evidence"}
         });
@@ -967,6 +989,34 @@ mod tests {
     use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
 
+
+    #[test]
+    fn verified_productive_feedback_changes_target_ranking_without_hardcoded_paths() {
+        let (state,root)=temp_state();
+        let source=root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        for name in ["alpha","beta"] {
+            std::fs::write(source.join(format!("src/{name}.rs")),
+                "fn memory_rank() { println!(\"memory retrieval\"); }\n").unwrap();
+        }
+        let meta=refresh(&state,&source).unwrap();
+        let id=meta["id"].as_str().unwrap();
+        let empty=BTreeMap::new();
+        let before=rank_focus_files(&state,id,"memory rank","memory",&empty,None,2);
+        assert_eq!(before[0]["path"],"src/alpha.rs");
+        let learned=BTreeMap::from([("src/beta.rs".into(),1)]);
+        let after=rank_focus_files_with_feedback(&state,id,"memory rank","memory",
+            &empty,&learned,None,2);
+        assert_eq!(after[0]["path"],"src/beta.rs");
+        assert_eq!(after[0]["evidence"]["priorProductive"],1.0);
+        let control=serde_json::json!({"revision":"trial-1",
+            "parameters":{"targetExpression":"pathEvidence + symbolEvidence - productiveEvidence"}});
+        let trial=rank_focus_files_with_feedback(&state,id,"memory rank","memory",
+            &empty,&learned,Some(&control),2);
+        assert_eq!(trial[0]["path"],"src/alpha.rs",
+            "an evolvable formula still controls the final file selection");
+        let _=std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn opaque_implementation_is_discovered_from_body_without_a_filename_hint() {
