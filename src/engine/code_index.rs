@@ -942,9 +942,18 @@ pub fn bounded_focus_context(
     const MAX_CONTEXT_CHARS: usize = 8_000;
     const MAX_SPAN_CHARS: usize = 3_000;
     const MAX_SPAN_LINES: usize = 100;
-    let indexed = state.store.get(FILE_KIND, &file_id(index_id, path))?;
-    let bytes = std::fs::read(source.join(path)).ok()?;
-    if indexed["hash"].as_str()? != digest(&bytes) { return None; }
+    // A stale or missing index must not silently erase the improvement target.
+    // Let the model re-read the exact source range instead of trusting old offsets.
+    let Some(indexed) = state.store.get(FILE_KIND, &file_id(index_id, path)) else {
+        return Some(format!("\n### 대상 파일: {path}\n색인에 이 파일이 없어 발췌를 만들지 못했습니다. workspace_read_range로 필요한 구간을 확인하세요.\n"));
+    };
+    let Ok(bytes) = std::fs::read(source.join(path)) else {
+        return Some(format!("\n### 대상 파일: {path}\n파일을 읽지 못했습니다. workspace_read_range로 필요한 구간을 확인하세요.\n"));
+    };
+    let hash = digest(&bytes);
+    if indexed["hash"].as_str() != Some(hash.as_str()) {
+        return Some(format!("\n### 대상 파일: {path}\n색인과 현재 파일 해시가 달라 발췌를 제공하지 않습니다. workspace_read_range로 필요한 구간을 확인하세요.\n"));
+    }
     let content = String::from_utf8(bytes).ok()?;
     let size = content.chars().count();
     if size <= WHOLE_FILE_CHARS {
