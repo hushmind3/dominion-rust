@@ -873,6 +873,44 @@ fn verified_candidate_id(result: &Value) -> Option<&str> {
         .filter(|_| result["rsi"]["checksPassed"] == true)
 }
 
+/// Prior campaign learning is reusable only when the exact chosen descendant
+/// commit, source branch, baseline and source fingerprint match. A shared goal
+/// sentence alone is not a lineage receipt.
+fn matching_prior_campaign(state:&AppState,input:&Value,record:&Value)->Option<Value> {
+    if record["lineage"]["reused"]!=true {return None;}
+    let prior_id=input["rsiContinueFrom"].as_str()?;
+    let prior=state.store.get("rsi_campaign",prior_id)?;
+    let selected=record["lineage"]["selectedCommit"].as_str()?;
+    if prior["headCommit"].as_str()!=Some(selected)
+        || record["sourceDir"]!=prior["sourceDir"]
+        || record["sourceBranch"]!=prior["sourceBranch"]
+        || record["baseCommit"]!=prior["baseCommit"]
+        || record["sourceFingerprint"]!=prior["sourceFingerprint"]
+        || !lineage_fingerprint_valid(record["sourceFingerprint"].as_str().unwrap_or("")) {
+        return None;
+    }
+    Some(prior)
+}
+
+fn allowed_trial_campaigns(state:&AppState,input:&Value,record:&Value,own_id:&str)->Vec<String> {
+    let mut owners=vec![own_id.to_string()];
+    if let Some(prior)=matching_prior_campaign(state,input,record) {
+        if let Some(id)=prior["id"].as_str().filter(|id| *id!=own_id) {
+            owners.push(id.to_string());
+        }
+    }
+    owners
+}
+
+fn trial_owned_by(candidate:&Value, allowed:&[String])->bool {
+    candidate["kind"]=="selfimprove.search"
+        && candidate["source"]=="rsi-generated"
+        && candidate["rsiTrial"]["campaignId"].as_str().is_some_and(|id|
+            allowed.iter().any(|campaign|campaign==id))
+        && matches!(candidate["rsiTrial"]["status"].as_str(),
+            Some("pending_trial"|"pending_second_trial"))
+}
+
 /// Collect the exact files, ranges and searches earlier generations already
 /// looked at. Without this, every generation starts from scratch and burns
 /// tokens re-reading the same source.
@@ -882,10 +920,8 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
     let executions = state.store.all("execution");
     let operations = state.store.all("execution_operation");
     let mut generations = Vec::new();
-    if let Some(prior_id) = input["rsiContinueFrom"].as_str() {
-        if let Some(prior) = state.store.get("rsi_campaign", prior_id) {
-            generations.extend(prior["history"].as_array().cloned().unwrap_or_default());
-        }
+    if let Some(prior)=matching_prior_campaign(state,input,record) {
+        generations.extend(prior["history"].as_array().cloned().unwrap_or_default());
     }
     generations.extend(record["history"].as_array().cloned().unwrap_or_default());
     for generation in generations {
@@ -1413,6 +1449,12 @@ fn queue_search_trial(
     campaign_id: &str,
     attempt: u64,
 ) -> Value {
+    // A proposal can be stale by the time its generation completes.
+    // Always inspect the durable owner before attempting a trial transition.
+    let latest=candidate["id"].as_str()
+        .and_then(|id|state.store.get("algorithm",id))
+        .unwrap_or_else(||candidate.clone());
+    let candidate=&latest;
     let replay = evaluate_search_algorithm(candidate, active, prior_history, objective);
     let existing_status = candidate["rsiTrial"]["status"].as_str().unwrap_or("");
     if matches!(existing_status, "adopted" | "trial_rejected") {
@@ -1423,6 +1465,27 @@ fn queue_search_trial(
             "replay": replay,
             "alreadyResolved": true,
         });
+    }
+    // Content-addressed algorithm IDs may be shared by separate experiments.
+    // Reproposing an identical formula cannot steal an unfinished campaign.
+    if let Some(owner)=candidate["rsiTrial"]["campaignId"].as_str() {
+        if owner!=campaign_id {
+            return json!({"status":"owned_by_other_campaign",
+                "candidateId":candidate["id"],"ownerCampaignId":owner});
+        }
+    }
+    // The synthetic registration sample is not equivalent to live feature
+    // values. Do not queue an expression which already fails on real history.
+    if valid_domain_scores(candidate,prior_history,objective).is_none() {
+        let mut invalid=candidate.clone();
+        invalid["rsiTrial"]=json!({"status":"trial_inconclusive",
+            "campaignId":campaign_id,
+            "objectiveHash":crate::engine::memory::stable_id(&[objective]),
+            "lastReason":"candidate_expression_invalid_for_runtime_features"});
+        state.store.put("algorithm",&invalid);
+        return json!({"status":"trial_inconclusive",
+            "candidateId":candidate["id"],
+            "reason":"candidate_expression_invalid_for_runtime_features"});
     }
     let mut record = candidate.clone();
     let mut trial = record["rsiTrial"].clone();
@@ -1468,7 +1531,7 @@ fn queue_search_trial(
 /// Returns a candidate that is waiting for a real trial under the same
 /// objective. It is used only inside an already scheduled generation; the
 /// caller never creates another campaign or generation for it.
-fn pending_trial_candidate(state: &AppState, objective: &str) -> Option<Value> {
+fn pending_trial_candidate(state: &AppState, objective: &str, allowed_campaigns:&[String]) -> Option<Value> {
     let objective_hash = crate::engine::memory::stable_id(&[objective]);
     let mut candidates = state
         .store
@@ -1478,10 +1541,7 @@ fn pending_trial_candidate(state: &AppState, objective: &str) -> Option<Value> {
             algorithm["kind"] == "selfimprove.search"
                 && algorithm["source"] == "rsi-generated"
                 && algorithm["rsiTrial"]["objectiveHash"] == objective_hash
-                && matches!(
-                    algorithm["rsiTrial"]["status"].as_str(),
-                    Some("pending_trial" | "pending_second_trial")
-                )
+                && trial_owned_by(algorithm,allowed_campaigns)
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|algorithm| {
@@ -2100,12 +2160,15 @@ async fn run_loop(
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
         let objective = input["rsiObjective"].as_str().unwrap_or("");
+        let allowed_campaigns=allowed_trial_campaigns(
+            &context.state,input,record,&context.job_id);
         let trial_algorithm = record["nextTrialAlgorithmId"]
             .as_str()
-            .filter(|value| !value.is_empty())
+            .filter(|id|context.state.store.get("algorithm",id)
+                .is_some_and(|algorithm|trial_owned_by(&algorithm,&allowed_campaigns)))
             .map(str::to_string)
             .or_else(|| {
-                pending_trial_candidate(&context.state, objective)
+                pending_trial_candidate(&context.state,objective,&allowed_campaigns)
                     .and_then(|algorithm| algorithm["id"].as_str().map(str::to_string))
             });
         if let Some(id) = trial_algorithm {
@@ -2814,9 +2877,16 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
     let continuation = research_continuation(&history);
+    // Child workers independently validate trial ownership against the stored
+    // campaign receipt. A stale coordinator plan cannot inject a sibling trial.
+    let allowed_campaigns=state.store.get("rsi_campaign",campaign)
+        .and_then(|record|state.store.get("job",campaign).map(|parent|
+            allowed_trial_campaigns(&state,&parent["input"],&record,campaign)))
+        .unwrap_or_else(||vec![campaign.to_string()]);
     let trial_id = job["input"]["rsiTrialAlgorithmId"]
         .as_str()
-        .filter(|value| !value.is_empty())
+        .filter(|id|state.store.get("algorithm",id)
+            .is_some_and(|algorithm|trial_owned_by(&algorithm,&allowed_campaigns)))
         .map(str::to_string);
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
     let (domain, domain_selection, strategy) =
@@ -4813,6 +4883,52 @@ mod tests {
     }
 
     #[test]
+    fn pending_search_algorithm_never_crosses_sibling_campaigns_with_same_objective() {
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"same-formula-shared-id",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"objectiveMatch + novelty"}
+        })).unwrap();
+        let first=queue_search_trial(&state,&candidate,&active,&[],"context","owner-a",1);
+        assert_eq!(first["status"],"pending_trial");
+        let second=queue_search_trial(&state,&candidate,&active,&[],"context","owner-b",1);
+        assert_eq!(second["status"],"owned_by_other_campaign");
+        let saved=state.store.get("algorithm",candidate["id"].as_str().unwrap()).unwrap();
+        assert_eq!(saved["rsiTrial"]["campaignId"],"owner-a");
+        assert!(pending_trial_candidate(&state,"context",&["owner-b".into()]).is_none(),
+            "matching objective hashes cannot cross unrelated experiment branches");
+        assert!(pending_trial_candidate(&state,"context",&["owner-a".into()]).is_some());
+        let fresh=queue_search_trial(&state,&saved,&active,&[],"context","owner-a",2);
+        assert_eq!(fresh["status"],"pending_trial");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn trial_inheritance_requires_verified_exact_campaign_source_lineage() {
+        let (state,root)=state();
+        let prior=json!({"id":"parent-campaign","sourceDir":"/repo","sourceBranch":"dominion-sub2",
+            "baseCommit":"a".repeat(40),"sourceFingerprint":"b".repeat(64),
+            "headCommit":"c".repeat(40)});
+        state.store.put("rsi_campaign",&prior).unwrap();
+        let mut record=prior.clone();
+        record["id"]=json!("descendant-campaign");
+        record["lineage"]=json!({"reused":true,"selectedCommit":"c".repeat(40)});
+        let input=json!({"rsiContinueFrom":"parent-campaign"});
+        assert_eq!(allowed_trial_campaigns(&state,&input,&record,"descendant-campaign"),
+            vec!["descendant-campaign","parent-campaign"]);
+        record["sourceBranch"]=json!("dominion-sub3");
+        assert_eq!(allowed_trial_campaigns(&state,&input,&record,"descendant-campaign"),
+            vec!["descendant-campaign"]);
+        record["sourceBranch"]=json!("dominion-sub2");
+        record["sourceFingerprint"]=json!("f".repeat(64));
+        assert_eq!(allowed_trial_campaigns(&state,&input,&record,"descendant-campaign"),
+            vec!["descendant-campaign"]);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn pending_trial_candidate_survives_for_a_later_scheduled_generation() {
         let (state, root) = state();
         let active = crate::engine::algorithms::active(&state, "selfimprove.search").unwrap();
@@ -4828,12 +4944,12 @@ mod tests {
         .unwrap();
         queue_search_trial(&state, &candidate, &active, &[], "context", "campaign", 1);
         assert_eq!(
-            pending_trial_candidate(&state, "context").unwrap()["id"],
+            pending_trial_candidate(&state, "context", &["campaign".into()]).unwrap()["id"],
             candidate["id"],
             "a pending candidate is reused by a later scheduled generation"
         );
         assert!(
-            pending_trial_candidate(&state, "a different objective").is_none(),
+            pending_trial_candidate(&state, "a different objective", &["campaign".into()]).is_none(),
             "a pending candidate is scoped to its objective"
         );
         let _ = std::fs::remove_dir_all(root);
