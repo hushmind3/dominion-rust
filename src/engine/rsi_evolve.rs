@@ -906,6 +906,46 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
 
 /// Put the focus file's current text into the prompt so the generation can
 /// build an exact replacement without spending its budget on full reads.
+/// Autonomous generations without an explicit focus file still need the
+/// source in the prompt. Pick one or two domain-relevant files so the model
+/// does not spend its budget searching for them.
+fn auto_focus_files(lab: &std::path::Path, input: &Value) -> Vec<String> {
+    let domain = input["rsiSelectedDomain"]
+        .as_str()
+        .or_else(|| input["rsiDomain"].as_str())
+        .unwrap_or("");
+    let objective = input["rsiObjective"].as_str().unwrap_or("").to_lowercase();
+    let candidates: &[&str] = match domain {
+        "memory" => &["src/engine/memory.rs"],
+        "context" => &[
+            "src/engine/chat/continuity.rs",
+            "src/engine/chat/room_context.rs",
+        ],
+        "learning" => &["src/engine/experience.rs"],
+        "tools" => &["src/engine/tools.rs"],
+        "improver" => &["src/engine/rsi_evolve.rs", "src/engine/rsi.rs"],
+        _ if objective.contains("기억") || objective.contains("memory") => {
+            &["src/engine/memory.rs"]
+        }
+        _ if objective.contains("문맥") || objective.contains("context") => {
+            &["src/engine/chat/continuity.rs"]
+        }
+        _ => &[],
+    };
+    candidates
+        .iter()
+        .filter(|path| {
+            let full = lab.join(path);
+            full.is_file()
+                && std::fs::metadata(&full)
+                    .map(|meta| meta.len() <= 100_000)
+                    .unwrap_or(false)
+        })
+        .take(2)
+        .map(|path| path.to_string())
+        .collect()
+}
+
 fn focus_file_context(record: &Value, input: &Value) -> String {
     let Some(lab) = record["labDir"].as_str() else { return String::new() };
     let mut text = String::new();
@@ -2003,9 +2043,15 @@ async fn run_loop(
         child_input["rsiInheritedImplementations"]=json!(inherited_implementations);
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
+        if child_input["rsiFocusFiles"]
+            .as_array()
+            .is_none_or(|files| files.is_empty())
+        {
+            child_input["rsiFocusFiles"] = json!(auto_focus_files(&lab, &child_input));
+        }
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
-        let focus = focus_file_context(record, input);
+        let focus = focus_file_context(record, &child_input);
         child_input["prompt"] = json!(format!(
             "{}\n\n{}{}{}",
             child_input["prompt"].as_str().unwrap_or(""),
@@ -2664,6 +2710,23 @@ mod tests {
         state.store.put("rsi_campaign", &json!({"id":"digest-prior","history":[{"jobId":"digest-job"}]}));
         let continued = research_digest(&state, &json!({"rsiContinueFrom":"digest-prior"}), &json!({"history":[]}));
         assert!(continued.contains("src/engine/memory.rs 10-20"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn auto_focus_files_picks_existing_domain_sources() {
+        let root = std::env::temp_dir().join(format!("auto-focus-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::write(root.join("src/engine/memory.rs"), "fn a() {}\n").unwrap();
+        assert_eq!(
+            auto_focus_files(&root, &json!({"rsiSelectedDomain":"memory"})),
+            vec!["src/engine/memory.rs".to_string()]
+        );
+        assert!(auto_focus_files(&root, &json!({"rsiSelectedDomain":"tools"})).is_empty());
+        assert_eq!(
+            auto_focus_files(&root, &json!({"rsiObjective":"기억 검색 비용을 줄여"})),
+            vec!["src/engine/memory.rs".to_string()]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
