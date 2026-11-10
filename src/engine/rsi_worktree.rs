@@ -16,6 +16,17 @@ pub(crate) fn rsi_work_branch(branch: &str) -> bool {
     matches!(branch, "dominion-sub" | "dominion-sub3")
 }
 
+/// Legacy experiments did not record a source branch. They may only be
+/// applied to the original legacy work branch. Current campaigns must match
+/// the exact branch they were evaluated on, including when the checkout's
+/// source path is identical.
+fn owns_application_branch(current: &str, recorded: Option<&str>) -> bool {
+    rsi_work_branch(current) && match recorded.filter(|v| !v.is_empty()) {
+        Some(branch) => branch == current,
+        None => current == "dominion-sub",
+    }
+}
+
 /// launchd starts the engine with a minimal PATH that often omits
 /// `~/.cargo/bin` and Homebrew. Resolve the tool explicitly so RSI can build
 /// even when the service environment is narrower than the user's shell.
@@ -503,9 +514,10 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
         || status["dirty"]!=0 || status["commit"]!=candidate["baseCommit"] {
         return Err("원본 작업 브랜치가 기준과 다르거나 수정 중이므로 적용하지 않았습니다.".into());
     }
-    if state.store.get("job",&job_id)
-        .and_then(|job|job["input"]["rsiSourceBranch"].as_str().map(str::to_string))
-        .is_some_and(|branch|status["branch"]!=branch) {
+    let recorded_branch=state.store.get("job",&job_id)
+        .and_then(|job|job["input"]["rsiSourceBranch"].as_str().map(str::to_string));
+    if !status["branch"].as_str().is_some_and(|branch|
+        owns_application_branch(branch,recorded_branch.as_deref())) {
         return Err("후보를 생성한 소스 브랜치와 현재 적용 브랜치가 다릅니다.".into());
     }
     let remote=status["remote"].as_str().unwrap_or("");
@@ -562,11 +574,11 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     let source=std::fs::canonicalize(campaign["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     let status=crate::engine::dev::status(state).await;
     let configured=status["config"]["sourceDir"].as_str().and_then(|s|std::fs::canonicalize(s).ok());
-    let work_branch=status["branch"].as_str().filter(|branch|rsi_work_branch(branch))
+    let work_branch=status["branch"].as_str()
+        .filter(|branch|rsi_work_branch(branch))
         .ok_or("허용된 RSI 작업 브랜치에서만 적용합니다.")?;
     if configured.as_ref()!=Some(&source)
-        || campaign["sourceBranch"].as_str()
-            .is_some_and(|branch| !branch.is_empty() && branch!=work_branch) {
+        || !owns_application_branch(work_branch,campaign["sourceBranch"].as_str()) {
         return Err("캠페인 원본 브랜치와 연결된 작업 브랜치가 다릅니다.".into());
     }
     if !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
@@ -849,6 +861,12 @@ mod tests {
         assert!(!valid_sha("bad"));
         assert!(rsi_work_branch("dominion-sub3"));
         assert!(rsi_work_branch("dominion-sub"));
+        assert!(owns_application_branch("dominion-sub3",Some("dominion-sub3")));
+        assert!(!owns_application_branch("dominion-sub3",Some("dominion-sub2")));
+        assert!(!owns_application_branch("dominion-sub3",None));
+        assert!(!owns_application_branch("dominion-sub3",Some("")));
+        assert!(owns_application_branch("dominion-sub",None));
+        assert!(!owns_application_branch("main",Some("main")));
         for forbidden in ["main","dominion-champion","dominion-sub1","dominion-sub2","dominion-sub4","dominion-sub3-other"] {
             assert!(!rsi_work_branch(forbidden), "다른 브랜치에 적용하면 안 됩니다: {forbidden}");
         }
@@ -883,6 +901,7 @@ mod tests {
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source.to_str().unwrap()}));
         let input=json!({
             "rsiBaseCommit":base,"rsiSourceDir":source.to_str().unwrap(),
+            "rsiSourceBranch":"dominion-sub3",
             "rsiObjective":"DOMINION 화면 렌더링 검증 대상 소스를 수정한다",
             "model":"test-model",
             "rsiFrozenCases":[

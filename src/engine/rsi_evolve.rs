@@ -4047,6 +4047,7 @@ mod tests {
             .into_iter().enumerate().map(|(i,name)|json!({"id":name,"domain":if i%2==0{"boundary"}else{"retention"},"holdout":i<2,"filter":format!("cases::{name}")})).collect::<Vec<_>>();
         context.checkpoint(json!({"input":{"rsiNativeApproved":true,"rsiSourceDir":source,"rsiBaseCommit":base,
             "selectionPolicy":"automatic","rsiFrozenCases":cases,
+            "rsiSourceBranch":"dominion-sub3",
             "rsiObjective":"memory capability improvement",
             "rsiFocusFiles":["src/engine/memory.rs"],
             "rsiFixtureMode":"research_then_adopt",
@@ -4104,9 +4105,12 @@ mod tests {
         // The same accepted chain can reach the real test branch through an
         // explicit product action. Untracked research and main are preserved.
         git(&context,&source,&["update-ref","refs/heads/main",&base]).await.unwrap();
+        git(&context,&source,&["checkout","main"]).await.unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
-        assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap_err().contains("dominion-sub"),"main must never be an application target");
-        git(&context,&source,&["checkout","-b","dominion-sub"]).await.unwrap();
+        assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.is_err(),
+            "main must never be an application target");
+        assert_eq!(git(&context,&source,&["rev-parse","HEAD"]).await.unwrap(),base);
+        git(&context,&source,&["checkout","-b","dominion-sub3"]).await.unwrap();
         std::fs::write(source.join("my-research.txt"),"keep my unrelated research").unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
         context.checkpoint(json!({"status":"completed"})).unwrap();
