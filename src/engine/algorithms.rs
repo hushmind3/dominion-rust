@@ -86,6 +86,8 @@ pub const SELFIMPROVE_FEATURES: &[&str] = &[
     "usefulGenerations",
     "barrenRate",
     "tokenCost",
+    "holdoutYield",
+    "gainPer10kTokens",
     "objectiveMatch",
     "unresolved",
     "exploration",
