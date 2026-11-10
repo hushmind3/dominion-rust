@@ -3482,7 +3482,7 @@ mod tests {
             "rsiObjective":"memory capability improvement",
             "rsiFocusFiles":["src/engine/memory.rs"],
             "rsiFixtureMode":"research_then_adopt",
-            "limits":{"maxAttempts":4,"tokenBudget":1000,"timeBudgetSeconds":300}}})).unwrap();
+            "limits":{"maxAttempts":4,"tokenBudget":12000,"timeBudgetSeconds":300}}})).unwrap();
         let job = state.store.get("job", "campaign").unwrap();
         let result = tokio::time::timeout(Duration::from_secs(300), run(&context, &job)).await.unwrap().unwrap();
         let evolution = &result["evolution"];
