@@ -244,6 +244,7 @@ pub async fn execute(
                 args,
                 &ctx.state.config.data_dir,
                 ctx.workspace,
+                ctx.agent_id.unwrap_or(ctx.session_id),
             )
             .await
         }
