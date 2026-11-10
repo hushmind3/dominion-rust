@@ -16,7 +16,8 @@ fn accepted_streak(record: &Value) -> (u64, u64) {
         if generation["accepted"] == true {
             streak += 1;
             max = max.max(streak);
-        } else if generation["evaluation"].is_object() {
+        } else {
+            // No result is still an attempted generation, not a free pass.
             streak = 0;
         }
     }
@@ -595,6 +596,14 @@ mod capability_tests {
             {"accepted":true,"evaluation":{}}
         ]});
         assert_eq!(accepted_streak(&partial), (1, 2));
+        let no_evaluation = json!({"history":[
+            {"accepted":true},
+            {"accepted":false,"reason":"research_only"},
+            {"accepted":true},
+            {"accepted":true}
+        ]});
+        assert_eq!(accepted_streak(&no_evaluation), (2, 2),
+            "research-only generations must not inflate a win streak");
         let mut derived = partial.clone();
         apply_capability(&state,&mut derived);
         assert_eq!(derived["capabilityDemonstrated"], false);
