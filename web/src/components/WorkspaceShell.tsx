@@ -56,6 +56,7 @@ export function WorkspaceHeader({page,online,collapsed,onMenu,onSearch}:{page:Pa
   <div className="flex items-center gap-3">
    <Button variant="bare" type="button" onClick={onSearch} className="flex h-9 items-center gap-2 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] px-3.5 text-[12px] text-[#7C7469] transition-colors hover:border-[#D8CFC2] hover:bg-[#F3EEE5]"><Search size={14}/><span className="hidden sm:inline">{t('shell.quickNav')}</span><kbd className="hidden text-[10px] md:inline">⌘K</kbd></Button>
    <span className={'hidden items-center gap-1.5 text-[11px] sm:inline-flex '+(online?'text-emerald-700':'text-rose-600')}><i className={'size-1.5 rounded-full '+(online?'bg-emerald-500':'bg-rose-500')}/>{online?t('shell.connected'):t('shell.disconnected')}</span>
+    <OwnerProfileEditor compact/>
   </div>
  </header>
 }
