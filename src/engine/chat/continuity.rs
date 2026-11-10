@@ -330,7 +330,7 @@ pub(super) async fn send(
         if let Some(id)=plan["cacheAffinityId"].as_str().or_else(||plan["transportSessionId"].as_str()) {
             request=request.header("x-dominion-conversation",id);
             // OpenCode Go's direct endpoint uses the same stable conversation
-            // affinity under its own header. No local shim is involved.
+            // affinity under its own header. No local proxy is involved.
             if opencode_go { request=request.header("x-opencode-session",id); }
         }
         let response=request.json(&body).send().await.map_err(|e|format!("{} 연결 실패: {e}",provider.name))?;

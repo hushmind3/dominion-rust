@@ -1275,13 +1275,10 @@ fn model_free_status(
     item: &Value,
     id: &str,
 ) -> (Option<bool>, &'static str) {
-    // Local runtimes on their standard ports are free. A localhost shim that
-    // proxies paid providers (for example port 4399) is not automatically free.
+    // Local runtimes on their standard ports are free. Any other localhost
+    // proxy may front a paid provider, so it is not automatically free.
     if kind == "ollama" || base.contains(":11434") || base.contains(":1234") {
         return (Some(true), "local-runtime");
-    }
-    if base.contains(":4399") {
-        return (Some(false), "subscription-proxy");
     }
     if base.contains("z.ai") {
         return (
@@ -1948,8 +1945,8 @@ mod tests {
     fn free_models_require_local_runtime_or_pricing_evidence() {
         let local = json!({"id":"p","name":"local","baseUrl":"http://127.0.0.1:11434/v1"});
         assert!(model_is_free(&local, "openai", "http://127.0.0.1:11434/v1", &Value::Null, "x"));
-        let shim = json!({"id":"p","name":"shim","baseUrl":"http://127.0.0.1:4399/v1"});
-        assert!(!model_is_free(&shim, "openai", "http://127.0.0.1:4399/v1", &Value::Null, "paid/model"));
+        let proxy = json!({"id":"p","name":"proxy","baseUrl":"http://127.0.0.1:4100/v1"});
+        assert!(!model_is_free(&proxy, "openai", "http://127.0.0.1:4100/v1", &Value::Null, "paid/model"));
         let free_api = json!({"id":"p","name":"free","integration":"freellmapi"});
         assert!(!model_is_free(&free_api, "openai", "https://api.example/v1", &Value::Null, "x"));
         let free_suffix = json!({"id":"p","name":"openrouter"});

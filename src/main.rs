@@ -6,7 +6,6 @@ mod engine;
 mod events;
 mod migrations;
 mod platform;
-mod shim;
 mod state;
 mod vault;
 

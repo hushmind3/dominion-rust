@@ -1267,7 +1267,7 @@ mod tests {
         let saved = store
             .put(
                 "provider",
-                &json!({ "name": "Local", "baseUrl": "http://127.0.0.1:4399/v1" }),
+                &json!({ "name": "Local", "baseUrl": "http://127.0.0.1:4199/v1" }),
             )
             .expect("saved");
         let id = saved["id"].as_str().unwrap().to_string();
@@ -1275,7 +1275,7 @@ mod tests {
         assert!(saved.get("createdAt").is_some());
 
         let fetched = store.get("provider", &id).unwrap();
-        assert_eq!(fetched["baseUrl"], "http://127.0.0.1:4399/v1");
+        assert_eq!(fetched["baseUrl"], "http://127.0.0.1:4199/v1");
 
         let updated = store
             .put(

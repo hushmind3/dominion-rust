@@ -13,16 +13,6 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
     if args.first().map(String::as_str)==Some("--rsi-worker-job") {
         return engine::rsi_evolve::worker(args.get(1).ok_or("세대 작업 ID가 필요합니다.")?).await;
     }
-    if args.iter().any(|arg| arg == "--shim") {
-        let port = args
-            .iter()
-            .position(|arg| arg == "--port")
-            .and_then(|index| args.get(index + 1))
-            .and_then(|value| value.parse::<u16>().ok())
-            .or_else(|| std::env::var("SHIM_PORT").ok().and_then(|value| value.parse().ok()))
-            .unwrap_or(4399);
-        return crate::shim::run(port).await;
-    }
     if platform::handle_control(&args)? {
         return Ok(());
     }
