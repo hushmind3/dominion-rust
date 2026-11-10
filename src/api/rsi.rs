@@ -7,6 +7,36 @@ fn error(message: String) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({"error":message}))).into_response()
 }
 
+/// Longest run of adopted generations in a campaign. Older campaigns stored
+/// only per-generation flags, so derive the streak instead of rewriting them.
+fn accepted_streak(record: &Value) -> (u64, u64) {
+    let mut streak = 0u64;
+    let mut max = 0u64;
+    for generation in record["history"].as_array().cloned().unwrap_or_default() {
+        if generation["accepted"] == true {
+            streak += 1;
+            max = max.max(streak);
+        } else if generation["evaluation"].is_object() {
+            streak = 0;
+        }
+    }
+    (streak, max)
+}
+
+fn apply_capability(record: &mut Value) {
+    let (streak, max) = if record["maxAcceptedStreak"].is_u64() {
+        (
+            record["acceptedStreak"].as_u64().unwrap_or(0),
+            record["maxAcceptedStreak"].as_u64().unwrap_or(0),
+        )
+    } else {
+        accepted_streak(record)
+    };
+    record["acceptedStreak"] = json!(streak);
+    record["maxAcceptedStreak"] = json!(max);
+    record["capabilityDemonstrated"] = json!(max >= 3);
+}
+
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
     let status = crate::engine::dev::status(state).await;
     let raw = status["config"]["sourceDir"].as_str().unwrap_or("");
@@ -124,6 +154,7 @@ pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Respo
         record[field]=job["input"][key].clone();
     }
     record["selectedVersionRunning"]=json!(record["headCommit"].as_str()==option_env!("DOMINION_BUILD_COMMIT"));
+    apply_capability(&mut record);
     if record["phase"]=="diagnosing_and_editing" {
         if let Some(session)=record["activeGenerationJobId"].as_str().and_then(|id|state.store.get("job",id))
             .and_then(|j|j["sessionId"].as_str().map(str::to_string)) {
@@ -141,7 +172,9 @@ pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Respo
 pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
     let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|record|{
         let job=record["id"].as_str().and_then(|id|state.store.get("job",id)).unwrap_or(Value::Null);
+        let (_,max_streak)=accepted_streak(&record);
         json!({"id":record["id"],"phase":record["phase"],
+            "maxAcceptedStreak":max_streak,"capabilityDemonstrated":max_streak>=3,
             "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
     }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
@@ -505,5 +538,32 @@ mod tests {
         assert!(prompt.chars().count()<6000);
         assert!(state.store.all("code_index").len() >= 1);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[test]
+    fn capability_requires_three_consecutive_accepts() {
+        let partial = json!({"history":[
+            {"accepted":true,"evaluation":{}},
+            {"accepted":true,"evaluation":{}},
+            {"accepted":false,"evaluation":{}},
+            {"accepted":true,"evaluation":{}}
+        ]});
+        assert_eq!(accepted_streak(&partial), (1, 2));
+        let mut derived = partial.clone();
+        apply_capability(&mut derived);
+        assert_eq!(derived["capabilityDemonstrated"], false);
+
+        let full = json!({"history":[
+            {"accepted":true},{"accepted":true},{"accepted":true}
+        ]});
+        let mut derived = full.clone();
+        apply_capability(&mut derived);
+        assert_eq!(derived["maxAcceptedStreak"], 3);
+        assert_eq!(derived["capabilityDemonstrated"], true);
     }
 }

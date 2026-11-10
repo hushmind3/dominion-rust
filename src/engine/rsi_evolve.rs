@@ -475,11 +475,37 @@ fn elapsed(record: &mut Value, started: Instant) {
 
 /// Read-only snapshot of the user's checkout. Unrelated untracked research,
 /// runtime data and secrets are excluded; users need not learn Git first.
+fn lineage_fingerprint(commit: &str, tree: &str, diff: &[u8], untracked: &[(String, Vec<u8>)]) -> String {
+    let mut fingerprint = Sha256::new();
+    fingerprint.update(commit.trim().as_bytes());
+    fingerprint.update([0]);
+    fingerprint.update(tree.trim().as_bytes());
+    fingerprint.update([0]);
+    fingerprint.update(diff);
+    for (name, contents) in untracked {
+        fingerprint.update(name.as_bytes());
+        fingerprint.update([0]);
+        fingerprint.update(contents);
+    }
+    format!("{:x}", fingerprint.finalize())
+}
+
+/// A real lineage fingerprint hashes the source commit and tree. Older
+/// campaigns hashed only `git diff HEAD`, which is empty for a clean checkout
+/// and produced the SHA-256 of the empty string.
+pub fn lineage_fingerprint_valid(value: &str) -> bool {
+    value.len() == 64
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && value != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}
+
 async fn snapshot_source(
     context: &JobContext,
     source: &Path,
     lab: &Path,
 ) -> Result<(bool, String), String> {
+    let commit = git(context, source, &["rev-parse", "HEAD"]).await?;
+    let tree = git(context, source, &["rev-parse", "HEAD^{tree}"]).await?;
     let mut cmd = Command::new("git");
     cmd.current_dir(source)
         .args(["diff", "--binary", "--no-ext-diff", "HEAD"]);
@@ -487,8 +513,6 @@ async fn snapshot_source(
     if !output.status.success() || output.stdout.len() >= 79_000 {
         return Err("원본 변경을 안전하게 복사하지 못했습니다.".into());
     }
-    let mut fingerprint = Sha256::new();
-    fingerprint.update(&output.stdout);
     if !output.stdout.is_empty() {
         let file = lab
             .parent()
@@ -511,6 +535,7 @@ async fn snapshot_source(
     )
     .await?;
     let mut bytes = 0u64;
+    let mut untracked: Vec<(String, Vec<u8>)> = Vec::new();
     for name in files.split('\0').filter(|name| !name.is_empty()) {
         let code = crate::engine::rsi::safe_path(name)
             || name
@@ -532,12 +557,10 @@ async fn snapshot_source(
         std::fs::create_dir_all(destination.parent().ok_or("원본 파일 경로 오류")?)
             .map_err(|e| e.to_string())?;
         let contents = std::fs::read(&path).map_err(|e| e.to_string())?;
-        fingerprint.update(name.as_bytes());
-        fingerprint.update([0]);
-        fingerprint.update(&contents);
+        untracked.push((name.to_string(), contents.clone()));
         std::fs::write(destination, contents).map_err(|e| e.to_string())?;
     }
-    let fingerprint = format!("{:x}", fingerprint.finalize());
+    let fingerprint = lineage_fingerprint(&commit, &tree, &output.stdout, &untracked);
     if git(context, lab, &["status", "--porcelain"])
         .await?
         .is_empty()
@@ -682,16 +705,35 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     )
     .await?;
     let (snapshot, fingerprint) = snapshot_source(context, &source, &lab).await?;
+    let mut lineage = json!({
+        "selectedCommit": Value::Null,
+        "sameSource": false,
+        "sameBase": false,
+        "fingerprintValid": false,
+        "fingerprintMatch": false,
+        "reused": false
+    });
     if let Some(selected) = context.state.store.get("rsi_current", "selected-engine") {
-        if selected["sourceDir"].as_str() == source.to_str()
-            && selected["sourceBaseCommit"] == base
-            && selected["sourceFingerprint"] == fingerprint
-        {
+        let same_source = selected["sourceDir"].as_str() == source.to_str();
+        let same_base = selected["sourceBaseCommit"].as_str() == Some(base);
+        let selected_fingerprint = selected["sourceFingerprint"].as_str().unwrap_or("");
+        let fingerprint_valid = lineage_fingerprint_valid(selected_fingerprint);
+        let fingerprint_match = fingerprint_valid && selected_fingerprint == fingerprint;
+        lineage = json!({
+            "selectedCommit": selected["commit"],
+            "sameSource": same_source,
+            "sameBase": same_base,
+            "fingerprintValid": fingerprint_valid,
+            "fingerprintMatch": fingerprint_match,
+            "reused": false
+        });
+        if same_source && same_base && fingerprint_match {
             if let Some(commit) = selected["commit"]
                 .as_str()
                 .filter(|s| s.len() == 40 && s.bytes().all(|c| c.is_ascii_hexdigit()))
             {
                 git(context, &lab, &["reset", "--hard", commit]).await?;
+                lineage["reused"] = json!(true);
             }
         }
     }
@@ -714,6 +756,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "nativeApproved":true,"limits":limits,"attempts":0,"acceptedGenerations":0,"tokens":0,
         "history":[],"activeGenerationJobId":null,"createdAt":chrono::Utc::now().to_rfc3339(),
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
+        "lineage":lineage,
+        "acceptedStreak":0,"maxAcceptedStreak":0,"capabilityDemonstrated":false,
         "productionChanged":false,"accelerationProven":false});
     save(context, &record)?;
     let started = Instant::now();
@@ -2097,6 +2141,22 @@ async fn run_loop(
             }
         }
         let generation_accepted = generation["accepted"] == true;
+        let accepted_streak = if generation_accepted {
+            record["acceptedStreak"].as_u64().unwrap_or(0) + 1
+        } else if generation["evaluation"].is_object() {
+            0
+        } else {
+            record["acceptedStreak"].as_u64().unwrap_or(0)
+        };
+        record["acceptedStreak"] = json!(accepted_streak);
+        let max_streak = record["maxAcceptedStreak"]
+            .as_u64()
+            .unwrap_or(0)
+            .max(accepted_streak);
+        record["maxAcceptedStreak"] = json!(max_streak);
+        // Three consecutive adopted generations are the documented threshold
+        // for calling the capability demonstrated, not a single lucky patch.
+        record["capabilityDemonstrated"] = json!(max_streak >= 3);
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
@@ -3302,6 +3362,50 @@ mod tests {
             "revision": format!("revision-{name}"),
             "parameters": {"expression": expression}
         })
+    }
+
+    #[tokio::test]
+    async fn source_snapshot_fingerprint_tracks_the_commit() {
+        let (state, root) = state();
+        state.store.put("job", &json!({"id":"snapshot-test","status":"running","cancelRequested":false}));
+        let source = root.join("source-repo");
+        std::fs::create_dir_all(&source).unwrap();
+        let run_git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&source)
+                .args(["-c","user.name=test","-c","user.email=test@localhost","-c","commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        assert!(run_git(&["init","-q"]).status.success());
+        std::fs::write(source.join("value.txt"), "one").unwrap();
+        assert!(run_git(&["add","."]).status.success());
+        assert!(run_git(&["commit","-q","-m","one"]).status.success());
+        let lab = root.join("lab");
+        std::fs::create_dir_all(&lab).unwrap();
+        std::process::Command::new("git").current_dir(&lab).args(["init","-q"]).output().unwrap();
+        let context = crate::engine::jobs::JobContext::new(state.clone(), "snapshot-test".into());
+        let (_, first) = snapshot_source(&context, &source, &lab).await.unwrap();
+        std::fs::write(source.join("value.txt"), "two").unwrap();
+        assert!(run_git(&["commit","-qam","two"]).status.success());
+        let (_, second) = snapshot_source(&context, &source, &lab).await.unwrap();
+        assert!(lineage_fingerprint_valid(&first), "a clean checkout must not hash to the empty digest");
+        assert_ne!(first, second, "a new commit must change the lineage fingerprint");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lineage_fingerprint_identifies_the_source_commit() {
+        let empty_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let first = lineage_fingerprint("a".repeat(40).as_str(), "b".repeat(40).as_str(), b"", &[]);
+        let second = lineage_fingerprint("c".repeat(40).as_str(), "b".repeat(40).as_str(), b"", &[]);
+        assert_eq!(first.len(), 64);
+        assert_ne!(first, empty_hash, "a clean checkout still has a commit and tree");
+        assert_ne!(first, second, "different commits must not share a fingerprint");
+        assert!(lineage_fingerprint_valid(&first));
+        assert!(!lineage_fingerprint_valid(empty_hash));
+        assert!(!lineage_fingerprint_valid(""));
     }
 
     #[test]
