@@ -3,6 +3,7 @@ import {ArrowLeft,ArrowRight,BrainCircuit,Check,LoaderCircle,Play,RefreshCw,Squa
 import {Provider,get,post} from '../api'
 import {ModelPicker} from '../components/ModelPicker'
 import {RsiTargetEvidence,type RsiTargetSelection} from '../components/RsiTargetEvidence'
+import {RsiLineageEvidence,type RsiGenerationProof} from '../components/RsiLineageEvidence'
 import {Button,SelectInput,TextArea} from '../components/Primitives'
 import {FormField,Headline,Notice,Panel,useRemote} from '../components/UI'
 
@@ -11,13 +12,13 @@ type Comparison={attempt:number;candidateId:string;winner:'baseline'|'candidate'
  canSelectCandidate:boolean;selected?:string;metrics:{pairedCases:number;regressions:number;measurements?:Measurement[]}}
 type InstallJob={id:string;status:string;error?:string;result?:{installed?:string}}
 type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
- objective?:string;providerId?:string;model?:string;headCommit?:string;baseCommit?:string;sourceSnapshot?:boolean;
+ objective?:string;providerId?:string;model?:string;headCommit?:string;baseCommit?:string;sourceSnapshot?:boolean;maxAcceptedStreak?:number;capabilityDemonstrated?:boolean;
  continuedFrom?:string;selectedVersionRunning?:boolean;installJobId?:string;
  limits?:{maxAttempts?:number;tokenBudget?:number;timeBudgetSeconds?:number};
  application?:{commit?:string;requiresRebuild?:boolean;restartRequested?:boolean};
  tokensEstimated?:boolean;
  error?:string;stopReason?:string;selectionPolicy?:string;comparison?:Comparison;
- history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusSelection?:RsiTargetSelection;tokenUsage?:{promptTokens?:number;completionTokens?:number;calls?:number;estimatedCalls?:number}}[]}
+ history?:{attempt:number;accepted:boolean;evaluation?:RsiGenerationProof['evaluation'];selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusSelection?:RsiTargetSelection;tokenUsage?:{promptTokens?:number;completionTokens?:number;calls?:number;estimatedCalls?:number}}[]}
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
 const workloads={
@@ -200,6 +201,7 @@ export function SelfImprovementPage(){
    {campaign.objective&&<p className="mt-3 text-[13px] leading-6 text-[#5C544A]">목표: {campaign.objective}</p>}
    <p className="mt-3 text-[12px] text-[#7C7469]">개선 시도 {campaign.attempts||0}회 <ArrowRight size={12} className="mx-1 inline"/>채택 {campaign.acceptedGenerations||0}회 · 생성에 사용한 토큰 {campaign.tokensEstimated?'약 ':''}{(campaign.tokens||0).toLocaleString()}</p>
    <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">{[{label:'새 연구 근거',value:research},{label:'검증·선택한 코드',value:adopted},{label:'선택 버전으로 후속 실행',value:inherited},{label:'저장된 방법의 실제 실행',value:executedMethods}].map(item=><div key={item.label} className="rounded-lg bg-[#FAF7F1] p-3"><span className="block text-[#7C7469]">{item.label}</span><strong className="mt-1 block text-lg">{item.value}</strong></div>)}</div>
+   <RsiLineageEvidence history={campaign.history||[]} maxAcceptedStreak={campaign.maxAcceptedStreak} capabilityDemonstrated={campaign.capabilityDemonstrated}/>
    {!working&&campaign.stopReason&&<p className="mt-3 text-[12px] text-[#7C7469]">{stops[campaign.stopReason]||campaign.stopReason}</p>}
    {!working&&hasSelected&&<div className="mt-4 rounded-xl border border-[#D9E3D3] bg-[#F2F6EF] p-4"><p className="text-[13px] font-semibold">{campaign.selectedVersionRunning?'검증한 버전이 현재 4317에서 실행 중입니다':installing?'검증본을 빌드하고 있습니다':install?.status==='completed'?'빌드 완료 · 서버 재연결 확인 중':'선택한 개선본을 실제 사용하는 프로그램에 반영할 수 있습니다'}</p><p className="mt-1 text-[12px] text-[#7C7469]">{campaign.sourceSnapshot?'작업 시작 시 미저장 코드가 있었습니다. 파일을 보존하기 위해 자동 반영은 제한합니다.':'작업 브랜치만 반영하며 메인과 다른 서비스의 설정은 유지합니다.'}</p>{!campaign.selectedVersionRunning&&!campaign.sourceSnapshot&&<Button className="mt-3" variant="primary" disabled={busy||installing} onClick={()=>void apply()}>{installing?<LoaderCircle size={14} className="animate-spin"/>:<Download size={14}/>}검증본을 4317에 반영</Button>}</div>}
    {activeSearch&&<div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-2 text-[11px] text-[#7C7469]"><span className="font-semibold text-[#5C544A]">다음 연구를 고르는 방식</span><span>{activeSearch.name}</span></div>}
