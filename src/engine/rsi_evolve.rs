@@ -1868,11 +1868,15 @@ fn generation_stop_reason(job:&Value,worker_error:Option<&str>)->Option<&'static
     else {None}
 }
 
-fn generation_fits_remaining_budget(record:&Value,input:&Value)->bool {
+fn prompt_fits_remaining_budget(record:&Value,prompt:&str)->bool {
     record["limits"]["tokenBudget"].as_u64().is_none_or(|budget|{
-        let minimum=crate::engine::chat::estimate_text_tokens(input["prompt"].as_str().unwrap_or(""))+256;
+        let minimum=crate::engine::chat::estimate_text_tokens(prompt)+256;
         budget.saturating_sub(record["tokens"].as_u64().unwrap_or(0))>=minimum
     })
+}
+
+fn generation_fits_remaining_budget(record:&Value,input:&Value)->bool {
+    prompt_fits_remaining_budget(record,input["prompt"].as_str().unwrap_or(""))
 }
 
 fn should_stop_no_progress(streak: u64, research: bool, changed: bool) -> bool {
@@ -2072,6 +2076,13 @@ async fn run_loop(
         child_input["rsiFocusContextChars"] = json!(focus.chars().count());
         child_input["rsiPromptContextChars"] = json!(child_input["prompt"]
             .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
+        // A generation prepends verified research, selected implementations
+        // and focused source after the first budget gate. Check the actual
+        // composed input before launching the native model worker, otherwise
+        // the budget may be exhausted on context alone.
+        if !prompt_fits_remaining_budget(record,child_input["prompt"].as_str().unwrap_or("")) {
+            return Ok("token_budget".into());
+        }
         let child = context
             .state
             .store
@@ -2639,6 +2650,19 @@ mod tests {
         JobContext::new(state.clone(), "campaign".into())
     }
     #[test]
+    #[test]
+    fn appended_research_context_must_fit_the_remaining_generation_budget() {
+        let record=json!({"limits":{"tokenBudget":1000},"tokens":200});
+        let input=json!({"prompt":"short objective"});
+        assert!(generation_fits_remaining_budget(&record,&input));
+        assert!(prompt_fits_remaining_budget(&record,"short objective"));
+        let expanded="verified research context ".repeat(320);
+        assert!(!prompt_fits_remaining_budget(&record,&expanded),
+            "real composed context must not dispatch an over-budget generation");
+        let exhausted=json!({"limits":{"tokenBudget":1000},"tokens":999});
+        assert!(!generation_fits_remaining_budget(&exhausted,&input));
+    }
+
     fn runtime_budget_stops_are_not_no_progress_or_another_generation(){
         let worker=json!({"status":"completed","result":{"status":"needs_review","reason":"model_error",
             "rsi":{"modelError":"rsi_token_budget: remaining context cannot fit"}}});
