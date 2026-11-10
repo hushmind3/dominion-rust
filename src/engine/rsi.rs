@@ -178,6 +178,9 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     let mut improved_holdouts = 0usize;
     let mut holdout_domains = BTreeSet::new();
     let mut holdout_evidence = Vec::new();
+    let mut improved_holdout_domains = BTreeSet::new();
+    let mut holdout_gains = 0usize;
+    let mut meta_holdout_gains = 0usize;
     let mut metric_gains = 0;
     let mut metric_losses = 0;
     let mut measurements = Vec::new();
@@ -207,7 +210,9 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
         metric_gains += mg;
         metric_losses += ml;
         if planned["domain"] == "improver" { meta_gains += mg; }
-        measurements.push(json!({"id":id,"metrics":detail}));
+        measurements.push(json!({"id":id,"domain":planned["domain"],
+            "holdout":planned["holdout"],"baselinePass":before,"candidatePass":after,
+            "metrics":detail}));
         if planned["holdout"] == true {
             let domain = planned["domain"].as_str()
                 .filter(|domain| !domain.trim().is_empty())
@@ -215,7 +220,12 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
             holdouts += 1;
             holdout_domains.insert(domain.to_string());
             let improved = (!before && after) || mg > 0;
-            if improved { improved_holdouts += 1; }
+            if improved {
+                improved_holdouts += 1;
+                improved_holdout_domains.insert(domain.to_string());
+                if !before && after { holdout_gains += 1; }
+                if planned["domain"]=="improver" { meta_holdout_gains += mg; }
+            }
             // Derived from the frozen plan and individual local measurements.
             // The RSI coordinator must not infer transfers from domain counts.
             holdout_evidence.push(json!({
@@ -229,17 +239,21 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     let ready = plan.len() >= MIN_PAIRED_CASES
         && holdouts >= 2
         && gains + metric_gains > 0
+        // A training-only win is never sufficient to adopt changed code.
+        && improved_holdouts > 0
         && losses + metric_losses == 0
         && (target != "improver"
             || (holdout_domains.len() >= 2 && improved_holdouts > 0
-                && (!plan.iter().any(|p|p["domain"]=="improver" && p["metrics"].as_array().is_some_and(|m|!m.is_empty())) || meta_gains>0)));
+                && (!plan.iter().any(|p|p["domain"]=="improver" && p["metrics"].as_array().is_some_and(|m|!m.is_empty())) || meta_holdout_gains>0)));
     Ok(json!({
         "pairedCases":plan.len(),"holdoutCases":holdouts,
         "holdoutDomains":holdout_domains.into_iter().collect::<Vec<_>>(),
-        "holdoutEvidence":holdout_evidence,
+        "improvedHoldoutDomains":improved_holdout_domains.into_iter().collect::<Vec<_>>(),
+        "holdoutEvidence":holdout_evidence,"holdoutGains":holdout_gains,
         "baselineSuccesses":baseline_successes,"candidateSuccesses":candidate_successes,
         "gains":gains,"regressions":losses+metric_losses,"improvedHoldouts":improved_holdouts,
-        "metricGains":metric_gains,"metricRegressions":metric_losses,"metaGains":meta_gains,"measurements":measurements,
+        "metricGains":metric_gains,"metricRegressions":metric_losses,
+        "metaGains":meta_gains,"metaHoldoutGains":meta_holdout_gains,"measurements":measurements,
         "eligible":ready,
         "verdict":if losses+metric_losses>0 {"regressed"} else if ready {"improved"} else {"inconclusive"}
     }))
@@ -441,6 +455,49 @@ mod tests {
         assert!(evaluate(&state,record["id"].as_str().unwrap(),&result).is_err());
         let _=std::fs::remove_dir_all(root);
     }
+    #[test]
+    fn training_only_improvement_never_promotes_a_candidate() {
+        let (state,root)=state();
+        let candidate=propose(&state,&proposal("harness")).unwrap();
+        let id=candidate["id"].as_str().unwrap();
+        let mut measured=report(&candidate);
+        // The only change is outside the three frozen holdout cases.
+        for (i,row) in measured["cases"].as_array_mut().unwrap().iter_mut().enumerate() {
+            row["baselinePass"]=json!(i!=3);
+            row["candidatePass"]=json!(true);
+        }
+        let evaluated=evaluate(&state,id,&measured).unwrap();
+        let metrics=&evaluated["evaluation"]["metrics"];
+        assert_eq!(metrics["gains"],1);
+        assert_eq!(metrics["improvedHoldouts"],0);
+        assert_eq!(metrics["eligible"],false);
+        assert_eq!(evaluated["status"],"inconclusive");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn improver_metric_gain_only_on_training_does_not_promote() {
+        let (state,root)=state();
+        let mut request=proposal("improver");
+        request["cases"][3]["domain"]=json!("improver");
+        request["cases"][3]["metrics"]=json!([{
+            "key":"tokens","direction":"lower",
+            "minRelativeGain":0.05,"maxRelativeRegression":0.0
+        }]);
+        let candidate=propose(&state,&request).unwrap();
+        let mut measured=report(&candidate);
+        for row in measured["cases"].as_array_mut().unwrap() {
+            row["baselinePass"]=json!(true);
+            row["candidatePass"]=json!(true);
+        }
+        measured["cases"][3]["metrics"]=json!({"tokens":{"baseline":100.0,"candidate":50.0}});
+        let tested=evaluate(&state,candidate["id"].as_str().unwrap(),&measured).unwrap();
+        assert_eq!(tested["status"],"inconclusive");
+        assert_eq!(tested["evaluation"]["metrics"]["metaGains"],1);
+        assert_eq!(tested["evaluation"]["metrics"]["metaHoldoutGains"],0);
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn holdout_regressions_and_unmatched_cases_never_promote() {
         let (state,root)=state();
