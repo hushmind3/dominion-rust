@@ -20,7 +20,7 @@ const FILE_KIND: &str = "code_index_file";
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SYMBOLS_PER_FILE: usize = 400;
 const MAP_MAX_CHARS: usize = 6_000;
-const PARSER_VERSION: u64 = 5;
+const PARSER_VERSION: u64 = 6;
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -34,6 +34,11 @@ pub fn index_id(source: &Path) -> String {
 }
 
 fn is_source(path: &Path) -> bool {
+    // Never hand frozen holdout oracles to a self-improvement generator through
+    // its repository index, including ranked snippets and source maps.
+    if crate::engine::rsi::frozen_evaluator_path(&path.to_string_lossy()) {
+        return false;
+    }
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
