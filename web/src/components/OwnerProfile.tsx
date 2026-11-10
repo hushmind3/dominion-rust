@@ -32,7 +32,7 @@ export function OwnerAvatar({profile,size='normal',className=''}:{profile:OwnerP
  </span>
 }
 
-export function OwnerProfileEditor(){
+export function OwnerProfileEditor({compact=false}:{compact?:boolean}){
  const {profile,setProfile}=useOwnerProfile()
  const [open,setOpen]=useState(false),[name,setName]=useState(profile.name),[avatar,setAvatar]=useState(profile.avatar)
  const [working,setWorking]=useState(false),[error,setError]=useState('')
@@ -55,14 +55,14 @@ export function OwnerProfileEditor(){
   reader.onerror=()=>setError('이미지를 읽지 못했습니다.')
   reader.readAsDataURL(file)
  }
- return <div className="relative shrink-0 border-t border-[#E0D8CC] p-3">
-  <Button variant="bare" type="button" onClick={()=>setOpen(x=>!x)} aria-expanded={open} aria-label="내 프로필 편집"
-   className="group flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left hover:bg-[#E8E0D3]">
-   <OwnerAvatar profile={profile}/>
-   <span className="min-w-0 flex-1"><strong className="block truncate text-[12px] text-[#3A342D]">{profile.name}</strong><small className="block text-[10px] text-[#8A8176]">내 프로필</small></span>
-   <Pencil size={13} className="text-[#998B7B] group-hover:text-[#A94E30]"/>
+ return <div className={compact?'relative shrink-0':'relative shrink-0 border-t border-[#E0D8CC] p-3'}>
+  <Button variant="bare" type="button" onClick={()=>setOpen(x=>!x)} aria-expanded={open} aria-label="내 프로필 편집" title="내 프로필"
+   className={compact?'flex items-center rounded-xl p-1 hover:bg-[#F3EEE5]':'group flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left hover:bg-[#E8E0D3]'}>
+   <OwnerAvatar profile={profile} size={compact?'small':'normal'}/>
+   {!compact&&<><span className="min-w-0 flex-1"><strong className="block truncate text-[12px] text-[#3A342D]">{profile.name}</strong><small className="block text-[10px] text-[#8A8176]">내 프로필</small></span>
+   <Pencil size={13} className="text-[#998B7B] group-hover:text-[#A94E30]"/></>}
   </Button>
-  {open&&<div role="dialog" aria-label="내 프로필" className="absolute bottom-full left-3 z-[70] w-[min(304px,calc(100vw-24px))] rounded-2xl border border-[#E7D8C7] bg-[#FFFDF9] p-4 shadow-[0_18px_56px_rgba(43,36,29,.2)]">
+  {open&&<div role="dialog" aria-label="내 프로필" className={'absolute z-[70] w-[min(304px,calc(100vw-24px))] rounded-2xl border border-[#E7D8C7] bg-[#FFFDF9] p-4 shadow-[0_18px_56px_rgba(43,36,29,.2)] '+(compact?'right-0 top-full mt-2':'bottom-full left-3')}>
    <div className="mb-3 flex items-center justify-between"><strong className="text-[13px] text-[#3A342D]">내 프로필</strong><Button type="button" variant="bare" aria-label="닫기" onClick={close} className="rounded-lg p-1 hover:bg-[#F3EEE5]"><X size={16}/></Button></div>
    <div className="mb-3 flex items-center gap-3">
     <OwnerAvatar profile={{name,avatar}} className="!size-14"/>
