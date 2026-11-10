@@ -188,8 +188,8 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
         return Err("DOMINION 소스가 아닙니다.".into());
     }
     let campaign=crate::engine::rsi_evolve::campaign_source(&context.state,input,&source,base);
-    if !campaign && git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?.trim()!="dominion-sub" {
-        return Err("원본 소스 브랜치가 dominion-sub가 아닙니다.".into());
+    if !campaign && !is_work_branch(git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?.trim()) {
+        return Err("원본 소스 브랜치가 dominion-sub 작업 브랜치가 아닙니다.".into());
     }
     if git(&source,&["rev-parse","HEAD"]).await?.trim()!=base {
         return Err("작업을 기다리는 동안 원본 커밋이 바뀌었습니다. 다시 시작하세요.".into());
@@ -490,7 +490,8 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
         return Err("패치 해시가 저장된 값과 다릅니다.".into());
     }
     let status=crate::engine::dev::status(state).await;
-    if status["git"]!=true || status["branch"]!="dominion-sub"
+    let branch=status["branch"].as_str().unwrap_or("");
+    if status["git"]!=true || !is_work_branch(branch)
         || status["dirty"]!=0 || status["commit"]!=candidate["baseCommit"] {
         return Err("원본 작업 브랜치가 기준과 다르거나 수정 중이므로 적용하지 않았습니다.".into());
     }
@@ -537,6 +538,13 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
 /// Publish the selected experimental lineage to the test branch. The main
 /// branch is never a target. Every commit is checked against its measured
 /// patch using a private Git index before the source checkout can move.
+/// Work branches are the per-session `dominion-sub*` branches plus the
+/// integration branch. Other branches, including production refs, are never
+/// valid RSI sources or application targets.
+pub(crate) fn is_work_branch(name: &str) -> bool {
+    name == "dominion-champion" || name.starts_with("dominion-sub")
+}
+
 pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expected:&str)->Result<Value,String>{
     if !state.begin_session("rsi-source-application") {return Err("검증된 버전을 적용 중입니다.".into());}
     let _guard=state.session_guard("rsi-source-application");
@@ -548,7 +556,7 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     let source=std::fs::canonicalize(campaign["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     let status=crate::engine::dev::status(state).await;
     let configured=status["config"]["sourceDir"].as_str().and_then(|s|std::fs::canonicalize(s).ok());
-    if configured.as_ref()!=Some(&source) || status["branch"]!="dominion-sub" {
+    if configured.as_ref()!=Some(&source) || !is_work_branch(status["branch"].as_str().unwrap_or("")) {
         return Err("연결된 dominion-sub 작업 브랜치에만 적용합니다.".into());
     }
     if !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
@@ -621,7 +629,8 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
 pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
     let id=job["input"]["candidateId"].as_str().ok_or("비교할 후보가 없습니다.")?;
     let status=crate::engine::dev::status(&context.state).await;
-    if status["git"]!=true || status["branch"]!="dominion-sub" {
+    let branch=status["branch"].as_str().unwrap_or("");
+    if status["git"]!=true || !is_work_branch(branch) {
         return Err("비교 실험은 dominion-sub 소스에서 시작하세요.".into());
     }
     let source=std::fs::canonicalize(status["config"]["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
