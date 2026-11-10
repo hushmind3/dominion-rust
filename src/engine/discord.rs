@@ -1062,7 +1062,7 @@ mod tests {
         assert!(validate(&s, &c).is_ok());
         s.store.put(
             "room",
-            &json!({"id":"r","agentIds":["a","a","a","a","a","a","a","a","a","a"]}),
+            &json!({"id":"r","agentIds":vec!["a";MAX_PARTICIPANTS+1]}),
         );
         c["roomId"] = json!("r");
         assert!(validate(&s, &c).is_err());
