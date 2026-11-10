@@ -2348,12 +2348,12 @@ async fn run_loop(
             }
         }
         let generation_accepted = generation["accepted"] == true;
+        // Every attempted generation counts toward the sequence. A
+        // research-only or failed attempt cannot silently bridge two wins.
         let accepted_streak = if generation_accepted {
             record["acceptedStreak"].as_u64().unwrap_or(0) + 1
-        } else if generation["evaluation"].is_object() {
-            0
         } else {
-            record["acceptedStreak"].as_u64().unwrap_or(0)
+            0
         };
         record["acceptedStreak"] = json!(accepted_streak);
         let max_streak = record["maxAcceptedStreak"]
