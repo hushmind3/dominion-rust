@@ -205,8 +205,15 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
         return Err("DOMINION 소스가 아닙니다.".into());
     }
     let campaign=crate::engine::rsi_evolve::campaign_source(&context.state,input,&source,base);
-    if !campaign && !rsi_work_branch(git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?.trim()) {
-        return Err("원본 소스가 허용된 RSI 작업 브랜치가 아닙니다.".into());
+    if !campaign {
+        let actual_branch=git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?;
+        if !rsi_work_branch(actual_branch.trim()) {
+            return Err("원본 소스가 허용된 RSI 작업 브랜치가 아닙니다.".into());
+        }
+        if input["rsiSourceBranch"].as_str()
+            .is_some_and(|recorded| !recorded.is_empty() && recorded!=actual_branch.trim()) {
+            return Err("작업 대기 중 소스 브랜치가 바뀌었습니다. 새 브랜치에서 다시 시작하세요.".into());
+        }
     }
     if git(&source,&["rev-parse","HEAD"]).await?.trim()!=base {
         return Err("작업을 기다리는 동안 원본 커밋이 바뀌었습니다. 다시 시작하세요.".into());
@@ -911,6 +918,10 @@ mod tests {
         });
         let job=state.store.put("job",&json!({"kind":"prompt","status":"running","input":input})).unwrap();
         let context=JobContext::new(state.clone(),job["id"].as_str().unwrap().to_string());
+        git_local(&source,&["checkout","-b","dominion-sub2"]);
+        assert!(prepare(&context,&job["input"]).await.is_err(),
+            "same-commit sibling work branches must not inherit a queued source job");
+        git_local(&source,&["checkout","dominion-sub3"]);
         let worktree=prepare(&context,&job["input"]).await.unwrap();
         assert_ne!(worktree.path,source);
         assert_eq!(git_local(&source,&["rev-parse","HEAD"]),base);

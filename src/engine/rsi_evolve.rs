@@ -704,6 +704,12 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     if git(context, &source, &["rev-parse", "HEAD"]).await? != base {
         return Err("원본 소스가 시작 시점과 다릅니다. 다시 시작하세요.".into());
     }
+    if let Some(recorded_branch)=input["rsiSourceBranch"].as_str().filter(|value|!value.is_empty()) {
+        let current_branch=git(context,&source,&["rev-parse","--abbrev-ref","HEAD"]).await?;
+        if current_branch!=recorded_branch {
+            return Err("자기개선 대기 중 원본 브랜치가 바뀌었습니다. 같은 브랜치에서 다시 시작하세요.".into());
+        }
+    }
     let limits = limits(&input["limits"])?;
     let parent = context.state.config.data_dir.join("rsi-labs");
     std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
@@ -4043,6 +4049,7 @@ mod tests {
         git(&context, &source, &["add", "."]).await.unwrap();
         git(&context, &source, &["-c","user.name=Test","-c","user.email=test@localhost","commit","-qm","controlled worker"]).await.unwrap();
         let base = git(&context, &source, &["rev-parse", "HEAD"]).await.unwrap();
+        git(&context,&source,&["checkout","-b","dominion-sub3"]).await.unwrap();
         let cases=["zero_boundary","negative_one","negative_two","negative_three","positive_one","positive_two","positive_three","positive_four"]
             .into_iter().enumerate().map(|(i,name)|json!({"id":name,"domain":if i%2==0{"boundary"}else{"retention"},"holdout":i<2,"filter":format!("cases::{name}")})).collect::<Vec<_>>();
         context.checkpoint(json!({"input":{"rsiNativeApproved":true,"rsiSourceDir":source,"rsiBaseCommit":base,
@@ -4110,7 +4117,7 @@ mod tests {
         assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.is_err(),
             "main must never be an application target");
         assert_eq!(git(&context,&source,&["rev-parse","HEAD"]).await.unwrap(),base);
-        git(&context,&source,&["checkout","-b","dominion-sub3"]).await.unwrap();
+        git(&context,&source,&["checkout","dominion-sub3"]).await.unwrap();
         std::fs::write(source.join("my-research.txt"),"keep my unrelated research").unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
         context.checkpoint(json!({"status":"completed"})).unwrap();
