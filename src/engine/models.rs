@@ -2271,11 +2271,10 @@ pub fn start_download_at_revision(
     for path in &files {
         let target = dir.join(path);
         let partial = partial_download_path(&target, revision);
-        let downloaded = if target.is_file() {
-            std::fs::metadata(&target).map(|meta| meta.len()).unwrap_or(0)
-        } else {
-            std::fs::metadata(&partial).map(|meta| meta.len()).unwrap_or(0)
-        };
+        // A pre-existing target may belong to a different revision. Until the
+        // worker validates its hash, only actual .part bytes are progress.
+        let downloaded = std::fs::metadata(&partial)
+            .map(|meta| meta.len()).unwrap_or(0);
         total += downloaded;
         entries.push(json!({"path": path, "downloaded": downloaded, "total": 0}));
     }
@@ -2390,6 +2389,38 @@ async fn hf_blob_metadata(
 
 /// A 206 response is safe to append only when the server confirms that the
 /// returned byte range starts exactly after the partial file on disk.
+fn promote_download_file(partial: &Path, target: &Path) -> Result<(), String> {
+    let _lock = DOWNLOAD_COMMIT.lock()
+        .map_err(|_| "모델 파일 변경 잠금을 획득하지 못했습니다.".to_string())?;
+    if !partial.is_file() {
+        return Err("완료된 부분 파일을 찾을 수 없습니다.".into());
+    }
+    // On macOS/Linux this is an atomic replacement. Windows may reject a
+    // rename onto an existing file; preserve the old model as a fallback.
+    match std::fs::rename(partial, target) {
+        Ok(()) => Ok(()),
+        Err(first) if target.is_file() => {
+            let backup = PathBuf::from(format!("{}.dominion-previous", target.display()));
+            if backup.exists() {
+                return Err(format!("이전 모델 백업 파일이 남아 있습니다: {}", backup.display()));
+            }
+            std::fs::rename(target, &backup).map_err(|error| error.to_string())?;
+            match std::fs::rename(partial, target) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&backup);
+                    Ok(())
+                }
+                Err(error) => {
+                    let restore = std::fs::rename(&backup, target);
+                    Err(format!("모델 교체 실패: {error}; 기존 모델 복구: {}",
+                        if restore.is_ok() { "완료" } else { "실패" }))
+                }
+            }
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn content_range_starts_at(header: Option<&str>, requested: u64) -> bool {
     let Some((range, total)) = header.and_then(|value| value.strip_prefix("bytes "))
         .and_then(|value| value.split_once('/')) else { return false };
@@ -2460,7 +2491,9 @@ async fn download_worker(state: AppState, job_id: String) {
                 file_sha256(&target).is_ok_and(|actual| actual == sha)
             });
             if size == 0 || expected == 0 || size != expected || !hash_ok {
-                let _ = std::fs::remove_file(&target);
+                // Do not erase an installed revision before the replacement
+                // has finished downloading and passed integrity checks.
+                files[index]["downloaded"] = json!(0);
             } else {
                 files[index]["downloaded"] = json!(size);
                 patch_download(
@@ -2496,9 +2529,9 @@ async fn download_worker(state: AppState, job_id: String) {
                 file_sha256(&partial).is_ok_and(|actual| actual == sha)
             });
             if expected > 0 && existing == expected && hash_ok {
-                if let Err(error) = tokio::fs::rename(&partial, &target).await {
+                if let Err(error) = promote_download_file(&partial, &target) {
                     patch_download(&state, &job_id, json!({
-                        "status": "failed", "error": error.to_string()
+                        "status": "failed", "error": error
                     }));
                     return;
                 }
@@ -2606,7 +2639,7 @@ async fn download_worker(state: AppState, job_id: String) {
         if job_status(&state, &job_id) != "downloading" {
             return;
         }
-        if declared > 0 && downloaded != declared {
+        if downloaded == 0 || (declared > 0 && downloaded != declared) {
             patch_download(
                 &state,
                 &job_id,
@@ -2630,11 +2663,7 @@ async fn download_worker(state: AppState, job_id: String) {
                 return;
             }
         }
-        let _commit = DOWNLOAD_COMMIT.lock().unwrap();
-        if target.exists() {
-            let _ = std::fs::remove_file(&target);
-        }
-        if let Err(error) = std::fs::rename(&partial, &target) {
+        if let Err(error) = promote_download_file(&partial, &target) {
             patch_download(
                 &state,
                 &job_id,
@@ -3007,6 +3036,33 @@ mod tests {
         assert_eq!(model["shards"], 2);
         assert_eq!(model["bytes"], 7);
         assert!(register_local(&state, &second.to_string_lossy()).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replacing_a_downloaded_model_keeps_the_new_bytes() {
+        let (state, dir) = temp_state();
+        let target = models_dir(&state).join("old.gguf");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"old").unwrap();
+        let partial = partial_download_path(&target, &"a".repeat(40));
+        std::fs::write(&partial, b"new").unwrap();
+        promote_download_file(&partial, &target).expect("promote");
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert!(!partial.exists());
+        assert!(!target.with_extension("gguf.dominion-previous").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_promotion_does_not_delete_existing_model() {
+        let (state, dir) = temp_state();
+        let target = models_dir(&state).join("old.gguf");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"old").unwrap();
+        let partial = partial_download_path(&target, &"b".repeat(40));
+        assert!(promote_download_file(&partial, &target).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
         let _ = std::fs::remove_dir_all(dir);
     }
 
