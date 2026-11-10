@@ -136,6 +136,9 @@ pub async fn execute(
         }
         "workspace_read_range" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
+            if isolated_rsi && crate::engine::rsi::sealed_measurement_path(&path.to_string_lossy()) {
+                return Err("개선 세대는 동결 평가 구현을 읽을 수 없습니다.".into());
+            }
             let start = args["startLine"].as_u64().unwrap_or(1).max(1);
             let requested_end = args["endLine"].as_u64().unwrap_or(start.saturating_add(199));
             let result = observed_read(ctx, &path, run_id).await?;
@@ -730,6 +733,9 @@ fn search_code_index(
     for file in ctx.store.all("code_index_file") {
         if file["indexId"].as_str()!=Some(index_id) {continue;}
         let path=file["path"].as_str().unwrap_or("");
+        if session["rsiRun"]==true && crate::engine::rsi::sealed_measurement_path(path) {
+            continue;
+        }
         let rank=score(path);
         if rank>0 {matches.push((rank,json!({"path":path,"kind":"file","name":path,"line":1})));}
         for symbol in file["symbols"].as_array().into_iter().flatten() {
