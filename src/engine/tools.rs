@@ -1163,7 +1163,10 @@ fn public_http_ip(ip: std::net::IpAddr) -> bool {
                 return public_http_ip(std::net::IpAddr::V4(v4));
             }
             let segments=v6.segments();
-            !(v6.is_unspecified() || v6.is_loopback() || v6.is_multicast()
+            // Restrict to global-unicast 2000::/3. Reject NAT64,
+            // site-local, documentation, and link-local translation ranges.
+            !((segments[0]&0xe000)!=0x2000
+                || v6.is_unspecified() || v6.is_loopback() || v6.is_multicast()
                 || (segments[0]&0xfe00)==0xfc00
                 || (segments[0]&0xffc0)==0xfe80
                 || (segments[0]&0xff00)==0x2000 && segments[0]==0x2001 && segments[1]==0xdb8)
@@ -1356,6 +1359,7 @@ mod tests {
             "http://127.0.0.1:4317/", "http://10.1.2.3/", "http://172.16.0.1/",
             "http://192.168.1.8/", "http://169.254.169.254/latest/meta-data/",
             "http://100.100.100.100/", "http://[::1]/", "http://[fc00::1]/",
+            "http://[64:ff9b::a9fe:a9fe]/",
             "http://localhost/", "http://service.internal/", "http://printer.local/"
         ] {
             let parsed=reqwest::Url::parse(url).unwrap();
