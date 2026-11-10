@@ -177,6 +177,7 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     let mut holdouts = 0usize;
     let mut improved_holdouts = 0usize;
     let mut holdout_domains = BTreeSet::new();
+    let mut holdout_evidence = Vec::new();
     let mut metric_gains = 0;
     let mut metric_losses = 0;
     let mut measurements = Vec::new();
@@ -208,9 +209,21 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
         if planned["domain"] == "improver" { meta_gains += mg; }
         measurements.push(json!({"id":id,"metrics":detail}));
         if planned["holdout"] == true {
+            let domain = planned["domain"].as_str()
+                .filter(|domain| !domain.trim().is_empty())
+                .ok_or("동결 holdout 사례의 도메인이 없습니다.")?;
             holdouts += 1;
-            holdout_domains.insert(planned["domain"].as_str().unwrap_or("").to_string());
-            if (!before && after) || mg > 0 { improved_holdouts += 1; }
+            holdout_domains.insert(domain.to_string());
+            let improved = (!before && after) || mg > 0;
+            if improved { improved_holdouts += 1; }
+            // Derived from the frozen plan and individual local measurements.
+            // The RSI coordinator must not infer transfers from domain counts.
+            holdout_evidence.push(json!({
+                "id":id,"domain":domain,
+                "baselinePass":before,"candidatePass":after,
+                "metricGains":mg,"metricRegressions":ml,
+                "improved":improved
+            }));
         }
     }
     let ready = plan.len() >= MIN_PAIRED_CASES
@@ -223,6 +236,7 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     Ok(json!({
         "pairedCases":plan.len(),"holdoutCases":holdouts,
         "holdoutDomains":holdout_domains.into_iter().collect::<Vec<_>>(),
+        "holdoutEvidence":holdout_evidence,
         "baselineSuccesses":baseline_successes,"candidateSuccesses":candidate_successes,
         "gains":gains,"regressions":losses+metric_losses,"improvedHoldouts":improved_holdouts,
         "metricGains":metric_gains,"metricRegressions":metric_losses,"metaGains":meta_gains,"measurements":measurements,
