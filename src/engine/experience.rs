@@ -1095,36 +1095,56 @@ pub fn record_rule_counterexamples(
 /// Merges duplicates and archives the least useful cases. Called by the
 /// learning worker so the bank does not grow without bound.
 pub fn consolidate(state: &AppState) -> Value {
-    let mut seen: HashMap<String, Value> = HashMap::new();
-    let mut archived = 0usize;
+    // Group every active experience before choosing a representative, so the
+    // result cannot depend on the order `all()` happened to return rows in.
+    let mut groups: HashMap<String, Vec<Value>> = HashMap::new();
     for record in state.store.all("experience") {
         if record["status"].as_str() != Some("active") {
             continue;
         }
         let key = format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}",
             record["partitionKey"].as_str().unwrap_or(""),
             match record["scope"].as_str() {
                 Some(scope) if scope == "shared" || scope == "global" => scope,
                 _ => record["agentId"].as_str().unwrap_or("default"),
             },
             record["signature"].as_str().unwrap_or(""),
-            record["outcome"].as_str().unwrap_or("")
+            record["outcome"].as_str().unwrap_or(""),
+            // A different lesson is a different solution, not a duplicate.
+            record["lesson"].as_str().unwrap_or("").trim()
         );
-        match seen.get(&key) {
-            Some(existing)
-                if existing["occurrences"].as_u64().unwrap_or(1)
-                    >= record["occurrences"].as_u64().unwrap_or(1) =>
+        groups.entry(key).or_default().push(record);
+    }
+    let mut archived = 0usize;
+    for (_, mut group) in groups {
+        group.sort_by(|a, b| {
+            b["occurrences"]
+                .as_u64()
+                .unwrap_or(1)
+                .cmp(&a["occurrences"].as_u64().unwrap_or(1))
+                .then_with(|| {
+                    b["lastSeenAt"]
+                        .as_str()
+                        .unwrap_or("")
+                        .cmp(a["lastSeenAt"].as_str().unwrap_or(""))
+                })
+                .then_with(|| {
+                    a["id"]
+                        .as_str()
+                        .unwrap_or("")
+                        .cmp(b["id"].as_str().unwrap_or(""))
+                })
+        });
+        for record in group.into_iter().skip(1) {
+            if let Some(mut old) = state
+                .store
+                .get("experience", record["id"].as_str().unwrap_or(""))
             {
-                if let Some(mut old) = state.store.get("experience", record["id"].as_str().unwrap_or("")) {
-                    old["status"] = json!("archived");
-                    old["archivedAt"] = json!(chrono::Utc::now().to_rfc3339());
-                    state.store.put("experience", &old);
-                    archived += 1;
-                }
-            }
-            _ => {
-                seen.insert(key, record);
+                old["status"] = json!("archived");
+                old["archivedAt"] = json!(chrono::Utc::now().to_rfc3339());
+                state.store.put("experience", &old);
+                archived += 1;
             }
         }
     }
@@ -1304,6 +1324,25 @@ mod tests {
         consolidate(&state);
         assert_eq!(state.store.get("experience", base["id"].as_str().unwrap()).unwrap()["status"], "active");
         assert_eq!(state.store.get("experience", "e2").unwrap()["status"], "archived");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn consolidation_is_independent_of_read_order() {
+        let (state, dir) = state();
+        let scope = MemoryScope::for_session(&state.store, "s", Some("a"));
+        let case = |id: &str, occurrences: u64, last: &str| json!({
+            "id":id,"scope":"shared","partitionKey":scope.partition_key,
+            "agentId":"a","signature":"same task","outcome":"failure","request":"same task",
+            "lesson":"same lesson","occurrences":occurrences,"status":"active","lastSeenAt":last
+        });
+        // Insert the weaker case first: the previous implementation kept it
+        // active when the stronger case arrived later.
+        state.store.put("experience", &case("weaker", 1, "2026-01-02")).unwrap();
+        state.store.put("experience", &case("stronger", 5, "2026-01-01")).unwrap();
+        consolidate(&state);
+        assert_eq!(state.store.get("experience","stronger").unwrap()["status"], "active");
+        assert_eq!(state.store.get("experience","weaker").unwrap()["status"], "archived");
         let _ = std::fs::remove_dir_all(dir);
     }
 

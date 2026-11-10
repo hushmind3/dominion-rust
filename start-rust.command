@@ -27,7 +27,14 @@ else
   echo "Using prebuilt Rust server."
 fi
 
-if [ ! -f web/dist/index.html ] || [ "${DOMINION_REBUILD_WEB:-0}" = "1" ]; then
+web_build_needed() {
+  [ -f web/dist/index.html ] || return 0
+  [ "${DOMINION_REBUILD_WEB:-0}" = "1" ] && return 0
+  find web/src web/shared web/index.html web/package.json web/vite.config.ts web/tsconfig.json \
+    -type f -newer web/dist/index.html -print -quit 2>/dev/null | grep -q .
+}
+
+if web_build_needed; then
   if command -v npm >/dev/null 2>&1; then
     echo "Building React bundle…"
     (cd web && { [ -d node_modules ] || npm install --no-audit --no-fund; } && npm run build)

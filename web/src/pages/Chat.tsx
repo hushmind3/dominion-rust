@@ -82,7 +82,8 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const viewingTurn=turnSession===current&&(!savedMessageId||!messages.some(message=>message.id===savedMessageId));
  const slashItems=slashOpen?slashCandidates(input,agents.value,models):[];
  const transcriptRevision=JSON.stringify([messages.at(-1)?.id,messages.length,viewingTurn?live.length:0,viewingTurn?thought.length:0,viewingTurn?toolStatus:'',approval?.id]);
- useEffect(()=>{if(!current){setServerUsage(0);return}let alive=true;get<{totalTokens?:number}>('/api/sessions/'+encodeURIComponent(current)+'/usage').then(usage=>{if(alive)setServerUsage(Number(usage.totalTokens)||0)}).catch(()=>{});return()=>{alive=false}},[current,transcriptRevision])
+ const usageRevision=JSON.stringify([messages.at(-1)?.id,messages.length]);
+ useEffect(()=>{if(!current){setServerUsage(0);return}let alive=true;get<{totalTokens?:number}>('/api/sessions/'+encodeURIComponent(current)+'/usage').then(usage=>{if(alive)setServerUsage(Number(usage.totalTokens)||0)}).catch(()=>{});return()=>{alive=false}},[current,usageRevision])
  const {scrollRef,onScroll,jumpDown}=useTranscriptScroll(current,transcriptRevision);
  const modelPanel=useAnchoredPanel(modelMenu,()=>setModelMenu(false),380);
  const permissionPanel=useAnchoredPanel(permissionOpen,()=>setPermissionOpen(false),300,'top');

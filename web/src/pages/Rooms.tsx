@@ -231,8 +231,12 @@ function RoomConversation({room,agents,providers,openList,showList,openSession,o
    }
   }
   window.addEventListener('dominion-refresh',update);window.addEventListener('dominion-room-event',stream)
-  const timer=setInterval(()=>void load(),2500)
-  return()=>{mounted.current=false;clearTimeout(debounce);clearInterval(timer);window.removeEventListener('dominion-refresh',update);window.removeEventListener('dominion-room-event',stream)}
+  // SSE carries live events; this poll is only a fallback. Ten seconds and no
+  // hidden-tab traffic removes the duplicate 2.5s loop.
+  const timer=setInterval(()=>{if(!document.hidden)void load()},10000)
+  const onVisible=()=>{if(!document.hidden)void load()}
+  document.addEventListener('visibilitychange',onVisible)
+  return()=>{mounted.current=false;clearTimeout(debounce);clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);window.removeEventListener('dominion-refresh',update);window.removeEventListener('dominion-room-event',stream)}
  },[room.id,load])
  useEffect(()=>{if(!dirty)setDraft(draftOf(current))},[current,dirty])
  useEffect(()=>{setTargets(previous=>previous.filter(id=>current.agentIds.includes(id)))},[current.agentIds])
