@@ -3083,7 +3083,9 @@ fn improvement_action_observation(generation:&Value, diff_bytes:u64) -> Value {
     json!({
         "mode":mode,
         "followed":observed,
-        "status":if generation["accepted"]==true {"verified_adoption"}
+        "status":if generation["accepted"]==true
+                    && generation["pairedRevalidated"]==true {"verified_adoption"}
+                 else if generation["accepted"]==true {"reported_adoption_unverified"}
                  else if observed {"attempted"}
                  else {"not_followed"},
         "completedWrites":completed_writes,
@@ -3684,10 +3686,14 @@ mod tests {
         assert_eq!(attempted["followed"],true);
         assert_eq!(attempted["status"],"attempted");
         let selected=improvement_action_observation(&json!({
-            "accepted":true,"candidateId":"paired-1",
+            "accepted":true,"pairedRevalidated":true,"candidateId":"paired-1",
             "improvementDirective":{"mode":"implement_research"},
             "toolsUsed":[]}),0);
         assert_eq!(selected["status"],"verified_adoption");
+        let unproven=improvement_action_observation(&json!({
+            "accepted":true,"pairedRevalidated":false,"candidateId":"paired-1",
+            "improvementDirective":{"mode":"implement_research"}}),0);
+        assert_eq!(unproven["status"],"reported_adoption_unverified");
     }
 
     #[test]
