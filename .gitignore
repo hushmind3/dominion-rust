@@ -8,3 +8,4 @@ web/dist
 /bench
 
 .dominion/
+web/tsconfig.tsbuildinfo
