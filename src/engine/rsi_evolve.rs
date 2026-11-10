@@ -2175,7 +2175,12 @@ async fn run_loop(
         // The earlier preflight only sees the base prompt. Inherited research,
         // source excerpts and method feedback can make the *real* generation
         // substantially larger; never spawn a paid worker that cannot fit.
-        if !generation_fits_remaining_budget(record,&child_input) {
+        // Controlled native fixtures have no model/provider and spend no
+        // prompt tokens. Do not block those real-binary lineage tests merely
+        // because their small synthetic budget cannot fit an LLM prompt.
+        let model_bound=child_input["model"].as_str().is_some_and(|s|!s.is_empty())
+            && child_input["providerId"].as_str().is_some_and(|s|!s.is_empty());
+        if model_bound && !generation_fits_remaining_budget(record,&child_input) {
             return Ok("token_budget".into());
         }
         // Record prompt composition so real-model savings can be measured
