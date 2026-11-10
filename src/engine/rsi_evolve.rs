@@ -1094,6 +1094,22 @@ fn choose_focus_files(
         .collect::<Vec<_>>();
     prior.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     for generation in prior.iter().take(8) {consider(generation,true);}
+    // Cross-objective transfer: an independently verified improvement in the
+    // same capability may guide a different owner's task. Only a still-current
+    // adopted source hash receives credit; a failure in another task cannot
+    // poison this task. Explicit owner objective and lexical relevance remain
+    // authoritative in the source ranker.
+    if !domain.is_empty() {
+        let mut transfer=state.store.all("rsi_generation").into_iter()
+            .filter(|generation|generation["knowledgePartition"]==partition
+                && generation["objectiveId"]!=objective_id
+                && generation["domain"]==domain
+                && generation["accepted"]==true
+                && generation["acceptedSourceHashes"].is_object())
+            .collect::<Vec<_>>();
+        transfer.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
+        for generation in transfer.iter().take(8) {consider(generation,true);}
+    }
     crate::engine::code_index::rank_focus_files_with_feedback(
         state,index_id,objective,domain,&failures,&successes,policy,2
     )
@@ -3753,6 +3769,60 @@ mod tests {
         crate::engine::code_index::refresh(&state,&root).unwrap();
         let unverified=choose_focus_files(&state,&input,&[],None);
         assert_eq!(unverified[0]["path"],"src/alpha.rs");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+
+    #[test]
+    fn verified_improvement_transfers_to_new_goal_in_same_capability() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let common="fn memory_recall() { println!(\"memory recall\"); }\n";
+        std::fs::write(root.join("src/alpha.rs"),common).unwrap();
+        std::fs::write(root.join("src/beta.rs"),common).unwrap();
+        let current=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let input=json!({"rsiIndexId":current["id"],
+            "rsiKnowledgeSource":root,"rsiObjective":"memory recall",
+            "rsiTargetDomain":"memory"});
+        assert_eq!(choose_focus_files(&state,&input,&[],None)[0]["path"],
+            "src/alpha.rs");
+        let beta=root.join("src/beta.rs");
+        std::fs::write(&beta,format!("{common}// verified revision\n")).unwrap();
+        let current=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let mut next=input.clone();
+        next["rsiIndexId"]=current["id"].clone();
+        assert_eq!(choose_focus_files(&state,&next,&[],None)[0]["path"],
+            "src/alpha.rs","a later revision alone is not a learned win");
+        let accepted_hash=crate::engine::code_index::indexed_source_hash(&state,
+            current["id"].as_str().unwrap(),"src/beta.rs").unwrap();
+        state.store.put("rsi_candidate",&json!({
+            "id":"transfer-patch","status":"verified",
+            "paths":["src/beta.rs"],
+            "evaluation":{"metrics":{"eligible":true,"regressions":0}}
+        })).unwrap();
+        let prior=json!({"id":"previous-objective",
+            "knowledgePartition":research_scope(&next).partition_key,
+            "objectiveId":crate::engine::memory::stable_id(&["different memory objective"]),
+            "domain":"memory","accepted":true,"candidateId":"transfer-patch",
+            "focusFiles":["src/beta.rs"],
+            "acceptedSourceHashes":{"src/beta.rs":accepted_hash},
+            "createdAt":"2026-11-11T00:00:00Z"});
+        state.store.put("rsi_generation",&prior).unwrap();
+        let learned=choose_focus_files(&state,&next,&[],None);
+        assert_eq!(learned[0]["path"],"src/beta.rs",
+            "a verified win must guide new tasks in the same capability");
+        assert_eq!(learned[0]["evidence"]["priorProductive"],1.0);
+        let mut unrelated=prior.clone();
+        unrelated["domain"]=json!("tools");
+        state.store.put("rsi_generation",&unrelated).unwrap();
+        assert_eq!(choose_focus_files(&state,&next,&[],None)[0]["path"],
+            "src/alpha.rs","cross-domain history must not override the owner's task");
+        unrelated["domain"]=json!("memory");
+        state.store.put("rsi_generation",&unrelated).unwrap();
+        std::fs::write(&beta,format!("{common}// changed again\n")).unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        assert_eq!(choose_focus_files(&state,&next,&[],None)[0]["path"],
+            "src/alpha.rs","stale accepted source hashes must not transfer");
         let _=std::fs::remove_dir_all(root);
     }
 
