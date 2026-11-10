@@ -933,46 +933,79 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
     text
 }
 
-/// Put the focus file's current text into the prompt so the generation can
-/// build an exact replacement without spending its budget on full reads.
-/// Autonomous generations without an explicit focus file still need the
-/// source in the prompt. Pick one or two domain-relevant files so the model
-/// does not spend its budget searching for them.
-fn auto_focus_files(lab: &std::path::Path, input: &Value) -> Vec<String> {
-    let domain = input["rsiSelectedDomain"]
-        .as_str()
-        .or_else(|| input["rsiDomain"].as_str())
-        .unwrap_or("");
-    let objective = input["rsiObjective"].as_str().unwrap_or("").to_lowercase();
-    let candidates: &[&str] = match domain {
-        "memory" => &["src/engine/memory.rs"],
-        "context" => &[
-            "src/engine/chat/continuity.rs",
-            "src/engine/chat/room_context.rs",
-        ],
-        "learning" => &["src/engine/experience.rs"],
-        "tools" => &["src/engine/tools.rs"],
-        "improver" => &["src/engine/rsi_evolve.rs", "src/engine/rsi.rs"],
-        _ if objective.contains("기억") || objective.contains("memory") => {
-            &["src/engine/memory.rs"]
+/// The domain score and the source target score are separate decisions.
+/// A failed research-only generation only down-ranks its previous files; it
+/// does not erase a verified source observation or count as an adopted patch.
+fn choose_focus_files(
+    state:&AppState, input:&Value, history:&[Value], policy:Option<&Value>,
+) -> Vec<Value> {
+    let Some(index_id)=input["rsiIndexId"].as_str() else {return Vec::new()};
+    let domain=input["rsiTargetDomain"].as_str().unwrap_or("");
+    // Autonomous RSI is not a learning-domain request just because its
+    // generic instruction mentions knowledge or experience. Use the chosen
+    // capability as the file query; explicit owner goals retain their text.
+    let objective=if input["rsiAutonomous"]==true {
+        domain
+    } else {input["rsiObjective"].as_str().unwrap_or("")};
+    let mut failures=BTreeMap::<String,u64>::new();
+    let mut successes=BTreeMap::<String,u64>::new();
+    let mut seen=BTreeSet::<String>::new();
+    let mut consider=|generation:&Value,cross_campaign:bool|{
+        let candidate=generation["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id))
+            .filter(|candidate|generation["accepted"]==true
+                && candidate["status"]=="verified"
+                && candidate["evaluation"]["metrics"]["eligible"]==true);
+        let failed=generation["accepted"]!=true
+            && generation["candidateId"].is_null()
+            && generation["newFindings"].as_u64().unwrap_or(0)==0;
+        if !failed && candidate.is_none() {return;}
+        let id=generation["id"].as_str().unwrap_or("");
+        if !id.is_empty() && !seen.insert(id.to_string()) {return;}
+        for path in generation["focusFiles"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            let earlier=generation["focusSelection"]["candidates"].as_array()
+                .into_iter().flatten().find(|row|row["path"]==path);
+            let pre_hash=earlier.and_then(|row|row["sourceHash"].as_str());
+            let accepted_hash=generation["acceptedSourceHashes"][path].as_str();
+            let current=crate::engine::code_index::indexed_source_hash(state,index_id,path);
+            if cross_campaign && ![pre_hash,accepted_hash].into_iter().flatten()
+                    .any(|hash|current.as_deref()==Some(hash)) {continue;}
+            // A verified improvement belongs to the post-adoption source,
+            // not the original file the model chose to inspect. A revert
+            // must revoke positive feedback even if the old hash matches.
+            let credited=candidate.as_ref().is_some_and(|candidate|
+                candidate["paths"].as_array().is_some_and(|paths|
+                    paths.iter().any(|item|item.as_str()==Some(path))))
+                && accepted_hash.is_some() && current.as_deref()==accepted_hash;
+            // Failed exploration is also revision-specific. A later patch
+            // must not keep punishing a file whose content has changed.
+            // Legacy local observations without a recorded hash can still
+            // be used within the same campaign for backward compatibility.
+            let failed_revision_matches=pre_hash
+                .is_some_and(|hash|current.as_deref()==Some(hash))
+                || (pre_hash.is_none() && !cross_campaign && current.is_some());
+            if credited {
+                *successes.entry(path.to_lowercase()).or_default()+=1;
+            } else if failed && failed_revision_matches {
+                *failures.entry(path.to_lowercase()).or_default()+=1;
+            }
         }
-        _ if objective.contains("문맥") || objective.contains("context") => {
-            &["src/engine/chat/continuity.rs"]
-        }
-        _ => &[],
     };
-    candidates
-        .iter()
-        .filter(|path| {
-            let full = lab.join(path);
-            full.is_file()
-                && std::fs::metadata(&full)
-                    .map(|meta| meta.len() <= 2 * 1024 * 1024)
-                    .unwrap_or(false)
-        })
-        .take(2)
-        .map(|path| path.to_string())
-        .collect()
+    for generation in history.iter().rev().take(8) {consider(generation,false);}
+    // Reuse only the same repository partition and same owner objective.
+    // Comparing source hashes prevents stale failures from poisoning a new
+    // revision, while cross-campaign records survive process restarts.
+    let partition=research_scope(input).partition_key;
+    let objective_id=crate::engine::memory::stable_id(&[objective]);
+    let mut prior=state.store.all("rsi_generation").into_iter()
+        .filter(|generation|generation["knowledgePartition"]==partition &&
+            generation["objectiveId"]==objective_id)
+        .collect::<Vec<_>>();
+    prior.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
+    for generation in prior.iter().take(8) {consider(generation,true);}
+    crate::engine::code_index::rank_focus_files_with_feedback(
+        state,index_id,objective,domain,&failures,&successes,policy,2
+    )
 }
 
 fn focus_file_context(state: &AppState, record: &Value, input: &Value) -> String {
@@ -2123,14 +2156,41 @@ async fn run_loop(
         child_input["rsiInheritedImplementations"]=json!(inherited_implementations);
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
+        let history=record["history"].as_array().cloned().unwrap_or_default();
+        let target_objective=selection_objective(&child_input);
+        let continuation=history.last()
+            .filter(|row|row["candidateId"].is_null()
+                && row["newFindings"].as_u64().unwrap_or(0)>0)
+            .and_then(|row|row["domain"].as_str())
+            .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
+        let trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
+        let suggested=child_input["rsiSelectedDomain"].as_str().map(str::to_string);
+        let (target_domain, target_selection, target_strategy)=select_generation_strategy(
+            &context.state,&history,&target_objective,continuation,trial,suggested,&head);
+        child_input["rsiTargetDomain"]=json!(target_domain);
+        child_input["rsiTargetPlan"]=json!({
+            "domain":target_domain,"selection":target_selection,
+            "strategy":target_strategy,"generatorCommit":head
+        });
         if child_input["rsiFocusFiles"]
-            .as_array()
-            .is_none_or(|files| files.is_empty())
-        {
-            child_input["rsiFocusFiles"] = json!(auto_focus_files(&lab, &child_input));
-            child_input["rsiAutoFocus"] = json!(true);
+            .as_array().is_none_or(|files|files.is_empty()) {
+            let policy=target_strategy["id"].as_str()
+                .and_then(|id|context.state.store.get("algorithm",id))
+                .or_else(||crate::engine::algorithms::active(&context.state,"selfimprove.search"));
+            let ranked=choose_focus_files(&context.state,&child_input,&history,policy.as_ref());
+            let selected=ranked.iter().filter_map(|row|row["path"].as_str())
+                .map(str::to_string).collect::<Vec<_>>();
+            child_input["rsiFocusFiles"]=json!(selected);
+            child_input["rsiAutoFocus"]=json!(true);
+            child_input["rsiFocusSelection"]=json!({
+                "source":"indexed_evidence","candidates":ranked,
+                "domain":target_domain,
+                "policyRevision":policy.as_ref().map(|row|row["revision"].clone()),
+                "sourceIndexId":child_input["rsiIndexId"]
+            });
         } else {
-            child_input["rsiAutoFocus"] = json!(false);
+            child_input["rsiAutoFocus"]=json!(false);
+            child_input["rsiFocusSelection"]=json!({"source":"user_selected"});
         }
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
@@ -2249,6 +2309,11 @@ async fn run_loop(
                 "calls":usage["calls"],"estimatedCalls":usage["estimatedCalls"]},
             "sourceContextChars":current["input"]["rsiFocusContextChars"],
             "totalPromptChars":current["input"]["rsiPromptContextChars"],
+            "focusFiles":current["input"]["rsiFocusFiles"],
+            "focusSelection":current["input"]["rsiFocusSelection"],
+            "knowledgePartition":research_scope(&current["input"]).partition_key,
+            "objectiveId":crate::engine::memory::stable_id(&[
+                current["input"]["rsiObjective"].as_str().unwrap_or("")]),
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
@@ -2301,6 +2366,16 @@ async fn run_loop(
                     generation["selection"] = json!(choice);
                     if eligible && choice == "candidate" {
                         let commit = adopt(context, &lab, &candidate, &head).await?;
+                        let mut accepted_hashes=serde_json::Map::new();
+                        for path in candidate["paths"].as_array().into_iter().flatten()
+                            .filter_map(Value::as_str) {
+                            if !crate::engine::rsi::safe_path(path) {continue;}
+                            if let Ok(bytes)=std::fs::read(lab.join(path)) {
+                                accepted_hashes.insert(path.to_string(),
+                                    json!(format!("{:x}",Sha256::digest(&bytes))));
+                            }
+                        }
+                        generation["acceptedSourceHashes"]=Value::Object(accepted_hashes);
                         generation["accepted"] = json!(true);
                         generation["acceptedCommit"] = json!(commit);
                         record["headCommit"] = json!(commit);
@@ -2831,20 +2906,26 @@ mod tests {
     }
 
     #[test]
-    fn auto_focus_files_picks_existing_domain_sources() {
-        let root = std::env::temp_dir().join(format!("auto-focus-{}", uuid::Uuid::new_v4()));
+    fn indexed_focus_finds_opaque_sources_and_model_can_explore_new_targets() {
+        let (state,root)=state();
         std::fs::create_dir_all(root.join("src/engine")).unwrap();
-        std::fs::write(root.join("src/engine/memory.rs"), "fn a() {}\n").unwrap();
-        assert_eq!(
-            auto_focus_files(&root, &json!({"rsiSelectedDomain":"memory"})),
-            vec!["src/engine/memory.rs".to_string()]
-        );
-        assert!(auto_focus_files(&root, &json!({"rsiSelectedDomain":"tools"})).is_empty());
-        assert_eq!(
-            auto_focus_files(&root, &json!({"rsiObjective":"기억 검색 비용을 줄여"})),
-            vec!["src/engine/memory.rs".to_string()]
-        );
-        let _ = std::fs::remove_dir_all(root);
+        std::fs::write(root.join("src/engine/opaque.rs"),
+            "fn dispatch() { let x = \"bm25\"; println!(\"{x}\"); }\n").unwrap();
+        std::fs::write(root.join("src/engine/neutral.rs"),
+            "fn unrelated() {}\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let input=json!({"rsiIndexId":index["id"],"rsiTargetDomain":"memory",
+            "rsiObjective":"bm25","rsiKnowledgeSource":root});
+        let ranked=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(ranked[0]["path"],"src/engine/opaque.rs");
+        let explorer=json!({"revision":"new-source-space",
+            "parameters":{"targetExpression":"novelty - sourceCost"}});
+        let unknown=json!({"rsiIndexId":index["id"],"rsiTargetDomain":"",
+            "rsiObjective":"uniqueunmatchedobjective","rsiKnowledgeSource":root});
+        assert!(choose_focus_files(&state,&unknown,&[],None).is_empty());
+        assert_eq!(choose_focus_files(&state,&unknown,&[],Some(&explorer)).len(),2,
+            "a model-authored policy can search beyond fixed filenames and keywords");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
