@@ -152,7 +152,7 @@ pub fn kind_label(kind: &str) -> &str {
 /// targeting formula. Unlike a hardcoded path table, these are measured from
 /// the current checkout and previous generations.
 pub const SELFIMPROVE_TARGET_FEATURES: &[&str] = &[
-    "pathEvidence", "symbolEvidence", "summaryEvidence", "bodyEvidence",
+    "pathEvidence", "symbolEvidence", "summaryEvidence", "bodyEvidence", "productiveEvidence",
     "domainEvidence", "repeatPenalty", "novelty", "sourceCost",
 ];
 
