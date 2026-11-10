@@ -156,6 +156,27 @@ fn gguf_shard_parts(path: &str) -> Option<(String, usize, usize)> {
         .then(|| (prefix.to_string(), number, total))
 }
 
+/// Local split GGUF imports and external registrations must include all
+/// numbered shards. A single shard is not a usable model.
+fn local_gguf_parts(file: &Path) -> Result<Vec<PathBuf>, String> {
+    let name = file.file_name().and_then(|name| name.to_str())
+        .ok_or("GGUF 파일 이름을 읽을 수 없습니다.")?;
+    let Some((prefix, number, total)) = gguf_shard_parts(name) else {
+        return Ok(vec![file.to_path_buf()]);
+    };
+    if number != 1 {
+        return Err("분할 GGUF 모델의 첫 번째 조각을 선택하세요.".into());
+    }
+    let parent = file.parent().unwrap_or_else(|| Path::new("."));
+    let parts = (1..=total)
+        .map(|index| parent.join(format!("{prefix}-{index:05}-of-{total:05}.gguf")))
+        .collect::<Vec<_>>();
+    if parts.iter().any(|part| !part.is_file()) {
+        return Err("분할 GGUF 모델의 조각이 누락되었습니다. 같은 폴더에 모든 조각을 두세요.".into());
+    }
+    Ok(parts)
+}
+
 fn gguf_download_options(siblings: &[Value]) -> Vec<Value> {
     let mut options = Vec::new();
     let mut groups = std::collections::BTreeMap::<
@@ -1326,15 +1347,21 @@ pub fn import_local(state: &AppState, file_path: &str) -> Result<Value, String> 
     if extension != "gguf" {
         return Err("지금은 GGUF 파일만 가져올 수 있습니다.".into());
     }
+    let parts = local_gguf_parts(&source)?;
     let dir = models_dir(state);
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let name = source
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
         .ok_or("파일 이름이 없습니다.")?;
-    let target = dir.join(&name);
-    if source != target {
-        std::fs::copy(&source, &target).map_err(|error| error.to_string())?;
+    // Preserve every sibling when importing a sharded model. Copying only the
+    // selected first shard made it disappear from the installed-model list.
+    for part in parts {
+        let part_name = part.file_name().ok_or("GGUF 조각 파일 이름이 없습니다.")?;
+        let target = dir.join(part_name);
+        if part != target {
+            std::fs::copy(&part, &target).map_err(|error| error.to_string())?;
+        }
     }
     Ok(installed(state)
         .into_iter()
@@ -1346,10 +1373,14 @@ fn external_model(id: &str, path: &Path) -> Option<Value> {
     let label = path.file_name()?.to_str()?;
     let metadata = path.metadata().ok()?;
     if metadata.is_file() && label.to_ascii_lowercase().ends_with(".gguf") {
+        let parts = local_gguf_parts(path).ok()?;
+        let bytes = parts.iter().try_fold(0u64, |sum, part| {
+            sum.checked_add(part.metadata().ok()?.len())
+        })?;
         return Some(json!({
             "id": format!("external:{id}"), "repo": label, "label": label,
-            "source": "external", "format": "gguf", "bytes": metadata.len(),
-            "externalPath": path, "installedAt": null
+            "source": "external", "format": "gguf", "bytes": bytes,
+            "shards": parts.len(), "externalPath": path, "installedAt": null
         }));
     }
     if metadata.is_dir() && path.join("config.json").is_file() {
@@ -2319,6 +2350,19 @@ async fn hf_blob_metadata(
     map
 }
 
+/// A 206 response is safe to append only when the server confirms that the
+/// returned byte range starts exactly after the partial file on disk.
+fn content_range_starts_at(header: Option<&str>, requested: u64) -> bool {
+    let Some((range, total)) = header.and_then(|value| value.strip_prefix("bytes "))
+        .and_then(|value| value.split_once('/')) else { return false };
+    let Some((start, end)) = range.split_once('-') else { return false };
+    let (Ok(start), Ok(end)) = (start.parse::<u64>(), end.parse::<u64>()) else {
+        return false;
+    };
+    start == requested && end >= start
+        && (total == "*" || total.parse::<u64>().is_ok_and(|n| n > end))
+}
+
 async fn download_worker(state: AppState, job_id: String) {
     use futures_util::StreamExt;
     if !active_downloads()
@@ -2374,7 +2418,7 @@ async fn download_worker(state: AppState, job_id: String) {
             let hash_ok = remote_sha.as_deref().is_none_or(|sha| {
                 file_sha256(&target).is_ok_and(|actual| actual == sha)
             });
-            if (expected > 0 && size != expected) || !hash_ok {
+            if size == 0 || (expected > 0 && size != expected) || !hash_ok {
                 let _ = std::fs::remove_file(&target);
             } else {
                 files[index]["downloaded"] = json!(size);
@@ -2411,8 +2455,14 @@ async fn download_worker(state: AppState, job_id: String) {
                 file_sha256(&partial).is_ok_and(|actual| actual == sha)
             });
             if expected > 0 && existing == expected && hash_ok {
-                let _ = tokio::fs::rename(&partial, &target).await;
+                if let Err(error) = tokio::fs::rename(&partial, &target).await {
+                    patch_download(&state, &job_id, json!({
+                        "status": "failed", "error": error.to_string()
+                    }));
+                    return;
+                }
                 files[index]["downloaded"] = json!(existing);
+                files[index]["total"] = json!(expected);
                 continue;
             }
             let _ = tokio::fs::remove_file(&partial).await;
@@ -2432,6 +2482,24 @@ async fn download_worker(state: AppState, job_id: String) {
             return;
         }
         let append = existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        if append && !content_range_starts_at(
+            response.headers().get(reqwest::header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok()),
+            existing,
+        ) {
+            // Never append unknown bytes onto a valid partial download.
+            // Discard it so the next resume starts from byte zero.
+            let _ = tokio::fs::remove_file(&partial).await;
+            patch_download(&state, &job_id, json!({
+                "status": "failed",
+                "error": "서버의 이어받기 바이트 구간이 일치하지 않습니다. 다시 재개하면 처음부터 다운로드합니다."
+            }));
+            return;
+        }
+        let remote_size = blobs.get(&path).map(|(size, _)| *size).unwrap_or(0);
+        let response_size = response.content_length()
+            .unwrap_or(0).saturating_add(if append { existing } else { 0 });
+        let declared = if remote_size > 0 { remote_size } else { response_size };
         let mut output = match tokio::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -2450,7 +2518,6 @@ async fn download_worker(state: AppState, job_id: String) {
                 return;
             }
         };
-        let declared = response.content_length().unwrap_or(0).saturating_add(if append { existing } else { 0 });
         files[index]["total"] = json!(declared);
         let mut downloaded = if append { existing } else { 0 };
         let mut stream = response.bytes_stream();
@@ -2864,6 +2931,52 @@ mod tests {
         assert_eq!(models[0]["id"], "split/model-00001-of-00003.gguf");
         assert_eq!(models[0]["bytes"], 6);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn split_gguf_import_copies_all_parts_and_rejects_incomplete_sets() {
+        let (state, dir) = temp_state();
+        let source_dir = dir.join("external");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let first = source_dir.join("model-00001-of-00003.gguf");
+        std::fs::write(&first, b"a").unwrap();
+        assert!(import_local(&state, &first.to_string_lossy()).is_err());
+        assert!(!models_dir(&state).join("model-00001-of-00003.gguf").exists());
+        for i in 2..=3 {
+            std::fs::write(source_dir.join(format!("model-{i:05}-of-00003.gguf")), b"bb").unwrap();
+        }
+        let imported = import_local(&state, &first.to_string_lossy()).unwrap();
+        assert_eq!(imported["id"], "model-00001-of-00003.gguf");
+        assert_eq!(imported["bytes"], 5);
+        for i in 1..=3 {
+            assert!(models_dir(&state).join(format!("model-{i:05}-of-00003.gguf")).exists());
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn external_split_gguf_registration_needs_every_part() {
+        let (state, dir) = temp_state();
+        let first = dir.join("model-00001-of-00002.gguf");
+        let second = dir.join("model-00002-of-00002.gguf");
+        std::fs::write(&first, b"aaa").unwrap();
+        assert!(register_local(&state, &first.to_string_lossy()).is_err());
+        std::fs::write(&second, b"bbbb").unwrap();
+        let model = register_local(&state, &first.to_string_lossy()).unwrap();
+        assert_eq!(model["shards"], 2);
+        assert_eq!(model["bytes"], 7);
+        assert!(register_local(&state, &second.to_string_lossy()).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resumable_download_rejects_misaligned_content_range() {
+        assert!(content_range_starts_at(Some("bytes 1024-2047/4096"), 1024));
+        assert!(content_range_starts_at(Some("bytes 1024-2047/*"), 1024));
+        assert!(!content_range_starts_at(Some("bytes 0-1023/4096"), 1024));
+        assert!(!content_range_starts_at(Some("bytes 1024-2047/2047"), 1024));
+        assert!(!content_range_starts_at(Some("bytes 1024-1023/4096"), 1024));
+        assert!(!content_range_starts_at(None, 1024));
     }
 
     #[test]
