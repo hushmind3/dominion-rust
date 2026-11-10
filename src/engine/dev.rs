@@ -505,7 +505,7 @@ async fn install_rsi_source(state:&AppState,input:&Value)->Result<(Vec<String>,V
     let application=crate::engine::rsi_worktree::apply_campaign_to_sub(state,id,commit).await.map_err(|e|(vec![],e))?;
     let staged=state.config.data_dir.join("rsi-web").join(uuid::Uuid::new_v4().to_string());
     let build_target=state.config.data_dir.join("rsi-build").join("generator");
-    let mut logs=vec!["검증된 계보를 dominion-sub에 반영했습니다. 실행 중인 서버는 빌드가 끝날 때까지 유지합니다.".into()];
+    let mut logs=vec![format!("검증된 계보를 {}에 반영했습니다. 실행 중인 서버는 빌드가 끝날 때까지 유지합니다.",application["branch"].as_str().unwrap_or("작업 브랜치"))];
     let commands=vec![
         (crate::engine::rsi_worktree::cargo_executable(),vec!["build".into(),"--locked".into(),"--release".into(),"--bin".into(),"dominion-rust".into(),"--target-dir".into(),build_target.to_string_lossy().to_string()],900),
         (PathBuf::from(npm()),vec!["--prefix".into(),"web".into(),"run".into(),"typecheck".into()],180),
