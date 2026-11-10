@@ -4330,8 +4330,9 @@ mod tests {
             "Two measured domains with only source-domain gain are not transfer");
         let transferred = verified(false,true);
         assert!(meta_transfer_proven(&[transferred.clone()]));
-        assert!(capability_demonstrated(&[
-            transferred.clone(),only_source_gain.clone(),only_source_gain.clone()]));
+        assert!(!capability_demonstrated(&[
+            transferred.clone(),only_source_gain.clone(),only_source_gain.clone()]),
+            "Repeated evidence without a new compiled generator chain is not recursion");
         let broken = json!({"accepted":false,"evaluation":{"verdict":"regressed"}});
         assert!(!capability_demonstrated(&[
             transferred,broken,only_source_gain.clone(),
