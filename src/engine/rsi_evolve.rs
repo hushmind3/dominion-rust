@@ -1286,6 +1286,18 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
     let name = body["name"].as_str().filter(|s| !s.trim().is_empty() && s.chars().count() <= 100)
         .ok_or("100자 이내의 절차 이름이 필요합니다.")?;
     let domain = body["domain"].as_str().filter(|d| DOMAINS.contains(d)).ok_or("유효한 분야가 필요합니다.")?;
+    let transfer_domains=body.get("transferDomains").map(|value|{
+        let domains=value.as_array().ok_or("transferDomains는 분야 배열이어야 합니다.")?;
+        if domains.len()>5 {return Err("다른 분야 전이는 최대 5개까지 허용됩니다.");}
+        let mut unique=BTreeSet::new();
+        for item in domains {
+            let target=item.as_str().ok_or("전이 분야는 문자열이어야 합니다.")?;
+            if !DOMAINS.contains(&target) || target==domain || !unique.insert(target.to_string()) {
+                return Err("전이 대상은 중복되지 않는 다른 유효 분야여야 합니다.");
+            }
+        }
+        Ok(unique.into_iter().collect::<Vec<_>>())
+    }).transpose()?.unwrap_or_default();
     let verification = crate::engine::procedure::normalize(&body["verification"]);
     if verification["type"] != "procedure"
         || verification["nodes"].as_array().is_none_or(Vec::is_empty)
@@ -1309,9 +1321,10 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
             return Err("파일 내용 검증에는 명시적인 기대 값이 필요합니다.".into());
         }
     }
-    let revision = format!("{:x}", Sha256::digest(json!([domain, &verification]).to_string().as_bytes()));
+    let revision = format!("{:x}", Sha256::digest(json!([domain, &transfer_domains, &verification]).to_string().as_bytes()));
     let method = json!({"id":format!("rsi-method-{revision}"),"revision":revision,"name":name,
-        "domain":domain,"verification":verification,"status":"candidate",
+        "domain":domain,"transferDomains":transfer_domains,
+        "verification":verification,"status":"candidate",
         "assistanceMode":"harness_assisted","description":body["description"],
         "sourceGenerationJobId":session["rsiGenerationJobId"]});
     if !session["rsiMethodProposals"].is_array() { session["rsiMethodProposals"] = json!([]); }
@@ -1333,11 +1346,20 @@ fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective
         .filter_map(|m|m["id"].as_str()).collect::<BTreeSet<_>>();
     for record in &records {
         for method in record["executableMethods"].as_array().into_iter().flatten() {
-            if method["domain"] != domain
+            let original_domain=method["domain"].as_str()==Some(domain);
+            let transferable=!original_domain
+                && method["transferDomains"].as_array().is_some_and(|domains|
+                    domains.iter().any(|item|item.as_str()==Some(domain)))
+                // A generated suggestion cannot transfer itself. It must
+                // first work in its original domain and be accepted.
+                && method["status"]=="executable"
+                && method["successfulApplications"].as_u64().unwrap_or(0)>0;
+            if !(original_domain || transferable)
                 || blocked.contains(method["id"].as_str().unwrap_or(""))
                 || !matches!(method["status"].as_str(), Some("candidate" | "executable"))
                 || !crate::engine::procedure::applies(method, objective, None, None) { continue; }
             let mut method = method.clone();
+            if transferable { method["rsiTransferTrial"]=json!(true); }
             method["rsiMethodExperienceId"] = record["id"].clone();
             methods.push(method);
         }
@@ -1433,6 +1455,8 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             method["successfulApplications"] = json!(method["successfulApplications"].as_u64().unwrap_or(0)+1);
         }
         let application = json!({"jobId":generation["jobId"],"executionId":receipt["executionId"],
+            "domain":generation["domain"],
+            "crossDomain":generation["domain"]!=method["domain"],
             "operationIds":receipt["operationIds"],
             "postconditionsPassed":if !ok && !violated {Value::Null}else{json!(ok)},
             "verificationVerdict":if violated {"violated"}else if ok {"passed"}else{"inconclusive"},
@@ -1441,6 +1465,17 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             "reuse":method["status"],"gain":"observed_association_not_causal_proof"});
         if !method["applications"].is_array() {method["applications"]=json!([]);}
         method["applications"].as_array_mut().unwrap().push(application);
+        // Record a transfer only after the procedure actually followed its
+        // verified tool plan AND the descendant change was independently adopted.
+        if ok && generation["accepted"]==true
+            && generation["domain"].as_str().is_some_and(|d|d!=method["domain"].as_str().unwrap_or("")) {
+            let target=generation["domain"].clone();
+            if !method["transferVerifiedDomains"].is_array() {
+                method["transferVerifiedDomains"]=json!([]);
+            }
+            let domains=method["transferVerifiedDomains"].as_array_mut().unwrap();
+            if !domains.contains(&target) {domains.push(target);}
+        }
         state.store.put("experience", &record);
     }
     receipts
@@ -4890,6 +4925,32 @@ mod tests {
             "revision": format!("revision-{name}"),
             "parameters": {"expression": expression}
         })
+    }
+
+    #[test]
+    fn verified_executable_method_can_be_retested_in_an_explicit_new_domain() {
+        let (state,root)=state();
+        let partition=research_scope(&json!({"rsiSourceDir":root})).partition_key;
+        let method=json!({"id":"learned-method","revision":"v1","domain":"memory",
+            "transferDomains":["tools"],"status":"executable","successfulApplications":1,
+            "verification":{"type":"procedure","appliesTo":{"requestContains":["search"]},
+                "nodes":[{"id":"find","tool":"code_search","arguments":{"query":"search"}}],
+                "edges":[],"after":[{"kind":"tool_called","tool":"code_search"}]}});
+        state.store.put("experience",&json!({"id":"research","status":"active",
+            "partitionKey":partition,"executableMethods":[method.clone()]})).unwrap();
+        let transfer=applicable_methods(&state,&partition,"tools","search indexing");
+        assert_eq!(transfer.len(),1);
+        assert_eq!(transfer[0]["rsiTransferTrial"],true);
+        assert!(applicable_methods(&state,&partition,"ui","search indexing").is_empty());
+        let mut unverified=method;
+        unverified["status"]=json!("candidate");
+        unverified["successfulApplications"]=json!(0);
+        state.store.put("experience",&json!({"id":"research","status":"active",
+            "partitionKey":partition,"executableMethods":[unverified]})).unwrap();
+        assert!(applicable_methods(&state,&partition,"tools","search indexing").is_empty(),
+            "unproven methods cannot claim cross-domain success");
+        assert_eq!(applicable_methods(&state,&partition,"memory","search indexing").len(),1);
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
