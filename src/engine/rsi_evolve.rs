@@ -895,7 +895,15 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
         generations.extend(prior["history"].as_array().cloned().unwrap_or_default());
     }
     generations.extend(record["history"].as_array().cloned().unwrap_or_default());
+    let current_revision=record["headCommit"].as_str().filter(|sha|!sha.is_empty());
     for generation in generations {
+        // Read ranges and symbol offsets are revision-specific. An accepted
+        // patch may shift them, so never tell the next generator to skip a
+        // read that belongs to an older executable/source revision.
+        if current_revision.is_some()
+            && generation["generatorCommit"].as_str()!=current_revision {
+            continue;
+        }
         let Some(job_id) = generation["jobId"].as_str() else { continue };
         let Some(session_id) = state
             .store
@@ -2888,14 +2896,20 @@ mod tests {
         assert_eq!(research_digest(&state, &json!({}), &json!({"history":[]})), "");
         // Only the verified selected lineage may inherit source-specific reads.
         let source="a".repeat(40);let fingerprint="b".repeat(64);
-        state.store.put("rsi_campaign", &json!({"id":"digest-prior","history":[{"jobId":"digest-job"}],
+        state.store.put("rsi_campaign", &json!({"id":"digest-prior",
+            "history":[{"jobId":"digest-job","generatorCommit":"c".repeat(40)}],
             "sourceDir":"/source","sourceBranch":"dominion-sub4","baseCommit":source,
             "headCommit":"c".repeat(40),"sourceFingerprint":fingerprint}));
-        let record=json!({"history":[],"sourceDir":"/source","sourceBranch":"dominion-sub4",
+        let record=json!({"history":[],"headCommit":"c".repeat(40),
+            "sourceDir":"/source","sourceBranch":"dominion-sub4",
             "baseCommit":source,"sourceFingerprint":fingerprint,
             "lineage":{"reused":true,"selectedCommit":"c".repeat(40)}});
         let continued = research_digest(&state, &json!({"rsiContinueFrom":"digest-prior"}), &record);
         assert!(continued.contains("src/engine/memory.rs 10-20"));
+        let mut evolved=record.clone();
+        evolved["headCommit"]=json!("d".repeat(40));
+        assert_eq!(research_digest(&state,&json!({"rsiContinueFrom":"digest-prior"}),&evolved),"",
+            "line offsets from a previous source revision are not reusable");
         let mut sibling=record.clone();
         sibling["sourceBranch"]=json!("dominion-sub3");
         assert_eq!(research_digest(&state,&json!({"rsiContinueFrom":"digest-prior"}),&sibling),"",
