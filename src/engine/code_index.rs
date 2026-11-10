@@ -615,18 +615,22 @@ pub fn prompt_context(
     let files = index_files(state, meta["id"].as_str().unwrap_or(""));
     let mut block = format!("## 저장된 코드 인덱스\n파일 {}개 / 심볼 {}개 / 테스트 {}개. 지문 {}\n",
         meta["files"], meta["symbols"], meta["tests"], meta["fingerprint"]);
-    block.push_str("코드와 전체 파일 지도는 DB에 있습니다. code_search로 관련 심볼·줄 번호를 찾고 workspace_read_range로 필요한 부분만 읽으세요.\n\n### 모듈 지도\n");
-    for module in meta["modules"].as_array().into_iter().flatten() {
-        let line=format!("- {}: 파일 {}, 심볼 {}\n", module["module"].as_str().unwrap_or(""), module["files"], module["symbols"]);
-        if block.chars().count()+line.chars().count()>MAP_MAX_CHARS {break;}
-        block.push_str(&line);
-    }
+    block.push_str("코드 원문은 DB의 위치 정보로 찾아 필요한 줄만 읽으세요. 아래 대상 심볼에 이미 있는 위치를 다시 검색할 필요는 없습니다.\n");
+    let per_file=(MAP_MAX_CHARS.saturating_sub(block.chars().count()+400))/focus.len().clamp(1,8);
     for relative in focus.iter().take(8) {
         let Some(file)=files.iter().find(|file|file["path"].as_str()==Some(relative)) else {continue};
-        let symbols=file["symbols"].as_array().into_iter().flatten().take(14)
-            .map(|symbol|format!("{}:{}",symbol["name"].as_str().unwrap_or(""),symbol["line"]))
-            .collect::<Vec<_>>().join(", ");
-        let line=format!("\n대상 {} ({}줄, hash={}): {}\n",relative,file["lines"],file["hash"],symbols);
+        let mut line=format!("\n대상 {} ({}줄): ",relative,file["lines"]);
+        for symbol in file["symbols"].as_array().into_iter().flatten()
+            .filter(|symbol|!file["tests"].as_array().is_some_and(|tests|tests.contains(&symbol["name"]))) {
+            let item=format!("{}:{}, ",symbol["name"].as_str().unwrap_or(""),symbol["line"]);
+            if line.chars().count()+item.chars().count()>per_file {break;}
+            line.push_str(&item);
+        }
+        block.push_str(&line);block.push('\n');
+    }
+    block.push_str("\n### 모듈 지도\n");
+    for module in meta["modules"].as_array().into_iter().flatten() {
+        let line=format!("- {}: 파일 {}, 심볼 {}\n",module["module"].as_str().unwrap_or(""),module["files"],module["symbols"]);
         if block.chars().count()+line.chars().count()>MAP_MAX_CHARS {break;}
         block.push_str(&line);
     }
@@ -653,6 +657,20 @@ mod tests {
         assert!(focused.contains("target:1"));assert!(focused.contains("src/large.rs"));
         assert!(!focused.contains("SOURCE_ONLY_NOT_A_TASK"));
         assert!(focused.chars().count()<1000);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn focused_navigation_includes_late_implementation_symbols_before_module_overview(){
+        let (state,root)=temp_state();let source=root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        let mut text=(0..25).map(|i|format!("fn helper_{i}() {{}}\n")).collect::<String>();
+        text.push_str("fn actual_search_hot_path() {}\n#[test]\nfn test_should_not_fill_navigation() {}\n");
+        std::fs::write(source.join("src/focused.rs"),text).unwrap();
+        let (_,block)=prompt_context(&state,&source,&["src/focused.rs".into()]).unwrap();
+        assert!(block.contains("actual_search_hot_path:26"));
+        assert!(!block.contains("test_should_not_fill_navigation"));
+        assert!(block.find("actual_search_hot_path").unwrap()<block.find("### 모듈 지도").unwrap());
         let _=std::fs::remove_dir_all(root);
     }
 

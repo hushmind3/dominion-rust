@@ -1068,12 +1068,12 @@ async fn run_turn_body(
                 round_tools.retain(|definition| {
                     matches!(
                         tool_name(definition),
-                        "workspace_write" | "workspace_replace"
+                        "workspace_write" | "workspace_replace" | "rsi_method_propose" | "algorithm_propose"
                     )
                 });
                 messages.push(json!({
                     "role":"system",
-                    "content":"추가 탐색을 중단하세요. 지금까지의 근거로 workspace_replace 또는 workspace_write를 사용해 수정하거나, 근거가 없으면 변경 없이 최종 보고하세요. code_search와 workspace_read_range는 이번 턴에서 더 사용할 수 없습니다."
+                    "content":"추가 탐색을 중단하세요. 지금까지의 근거로 코드 변경이나 재사용 가능한 실행 방법을 제안할 수 있습니다. 근거가 없으면 변경 없이 최종 보고하세요. code_search와 workspace_read_range는 이번 턴에서 더 사용할 수 없습니다."
                 }));
                 rsi_decision_checkpoint = true;
             }

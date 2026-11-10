@@ -6601,7 +6601,7 @@ fn rsi_context_is_not_reinterpreted_as_tasks_or_forced_into_a_write() {
         let n=counter.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
         let delta=match n {
             0=>json!({"tool_calls":(["target","fn target","target missing","missing target"].iter().enumerate().map(|(i,q)|json!({"index":i,"id":format!("search-{i}"),"type":"function","function":{"name":"code_search","arguments":json!({"query":q}).to_string()}})).collect::<Vec<_>>())}),
-            1=>json!({"tool_calls":[{"index":0,"id":"read-after-four-searches","type":"function","function":{"name":"workspace_read_range","arguments":"{\"path\":\"src/target.rs\",\"startLine\":1,\"endLine\":1}"}}]}),
+            1=>json!({"tool_calls":(0..2).map(|i|json!({"index":i,"id":format!("read-after-four-searches-{i}"),"type":"function","function":{"name":"workspace_read_range","arguments":"{\"path\":\"src/target.rs\",\"startLine\":1,\"endLine\":1}"}})).collect::<Vec<_>>()}),
             _=>json!({"content":"근거가 없어 변경 없이 마칩니다."}),
         };
         vec![json!({"choices":[{"delta":delta,"finish_reason":if n<2 {"tool_calls"}else{"stop"}}],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}})]
@@ -6617,12 +6617,17 @@ fn rsi_context_is_not_reinterpreted_as_tasks_or_forced_into_a_write() {
         assert!(body["messages"].as_array().unwrap().iter().all(|row|!row["content"].as_str().unwrap_or("").contains("조사는 충분합니다")));
     }
     assert!(seen[1]["tools"].as_array().unwrap().iter().any(|tool|tool["function"]["name"]=="workspace_read_range"));
+    let finishing=seen[2]["tools"].as_array().unwrap();
+    for proposal in ["rsi_method_propose","algorithm_propose"] {
+        assert!(finishing.iter().any(|tool|tool["function"]["name"]==proposal),"research must be able to finish with a reusable method, not only a source write");
+    }
+    assert!(!finishing.iter().any(|tool|tool["function"]["name"]=="code_search"));
     assert_eq!(std::fs::read_to_string(app._root.join("src/target.rs")).unwrap(),"pub fn target() {}\n");
     let c=Connection::open(app._root.join("runtime/dominion.sqlite")).unwrap();
     let raw:String=c.query_row("SELECT data FROM records WHERE kind='execution' AND json_extract(data,'$.sessionId')=?1",[session["id"].as_str().unwrap()],|r|r.get(0)).unwrap();
     let execution:Value=serde_json::from_str(&raw).unwrap();
     assert!(execution["subtasks"].as_array().unwrap().len()<5,"source text is not a work list");
-    assert!(execution["plan"].is_null());assert_eq!(execution["toolCalls"],5);
+    assert!(execution["plan"].is_null());assert_eq!(execution["toolCalls"],6);
 }
 
 #[test]
