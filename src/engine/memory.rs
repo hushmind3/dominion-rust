@@ -337,6 +337,47 @@ pub(crate) fn bm25_scores(
         })
 }
 
+/// Recover the original evidence only when the current query actually
+/// matches an archived detail. The stored summary remains unchanged and
+/// visible; archived records never become independently retrievable.
+fn compressed_matches(
+    store:&Store, scope:&MemoryScope, summary:&Value, query_terms:&BTreeSet<String>,
+) -> Vec<Value> {
+    if summary["source"]!="compression" || query_terms.is_empty() { return Vec::new(); }
+    let Some(ids)=summary["compressedFrom"].as_array().filter(|ids| !ids.is_empty() && ids.len()<=128)
+        else { return Vec::new(); };
+    let mut matches=Vec::<(usize,Value)>::new();
+    let fields=["scope","partitionKey","agentId","sessionId","sourceAuthorKey","type"];
+    let summary_id=summary["id"].as_str().unwrap_or("");
+    if summary_id.is_empty() { return Vec::new(); }
+    for id in ids {
+        let Some(original)=id.as_str().and_then(|id|store.get("memory",id)) else {continue;};
+        if original["status"]!="archived" || original["compressedInto"]!=summary_id
+            || !fields.iter().all(|field|original[*field]==summary[*field]) {
+            continue;
+        }
+        let Some(raw)=original["text"].as_str().filter(|text|!text.is_empty() && !contains_secret(text)) else {
+            continue;
+        };
+        // Evaluate the original visibility and expiry without reactivating it
+        // in storage. This prevents mismatched legacy summaries from leaking.
+        let mut temporary=original.clone();
+        temporary["status"]=json!("active");
+        if !recallable(store,&temporary,scope) {continue;}
+        let overlap=query_terms.intersection(&terms(raw)).count();
+        if overlap==0 {continue;}
+        matches.push((overlap,json!({
+            "id":original["id"],
+            "text":raw.chars().take(650).collect::<String>(),
+            "revision":original["revision"],
+            "sourceMessageIds":original["sourceMessageIds"],
+            "scope":original["scope"]
+        })));
+    }
+    matches.sort_by(|a,b|b.0.cmp(&a.0).then_with(||a.1["id"].as_str().cmp(&b.1["id"].as_str())));
+    matches.into_iter().take(2).map(|(_,record)|record).collect()
+}
+
 fn retrieve_ranked_with_rerank(
     store: &Store, scope: &MemoryScope, query: &str, limit: usize,
     algorithm: &Value, rerank: &Value,
@@ -370,6 +411,18 @@ fn retrieve_ranked_with_rerank(
             record["sourceAuthorKey"].as_str().unwrap_or("owner"), key);
         fact_keys.insert(owner)
     });
+    // Summaries have short, lossy text. Index only query-matched archived
+    // originals under their exact verified scope, and deliver provenance
+    // instead of silently substituting the archived record for the summary.
+    for record in &mut records {
+        let originals=compressed_matches(store,scope,record,&query_terms);
+        if !originals.is_empty() {
+            let recovered=originals.iter().filter_map(|item|item["text"].as_str())
+                .collect::<Vec<_>>().join(" ");
+            record["retrievalText"]=json!(format!("{} {}",record["text"].as_str().unwrap_or(""),recovered));
+            record["restoredOriginals"]=json!(originals);
+        }
+    }
     let rerank_strategy = rerank["implementation"]
         .as_str()
         .or_else(|| rerank["variant"].as_str())
@@ -382,7 +435,8 @@ fn retrieve_ranked_with_rerank(
         Some(
             records
                 .iter()
-                .map(|record| terms(record["text"].as_str().unwrap_or("")))
+                .map(|record| terms(record["retrievalText"].as_str()
+                    .or_else(||record["text"].as_str()).unwrap_or("")))
                 .collect::<Vec<_>>(),
         )
     } else {
@@ -400,7 +454,8 @@ fn retrieve_ranked_with_rerank(
         .into_iter()
         .enumerate()
         .filter_map(|(record_index, record)| {
-            let text = record["text"].as_str()?;
+            let text = record["retrievalText"].as_str()
+                .or_else(||record["text"].as_str())?;
             let extracted;
             let memory_terms = match &corpus {
                 Some(corpus) => &corpus[record_index],
@@ -1090,6 +1145,7 @@ fn context_block_from_records(store: &Store, memories: Vec<Value>)
             json!({
                 "id": memory["id"], "type": memory["type"],
                 "text": memory["text"].as_str().unwrap_or("").chars().take(600).collect::<String>(),
+                "restoredOriginals":memory["restoredOriginals"],
                 "source": memory["source"], "sourceMessageIds": memory["sourceMessageIds"],"sourceAuthors":memory["sourceAuthors"],
                 "sourceSessionId": memory["sessionId"], "sourcePartitionKey": memory["partitionKey"],
         "sourceRole": memory["sourceRole"], "verification": memory["verification"],
@@ -1106,6 +1162,10 @@ fn context_block_from_records(store: &Store, memories: Vec<Value>)
                 "id": id,
                 "type": memory["type"],
                 "scope": memory["scope"],
+                "restoredFrom":memory["restoredOriginals"].as_array()
+                    .map(|originals|originals.iter().map(|original|
+                        json!({"id":original["id"],"revision":original["revision"]}))
+                        .collect::<Vec<_>>()).unwrap_or_default(),
                 "revision": memory["revision"]
                     .as_str()
                     .map(str::to_string)
@@ -2433,6 +2493,41 @@ mod regression_memory_visibility_tests {
         assert!(state.store.get("algorithm_usage", &empty_id).is_none(),
             "no graded evidence should mean no UCB usage");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn compressed_memory_restores_only_matched_scoped_original_evidence() {
+        let db=store();
+        let scope=scope(&db,"s","a");
+        let summary_id="summary-archive";
+        let common=json!({"scope":"agent","agentId":"a","partitionKey":scope.partition_key,
+            "sessionId":"s","sourceAuthorKey":"owner","type":"fact"});
+        let original=json!({"id":"archived-detail","text":"복구 식별자 bluewater7294 보관",
+            "status":"archived","compressedInto":summary_id,
+            "scope":common["scope"],"agentId":common["agentId"],
+            "partitionKey":common["partitionKey"],"sessionId":common["sessionId"],
+            "sourceAuthorKey":common["sourceAuthorKey"],"type":common["type"]});
+        db.put("memory",&original);
+        db.put("memory",&json!({"id":summary_id,"source":"compression",
+            "text":"이전 문제의 해결 요약","status":"active",
+            "compressedFrom":["archived-detail","wrong-scope"],
+            "scope":common["scope"],"agentId":common["agentId"],
+            "partitionKey":common["partitionKey"],"sessionId":common["sessionId"],
+            "sourceAuthorKey":common["sourceAuthorKey"],"type":common["type"]}));
+        db.put("memory",&json!({"id":"wrong-scope","text":"secretcode12345",
+            "status":"archived","compressedInto":summary_id,"scope":"agent",
+            "agentId":"someone-else","partitionKey":"private-room",
+            "sessionId":"private","sourceAuthorKey":"owner","type":"fact"}));
+        let restored=retrieve(&db,&scope,"bluewater7294",4);
+        assert_eq!(restored.len(),1);
+        assert_eq!(restored[0]["id"],summary_id);
+        assert_eq!(restored[0]["restoredOriginals"][0]["id"],"archived-detail");
+        let context=context_block(&db,&scope,"bluewater7294").unwrap();
+        assert!(context.contains("bluewater7294"),
+            "matched original details must reach the model context");
+        assert!(!context.contains("secretcode12345"));
+        assert!(retrieve(&db,&scope,"secretcode12345",4).is_empty(),
+            "a mismatched legacy summary must never expose private originals");
     }
 
     #[test]
