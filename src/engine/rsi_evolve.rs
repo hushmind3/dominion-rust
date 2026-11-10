@@ -1660,9 +1660,26 @@ fn propose_autonomous_search_trial(
         && row["rsiTrial"]["campaignId"]==campaign_id) {
         return json!({"status":"existing_trial"});
     }
-    let Some(hypothesis)=autonomous_search_hypothesis(history) else {
+    let Some(mut hypothesis)=autonomous_search_hypothesis(history) else {
         return json!({"status":"insufficient_failure_evidence"});
     };
+    // A rejected policy must alter the *next* search hypothesis instead of
+    // causing the same formula to be registered again across new campaigns.
+    let prior_rejections=state.store.all("algorithm").into_iter()
+        .filter(|row|row["kind"]=="selfimprove.search"
+            && row["name"].as_str().is_some_and(|n|n.starts_with("autonomous-"))
+            && row["rsiTrial"]["status"]=="trial_rejected")
+        .count().min(4);
+    if prior_rejections>0 {
+        let original=hypothesis["parameters"]["targetExpression"].as_str().unwrap_or("");
+        let revised=format!("{original} + productiveEvidence * {} - repeatPenalty * {}",
+            2*prior_rejections,prior_rejections);
+        hypothesis["parameters"]["targetExpression"]=json!(revised);
+        hypothesis["hypothesisEvidence"]["previousRejectedPolicies"]=json!(prior_rejections);
+    }
+    // Content-addressed IDs are campaign-specific: two independent trials
+    // must not share mutable ownership just because their formulas match.
+    hypothesis["name"]=json!(format!("{}-{}",hypothesis["name"].as_str().unwrap_or("autonomous"),campaign_id));
     let candidate=match crate::engine::algorithms::register(state,&hypothesis) {
         Ok(candidate)=>candidate,
         Err(error)=>return json!({"status":"invalid_hypothesis","error":error})
@@ -3277,6 +3294,14 @@ mod tests {
         let repeated=propose_autonomous_search_trial(
             &state,&history,"","campaign-synth",4);
         assert_eq!(repeated["status"],"existing_trial");
+        // A later campaign may independently examine the same formula. It
+        // cannot steal the first candidate's comparison or trial ownership.
+        let next=propose_autonomous_search_trial(
+            &state,&history,"","campaign-next",3);
+        assert_eq!(next["status"],"pending_trial","{next}");
+        assert_ne!(next["candidateId"],report["candidateId"]);
+        let next_candidate=state.store.get("algorithm",next["candidateId"].as_str().unwrap()).unwrap();
+        assert_eq!(next_candidate["rsiTrial"]["campaignId"],"campaign-next");
         let (domain,mode,_strategy)=select_generation_strategy(
             &state,&history,"",None,Some(saved["id"].as_str().unwrap().into()),None,"base-1");
         assert_eq!(mode,"algorithm_active","the first comparison collects a baseline control");
