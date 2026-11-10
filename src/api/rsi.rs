@@ -23,7 +23,7 @@ fn accepted_streak(record: &Value) -> (u64, u64) {
     (streak, max)
 }
 
-fn apply_capability(record: &mut Value) {
+fn apply_capability(state:&AppState,record: &mut Value) {
     let (streak, max) = if record["maxAcceptedStreak"].is_u64() {
         (
             record["acceptedStreak"].as_u64().unwrap_or(0),
@@ -34,7 +34,8 @@ fn apply_capability(record: &mut Value) {
     };
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
-    record["capabilityDemonstrated"] = json!(max >= 3);
+    record["capabilityDemonstrated"] = json!(max >= 3 &&
+        engine::capability_proven(state,record["history"].as_array().map(Vec::as_slice).unwrap_or(&[])));
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
@@ -154,7 +155,7 @@ pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Respo
         record[field]=job["input"][key].clone();
     }
     record["selectedVersionRunning"]=json!(record["headCommit"].as_str()==option_env!("DOMINION_BUILD_COMMIT"));
-    apply_capability(&mut record);
+    apply_capability(&state,&mut record);
     if record["phase"]=="diagnosing_and_editing" {
         if let Some(session)=record["activeGenerationJobId"].as_str().and_then(|id|state.store.get("job",id))
             .and_then(|j|j["sessionId"].as_str().map(str::to_string)) {
@@ -553,6 +554,10 @@ mod capability_tests {
 
     #[test]
     fn capability_requires_three_consecutive_accepts() {
+        use crate::{config::Config,db::Store,vault::Vault};
+        let root=std::env::temp_dir().join(format!("dominion-capability-{}",uuid::Uuid::new_v4()));
+        let config=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
         let partial = json!({"history":[
             {"accepted":true,"evaluation":{}},
             {"accepted":true,"evaluation":{}},
@@ -561,15 +566,17 @@ mod capability_tests {
         ]});
         assert_eq!(accepted_streak(&partial), (1, 2));
         let mut derived = partial.clone();
-        apply_capability(&mut derived);
+        apply_capability(&state,&mut derived);
         assert_eq!(derived["capabilityDemonstrated"], false);
 
         let full = json!({"history":[
             {"accepted":true},{"accepted":true},{"accepted":true}
         ]});
         let mut derived = full.clone();
-        apply_capability(&mut derived);
+        apply_capability(&state,&mut derived);
         assert_eq!(derived["maxAcceptedStreak"], 3);
-        assert_eq!(derived["capabilityDemonstrated"], true);
+        assert_eq!(derived["capabilityDemonstrated"], false,
+            "adoption counts without paired meta-transfer evidence are not intelligence amplification");
+        let _=std::fs::remove_dir_all(root);
     }
 }

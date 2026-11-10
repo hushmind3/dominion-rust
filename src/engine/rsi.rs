@@ -195,6 +195,7 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     let mut metric_losses = 0;
     let mut measurements = Vec::new();
     let mut meta_gains = 0;
+    let mut meta_holdout_gains = 0;
     for measurement in measured {
         let id = measurement["id"].as_str().ok_or("측정 사례 id가 없습니다.")?;
         let Some(planned) = plan.iter().find(|row| row["id"] == id) else {
@@ -219,7 +220,10 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
         let mg = if before && after { mg } else { 0 };
         metric_gains += mg;
         metric_losses += ml;
-        if planned["domain"] == "improver" { meta_gains += mg; }
+        if planned["domain"] == "improver" {
+            meta_gains += mg;
+            if planned["holdout"] == true {meta_holdout_gains += mg;}
+        }
         measurements.push(json!({"id":id,"metrics":detail}));
         if planned["holdout"] == true {
             holdouts += 1;
@@ -236,13 +240,15 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
         && losses + metric_losses == 0
         && (target != "improver"
             || (holdout_domains.len() >= 2 && improved_holdouts > 0
-                && (!plan.iter().any(|p|p["domain"]=="improver" && p["metrics"].as_array().is_some_and(|m|!m.is_empty())) || meta_gains>0)));
+                && (!plan.iter().any(|p|p["domain"]=="improver" && p["metrics"].as_array().is_some_and(|m|!m.is_empty())) || meta_holdout_gains>0)));
     Ok(json!({
         "pairedCases":plan.len(),"holdoutCases":holdouts,
         "holdoutDomains":holdout_domains.into_iter().collect::<Vec<_>>(),
         "baselineSuccesses":baseline_successes,"candidateSuccesses":candidate_successes,
         "gains":gains,"regressions":losses+metric_losses,"improvedHoldouts":improved_holdouts,
-        "metricGains":metric_gains,"metricRegressions":metric_losses,"metaGains":meta_gains,"measurements":measurements,
+        "metricGains":metric_gains,"metricRegressions":metric_losses,
+        "metaGains":meta_gains,"metaHoldoutGains":meta_holdout_gains,
+        "measurements":measurements,
         "eligible":ready,
         "verdict":if losses+metric_losses>0 {"regressed"} else if ready {"improved"} else {"inconclusive"}
     }))
@@ -367,6 +373,55 @@ pub fn confirm_deployment(
     Ok(saved)
 }
 
+/// A successful patch is not proof that a system can improve its own
+/// improvement mechanism. Require a verified meta holdout gain followed by a
+/// verified cross-domain gain from the newly compiled descendant generator.
+/// A three-generation chain without independent evidence is not capability.
+pub fn capability_proven(state:&AppState, history:&[Value])->bool {
+    let mut chain:Vec<(String,bool,bool)>=Vec::new();
+    for generation in history {
+        if generation["accepted"]!=true {
+            if generation["evaluation"].is_object() {chain.clear();}
+            continue;
+        }
+        let Some(candidate)=generation["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id)) else {
+            chain.clear(); continue;
+        };
+        let evaluation=&candidate["evaluation"];
+        let Some(commit)=generation["acceptedCommit"].as_str().filter(|v|sha(v)) else {
+            chain.clear();continue;
+        };
+        let Some(generator)=generation["generatorCommit"].as_str().filter(|v|sha(v)) else {
+            chain.clear();continue;
+        };
+        let evidence=evaluation["evidenceSha256"].as_str().filter(|v|
+            v.len()==64 && v.bytes().all(|byte|byte.is_ascii_hexdigit()));
+        let verified=candidate["status"]=="verified"
+            && evaluation["source"]=="server_invoked_local_paired_git_worktrees"
+            && evaluation["metrics"]["eligible"]==true
+            && evaluation["metrics"]["regressions"]==0
+            && evaluation["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)>0
+            && evidence.is_some()
+            && generation["evaluation"]["evidenceSha256"]==evaluation["evidenceSha256"]
+            && candidate["experimentAdoption"]["commit"]==generation["acceptedCommit"]
+            && candidate["baseCommit"]==generation["generatorCommit"];
+        if !verified {chain.clear();continue;}
+        if chain.last().is_some_and(|(prior,_,_)|prior!=generator) {chain.clear();}
+        let meta=candidate["target"]=="improver"
+            && evaluation["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0;
+        let cross_domain=candidate["target"]!="improver";
+        chain.push((commit.to_string(),meta,cross_domain));
+        // A meta improvement needs evidence of changed successor behavior.
+        if chain.len()>=3 && chain.windows(3).any(|window|
+            window.iter().enumerate().any(|(index,(_,meta,_))|
+                *meta && window[index+1..].iter().any(|(_,_,cross)|*cross))) {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn list(state: &AppState) -> Vec<Value> {
     let mut items = state.store.all("rsi_candidate");
     items.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
@@ -406,6 +461,36 @@ mod tests {
             "baselineBuildOk":true,"candidateBuildOk":true,
             "cases":(0..8).map(|i|json!({"id":format!("case-{i}"),"baselinePass":i!=0,"candidatePass":true})).collect::<Vec<_>>()})
     }
+    #[test]
+    fn three_accepted_patches_do_not_prove_recursive_growth_without_meta_transfer() {
+        let (state,root)=state();
+        let revisions=["a".repeat(40),"b".repeat(40),"c".repeat(40),"d".repeat(40)];
+        let mut history=Vec::new();
+        for i in 0..3 {
+            let id=format!("proof-{i}");
+            let evaluation_id=format!("eval-{i}");
+            let target=if i==0{"improver"}else{"harness"};
+            state.store.put("rsi_candidate",&json!({"id":id,"status":"verified","target":target,
+                "baseCommit":revisions[i],"experimentAdoption":{"commit":revisions[i+1]},
+                "evaluation":{"id":evaluation_id,"source":"server_invoked_local_paired_git_worktrees",
+                    "evidenceSha256":"a".repeat(64),
+                    "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":1,
+                        "metaHoldoutGains":if i==0{1}else{0}}}}));
+            history.push(json!({"accepted":true,"candidateId":id,
+                "generatorCommit":revisions[i],"acceptedCommit":revisions[i+1],
+                "evaluation":{"evidenceSha256":"a".repeat(64)}}));
+        }
+        assert!(capability_proven(&state,&history),"validated meta improvement followed by verified transfer");
+        let mut false_claim=history.clone();
+        false_claim[1]["generatorCommit"]=json!("9".repeat(40));
+        assert!(!capability_proven(&state,&false_claim),"broken binary lineage cannot be counted");
+        let mut no_meta=state.store.get("rsi_candidate","proof-0").unwrap();
+        no_meta["evaluation"]["metrics"]["metaHoldoutGains"]=json!(0);
+        state.store.put("rsi_candidate",&no_meta);
+        assert!(!capability_proven(&state,&history),"ordinary code gains alone cannot prove meta improvement");
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn identical_patches_on_sibling_branches_have_independent_candidate_ids() {
         let (state,root)=state();

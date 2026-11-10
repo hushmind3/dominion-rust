@@ -2353,7 +2353,10 @@ async fn run_loop(
         record["maxAcceptedStreak"] = json!(max_streak);
         // Three consecutive adopted generations are the documented threshold
         // for calling the capability demonstrated, not a single lucky patch.
-        record["capabilityDemonstrated"] = json!(max_streak >= 3);
+        let mut evidence_history=record["history"].as_array().cloned().unwrap_or_default();
+        evidence_history.push(generation.clone());
+        record["capabilityDemonstrated"]=json!(max_streak>=3 &&
+            rsi::capability_proven(&context.state,&evidence_history));
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
