@@ -2564,6 +2564,9 @@ async fn run_loop(
         let mut history_now = record["history"].as_array().cloned().unwrap_or_default();
         history_now.push(generation.clone());
         let proven_history=revalidated_history(&context.state,&history_now);
+        let (proven_streak,proven_max)=verified_capability_streak(&proven_history);
+        record["verifiedStreak"]=json!(proven_streak);
+        record["maxVerifiedStreak"]=json!(proven_max);
         let meta_transfer = meta_transfer_proven(&proven_history);
         record["metaTransferProven"] = json!(meta_transfer);
         record["capabilityDemonstrated"] = json!(capability_demonstrated(&proven_history));
