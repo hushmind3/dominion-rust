@@ -851,7 +851,11 @@ pub fn rank_focus_files_with_feedback(
         let domain_evidence=if !domain.is_empty()
             && (path.contains(domain)||symbols.contains(domain)) {1.0} else {0.0};
         let evidence=path_evidence+symbol_evidence+summary_evidence+body_evidence+domain_evidence;
-        if evidence==0.0 {continue;}
+        // The builtin navigator remains evidence-gated. A model-authored
+        // targetExpression is allowed to explore sources with zero lexical
+        // overlap: otherwise the AI can change the score but not the search
+        // space, preventing novel harness architecture improvements.
+        if evidence==0.0 && target_expression.is_none() {continue;}
         let path_key=file["path"].as_str().unwrap_or("").to_lowercase();
         let prior=prior_unproductive.get(path_key.as_str()).copied().unwrap_or(0) as f64;
         let successful=prior_productive.get(path_key.as_str()).copied().unwrap_or(0) as f64;
@@ -884,6 +888,7 @@ pub fn rank_focus_files_with_feedback(
             "sourceHash":file["hash"],
             "score":score,
             "baselineScore":default,
+            "lexicalEvidencePresent":evidence>0.0,
             "evidence":{"path":path_evidence,"symbols":symbol_evidence,
                 "summary":summary_evidence,"body":body_evidence,"domain":domain_evidence,
                 "priorUnproductive":prior,"priorProductive":successful,
@@ -901,6 +906,10 @@ pub fn rank_focus_files_with_feedback(
     // of arbitrary scores and fallback scores. One runtime failure invalidates
     // the formula for the whole indexed source decision.
     if let Some(error)=policy_invalid {
+        // Invalid formulas must recover the exact builtin candidate pool as
+        // well as its scores. Never promote an ungrounded exploration target
+        // merely because its experimental formula failed to execute.
+        ranked.retain(|row|row["lexicalEvidencePresent"]==true);
         for row in &mut ranked {
             row["score"]=row["baselineScore"].clone();
             row["scoring"]=json!("corpus-evidence");
@@ -1091,6 +1100,37 @@ mod tests {
             &empty,&learned,Some(&control),2);
         assert_eq!(trial[0]["path"],"src/alpha.rs",
             "an evolvable formula still controls the final file selection");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ai_target_policy_can_explore_sources_outside_the_builtin_keyword_pool() {
+        let (state,root)=temp_state();
+        let source=root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        std::fs::write(source.join("src/opaque.rs"),
+            "fn iterate() { println!(\"unrelated\"); }\n").unwrap();
+        std::fs::write(source.join("src/neutral.rs"),
+            "fn dispatch() { println!(\"generic task\"); }\n").unwrap();
+        let index=refresh(&state,&source).unwrap();
+        let id=index["id"].as_str().unwrap();
+        let empty=BTreeMap::new();
+        let objective="entirely novel architecture";
+        assert!(rank_focus_files(&state,id,objective,"",&empty,None,2).is_empty(),
+            "builtin still uses evidence gate to avoid guessing files");
+        let explorer=json!({"revision":"exploration-1",
+            "parameters":{"targetExpression":"novelty - sourceCost"}});
+        let selected=rank_focus_files(&state,id,objective,"",
+            &empty,Some(&explorer),2);
+        assert_eq!(selected.len(),2,
+            "user-model exploration must not inherit the built-in lexical filter");
+        assert!(selected.iter().all(|row|row["scoring"]=="expression"
+            && row["lexicalEvidencePresent"]==false));
+        let broken=json!({"revision":"broken-1",
+            "parameters":{"targetExpression":"1 / pathEvidence"}});
+        assert!(rank_focus_files(&state,id,objective,"",
+            &empty,Some(&broken),2).is_empty(),
+            "invalid trial must restore builtin *pool*, not only scores");
         let _=std::fs::remove_dir_all(root);
     }
 
