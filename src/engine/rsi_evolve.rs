@@ -1596,6 +1596,68 @@ fn comparable_trial_baseline(
         .cloned()
 }
 
+/// Evidence from the same frozen experiment under two search policies.
+/// A code-adoption flag or a cheaper failed generation cannot prove that the
+/// algorithm found a better target. Missing or mismatched reports are unknown.
+fn paired_trial_effect(generation:&Value,baseline:&Value)->Option<(u64,u64,u64)> {
+    for key in ["generatorCommit","campaignId","objectiveId","generatorModel","generatorProviderId"] {
+        let expected=generation[key].as_str().filter(|v|!v.is_empty())?;
+        if baseline[key].as_str()!=Some(expected){return None;}
+    }
+    if generation["domain"]!=baseline["domain"]{return None;}
+    let trial=generation["evaluation"]["metrics"]["measurements"].as_array()?;
+    let control=baseline["evaluation"]["metrics"]["measurements"].as_array()?;
+    if trial.len()<8 || trial.len()!=control.len(){return None;}
+    let mut seen=BTreeSet::new();
+    let mut holdouts=0;
+    let mut wins=0;
+    let mut losses=0;
+    for row in trial {
+        let id=row["id"].as_str().filter(|v|!v.is_empty())?;
+        if !seen.insert(id){return None;}
+        let source=control.iter().find(|r|r["id"]==id)?;
+        let holdout=row["holdout"].as_bool()?;
+        let prior=row["baselinePass"].as_bool()?;
+        let candidate_pass=row["candidatePass"].as_bool()?;
+        let control_pass=source["candidatePass"].as_bool()?;
+        if source["holdout"].as_bool()!=Some(holdout)
+            || source["domain"]!=row["domain"]
+            || source["baselinePass"].as_bool()!=Some(prior) {return None;}
+        let mut row_won=candidate_pass && !control_pass;
+        let mut row_lost=!candidate_pass && control_pass;
+        // Quality improvements can matter even when both versions pass.
+        // Compare signed metric results only when the frozen baseline and
+        // metric directions agree on this exact case.
+        let measures=row["metrics"].as_array()?;
+        let previous=source["metrics"].as_array()?;
+        if measures.len()!=previous.len(){return None;}
+        let mut keys=BTreeSet::new();
+        for metric in measures {
+            let key=metric["key"].as_str().filter(|v|!v.is_empty())?;
+            if !keys.insert(key){return None;}
+            let former=previous.iter().find(|m|m["key"]==key)?;
+            if metric["direction"]!=former["direction"]
+                || metric["baseline"]!=former["baseline"]{return None;}
+            let gain=metric["improved"].as_bool()?;
+            let regression=metric["regressed"].as_bool()?;
+            let prior_gain=former["improved"].as_bool()?;
+            let prior_regression=former["regressed"].as_bool()?;
+            if gain && regression || prior_gain && prior_regression {return None;}
+            if candidate_pass && control_pass {
+                row_won |= gain && !prior_gain && !prior_regression;
+                row_lost |= regression || (!gain && prior_gain);
+            }
+        }
+        if holdout {
+            holdouts+=1;
+            wins+=u64::from(row_won && !row_lost);
+            losses+=u64::from(row_lost);
+        }
+    }
+    if holdouts<2{return None;}
+    Some((wins,losses,holdouts))
+}
+
 fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
     let trial_accepted = generation["accepted"] == true;
     let baseline_accepted = baseline["accepted"] == true;
@@ -1616,13 +1678,17 @@ fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
     } else {
         1.0
     };
+    let proof=paired_trial_effect(generation,baseline);
+    let (holdout_wins,holdout_losses,holdout_cases)=proof.unwrap_or((0,0,0));
     let verdict = if trial_regressed {
         "rejected"
     } else if trial_error && !baseline_error {
         "rejected"
-    } else if trial_error {
+    } else if trial_error || proof.is_none() {
         "inconclusive"
-    } else if trial_accepted && !baseline_accepted {
+    } else if holdout_losses > 0 {
+        "rejected"
+    } else if trial_accepted && holdout_wins > 0 {
         "supported"
     } else if !trial_accepted && baseline_accepted {
         "rejected"
@@ -1648,6 +1714,10 @@ fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
             "baselineAttempt": baseline["attempt"],
             "baselineAccepted": baseline_accepted,
             "trialAccepted": trial_accepted,
+            "matchedFrozenCases":proof.is_some(),
+            "holdoutCases":holdout_cases,
+            "holdoutWins":holdout_wins,
+            "holdoutRegressions":holdout_losses,
             "baselineVerdict": baseline["evaluation"]["verdict"],
             "trialVerdict": generation["evaluation"]["verdict"],
             "baselineTokens": baseline_tokens,
@@ -1663,8 +1733,12 @@ fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
                 "trial generation regressed"
             } else if trial_error {
                 "both generations failed; lower cost is not successful improvement"
-            } else if trial_accepted && !baseline_accepted {
-                "trial produced an accepted change where the baseline did not"
+            } else if proof.is_none() {
+                "frozen paired observations or experiment identity missing"
+            } else if holdout_losses > 0 {
+                "candidate search regressed on previously held-out cases"
+            } else if trial_accepted && holdout_wins > 0 {
+                "candidate search improved frozen cases compared with control"
             } else if !trial_accepted && baseline_accepted {
                 "baseline produced an accepted change where the trial did not"
             } else if verdict == "supported" {
@@ -4740,9 +4814,48 @@ mod tests {
     }
 
     #[test]
+    // Deterministic frozen receipts, independent of candidate adoption flags.
+    fn with_frozen_trial_receipts(baseline:&mut Value,trial:&mut Value) {
+        for generation in [&mut *baseline, &mut *trial] {
+            generation["campaignId"]=json!("campaign");
+            generation["objectiveId"]=json!("same-frozen-objective");
+            generation["generatorModel"]=json!("test-model");
+            generation["generatorProviderId"]=json!("test-provider");
+        }
+        let cases=|policy:&str| (0..8).map(|i|{
+            let won=policy=="trial" && i==0;
+            json!({"id":format!("frozen-{i}"),"domain":"context","holdout":i<4,
+                "baselinePass":true,"candidatePass":if i==0 {won}else{true},
+                "metrics":[]})
+        }).collect::<Vec<_>>();
+        baseline["evaluation"]["metrics"]["measurements"]=json!(cases("control"));
+        trial["evaluation"]["metrics"]["measurements"]=json!(cases("trial"));
+    }
+
+    #[test]
+    fn search_trial_requires_matched_holdout_results_not_adoption_flags() {
+        let mut active=active_generation("a",1,"context",true,"rev",1000,100);
+        let mut candidate=trial_generation("b",2,"context",true,"rev",800,90,"candidate");
+        assert_eq!(trial_verdict(&candidate,&active).0,"inconclusive");
+        with_frozen_trial_receipts(&mut active,&mut candidate);
+        assert_eq!(trial_verdict(&candidate,&active).0,"supported");
+        candidate["generatorModel"]=json!("different-model");
+        assert_eq!(trial_verdict(&candidate,&active).0,"inconclusive");
+        candidate["generatorModel"]=json!("test-model");
+        candidate["evaluation"]["metrics"]["measurements"][0]["id"]=json!("forged-case");
+        assert_eq!(trial_verdict(&candidate,&active).0,"inconclusive");
+        candidate["evaluation"]["metrics"]["measurements"][0]["id"]=json!("frozen-0");
+        candidate["evaluation"]["metrics"]["measurements"][0]["candidatePass"]=json!(false);
+        active["evaluation"]["metrics"]["measurements"][1]["candidatePass"]=json!(true);
+        candidate["evaluation"]["metrics"]["measurements"][1]["candidatePass"]=json!(false);
+        assert_eq!(trial_verdict(&candidate,&active).0,"rejected",
+            "a frozen regression must override savings and accepted flags");
+    }
+
     fn trial_verdict_requires_success_before_supporting_cost_savings() {
         let mut baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
         let mut trial = trial_generation("trial", 2, "context", false, "commit-1", 5_000, 500, "candidate");
+        with_frozen_trial_receipts(&mut baseline,&mut trial);
         assert_eq!(trial_verdict(&trial, &baseline).0, "inconclusive",
             "cheaper non-results are not successful improvement");
         baseline["error"] = json!("failed");
@@ -4787,8 +4900,9 @@ mod tests {
             1,
         );
 
-        let baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
-        let first = trial_generation("trial-1", 2, "context", true, "commit-1", 9_000, 900, id);
+        let mut baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
+        let mut first = trial_generation("trial-1", 2, "context", true, "commit-1", 9_000, 900, id);
+        with_frozen_trial_receipts(&mut baseline,&mut first);
         let outcome = record_trial_outcome(&state, id, &first, &[baseline.clone()]);
         assert_eq!(outcome["verdict"], "supported");
         assert_eq!(outcome["status"], "pending_second_trial");
@@ -4809,11 +4923,12 @@ mod tests {
         assert_eq!(saved["rsiTrial"]["trials"].as_array().unwrap().len(), 1);
         assert!(comparable_trial_baseline(&[baseline.clone()], &first, &saved).is_none());
 
-        let baseline2 = active_generation("base-2", 3, "context", false, "commit-1", 10_000, 1_000);
+        let mut baseline2 = active_generation("base-2", 3, "context", false, "commit-1", 10_000, 1_000);
         let (_, mode, _) = select_generation_strategy(
             &state, &[baseline.clone(), first.clone(), baseline2.clone()], "context", None, Some(id.into()), None, "commit-1");
         assert_eq!(mode, "algorithm_trial", "a fresh control permits the pending trial");
-        let second = trial_generation("trial-2", 4, "context", true, "commit-1", 9_000, 900, id);
+        let mut second = trial_generation("trial-2", 4, "context", true, "commit-1", 9_000, 900, id);
+        with_frozen_trial_receipts(&mut baseline2,&mut second);
         let outcome = record_trial_outcome(&state, id, &second, &[baseline.clone(), first.clone(), baseline2]);
         assert_eq!(outcome["verdict"], "supported");
         assert_eq!(outcome["status"], "adopted");
