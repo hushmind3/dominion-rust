@@ -218,26 +218,32 @@ fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f
     }
 }
 
-pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &str) -> String {
-    let mut best = (f64::NEG_INFINITY, DOMAINS[0]);
-    // Scope is an owner constraint, not a tweakable reward. An explicit goal
-    // is evaluated only among the matching capabilities; open-ended evolution
-    // still explores all domains.
+fn eligible_domains(objective: &str) -> Vec<&'static str> {
+    // An explicit owner objective is a constraint; a failed candidate formula
+    // must not silently send a tools goal to the first declared domain.
     let matching=DOMAINS.iter().copied().filter(|domain|objective_matches(domain,objective))
         .collect::<Vec<_>>();
-    let eligible=if matching.is_empty(){DOMAINS.to_vec()}else{matching};
-    for domain in eligible {
-        let features = search_features(history, domain, objective);
-        let Some(score) = score_domain(algorithm, &features) else {
-            continue;
-        };
-        // Strict comparison keeps the declared DOMAINS order as the stable
-        // tie-breaker, so evaluation replays are deterministic.
-        if score > best.0 {
-            best = (score, domain);
-        }
-    }
-    best.1.to_string()
+    if matching.is_empty() {DOMAINS.to_vec()} else {matching}
+}
+
+fn valid_domain_scores(algorithm:&Value,history:&[Value],objective:&str)
+    ->Option<Vec<(&'static str,f64)>> {
+    eligible_domains(objective).into_iter().map(|domain|{
+        let features=search_features(history,domain,objective);
+        score_domain(algorithm,&features).filter(|score|score.is_finite())
+            .map(|score|(domain,score))
+    }).collect()
+}
+
+pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &str) -> String {
+    let scores=valid_domain_scores(algorithm,history,objective)
+        .or_else(||valid_domain_scores(&json!({"implementation":"failure-clusters"}),
+            history,objective)).unwrap_or_default();
+    // Strict comparison preserves declared domain order as a stable tie break.
+    scores.into_iter().max_by(|left,right|
+        left.1.total_cmp(&right.1).then_with(||right.0.cmp(left.0)))
+        .map(|(domain,_)|domain.to_string())
+        .unwrap_or_else(||eligible_domains(objective)[0].to_string())
 }
 
 fn search_strategy(algorithm: &Value, mode: &str) -> Value {
@@ -2596,6 +2602,14 @@ fn select_generation_strategy(
                 && algorithm["source"] == "rsi-generated"
                 && algorithm["rsiTrial"]["status"] != "trial_rejected"
         }) {
+            if valid_domain_scores(&algorithm,history,objective).is_none() {
+                let baseline=active.unwrap_or_else(||json!({
+                    "implementation":"failure-clusters","parameters":{}
+                }));
+                let mut strategy=search_strategy(&baseline,"active");
+                strategy["trialFallback"]=json!("candidate_expression_invalid_for_runtime_features");
+                return (select_domain(&baseline,history,objective),"algorithm_active",strategy);
+            }
             let domain = select_domain(&algorithm, history, objective);
             let generation = json!({"domain":domain,"generatorCommit":generator_commit});
             if comparable_trial_baseline(history, &generation, &algorithm).is_some() {
@@ -4263,6 +4277,29 @@ mod tests {
             "newFindings":0,"accepted":false}));
         assert!(research_continuation(&failed).is_none(),
             "stale research must not force continuation");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_runtime_domain_policy_preserves_owner_scope_and_never_counts_as_trial() {
+        let (state,root)=state();
+        let expression=json!({"implementation":"expression",
+            "parameters":{"expression":"1 / attempts"}});
+        let history=vec![];
+        assert_eq!(select_domain(&expression,&history,"브라우저 도구"),"tools",
+            "zero-attempt division must not redirect a tools goal to memory");
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"runtime-div-zero",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"1 / attempts"}
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap();
+        let (domain,mode,strategy)=select_generation_strategy(
+            &state,&history,"브라우저 도구",None,Some(id.into()),None,"rev");
+        assert_eq!(domain,"tools");
+        assert_eq!(mode,"algorithm_active");
+        assert_eq!(strategy["trialFallback"],
+            "candidate_expression_invalid_for_runtime_features");
         let _=std::fs::remove_dir_all(root);
     }
 
