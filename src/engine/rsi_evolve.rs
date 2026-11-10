@@ -1048,9 +1048,13 @@ fn choose_focus_files(
         .collect::<Vec<_>>();
     prior.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     for generation in prior.iter().take(8) {consider(generation,true);}
+    // Keep the generic index complete for normal developer tools, but never
+    // surface the frozen evaluator as a source target inside an RSI generation.
+    // Fetch extra ranks so filtering cannot exhaust the real improvement pool.
     crate::engine::code_index::rank_focus_files_with_feedback(
-        state,index_id,objective,domain,&failures,&successes,policy,2
-    )
+        state,index_id,objective,domain,&failures,&successes,policy,10
+    ).into_iter().filter(|row|!crate::engine::rsi::sealed_measurement_path(
+        row["path"].as_str().unwrap_or(""))).take(2).collect()
 }
 
 /// Empty focus is meaningful: the model searches the index instead of being
@@ -4610,6 +4614,28 @@ mod tests {
         );
         assert!(state.store.all("algorithm_eval").is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rsi_target_ranking_excludes_oracle_without_hiding_normal_index() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::write(root.join("src/engine/rsi_oracle_fixture.rs"),
+            "fn memory_holdout_secret() {}\n").unwrap();
+        std::fs::write(root.join("src/engine/visible_memory.rs"),
+            "fn memory_retrieve() {}\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let all=state.store.all("code_index_file");
+        assert!(all.iter().any(|f|f["path"]=="src/engine/rsi_oracle_fixture.rs"),
+            "normal code tools still index the complete source");
+        let ranked=choose_focus_files(&state,&json!({
+            "rsiIndexId":index["id"],"rsiObjective":"memory holdout",
+            "rsiTargetDomain":"memory"
+        }),&[],None);
+        assert!(ranked.iter().all(|row|
+            !crate::engine::rsi::sealed_measurement_path(row["path"].as_str().unwrap_or(""))));
+        assert_eq!(ranked[0]["path"],"src/engine/visible_memory.rs");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
