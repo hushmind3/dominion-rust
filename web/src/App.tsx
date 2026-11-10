@@ -106,6 +106,16 @@ export default function App(){
  const [online,setOnline]=useState(false)
  const [running,setRunning]=useState(0)
  const [pending,setPending]=useState(0)
+ const [engineBuild,setEngineBuild]=useState<{branch:string;commit:string}|null>(null)
+ useEffect(()=>{
+  let live=true
+  const load=()=>{void get<{branch:string;commit:string}>('/api/health')
+   .then(info=>{if(live)setEngineBuild(info)}).catch(()=>{if(live)setEngineBuild(null)})}
+  load()
+  const focus=()=>{if(document.visibilityState==='visible')load()}
+  window.addEventListener('focus',focus)
+  return()=>{live=false;window.removeEventListener('focus',focus)}
+ },[])
  const toggleNav=useCallback(()=>{
   try{
    if(window.innerWidth<520){setSidebar(open=>!open);return}
@@ -178,7 +188,7 @@ export default function App(){
    <ContextMenu />
   <WorkspaceSidebar page={page} open={sidebar} collapsed={collapsed} online={online} running={running} pending={pending} onNavigate={navigate} onNewChat={()=>{setChatDraft(value=>value+1);navigate('chat')}} onClose={()=>setSidebar(false)}/>
   <main className={'min-h-dvh min-w-0 transition-[margin] duration-200 '+(collapsed?'ml-0':'ml-[216px] max-[519px]:ml-0')}>
-   <WorkspaceHeader page={page} online={online} collapsed={collapsed} onMenu={toggleNav} onSearch={()=>setPalette(true)}/>
+   <WorkspaceHeader page={page} online={online} collapsed={collapsed} build={engineBuild} onMenu={toggleNav} onSearch={()=>setPalette(true)}/>
    <div className={'min-w-0 page-'+page}>
     <PageLoadBoundary key={page}>
     <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
