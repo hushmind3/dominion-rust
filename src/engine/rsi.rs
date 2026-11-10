@@ -225,16 +225,15 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
             meta_gains += mg;
             if planned["holdout"] == true {meta_holdout_gains += mg;}
         }
-        measurements.push(json!({
-            "id":id,"domain":planned["domain"],"holdout":planned["holdout"],
-            "baselinePass":before,"candidatePass":after,"metrics":detail
-        }));
+        measurements.push(json!({"id":id,"domain":planned["domain"],
+            "holdout":planned["holdout"],"baselinePass":before,"candidatePass":after,
+            "metrics":detail}));
         if planned["holdout"] == true {
             holdouts += 1;
             holdout_domains.insert(planned["domain"].as_str().unwrap_or("").to_string());
             if (!before && after) || mg > 0 {
                 improved_holdouts += 1;
-                if let Some(domain)=planned["domain"].as_str() {
+                if let Some(domain)=planned["domain"].as_str(){
                     improved_holdout_domains.insert(domain.to_string());
                 }
             }
@@ -383,14 +382,60 @@ pub fn confirm_deployment(
     Ok(saved)
 }
 
+/// Recompute the claimed domain transfer from immutable per-case paired receipts.
+/// Missing legacy detail is unproven, never silently upgraded to a pass.
+fn verified_holdout_domains(metrics:&Value)->Option<BTreeSet<String>> {
+    let rows=metrics["measurements"].as_array()?;
+    let mut seen=BTreeSet::new();
+    let mut domains=BTreeSet::new();
+    let mut improved_rows=0u64;
+    let mut holdout_rows=0u64;
+    let mut meta_gains=0u64;
+    for row in rows {
+        let id=row["id"].as_str().filter(|value|!value.is_empty())?;
+        if !seen.insert(id.to_string()) { return None; }
+        let domain=row["domain"].as_str().filter(|value|!value.is_empty())?;
+        let holdout=row["holdout"].as_bool()?;
+        let before=row["baselinePass"].as_bool()?;
+        let after=row["candidatePass"].as_bool()?;
+        let details=row["metrics"].as_array()?;
+        if before && !after { return None; }
+        let mut improved_metrics=0u64;
+        for detail in details {
+            let improved=detail["improved"].as_bool()?;
+            if detail["regressed"].as_bool()? { return None; }
+            if improved && (!before || !after) { return None; }
+            improved_metrics+=u64::from(improved);
+        }
+        if holdout {
+            holdout_rows+=1;
+            if (!before && after) || improved_metrics>0 {
+                improved_rows+=1;
+                domains.insert(domain.to_string());
+            }
+            if domain=="improver" { meta_gains+=improved_metrics; }
+        }
+    }
+    let claimed=metrics["improvedHoldoutDomains"].as_array()?
+        .iter().map(|value|value.as_str().filter(|value|!value.is_empty())
+            .map(str::to_string)).collect::<Option<BTreeSet<_>>>()?;
+    if holdout_rows<2 || domains.is_empty() || domains!=claimed
+        || metrics["holdoutCases"].as_u64()?!=holdout_rows
+        || metrics["improvedHoldouts"].as_u64()?!=improved_rows
+        || metrics["metaHoldoutGains"].as_u64()?!=meta_gains {
+        return None;
+    }
+    Some(domains)
+}
+
 /// A successful patch is not proof that a system can improve its own
 /// improvement mechanism. Require a verified meta holdout gain followed by a
 /// verified cross-domain gain from the newly compiled descendant generator.
 /// A three-generation chain without independent evidence is not capability.
 pub fn capability_proven(state:&AppState, history:&[Value])->bool {
-    // Store the evaluated domains rather than treating a candidate's target
-    // label as evidence that its changes improved an unrelated capability.
-    let mut chain:Vec<(String,bool,bool,BTreeSet<String>)>=Vec::new();
+    // Every transfer must be grounded in the domains of improved frozen cases.
+    // Merely labelling the next patch as "harness" is not cross-domain evidence.
+    let mut chain:Vec<(String,bool,String,BTreeSet<String>)>=Vec::new();
     for generation in history {
         if generation["accepted"]!=true {
             // A research-only or failed generation also interrupts a
@@ -399,8 +444,21 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
             continue;
         }
         let Some(candidate)=generation["candidateId"].as_str()
-            .and_then(|id|state.store.get("rsi_candidate",id)) else {
-            chain.clear(); continue;
+            .and_then(|id|state.store.get("rsi_candidate",id))
+            .or_else(|| {
+                // The index record may have been archived. Accept only the
+                // evidence receipt written at the time of actual adoption.
+                let proof=&generation["acceptedProof"];
+                (proof["candidateId"]==generation["candidateId"]
+                    && proof["adoptedCommit"]==generation["acceptedCommit"]
+                    && proof["baseCommit"]==generation["generatorCommit"]
+                    && proof["status"]=="verified")
+                .then(||json!({"status":proof["status"],"target":proof["target"],
+                    "baseCommit":proof["baseCommit"],
+                    "experimentAdoption":{"commit":proof["adoptedCommit"]},
+                    "evaluation":proof["evaluation"]}))
+            }) else {
+            chain.clear();continue;
         };
         let evaluation=&candidate["evaluation"];
         let Some(commit)=generation["acceptedCommit"].as_str().filter(|v|sha(v)) else {
@@ -422,39 +480,25 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
             && candidate["baseCommit"]==generation["generatorCommit"];
         if !verified {chain.clear();continue;}
         if chain.last().is_some_and(|(prior,_,_,_)|prior!=generator) {chain.clear();}
-        // Proof must be backed by concrete paired holdout results. A summary
-        // field on its own must never turn an unmeasured target into transfer.
-        let measurements=evaluation["metrics"]["measurements"].as_array();
-        let measured_domains=measurements.into_iter().flatten()
-            .filter(|row|row["holdout"]==true)
-            .filter(|row| {
-                (row["baselinePass"]==false && row["candidatePass"]==true)
-                    || row["metrics"].as_array().is_some_and(|metrics|
-                        metrics.iter().any(|metric|metric["improved"]==true))
-            })
-            .filter_map(|row|row["domain"].as_str().filter(|domain|!domain.is_empty()))
-            .map(str::to_string).collect::<BTreeSet<_>>();
-        let claimed_domains=evaluation["metrics"]["improvedHoldoutDomains"]
-            .as_array().into_iter().flatten()
-            .filter_map(Value::as_str).map(str::to_string)
-            .collect::<BTreeSet<_>>();
-        if measured_domains.is_empty() || measured_domains!=claimed_domains {
-            chain.clear();
-            continue;
-        }
+        // Domains are frozen in the evaluation plan and earned only by paired
+        // baseline/candidate holdout measurements, not inferred from target labels.
+        let Some(improved_domains)=verified_holdout_domains(&evaluation["metrics"]) else {
+            chain.clear();continue;
+        };
         let meta=candidate["target"]=="improver"
             && evaluation["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0
-            && measured_domains.contains("improver");
-        let transfer=candidate["target"]!="improver";
-        chain.push((commit.to_string(),meta,transfer,measured_domains));
-        // Three actually deployed generations are required. The successor
-        // must newly improve a frozen non-improver domain that was not already
-        // improved at the meta generation. A label alone earns no credit.
-        if chain.len()>=3 && chain.windows(3).any(|window|
-            window.iter().enumerate().any(|(index,(_,meta,_,meta_domains))|
-                *meta && window[index+1..].iter().any(|(_,_,is_transfer,successor_domains)|
-                    *is_transfer && successor_domains.iter().any(|domain|
-                        domain!="improver" && !meta_domains.contains(domain))))) {
+            && improved_domains.contains("improver");
+        let target=candidate["target"].as_str().unwrap_or("").to_string();
+        chain.push((commit.to_string(),meta,target,improved_domains));
+        // Prove a distinct, newly improved frozen domain after the meta gain.
+        // Improving memory twice cannot masquerade as transfer to planning.
+        // A later descendant may demonstrate transfer after more than three
+        // generations. The chain must be consecutive and verified, but the
+        // meta gain and its cross-domain consequence need not be adjacent.
+        if chain.len()>=3 && chain.iter().enumerate().any(|(index,(_,meta,_,meta_domains))|
+            *meta && chain[index+1..].iter().any(|(_,_,target,domains)|
+                target!="improver" && domains.iter().any(|domain|
+                    domain!="improver" && !meta_domains.contains(domain)))) {
             return true;
         }
     }
@@ -477,16 +521,23 @@ pub fn campaign_capability_proven(state: &AppState, campaign: &Value) -> bool {
         let Some(prior) = state.store.get("rsi_campaign", prior_id) else {break};
         let selected = current["lineage"]["selectedCommit"].as_str().unwrap_or("");
         let fingerprint = current["sourceFingerprint"].as_str().unwrap_or("");
+        let same_base=current["baseCommit"]==prior["baseCommit"]
+            && current["sourceFingerprint"]==prior["sourceFingerprint"];
+        // A newly chosen descendant may become the next campaign's starting
+        // source revision. Its fingerprint changes, but the selected commit
+        // must be the exact head previously adopted by this lineage.
+        let advanced_base=current["baseCommit"].as_str()==Some(selected)
+            && prior["headCommit"].as_str()==Some(selected);
         let same_origin = current["sourceDir"] == prior["sourceDir"]
             && current["sourceBranch"] == prior["sourceBranch"]
-            && current["baseCommit"] == prior["baseCommit"];
+            && (same_base||advanced_base);
         if !same_origin
             || !sha(selected)
             || prior["headCommit"].as_str() != Some(selected)
             || fingerprint.len() != 64
             || !fingerprint.bytes().all(|b|b.is_ascii_hexdigit())
             || fingerprint == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-            || prior["sourceFingerprint"].as_str() != Some(fingerprint) {
+            || (!advanced_base && prior["sourceFingerprint"].as_str() != Some(fingerprint)) {
             break;
         }
         current = prior;
@@ -548,58 +599,53 @@ mod tests {
                 "baseCommit":revisions[i],"experimentAdoption":{"commit":revisions[i+1]},
                 "evaluation":{"id":evaluation_id,"source":"server_invoked_local_paired_git_worktrees",
                     "evidenceSha256":"a".repeat(64),
-                    "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":1,
-                        "metaHoldoutGains":if i==0{1}else{0},
-                        "improvedHoldoutDomains":if i==0{json!(["improver","memory"])}
-                            else if i==1{json!(["memory"])}else{json!(["planning"])},
-                        "measurements":if i==0{
-                            json!([{"domain":"improver","holdout":true,"baselinePass":true,
-                                "candidatePass":true,"metrics":[{"improved":true}]},
-                               {"domain":"memory","holdout":true,"baselinePass":false,
-                                "candidatePass":true,"metrics":[]}])
-                        }else{
-                            json!([{"domain":if i==1{"memory"}else{"planning"},
-                                "holdout":true,"baselinePass":false,"candidatePass":true,
-                                "metrics":[]}])
-                        }}}}));
+                    "metrics":{"eligible":true,"regressions":0,"holdoutCases":2,
+                        "improvedHoldouts":1,"metaHoldoutGains":if i==0{1}else{0},
+                        "improvedHoldoutDomains":if i==0 {json!(["improver"])}
+                            else if i==1 {json!(["memory"])} else {json!(["planning"])},
+                        "measurements":[
+                            {"id":format!("measured-{i}"),
+                                "domain":if i==0{"improver"}else if i==1{"memory"}else{"planning"},
+                                "holdout":true,"baselinePass":i==0,"candidatePass":true,
+                                "metrics":if i==0{json!([{"improved":true,"regressed":false}])}else{json!([])}},
+                            {"id":format!("control-{i}"),"domain":"other",
+                                "holdout":true,"baselinePass":true,"candidatePass":true,"metrics":[]}
+                        ]}}}));
+            let saved=state.store.get("rsi_candidate",&id).unwrap();
             history.push(json!({"accepted":true,"candidateId":id,
                 "generatorCommit":revisions[i],"acceptedCommit":revisions[i+1],
-                "evaluation":{"evidenceSha256":"a".repeat(64)}}));
+                "evaluation":{"evidenceSha256":"a".repeat(64)},
+                "acceptedProof":{"candidateId":id,"status":"verified","target":target,
+                    "baseCommit":revisions[i],"adoptedCommit":revisions[i+1],
+                    "evaluation":saved["evaluation"]}}));
         }
         assert!(capability_proven(&state,&history),"validated meta improvement followed by verified transfer");
-        let mut no_receipt=state.store.get("rsi_candidate","proof-2").unwrap();
-        no_receipt["evaluation"]["metrics"].as_object_mut().unwrap().remove("measurements");
-        state.store.put("rsi_candidate",&no_receipt);
+        let retained=state.store.get("rsi_candidate","proof-1").unwrap();
+        assert!(state.store.remove("rsi_candidate","proof-1"));
+        assert!(capability_proven(&state,&history),
+            "archiving the candidate index cannot erase durable adopted evidence");
+        state.store.put("rsi_candidate",&retained).unwrap();
+        let mut forged=state.store.get("rsi_candidate","proof-2").unwrap();
+        forged["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["unmeasured-domain"]);
+        state.store.put("rsi_candidate",&forged).unwrap();
         assert!(!capability_proven(&state,&history),
-            "a claimed gain without the paired holdout receipt must not count");
-        no_receipt["evaluation"]["metrics"]["measurements"]=json!([{
-            "domain":"memory","holdout":true,"baselinePass":false,"candidatePass":true,"metrics":[]
-        }]);
-        state.store.put("rsi_candidate",&no_receipt);
-        assert!(!capability_proven(&state,&history),
-            "a mismatched success-domain label must not count");
-        no_receipt["evaluation"]["metrics"]["measurements"]=json!([{
-            "domain":"planning","holdout":true,"baselinePass":false,"candidatePass":true,"metrics":[]
-        }]);
-        no_receipt["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
-        state.store.put("rsi_candidate",&no_receipt);
-        assert!(!capability_proven(&state,&history),
-            "a success label in another domain must not substitute for measurements");
-        no_receipt["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["planning"]);
-        state.store.put("rsi_candidate",&no_receipt);
-        assert!(capability_proven(&state,&history));
-        no_receipt["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
-        no_receipt["evaluation"]["metrics"]["measurements"]=json!([{
-            "domain":"memory","holdout":true,"baselinePass":false,"candidatePass":true,"metrics":[]
-        }]);
-        state.store.put("rsi_candidate",&no_receipt);
-        assert!(!capability_proven(&state,&history),
-            "repeating a domain already improved with the meta change is not transfer");
-        no_receipt["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["planning"]);
-        no_receipt["evaluation"]["metrics"]["measurements"]=json!([{
-            "domain":"planning","holdout":true,"baselinePass":false,"candidatePass":true,"metrics":[]
-        }]);
-        state.store.put("rsi_candidate",&no_receipt);
+            "a forged summary cannot override the frozen paired case receipts");
+        forged["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["planning"]);
+        state.store.put("rsi_candidate",&forged).unwrap();
+        // A later patch in the same previously improved domain is not transfer.
+        let mut same_domain=state.store.get("rsi_candidate","proof-2").unwrap();
+        same_domain["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
+        state.store.put("rsi_candidate",&same_domain);
+        assert!(!capability_proven(&state,&history),"same-domain replay cannot prove transfer");
+        same_domain["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["planning"]);
+        state.store.put("rsi_candidate",&same_domain);
+        // Missing domain receipts are not retroactively accepted as proof.
+        let mut missing_domains=state.store.get("rsi_candidate","proof-2").unwrap();
+        missing_domains["evaluation"]["metrics"].as_object_mut().unwrap()
+            .remove("improvedHoldoutDomains");
+        state.store.put("rsi_candidate",&missing_domains);
+        assert!(!capability_proven(&state,&history));
+        state.store.put("rsi_candidate",&same_domain);
         let mut interrupted=history.clone();
         interrupted.insert(1,json!({"accepted":false,"reason":"research_only"}));
         assert!(!capability_proven(&state,&interrupted),
@@ -620,6 +666,11 @@ mod tests {
         next["history"]=json!(history[2..].to_vec());
         assert!(campaign_capability_proven(&state,&next),
             "three proven descendants may span two campaigns on the same source lineage");
+        let mut advanced=next.clone();
+        advanced["baseCommit"]=json!(revisions[2]);
+        advanced["sourceFingerprint"]=json!("c".repeat(64));
+        assert!(campaign_capability_proven(&state,&advanced),
+            "a continued campaign may start from the previously selected descendant");
         let mut unrelated=next.clone();
         unrelated["sourceBranch"]=json!("dominion-sub3");
         assert!(!campaign_capability_proven(&state,&unrelated),
