@@ -2314,7 +2314,11 @@ fn fit_worker_context(
 }
 
 fn should_stop_no_progress(streak: u64, research: bool, changed: bool) -> bool {
-    streak>=1 && (!research || !changed)
+    // A single no-edit attempt is evidence for a changed next strategy, not
+    // an instruction to abandon the entire campaign. The source ranker uses
+    // that failed target to find an alternative on the next bounded attempt.
+    // Two consecutive empty attempts stop the run to protect the token budget.
+    streak>=2 && (!research || !changed)
 }
 
 fn new_research_findings(state:&AppState,input:&Value,job_id:&str,hashes:&[Value],history:&[Value])->usize{
@@ -4070,8 +4074,11 @@ mod tests {
     #[test]
     fn research_continues_for_new_findings_not_for_new_query_spellings() {
         assert!(!should_stop_no_progress(1, true, true));
-        assert!(should_stop_no_progress(1, true, false));
-        assert!(should_stop_no_progress(1, false, true));
+        assert!(!should_stop_no_progress(1, true, false),
+            "first empty generation must have one evidence-driven retry");
+        assert!(!should_stop_no_progress(1, false, true));
+        assert!(should_stop_no_progress(2, true, false));
+        assert!(should_stop_no_progress(2, false, false));
         assert!(!should_stop_no_progress(2, true, true));
         assert!(!should_stop_no_progress(3, true, true));
         assert!(should_stop_no_progress(3, true, false));
