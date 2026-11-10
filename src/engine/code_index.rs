@@ -852,8 +852,9 @@ pub fn rank_focus_files_with_feedback(
             && (path.contains(domain)||symbols.contains(domain)) {1.0} else {0.0};
         let evidence=path_evidence+symbol_evidence+summary_evidence+body_evidence+domain_evidence;
         if evidence==0.0 {continue;}
-        let prior=prior_unproductive.get(path).copied().unwrap_or(0) as f64;
-        let successful=prior_productive.get(path).copied().unwrap_or(0) as f64;
+        let path_key=file["path"].as_str().unwrap_or("").to_lowercase();
+        let prior=prior_unproductive.get(path_key.as_str()).copied().unwrap_or(0) as f64;
+        let successful=prior_productive.get(path_key.as_str()).copied().unwrap_or(0) as f64;
         let productive_evidence=successful.ln_1p();
         let source_cost=(file["bytes"].as_u64().unwrap_or(0) as f64/8_192.0).min(100.0);
         let features=BTreeMap::from([
