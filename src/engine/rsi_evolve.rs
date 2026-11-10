@@ -2135,6 +2135,12 @@ async fn run_loop(
             digest,
             focus
         ));
+        // The earlier preflight only sees the base prompt. Inherited research,
+        // source excerpts and method feedback can make the *real* generation
+        // substantially larger; never spawn a paid worker that cannot fit.
+        if !generation_fits_remaining_budget(record,&child_input) {
+            return Ok("token_budget".into());
+        }
         // Record prompt composition so real-model savings can be measured
         // separately from completion tokens and tool-call counts.
         child_input["rsiFocusContextChars"] = json!(focus.chars().count());
@@ -2759,6 +2765,12 @@ mod tests {
         let record=json!({"limits":{"tokenBudget":30000},"tokens":27446});
         assert!(!generation_fits_remaining_budget(&record,&json!({"prompt":"한".repeat(3000)})),"do not build or launch a worker when even its existing prompt cannot fit");
         assert!(generation_fits_remaining_budget(&json!({"limits":{}}),&json!({"prompt":"한".repeat(3000)})));
+        let budget=json!({"limits":{"tokenBudget":30000},"tokens":27000});
+        let base=json!({"prompt":"small source"});
+        assert!(generation_fits_remaining_budget(&budget,&base));
+        let expanded=json!({"prompt":format!("small source{}", "research context ".repeat(3000))});
+        assert!(!generation_fits_remaining_budget(&budget,&expanded),
+            "check the complete composed worker prompt before creating the next job");
     }
 
     #[test]
