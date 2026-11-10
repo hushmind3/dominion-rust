@@ -139,6 +139,87 @@ fn find_lms_key(repo: &str) -> Option<String> {
     })
 }
 
+
+/* A split GGUF is ONE model: llama.cpp needs every numbered part beside
+ * the first shard. Never advertise a partial set as a usable model. */
+fn gguf_shard_parts(path: &str) -> Option<(String, usize, usize)> {
+    let stem = path.strip_suffix(".gguf")?;
+    let (head, total_text) = stem.rsplit_once("-of-")?;
+    let (prefix, number_text) = head.rsplit_once('-')?;
+    if number_text.len() != 5 || total_text.len() != 5
+        || !number_text.bytes().all(|b| b.is_ascii_digit())
+        || !total_text.bytes().all(|b| b.is_ascii_digit())
+    { return None; }
+    let number = number_text.parse::<usize>().ok()?;
+    let total = total_text.parse::<usize>().ok()?;
+    (number > 0 && total > 1 && total <= 256 && number <= total)
+        .then(|| (prefix.to_string(), number, total))
+}
+
+fn gguf_download_options(siblings: &[Value]) -> Vec<Value> {
+    let mut options = Vec::new();
+    let mut groups = std::collections::BTreeMap::<
+        (String, usize), std::collections::BTreeMap<usize, (String, u64)>
+    >::new();
+    for sibling in siblings {
+        let Some(file) = sibling["rfilename"].as_str() else { continue };
+        if !file.to_ascii_lowercase().ends_with(".gguf") || !safe_relative(file) { continue; }
+        let size = sibling["size"].as_u64().unwrap_or(0);
+        if let Some((prefix, number, total)) = gguf_shard_parts(file) {
+            groups.entry((prefix, total)).or_default()
+                .insert(number, (file.to_string(), size));
+            continue;
+        }
+        let quantization = file.strip_suffix(".gguf").unwrap_or(file)
+            .rsplit('-').next().unwrap_or("").to_uppercase();
+        options.push(json!({
+            "id": file, "format": "gguf",
+            "label": file.rsplit('/').next().unwrap_or(file),
+            "quantization": quantization, "bytes": size,
+            "sizeLabel": format_bytes(size), "files": [file], "shards": 1
+        }));
+    }
+    for ((prefix, total), group) in groups {
+        if group.len() != total || !(1..=total).all(|i| group.contains_key(&i)) {
+            continue;
+        }
+        let files = (1..=total).map(|i| group[&i].0.clone()).collect::<Vec<_>>();
+        let bytes = group.values().map(|(_, size)| *size).sum::<u64>();
+        let name = prefix.rsplit('/').next().unwrap_or(&prefix);
+        options.push(json!({
+            "id": files[0], "format": "gguf",
+            "label": format!("{name} · {total} parts"),
+            "quantization": "", "bytes": bytes, "sizeLabel": format_bytes(bytes),
+            "files": files, "shards": total
+        }));
+    }
+    options
+}
+
+fn validated_gguf_files(option: &str, requested: Vec<String>) -> Result<Vec<String>, String> {
+    let file = option.trim_start_matches('/').to_string();
+    if !file.to_ascii_lowercase().ends_with(".gguf") || !safe_relative(&file) {
+        return Err("다운로드할 GGUF 파일을 확인하세요.".into());
+    }
+    let files = if requested.is_empty() { vec![file.clone()] } else { requested };
+    if files.len() == 1 && files[0] == file && gguf_shard_parts(&file).is_none() {
+        return Ok(files);
+    }
+    let Some((prefix, number, total)) = gguf_shard_parts(&file) else {
+        return Err("GGUF 파일 목록과 선택한 모델이 일치하지 않습니다.".into());
+    };
+    if number != 1 || files.len() != total
+        || files.iter().enumerate().any(|(index, path)| {
+            !safe_relative(path) || gguf_shard_parts(path).is_none_or(|(p, n, t)| {
+                p != prefix || n != index + 1 || t != total
+            })
+        })
+    {
+        return Err("분할 GGUF 모델은 모든 조각을 순서대로 함께 다운로드해야 합니다.".into());
+    }
+    Ok(files)
+}
+
 fn mlx_download_files(siblings: &[Value]) -> Option<Value> {
     let mut files = Vec::new();
     let mut has_config = false;
@@ -220,16 +301,31 @@ pub fn installed(state: &AppState) -> Vec<Value> {
         .iter()
         .filter_map(|model| model["repo"].as_str().map(str::to_string))
         .collect::<std::collections::HashSet<_>>();
-    found
-        .into_iter()
+    let gguf = found.into_iter()
+        .filter(|path| path.extension().and_then(|value| value.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf")))
+        .collect::<Vec<_>>();
+    let available = gguf.iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<std::collections::HashSet<_>>();
+    gguf.into_iter()
         .filter(|path| {
-            path.extension()
-                .and_then(|value| value.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case("gguf"))
-                .unwrap_or(false)
+            let path = path.to_string_lossy();
+            match gguf_shard_parts(&path) {
+                None => true,
+                Some((prefix, number, total)) => number == 1
+                    && (2..=total).all(|index|
+                        available.contains(&format!("{prefix}-{index:05}-of-{total:05}.gguf"))),
+            }
         })
         .filter_map(|path| {
             let metadata = std::fs::metadata(&path).ok()?;
+            let bytes = if let Some((prefix, _, total)) =
+                gguf_shard_parts(&path.to_string_lossy()) {
+                (1..=total).map(|index|
+                    std::fs::metadata(format!("{prefix}-{index:05}-of-{total:05}.gguf"))
+                        .map(|m| m.len()).unwrap_or(0)).sum()
+            } else { metadata.len() };
             let relative = path
                 .strip_prefix(&dir)
                 .unwrap_or(&path)
@@ -246,8 +342,8 @@ pub fn installed(state: &AppState) -> Vec<Value> {
                 "source": "local",
                 "format": "gguf",
                 "label": file,
-                "bytes": metadata.len(),
-                "sizeLabel": format_bytes(metadata.len()),
+                "bytes": bytes,
+                "sizeLabel": format_bytes(bytes),
                 "installedAt": metadata.modified().ok()
                     .map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()),
             }))
@@ -1938,9 +2034,7 @@ async fn catalog_filtered(query: &str, limit: usize, format: &str) -> Result<Vec
 }
 
 pub async fn details(repo: &str) -> Result<Value, String> {
-    if repo.trim().is_empty() {
-        return Err("모델 id 가 필요합니다.".into());
-    }
+    let repo = safe_repo(repo)?;
     let url = format!("https://huggingface.co/api/models/{repo}?blobs=true");
     let response = reqwest::Client::new()
         .get(&url)
@@ -1952,35 +2046,12 @@ pub async fn details(repo: &str) -> Result<Value, String> {
         return Err(format!("Hugging Face HTTP {}", response.status()));
     }
     let value: Value = response.json().await.map_err(|error| error.to_string())?;
-    let mut options = Vec::new();
     let siblings = value
         .get("siblings")
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
-    for sibling in &siblings {
-        let Some(file) = sibling.get("rfilename").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        if !file.to_ascii_lowercase().ends_with(".gguf") {
-            continue;
-        }
-        let bytes = sibling
-            .get("size")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0);
-        let quantization = file.rsplit('.').nth(1).unwrap_or("").to_uppercase();
-        options.push(json!({
-            "id": file,
-            "format": "gguf",
-            "label": file.rsplit('/').next().unwrap_or(file),
-            "quantization": quantization,
-            "bytes": bytes,
-            "sizeLabel": format_bytes(bytes),
-            "files": [file],
-            "shards": 1,
-        }));
-    }
+    let mut options = gguf_download_options(&siblings);
     options.sort_by(|a, b| {
         a.get("bytes")
             .and_then(|value| value.as_u64())
@@ -1990,6 +2061,21 @@ pub async fn details(repo: &str) -> Result<Value, String> {
     if let Some(mlx) = mlx_download_files(&siblings) {
         options.push(mlx);
     }
+    // Model card metadata belongs to the detail view. A missing README must
+    // never make a downloadable model look broken.
+    let readme = match reqwest::Client::new()
+        .get(format!("https://huggingface.co/{repo}/raw/main/README.md"))
+        .timeout(Duration::from_secs(5))
+        .send().await
+    {
+        Ok(response) if response.status().is_success()
+            && response.content_length().unwrap_or(0) <= 1_048_576 => {
+            response.bytes().await.ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes[..bytes.len().min(64_000)]).into_owned())
+                .unwrap_or_default()
+        }
+        _ => String::new(),
+    };
     let author = repo.split('/').next().unwrap_or("");
     Ok(json!({
         "id": repo,
@@ -2000,14 +2086,15 @@ pub async fn details(repo: &str) -> Result<Value, String> {
         "likes": value.get("likes").and_then(|v| v.as_u64()).unwrap_or(0),
         "gated": value.get("gated").and_then(|v| v.as_bool()).unwrap_or(false),
         "updatedAt": value.get("lastModified"),
-        "description": "",
+        "description": value["cardData"]["description"].as_str().unwrap_or(""),
         "task": value.get("pipeline_tag").and_then(|v| v.as_str()).unwrap_or(""),
         "tags": value.get("tags").cloned().unwrap_or_else(|| json!([])),
         "revision": value.get("sha").and_then(|v| v.as_str()).unwrap_or("main"),
-        "license": "",
-        "architecture": "",
+        "license": value["cardData"]["license"].as_str().unwrap_or(""),
+        "architecture": value["config"]["model_type"].as_str()
+            .or_else(|| value["config"]["architectures"][0].as_str()).unwrap_or(""),
         "options": options,
-        "readme": "",
+        "readme": readme,
     }))
 }
 
@@ -2057,11 +2144,7 @@ pub fn start_download_with(
         }
         files
     } else {
-        let file = option.trim_start_matches('/').to_string();
-        if !file.to_ascii_lowercase().ends_with(".gguf") || !safe_relative(&file) {
-            return Err("다운로드할 GGUF 파일을 확인하세요.".into());
-        }
-        vec![file]
+        validated_gguf_files(&option, requested_files)?
     };
     let dir = target_root(&state, format, &repo);
     let mut total = 0u64;
@@ -2657,6 +2740,49 @@ mod tests {
             target_root(&state, "mlx", "owner/model"),
             mlx_models_root(&state).join("owner/model")
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn split_gguf_is_one_complete_download_and_never_a_partial_model() {
+        let siblings = vec![
+            json!({"rfilename":"Q4/model-00002-of-00003.gguf","size":20}),
+            json!({"rfilename":"Q4/model-00001-of-00003.gguf","size":10}),
+            json!({"rfilename":"Q4/model-00003-of-00003.gguf","size":30}),
+            json!({"rfilename":"simple-Q8_0.gguf","size":60}),
+            json!({"rfilename":"broken-00001-of-00002.gguf","size":99}),
+        ];
+        let options = gguf_download_options(&siblings);
+        assert_eq!(options.len(), 2, "{options:?}");
+        let split = options.iter().find(|o| o["shards"] == 3).unwrap();
+        assert_eq!(split["bytes"], 60);
+        assert_eq!(split["files"], json!([
+            "Q4/model-00001-of-00003.gguf",
+            "Q4/model-00002-of-00003.gguf",
+            "Q4/model-00003-of-00003.gguf"
+        ]));
+        assert_eq!(validated_gguf_files(split["id"].as_str().unwrap(),
+            split["files"].as_array().unwrap().iter().map(|v|v.as_str().unwrap().to_string()).collect()).unwrap().len(), 3);
+        assert!(validated_gguf_files("Q4/model-00001-of-00003.gguf", vec![]).is_err());
+        assert!(validated_gguf_files("Q4/model-00002-of-00003.gguf",
+            vec!["Q4/model-00002-of-00003.gguf".into()]).is_err());
+        assert!(validated_gguf_files("simple-Q8_0.gguf",
+            vec!["simple-Q8_0.gguf".into(),"another.gguf".into()]).is_err());
+    }
+
+    #[test]
+    fn split_gguf_appears_only_when_all_shards_exist() {
+        let (state, dir) = temp_state();
+        let model_dir = models_dir(&state).join("split");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("model-00001-of-00003.gguf"), b"a").unwrap();
+        assert!(!installed(&state).iter().any(|m| m["id"] == "split/model-00001-of-00003.gguf"));
+        std::fs::write(model_dir.join("model-00002-of-00003.gguf"), b"bb").unwrap();
+        std::fs::write(model_dir.join("model-00003-of-00003.gguf"), b"ccc").unwrap();
+        let models = installed(&state).into_iter().filter(|m| m["format"] == "gguf").collect::<Vec<_>>();
+        assert_eq!(models.len(), 1, "{models:?}");
+        assert_eq!(models[0]["id"], "split/model-00001-of-00003.gguf");
+        assert_eq!(models[0]["bytes"], 6);
         let _ = std::fs::remove_dir_all(dir);
     }
 
