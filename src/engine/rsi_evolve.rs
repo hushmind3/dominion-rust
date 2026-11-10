@@ -4813,7 +4813,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
     // Deterministic frozen receipts, independent of candidate adoption flags.
     fn with_frozen_trial_receipts(baseline:&mut Value,trial:&mut Value) {
         for generation in [&mut *baseline, &mut *trial] {
@@ -4852,6 +4851,7 @@ mod tests {
             "a frozen regression must override savings and accepted flags");
     }
 
+    #[test]
     fn trial_verdict_requires_success_before_supporting_cost_savings() {
         let mut baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
         let mut trial = trial_generation("trial", 2, "context", false, "commit-1", 5_000, 500, "candidate");
