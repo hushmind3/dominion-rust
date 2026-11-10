@@ -2141,22 +2141,80 @@ async fn run_loop(
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
         let target_objective=selection_objective(&child_input);
-        // Compute the same domain decision that the worker will use. Keep it
-        // distinct from rsiSelectedDomain, which represents an explicit choice.
         let target_trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
         let parent_domain=child_input["rsiSelectedDomain"].as_str().map(str::to_string);
-        let (target_domain,target_selection,target_strategy)=select_generation_strategy(
-            &context.state,&recorded_history,&target_objective,
-            research_continuation(&recorded_history),target_trial,parent_domain,&head);
+        let native_planning=child_input["model"].as_str().is_some_and(|model|!model.is_empty())
+            && child_input["providerId"].as_str().is_some_and(|provider|!provider.is_empty());
+        // Legacy, model-free native fixtures use the deterministic coordinator
+        // plan. A real model generation instead delegates planning and file
+        // ranking to its own newly built executable before spending tokens.
+        let (target_domain,target_selection,target_strategy,worker_ranked)=if native_planning {
+            record["planAttempt"]=json!(attempt);
+            record["planIndexId"]=child_input["rsiIndexId"].clone();
+            record["planTrialAlgorithmId"]=child_input["rsiTrialAlgorithmId"].clone();
+            record["planSelectedDomain"]=child_input["rsiSelectedDomain"].clone();
+            record["phase"]=json!("planning_next_generator");
+            save(context,record)?;
+            let mut planner=Command::new(&binary);
+            planner.arg("--rsi-worker-plan").arg(&context.job_id)
+                .current_dir(&lab)
+                .env("DOMINION_DATA",std::fs::canonicalize(&context.state.config.data_dir)
+                    .map_err(|e|e.to_string())?)
+                .env("DOMINION_WORKSPACE",&lab)
+                .env_remove("DOMINION_DESKTOP_PARENT");
+            let output=command(context,planner,Duration::from_secs(30)).await?;
+            if !output.status.success() {
+                return Err(format!("차세대 실행기가 자체 목표를 설계하지 못했습니다: {}",
+                    String::from_utf8_lossy(&output.stderr).chars().take(700).collect::<String>()));
+            }
+            if output.stdout.len()>64*1024 {
+                return Err("차세대 실행기의 계획 출력이 허용 범위를 넘었습니다.".into());
+            }
+            let plan:Value=serde_json::from_slice(&output.stdout)
+                .map_err(|e|format!("차세대 실행기의 목표 계획 형식 오류: {e}"))?;
+            let domain=plan["domain"].as_str().filter(|d|DOMAINS.contains(d))
+                .ok_or("차세대 실행기가 허용되지 않은 개선 분야를 선택했습니다.")?;
+            let selection=plan["selection"].as_str()
+                .filter(|s|matches!(*s,"algorithm_active"|"algorithm_trial"|"research_continuation"))
+                .ok_or("차세대 실행기의 선택 방식이 유효하지 않습니다.")?;
+            let strategy=plan["strategy"].clone();
+            if !strategy.is_object() && !strategy.is_null() {
+                return Err("차세대 실행기 전략의 자료형이 올바르지 않습니다.".into());
+            }
+            let expected_target=generation_target_plan(domain,selection,&strategy,&head);
+            if plan["source"]!="compiled_generator_plan_v1"
+                || plan["generatorCommit"]!=head
+                || plan["attempt"].as_u64()!=Some(attempt)
+                || plan["historyCount"].as_u64()!=Some(recorded_history.len() as u64)
+                || plan["objectiveId"]!=crate::engine::memory::stable_id(&[&target_objective])
+                || plan["indexId"]!=child_input["rsiIndexId"]
+                || plan["targetPlan"]!=expected_target {
+                return Err("차세대 계획과 동결된 세대 계보·인덱스·revision이 다릅니다.".into());
+            }
+            let rows=plan["rankedFiles"].as_array()
+                .ok_or("차세대 실행기의 소스 탐색 결과가 배열이 아닙니다.")?.clone();
+            if rows.len()>2 || rows.iter().any(|row|row["path"].as_str()
+                .is_none_or(|path|!crate::engine::rsi::safe_path(path))) {
+                return Err("차세대 실행기의 소스 후보 경로가 유효하지 않습니다.".into());
+            }
+            record["nextGenerationPlan"]=plan;
+            save(context,record)?;
+            (domain.to_string(),selection.to_string(),strategy,Some(rows))
+        } else {
+            let (domain,selection,strategy)=select_generation_strategy(
+                &context.state,&recorded_history,&target_objective,
+                research_continuation(&recorded_history),target_trial,parent_domain,&head);
+            (domain,selection.to_string(),strategy,None)
+        };
         child_input["rsiTargetDomain"]=json!(target_domain);
         child_input["rsiTargetPlan"]=generation_target_plan(
-            &target_domain,target_selection,&target_strategy,&head);
+            &target_domain,&target_selection,&target_strategy,&head);
         let target_policy=target_strategy["id"].as_str()
             .and_then(|id|context.state.store.get("algorithm",id))
             .or_else(||crate::engine::algorithms::active(&context.state,"selfimprove.search"));
         if child_input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
-            let ranked=choose_focus_files(&context.state,&child_input,&recorded_history,
-                target_policy.as_ref());
+            let ranked=worker_ranked.unwrap_or_else(||choose_focus_files(
+                &context.state,&child_input,&recorded_history,target_policy.as_ref()));
             let selected=ranked.iter().filter_map(|row|row["path"].as_str())
                 .map(str::to_string).collect::<Vec<_>>();
             child_input["rsiFocusFiles"]=json!(selected);
@@ -2861,6 +2919,76 @@ fn select_generation_strategy(
         "algorithm_active",
         search_strategy(&algorithm, "active"),
     )
+}
+
+/// The model-bearing generation is planned by its own compiled executable,
+/// not by an older coordinator. This method only reads durable observations
+/// and returns a bounded proposal; it does not invoke a model or mutate code.
+fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_commit:&str)
+    -> Result<Value,String> {
+    if job["kind"]!="rsi_evolve" || job["status"]!="running"
+        || job["cancelRequested"]==true || campaign["id"]!=job["id"]
+        || campaign["headCommit"]!=binary_commit
+        || campaign["planAttempt"].as_u64().is_none()
+    {
+        return Err("계획 작업의 캠페인 상태 또는 개선기 revision이 일치하지 않습니다.".into());
+    }
+    let campaign_id=campaign["id"].as_str().ok_or("캠페인 ID가 없습니다.")?;
+    let mut history=state.store.all("rsi_generation").into_iter()
+        .filter(|generation|generation["campaignId"]==campaign_id)
+        .collect::<Vec<_>>();
+    history.sort_by_key(|generation|generation["attempt"].as_u64().unwrap_or(0));
+    if campaign["history"].as_array().is_none_or(|rows|rows.len()!=history.len())
+        || campaign["planAttempt"].as_u64()!=Some(history.len() as u64+1) {
+        return Err("계획 시점의 세대 이력과 저장된 실험 계보가 다릅니다.".into());
+    }
+    let source_input=&job["input"];
+    let objective=selection_objective(source_input);
+    let selected_domain=campaign["planSelectedDomain"].as_str()
+        .filter(|domain|DOMAINS.contains(domain))
+        .map(str::to_string);
+    let trial_id=campaign["planTrialAlgorithmId"].as_str()
+        .filter(|id|!id.is_empty()).map(str::to_string);
+    let (domain,selection,strategy)=select_generation_strategy(
+        state,&history,&objective,research_continuation(&history),trial_id,
+        selected_domain,binary_commit);
+    let mut focus_input=source_input.clone();
+    focus_input["rsiTargetDomain"]=json!(domain);
+    focus_input["rsiIndexId"]=campaign["planIndexId"].clone();
+    let ranked=if focus_input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
+        let policy=strategy["id"].as_str()
+            .and_then(|id|state.store.get("algorithm",id))
+            .or_else(||crate::engine::algorithms::active(state,"selfimprove.search"));
+        choose_focus_files(state,&focus_input,&history,policy.as_ref())
+    } else {
+        Vec::new()
+    };
+    Ok(json!({
+        "source":"compiled_generator_plan_v1",
+        "generatorCommit":binary_commit,
+        "attempt":campaign["planAttempt"],
+        "historyCount":history.len(),
+        "objectiveId":crate::engine::memory::stable_id(&[&objective]),
+        "indexId":campaign["planIndexId"],
+        "domain":domain,"selection":selection,"strategy":strategy,
+        "targetPlan":generation_target_plan(&domain,selection,&strategy,binary_commit),
+        "rankedFiles":ranked
+    }))
+}
+
+/// A short-lived native planning subprocess runs before a paid model worker.
+/// The executable identity and plan fields are checked by the coordinator.
+pub async fn worker_plan(campaign_id:&str) -> Result<(),String> {
+    let config=crate::config::Config::from_env();
+    let store=crate::db::Store::open(&config.db_path()).map_err(|e|e.to_string())?;
+    let vault=crate::vault::Vault::open(&config.key_path());
+    let state=AppState::new(config,store,vault);
+    let campaign=state.store.get("rsi_campaign",campaign_id).ok_or("계획할 캠페인이 없습니다.")?;
+    let job=state.store.get("job",campaign_id).ok_or("캠페인 작업을 찾을 수 없습니다.")?;
+    let binary_commit=option_env!("DOMINION_BUILD_COMMIT").ok_or("개선기 revision 식별자가 없습니다.")?;
+    let plan=native_generation_plan(&state,&campaign,&job,binary_commit)?;
+    println!("{plan}");
+    Ok(())
 }
 
 /// Executes only one durable generation, without starting a server, scheduler,
@@ -4521,6 +4649,31 @@ mod tests {
         );
         assert!(state.store.all("algorithm_eval").is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn new_generator_plans_its_own_domain_without_running_a_model() {
+        let (state,root)=state();
+        let commit="a".repeat(40);
+        state.store.put("job",&json!({"id":"native-plan","kind":"rsi_evolve",
+            "status":"running","cancelRequested":false,
+            "input":{"rsiObjective":"Improve memory retrieval","rsiFocusFiles":["src/engine/memory.rs"]}}));
+        let mut campaign=json!({"id":"native-plan","headCommit":commit,"history":[],
+            "planAttempt":1,"planSelectedDomain":"memory",
+            "planTrialAlgorithmId":null,"planIndexId":"index-revision"});
+        state.store.put("rsi_campaign",&campaign);
+        let job=state.store.get("job","native-plan").unwrap();
+        let plan=native_generation_plan(&state,&campaign,&job,&commit).unwrap();
+        assert_eq!(plan["domain"],"memory");
+        assert_eq!(plan["source"],"compiled_generator_plan_v1");
+        assert_eq!(plan["targetPlan"]["generatorCommit"],commit);
+        assert_eq!(plan["rankedFiles"],json!([]));
+        assert!(native_generation_plan(&state,&campaign,&job,&"b".repeat(40)).is_err(),
+            "a different executable cannot claim a generation plan");
+        campaign["planAttempt"]=json!(2);
+        assert!(native_generation_plan(&state,&campaign,&job,&commit).is_err(),
+            "a stale generation counter cannot silently reuse a plan");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
