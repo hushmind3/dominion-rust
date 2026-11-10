@@ -2536,6 +2536,8 @@ async fn run_loop(
         if let Some(session)=session {
             generation["knowledgeReuse"]=context.state.store.get("session",session).map(|s|s["rsiKnowledgeReuse"].clone()).unwrap_or(Value::Null);
         }
+        generation["improvementActionObservation"]=improvement_action_observation(
+            &generation,current["result"]["rsi"]["diffBytes"].as_u64().unwrap_or(0));
         let prior_history = record["history"].as_array().cloned().unwrap_or_default();
         if let Some(session)=session {
             let proposals = proposed_algorithms(&context.state, session);
@@ -2974,6 +2976,9 @@ fn improvement_directive(history:&[Value]) -> Value {
     let new_findings=last["newFindings"].as_u64().unwrap_or(0);
     let mode=if last["accepted"]==true {
         "extend_verified_capability"
+    } else if last["improvementActionObservation"]["status"]=="not_followed"
+        && !matches!(previous_mode,""|"discover"|"change_approach") {
+        "change_approach"
     } else if matches!(verdict,"regressed"|"build_failed") {
         if previous_mode=="repair_counterexample" {"change_approach"}
         else {"repair_counterexample"}
@@ -3031,10 +3036,48 @@ fn improvement_work_contract(directive:&Value) -> &'static str {
     }
 }
 
+/// Separate instruction delivery from actual execution. Small models
+/// frequently remember the lesson but repeat research instead of editing.
+/// This receipt is computed from operations and candidate evidence, not
+/// from the model claiming it followed a plan.
+fn improvement_action_observation(generation:&Value, diff_bytes:u64) -> Value {
+    let mode=generation["improvementDirective"]["mode"].as_str().unwrap_or("discover");
+    let completed_writes=generation["toolsUsed"].as_array().into_iter().flatten()
+        .filter(|row|matches!(row["tool"].as_str(),
+            Some("workspace_write"|"workspace_replace"|"file_write")))
+        .map(|row|row["calls"].as_u64().unwrap_or(0))
+        .sum::<u64>();
+    let produced_candidate=generation["candidateId"].is_string();
+    let attempted_change=completed_writes>0 || diff_bytes>0 || produced_candidate;
+    let previous_files=generation["improvementDirective"]["previousFocusFiles"]
+        .as_array().cloned().unwrap_or_default();
+    let current_files=generation["focusFiles"].as_array().cloned().unwrap_or_default();
+    let source_changed=!previous_files.is_empty() && previous_files!=current_files;
+    let observed=match mode {
+        "implement_research"|"repair_counterexample"|"revise_candidate"=>attempted_change,
+        "change_approach"=>attempted_change || source_changed,
+        "extend_verified_capability"=>attempted_change
+            || generation["newFindings"].as_u64().unwrap_or(0)>0,
+        _=>attempted_change || generation["newFindings"].as_u64().unwrap_or(0)>0,
+    };
+    json!({
+        "mode":mode,
+        "followed":observed,
+        "status":if generation["accepted"]==true {"verified_adoption"}
+                 else if observed {"attempted"}
+                 else {"not_followed"},
+        "completedWrites":completed_writes,
+        "diffBytes":diff_bytes,
+        "candidateProduced":produced_candidate,
+        "focusChanged":source_changed,
+        "accepted":generation["accepted"]
+    })
+}
+
 /// Aggregate observed gains and costs per action. These are measurements of
 /// campaign throughput, not causal attribution or a proxy for improvement.
 fn improvement_action_results(history:&[Value]) -> Vec<Value> {
-    let mut rows=BTreeMap::<String,(u64,u64,u64,u64)>::new();
+    let mut rows=BTreeMap::<String,(u64,u64,u64,u64,u64)>::new();
     for generation in history {
         let mode=generation["improvementDirective"]["mode"].as_str().unwrap_or("legacy");
         let entry=rows.entry(mode.to_string()).or_default();
@@ -3044,9 +3087,13 @@ fn improvement_action_results(history:&[Value]) -> Vec<Value> {
         }
         entry.2+=generation["newFindings"].as_u64().unwrap_or(0);
         entry.3+=generation["tokens"].as_u64().unwrap_or(0);
+        if generation["improvementActionObservation"]["followed"]==true {
+            entry.4+=1;
+        }
     }
-    rows.into_iter().map(|(mode,(attempts,adoptions,findings,tokens))|json!({
+    rows.into_iter().map(|(mode,(attempts,adoptions,findings,tokens,followed))|json!({
         "mode":mode,"attempts":attempts,"verifiedAdoptions":adoptions,
+        "actionsFollowed":followed,
         "newFindings":findings,"tokens":tokens,
         "adoptionsPer100kTokens":if tokens>0 {100000.0*adoptions as f64/tokens as f64} else {0.0}
     })).collect()
