@@ -1051,6 +1051,32 @@ mod tests {
 
 
     #[test]
+    fn frozen_evaluation_files_are_not_discovered_or_ranked() {
+        let (state,root)=temp_state();
+        let source=root.join("repo");
+        std::fs::create_dir_all(source.join("src/engine")).unwrap();
+        std::fs::write(source.join("src/engine/rsi_oracle_fixture.rs"),
+            "fn secret_frozen_holdout() {}\n").unwrap();
+        std::fs::write(source.join("src/engine/rsi_metrics.rs"),
+            "fn secret_frozen_metric() {}\n").unwrap();
+        std::fs::write(source.join("src/engine/search.rs"),
+            "fn public_improvement_search() {}\n").unwrap();
+        let meta=refresh(&state,&source).unwrap();
+        let id=meta["id"].as_str().unwrap();
+        let paths=state.store.all("code_index_file").into_iter()
+            .filter(|file|file["indexId"]==id)
+            .map(|file|file["path"].as_str().unwrap_or("").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(paths,vec!["src/engine/search.rs"],
+            "frozen evaluator content must never enter the source index");
+        let ranked=rank_focus_files(&state,id,"secret frozen holdout","improver",
+            &BTreeMap::new(),None,8);
+        assert!(ranked.iter().all(|row|
+            !crate::engine::rsi::sealed_measurement_path(row["path"].as_str().unwrap_or(""))));
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn invalid_target_expression_falls_back_for_all_files_not_a_mixed_ranking() {
         let (state,root)=temp_state();
         let source=root.join("repo");
