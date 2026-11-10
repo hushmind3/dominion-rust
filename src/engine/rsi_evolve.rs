@@ -2755,25 +2755,38 @@ pub fn meta_transfer_proven(history: &[Value]) -> bool {
     history.iter().any(generation_meta_transfer_proven)
 }
 
-/// Count a demonstrated recursive capability only when the transferable
-/// gain occurred within a three-generation uninterrupted verified streak.
-/// A transfer from an earlier, broken streak cannot be recycled as proof.
+/// A three-generation adoption streak proves a real lineage only if the
+/// first adoption changes the improver, a newly compiled child improves an
+/// independently measured different domain, and its successor inherits that
+/// result and produces another measured gain. This is observed lineage, not
+/// by itself a causal A/B proof of faster self-improvement.
 pub fn capability_demonstrated(history: &[Value]) -> bool {
-    let mut streak = 0u64;
-    let mut transfer_in_streak = false;
-    for generation in history {
-        if generation_is_verified(generation) {
-            streak += 1;
-            transfer_in_streak |= generation_meta_transfer_proven(generation);
-            if streak >= 3 && transfer_in_streak {
-                return true;
-            }
-        } else if generation["evaluation"].is_object() {
-            streak = 0;
-            transfer_in_streak = false;
+    history.windows(3).any(|chain| {
+        let [parent,child,grandchild]=chain else {return false;};
+        if !chain.iter().all(|generation|generation_is_verified(generation))
+            || parent["candidateTarget"]!="improver"
+            || parent["domain"]==child["domain"]
+            || child["nativePlan"]["source"]!="compiled_generator_plan_v1"
+            || grandchild["nativePlan"]["source"]!="compiled_generator_plan_v1"
+            || child["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)==0
+            || grandchild["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)==0 {
+            return false;
         }
-    }
-    false
+        let valid_commit=|value:&Value|value.as_str().is_some_and(|sha|
+            sha.len()==40 && sha.bytes().all(|byte|byte.is_ascii_hexdigit()));
+        if !chain.iter().all(|generation|valid_commit(&generation["acceptedCommit"])
+                && valid_commit(&generation["generatorCommit"]))
+            || child["generatorCommit"]!=parent["acceptedCommit"]
+            || grandchild["generatorCommit"]!=child["acceptedCommit"]
+            || parent["acceptedCommit"]==child["acceptedCommit"]
+            || child["acceptedCommit"]==grandchild["acceptedCommit"] {
+            return false;
+        }
+        let measured_child_gain=child["evaluation"]["metrics"]["holdoutEvidence"]
+            .as_array().is_some_and(|rows|rows.iter().any(|row|
+                row["domain"]==child["domain"] && row["improved"]==true));
+        measured_child_gain
+    })
 }
 
 /// Longest run of verified adopted generations. Capability is derived from
@@ -4346,6 +4359,43 @@ mod tests {
                          "improved":true}]}}});
         assert!(meta_transfer_proven(&[improver_gain]),
             "An actual improver holdout gain supports recursive improvement");
+    }
+
+    #[test]
+    fn recursive_capability_requires_real_lineage_and_child_domain_gain() {
+        let make=|domain:&str,from:&str,to:&str,target:&str|json!({
+            "pairedRevalidated":true,"accepted":true,
+            "domain":domain,"candidateTarget":target,
+            "generatorCommit":from,"acceptedCommit":to,
+            "nativePlan":{"source":"compiled_generator_plan_v1"},
+            "evaluation":{"candidateStatus":"verified",
+                "measurementScope":"frozen_native_cases_only",
+                "metrics":{"eligible":true,"holdoutCases":2,"regressions":0,
+                    "improvedHoldouts":1,"holdoutEvidence":[
+                        {"id":"held","domain":domain,"improved":true}]}}
+        });
+        let a="a".repeat(40);
+        let b="b".repeat(40);
+        let c="c".repeat(40);
+        let d="d".repeat(40);
+        let parent=make("improver",&a,&b,"improver");
+        let child=make("context",&b,&c,"harness");
+        let grandchild=make("context",&c,&d,"algorithm");
+        assert!(capability_demonstrated(&[parent.clone(),child.clone(),grandchild.clone()]));
+        let mut copied=child.clone();
+        copied["generatorCommit"]=json!(a);
+        assert!(!capability_demonstrated(&[parent.clone(),copied,grandchild.clone()]),
+            "A copied success without inherited executable lineage is not recursion");
+        let mut no_child_gain=child.clone();
+        no_child_gain["evaluation"]["metrics"]["holdoutEvidence"]=json!([{
+            "id":"held","domain":"improver","improved":true}]);
+        assert!(!capability_demonstrated(&[parent.clone(),no_child_gain,grandchild.clone()]),
+            "The child must improve a measured case in its new domain");
+        let mut no_native_plan=child.clone();
+        no_native_plan["nativePlan"]=Value::Null;
+        assert!(!capability_demonstrated(&[parent.clone(),no_native_plan,grandchild.clone()]));
+        let same_domain=make("improver",&b,&c,"harness");
+        assert!(!capability_demonstrated(&[parent,same_domain,grandchild]));
     }
 
     #[test]
