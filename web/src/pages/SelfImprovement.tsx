@@ -2,6 +2,7 @@ import {useEffect,useState} from 'react'
 import {ArrowLeft,ArrowRight,BrainCircuit,Check,LoaderCircle,Play,RefreshCw,Square,Download} from 'lucide-react'
 import {Provider,get,post} from '../api'
 import {ModelPicker} from '../components/ModelPicker'
+import {RsiTargetEvidence,type RsiTargetSelection} from '../components/RsiTargetEvidence'
 import {Button,SelectInput,TextArea} from '../components/Primitives'
 import {FormField,Headline,Notice,Panel,useRemote} from '../components/UI'
 
@@ -16,7 +17,7 @@ type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGen
  application?:{commit?:string;requiresRebuild?:boolean;restartRequested?:boolean};
  tokensEstimated?:boolean;
  error?:string;stopReason?:string;selectionPolicy?:string;comparison?:Comparison;
- history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string}}[]}
+ history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusSelection?:RsiTargetSelection;tokenUsage?:{promptTokens?:number;completionTokens?:number;calls?:number;estimatedCalls?:number}}[]}
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
 const workloads={
@@ -202,7 +203,13 @@ export function SelfImprovementPage(){
    {!working&&campaign.stopReason&&<p className="mt-3 text-[12px] text-[#7C7469]">{stops[campaign.stopReason]||campaign.stopReason}</p>}
    {!working&&hasSelected&&<div className="mt-4 rounded-xl border border-[#D9E3D3] bg-[#F2F6EF] p-4"><p className="text-[13px] font-semibold">{campaign.selectedVersionRunning?'검증한 버전이 현재 4317에서 실행 중입니다':installing?'검증본을 빌드하고 있습니다':install?.status==='completed'?'빌드 완료 · 서버 재연결 확인 중':'선택한 개선본을 실제 사용하는 프로그램에 반영할 수 있습니다'}</p><p className="mt-1 text-[12px] text-[#7C7469]">{campaign.sourceSnapshot?'작업 시작 시 미저장 코드가 있었습니다. 파일을 보존하기 위해 자동 반영은 제한합니다.':'작업 브랜치만 반영하며 메인과 다른 서비스의 설정은 유지합니다.'}</p>{!campaign.selectedVersionRunning&&!campaign.sourceSnapshot&&<Button className="mt-3" variant="primary" disabled={busy||installing} onClick={()=>void apply()}>{installing?<LoaderCircle size={14} className="animate-spin"/>:<Download size={14}/>}검증본을 4317에 반영</Button>}</div>}
    {activeSearch&&<div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-2 text-[11px] text-[#7C7469]"><span className="font-semibold text-[#5C544A]">다음 연구를 고르는 방식</span><span>{activeSearch.name}</span></div>}
-   {campaign.history&&campaign.history.length>0&&<details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[#7C7469]">지난 비교 결과</summary><div className="mt-2 grid gap-2">{campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-2">{item.attempt}번째 · {item.accepted?'검증 버전 선택':(item.newFindings||0)>0?'연구 보존':item.error?'개선 효과 확인 못함':'새로운 진전 없음'}{item.domainSelection==='algorithm_trial'?' · 전략 시험':item.domainSelection==='research_continuation'?' · 연구 계속':''}{item.trialOutcome?.verdict?` · 시험 ${item.trialOutcome.verdict}`:''}</div>)}</div></details>}
+   {campaign.history&&campaign.history.length>0&&<details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[#7C7469]">지난 비교 결과</summary><div className="mt-2 grid gap-2">
+    {campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-3">
+     <p>{item.attempt}번째 · {item.accepted?'검증 버전 선택':(item.newFindings||0)>0?'연구 보존':item.error?'개선 효과 확인 못함':'새로운 진전 없음'}{item.domainSelection==='algorithm_trial'?' · 전략 시험':item.domainSelection==='research_continuation'?' · 연구 계속':''}{item.trialOutcome?.verdict?' · 시험 '+item.trialOutcome.verdict:''}</p>
+     {item.tokenUsage&&<p className="mt-1 text-[11px] text-[#7C7469]">입력 {(item.tokenUsage.promptTokens||0).toLocaleString()} · 출력 {(item.tokenUsage.completionTokens||0).toLocaleString()} 토큰{item.tokenUsage.estimatedCalls?' · 추정 '+item.tokenUsage.estimatedCalls+'회':''}</p>}
+     <RsiTargetEvidence selection={item.focusSelection}/>
+    </div>)}
+   </div></details>}
   </Panel>}
   {campaign?.comparison&&<Results comparison={campaign.comparison} waiting={working&&campaign.phase==='waiting_for_choice'} busy={busy} onChoose={side=>void choose(side)}/>}
  </div>
