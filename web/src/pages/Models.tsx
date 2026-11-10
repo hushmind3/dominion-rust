@@ -7,13 +7,14 @@ import {DialogBackdrop,DialogPanel} from '../components/Dialog'
 import {ModelExplorer} from '../components/ModelExplorer'
 import {ModelPicker} from '../components/ModelPicker'
 import {OAuthConnectionCard} from '../components/OAuthConnectionCard'
+import {CliAuthProgress, type CliAuthStatus} from '../components/CliAuthProgress'
 import {ReasoningSelect} from '../components/ReasoningSelect'
 import {useProviderModels} from '../hooks/useProviderModels'
 import {t,useLocale} from '../i18n'
 
 type PresetCategory='free'|'cloud'|'local'
 type ProviderPreset={name:string;baseUrl:string;kind:string;local:boolean;integration?:'freellmapi'|'opencode-go';free?:boolean;requestsPerMinute?:number;category:PresetCategory;auth?:'key'|'none';note?:string}
-type CliCredential={id:string;name:string;available:boolean;supported:boolean;connected?:boolean;importAvailable?:boolean;accountId?:string;model?:string;hint?:string;loginSupported?:boolean;loginMethod?:'browser'|'terminal'|'api-key'}
+type CliCredential={id:string;name:string;available:boolean;supported:boolean;connected?:boolean;importAvailable?:boolean;accountId?:string;model?:string;hint?:string;loginSupported?:boolean;loginMethod?:'browser'|'browser-cli'|'api-key'}
 type CatalogProvider={id:string;name:string;api:string;models:number;env?:string[];doc?:string}
 type CatalogResponse={providers:CatalogProvider[];cached?:boolean;error?:string}
 type FreeCatalogModel={id:string;free?:boolean|null;freeStatus?:string;freeSource?:string}
@@ -81,7 +82,8 @@ export function ModelHub(){
  const freeCatalog=useRemote<FreeCatalog>('/api/providers/free-catalog',{providers:[]})
  const [freeBusy,setFreeBusy]=useState(false)
  const [oauthBusy,setOauthBusy]=useState('')
- const [cliPolling,setCliPolling]=useState('')
+ const [cliAuth,setCliAuth]=useState<CliAuthStatus|null>(null)
+ const [openCodeAuthProvider,setOpenCodeAuthProvider]=useState('openai')
  const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[defaultModel,setDefaultModel]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
  const [defaultEffort,setDefaultEffort]=useState('')
  const editModels=useProviderModels(modal&&edit?edit.id:'')
@@ -188,31 +190,41 @@ export function ModelHub(){
  const startCliLogin=async(source:string)=>{
   if(oauthBusy)return
   setOauthBusy('login-'+source);setError('');setLoginMessage('')
+  setCliAuth({source,status:'starting',message:'공식 로그인 창을 준비 중입니다.'})
   try{
-   const started=await post<{message:string}>('/api/providers/cli/'+encodeURIComponent(source)+'/login',{})
-   setLoginMessage(started.message)
-   setCliPolling(source)
-  }catch(e){setError((e as Error).message)}
+   const started=await post<CliAuthStatus>('/api/providers/cli/'+encodeURIComponent(source)+'/login',{provider:source==='opencode'?openCodeAuthProvider:undefined})
+   setCliAuth(started)
+  }catch(e){setCliAuth(null);setError((e as Error).message)}
   finally{setOauthBusy('')}
  }
  useEffect(()=>{
-  if(!cliPolling)return
+  if(!cliAuth||['completed','failed','cancelled'].includes(cliAuth.status))return
   let live=true
-  let checks=0
+  const source=cliAuth.source
   const timer=setInterval(()=>{
-   void get<CliCredential[]>('/api/providers/cli').then(rows=>{
+   void get<CliAuthStatus>('/api/providers/cli/'+encodeURIComponent(source)+'/login/status').then(next=>{
     if(!live)return
-    cli.setValue(rows)
-    if(rows.find(row=>row.id===cliPolling)?.available){
-     setCliPolling('')
-     setLoginMessage('CLI 로그인 정보가 감지되었습니다. DOMINION에서 모델을 사용하려면 별도 API 연결 상태도 확인하세요.')
+    setCliAuth(current=>current?.source===source?next:current)
+    if(['completed','failed','cancelled'].includes(next.status)){
+     void cli.reload()
+     if(next.status==='completed')setLoginMessage('공식 CLI 인증이 완료됐습니다. DOMINION의 모델 연결 상태는 별도로 확인하세요.')
     }
-   }).catch(()=>{})
-   checks++
-   if(checks>=120&&live)setCliPolling('')
-  },3000)
+   }).catch(e=>{if(live)setError((e as Error).message)})
+  },1200)
   return()=>{live=false;clearInterval(timer)}
- },[cliPolling])
+ },[cliAuth?.source,cliAuth?.status])
+ const sendCliInput=async(input:string)=>{
+  if(!cliAuth)return
+  try{await post('/api/providers/cli/'+encodeURIComponent(cliAuth.source)+'/login/input',{input})}
+  catch(e){setError((e as Error).message)}
+ }
+ const cancelCliAuth=async()=>{
+  if(!cliAuth)return
+  try{
+   await post('/api/providers/cli/'+encodeURIComponent(cliAuth.source)+'/login/cancel',{})
+   setCliAuth({...cliAuth,status:'cancelled',message:'로그인을 취소했습니다.'})
+  }catch(e){setError((e as Error).message)}
+ }
  const refreshFreeCatalog=async()=>{
   if(freeBusy)return
   setFreeBusy(true);setError('')
@@ -295,7 +307,10 @@ export function ModelHub(){
       <Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexLogin()}><LogIn size={13}/> {item.connected?'재로그인':'브라우저 로그인'}</Button>
       <Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCodexDevice()}><KeyRound size={13}/> 기기 코드 로그인</Button>
      </>}
-     {item.loginMethod==='terminal'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void startCliLogin(item.id)}>{oauthBusy==='login-'+item.id?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {item.available?'재로그인':'로그인'}</Button>}
+     {item.id==='opencode'&&<SelectInput aria-label="OpenCode 로그인 제공자" className="!w-auto !min-w-[128px] !py-1 !text-[12px]" value={openCodeAuthProvider} onChange={event=>setOpenCodeAuthProvider(event.target.value)}>
+      <option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="google">Google</option><option value="github-copilot">GitHub Copilot</option>
+     </SelectInput>}
+     {item.loginMethod==='browser-cli'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)||Boolean(cliAuth&&!['completed','failed','cancelled'].includes(cliAuth.status))} onClick={()=>void startCliLogin(item.id)}>{oauthBusy==='login-'+item.id?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {item.available?'브라우저 재로그인':'브라우저 로그인'}</Button>}
      {item.id==='opencode-go'&&<Button type="button" variant="primary" size="sm" onClick={connectOpencodeGo}><KeyRound size={13}/> {goProvider?'키 / 모델 설정':'API 키 연결'}</Button>}
      {item.supported&&(item.importAvailable??item.available)&&<Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}><KeyRound size={13}/> {item.id==='opencode-go'?'기존 키 가져오기':'기존 인증 가져오기'}</Button>}
      {(item.id==='claude'||item.id==='gemini')&&<Button type="button" variant="secondary" size="sm" onClick={()=>openPreset(providerPresets.find(p=>p.name===(item.id==='claude'?'Anthropic':'Google Gemini'))!)}><KeyRound size={13}/> API 키 연결</Button>}
@@ -304,6 +319,7 @@ export function ModelHub(){
      <Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void cli.reload()}><RefreshCw size={13}/> 상태 새로고침</Button>
     </OAuthConnectionCard>)}
    </div>
+   {cliAuth&&<CliAuthProgress session={cliAuth} onInput={sendCliInput} onCancel={cancelCliAuth}/>}
    {deviceCode&&<div className="mt-3 rounded-xl border border-[#E7D9C8] bg-[#FFF9F0] px-4 py-3"><div className="text-[11px] text-[#8A775F]">{t('models.oauth.deviceHint')}</div><div className="my-2 font-mono text-[26px] font-bold tracking-[.18em] text-[#A94E30]">{deviceCode.userCode}</div><a className="text-[11px] font-semibold text-[#C96442] hover:underline" href={deviceCode.verificationUrl} target="_blank" rel="noreferrer">{t('models.oauth.openDevice')}</a></div>}
    {loginPending&&!deviceCode&&<p className="mt-3 rounded-xl border border-[#E7E0DF] bg-[#F7F1E6] px-3 py-2 text-[11px] text-[#7C7469]">{t('models.oauth.loginHint')}{loginUrl&&<> · <a className="font-semibold text-[#C96442] hover:underline" href={loginUrl} target="_blank" rel="noreferrer">{t('models.oauth.openBrowser')}</a></>}</p>}
    {loginMessage&&<p className="mt-3 rounded-xl border border-[#CFE0CF] bg-[#F4FAF3] px-3 py-2 text-[11px] text-[#4F6F52]">{loginMessage}</p>}

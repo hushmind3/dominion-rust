@@ -446,60 +446,6 @@ pub async fn free_catalog_refresh(State(state): State<AppState>) -> Json<Value> 
     Json(refresh_free_catalog(&state).await)
 }
 
-// DOMINION launches the *official* local CLI authentication flow; it does not copy
-// Claude/Gemini/OpenCode OAuth tokens into a different provider.
-fn cli_login_command(source: &str) -> Option<(&'static str, &'static str)> {
-    match source {
-        "claude" => Some(("Claude Code", "claude auth login")),
-        "gemini" => Some(("Gemini CLI", "gemini")),
-        "opencode" => Some(("OpenCode", "opencode auth login")),
-        _ => None,
-    }
-}
-
-pub async fn start_cli_login(Path(source): Path<String>) -> Response {
-    let Some((name, command)) = cli_login_command(&source) else {
-        return error(StatusCode::BAD_REQUEST, "지원하지 않는 CLI 로그인 소스입니다.");
-    };
-    // Only the fixed allowlist above reaches the shell. Never accept a command
-    // or executable from request JSON.
-    #[cfg(target_os = "macos")]
-    let mut process = {
-        let mut process = tokio::process::Command::new("osascript");
-        process.args([
-            "-e",
-            &format!("tell application \"Terminal\"\nactivate\ndo script \"cd ~ && {command}\"\nend tell"),
-        ]);
-        process
-    };
-    #[cfg(target_os = "windows")]
-    let mut process = {
-        let mut process = tokio::process::Command::new("cmd");
-        process.args(["/C", "start", "", "cmd", "/K", command]);
-        process
-    };
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    let mut process = {
-        let mut process = tokio::process::Command::new("x-terminal-emulator");
-        process.args(["-e", "sh", "-lc", command]);
-        process
-    };
-    let launched = tokio::time::timeout(Duration::from_secs(15), process.output()).await;
-    match launched {
-        Ok(Ok(output)) if output.status.success() => Json(json!({
-            "status": "launched",
-            "source":source,
-            "message":format!("{name} 로그인 터미널을 열었습니다. 로그인 완료 후 연결 상태가 갱신됩니다."),
-        })).into_response(),
-        Ok(Ok(output)) => error(
-            StatusCode::BAD_GATEWAY,
-            &format!("로그인 터미널을 열지 못했습니다: {}", String::from_utf8_lossy(&output.stderr).chars().take(220).collect::<String>()),
-        ),
-        Ok(Err(issue)) => error(StatusCode::BAD_GATEWAY, &format!("로그인 실행 실패: {issue}")),
-        Err(_) => error(StatusCode::GATEWAY_TIMEOUT, "로그인 터미널 실행 시간이 초과되었습니다."),
-    }
-}
-
 async fn claude_cli_authenticated() -> bool {
     if home_file(".claude/.credentials.json").is_some_and(|path| path.exists()) {
         return true;
@@ -557,7 +503,7 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
             "id":"claude",
             "name":"Claude Code (OAuth)",
             "loginSupported":true,
-            "loginMethod":"terminal",
+            "loginMethod":"browser-cli",
             "available":claude,
             "supported":false,
             "hint":if claude { "Claude Code CLI 로그인 감지됨. DOMINION 모델 실행에는 Anthropic API 연결이 별도로 필요합니다." } else { "로그인을 누르면 Claude Code 공식 인증을 시작합니다. DOMINION 모델 실행에는 API 연결이 필요합니다." }
@@ -566,7 +512,7 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
             "id":"gemini",
             "name":"Gemini CLI (OAuth)",
             "loginSupported":true,
-            "loginMethod":"terminal",
+            "loginMethod":"browser-cli",
             "available":gemini,
             "supported":false,
             "hint":if gemini { "Gemini CLI 로그인 감지됨. DOMINION 모델 실행에는 Gemini API 연결이 별도로 필요합니다." } else { "로그인을 누르면 Gemini CLI 공식 인증을 시작합니다. DOMINION 모델 실행에는 API 연결이 필요합니다." }
@@ -593,7 +539,7 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
             "id":"opencode",
             "name":"OpenCode (OAuth/CLI)",
             "loginSupported":true,
-            "loginMethod":"terminal",
+            "loginMethod":"browser-cli",
             "available":opencode,
             "importAvailable":opencode_importable > 0,
             "supported":opencode_importable > 0,
@@ -1953,15 +1899,6 @@ mod tests {
         assert!(model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &zero, "meta/llama"));
         let paid = json!({"pricing":{"prompt":"0.000001","completion":"0.000002"}});
         assert!(!model_is_free(&free_suffix, "openai", "https://openrouter.ai/api/v1", &paid, "meta/llama"));
-    }
-
-    #[test]
-    fn cli_login_commands_are_allowlisted() {
-        assert_eq!(cli_login_command("claude"), Some(("Claude Code", "claude auth login")));
-        assert_eq!(cli_login_command("gemini"), Some(("Gemini CLI", "gemini")));
-        assert_eq!(cli_login_command("opencode"), Some(("OpenCode", "opencode auth login")));
-        assert!(cli_login_command("../../bin/sh").is_none());
-        assert!(cli_login_command("opencode-go").is_none());
     }
 
     #[test]

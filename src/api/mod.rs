@@ -17,6 +17,7 @@ pub mod approvals;
 pub mod sessions;
 pub mod agents;
 pub mod providers;
+pub mod cli_oauth;
 pub mod benchmark;
 pub mod experiments;
 pub mod chat;
@@ -162,7 +163,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/providers/free-catalog", get(providers::free_catalog))
         .route("/api/providers/free-catalog/refresh", post(providers::free_catalog_refresh))
         .route("/api/providers/cli", get(providers::cli_credentials))
-        .route("/api/providers/cli/:source/login", post(providers::start_cli_login))
+        .route("/api/providers/cli/:source/login", post(cli_oauth::start))
+        .route("/api/providers/cli/:source/login/status", get(cli_oauth::status))
+        .route("/api/providers/cli/:source/login/input", post(cli_oauth::input))
+        .route("/api/providers/cli/:source/login/cancel", post(cli_oauth::cancel))
         .route("/api/providers/codex/login", get(providers::codex_login_start))
         .route("/api/providers/codex/device", post(providers::codex_device_start))
         .route("/api/providers/codex/login/status", get(providers::codex_login_status))
