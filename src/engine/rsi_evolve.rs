@@ -904,6 +904,34 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
     text
 }
 
+/// Put the focus file's current text into the prompt so the generation can
+/// build an exact replacement without spending its budget on full reads.
+fn focus_file_context(record: &Value, input: &Value) -> String {
+    let Some(lab) = record["labDir"].as_str() else { return String::new() };
+    let mut text = String::new();
+    let mut total = 0usize;
+    for path in input["rsiFocusFiles"].as_array().cloned().unwrap_or_default() {
+        let Some(path) = path.as_str() else { continue };
+        if !crate::engine::rsi::safe_path(path) {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(std::path::Path::new(lab).join(path)) else {
+            continue;
+        };
+        if contents.len() > 100_000 {
+            continue;
+        }
+        total += contents.len();
+        if total > 160_000 {
+            break;
+        }
+        text.push_str(&format!(
+            "\n### 대상 파일 원문: {path}\n아래 원문에서 정확한 oldText를 그대로 복사해 workspace_replace로 수정하세요. 이 파일을 다시 읽지 마세요.\n```\n{contents}\n```\n"
+        ));
+    }
+    text
+}
+
 fn generation_context(state: &AppState, input: &Value, record: &Value) -> String {
     let objective = input["rsiObjective"].as_str().unwrap_or("");
     let scope = research_scope(input);
@@ -1977,11 +2005,13 @@ async fn run_loop(
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
+        let focus = focus_file_context(record, input);
         child_input["prompt"] = json!(format!(
-            "{}\n\n{}{}",
+            "{}\n\n{}{}{}",
             child_input["prompt"].as_str().unwrap_or(""),
             inherited,
-            digest
+            digest,
+            focus
         ));
         let child = context
             .state
@@ -2634,6 +2664,17 @@ mod tests {
         state.store.put("rsi_campaign", &json!({"id":"digest-prior","history":[{"jobId":"digest-job"}]}));
         let continued = research_digest(&state, &json!({"rsiContinueFrom":"digest-prior"}), &json!({"history":[]}));
         assert!(continued.contains("src/engine/memory.rs 10-20"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn focus_file_context_inlines_the_target() {
+        let root = std::env::temp_dir().join(format!("focus-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::write(root.join("src/engine/x.rs"), "fn a() {}\n").unwrap();
+        let text = focus_file_context(&json!({"labDir":root}), &json!({"rsiFocusFiles":["src/engine/x.rs"]}));
+        assert!(text.contains("fn a() {}"));
+        assert!(text.contains("다시 읽지 마세요"));
         let _ = std::fs::remove_dir_all(root);
     }
 
