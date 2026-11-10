@@ -1138,36 +1138,113 @@ fn output_payload(output: &std::process::Output) -> Value {
     })
 }
 
-async fn http_fetch(url: &str) -> Result<Value, String> {
-    let parsed = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("Only HTTP(S) URLs are allowed".into());
+const HTTP_FETCH_MAX_BYTES: usize = 256 * 1024;
+const HTTP_FETCH_MAX_REDIRECTS: usize = 5;
+
+/// Public-network requests must not resolve to local interfaces, metadata
+/// services, private infrastructure, or reserved addresses.
+fn public_http_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let [a,b,c,d]=v4.octets();
+            let _=d;
+            !(a==0 || a==10 || a==127 || a>=224
+                || (a==100 && (64..=127).contains(&b))
+                || (a==169 && b==254)
+                || (a==172 && (16..=31).contains(&b))
+                || (a==192 && (b==168 || (b==0 && c<=2)))
+                || (a==198 && (b==18 || b==19 || b==51 && c==100))
+                || (a==203 && b==0 && c==113)
+                || (a==192 && b==88 && c==99))
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4)=v6.to_ipv4_mapped() {
+                return public_http_ip(std::net::IpAddr::V4(v4));
+            }
+            let segments=v6.segments();
+            !(v6.is_unspecified() || v6.is_loopback() || v6.is_multicast()
+                || (segments[0]&0xfe00)==0xfc00
+                || (segments[0]&0xffc0)==0xfe80
+                || (segments[0]&0xff00)==0x2000 && segments[0]==0x2001 && segments[1]==0xdb8)
+        }
     }
-    let response = reqwest::Client::new()
-        .get(parsed)
-        .timeout(Duration::from_secs(30))
-        .header("User-Agent", "DOMINION/0.2 (+rust)")
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    let status = response.status().as_u16();
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let body = response.text().await.map_err(|error| error.to_string())?;
-    let text = if content_type.contains("html") {
-        strip_html(&body)
-    } else {
-        body
-    };
-    Ok(json!({
-        "status": status,
-        "contentType": content_type,
-        "text": text.chars().take(60_000).collect::<String>(),
-    }))
+}
+
+fn validate_http_target(parsed:&reqwest::Url)->Result<(String,u16),String> {
+    if !matches!(parsed.scheme(),"http"|"https") {
+        return Err("http_fetch requires HTTP(S)".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some(){
+        return Err("http_fetch does not permit embedded credentials".into());
+    }
+    let host=parsed.host_str().ok_or("http_fetch URL has no host")?
+        .trim_matches(['[',']']).trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty()
+        || host=="localhost" || host.ends_with(".localhost")
+        || [".local",".internal",".lan",".test",".invalid",".home.arpa",".onion"]
+            .iter().any(|suffix|host.ends_with(suffix))
+    {
+        return Err("http_fetch blocked a local or non-public hostname".into());
+    }
+    if let Ok(ip)=host.parse::<std::net::IpAddr>(){
+        if !public_http_ip(ip){return Err("http_fetch blocked a non-public IP".into());}
+    }
+    let port=parsed.port_or_known_default().ok_or("http_fetch has no valid port")?;
+    Ok((host,port))
+}
+
+/// Resolve before connecting, reject mixed public/private DNS answers, and
+/// pin exactly the approved addresses in reqwest to prevent DNS rebinding.
+/// Redirects are handled manually so the same validation runs on every hop.
+async fn http_fetch(url: &str) -> Result<Value, String> {
+    let mut current=reqwest::Url::parse(url).map_err(|error|error.to_string())?;
+    for redirects in 0..=HTTP_FETCH_MAX_REDIRECTS {
+        let (host,port)=validate_http_target(&current)?;
+        let addresses=tokio::net::lookup_host((host.as_str(),port))
+            .await.map_err(|e|format!("http_fetch DNS lookup failed: {e}"))?
+            .collect::<Vec<_>>();
+        if addresses.is_empty() || addresses.iter().any(|addr|!public_http_ip(addr.ip())){
+            return Err("http_fetch blocked a private or unresolvable DNS destination".into());
+        }
+        let client=reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .resolve_to_addrs(&host,&addresses)
+            .timeout(Duration::from_secs(30))
+            .build().map_err(|e|e.to_string())?;
+        let mut response=client.get(current.clone())
+            .header("User-Agent","DOMINION/0.2 (+rust)")
+            .send().await.map_err(|e|e.to_string())?;
+        if response.status().is_redirection() {
+            if redirects==HTTP_FETCH_MAX_REDIRECTS {
+                return Err("http_fetch exceeded redirect limit".into());
+            }
+            let location=response.headers().get(reqwest::header::LOCATION)
+                .ok_or("http_fetch redirect omitted Location")?
+                .to_str().map_err(|e|e.to_string())?;
+            current=current.join(location).map_err(|e|e.to_string())?;
+            continue;
+        }
+        if response.content_length().is_some_and(|size|size>HTTP_FETCH_MAX_BYTES as u64){
+            return Err("http_fetch response exceeds 256 KiB".into());
+        }
+        let status=response.status().as_u16();
+        let content_type=response.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value|value.to_str().ok()).unwrap_or("").to_string();
+        let mut bytes=Vec::new();
+        while let Some(chunk)=response.chunk().await.map_err(|e|e.to_string())?{
+            if chunk.len()>HTTP_FETCH_MAX_BYTES.saturating_sub(bytes.len()){
+                return Err("http_fetch response exceeds 256 KiB".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let body=String::from_utf8_lossy(&bytes);
+        let text=if content_type.contains("html"){strip_html(&body)}else{body.into_owned()};
+        return Ok(json!({"status":status,"contentType":content_type,
+            "text":text.chars().take(60_000).collect::<String>(),
+            "bytesRead":bytes.len(),"redirects":redirects}));
+    }
+    Err("http_fetch redirect limit reached".into())
 }
 
 async fn web_search(query: &str) -> Result<Value, String> {
@@ -1271,6 +1348,29 @@ fn strip_html(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_fetch_rejects_private_addresses_and_local_hosts() {
+        for url in [
+            "http://127.0.0.1:4317/", "http://10.1.2.3/", "http://172.16.0.1/",
+            "http://192.168.1.8/", "http://169.254.169.254/latest/meta-data/",
+            "http://100.100.100.100/", "http://[::1]/", "http://[fc00::1]/",
+            "http://localhost/", "http://service.internal/", "http://printer.local/"
+        ] {
+            let parsed=reqwest::Url::parse(url).unwrap();
+            assert!(validate_http_target(&parsed).is_err(),"{url}");
+        }
+        assert!(validate_http_target(&reqwest::Url::parse("https://1.1.1.1/").unwrap()).is_ok());
+        assert!(validate_http_target(&reqwest::Url::parse("https://example.com/").unwrap()).is_ok());
+        assert!(validate_http_target(&reqwest::Url::parse("ftp://example.com/").unwrap()).is_err());
+        assert!(validate_http_target(&reqwest::Url::parse("https://user:pass@example.com/").unwrap()).is_err());
+    }
+
+    #[tokio::test]
+    async fn http_fetch_rejects_loopback_before_connecting() {
+        assert!(http_fetch("http://127.0.0.1:4317/admin").await.unwrap_err().contains("non-public"));
+        assert!(http_fetch("http://[::1]/").await.is_err());
+    }
 
     #[test]
     fn workspace_paths_cannot_escape() {
