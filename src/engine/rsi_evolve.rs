@@ -1488,6 +1488,30 @@ fn queue_search_trial(
             "alreadyResolved": true,
         });
     }
+    // Algorithm records have content-derived global IDs. A second campaign
+    // must not overwrite an unresolved first campaign's trial ownership,
+    // even if both independently proposed identical formulas.
+    if let Some(previous_campaign)=candidate["rsiTrial"]["campaignId"].as_str() {
+        if previous_campaign!=campaign_id {
+            return json!({"status":"owned_by_other_campaign",
+                "candidateId":candidate["id"],
+                "ownerCampaignId":previous_campaign});
+        }
+    }
+    // Runtime scores can become undefined for real historical features even
+    // if the expression passed registration's synthetic non-zero sample.
+    // Never queue a perpetually falling-back formula as an executable trial.
+    if valid_domain_scores(candidate,prior_history,objective).is_none() {
+        let mut rejected=candidate.clone();
+        rejected["rsiTrial"]=json!({"status":"trial_inconclusive",
+            "campaignId":campaign_id,
+            "objectiveHash":crate::engine::memory::stable_id(&[objective]),
+            "lastReason":"candidate_expression_invalid_for_runtime_features"});
+        state.store.put("algorithm",&rejected);
+        return json!({"status":"trial_inconclusive",
+            "candidateId":candidate["id"],
+            "reason":"candidate_expression_invalid_for_runtime_features"});
+    }
     let mut record = candidate.clone();
     let mut trial = record["rsiTrial"].clone();
     if !trial.is_object() {
@@ -1529,10 +1553,10 @@ fn queue_search_trial(
     })
 }
 
-/// Returns a candidate that is waiting for a real trial under the same
-/// objective. It is used only inside an already scheduled generation; the
-/// caller never creates another campaign or generation for it.
-fn pending_trial_candidate(state: &AppState, objective: &str) -> Option<Value> {
+/// Returns a candidate belonging to the current campaign or an exact
+/// fingerprint-verified predecessor, never a sibling sharing a goal string.
+/// No new work or extra generation is created by this lookup.
+fn pending_trial_candidate(state: &AppState, objective: &str, allowed_campaigns:&[String]) -> Option<Value> {
     let objective_hash = crate::engine::memory::stable_id(&[objective]);
     let mut candidates = state
         .store
@@ -1542,6 +1566,8 @@ fn pending_trial_candidate(state: &AppState, objective: &str) -> Option<Value> {
             algorithm["kind"] == "selfimprove.search"
                 && algorithm["source"] == "rsi-generated"
                 && algorithm["rsiTrial"]["objectiveHash"] == objective_hash
+                && algorithm["rsiTrial"]["campaignId"].as_str().is_some_and(|id|
+                    allowed_campaigns.iter().any(|allowed|allowed==id))
                 && matches!(
                     algorithm["rsiTrial"]["status"].as_str(),
                     Some("pending_trial" | "pending_second_trial")
@@ -2250,12 +2276,18 @@ async fn run_loop(
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
         let objective = input["rsiObjective"].as_str().unwrap_or("");
+        let mut eligible_campaigns=vec![context.job_id.to_string()];
+        if let Some(prior)=matching_prior_campaign(&context.state,input,record) {
+            if let Some(id)=prior["id"].as_str() {
+                eligible_campaigns.push(id.to_string());
+            }
+        }
         let trial_algorithm = record["nextTrialAlgorithmId"]
             .as_str()
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .or_else(|| {
-                pending_trial_candidate(&context.state, objective)
+                pending_trial_candidate(&context.state, objective, &eligible_campaigns)
                     .and_then(|algorithm| algorithm["id"].as_str().map(str::to_string))
             });
         if let Some(id) = trial_algorithm {
@@ -2828,13 +2860,19 @@ fn select_generation_strategy(
             if comparable_trial_baseline(history, &generation, &algorithm).is_some() {
                 return (domain, "algorithm_trial", search_strategy(&algorithm, "trial"));
             }
-            // Use this already scheduled generation normally. Do not spend a
-            // trial on a missing/reused control or create another generation.
+            // Bootstrap a control on the SAME target domain the candidate
+            // would evaluate. Choosing the active algorithm's unrelated domain
+            // cannot create a comparable baseline and can strand a candidate.
+            // This uses an already scheduled generation, not an extra run.
+            // It measures execution behavior within a domain; domain-choice
+            // superiority still needs separately randomized paired trials.
             let active = active
                 .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
             let mut selected = search_strategy(&active, "active");
             selected["trialFallback"] = json!("unused_comparable_baseline_missing");
-            return (select_domain(&active, history, objective), "algorithm_active", selected);
+            selected["controlForCandidateId"] = algorithm["id"].clone();
+            selected["controlForCandidateRevision"] = algorithm["revision"].clone();
+            return (domain, "algorithm_active", selected);
         }
         let algorithm = active
             .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
@@ -4952,6 +4990,72 @@ mod tests {
     }
 
     #[test]
+    fn missing_trial_baseline_bootstraps_a_control_in_the_candidate_domain() {
+        let (state,root)=state();
+        let history=vec![generation("tools",false)];
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"prefer-attempted-domain",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"attempts * 100 + objectiveMatch"}
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap();
+        assert_eq!(select_domain(&candidate,&history,"unrelated goal"),"tools");
+        assert_ne!(select_domain(&active,&history,"unrelated goal"),"tools");
+        let (domain,mode,strategy)=select_generation_strategy(
+            &state,&history,"unrelated goal",None,Some(id.into()),None,"commit-one");
+        assert_eq!(domain,"tools","a control must target the candidate's domain");
+        assert_eq!(mode,"algorithm_active");
+        assert_eq!(strategy["controlForCandidateId"],id);
+        let mut next=history;
+        next.push(active_generation("control",2,"tools",false,"commit-one",1000,100));
+        let (domain,mode,_)=select_generation_strategy(
+            &state,&next,"unrelated goal",None,Some(id.into()),None,"commit-one");
+        assert_eq!(domain,"tools");
+        assert_eq!(mode,"algorithm_trial","the control must unlock a real trial");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pending_trial_lookup_does_not_import_sibling_campaign_formulas() {
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let first=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"foreign-trial",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"novelty + objectiveMatch"}
+        })).unwrap();
+        let second=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"own-trial",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"exploration + objectiveMatch"}
+        })).unwrap();
+        assert_eq!(queue_search_trial(&state,&first,&active,&[],"context","sub3",1)["status"],"pending_trial");
+        assert_eq!(queue_search_trial(&state,&second,&active,&[],"context","champion",1)["status"],"pending_trial");
+        assert_eq!(pending_trial_candidate(&state,"context",&["champion".into()]).unwrap()["id"],second["id"]);
+        assert_eq!(pending_trial_candidate(&state,"context",&["sub3".into()]).unwrap()["id"],first["id"]);
+        assert_eq!(queue_search_trial(&state,&first,&active,&[],"context","champion",2)["status"],"owned_by_other_campaign",
+            "identical global algorithm IDs must not transfer trial ownership");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_invalid_formula_is_not_queued_for_endless_fallback() {
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"runtime-invalid",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"1 / attempts"}
+        })).unwrap();
+        let out=queue_search_trial(&state,&candidate,&active,&[],"memory","campaign",1);
+        assert_eq!(out["status"],"trial_inconclusive");
+        assert_eq!(out["reason"],"candidate_expression_invalid_for_runtime_features");
+        assert!(pending_trial_candidate(&state,"memory",&["campaign".into()]).is_none());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn pending_trial_candidate_survives_for_a_later_scheduled_generation() {
         let (state, root) = state();
         let active = crate::engine::algorithms::active(&state, "selfimprove.search").unwrap();
@@ -4967,12 +5071,12 @@ mod tests {
         .unwrap();
         queue_search_trial(&state, &candidate, &active, &[], "context", "campaign", 1);
         assert_eq!(
-            pending_trial_candidate(&state, "context").unwrap()["id"],
+            pending_trial_candidate(&state, "context", &["campaign".into()]).unwrap()["id"],
             candidate["id"],
             "a pending candidate is reused by a later scheduled generation"
         );
         assert!(
-            pending_trial_candidate(&state, "a different objective").is_none(),
+            pending_trial_candidate(&state, "a different objective", &["campaign".into()]).is_none(),
             "a pending candidate is scoped to its objective"
         );
         let _ = std::fs::remove_dir_all(root);
