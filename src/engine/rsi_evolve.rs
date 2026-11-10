@@ -1633,6 +1633,36 @@ fn record_trial_outcome(
             "verdict":previous["verdict"],"comparison":previous["comparison"],
             "alreadyRecorded":true});
     }
+    // A trial may improve the file even when its own formula failed and the
+    // builtin selector took over. Such a fallback is not evidence that the
+    // model-authored targetExpression improved source discovery.
+    if candidate["parameters"]["targetExpression"].is_string() {
+        let selection=&generation["focusSelection"];
+        let rows=selection["candidates"].as_array();
+        let executed=matches!(selection["source"].as_str(),
+                Some("indexed_evidence"|"descendant_indexed_evidence"))
+            && selection["policyRevision"]==candidate["revision"]
+            && rows.is_some_and(|rows|!rows.is_empty()
+                && rows.iter().all(|row|row["scoring"]=="expression"
+                    && row["policyError"].is_null()));
+        if !executed {
+            let mut trial=candidate["rsiTrial"].clone();
+            if !trial["trials"].is_array() {trial["trials"]=json!([]);}
+            trial["status"]=json!("trial_inconclusive");
+            trial["lastReason"]=json!("target_formula_not_executed");
+            trial["trials"].as_array_mut().unwrap().push(json!({
+                "jobId":generation["jobId"],"attempt":generation["attempt"],
+                "verdict":"inconclusive","reason":"target_formula_not_executed",
+                "at":chrono::Utc::now().to_rfc3339()
+            }));
+            candidate["rsiTrial"]=trial;
+            state.store.put("algorithm",&candidate);
+            state.store.audit("rsi.search_trial_invalid_target",
+                json!({"candidateId":candidate_id,"jobId":generation["jobId"],
+                    "reason":"target_formula_not_executed"}));
+            return json!({"status":"inconclusive","reason":"target_formula_not_executed"});
+        }
+    }
     let Some(baseline) = comparable_trial_baseline(prior_history, generation, &candidate) else {
         let mut trial = candidate["rsiTrial"].clone();
         trial["status"] = json!("trial_inconclusive");
@@ -3160,6 +3190,32 @@ mod tests {
         let refreshed=choose_focus_files(&state,&input,&[],None);
         assert_eq!(refreshed[0]["path"],"src/search_first.rs",
             "stale failure evidence must not penalize changed code");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fallback_source_selector_cannot_falsely_promote_a_generated_target_formula() {
+        let (state,root)=state();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"invalid-runtime-target",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"objectiveMatch + exploration",
+                "targetExpression":"1 / pathEvidence"}
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap();
+        let generation=json!({"jobId":"actual-trial","attempt":2,
+            "domainSelection":"algorithm_trial","domain":"memory",
+            "focusSelection":{"source":"indexed_evidence",
+                "policyRevision":candidate["revision"],
+                "candidates":[{"scoring":"corpus-evidence",
+                    "policyError":"division_by_zero"}]},
+            "accepted":true,"tokens":1000,"elapsedMs":100,
+            "evaluation":{"verdict":"improved"}});
+        let outcome=record_trial_outcome(&state,id,&generation,&[]);
+        assert_eq!(outcome["reason"],"target_formula_not_executed");
+        let saved=state.store.get("algorithm",id).unwrap();
+        assert_eq!(saved["rsiTrial"]["status"],"trial_inconclusive");
+        assert_ne!(saved["status"],"active");
         let _=std::fs::remove_dir_all(root);
     }
 
