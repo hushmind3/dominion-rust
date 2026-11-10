@@ -899,7 +899,7 @@ mod tests {
         let (state,root)=temp_state();
         let source=root.join("repo");
         std::fs::create_dir_all(source.join("src")).unwrap();
-        let mut code=(0..180).map(|i|format!("fn neutral_{i}() {{}}\n")).collect::<String>();
+        let mut code=(0..350).map(|i|format!("fn neutral_{i}() {{}}\n")).collect::<String>();
         code.push_str("fn hidden_worker() {\n    let x = \"BM25_SIGNAL_VISIBLE\";\n    println!(\"{x}\");\n}\n");
         code.push_str("fn caller_entrypoint() {\n    hidden_worker(); // DEPENDENT_CALLER_VISIBLE\n}\n");
         std::fs::write(source.join("src/opaque.rs"),&code).unwrap();
