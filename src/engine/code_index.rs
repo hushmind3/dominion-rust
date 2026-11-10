@@ -248,6 +248,39 @@ fn code_only(line: &str) -> String {
     output
 }
 
+// Lexical targeting must not treat documentation comments as implementation.
+// Preserve quoted literals: routes, SQL and prompts can identify opaque code.
+fn source_without_comments(line: &str, in_block: &mut bool) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    let mut quoted: Option<char> = None;
+    let mut escaped = false;
+    while let Some(ch) = chars.next() {
+        if *in_block {
+            if ch == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                *in_block = false;
+            }
+        } else if let Some(delimiter) = quoted {
+            out.push(ch);
+            if escaped { escaped = false; }
+            else if ch == '\\' { escaped = true; }
+            else if ch == delimiter { quoted = None; }
+        } else if ch == '"' || ch == '`' {
+            quoted = Some(ch);
+            out.push(ch);
+        } else if ch == '/' && chars.peek() == Some(&'/') {
+            break;
+        } else if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            *in_block = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 fn parse_file(rel: &str, content: &str) -> Value {
     let language = rel
         .rsplit_once('.')
@@ -262,6 +295,7 @@ fn parse_file(rel: &str, content: &str) -> Value {
     // Compact lexical evidence allows target discovery even when file and symbol names are opaque.
     // Indexed once per source hash; never sent wholesale to the model.
     let mut body_terms = BTreeSet::<String>::new();
+    let mut in_block_comment = false;
     let mut test_pending = false;
     let mut in_tests = rel.starts_with("tests/")
         || rel.contains("/tests/")
@@ -338,17 +372,14 @@ fn parse_file(rel: &str, content: &str) -> Value {
         if in_tests {
             continue;
         }
-        let code = comment_start(line)
-            .map(|position| &line[..position.saturating_sub(2)])
-            .unwrap_or(line);
-        // Include identifiers and string-literal vocabulary (API routes, prompts,
-        // SQL, etc.), but never classify comment-only mentions as implementation.
+        // Include identifiers and string-literal vocabulary, not comments.
+        let code = source_without_comments(line, &mut in_block_comment);
         for word in code.split(|ch: char| !ch.is_alphanumeric()) {
             if (3..=80).contains(&word.chars().count()) {
                 body_terms.insert(word.to_lowercase());
             }
         }
-        let code = code_only(code);
+        let code = code_only(&code);
         for (key, needle) in [
             ("unwrap", ".unwrap()"),
             ("expect", ".expect("),
@@ -943,7 +974,7 @@ mod tests {
         let source = root.join("repo");
         std::fs::create_dir_all(source.join("src")).unwrap();
         std::fs::write(source.join("src/neutral.rs"),
-            "fn unrelated() {} // bm25 retrieval appears only in a comment\n").unwrap();
+            "/*\nbm25 retrieval appears only in a block comment\n*/\nfn unrelated() {} // bm25 again\n").unwrap();
         std::fs::write(source.join("src/opaque.rs"),
             "fn hidden_worker() {\n    let api_marker = \"bm25\";\n    println!(\"{api_marker}\");\n}\n").unwrap();
         let index = refresh(&state, &source).unwrap();
