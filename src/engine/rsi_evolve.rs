@@ -2084,10 +2084,12 @@ async fn run_loop(
         // distinct from rsiSelectedDomain, which represents an explicit choice.
         let target_trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
         let parent_domain=child_input["rsiSelectedDomain"].as_str().map(str::to_string);
-        let (target_domain,_,target_strategy)=select_generation_strategy(
-            &context.state,&recorded_history,&target_objective,None,target_trial,
-            parent_domain,&head);
+        let (target_domain,target_selection,target_strategy)=select_generation_strategy(
+            &context.state,&recorded_history,&target_objective,
+            research_continuation(&recorded_history),target_trial,parent_domain,&head);
         child_input["rsiTargetDomain"]=json!(target_domain);
+        child_input["rsiTargetPlan"]=generation_target_plan(
+            &target_domain,target_selection,&target_strategy,&head);
         let target_policy=target_strategy["id"].as_str()
             .and_then(|id|context.state.store.get("algorithm",id))
             .or_else(||crate::engine::algorithms::active(&context.state,"selfimprove.search"));
@@ -2525,6 +2527,23 @@ pub(crate) async fn adopt(
     git(context, lab, &["rev-parse", "HEAD"]).await
 }
 
+// A generation's research continuation must be decided identically by the
+// coordinator (which chooses source files) and by the native child worker
+// (which actually runs the algorithm). Otherwise a trial policy can appear
+// in focusSelection even though no trial was executed.
+fn research_continuation(history: &[Value]) -> Option<String> {
+    history.last()
+        .filter(|row| row["candidateId"].is_null()
+            && row["newFindings"].as_u64().unwrap_or(0) > 0)
+        .and_then(|row| row["domain"].as_str())
+        .filter(|domain| DOMAINS.contains(domain))
+        .map(str::to_string)
+}
+
+fn generation_target_plan(domain: &str, selection: &str, strategy: &Value, commit: &str) -> Value {
+    json!({"domain":domain,"selection":selection,"strategy":strategy,"generatorCommit":commit})
+}
+
 fn select_generation_strategy(
     state: &AppState,
     history: &[Value],
@@ -2615,9 +2634,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
-    let latest=history.iter().max_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
-    let continuation = latest.filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)
-        .and_then(|g|g["domain"].as_str()).map(str::to_string);
+    let continuation = research_continuation(&history);
     let trial_id = job["input"]["rsiTrialAlgorithmId"]
         .as_str()
         .filter(|value| !value.is_empty())
@@ -2626,9 +2643,18 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .as_str()
         .filter(|domain| DOMAINS.contains(domain))
         .map(str::to_string);
+    let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("");
     let (domain, domain_selection, strategy) =
         select_generation_strategy(&state, &history, &objective, continuation, trial_id,
-            selected_domain, job["input"]["rsiGeneratorCommit"].as_str().unwrap_or(""));
+            selected_domain, commit);
+    // Parent has already spent tokens selecting the source and building prompt
+    // evidence. A changed/incorrect selection is a failed checkpoint, not
+    // permission to run a different strategy under a misleading provenance.
+    if job["input"]["rsiTargetPlan"].is_object()
+        && job["input"]["rsiTargetPlan"]
+            != generation_target_plan(&domain,domain_selection,&strategy,commit) {
+        return Err("rsi_target_plan_mismatch: 조정자와 개선기의 목표/탐색 정책 불일치".into());
+    }
     job["rsiDomain"] = json!(domain);
     job["rsiDomainSelection"] = json!(domain_selection);
     job["rsiSearchStrategy"] = strategy.clone();
@@ -4110,6 +4136,45 @@ mod tests {
         );
         assert!(state.store.all("algorithm_eval").is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn coordinator_and_worker_share_continuation_plan_even_when_a_trial_is_pending() {
+        let (state, root)=state();
+        let proposed=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"continuation-safety-trial",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"objectiveMatch + exploration",
+                "targetExpression":"bodyEvidence + pathEvidence"}
+        })).unwrap();
+        let id=proposed["id"].as_str().unwrap();
+        let history=vec![
+            active_generation("prior",1,"memory",false,"commit-1",10000,1000),
+            json!({"attempt":2,"domain":"memory","candidateId":null,
+                "newFindings":1,"accepted":false,"generatorCommit":"commit-1"})
+        ];
+        let continuation=research_continuation(&history);
+        assert_eq!(continuation.as_deref(),Some("memory"));
+        let (parent_domain,parent_mode,parent_strategy)=select_generation_strategy(
+            &state,&history,"context",continuation.clone(),Some(id.into()),
+            Some("context".into()),"commit-1");
+        let (worker_domain,worker_mode,worker_strategy)=select_generation_strategy(
+            &state,&history,"context",research_continuation(&history),Some(id.into()),
+            Some("context".into()),"commit-1");
+        let plan=generation_target_plan(&parent_domain,parent_mode,&parent_strategy,"commit-1");
+        assert_eq!(plan,generation_target_plan(
+            &worker_domain,worker_mode,&worker_strategy,"commit-1"));
+        assert_eq!(plan["domain"],"memory");
+        assert_eq!(plan["selection"],"research_continuation");
+        assert!(plan["strategy"].is_null(),"trial formula was not run");
+        assert_ne!(plan,generation_target_plan(
+            "context","algorithm_trial",&proposed,"commit-1"));
+        let mut failed=history.clone();
+        failed.push(json!({"attempt":3,"domain":"memory","candidateId":null,
+            "newFindings":0,"accepted":false}));
+        assert!(research_continuation(&failed).is_none(),
+            "stale research must not force continuation");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
