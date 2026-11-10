@@ -493,6 +493,11 @@ fn lineage_fingerprint(commit: &str, tree: &str, diff: &[u8], untracked: &[(Stri
 /// A real lineage fingerprint hashes the source commit and tree. Older
 /// campaigns hashed only `git diff HEAD`, which is empty for a clean checkout
 /// and produced the SHA-256 of the empty string.
+fn selected_lineage_branch_matches(selected:&Value, branch:&str)->bool{
+    let source_branch=selected["sourceBranch"].as_str().unwrap_or("dominion-sub");
+    crate::engine::rsi_worktree::is_rsi_work_branch(branch) && source_branch==branch
+}
+
 pub fn lineage_fingerprint_valid(value: &str) -> bool {
     value.len() == 64
         && value.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -714,6 +719,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let mut lineage = json!({
         "selectedCommit": Value::Null,
         "sameSource": false,
+        "sameBranch": false,
         "sameBase": false,
         "fingerprintValid": false,
         "fingerprintMatch": false,
@@ -721,6 +727,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     });
     if let Some(selected) = context.state.store.get("rsi_current", "selected-engine") {
         let same_source = selected["sourceDir"].as_str() == source.to_str();
+        let selected_branch=input["rsiSourceBranch"].as_str().unwrap_or("dominion-sub");
+        let same_branch=selected_lineage_branch_matches(&selected,selected_branch);
         let same_base = selected["sourceBaseCommit"].as_str() == Some(base);
         let selected_fingerprint = selected["sourceFingerprint"].as_str().unwrap_or("");
         let fingerprint_valid = lineage_fingerprint_valid(selected_fingerprint);
@@ -728,12 +736,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         lineage = json!({
             "selectedCommit": selected["commit"],
             "sameSource": same_source,
+            "sameBranch": same_branch,
             "sameBase": same_base,
             "fingerprintValid": fingerprint_valid,
             "fingerprintMatch": fingerprint_match,
             "reused": false
         });
-        if same_source && same_base && fingerprint_match {
+        if same_source && same_branch && same_base && fingerprint_match {
             if let Some(commit) = selected["commit"]
                 .as_str()
                 .filter(|s| s.len() == 40 && s.bytes().all(|c| c.is_ascii_hexdigit()))
@@ -2213,7 +2222,8 @@ async fn run_loop(
                             .put("rsi_candidate", &saved)
                             .ok_or("채택 기록 저장 실패")?;
                         context.state.store.put("rsi_current",&json!({"id":"selected-engine","commit":commit,
-                            "sourceDir":record["sourceDir"],"sourceBaseCommit":record["baseCommit"],
+                            "sourceDir":record["sourceDir"],"sourceBranch":record["sourceBranch"],
+                            "sourceBaseCommit":record["baseCommit"],
                             "sourceFingerprint":record["sourceFingerprint"],"campaignId":context.job_id,
                             "candidateId":id,"selectedAt":chrono::Utc::now().to_rfc3339()})).ok_or("선택한 개선기 저장 실패")?;
                     }
@@ -3630,6 +3640,18 @@ mod tests {
         assert!(lineage_fingerprint_valid(&first), "a clean checkout must not hash to the empty digest");
         assert_ne!(first, second, "a new commit must change the lineage fingerprint");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn selected_improver_revision_does_not_reuse_across_sibling_branches() {
+        let selected=json!({"sourceBranch":"dominion-sub3","sourceBaseCommit":"same",
+            "sourceFingerprint":"abc","commit":"adopted"});
+        assert!(selected_lineage_branch_matches(&selected,"dominion-sub3"));
+        assert!(!selected_lineage_branch_matches(&selected,"dominion-sub4"));
+        assert!(!selected_lineage_branch_matches(&selected,"dominion-champion"));
+        let legacy=json!({"sourceBaseCommit":"same","sourceFingerprint":"abc"});
+        assert!(selected_lineage_branch_matches(&legacy,"dominion-sub"));
+        assert!(!selected_lineage_branch_matches(&legacy,"dominion-sub4"));
     }
 
     #[test]
