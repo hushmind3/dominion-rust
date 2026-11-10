@@ -2445,6 +2445,7 @@ async fn run_loop(
             "attempt":attempt,"generatorCommit":head,"jobId":child_id,"tokens":tokens,
             "focusFiles":current["input"]["rsiFocusFiles"],
             "focusSelection":current["input"]["rsiFocusSelection"],
+            "targetReplan":current["input"]["rsiTargetReplan"],
             "knowledgePartition":research_scope(&current["input"]).partition_key,
             "objectiveId":crate::engine::memory::stable_id(&[
                 current["input"]["rsiObjective"].as_str().unwrap_or("")
