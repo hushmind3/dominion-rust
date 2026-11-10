@@ -819,15 +819,18 @@ pub fn rank_focus_files(
 fn rank_focus_spans(
     symbols:&[Value],tests:Option<&Vec<Value>>,lines:&[&str],terms:&[String]
 )->Vec<(f64,usize,usize,String)> {
-    let nodes=symbols.iter().filter_map(|item|{
+    let nodes=symbols.iter().enumerate().filter_map(|(index,item)|{
         let name=item["name"].as_str()?;
         if tests.is_some_and(|rows|rows.iter().any(|test|test.as_str()==Some(name))){
             return None;
         }
         let line=item["line"].as_u64()? as usize;
         if line==0 || line>lines.len(){return None;}
-        let end=symbols.iter().filter_map(|row|row["line"].as_u64().map(|n|n as usize))
-            .filter(|next|*next>line).min().unwrap_or(lines.len()+1)
+        // Symbol positions are collected in source order. Avoid a quadratic
+        // scan just to locate each following declaration in large files.
+        let end=symbols.get(index+1)
+            .and_then(|next|next["line"].as_u64())
+            .map(|next|next as usize).unwrap_or(lines.len()+1)
             .saturating_sub(1).min(lines.len());
         let body=lines[line-1..end].iter().take(450).copied()
             .collect::<Vec<_>>().join("\n").to_lowercase();
@@ -881,9 +884,25 @@ pub fn bounded_focus_context(
             "\n### 대상 파일 전체: {path} ({size}자, 소스 해시 검증)\n원문의 정확한 oldText로 workspace_replace를 사용하세요.\n~~~\n{content}\n~~~\n"
         ));
     }
-    let symbols = indexed["symbols"].as_array()?;
-    let tests = indexed["tests"].as_array();
     let lines = content.lines().collect::<Vec<_>>();
+    // The durable navigation map stores at most MAX_SYMBOLS_PER_FILE entries.
+    // Once a file is already chosen, recover every declaration from the
+    // hash-verified source so late implementation code is not invisible.
+    let complete_symbols = (indexed["symbolsTruncated"] == true).then(|| {
+        lines.iter().enumerate().filter_map(|(index,line)| {
+            let trimmed = line.trim_start();
+            let found = if path.ends_with(".rs") {
+                rust_symbol(trimmed)
+            } else if matches!(path.rsplit_once('.').map(|(_,ext)|ext),
+                Some("ts"|"tsx"|"js"|"jsx")) {
+                script_symbol(trimmed)
+            } else { None };
+            found.map(|(kind,name)|json!({"kind":kind,"name":name,"line":index+1}))
+        }).collect::<Vec<_>>()
+    });
+    let symbols = complete_symbols.as_ref()
+        .or_else(||indexed["symbols"].as_array())?;
+    let tests = indexed["tests"].as_array();
     let terms=focus_terms(objective,domain);
     let ranked=rank_focus_spans(symbols,tests,&lines,&terms);
     let mut result = format!(
@@ -940,6 +959,25 @@ mod tests {
         assert_eq!(refreshed["changedFiles"], 1);
         assert!(rank_focus_files(&state, id, "bm25", "", &BTreeMap::new(), None, 2).is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn large_file_excerpts_recover_implementations_after_the_symbol_index_cap() {
+        let (state,root) = temp_state();
+        let source=root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        let mut code=(0..450).map(|n|format!("fn unrelated_{n}() {{}}\n")).collect::<String>();
+        code.push_str("fn late_entrypoint() {\n    let marker = \"deep_retrieval_needle\";\n    println!(\"{marker}\");\n}\n");
+        std::fs::write(source.join("src/opaque.rs"),code).unwrap();
+        let index=refresh(&state,&source).unwrap();
+        let id=index["id"].as_str().unwrap();
+        let file=state.store.get(FILE_KIND,&file_id(id,"src/opaque.rs")).unwrap();
+        assert_eq!(file["symbolsTruncated"],true);
+        let excerpt=bounded_focus_context(&state,&source,id,"src/opaque.rs","needle","").unwrap();
+        assert!(excerpt.contains("fn late_entrypoint()"),"{excerpt}");
+        assert!(excerpt.contains("deep_retrieval_needle"),"{excerpt}");
+        assert!(!excerpt.contains("fn unrelated_0()"),"{excerpt}");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
