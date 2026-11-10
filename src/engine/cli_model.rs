@@ -103,6 +103,10 @@ pub async fn generate(source:&str,model:&str,messages:&[Value])->Result<String,S
   },
   _=>return Err("지원하지 않는 CLI 모델입니다.".into())
  }
+ // A saved CLI OAuth login should not silently switch to separately billed
+ // API keys from the shell environment.
+ if source=="claude"{command.env_remove("ANTHROPIC_API_KEY");}
+ if source=="gemini"{command.env_remove("GEMINI_API_KEY").env_remove("GOOGLE_API_KEY");}
  prep(&mut command);
  let output=tokio::time::timeout(Duration::from_secs(240),command.output()).await
   .map_err(|_|format!("{source} CLI 모델 호출 시간이 초과됐습니다."))?

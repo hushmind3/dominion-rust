@@ -268,7 +268,7 @@ export function ModelHub(){
     if(!live)return
     setCliAuth(current=>current?.source===source?next:current)
     if(['completed','failed','cancelled'].includes(next.status)){
-     void Promise.all([cli.reload(),providers.reload()]).then(()=>{
+     void cli.reload().then(()=>providers.reload()).then(()=>{
       if(next.status==='completed')void fetchCliModels(source)
      })
      if(next.status==='completed')setLoginMessage('로그인 완료. 모델 목록을 불러옵니다.')
@@ -377,7 +377,7 @@ export function ModelHub(){
      {item.loginMethod==='browser-cli'&&<Button type="button" variant="primary" size="sm" disabled={Boolean(oauthBusy)||Boolean(cliAuth&&!['completed','failed','cancelled'].includes(cliAuth.status))} onClick={()=>void startCliLogin(item.id)}>{oauthBusy==='login-'+item.id?<RefreshCw size={13} className="animate-spin"/>:<LogIn size={13}/>} {item.available?'브라우저 재로그인':'브라우저 로그인'}</Button>}
      {item.id==='opencode-go'&&<Button type="button" variant="primary" size="sm" onClick={connectOpencodeGo}><KeyRound size={13}/> {goProvider?'키 / 모델 설정':'API 키 연결'}</Button>}
      {item.supported&&(item.importAvailable??item.available)&&<Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}><KeyRound size={13}/> {item.id==='opencode-go'?'기존 키 가져오기':'기존 인증 가져오기'}</Button>}
-     {(item.id==='claude'||item.id==='gemini')&&<Button type="button" variant="secondary" size="sm" onClick={()=>openPreset(providerPresets.find(p=>p.name===(item.id==='claude'?'Anthropic':'Google Gemini'))!)}><KeyRound size={13}/> API 키 연결</Button>}
+     {(item.id==='claude'||item.id==='gemini')&&<Button type="button" variant="secondary" size="sm" onClick={()=>openPreset(providerPresets.find(p=>p.name===(item.id==='claude'?'Anthropic':'Google Gemini'))!)}><KeyRound size={13}/> 별도 API 연결(선택)</Button>}
      {item.connected&&['claude','gemini','opencode'].includes(item.id)&&<div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-[#E7E0D5] bg-white p-2">
       <SelectInput aria-label={item.name+' 사용 모델 선택'} className="min-w-[145px] flex-1 !py-1 !text-[12px]"
        value={cliModelSelection[item.id]||item.model||'default'}
