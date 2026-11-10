@@ -3062,10 +3062,22 @@ mod tests {
         assert!(text.contains("src/engine/memory.rs 10-20"));
         assert!(text.contains("다시 읽지 마세요"));
         assert_eq!(research_digest(&state, &json!({}), &json!({"history":[]})), "");
-        // A continuation must also see the previous campaign's reads.
-        state.store.put("rsi_campaign", &json!({"id":"digest-prior","history":[{"jobId":"digest-job"}]}));
-        let continued = research_digest(&state, &json!({"rsiContinueFrom":"digest-prior"}), &json!({"history":[]}));
+        // Reuse an earlier campaign's read ledger only for a verified exact
+        // descendant. The ID alone is not a source-lineage receipt.
+        let prior=json!({"id":"digest-prior","sourceDir":"/repo","sourceBranch":"dominion-sub2",
+            "baseCommit":"a".repeat(40),"sourceFingerprint":"b".repeat(64),
+            "headCommit":"c".repeat(40),"history":[{"jobId":"digest-job"}]});
+        state.store.put("rsi_campaign",&prior);
+        let current=json!({"history":[],"sourceDir":"/repo","sourceBranch":"dominion-sub2",
+            "baseCommit":"a".repeat(40),"sourceFingerprint":"b".repeat(64),
+            "lineage":{"reused":true,"selectedCommit":"c".repeat(40)}});
+        let previous=json!({"rsiContinueFrom":"digest-prior"});
+        let continued=research_digest(&state,&previous,&current);
         assert!(continued.contains("src/engine/memory.rs 10-20"));
+        let mut foreign=current.clone();
+        foreign["sourceBranch"]=json!("dominion-sub3");
+        assert!(!research_digest(&state,&previous,&foreign).contains("src/engine/memory.rs 10-20"),
+            "a sibling branch must not inject source offsets into a new campaign");
         let _ = std::fs::remove_dir_all(root);
     }
 
