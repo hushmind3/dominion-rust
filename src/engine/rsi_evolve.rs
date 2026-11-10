@@ -2650,7 +2650,6 @@ mod tests {
         JobContext::new(state.clone(), "campaign".into())
     }
     #[test]
-    #[test]
     fn appended_research_context_must_fit_the_remaining_generation_budget() {
         let record=json!({"limits":{"tokenBudget":1000},"tokens":200});
         let input=json!({"prompt":"short objective"});
@@ -2663,6 +2662,7 @@ mod tests {
         assert!(!generation_fits_remaining_budget(&exhausted,&input));
     }
 
+    #[test]
     fn runtime_budget_stops_are_not_no_progress_or_another_generation(){
         let worker=json!({"status":"completed","result":{"status":"needs_review","reason":"model_error",
             "rsi":{"modelError":"rsi_token_budget: remaining context cannot fit"}}});
