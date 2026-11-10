@@ -103,7 +103,7 @@ pub fn limits(body: &Value) -> Result<Value, String> {
             }
         }
     };
-    Ok(json!({"maxAttempts":bound("maxAttempts",3,1,100)?,
+    Ok(json!({"maxAttempts":bound("maxAttempts",8,1,100)?,
         "tokenBudget":token_budget,
         "timeBudgetSeconds":time_budget}))
 }
@@ -1547,6 +1547,84 @@ fn queue_search_trial(
     })
 }
 
+/// Synthesize an executable search-policy experiment from observed failures,
+/// even when a small model never calls algorithm_propose. This creates only a
+/// candidate: promotion still requires independently measured live trials.
+fn autonomous_search_hypothesis(history:&[Value])->Option<Value> {
+    let recent=history.iter().rev().take(4).collect::<Vec<_>>();
+    if recent.len()<2 {return None;}
+    // The last two attempts must have spent work without an accepted patch or
+    // a new discovery. One bad model response is too little evidence.
+    let failure=|row:&&Value| {
+        row["accepted"]!=true && row["tokens"].as_u64().unwrap_or(0)>0
+        && (row["newFindings"].as_u64().unwrap_or(0)==0
+            || row["evaluation"]["verdict"]=="regressed")
+    };
+    if !recent.iter().take(2).all(failure) {return None;}
+    let wasted=recent.iter().filter(|row|failure(row)).collect::<Vec<_>>();
+    let regressions=wasted.iter().filter(|row|
+        row["evaluation"]["verdict"]=="regressed").count();
+    let stalled=wasted.iter().filter(|row|row["candidateId"].is_null()).count();
+    let mut file_counts=BTreeMap::<String,usize>::new();
+    for row in &wasted {
+        for file in row["focusFiles"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str) {
+            *file_counts.entry(file.to_string()).or_default()+=1;
+        }
+    }
+    let repeated=file_counts.values().filter(|count|**count>=2).count();
+    let novelty_weight=(2+repeated.min(4)+stalled.min(2)) as u64;
+    let repeat_weight=(3+2*repeated.min(3)) as u64;
+    let approach=if regressions>0 {"avoid_regressions"}else{"escape_barren_research"};
+    let domain_expression=if regressions>0 {
+        format!("objectiveMatch * 3 + successRate * 4 + exploration * 1.5 + novelty * {novelty_weight} - regressions * 2 - barrenRate - tokenCost * 0.3")
+    } else {
+        format!("objectiveMatch * 3 + exploration * 2 + novelty * {novelty_weight} + successRate * 1.5 - barrenRate * 2 - tokenCost * 0.6")
+    };
+    let target_expression=format!(
+        "bodyEvidence * 3 + symbolEvidence * 2 + pathEvidence + domainEvidence * 2 + productiveEvidence * 3 + novelty * {novelty_weight} - repeatPenalty * {repeat_weight} - sourceCost"
+    );
+    let anchors=wasted.iter().take(4).filter_map(|row|row["id"].as_str())
+        .map(str::to_string).collect::<Vec<_>>();
+    Some(json!({"kind":"selfimprove.search","name":format!("autonomous-{approach}-v1"),
+        "implementation":"expression","source":"rsi-generated",
+        "description":format!(
+            "Engine-generated hypothesis from {} observed failed attempts: {}. Test different code targets and preserve the verified evaluator. Proposal, not measured improvement.",
+            wasted.len(),approach),
+        "parameters":{"expression":domain_expression,
+            "targetExpression":target_expression},
+        "hypothesisEvidence":{"class":approach,
+            "wastedGenerations":wasted.len(),"regressions":regressions,
+            "stalledWithoutCandidate":stalled,"repeatedFiles":repeated,
+            "generationIds":anchors}}))
+}
+
+/// Never seed a second candidate over a pending or previously tried campaign
+/// candidate. The generated strategy is claimed through the same durable
+/// search-trial mechanism as a model-authored proposal.
+fn propose_autonomous_search_trial(
+    state:&AppState,history:&[Value],objective:&str,campaign_id:&str,attempt:u64
+)->Value {
+    if state.store.all("algorithm").iter().any(|row|
+        row["kind"]=="selfimprove.search"
+        && row["rsiTrial"]["campaignId"]==campaign_id) {
+        return json!({"status":"existing_trial"});
+    }
+    let Some(hypothesis)=autonomous_search_hypothesis(history) else {
+        return json!({"status":"insufficient_failure_evidence"});
+    };
+    let candidate=match crate::engine::algorithms::register(state,&hypothesis) {
+        Ok(candidate)=>candidate,
+        Err(error)=>return json!({"status":"invalid_hypothesis","error":error})
+    };
+    let active=crate::engine::algorithms::active(state,"selfimprove.search")
+        .unwrap_or_else(||json!({"implementation":"failure-clusters","parameters":{}}));
+    let mut receipt=queue_search_trial(state,&candidate,&active,history,objective,campaign_id,attempt);
+    receipt["origin"]=json!("engine_synthesized_failure_hypothesis");
+    receipt["hypothesisEvidence"]=hypothesis["hypothesisEvidence"].clone();
+    receipt
+}
+
 /// Returns a candidate that is waiting for a real trial under the same
 /// objective. It is used only inside an already scheduled generation; the
 /// caller never creates another campaign or generation for it.
@@ -2603,6 +2681,23 @@ async fn run_loop(
                     }
                 }
             }
+            // A failed generation must still improve the *search process*.
+            // No model tool call is required to propose the next algorithm.
+            // The candidate is never called successful until real paired runs.
+            if queued.is_empty() {
+                let mut observed=prior_history.clone();
+                observed.push(generation.clone());
+                let synthesized=propose_autonomous_search_trial(
+                    &context.state,&observed,
+                    input["rsiObjective"].as_str().unwrap_or(""),
+                    &context.job_id,attempt);
+                if synthesized["status"]=="pending_trial" {
+                    if let Some(id)=synthesized["candidateId"].as_str() {
+                        queued.push(id.to_string());
+                    }
+                    generation["autonomousSearchProposal"]=synthesized;
+                }
+            }
             if !queued.is_empty() {
                 generation["searchTrialsQueued"] = json!(queued);
             }
@@ -3064,6 +3159,54 @@ mod tests {
         state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve","status":"running","input":{"rsiNativeApproved":true}})).unwrap();
         JobContext::new(state.clone(), "campaign".into())
     }
+    #[test]
+    fn autonomous_search_synthesizes_executable_new_policy_from_wasted_generations() {
+        let (state,root)=state();
+        crate::engine::algorithms::seed(&state);
+        let history=(0..3).map(|attempt|json!({
+            "id":format!("failed-{attempt}"),"attempt":attempt+1,
+            "accepted":false,"newFindings":0,"candidateId":null,
+            "domain":"memory","tokens":12000,"focusFiles":["src/engine/memory.rs"],
+            "generatorCommit":"base-1"
+        })).collect::<Vec<_>>();
+        assert!(autonomous_search_hypothesis(&history[0..1]).is_none());
+        let hypothesis=autonomous_search_hypothesis(&history).unwrap();
+        assert_eq!(hypothesis["hypothesisEvidence"]["class"],"escape_barren_research");
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        assert_ne!(hypothesis["parameters"]["targetExpression"],active["parameters"]["targetExpression"]);
+        let candidate=crate::engine::algorithms::register(&state,&hypothesis).unwrap();
+        assert_eq!(candidate["implementation"],"expression");
+        assert!(valid_domain_scores(&candidate,&history,"").is_some());
+        let report=propose_autonomous_search_trial(
+            &state,&history,"","campaign-synth",3);
+        assert_eq!(report["status"],"pending_trial","{report}");
+        assert_eq!(report["origin"],"engine_synthesized_failure_hypothesis");
+        assert_eq!(report["hypothesisEvidence"]["repeatedFiles"],1);
+        let saved=state.store.get("algorithm",report["candidateId"].as_str().unwrap()).unwrap();
+        assert_eq!(saved["rsiTrial"]["status"],"pending_trial");
+        assert_ne!(saved["status"],"active","a synthesized hypothesis must not auto-promote");
+        let repeated=propose_autonomous_search_trial(
+            &state,&history,"","campaign-synth",4);
+        assert_eq!(repeated["status"],"existing_trial");
+        let (domain,mode,_strategy)=select_generation_strategy(
+            &state,&history,"",None,Some(saved["id"].as_str().unwrap().into()),None,"base-1");
+        assert_eq!(mode,"algorithm_active","the first comparison collects a baseline control");
+        assert!(DOMAINS.contains(&domain.as_str()));
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn autonomous_search_requires_two_genuine_failed_attempts() {
+        let done=json!({"id":"a","accepted":true,"tokens":5000,"newFindings":0});
+        let failed=json!({"id":"b","accepted":false,"tokens":5000,"newFindings":0});
+        let research=json!({"id":"c","accepted":false,"tokens":5000,"newFindings":2});
+        let zero=json!({"id":"d","accepted":false,"tokens":0,"newFindings":0});
+        assert!(autonomous_search_hypothesis(&[done.clone(),failed.clone()]).is_none());
+        assert!(autonomous_search_hypothesis(&[research,failed.clone()]).is_none());
+        assert!(autonomous_search_hypothesis(&[zero,failed.clone()]).is_none());
+        assert!(autonomous_search_hypothesis(&[failed.clone(),failed]).is_some());
+    }
+
     #[test]
     fn runtime_budget_stops_are_not_no_progress_or_another_generation(){
         let worker=json!({"status":"completed","result":{"status":"needs_review","reason":"model_error",
