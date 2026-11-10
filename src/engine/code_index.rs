@@ -20,7 +20,7 @@ const FILE_KIND: &str = "code_index_file";
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SYMBOLS_PER_FILE: usize = 400;
 const MAP_MAX_CHARS: usize = 6_000;
-const PARSER_VERSION: u64 = 3;
+const PARSER_VERSION: u64 = 4;
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -248,6 +248,48 @@ fn code_only(line: &str) -> String {
     output
 }
 
+/// Normalize source identifiers and user goals to complete lexical terms.
+/// CamelCase and acronym boundaries are equivalent to snake_case; substrings
+/// do not count as source evidence ("auth" != "unauthorized").
+fn source_terms(value: &str) -> BTreeSet<String> {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut out=BTreeSet::new();
+    let mut token=String::new();
+    for (i,ch) in chars.iter().copied().enumerate() {
+        let before=i.checked_sub(1).and_then(|n|chars.get(n)).copied();
+        let after=chars.get(i+1).copied();
+        let split=ch.is_uppercase() && (before.is_some_and(|v|v.is_lowercase() || v.is_ascii_digit())
+            || (before.is_some_and(|v|v.is_uppercase()) && after.is_some_and(char::is_lowercase)));
+        if !ch.is_alphanumeric() || split {
+            if !token.is_empty() {out.insert(token.to_lowercase());token.clear();}
+        }
+        if ch.is_alphanumeric() {token.push(ch);}
+    }
+    if !token.is_empty() {out.insert(token.to_lowercase());}
+    out
+}
+
+/// Bridge capability language to source vocabulary without prescribing files.
+fn goal_terms(goal:&str,domain:&str)->BTreeSet<String> {
+    let mut terms=source_terms(goal);
+    for (signal,additions) in [
+        ("기억", &["memory","retrieve","recall","rerank","compression"][..]),
+        ("검색", &["search","rank","retrieve","index"][..]),
+        ("문맥", &["context","continuity","prompt"][..]),
+        ("학습", &["learn","learning","experience","distill"][..]),
+        ("도구", &["tool","execute","dispatch"][..]),
+        ("개선", &["improve","evolve","algorithm","rsi"][..]),
+        ("망각", &["forgetting","decay","sweep"][..]),
+        ("압축", &["compact","compress","summary"][..]),
+    ] {
+        if goal.contains(signal) {terms.extend(additions.iter().map(|w|w.to_string()));}
+    }
+    if terms.is_empty() {
+        terms.extend(source_terms(domain));
+    }
+    terms
+}
+
 fn parse_file(rel: &str, content: &str) -> Value {
     let language = rel
         .rsplit_once('.')
@@ -258,6 +300,7 @@ fn parse_file(rel: &str, content: &str) -> Value {
     let mut tests = Vec::new();
     let mut todos = Vec::new();
     let mut summary = Vec::new();
+    let mut body_terms=BTreeSet::<String>::new();
     let mut patterns = BTreeMap::<&'static str, u64>::new();
     let mut test_pending = false;
     let mut in_tests = rel.starts_with("tests/")
@@ -339,6 +382,11 @@ fn parse_file(rel: &str, content: &str) -> Value {
             .map(|position| &line[..position])
             .unwrap_or(line);
         let code = code_only(code);
+        for term in source_terms(&code) {
+            if (3..=80).contains(&term.chars().count()) && body_terms.len()<1500 {
+                body_terms.insert(term);
+            }
+        }
         for (key, needle) in [
             ("unwrap", ".unwrap()"),
             ("expect", ".expect("),
@@ -368,6 +416,7 @@ fn parse_file(rel: &str, content: &str) -> Value {
         "todos": todos,
         "patterns": patterns,
         "summary": summary,
+        "bodyTerms":body_terms.into_iter().collect::<Vec<_>>(),
     })
 }
 
@@ -604,6 +653,88 @@ pub fn get(state: &AppState, source: &Path) -> Option<Value> {
     state.store.get(INDEX_KIND, &index_id(&source))
 }
 
+/// Rank possible source targets from the entire indexed workspace. A model
+/// may supply a bounded executable target score expression through the active
+/// selfimprove.search algorithm. This expands the candidate space beyond
+/// lexical overlap, rather than merely reordering a hard-coded file list.
+///
+/// Candidate scores are replayable from verified source hashes. If one formula
+/// evaluation fails, all candidates revert atomically to builtin evidence
+/// scoring, including the builtin evidence-gated candidate set.
+pub fn rank_source_targets(
+    state:&AppState,index_id:&str,objective:&str,domain:&str,
+    policy:Option<&Value>,limit:usize
+)->Vec<Value> {
+    let mut terms=goal_terms(objective,domain);
+    if !domain.is_empty() {terms.extend(source_terms(domain));}
+    let expression=policy.and_then(|p|p["parameters"]["targetExpression"].as_str())
+        .filter(|e|!e.trim().is_empty());
+    let mut ranked=Vec::new();
+    let mut formula_failed=false;
+    for file in index_files(state,index_id) {
+        let Some(path)=file["path"].as_str() else {continue};
+        if !crate::engine::rsi::safe_path(path) {continue;}
+        let path_terms=source_terms(path);
+        let sym_terms=file["symbols"].as_array().into_iter().flatten()
+            .filter_map(|v|v["name"].as_str()).flat_map(source_terms)
+            .collect::<BTreeSet<_>>();
+        let doc_terms=file["summary"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str).flat_map(source_terms)
+            .collect::<BTreeSet<_>>();
+        let body_terms=file["bodyTerms"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str).map(str::to_string)
+            .collect::<BTreeSet<_>>();
+        let overlap=|items:&BTreeSet<String>| terms.intersection(items).count() as f64;
+        let path_evidence=overlap(&path_terms);
+        let symbol_evidence=overlap(&sym_terms);
+        let summary_evidence=overlap(&doc_terms);
+        let body_evidence=overlap(&body_terms);
+        let evidence=path_evidence+symbol_evidence+summary_evidence+body_evidence;
+        if evidence==0.0 && expression.is_none() {continue;}
+        let source_cost=(file["bytes"].as_u64().unwrap_or(0) as f64/8192.0).min(100.0);
+        let default=3.0*path_evidence+2.0*symbol_evidence+
+            0.6*summary_evidence+0.8*body_evidence-0.1*source_cost;
+        let vars=BTreeMap::from([
+            ("pathEvidence".into(),path_evidence),
+            ("symbolEvidence".into(),symbol_evidence),
+            ("summaryEvidence".into(),summary_evidence),
+            ("bodyEvidence".into(),body_evidence),
+            ("sourceCost".into(),source_cost),
+            ("novelty".into(),if evidence==0.0{1.0}else{0.0}),
+        ]);
+        let score=match expression {
+            Some(expr)=>match crate::engine::algorithms::eval_expression(expr,&vars) {
+                Ok(value) if value.is_finite()=>value,
+                _=>{formula_failed=true;default},
+            },
+            None=>default
+        };
+        ranked.push(json!({
+            "path":path,"sourceHash":file["hash"],
+            "score":score,"defaultScore":default,
+            "lexicalEvidencePresent":evidence>0.0,
+            "policyRevision":policy.map(|p|p["revision"].clone()).unwrap_or(Value::Null),
+            "scoring":if expression.is_some(){"model_expression"}else{"indexed_evidence"},
+            "evidence":{"path":path_evidence,"symbols":symbol_evidence,
+                "summary":summary_evidence,"body":body_evidence,
+                "sourceCost":source_cost}
+        }));
+    }
+    if formula_failed {
+        ranked.retain(|file|file["lexicalEvidencePresent"]==true);
+        for file in &mut ranked {
+            file["score"]=file["defaultScore"].clone();
+            file["scoring"]=json!("indexed_evidence");
+            file["policyFallback"]=json!("invalid_expression");
+        }
+    }
+    ranked.sort_by(|a,b|b["score"].as_f64().unwrap_or(0.0)
+        .total_cmp(&a["score"].as_f64().unwrap_or(0.0))
+        .then_with(||a["path"].as_str().cmp(&b["path"].as_str())));
+    ranked.truncate(limit.min(8));
+    ranked
+}
+
 /// Keep the index in SQLite. Send a small navigation map, not the entire
 /// index plus arbitrary hotspot source on every model/tool round.
 pub fn prompt_context(
@@ -740,6 +871,47 @@ mod tests {
     use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
 
+
+    #[test]
+    fn indexed_source_selection_finds_new_architecture_and_exact_identifiers() {
+        let (state,root)=temp_state();
+        let src=root.join("repo");
+        std::fs::create_dir_all(src.join("src/engine")).unwrap();
+        for (name,content) in [
+            ("src/engine/unsearchable.rs","fn unsearchable() {}\n"),
+            ("src/engine/opaque.rs","fn searchHandler() {}\nfn BM25Ranker() {}\n"),
+            ("src/engine/indirect.rs","fn obscure() { let corpus_retrieval = 3; }\n")
+        ] {
+            let file=src.join(name);
+            std::fs::write(file,content).unwrap();
+        }
+        let index=refresh(&state,&src).unwrap();
+        let id=index["id"].as_str().unwrap();
+        let result=rank_source_targets(&state,id,"search","",None,5);
+        assert_eq!(result[0]["path"],"src/engine/opaque.rs");
+        assert!(result.iter().all(|v|v["path"]!="src/engine/unsearchable.rs"),
+            "a substring must not masquerade as a lexical match");
+        let body=rank_source_targets(&state,id,"retrieval","",None,5);
+        assert_eq!(body[0]["path"],"src/engine/indirect.rs",
+            "implementation body terms must be searchable even with an opaque filename");
+        let unrelated=rank_source_targets(&state,id,"entirely unrelated novel goal","",None,5);
+        assert!(unrelated.is_empty());
+        let exploratory=json!({"revision":"new","parameters":{
+            "targetExpression":"novelty - sourceCost"
+        }});
+        let novel=rank_source_targets(&state,id,"entirely unrelated novel goal","",
+            Some(&exploratory),8);
+        assert_eq!(novel.len(),3,"model-authored scoring can inspect files outside lexical matches");
+        assert!(novel.iter().all(|v|v["scoring"]=="model_expression"));
+        let invalid=json!({"revision":"broken","parameters":{
+            "targetExpression":"1 / pathEvidence"
+        }});
+        let recovered=rank_source_targets(&state,id,"search","",Some(&invalid),8);
+        assert_eq!(recovered.len(),1);
+        assert_eq!(recovered[0]["path"],"src/engine/opaque.rs");
+        assert_eq!(recovered[0]["policyFallback"],"invalid_expression");
+        let _=std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn bounded_focus_prefers_relevant_spans_without_full_file_retransmission() {
