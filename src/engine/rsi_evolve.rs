@@ -929,6 +929,28 @@ fn verified_candidate_id(result: &Value) -> Option<&str> {
         .filter(|_| result["rsi"]["checksPassed"] == true)
 }
 
+/// Stop repeating an already measured, unproductive patch against the exact
+/// same source commit. A new base revision or a changed hypothesis/patch can
+/// still be tested. This saves a full native paired build/evaluation cycle.
+fn identical_failed_patch(
+    state:&AppState,history:&[Value],candidate_id:&str,
+)->Option<String>{
+    let current=state.store.get("rsi_candidate",candidate_id)?;
+    let patch=current["patchSha256"].as_str().filter(|s|!s.is_empty())?;
+    let base=current["baseCommit"].as_str().filter(|s|!s.is_empty())?;
+    for row in history.iter().rev() {
+        if row["accepted"]==true {continue;}
+        if !matches!(row["evaluation"]["verdict"].as_str(),
+            Some("regressed"|"inconclusive"|"build_failed")) {continue;}
+        let Some(old_id)=row["candidateId"].as_str() else {continue;};
+        let Some(old)=state.store.get("rsi_candidate",old_id) else {continue;};
+        if old["baseCommit"]==base && old["patchSha256"]==patch {
+            return Some(old_id.to_string());
+        }
+    }
+    None
+}
+
 /// Resume a pending candidate from a predecessor only when the new
 /// campaign proves an identical source snapshot, branch, and inherited head.
 fn matching_prior_campaign(state:&AppState,input:&Value,record:&Value)->Option<Value> {
@@ -2527,7 +2549,13 @@ async fn run_loop(
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
-        let candidate_id = verified_candidate_id(&current["result"]);
+        let proposed_candidate = verified_candidate_id(&current["result"]);
+        let previous_failed = proposed_candidate.and_then(|id|
+            identical_failed_patch(&context.state,
+                record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]),id));
+        // A byte-identical failed patch from the identical base does not
+        // deserve another full expensive A/B run.
+        let candidate_id = proposed_candidate.filter(|_|previous_failed.is_none());
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
         if let Some(id) = candidate_id {
             record["phase"] = json!("measuring");
@@ -2603,11 +2631,20 @@ async fn run_loop(
         } else {
             let worker_error = output.as_ref().err().map(String::as_str);
             let child = &current["result"]["rsi"];
-            generation["error"] = json!(worker_error
-                .or_else(|| child["modelError"].as_str())
-                .or_else(|| child["captureError"].as_str())
-                .or_else(|| current["error"].as_str())
-                .unwrap_or("유효한 변경이나 검사 통과 없음"));
+            if let Some(previous)=previous_failed.as_deref() {
+                generation["candidateId"]=json!(proposed_candidate);
+                generation["evaluation"]=json!({"verdict":"duplicate_unproductive_patch",
+                    "duplicateOf":previous});
+                generation["repeatedEvaluationAvoided"]=json!(true);
+                generation["error"]=json!(format!(
+                    "동일 기준 커밋에서 이미 개선 효과가 없던 패치를 다시 제안했습니다: {previous}. 새로운 가설과 다른 코드 변경이 필요합니다."));
+            } else {
+                generation["error"] = json!(worker_error
+                    .or_else(|| child["modelError"].as_str())
+                    .or_else(|| child["captureError"].as_str())
+                    .or_else(|| current["error"].as_str())
+                    .unwrap_or("유효한 변경이나 검사 통과 없음"));
+            }
         }
         generation["elapsedMs"] = json!((worker_started.elapsed().as_millis() as u64)
             .saturating_sub(
@@ -2734,6 +2771,8 @@ async fn run_loop(
         let decision_history = record["history"].as_array().cloned().unwrap_or_default();
         let decision_basis = if let Some(reason)=stopped {
             reason
+        } else if previous_failed.is_some() {
+            "duplicate_unproductive_patch"
         } else if generation_accepted {
             "accepted_implementation"
         } else if new_findings > 0 {
@@ -4603,6 +4642,35 @@ mod tests {
         assert_eq!(state.store.get("session","s").unwrap()["rsiMethodProposals"].as_array().unwrap().len(),1);
         state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve","status":"cancelled"}));
         assert!(propose_method(&state,"s",&valid).is_err());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repeating_a_failed_patch_is_skipped_but_a_new_base_or_patch_can_retry() {
+        let (state,root)=state();
+        let base="a".repeat(40);
+        let digest="d".repeat(64);
+        state.store.put("rsi_candidate",&json!({"id":"old","baseCommit":base,
+            "patchSha256":digest})).unwrap();
+        state.store.put("rsi_candidate",&json!({"id":"new","baseCommit":base,
+            "patchSha256":digest})).unwrap();
+        let mut history=vec![json!({"candidateId":"old","accepted":false,
+            "evaluation":{"verdict":"regressed"}})];
+        assert_eq!(identical_failed_patch(&state,&history,"new"),Some("old".into()));
+        history[0]["accepted"]=json!(true);
+        assert!(identical_failed_patch(&state,&history,"new").is_none());
+        history[0]["accepted"]=json!(false);
+        history[0]["evaluation"]["verdict"]=json!("unmeasured");
+        assert!(identical_failed_patch(&state,&history,"new").is_none());
+        history[0]["evaluation"]["verdict"]=json!("inconclusive");
+        let mut changed=state.store.get("rsi_candidate","new").unwrap();
+        changed["baseCommit"]=json!("b".repeat(40));
+        state.store.put("rsi_candidate",&changed).unwrap();
+        assert!(identical_failed_patch(&state,&history,"new").is_none());
+        changed["baseCommit"]=json!(base);
+        changed["patchSha256"]=json!("e".repeat(64));
+        state.store.put("rsi_candidate",&changed).unwrap();
+        assert!(identical_failed_patch(&state,&history,"new").is_none());
         let _=std::fs::remove_dir_all(root);
     }
 
