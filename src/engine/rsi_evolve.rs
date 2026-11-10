@@ -2839,18 +2839,29 @@ fn select_generation_strategy(
                 && algorithm["source"] == "rsi-generated"
                 && algorithm["rsiTrial"]["status"] != "trial_rejected"
         }) {
+            if scored_domains(&algorithm,history,objective).is_none() {
+                let baseline=active.unwrap_or_else(||json!({
+                    "implementation":"failure-clusters","parameters":{}
+                }));
+                let mut strategy=search_strategy(&baseline,"active");
+                strategy["trialFallback"]=json!("candidate_expression_invalid_for_runtime_features");
+                return (select_domain(&baseline,history,objective),"algorithm_active",strategy);
+            }
             let domain = select_domain(&algorithm, history, objective);
             let generation = json!({"domain":domain,"generatorCommit":generator_commit});
             if comparable_trial_baseline(history, &generation, &algorithm).is_some() {
                 return (domain, "algorithm_trial", search_strategy(&algorithm, "trial"));
             }
-            // Use this already scheduled generation normally. Do not spend a
-            // trial on a missing/reused control or create another generation.
+            // Bootstrap a comparable control in the very same domain the
+            // new algorithm intends to explore, without creating extra work.
+            // Comparing different domains cannot prove improved targeting.
             let active = active
                 .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
             let mut selected = search_strategy(&active, "active");
             selected["trialFallback"] = json!("unused_comparable_baseline_missing");
-            return (select_domain(&active, history, objective), "algorithm_active", selected);
+            selected["controlForCandidateId"] = algorithm["id"].clone();
+            selected["controlForCandidateRevision"] = algorithm["revision"].clone();
+            return (domain, "algorithm_active", selected);
         }
         let algorithm = active
             .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
@@ -4773,6 +4784,33 @@ mod tests {
             active_before["id"]
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_trial_control_uses_candidate_domain_then_unlocks_real_trial() {
+        let (state,root)=state();
+        let history=vec![generation("tools",false)];
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"sub3-prefer-attempted",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"attempts * 100 + objectiveMatch"}
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap();
+        assert_eq!(select_domain(&candidate,&history,"unrelated goal"),"tools");
+        assert_ne!(select_domain(&active,&history,"unrelated goal"),"tools");
+        let (domain,mode,strategy)=select_generation_strategy(
+            &state,&history,"unrelated goal",None,Some(id.into()),None,"commit-one");
+        assert_eq!(domain,"tools");
+        assert_eq!(mode,"algorithm_active");
+        assert_eq!(strategy["controlForCandidateId"],id);
+        let mut updated=history;
+        updated.push(active_generation("control",2,"tools",false,"commit-one",1000,100));
+        let (domain,mode,_)=select_generation_strategy(
+            &state,&updated,"unrelated goal",None,Some(id.into()),None,"commit-one");
+        assert_eq!(domain,"tools");
+        assert_eq!(mode,"algorithm_trial");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
