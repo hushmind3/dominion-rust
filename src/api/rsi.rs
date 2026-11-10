@@ -29,8 +29,10 @@ fn apply_capability(record: &mut Value) {
     record["maxAcceptedStreak"] = json!(max);
     let history = record["history"].as_array().cloned().unwrap_or_default();
     let (_, verified) = crate::engine::rsi_evolve::verified_capability_streak(&history);
+    let meta = crate::engine::rsi_evolve::meta_transfer_proven(&history);
     record["maxVerifiedStreak"] = json!(verified);
-    record["capabilityDemonstrated"] = json!(verified >= 3);
+    record["metaTransferProven"] = json!(meta);
+    record["capabilityDemonstrated"] = json!(verified >= 3 && meta);
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
@@ -171,8 +173,9 @@ pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
         let (_,max_streak)=accepted_streak(&record);
         let history=record["history"].as_array().cloned().unwrap_or_default();
         let (_,verified)=crate::engine::rsi_evolve::verified_capability_streak(&history);
+        let meta=crate::engine::rsi_evolve::meta_transfer_proven(&history);
         json!({"id":record["id"],"phase":record["phase"],
-            "maxAcceptedStreak":max_streak,"maxVerifiedStreak":verified,"capabilityDemonstrated":verified>=3,
+            "maxAcceptedStreak":max_streak,"maxVerifiedStreak":verified,"metaTransferProven":meta,"capabilityDemonstrated":verified>=3&&meta,
             "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
     }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
@@ -560,7 +563,7 @@ mod capability_tests {
         apply_capability(&mut derived);
         assert_eq!(derived["capabilityDemonstrated"], false);
 
-        let verified = json!({"accepted":true,"evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":0}}});
+        let verified = json!({"accepted":true,"domain":"memory","evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":0,"holdoutDomains":["memory","context"],"improvedHoldouts":1,"metaGains":1}}});
         let full = json!({"history":[verified.clone(),verified.clone(),verified.clone()]});
         let mut derived = full.clone();
         apply_capability(&mut derived);

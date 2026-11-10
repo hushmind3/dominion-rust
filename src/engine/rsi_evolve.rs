@@ -2476,7 +2476,11 @@ async fn run_loop(
             .unwrap_or(0)
             .max(verified_streak);
         record["maxVerifiedStreak"] = json!(verified_max);
-        record["capabilityDemonstrated"] = json!(verified_max >= 3);
+        let mut history_now = record["history"].as_array().cloned().unwrap_or_default();
+        history_now.push(generation.clone());
+        let meta_transfer = meta_transfer_proven(&history_now);
+        record["metaTransferProven"] = json!(meta_transfer);
+        record["capabilityDemonstrated"] = json!(verified_max >= 3 && meta_transfer);
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
@@ -2566,6 +2570,28 @@ pub fn generation_is_verified(generation: &Value) -> bool {
     metrics["eligible"] == true
         && metrics["holdoutCases"].as_u64().unwrap_or(0) >= 2
         && metrics["regressions"].as_u64().unwrap_or(0) == 0
+}
+
+/// A capability claim also needs evidence that an improvement transferred
+/// beyond its own target: either a metric gain on the improver's holdout, or
+/// improvements across at least two holdout domains.
+pub fn meta_transfer_proven(history: &[Value]) -> bool {
+    history.iter().any(|generation| {
+        if generation["accepted"] != true {
+            return false;
+        }
+        let metrics = &generation["evaluation"]["metrics"];
+        if metrics["eligible"] != true {
+            return false;
+        }
+        let improved = metrics["improvedHoldouts"].as_u64().unwrap_or(0);
+        let domains = metrics["holdoutDomains"]
+            .as_array()
+            .map(|rows| rows.len())
+            .unwrap_or(0);
+        improved > 0
+            && (metrics["metaGains"].as_u64().unwrap_or(0) > 0 || domains >= 2)
+    })
 }
 
 /// Longest run of verified adopted generations. Capability is derived from
@@ -4011,6 +4037,18 @@ mod tests {
             "revision": format!("revision-{name}"),
             "parameters": {"expression": expression}
         })
+    }
+
+    #[test]
+    fn capability_also_requires_meta_transfer_evidence() {
+        let verified=json!({"accepted":true,"domain":"memory",
+            "evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":0,
+                "holdoutDomains":["memory"],"improvedHoldouts":1,"metaGains":0}}});
+        assert!(!meta_transfer_proven(&[verified.clone(),verified.clone(),verified.clone()]));
+        let transferred=json!({"accepted":true,"domain":"memory",
+            "evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":0,
+                "holdoutDomains":["memory","context"],"improvedHoldouts":1,"metaGains":1}}});
+        assert!(meta_transfer_proven(&[transferred]));
     }
 
     #[test]
