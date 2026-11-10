@@ -769,8 +769,16 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     if lineage["reused"] == true {
         if let Some(prior_id) = input["rsiContinueFrom"].as_str() {
             if let Some(prior) = context.state.store.get("rsi_campaign", prior_id) {
-                accepted_streak_seed = prior["acceptedStreak"].as_u64().unwrap_or(0);
-                max_streak_seed = prior["maxAcceptedStreak"].as_u64().unwrap_or(0);
+                // A continued campaign may inherit a streak only from the
+                // exact source snapshot and adopted generator it resumes.
+                if prior["headCommit"] == head
+                    && prior["sourceDir"] == json!(source)
+                    && prior["sourceBranch"] == input["rsiSourceBranch"]
+                    && prior["baseCommit"] == base
+                    && prior["sourceFingerprint"] == fingerprint {
+                    accepted_streak_seed = prior["acceptedStreak"].as_u64().unwrap_or(0);
+                    max_streak_seed = prior["maxAcceptedStreak"].as_u64().unwrap_or(0);
+                }
             }
         }
     }
@@ -782,8 +790,10 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "history":[],"activeGenerationJobId":null,"createdAt":chrono::Utc::now().to_rfc3339(),
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
         "lineage":lineage,
-        "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,"capabilityDemonstrated":max_streak_seed>=3,
+        "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,"capabilityDemonstrated":false,
         "productionChanged":false,"accelerationProven":false});
+    record["capabilityDemonstrated"]=json!(max_streak_seed>=3 &&
+        crate::engine::rsi::campaign_capability_proven(&context.state,&record));
     save(context, &record)?;
     let started = Instant::now();
     let result = run_loop(context, job, &mut record, started).await;
@@ -2353,10 +2363,10 @@ async fn run_loop(
         record["maxAcceptedStreak"] = json!(max_streak);
         // Three consecutive adopted generations are the documented threshold
         // for calling the capability demonstrated, not a single lucky patch.
-        let mut evidence_history=record["history"].as_array().cloned().unwrap_or_default();
-        evidence_history.push(generation.clone());
+        let mut evidence_record=record.clone();
+        evidence_record["history"].as_array_mut().ok_or("세대 목록 손상")?.push(generation.clone());
         record["capabilityDemonstrated"]=json!(max_streak>=3 &&
-            crate::engine::rsi::capability_proven(&context.state,&evidence_history));
+            crate::engine::rsi::campaign_capability_proven(&context.state,&evidence_record));
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
