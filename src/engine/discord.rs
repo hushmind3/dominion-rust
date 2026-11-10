@@ -1037,12 +1037,15 @@ mod tests {
         assert!(validate(&s, &c).is_err());
         c["allowedUserIds"] = json!("30");
         assert!(validate(&s, &c).is_ok());
-        s.store.put(
-            "room",
-            &json!({"id":"r","agentIds":["a","a","a","a","a","a","a","a","a","a"]}),
-        );
+        // The channel and native rooms share a 32-actor capacity. Exercise
+        // the actual boundary instead of assuming the old nine-actor cap.
+        let too_many=(0..=MAX_PARTICIPANTS).map(|index|
+            format!("agent-{index}")).collect::<Vec<_>>();
+        s.store.put("room",&json!({"id":"r","agentIds":too_many}));
         c["roomId"] = json!("r");
         assert!(validate(&s, &c).is_err());
+        s.store.put("room",&json!({"id":"r","agentIds":["a"]}));
+        assert!(validate(&s, &c).is_ok());
         drop(s);
         let _ = std::fs::remove_dir_all(dir);
     }
