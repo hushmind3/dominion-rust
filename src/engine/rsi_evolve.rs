@@ -692,7 +692,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         return Err("원본 소스가 시작 시점과 다릅니다. 다시 시작하세요.".into());
     }
     if let Some(branch)=input["rsiSourceBranch"].as_str(){
-        if !rsi_worktree::is_rsi_work_branch(branch)
+        if branch.is_empty()
             || git(context,&source,&["rev-parse","--abbrev-ref","HEAD"]).await?!=branch {
             return Err("개선 시작 시 선택한 작업 브랜치가 변경되었습니다.".into());
         }

@@ -263,8 +263,12 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         return error("비활성화된 모델 제공자입니다.".into());
     }
     let status = crate::engine::dev::status(&state).await;
-    if status["git"] != true || !crate::engine::rsi_worktree::is_rsi_work_branch(status["branch"].as_str().unwrap_or("")) {
-        return error("자기개선은 연결된 dominion-sub 계열 작업 브랜치에서만 실행합니다. champion/main은 변경하지 않습니다.".into());
+    // Read-only, detached continuous experiments may inspect a source branch
+    // of the owner's choosing. Only manual patch/application paths require a
+    // dedicated dominion-sub work branch, never champion or main.
+    if status["git"] != true || (!continuous
+        && !crate::engine::rsi_worktree::is_rsi_work_branch(status["branch"].as_str().unwrap_or(""))) {
+        return error("수동 자기개선은 dominion-sub 계열 작업 브랜치에서만 실행합니다. 연속 연구는 현재 브랜치를 격리해 진행할 수 있습니다.".into());
     }
     if !continuous && status["dirty"].as_u64().unwrap_or(u64::MAX) != 0 {
         return error("소스 폴더에 미저장 변경사항이 있습니다. 기존 작업이 덮어써지지 않도록 먼저 정리하세요.".into());
