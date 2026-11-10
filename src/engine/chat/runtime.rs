@@ -55,17 +55,13 @@ fn rsi_should_checkpoint(tool_calls: u64, has_write: bool) -> bool {
     !has_write && tool_calls >= 6
 }
 
-/// Read tools stay available at the checkpoint so the model can locate the
-/// exact block it replaces instead of overwriting a whole file.
+/// At the checkpoint only the edit and research-proposal tools remain. The
+/// focus file is already inlined in the prompt, so a read tool is not needed
+/// to build an exact replacement.
 fn rsi_checkpoint_tool(name: &str) -> bool {
     matches!(
         name,
-        "code_search"
-            | "workspace_read_range"
-            | "workspace_write"
-            | "workspace_replace"
-            | "rsi_method_propose"
-            | "algorithm_propose"
+        "workspace_write" | "workspace_replace" | "rsi_method_propose" | "algorithm_propose"
     )
 }
 
@@ -1088,7 +1084,7 @@ async fn run_turn_body(
                 round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition)));
                 messages.push(json!({
                     "role":"system",
-                    "content":"추가 탐색은 최소화하세요. 지금까지 확인한 근거로 코드 변경이나 재사용 가능한 실행 방법을 제안하세요. 수정에 필요한 정확한 블록을 확인할 때만 code_search와 workspace_read_range를 쓸 수 있습니다. 근거가 없으면 변경 없이 최종 보고하세요."
+                    "content":"추가 탐색을 중단하세요. 지금까지의 근거로 코드 변경이나 재사용 가능한 실행 방법을 제안할 수 있습니다. 근거가 없으면 변경 없이 최종 보고하세요. code_search와 workspace_read_range는 이번 턴에서 더 사용할 수 없습니다."
                 }));
                 rsi_decision_checkpoint = true;
             }
@@ -6085,10 +6081,10 @@ mod harness_tool_selection_tests {
         assert!(!rsi_should_checkpoint(5, false));
         assert!(rsi_should_checkpoint(6, false));
         assert!(!rsi_should_checkpoint(6, true));
-        for name in ["code_search", "workspace_read_range", "workspace_replace", "workspace_write"] {
+        for name in ["workspace_replace", "workspace_write", "rsi_method_propose", "algorithm_propose"] {
             assert!(rsi_checkpoint_tool(name), "{name} must stay available at the checkpoint");
         }
-        for name in ["shell_exec", "file_write", "web_search"] {
+        for name in ["code_search", "workspace_read_range", "shell_exec", "file_write", "web_search"] {
             assert!(!rsi_checkpoint_tool(name), "{name} must not stay available");
         }
         assert!(tool_discovery_applies(false, false));
