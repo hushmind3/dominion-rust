@@ -12,6 +12,9 @@ const MODEL_KIND: &str = "model_job";
 const EXTERNAL_KIND: &str = "external_model";
 pub static RUNTIME_CHANGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static DOWNLOAD_COMMIT: Mutex<()> = Mutex::new(());
+// Serialize the file ownership check and job registration. Per-job locks alone
+// do not protect two jobs that target the same on-disk model file.
+static DOWNLOAD_REGISTRATION: Mutex<()> = Mutex::new(());
 static ACTIVE_DOWNLOADS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
 
 fn active_downloads() -> &'static Mutex<std::collections::HashSet<String>> {
@@ -139,6 +142,108 @@ fn find_lms_key(repo: &str) -> Option<String> {
     })
 }
 
+
+/* A split GGUF is ONE model: llama.cpp needs every numbered part beside
+ * the first shard. Never advertise a partial set as a usable model. */
+fn gguf_shard_parts(path: &str) -> Option<(String, usize, usize)> {
+    let stem = path.strip_suffix(".gguf")?;
+    let (head, total_text) = stem.rsplit_once("-of-")?;
+    let (prefix, number_text) = head.rsplit_once('-')?;
+    if number_text.len() != 5 || total_text.len() != 5
+        || !number_text.bytes().all(|b| b.is_ascii_digit())
+        || !total_text.bytes().all(|b| b.is_ascii_digit())
+    { return None; }
+    let number = number_text.parse::<usize>().ok()?;
+    let total = total_text.parse::<usize>().ok()?;
+    (number > 0 && total > 1 && total <= 256 && number <= total)
+        .then(|| (prefix.to_string(), number, total))
+}
+
+/// Local split GGUF imports and external registrations must include all
+/// numbered shards. A single shard is not a usable model.
+fn local_gguf_parts(file: &Path) -> Result<Vec<PathBuf>, String> {
+    let name = file.file_name().and_then(|name| name.to_str())
+        .ok_or("GGUF 파일 이름을 읽을 수 없습니다.")?;
+    let Some((prefix, number, total)) = gguf_shard_parts(name) else {
+        return Ok(vec![file.to_path_buf()]);
+    };
+    if number != 1 {
+        return Err("분할 GGUF 모델의 첫 번째 조각을 선택하세요.".into());
+    }
+    let parent = file.parent().unwrap_or_else(|| Path::new("."));
+    let parts = (1..=total)
+        .map(|index| parent.join(format!("{prefix}-{index:05}-of-{total:05}.gguf")))
+        .collect::<Vec<_>>();
+    if parts.iter().any(|part| !part.is_file()) {
+        return Err("분할 GGUF 모델의 조각이 누락되었습니다. 같은 폴더에 모든 조각을 두세요.".into());
+    }
+    Ok(parts)
+}
+
+fn gguf_download_options(siblings: &[Value]) -> Vec<Value> {
+    let mut options = Vec::new();
+    let mut groups = std::collections::BTreeMap::<
+        (String, usize), std::collections::BTreeMap<usize, (String, u64)>
+    >::new();
+    for sibling in siblings {
+        let Some(file) = sibling["rfilename"].as_str() else { continue };
+        if !file.to_ascii_lowercase().ends_with(".gguf") || !safe_relative(file) { continue; }
+        let size = sibling["size"].as_u64().unwrap_or(0);
+        if let Some((prefix, number, total)) = gguf_shard_parts(file) {
+            groups.entry((prefix, total)).or_default()
+                .insert(number, (file.to_string(), size));
+            continue;
+        }
+        let quantization = file.strip_suffix(".gguf").unwrap_or(file)
+            .rsplit('-').next().unwrap_or("").to_uppercase();
+        options.push(json!({
+            "id": file, "format": "gguf",
+            "label": file.rsplit('/').next().unwrap_or(file),
+            "quantization": quantization, "bytes": size,
+            "sizeLabel": format_bytes(size), "files": [file], "shards": 1
+        }));
+    }
+    for ((prefix, total), group) in groups {
+        if group.len() != total || !(1..=total).all(|i| group.contains_key(&i)) {
+            continue;
+        }
+        let files = (1..=total).map(|i| group[&i].0.clone()).collect::<Vec<_>>();
+        let bytes = group.values().map(|(_, size)| *size).sum::<u64>();
+        let name = prefix.rsplit('/').next().unwrap_or(&prefix);
+        options.push(json!({
+            "id": files[0], "format": "gguf",
+            "label": format!("{name} · {total} parts"),
+            "quantization": "", "bytes": bytes, "sizeLabel": format_bytes(bytes),
+            "files": files, "shards": total
+        }));
+    }
+    options
+}
+
+fn validated_gguf_files(option: &str, requested: Vec<String>) -> Result<Vec<String>, String> {
+    let file = option.trim_start_matches('/').to_string();
+    if !file.to_ascii_lowercase().ends_with(".gguf") || !safe_relative(&file) {
+        return Err("다운로드할 GGUF 파일을 확인하세요.".into());
+    }
+    let files = if requested.is_empty() { vec![file.clone()] } else { requested };
+    if files.len() == 1 && files[0] == file && gguf_shard_parts(&file).is_none() {
+        return Ok(files);
+    }
+    let Some((prefix, number, total)) = gguf_shard_parts(&file) else {
+        return Err("GGUF 파일 목록과 선택한 모델이 일치하지 않습니다.".into());
+    };
+    if number != 1 || files.len() != total
+        || files.iter().enumerate().any(|(index, path)| {
+            !safe_relative(path) || gguf_shard_parts(path).is_none_or(|(p, n, t)| {
+                p != prefix || n != index + 1 || t != total
+            })
+        })
+    {
+        return Err("분할 GGUF 모델은 모든 조각을 순서대로 함께 다운로드해야 합니다.".into());
+    }
+    Ok(files)
+}
+
 fn mlx_download_files(siblings: &[Value]) -> Option<Value> {
     let mut files = Vec::new();
     let mut has_config = false;
@@ -220,16 +325,31 @@ pub fn installed(state: &AppState) -> Vec<Value> {
         .iter()
         .filter_map(|model| model["repo"].as_str().map(str::to_string))
         .collect::<std::collections::HashSet<_>>();
-    found
-        .into_iter()
+    let gguf = found.into_iter()
+        .filter(|path| path.extension().and_then(|value| value.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf")))
+        .collect::<Vec<_>>();
+    let available = gguf.iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<std::collections::HashSet<_>>();
+    gguf.into_iter()
         .filter(|path| {
-            path.extension()
-                .and_then(|value| value.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case("gguf"))
-                .unwrap_or(false)
+            let path = path.to_string_lossy();
+            match gguf_shard_parts(&path) {
+                None => true,
+                Some((prefix, number, total)) => number == 1
+                    && (2..=total).all(|index|
+                        available.contains(&format!("{prefix}-{index:05}-of-{total:05}.gguf"))),
+            }
         })
         .filter_map(|path| {
             let metadata = std::fs::metadata(&path).ok()?;
+            let bytes = if let Some((prefix, _, total)) =
+                gguf_shard_parts(&path.to_string_lossy()) {
+                (1..=total).map(|index|
+                    std::fs::metadata(format!("{prefix}-{index:05}-of-{total:05}.gguf"))
+                        .map(|m| m.len()).unwrap_or(0)).sum()
+            } else { metadata.len() };
             let relative = path
                 .strip_prefix(&dir)
                 .unwrap_or(&path)
@@ -246,8 +366,8 @@ pub fn installed(state: &AppState) -> Vec<Value> {
                 "source": "local",
                 "format": "gguf",
                 "label": file,
-                "bytes": metadata.len(),
-                "sizeLabel": format_bytes(metadata.len()),
+                "bytes": bytes,
+                "sizeLabel": format_bytes(bytes),
                 "installedAt": metadata.modified().ok()
                     .map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()),
             }))
@@ -1230,15 +1350,21 @@ pub fn import_local(state: &AppState, file_path: &str) -> Result<Value, String> 
     if extension != "gguf" {
         return Err("지금은 GGUF 파일만 가져올 수 있습니다.".into());
     }
+    let parts = local_gguf_parts(&source)?;
     let dir = models_dir(state);
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let name = source
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
         .ok_or("파일 이름이 없습니다.")?;
-    let target = dir.join(&name);
-    if source != target {
-        std::fs::copy(&source, &target).map_err(|error| error.to_string())?;
+    // Preserve every sibling when importing a sharded model. Copying only the
+    // selected first shard made it disappear from the installed-model list.
+    for part in parts {
+        let part_name = part.file_name().ok_or("GGUF 조각 파일 이름이 없습니다.")?;
+        let target = dir.join(part_name);
+        if part != target {
+            std::fs::copy(&part, &target).map_err(|error| error.to_string())?;
+        }
     }
     Ok(installed(state)
         .into_iter()
@@ -1250,10 +1376,14 @@ fn external_model(id: &str, path: &Path) -> Option<Value> {
     let label = path.file_name()?.to_str()?;
     let metadata = path.metadata().ok()?;
     if metadata.is_file() && label.to_ascii_lowercase().ends_with(".gguf") {
+        let parts = local_gguf_parts(path).ok()?;
+        let bytes = parts.iter().try_fold(0u64, |sum, part| {
+            sum.checked_add(part.metadata().ok()?.len())
+        })?;
         return Some(json!({
             "id": format!("external:{id}"), "repo": label, "label": label,
-            "source": "external", "format": "gguf", "bytes": metadata.len(),
-            "externalPath": path, "installedAt": null
+            "source": "external", "format": "gguf", "bytes": bytes,
+            "shards": parts.len(), "externalPath": path, "installedAt": null
         }));
     }
     if metadata.is_dir() && path.join("config.json").is_file() {
@@ -1341,7 +1471,24 @@ pub fn remove_installed(state: &AppState, id: &str) -> Result<(), String> {
         std::fs::remove_dir_all(path).map_err(|error| error.to_string())?;
     } else {
         let path = managed_model_path(state, id).ok_or("DOMINION이 관리하는 모델 파일을 찾을 수 없습니다.")?;
-        std::fs::remove_file(path).map_err(|error| error.to_string())?;
+        if let Some((prefix, number, total)) = gguf_shard_parts(&path.to_string_lossy()) {
+            if number != 1 {
+                return Err("분할 GGUF 모델은 첫 조각에서 제거해야 합니다.".into());
+            }
+            // Delete the full model, not just shard one. Otherwise gigabytes
+            // remain orphaned on disk but disappear from the installed list.
+            let parts = (1..=total)
+                .map(|index| PathBuf::from(format!("{prefix}-{index:05}-of-{total:05}.gguf")))
+                .collect::<Vec<_>>();
+            if !parts.iter().all(|part| part.is_file()) {
+                return Err("분할 GGUF 조각이 누락되어 모델을 제거할 수 없습니다.".into());
+            }
+            for part in parts {
+                std::fs::remove_file(part).map_err(|error| error.to_string())?;
+            }
+        } else {
+            std::fs::remove_file(path).map_err(|error| error.to_string())?;
+        }
     }
     state.bus.record(EXTERNAL_KIND, &json!({"id":id}));
     Ok(())
@@ -1865,34 +2012,54 @@ pub fn unload(state: &AppState) -> Value {
 }
 
 /// Hugging Face search, mapped to the shape the model explorer expects.
+
+#[allow(dead_code)]
 pub async fn catalog(query: &str, limit: usize, format: &str) -> Result<Vec<Value>, String> {
+    catalog_with_filters(query, limit, format, "downloads", None, false).await
+}
+
+pub async fn catalog_with_filters(
+    query: &str, limit: usize, format: &str, sort: &str,
+    max_params: Option<usize>, chat_only: bool,
+) -> Result<Vec<Value>, String> {
+    let sort = match sort {
+        "likes" => "likes",
+        "lastModified" => "lastModified",
+        _ => "downloads",
+    };
     if format == "all" {
         let limit = limit.clamp(1, 100);
         let (gguf, mlx) = tokio::join!(
-            catalog_filtered(query, limit, "gguf"),
-            catalog_filtered(query, limit, "mlx")
+            catalog_filtered(query, limit, "gguf", sort, max_params, chat_only),
+            catalog_filtered(query, limit, "mlx", sort, max_params, chat_only)
         );
         let mut items = gguf.unwrap_or_default();
         items.extend(mlx.unwrap_or_default());
         let mut seen = std::collections::HashSet::new();
         items.retain(|item| {
-            item["id"]
-                .as_str()
-                .is_some_and(|id| seen.insert(id.to_string()))
+            item["id"].as_str().is_some_and(|id| seen.insert(id.to_string()))
         });
         items.sort_by(|a, b| {
-            b["downloads"]
-                .as_u64()
-                .unwrap_or(0)
-                .cmp(&a["downloads"].as_u64().unwrap_or(0))
+            let order = match sort {
+                "likes" => b["likes"].as_u64().unwrap_or(0)
+                    .cmp(&a["likes"].as_u64().unwrap_or(0)),
+                "lastModified" => b["updatedAt"].as_str().unwrap_or("")
+                    .cmp(a["updatedAt"].as_str().unwrap_or("")),
+                _ => b["downloads"].as_u64().unwrap_or(0)
+                    .cmp(&a["downloads"].as_u64().unwrap_or(0)),
+            };
+            order.then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
         });
         items.truncate(limit);
         return Ok(items);
     }
-    catalog_filtered(query, limit, format).await
+    catalog_filtered(query, limit, format, sort, max_params, chat_only).await
 }
 
-async fn catalog_filtered(query: &str, limit: usize, format: &str) -> Result<Vec<Value>, String> {
+fn hf_catalog_url(
+    query: &str, limit: usize, format: &str, sort: &str,
+    max_params: Option<usize>, chat_only: bool,
+) -> Result<reqwest::Url, String> {
     let mut url = reqwest::Url::parse("https://huggingface.co/api/models")
         .map_err(|error| error.to_string())?;
     {
@@ -1900,12 +2067,25 @@ async fn catalog_filtered(query: &str, limit: usize, format: &str) -> Result<Vec
         if !query.trim().is_empty() {
             pairs.append_pair("search", query.trim());
         }
-        pairs
-            .append_pair("filter", if format == "mlx" { "mlx" } else { "gguf" })
-            .append_pair("sort", "downloads")
-            .append_pair("direction", "-1")
-            .append_pair("limit", &limit.clamp(1, 100).to_string());
+        pairs.append_pair("filter", if format == "mlx" { "mlx" } else { "gguf" });
+        pairs.append_pair("sort", sort);
+        pairs.append_pair("direction", "-1");
+        pairs.append_pair("limit", &limit.clamp(1, 100).to_string());
+        if let Some(max) = max_params.filter(|n| [1, 2, 3, 4, 8].contains(n)) {
+            pairs.append_pair("num_parameters", &format!("max:{max}B"));
+        }
+        if chat_only {
+            pairs.append_pair("pipeline_tag", "text-generation");
+        }
     }
+    Ok(url)
+}
+
+async fn catalog_filtered(
+    query: &str, limit: usize, format: &str, sort: &str,
+    max_params: Option<usize>, chat_only: bool,
+) -> Result<Vec<Value>, String> {
+    let url = hf_catalog_url(query, limit, format, sort, max_params, chat_only)?;
     let response = reqwest::Client::new()
         .get(url)
         .timeout(Duration::from_secs(20))
@@ -1938,10 +2118,10 @@ async fn catalog_filtered(query: &str, limit: usize, format: &str) -> Result<Vec
 }
 
 pub async fn details(repo: &str) -> Result<Value, String> {
-    if repo.trim().is_empty() {
-        return Err("모델 id 가 필요합니다.".into());
-    }
-    let url = format!("https://huggingface.co/api/models/{repo}?blobs=true");
+    let repo = safe_repo(repo)?;
+    // Card metadata and model configuration are opt-in fields on the Hub API.
+    // Without these flags the UI still receives empty license/architecture.
+    let url = format!("https://huggingface.co/api/models/{repo}?blobs=true&cardData=true&config=true");
     let response = reqwest::Client::new()
         .get(&url)
         .timeout(Duration::from_secs(25))
@@ -1952,35 +2132,12 @@ pub async fn details(repo: &str) -> Result<Value, String> {
         return Err(format!("Hugging Face HTTP {}", response.status()));
     }
     let value: Value = response.json().await.map_err(|error| error.to_string())?;
-    let mut options = Vec::new();
     let siblings = value
         .get("siblings")
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
-    for sibling in &siblings {
-        let Some(file) = sibling.get("rfilename").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        if !file.to_ascii_lowercase().ends_with(".gguf") {
-            continue;
-        }
-        let bytes = sibling
-            .get("size")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0);
-        let quantization = file.rsplit('.').nth(1).unwrap_or("").to_uppercase();
-        options.push(json!({
-            "id": file,
-            "format": "gguf",
-            "label": file.rsplit('/').next().unwrap_or(file),
-            "quantization": quantization,
-            "bytes": bytes,
-            "sizeLabel": format_bytes(bytes),
-            "files": [file],
-            "shards": 1,
-        }));
-    }
+    let mut options = gguf_download_options(&siblings);
     options.sort_by(|a, b| {
         a.get("bytes")
             .and_then(|value| value.as_u64())
@@ -1990,24 +2147,40 @@ pub async fn details(repo: &str) -> Result<Value, String> {
     if let Some(mlx) = mlx_download_files(&siblings) {
         options.push(mlx);
     }
+    // Model card metadata belongs to the detail view. A missing README must
+    // never make a downloadable model look broken.
+    let readme = match reqwest::Client::new()
+        .get(format!("https://huggingface.co/{repo}/raw/main/README.md"))
+        .timeout(Duration::from_secs(5))
+        .send().await
+    {
+        Ok(response) if response.status().is_success()
+            && response.content_length().unwrap_or(0) <= 1_048_576 => {
+            response.bytes().await.ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes[..bytes.len().min(64_000)]).into_owned())
+                .unwrap_or_default()
+        }
+        _ => String::new(),
+    };
     let author = repo.split('/').next().unwrap_or("");
     Ok(json!({
         "id": repo,
         "author": author,
-        "name": repo.split('/').nth(1).unwrap_or(repo),
+        "name": repo.split('/').nth(1).unwrap_or(&repo),
         "library": value.get("library_name").and_then(|v| v.as_str()).unwrap_or("gguf"),
         "downloads": value.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0),
         "likes": value.get("likes").and_then(|v| v.as_u64()).unwrap_or(0),
         "gated": value.get("gated").and_then(|v| v.as_bool()).unwrap_or(false),
         "updatedAt": value.get("lastModified"),
-        "description": "",
+        "description": value["cardData"]["description"].as_str().unwrap_or(""),
         "task": value.get("pipeline_tag").and_then(|v| v.as_str()).unwrap_or(""),
         "tags": value.get("tags").cloned().unwrap_or_else(|| json!([])),
         "revision": value.get("sha").and_then(|v| v.as_str()).unwrap_or("main"),
-        "license": "",
-        "architecture": "",
+        "license": value["cardData"]["license"].as_str().unwrap_or(""),
+        "architecture": value["config"]["model_type"].as_str()
+            .or_else(|| value["config"]["architectures"][0].as_str()).unwrap_or(""),
         "options": options,
-        "readme": "",
+        "readme": readme,
     }))
 }
 
@@ -2023,6 +2196,21 @@ pub fn start_download(state: AppState, repo: String, option: String) -> Result<V
 /// Starts a GGUF or multi-file MLX download. The job stores a repo-scoped
 /// target directory and a per-file list so resume never has to guess which
 /// bytes are already on disk.
+fn valid_hf_revision(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Keep partial downloads from different immutable snapshots independent.
+/// A cancelled build A must never be appended to by resumed build B.
+fn partial_download_path(target: &Path, revision: &str) -> PathBuf {
+    let suffix = if valid_hf_revision(revision) {
+        format!(".part.{revision}")
+    } else {
+        ".part".to_string()
+    };
+    PathBuf::from(format!("{}{}", target.display(), suffix))
+}
+
 pub fn start_download_with(
     state: AppState,
     repo: String,
@@ -2030,18 +2218,41 @@ pub fn start_download_with(
     format: String,
     requested_files: Vec<String>,
 ) -> Result<Value, String> {
+    start_download_at_revision(state, repo, option, format, requested_files, None)
+}
+
+/// Pin a single immutable Hugging Face commit for every shard and resume.
+pub fn start_download_at_revision(
+    state: AppState,
+    repo: String,
+    option: String,
+    format: String,
+    requested_files: Vec<String>,
+    revision: Option<&str>,
+) -> Result<Value, String> {
     let repo = safe_repo(&repo)?;
+    let revision = revision.filter(|value| !value.is_empty()).unwrap_or("main");
+    if revision != "main" && !valid_hf_revision(revision) {
+        return Err("Hugging Face 모델 버전이 올바른 커밋 해시가 아닙니다.".into());
+    }
     let format = if format == "mlx" { "mlx" } else { "gguf" };
     let option = option.trim().to_string();
     if option.is_empty() {
         return Err("다운로드할 배포 형식을 선택하세요.".into());
     }
+    let _registration = DOWNLOAD_REGISTRATION.lock()
+        .map_err(|_|"모델 다운로드 등록 잠금을 획득하지 못했습니다.".to_string())?;
     for existing in state.store.all(MODEL_KIND) {
         if existing["repo"].as_str() == Some(repo.as_str())
             && existing["optionId"].as_str() == Some(option.as_str())
             && matches!(existing["status"].as_str(), Some("downloading" | "paused"))
         {
-            return Ok(existing);
+            if existing["revision"].as_str().unwrap_or("main") == revision {
+                return Ok(existing);
+            }
+            // Two revisions of the same file share a .part destination.
+            // Do not start concurrent writers into the same download target.
+            return Err("이 모델의 다른 버전 다운로드가 진행 중입니다. 기존 작업을 먼저 완료하거나 취소하세요.".into());
         }
     }
     let files = if format == "mlx" {
@@ -2057,23 +2268,35 @@ pub fn start_download_with(
         }
         files
     } else {
-        let file = option.trim_start_matches('/').to_string();
-        if !file.to_ascii_lowercase().ends_with(".gguf") || !safe_relative(&file) {
-            return Err("다운로드할 GGUF 파일을 확인하세요.".into());
-        }
-        vec![file]
+        validated_gguf_files(&option, requested_files)?
     };
     let dir = target_root(&state, format, &repo);
+    let targets = files.iter().map(|path|dir.join(path))
+        .collect::<std::collections::HashSet<_>>();
+    for existing in state.store.all(MODEL_KIND) {
+        if !matches!(existing["status"].as_str(),Some("downloading" | "paused")) {
+            continue;
+        }
+        let Some(previous_dir)=existing["targetDir"].as_str() else {continue};
+        if previous_dir.is_empty(){continue;}
+        let previous_dir=Path::new(previous_dir);
+        let overlapping=existing["files"].as_array().into_iter().flatten()
+            .filter_map(|file|file["path"].as_str())
+            .filter(|path|safe_relative(path))
+            .any(|path|targets.contains(&previous_dir.join(path)));
+        if overlapping {
+            return Err("동일한 대상 파일을 사용하는 다른 모델 다운로드가 진행 중입니다. 기존 작업을 먼저 완료하거나 취소하세요.".into());
+        }
+    }
     let mut total = 0u64;
     let mut entries = Vec::new();
     for path in &files {
         let target = dir.join(path);
-        let partial = PathBuf::from(format!("{}.part", target.display()));
-        let downloaded = if target.is_file() {
-            std::fs::metadata(&target).map(|meta| meta.len()).unwrap_or(0)
-        } else {
-            std::fs::metadata(&partial).map(|meta| meta.len()).unwrap_or(0)
-        };
+        let partial = partial_download_path(&target, revision);
+        // A pre-existing target may belong to a different revision. Until the
+        // worker validates its hash, only actual .part bytes are progress.
+        let downloaded = std::fs::metadata(&partial)
+            .map(|meta| meta.len()).unwrap_or(0);
         total += downloaded;
         entries.push(json!({"path": path, "downloaded": downloaded, "total": 0}));
     }
@@ -2082,6 +2305,7 @@ pub fn start_download_with(
         &json!({
             "repo": repo,
             "optionId": option,
+            "revision": revision,
             "format": format,
             "status": "downloading",
             "downloaded": total,
@@ -2160,8 +2384,9 @@ fn file_sha256(path: &Path) -> Result<String, String> {
 async fn hf_blob_metadata(
     client: &reqwest::Client,
     repo: &str,
+    revision: &str,
 ) -> std::collections::HashMap<String, (u64, Option<String>)> {
-    let url = format!("https://huggingface.co/api/models/{repo}?blobs=true");
+    let url = format!("https://huggingface.co/api/models/{repo}/revision/{revision}?blobs=true");
     let Ok(response) = client.get(url).timeout(Duration::from_secs(20)).send().await else {
         return Default::default();
     };
@@ -2184,6 +2409,51 @@ async fn hf_blob_metadata(
     map
 }
 
+/// A 206 response is safe to append only when the server confirms that the
+/// returned byte range starts exactly after the partial file on disk.
+fn promote_download_file(partial: &Path, target: &Path) -> Result<(), String> {
+    let _lock = DOWNLOAD_COMMIT.lock()
+        .map_err(|_| "모델 파일 변경 잠금을 획득하지 못했습니다.".to_string())?;
+    if !partial.is_file() {
+        return Err("완료된 부분 파일을 찾을 수 없습니다.".into());
+    }
+    // On macOS/Linux this is an atomic replacement. Windows may reject a
+    // rename onto an existing file; preserve the old model as a fallback.
+    match std::fs::rename(partial, target) {
+        Ok(()) => Ok(()),
+        Err(first) if target.is_file() => {
+            let backup = PathBuf::from(format!("{}.dominion-previous", target.display()));
+            if backup.exists() {
+                return Err(format!("이전 모델 백업 파일이 남아 있습니다: {}", backup.display()));
+            }
+            std::fs::rename(target, &backup).map_err(|error| error.to_string())?;
+            match std::fs::rename(partial, target) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&backup);
+                    Ok(())
+                }
+                Err(error) => {
+                    let restore = std::fs::rename(&backup, target);
+                    Err(format!("모델 교체 실패: {error}; 기존 모델 복구: {}",
+                        if restore.is_ok() { "완료" } else { "실패" }))
+                }
+            }
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn content_range_starts_at(header: Option<&str>, requested: u64) -> bool {
+    let Some((range, total)) = header.and_then(|value| value.strip_prefix("bytes "))
+        .and_then(|value| value.split_once('/')) else { return false };
+    let Some((start, end)) = range.split_once('-') else { return false };
+    let (Ok(start), Ok(end)) = (start.parse::<u64>(), end.parse::<u64>()) else {
+        return false;
+    };
+    start == requested && end >= start
+        && (total == "*" || total.parse::<u64>().is_ok_and(|n| n > end))
+}
+
 async fn download_worker(state: AppState, job_id: String) {
     use futures_util::StreamExt;
     if !active_downloads()
@@ -2200,6 +2470,9 @@ async fn download_worker(state: AppState, job_id: String) {
         return;
     };
     let repo = job["repo"].as_str().unwrap_or("").to_string();
+    let revision = job["revision"].as_str()
+        .filter(|value| valid_hf_revision(value))
+        .unwrap_or("main").to_string();
     let format = job["format"].as_str().unwrap_or("gguf").to_string();
     let dir = PathBuf::from(job["targetDir"].as_str().unwrap_or(""));
     let mut files = job["files"].as_array().cloned().unwrap_or_default();
@@ -2212,7 +2485,7 @@ async fn download_worker(state: AppState, job_id: String) {
         return;
     }
     let client = reqwest::Client::new();
-    let blobs = hf_blob_metadata(&client, &repo).await;
+    let blobs = hf_blob_metadata(&client, &repo, &revision).await;
     for index in 0..files.len() {
         if job_status(&state, &job_id) != "downloading" {
             return;
@@ -2239,8 +2512,10 @@ async fn download_worker(state: AppState, job_id: String) {
             let hash_ok = remote_sha.as_deref().is_none_or(|sha| {
                 file_sha256(&target).is_ok_and(|actual| actual == sha)
             });
-            if (expected > 0 && size != expected) || !hash_ok {
-                let _ = std::fs::remove_file(&target);
+            if size == 0 || expected == 0 || size != expected || !hash_ok {
+                // Do not erase an installed revision before the replacement
+                // has finished downloading and passed integrity checks.
+                files[index]["downloaded"] = json!(0);
             } else {
                 files[index]["downloaded"] = json!(size);
                 patch_download(
@@ -2251,9 +2526,9 @@ async fn download_worker(state: AppState, job_id: String) {
                 continue;
             }
         }
-        let partial = PathBuf::from(format!("{}.part", target.display()));
+        let partial = partial_download_path(&target, &revision);
         let existing = std::fs::metadata(&partial).map(|meta| meta.len()).unwrap_or(0);
-        let url = format!("https://huggingface.co/{repo}/resolve/main/{path}?download=true");
+        let url = format!("https://huggingface.co/{repo}/resolve/{revision}/{path}?download=true");
         let mut request = client.get(&url).timeout(Duration::from_secs(3600));
         if existing > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
@@ -2276,8 +2551,14 @@ async fn download_worker(state: AppState, job_id: String) {
                 file_sha256(&partial).is_ok_and(|actual| actual == sha)
             });
             if expected > 0 && existing == expected && hash_ok {
-                let _ = tokio::fs::rename(&partial, &target).await;
+                if let Err(error) = promote_download_file(&partial, &target) {
+                    patch_download(&state, &job_id, json!({
+                        "status": "failed", "error": error
+                    }));
+                    return;
+                }
                 files[index]["downloaded"] = json!(existing);
+                files[index]["total"] = json!(expected);
                 continue;
             }
             let _ = tokio::fs::remove_file(&partial).await;
@@ -2297,6 +2578,24 @@ async fn download_worker(state: AppState, job_id: String) {
             return;
         }
         let append = existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        if append && !content_range_starts_at(
+            response.headers().get(reqwest::header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok()),
+            existing,
+        ) {
+            // Never append unknown bytes onto a valid partial download.
+            // Discard it so the next resume starts from byte zero.
+            let _ = tokio::fs::remove_file(&partial).await;
+            patch_download(&state, &job_id, json!({
+                "status": "failed",
+                "error": "서버의 이어받기 바이트 구간이 일치하지 않습니다. 다시 재개하면 처음부터 다운로드합니다."
+            }));
+            return;
+        }
+        let remote_size = blobs.get(&path).map(|(size, _)| *size).unwrap_or(0);
+        let response_size = response.content_length()
+            .unwrap_or(0).saturating_add(if append { existing } else { 0 });
+        let declared = if remote_size > 0 { remote_size } else { response_size };
         let mut output = match tokio::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -2315,7 +2614,6 @@ async fn download_worker(state: AppState, job_id: String) {
                 return;
             }
         };
-        let declared = response.content_length().unwrap_or(0).saturating_add(if append { existing } else { 0 });
         files[index]["total"] = json!(declared);
         let mut downloaded = if append { existing } else { 0 };
         let mut stream = response.bytes_stream();
@@ -2363,7 +2661,7 @@ async fn download_worker(state: AppState, job_id: String) {
         if job_status(&state, &job_id) != "downloading" {
             return;
         }
-        if declared > 0 && downloaded != declared {
+        if downloaded == 0 || (declared > 0 && downloaded != declared) {
             patch_download(
                 &state,
                 &job_id,
@@ -2387,11 +2685,7 @@ async fn download_worker(state: AppState, job_id: String) {
                 return;
             }
         }
-        let _commit = DOWNLOAD_COMMIT.lock().unwrap();
-        if target.exists() {
-            let _ = std::fs::remove_file(&target);
-        }
-        if let Err(error) = std::fs::rename(&partial, &target) {
+        if let Err(error) = promote_download_file(&partial, &target) {
             patch_download(
                 &state,
                 &job_id,
@@ -2658,6 +2952,211 @@ mod tests {
             mlx_models_root(&state).join("owner/model")
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hf_catalog_filters_are_server_side_and_preserve_sorting() {
+        let url = hf_catalog_url("Qwen", 80, "gguf", "likes", Some(4), true).unwrap();
+        let values = url.query_pairs().into_owned().collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(values.get("search").map(String::as_str), Some("Qwen"));
+        assert_eq!(values.get("sort").map(String::as_str), Some("likes"));
+        assert_eq!(values.get("filter").map(String::as_str), Some("gguf"));
+        assert_eq!(values.get("num_parameters").map(String::as_str), Some("max:4B"));
+        assert_eq!(values.get("pipeline_tag").map(String::as_str), Some("text-generation"));
+        let without = hf_catalog_url("", 3, "mlx", "downloads", None, false).unwrap();
+        assert!(!without.as_str().contains("num_parameters"));
+        assert!(!without.as_str().contains("pipeline_tag"));
+    }
+
+    #[test]
+    fn split_gguf_is_one_complete_download_and_never_a_partial_model() {
+        let siblings = vec![
+            json!({"rfilename":"Q4/model-00002-of-00003.gguf","size":20}),
+            json!({"rfilename":"Q4/model-00001-of-00003.gguf","size":10}),
+            json!({"rfilename":"Q4/model-00003-of-00003.gguf","size":30}),
+            json!({"rfilename":"simple-Q8_0.gguf","size":60}),
+            json!({"rfilename":"broken-00001-of-00002.gguf","size":99}),
+        ];
+        let options = gguf_download_options(&siblings);
+        assert_eq!(options.len(), 2, "{options:?}");
+        let split = options.iter().find(|o| o["shards"] == 3).unwrap();
+        assert_eq!(split["bytes"], 60);
+        assert_eq!(split["files"], json!([
+            "Q4/model-00001-of-00003.gguf",
+            "Q4/model-00002-of-00003.gguf",
+            "Q4/model-00003-of-00003.gguf"
+        ]));
+        assert_eq!(validated_gguf_files(split["id"].as_str().unwrap(),
+            split["files"].as_array().unwrap().iter().map(|v|v.as_str().unwrap().to_string()).collect()).unwrap().len(), 3);
+        assert!(validated_gguf_files("Q4/model-00001-of-00003.gguf", vec![]).is_err());
+        assert!(validated_gguf_files("Q4/model-00002-of-00003.gguf",
+            vec!["Q4/model-00002-of-00003.gguf".into()]).is_err());
+        assert!(validated_gguf_files("simple-Q8_0.gguf",
+            vec!["simple-Q8_0.gguf".into(),"another.gguf".into()]).is_err());
+    }
+
+    #[test]
+    fn removing_split_gguf_cleans_up_every_shard() {
+        let (state, dir) = temp_state();
+        let model_dir = models_dir(&state).join("split");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for part in 1..=3 {
+            std::fs::write(model_dir.join(format!("model-{part:05}-of-00003.gguf")), b"x").unwrap();
+        }
+        assert_eq!(installed(&state).iter().filter(|m| m["format"] == "gguf").count(), 1);
+        remove_installed(&state, "split/model-00001-of-00003.gguf").unwrap();
+        assert!(std::fs::read_dir(&model_dir).unwrap().next().is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn split_gguf_appears_only_when_all_shards_exist() {
+        let (state, dir) = temp_state();
+        let model_dir = models_dir(&state).join("split");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("model-00001-of-00003.gguf"), b"a").unwrap();
+        assert!(!installed(&state).iter().any(|m| m["id"] == "split/model-00001-of-00003.gguf"));
+        std::fs::write(model_dir.join("model-00002-of-00003.gguf"), b"bb").unwrap();
+        std::fs::write(model_dir.join("model-00003-of-00003.gguf"), b"ccc").unwrap();
+        let models = installed(&state).into_iter().filter(|m| m["format"] == "gguf").collect::<Vec<_>>();
+        assert_eq!(models.len(), 1, "{models:?}");
+        assert_eq!(models[0]["id"], "split/model-00001-of-00003.gguf");
+        assert_eq!(models[0]["bytes"], 6);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn split_gguf_import_copies_all_parts_and_rejects_incomplete_sets() {
+        let (state, dir) = temp_state();
+        let source_dir = dir.join("external");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let first = source_dir.join("model-00001-of-00003.gguf");
+        std::fs::write(&first, b"a").unwrap();
+        assert!(import_local(&state, &first.to_string_lossy()).is_err());
+        assert!(!models_dir(&state).join("model-00001-of-00003.gguf").exists());
+        for i in 2..=3 {
+            std::fs::write(source_dir.join(format!("model-{i:05}-of-00003.gguf")), b"bb").unwrap();
+        }
+        let imported = import_local(&state, &first.to_string_lossy()).unwrap();
+        assert_eq!(imported["id"], "model-00001-of-00003.gguf");
+        assert_eq!(imported["bytes"], 5);
+        for i in 1..=3 {
+            assert!(models_dir(&state).join(format!("model-{i:05}-of-00003.gguf")).exists());
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn external_split_gguf_registration_needs_every_part() {
+        let (state, dir) = temp_state();
+        let first = dir.join("model-00001-of-00002.gguf");
+        let second = dir.join("model-00002-of-00002.gguf");
+        std::fs::write(&first, b"aaa").unwrap();
+        assert!(register_local(&state, &first.to_string_lossy()).is_err());
+        std::fs::write(&second, b"bbbb").unwrap();
+        let model = register_local(&state, &first.to_string_lossy()).unwrap();
+        assert_eq!(model["shards"], 2);
+        assert_eq!(model["bytes"], 7);
+        assert!(register_local(&state, &second.to_string_lossy()).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replacing_a_downloaded_model_keeps_the_new_bytes() {
+        let (state, dir) = temp_state();
+        let target = models_dir(&state).join("old.gguf");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"old").unwrap();
+        let partial = partial_download_path(&target, &"a".repeat(40));
+        std::fs::write(&partial, b"new").unwrap();
+        promote_download_file(&partial, &target).expect("promote");
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert!(!partial.exists());
+        assert!(!target.with_extension("gguf.dominion-previous").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_promotion_does_not_delete_existing_model() {
+        let (state, dir) = temp_state();
+        let target = models_dir(&state).join("old.gguf");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"old").unwrap();
+        let partial = partial_download_path(&target, &"b".repeat(40));
+        assert!(promote_download_file(&partial, &target).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn different_snapshot_downloads_never_share_partial_bytes() {
+        let target = PathBuf::from("/tmp/weights.gguf");
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        let first = partial_download_path(&target, &a);
+        let second = partial_download_path(&target, &b);
+        assert_ne!(first, second);
+        assert_eq!(first, PathBuf::from(format!("/tmp/weights.gguf.part.{a}")));
+        assert_eq!(partial_download_path(&target, "main"), PathBuf::from("/tmp/weights.gguf.part"));
+    }
+
+    #[test]
+    fn competing_model_revisions_cannot_share_one_partial_file() {
+        let (state, dir) = temp_state();
+        let previous = "a".repeat(40);
+        let requested = "b".repeat(40);
+        state.store.put(MODEL_KIND, &json!({
+            "repo": "owner/model", "optionId": "model.gguf",
+            "revision": previous, "status": "paused"
+        }));
+        let error = start_download_at_revision(
+            state.clone(), "owner/model".into(), "model.gguf".into(),
+            "gguf".into(), Vec::new(), Some(&requested)
+        ).unwrap_err();
+        assert!(error.contains("다른 버전"), "{error}");
+        assert!(start_download_at_revision(
+            state, "owner/model".into(), "model.gguf".into(),
+            "gguf".into(), Vec::new(), Some("bad/revision")
+        ).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn different_mlx_options_cannot_write_the_same_snapshot_files() {
+        let (state,dir)=temp_state();
+        let target=target_root(&state,"mlx","owner/model");
+        state.store.put(MODEL_KIND,&json!({
+            "repo":"owner/model","optionId":"separate-selection",
+            "revision":"a".repeat(40),"format":"mlx","status":"paused",
+            "targetDir":target.to_string_lossy(),
+            "files":[{"path":"config.json"},{"path":"model.safetensors"}]
+        }));
+        let requested="b".repeat(40);
+        let error=start_download_at_revision(state,"owner/model".into(),
+            "different-selection".into(),"mlx".into(),
+            vec!["config.json".into(),"model.safetensors".into()],
+            Some(&requested)).unwrap_err();
+        assert!(error.contains("동일한 대상 파일"),"{error}");
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hugging_face_snapshot_requires_an_immutable_commit_hash() {
+        assert!(valid_hf_revision("0123456789abcdef0123456789abcdef01234567"));
+        assert!(!valid_hf_revision("main"));
+        assert!(!valid_hf_revision("../main"));
+        assert!(!valid_hf_revision("0123456789abcdef0123456789abcdef0123456/"));
+        assert!(!valid_hf_revision("0123456789abcdef0123456789abcdef0123456z"));
+    }
+
+    #[test]
+    fn resumable_download_rejects_misaligned_content_range() {
+        assert!(content_range_starts_at(Some("bytes 1024-2047/4096"), 1024));
+        assert!(content_range_starts_at(Some("bytes 1024-2047/*"), 1024));
+        assert!(!content_range_starts_at(Some("bytes 0-1023/4096"), 1024));
+        assert!(!content_range_starts_at(Some("bytes 1024-2047/2047"), 1024));
+        assert!(!content_range_starts_at(Some("bytes 1024-1023/4096"), 1024));
+        assert!(!content_range_starts_at(None, 1024));
     }
 
     #[test]
