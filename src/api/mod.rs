@@ -428,9 +428,42 @@ async fn maintenance_guard(State(state): State<AppState>, request: Request, next
         .into_response()
 }
 
-/// Rejects cross-origin writes so a random website cannot drive the local
-/// computer-control API. An optional admin token protects writes further.
+/// Local CLI calls may omit Origin, but browser-originated requests have
+/// Fetch Metadata / Host evidence. Enforce it on reads as well as mutations:
+/// CORS alone does not prevent DNS-rebinding requests or cross-site GETs.
+fn browser_api_origin_denied(headers:&axum::http::HeaderMap,port:u16)->bool {
+    let fetch_site=headers.get("sec-fetch-site").and_then(|value|value.to_str().ok()).unwrap_or("");
+    if fetch_site=="cross-site" {return true;}
+    let expected=[
+        format!("http://127.0.0.1:{port}"),
+        format!("http://localhost:{port}"),
+    ];
+    if let Some(origin)=headers.get(header::ORIGIN).and_then(|v|v.to_str().ok()){
+        if !expected.iter().any(|trusted|trusted==origin){return true;}
+    }
+    // Browsers always attach Fetch Metadata on supported engines. A browser
+    // using an attacker-controlled DNS-rebound hostname cannot claim that
+    // hostname is our native local API. Raw local CLI/gateway calls remain
+    // compatible because they do not carry browser metadata.
+    if !fetch_site.is_empty() {
+        if let Some(host)=headers.get(header::HOST).and_then(|v|v.to_str().ok()){
+            if host!=format!("127.0.0.1:{port}") && host!=format!("localhost:{port}"){
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Browser-origin checks apply to all API methods. Writes additionally use
+/// the optional local admin token when one has been configured.
 async fn guard_writes(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if request.uri().path().starts_with("/api/")
+        && browser_api_origin_denied(request.headers(),state.config.port)
+    {
+        return (StatusCode::FORBIDDEN,Json(json!({"error":"untrusted API browser origin"})))
+            .into_response();
+    }
     let method = request.method().clone();
     if !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) {
         let port = state.config.port;
@@ -468,3 +501,34 @@ async fn guard_writes(State(state): State<AppState>, request: Request, next: Nex
     }
     next.run(request).await
 }
+
+#[cfg(test)]
+mod origin_guard_tests {
+    use super::*;
+    #[test]
+    fn browser_metadata_rejects_cross_site_reads_and_dns_rebinding() {
+        let port=4317;
+        let mut headers=axum::http::HeaderMap::new();
+        headers.insert(header::HOST,"127.0.0.1:4317".parse().unwrap());
+        assert!(!browser_api_origin_denied(&headers,port));
+        headers.insert("sec-fetch-site","same-origin".parse().unwrap());
+        assert!(!browser_api_origin_denied(&headers,port));
+        headers.insert("sec-fetch-site","cross-site".parse().unwrap());
+        assert!(browser_api_origin_denied(&headers,port));
+        headers.insert("sec-fetch-site","same-origin".parse().unwrap());
+        headers.insert(header::HOST,"attacker.test:4317".parse().unwrap());
+        assert!(browser_api_origin_denied(&headers,port),
+            "DNS-rebound browser Host must not be treated as local");
+        headers.insert(header::HOST,"127.0.0.1:4317".parse().unwrap());
+        headers.insert(header::ORIGIN,"https://attacker.example".parse().unwrap());
+        assert!(browser_api_origin_denied(&headers,port));
+        headers.insert(header::ORIGIN,"http://127.0.0.1:4317".parse().unwrap());
+        assert!(!browser_api_origin_denied(&headers,port));
+        headers.remove("sec-fetch-site");
+        headers.remove(header::ORIGIN);
+        headers.insert(header::HOST,"tunnel.example:4317".parse().unwrap());
+        assert!(!browser_api_origin_denied(&headers,port),
+            "local command-line/gateway requests should remain compatible");
+    }
+}
+
