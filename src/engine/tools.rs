@@ -1196,50 +1196,61 @@ fn validated_http_target(url: &str) -> Result<(reqwest::Url, String, u16), Strin
 }
 
 async fn http_fetch(url: &str) -> Result<Value, String> {
-    let (parsed, host, port) = validated_http_target(url)?;
-    let resolved = tokio::net::lookup_host((host.as_str(),port)).await
-        .map_err(|error|format!("HTTP fetch DNS lookup failed: {error}"))?
-        .collect::<Vec<_>>();
-    if resolved.is_empty() || resolved.iter().any(|address|!public_fetch_ip(address.ip())) {
-        return Err("HTTP fetch resolved to a local or non-public address".into());
-    }
-    // Do not follow redirects: every new destination would require a fresh
-    // address and hostname authorization. Disable environment proxies, which
-    // could otherwise bypass DNS pinning.
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .no_proxy()
-        .resolve_to_addrs(&host, &resolved)
-        .timeout(Duration::from_secs(30))
-        .build().map_err(|error|error.to_string())?;
-    let mut response = client.get(parsed)
-        .header("User-Agent", "DOMINION/0.2 (+rust)")
-        .send().await.map_err(|error| error.to_string())?;
-    let status = response.status().as_u16();
-    if response.status().is_redirection() {
-        return Err("HTTP fetch refused an unchecked redirect destination".into());
-    }
-    if response.content_length().is_some_and(|length|length>MAX_HTTP_FETCH_BYTES as u64) {
-        return Err("HTTP fetch response exceeds the byte limit".into());
-    }
-    let content_type = response.headers().get("content-type")
-        .and_then(|value|value.to_str().ok()).unwrap_or("").to_string();
-    let mut bytes=Vec::new();
-    while let Some(chunk)=response.chunk().await.map_err(|error|error.to_string())? {
-        if chunk.len()>MAX_HTTP_FETCH_BYTES.saturating_sub(bytes.len()) {
+    const MAX_REDIRECTS: usize = 3;
+    let mut next=url.to_string();
+    for hop in 0..=MAX_REDIRECTS {
+        let (parsed, host, port) = validated_http_target(&next)?;
+        let resolved = tokio::net::lookup_host((host.as_str(),port)).await
+            .map_err(|error|format!("HTTP fetch DNS lookup failed: {error}"))?
+            .collect::<Vec<_>>();
+        if resolved.is_empty() || resolved.iter().any(|address|!public_fetch_ip(address.ip())) {
+            return Err("HTTP fetch resolved to a local or non-public address".into());
+        }
+        // Explicitly review every redirect target with a new DNS lookup.
+        // Pin the validated answers and ignore environment proxies.
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .resolve_to_addrs(&host, &resolved)
+            .timeout(Duration::from_secs(30))
+            .build().map_err(|error|error.to_string())?;
+        let mut response = client.get(parsed.clone())
+            .header("User-Agent", "DOMINION/0.2 (+rust)")
+            .send().await.map_err(|error| error.to_string())?;
+        if response.status().is_redirection() {
+            if hop==MAX_REDIRECTS {
+                return Err("HTTP fetch exceeded the redirect limit".into());
+            }
+            let location=response.headers().get(reqwest::header::LOCATION)
+                .and_then(|value|value.to_str().ok())
+                .ok_or("HTTP fetch redirect has no valid location")?;
+            next=parsed.join(location).map_err(|error|
+                format!("HTTP fetch redirect URL is invalid: {error}"))?.to_string();
+            continue;
+        }
+        let status=response.status().as_u16();
+        if response.content_length().is_some_and(|length|length>MAX_HTTP_FETCH_BYTES as u64) {
             return Err("HTTP fetch response exceeds the byte limit".into());
         }
-        bytes.extend_from_slice(&chunk);
+        let content_type = response.headers().get("content-type")
+            .and_then(|value|value.to_str().ok()).unwrap_or("").to_string();
+        let mut bytes=Vec::new();
+        while let Some(chunk)=response.chunk().await.map_err(|error|error.to_string())? {
+            if chunk.len()>MAX_HTTP_FETCH_BYTES.saturating_sub(bytes.len()) {
+                return Err("HTTP fetch response exceeds the byte limit".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let body=String::from_utf8_lossy(&bytes);
+        let text=if content_type.contains("html") {strip_html(&body)} else {body.into_owned()};
+        return Ok(json!({
+            "status":status,"contentType":content_type,
+            "text":text.chars().take(60_000).collect::<String>(),
+            "receivedBytes":bytes.len(),"redirectsFollowed":hop,
+        }));
     }
-    let body=String::from_utf8_lossy(&bytes);
-    let text=if content_type.contains("html") {strip_html(&body)} else {body.into_owned()};
-    Ok(json!({
-        "status":status,"contentType":content_type,
-        "text":text.chars().take(60_000).collect::<String>(),
-        "receivedBytes":bytes.len(),
-    }))
+    Err("HTTP fetch exceeded the redirect limit".into())
 }
-
 async fn web_search(query: &str) -> Result<Value, String> {
     let response = reqwest::Client::new()
         .post("https://html.duckduckgo.com/html/")
@@ -1772,6 +1783,12 @@ mod tests {
         for url in ["https://example.com/resource", "http://1.1.1.1/"] {
             assert!(validated_http_target(url).is_ok(), "{url}");
         }
+        let origin=validated_http_target("https://example.com/root").unwrap().0;
+        let public=origin.join("/next").unwrap();
+        assert!(validated_http_target(public.as_str()).is_ok());
+        let private=origin.join("http://127.0.0.1:4317/").unwrap();
+        assert!(validated_http_target(private.as_str()).is_err(),
+            "A relative or absolute redirect is subject to the same URL gate");
         for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
             assert!(public_fetch_ip(ip.parse().unwrap()), "{ip}");
         }
