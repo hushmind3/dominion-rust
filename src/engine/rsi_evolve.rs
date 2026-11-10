@@ -803,7 +803,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "history":[],"activeGenerationJobId":null,"createdAt":chrono::Utc::now().to_rfc3339(),
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
         "lineage":lineage,
-        "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,"capabilityDemonstrated":max_streak_seed>=3,
+        "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,"capabilityDemonstrated":false,"metaTransferProven":false,
         "productionChanged":false,"accelerationProven":false});
     save(context, &record)?;
     let started = Instant::now();
@@ -2480,7 +2480,7 @@ async fn run_loop(
         history_now.push(generation.clone());
         let meta_transfer = meta_transfer_proven(&history_now);
         record["metaTransferProven"] = json!(meta_transfer);
-        record["capabilityDemonstrated"] = json!(verified_max >= 3 && meta_transfer);
+        record["capabilityDemonstrated"] = json!(capability_demonstrated(&history_now));
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
@@ -2572,26 +2572,116 @@ pub fn generation_is_verified(generation: &Value) -> bool {
         && metrics["regressions"].as_u64().unwrap_or(0) == 0
 }
 
-/// A capability claim also needs evidence that an improvement transferred
-/// beyond its own target: either a metric gain on the improver's holdout, or
-/// improvements across at least two holdout domains.
+/// Only a locally paired, evidence-hashed comparison can establish a
+/// transferable gain. Reporting two tested domains is not proof that both
+/// improved. Each improvement must be traced to its frozen holdout case.
+fn generation_meta_transfer_proven(generation: &Value) -> bool {
+    if !generation_is_verified(generation) {
+        return false;
+    }
+    let evaluation = &generation["evaluation"];
+    if evaluation["candidateStatus"] != "verified"
+        || evaluation["measurementScope"] != "frozen_native_cases_only"
+        || !evaluation["evidenceSha256"].as_str().is_some_and(|sha| {
+            sha.len() == 64 && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    {
+        return false;
+    }
+    let metrics = &evaluation["metrics"];
+    let Some(holdouts) = metrics["holdoutEvidence"].as_array() else {
+        return false;
+    };
+    if holdouts.len() < 2 || metrics["holdoutCases"].as_u64() != Some(holdouts.len() as u64) {
+        return false;
+    }
+
+    let mut ids = BTreeSet::new();
+    let mut tested_domains = BTreeSet::new();
+    let mut improved_domains = BTreeSet::new();
+    let mut improved_count = 0u64;
+    let mut improver_holdout_gain = false;
+    for case in holdouts {
+        let Some(id) = case["id"].as_str().filter(|id| !id.trim().is_empty()) else {
+            return false;
+        };
+        let Some(domain) = case["domain"].as_str().filter(|domain| !domain.trim().is_empty()) else {
+            return false;
+        };
+        if !ids.insert(id) {
+            return false;
+        }
+        let (Some(before), Some(after), Some(metric_gains), Some(metric_regressions)) = (
+            case["baselinePass"].as_bool(),
+            case["candidatePass"].as_bool(),
+            case["metricGains"].as_u64(),
+            case["metricRegressions"].as_u64(),
+        ) else {
+            return false;
+        };
+        if metric_regressions != 0 || (before && !after)
+            || (metric_gains > 0 && (!before || !after))
+        {
+            return false;
+        }
+        let improved = (!before && after) || metric_gains > 0;
+        if case["improved"].as_bool() != Some(improved) {
+            return false;
+        }
+        tested_domains.insert(domain);
+        if improved {
+            improved_count += 1;
+            improved_domains.insert(domain);
+        }
+        if domain == "improver" && metric_gains > 0 {
+            improver_holdout_gain = true;
+        }
+    }
+    let Some(domain_rows) = metrics["holdoutDomains"].as_array() else {
+        return false;
+    };
+    let reported_domains = domain_rows.iter()
+        .map(|value| value.as_str().filter(|domain| !domain.trim().is_empty()))
+        .collect::<Option<BTreeSet<_>>>();
+    if reported_domains.as_ref() != Some(&tested_domains)
+        || domain_rows.len() != tested_domains.len()
+        || metrics["improvedHoldouts"].as_u64() != Some(improved_count)
+    {
+        return false;
+    }
+    let source_domain = generation["domain"].as_str().unwrap_or("");
+    let cross_domain_gain = tested_domains.contains(source_domain)
+        && improved_domains.iter().any(|domain| *domain != source_domain);
+    let improver_gain = improver_holdout_gain
+        && metrics["metaGains"].as_u64().unwrap_or(0) > 0;
+    cross_domain_gain || improver_gain
+}
+
+/// A measured transfer is meaningful only when it belongs to a verified
+/// adoption. Incompatible legacy summary-only records fail closed.
 pub fn meta_transfer_proven(history: &[Value]) -> bool {
-    history.iter().any(|generation| {
-        if generation["accepted"] != true {
-            return false;
+    history.iter().any(generation_meta_transfer_proven)
+}
+
+/// Count a demonstrated recursive capability only when the transferable
+/// gain occurred within a three-generation uninterrupted verified streak.
+/// A transfer from an earlier, broken streak cannot be recycled as proof.
+pub fn capability_demonstrated(history: &[Value]) -> bool {
+    let mut streak = 0u64;
+    let mut transfer_in_streak = false;
+    for generation in history {
+        if generation_is_verified(generation) {
+            streak += 1;
+            transfer_in_streak |= generation_meta_transfer_proven(generation);
+            if streak >= 3 && transfer_in_streak {
+                return true;
+            }
+        } else if generation["evaluation"].is_object() {
+            streak = 0;
+            transfer_in_streak = false;
         }
-        let metrics = &generation["evaluation"]["metrics"];
-        if metrics["eligible"] != true {
-            return false;
-        }
-        let improved = metrics["improvedHoldouts"].as_u64().unwrap_or(0);
-        let domains = metrics["holdoutDomains"]
-            .as_array()
-            .map(|rows| rows.len())
-            .unwrap_or(0);
-        improved > 0
-            && (metrics["metaGains"].as_u64().unwrap_or(0) > 0 || domains >= 2)
-    })
+    }
+    false
 }
 
 /// Longest run of verified adopted generations. Capability is derived from
@@ -4040,15 +4130,57 @@ mod tests {
     }
 
     #[test]
-    fn capability_also_requires_meta_transfer_evidence() {
-        let verified=json!({"accepted":true,"domain":"memory",
-            "evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":0,
-                "holdoutDomains":["memory"],"improvedHoldouts":1,"metaGains":0}}});
-        assert!(!meta_transfer_proven(&[verified.clone(),verified.clone(),verified.clone()]));
-        let transferred=json!({"accepted":true,"domain":"memory",
-            "evaluation":{"metrics":{"eligible":true,"holdoutCases":2,"regressions":0,
-                "holdoutDomains":["memory","context"],"improvedHoldouts":1,"metaGains":1}}});
-        assert!(meta_transfer_proven(&[transferred]));
+    fn capability_also_requires_measured_cross_domain_transfer() {
+        let holdout = |id: &str, domain: &str, improved: bool| json!({
+            "id":id,"domain":domain,"baselinePass":!improved,"candidatePass":true,
+            "metricGains":0,"metricRegressions":0,"improved":improved
+        });
+        let verified = |memory_gain: bool, context_gain: bool| json!({
+            "accepted":true,"domain":"memory",
+            "evaluation":{"candidateStatus":"verified",
+                "measurementScope":"frozen_native_cases_only",
+                "evidenceSha256":"a".repeat(64),
+                "metrics":{"eligible":true,"holdoutCases":2,"regressions":0,
+                    "holdoutDomains":["context","memory"],
+                    "improvedHoldouts":u64::from(memory_gain)+u64::from(context_gain),
+                    "metaGains":0,
+                    "holdoutEvidence":[holdout("a","memory",memory_gain),
+                        holdout("b","context",context_gain)]}}
+        });
+        let only_source_gain = verified(true,false);
+        assert!(!meta_transfer_proven(&[only_source_gain.clone()]),
+            "Two measured domains with only source-domain gain are not transfer");
+        let transferred = verified(false,true);
+        assert!(meta_transfer_proven(&[transferred.clone()]));
+        assert!(capability_demonstrated(&[
+            transferred.clone(),only_source_gain.clone(),only_source_gain.clone()]));
+        let broken = json!({"accepted":false,"evaluation":{"verdict":"regressed"}});
+        assert!(!capability_demonstrated(&[
+            transferred,broken,only_source_gain.clone(),
+            only_source_gain.clone(),only_source_gain.clone()]),
+            "Transfer from an interrupted streak must not prove capability");
+        let mut forged = verified(false,true);
+        forged["evaluation"]["metrics"]["improvedHoldouts"] = json!(2);
+        assert!(!meta_transfer_proven(&[forged]),
+            "Summary counts must match individual measured holdouts");
+        let mut unproven = verified(false,true);
+        unproven["evaluation"]["evidenceSha256"] = Value::Null;
+        assert!(!meta_transfer_proven(&[unproven]),
+            "A claimed improvement without a paired receipt is not proof");
+
+        let improver_gain = json!({"accepted":true,"domain":"memory",
+            "evaluation":{"candidateStatus":"verified",
+                "measurementScope":"frozen_native_cases_only",
+                "evidenceSha256":"b".repeat(64),
+                "metrics":{"eligible":true,"holdoutCases":2,"regressions":0,
+                    "holdoutDomains":["improver","memory"],"improvedHoldouts":1,
+                    "metaGains":1,"holdoutEvidence":[
+                        holdout("a","memory",false),
+                        {"id":"b","domain":"improver","baselinePass":true,
+                         "candidatePass":true,"metricGains":1,"metricRegressions":0,
+                         "improved":true}]}}});
+        assert!(meta_transfer_proven(&[improver_gain]),
+            "An actual improver holdout gain supports recursive improvement");
     }
 
     #[test]
