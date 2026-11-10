@@ -1238,46 +1238,139 @@ async fn bounded_http_body(mut response: reqwest::Response) -> Result<String, St
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+// Public Internet fetches must not become an unintended gateway into the
+// machine running DOMINION. Deliberate local service access uses dedicated
+// tools; this arbitrary-URL reader is external-only.
+fn public_fetch_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(
+                a == 0 || a == 10 || a == 127 || a >= 224
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 168)
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 88 && c == 99)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+            )
+        }
+        std::net::IpAddr::V6(ip) => {
+            if let Some(v4) = ip.to_ipv4() {
+                return public_fetch_ip(std::net::IpAddr::V4(v4));
+            }
+            let words = ip.segments();
+            // Only global unicast destinations. Exclude documentation, 6to4
+            // and Teredo tunnelling addresses (which can conceal private IPv4).
+            (words[0] & 0xe000) == 0x2000
+                && !(words[0] == 0x2001 && words[1] == 0x0db8)
+                && !(words[0] == 0x2001 && words[1] == 0)
+                && words[0] != 0x2002
+        }
+    }
+}
+
+fn validate_public_fetch_url(url: &reqwest::Url) -> Result<(), String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("Only HTTP(S) URLs are allowed".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("URL credentials are not accepted by http_fetch".into());
+    }
+    let host = url.host_str().ok_or("HTTP URL requires a hostname")?;
+    let normalized = host.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.').to_ascii_lowercase();
+    if normalized.parse::<std::net::IpAddr>().is_ok_and(public_fetch_ip) {
+        return Ok(());
+    }
+    if normalized.parse::<std::net::IpAddr>().is_ok() {
+        return Err("Local, private and reserved addresses are blocked".into());
+    }
+    if !normalized.contains('.')
+        || ["localhost", "local", "internal", "lan", "home.arpa", "test", "invalid"]
+            .iter().any(|suffix| normalized == *suffix || normalized.ends_with(&format!(".{suffix}")))
+    {
+        return Err("Internal hostnames are blocked".into());
+    }
+    Ok(())
+}
+
+async fn bounded_http_body(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
+    if response.content_length().is_some_and(|length| length > cap as u64) {
+        return Err(format!("HTTP response exceeds {cap} bytes"));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if chunk.len() > cap.saturating_sub(bytes.len()) {
+            return Err(format!("HTTP response exceeds {cap} bytes"));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 async fn http_fetch(url: &str) -> Result<Value, String> {
-    let mut current = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
-    for hop in 0..=MAX_HTTP_REDIRECTS {
-        // Resolve, validate and pin each hop. Disable client DNS re-resolution,
-        // proxy overrides and implicit redirects to prevent private-network pivots.
-        let (host, address) = resolve_public_target(&current).await?;
+    const MAX_BODY: usize = 256 * 1024;
+    let mut target = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
+    for redirect in 0..=5 {
+        validate_public_fetch_url(&target)?;
+        let host = target.host_str().ok_or("HTTP URL requires a hostname")?.to_string();
+        let port = target.port_or_known_default().ok_or("HTTP URL requires a port")?;
+        let normalized = host.trim_start_matches('[').trim_end_matches(']');
+        let literal = normalized.parse::<std::net::IpAddr>().ok();
+        let addresses = if let Some(ip) = literal {
+            vec![std::net::SocketAddr::new(ip, port)]
+        } else {
+            let lookup = tokio::time::timeout(
+                Duration::from_secs(5), tokio::net::lookup_host((host.as_str(), port))
+            ).await.map_err(|_| "DNS lookup timed out".to_string())?
+                .map_err(|error| error.to_string())?;
+            lookup.collect::<Vec<_>>()
+        };
+        if addresses.is_empty() || addresses.iter().any(|addr| !public_fetch_ip(addr.ip())) {
+            return Err("DNS target is local, private or reserved".into());
+        }
+        // Bind the validated DNS answer to the actual TCP connection. A fresh
+        // resolver lookup inside reqwest would reopen a DNS-rebinding window.
         let mut builder = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30));
-        if host.parse::<std::net::IpAddr>().is_err() {
-            builder = builder.resolve(&host, address);
+        if literal.is_none() {
+            builder = builder.resolve_to_addrs(&host, &addresses);
         }
-        let client = builder.build().map_err(|error| error.to_string())?;
-        let response = client.get(current.clone())
+        let response = builder.build().map_err(|error| error.to_string())?
+            .get(target.clone())
             .header("User-Agent", "DOMINION/0.2 (+rust)")
             .send().await.map_err(|error| error.to_string())?;
         if response.status().is_redirection() {
-            if hop == MAX_HTTP_REDIRECTS {
-                return Err("HTTP redirect limit exceeded".into());
-            }
-            let location = response.headers().get(reqwest::header::LOCATION)
-                .and_then(|value| value.to_str().ok())
-                .ok_or("HTTP redirect missing Location")?;
-            current = current.join(location).map_err(|error| error.to_string())?;
-            continue;
+            if redirect == 5 { return Err("HTTP redirect limit reached".into()); }
+            let next = response.headers().get(reqwest::header::LOCATION)
+                .ok_or("HTTP redirect is missing Location")?
+                .to_str().map_err(|error| error.to_string())?;
+            target = target.join(next).map_err(|error| error.to_string())?;
+            continue; // Validate and pin every redirected destination.
         }
         let status = response.status().as_u16();
-        let content_type = response.headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("").to_string();
-        let body = bounded_http_body(response).await?;
-        let text = if content_type.contains("html") { strip_html(&body) } else { body };
+        let content_type = response.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()).unwrap_or("").to_string();
+        let raw = bounded_http_body(response, MAX_BODY).await?;
+        let body = String::from_utf8_lossy(&raw);
+        let text = if content_type.contains("html") {
+            strip_html(&body)
+        } else {
+            body.to_string()
+        };
         return Ok(json!({
-            "status": status, "contentType": content_type,
+            "status": status,
+            "contentType": content_type,
             "text": text.chars().take(60_000).collect::<String>(),
         }));
     }
-    Err("HTTP redirect limit exceeded".into())
+    Err("HTTP redirect limit reached".into())
 }
 
 async fn web_search(query: &str) -> Result<Value, String> {
@@ -1292,7 +1385,8 @@ async fn web_search(query: &str) -> Result<Value, String> {
         .send()
         .await
         .map_err(|error| error.to_string())?;
-    let html = response.text().await.map_err(|error| error.to_string())?;
+    let raw = bounded_http_body(response, 512 * 1024).await?;
+    let html = String::from_utf8_lossy(&raw);
     let mut results = Vec::new();
     for chunk in html.split("result__a").skip(1).take(10) {
         let Some(href_start) = chunk.find("href=\"") else {
@@ -1647,6 +1741,45 @@ mod tests {
             "expression":"novelty","targetExpression":"untrusted_system_call"
         }),"run").await.is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+
+    #[test]
+    fn arbitrary_http_fetch_blocks_local_and_private_targets() {
+        for url in [
+            "http://localhost:4317/", "http://service.internal/",
+            "http://engine.local/", "http://example.test/",
+            "http://127.0.0.1:80/", "http://2130706433/",
+            "http://10.10.10.10/", "http://169.254.169.254/latest/meta-data/",
+            "http://172.24.1.9/", "http://192.168.1.1/",
+            "http://100.100.100.200/", "http://198.18.1.1/",
+            "http://[::1]/", "http://[fc00::1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "file:///etc/passwd", "http://user:pass@example.com/",
+        ] {
+            let target=reqwest::Url::parse(url).expect(url);
+            assert!(validate_public_fetch_url(&target).is_err(), "{url}");
+        }
+        for url in ["https://github.com/org/repo", "https://example.com/",
+            "https://1.1.1.1/", "https://[2606:4700:4700::1111]/"]
+        {
+            let target=reqwest::Url::parse(url).unwrap();
+            assert!(validate_public_fetch_url(&target).is_ok(), "{url}");
+        }
+        for destination in [
+            "127.0.0.1".parse().unwrap(), "10.0.0.1".parse().unwrap(),
+            "169.254.169.254".parse().unwrap(), "192.168.1.1".parse().unwrap(),
+            "::1".parse().unwrap(), "fc00::1".parse().unwrap(),
+            "2002:c0a8:0101::".parse().unwrap(),
+        ] {
+            assert!(!public_fetch_ip(destination), "{destination}");
+        }
+    }
+
+    #[tokio::test]
+    async fn arbitrary_http_fetch_rejects_loopback_without_a_request() {
+        assert!(http_fetch("http://127.0.0.1:4317/api/settings").await.is_err());
+        assert!(http_fetch("http://169.254.169.254/latest/meta-data/").await.is_err());
     }
 
     #[tokio::test]
