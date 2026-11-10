@@ -534,9 +534,9 @@ async fn run_turn_body(
         .unwrap_or(MAX_ROUNDS as u64)
         .clamp(2, 24) as usize;
     if session["rsiRun"] == true {
-        // Leave rounds after the exploration checkpoint so the model can
-        // either make the grounded edit or finish without one.
-        max_rounds = max_rounds.max(8);
+        // RSI generations mix reading, checkpointing and editing. Eight rounds
+        // is enough to abort a real attempt before the edit lands.
+        max_rounds = max_rounds.max(16);
     }
     let max_tools = budget_algorithm
         .as_ref()
