@@ -1960,7 +1960,26 @@ fn fit_worker_context(
     let directive=format!(
         "\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요."
     );
-    let rich=history.iter().take(8).cloned().collect::<Vec<_>>();
+    // Keep actual changed paired metrics, but never inject unbounded model
+    // notes or arbitrary JSON fields. A complete structured receipt is better
+    // than the former 12k-character truncation that produced malformed JSON.
+    let rich=history.iter().take(8).map(|row|{
+        let changed=row["measurements"].as_array().into_iter().flatten()
+            .filter(|case|case["metrics"].as_array().is_some_and(|metrics|
+                metrics.iter().any(|metric|metric["improved"]==true||metric["regressed"]==true)))
+            .take(3).map(|case|{
+                let metrics=case["metrics"].as_array().into_iter().flatten().take(3)
+                    .map(|metric|json!({"key":metric["key"],"baseline":metric["baseline"],
+                        "candidate":metric["candidate"],"improved":metric["improved"],
+                        "regressed":metric["regressed"]})).collect::<Vec<_>>();
+                json!({"id":case["id"].as_str().unwrap_or("").chars().take(120).collect::<String>(),
+                    "metrics":metrics})
+            }).collect::<Vec<_>>();
+        json!({"domain":row["domain"],"accepted":row["accepted"],
+            "verdict":row["verdict"],"tokens":row["tokens"],"elapsedMs":row["elapsedMs"],
+            "error":row["error"].as_str().map(|v|v.chars().take(240).collect::<String>()),
+            "measurements":changed})
+    }).collect::<Vec<_>>();
     let compact=history.iter().take(2).map(|row|json!({
         "domain":row["domain"],"accepted":row["accepted"],
         "verdict":row["verdict"],"tokens":row["tokens"],
@@ -2941,6 +2960,8 @@ mod tests {
         let suffix=full.split("이 실험 계보의 과거 결과: ").nth(1).unwrap();
         let parsed:Value=serde_json::from_str(suffix).unwrap();
         assert_eq!(parsed.as_array().unwrap().len(),8,"never cut a JSON receipt mid-record");
+        assert!(!full.contains("\\"notes\\""),"untrusted verbose fields must not consume the next generation");
+        assert!(full.chars().count()<12_000,"structured case summaries must stay bounded");
         let minimum=fit_worker_context("사용자 목표","memory","memory",&history,Some(50));
         assert!(minimum.unwrap_err().starts_with("rsi_token_budget:"));
         let base_only=fit_worker_context("사용자 목표","memory","memory",&[],None).unwrap().0;
