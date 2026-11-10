@@ -83,6 +83,8 @@ export function ModelHub(){
  const [freeBusy,setFreeBusy]=useState(false)
  const [oauthBusy,setOauthBusy]=useState('')
  const [cliAuth,setCliAuth]=useState<CliAuthStatus|null>(null)
+ const cliLoginPopup=useRef<Window|null>(null)
+ const cliLoginPopupUrl=useRef('')
  const [openCodeAuthProvider,setOpenCodeAuthProvider]=useState('openai')
  const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[defaultModel,setDefaultModel]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
  const [defaultEffort,setDefaultEffort]=useState('')
@@ -189,14 +191,38 @@ export function ModelHub(){
  },[loginPending])
  const startCliLogin=async(source:string)=>{
   if(oauthBusy)return
+  // Open synchronously from the user click, as with Codex OAuth. Creating the
+  // tab after the asynchronous Rust request would trigger popup blocking.
+  const popup=window.open('about:blank','_blank')
+  if(popup){
+   popup.document.title='DOMINION · 로그인 연결 중'
+   popup.document.body.textContent='공식 로그인 페이지를 준비하고 있습니다…'
+  }
+  cliLoginPopup.current=popup
+  cliLoginPopupUrl.current=''
   setOauthBusy('login-'+source);setError('');setLoginMessage('')
   setCliAuth({source,status:'starting',message:'공식 로그인 창을 준비 중입니다.'})
   try{
    const started=await post<CliAuthStatus>('/api/providers/cli/'+encodeURIComponent(source)+'/login',{provider:source==='opencode'?openCodeAuthProvider:undefined})
    setCliAuth(started)
-  }catch(e){setCliAuth(null);setError((e as Error).message)}
+  }catch(e){popup?.close();cliLoginPopup.current=null;setCliAuth(null);setError((e as Error).message)}
   finally{setOauthBusy('')}
  }
+ useEffect(()=>{
+  if(!cliAuth)return
+  if(cliAuth.url && cliLoginPopupUrl.current!==cliAuth.url){
+   const popup=cliLoginPopup.current
+   if(popup && !popup.closed){
+    popup.location.href=cliAuth.url
+    cliLoginPopupUrl.current=cliAuth.url
+    cliLoginPopup.current=null
+   }
+  }
+  if(['completed','failed','cancelled'].includes(cliAuth.status)){
+   cliLoginPopup.current?.close()
+   cliLoginPopup.current=null
+  }
+ },[cliAuth?.url,cliAuth?.status])
  useEffect(()=>{
   if(!cliAuth||['completed','failed','cancelled'].includes(cliAuth.status))return
   let live=true
