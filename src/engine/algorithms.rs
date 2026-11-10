@@ -152,7 +152,7 @@ pub fn kind_label(kind: &str) -> &str {
 /// targeting formula. Unlike a hardcoded path table, these are measured from
 /// the current checkout and previous generations.
 pub const SELFIMPROVE_TARGET_FEATURES: &[&str] = &[
-    "pathEvidence", "symbolEvidence", "summaryEvidence",
+    "pathEvidence", "symbolEvidence", "summaryEvidence", "bodyEvidence",
     "domainEvidence", "repeatPenalty", "novelty", "sourceCost",
 ];
 
@@ -2008,6 +2008,13 @@ mod tests {
         assert_eq!(registered["parameters"]["targetExpression"],
             "pathEvidence * 3 + symbolEvidence - repeatPenalty - sourceCost");
         assert_eq!(registered["status"],"available");
+        let body_aware = register(&state, &json!({
+            "kind":"selfimprove.search", "name":"body-evidence-target-v1",
+            "implementation":"expression",
+            "parameters":{"expression":"objectiveMatch + exploration",
+                "targetExpression":"bodyEvidence * 2 + pathEvidence - repeatPenalty"}
+        })).unwrap();
+        assert_eq!(body_aware["status"], "available");
         assert!(register(&state,&json!({"kind":"selfimprove.search","name":"unknown-feature",
             "implementation":"expression","parameters":{"expression":"novelty",
                 "targetExpression":"unguardedVariable + pathEvidence"}})).is_err());
