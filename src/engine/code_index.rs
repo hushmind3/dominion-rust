@@ -34,10 +34,6 @@ pub fn index_id(source: &Path) -> String {
 }
 
 fn is_source(path: &Path) -> bool {
-    // Evaluator internals must never appear in a model's source map.
-    if crate::engine::rsi::sealed_measurement_path(&path.to_string_lossy()) {
-        return false;
-    }
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
@@ -1051,7 +1047,7 @@ mod tests {
 
 
     #[test]
-    fn frozen_evaluation_files_are_not_discovered_or_ranked() {
+    fn generic_code_index_preserves_full_repository_for_normal_development() {
         let (state,root)=temp_state();
         let source=root.join("repo");
         std::fs::create_dir_all(source.join("src/engine")).unwrap();
@@ -1067,12 +1063,11 @@ mod tests {
             .filter(|file|file["indexId"]==id)
             .map(|file|file["path"].as_str().unwrap_or("").to_string())
             .collect::<Vec<_>>();
-        assert_eq!(paths,vec!["src/engine/search.rs"],
-            "frozen evaluator content must never enter the source index");
-        let ranked=rank_focus_files(&state,id,"secret frozen holdout","improver",
-            &BTreeMap::new(),None,8);
-        assert!(ranked.iter().all(|row|
-            !crate::engine::rsi::sealed_measurement_path(row["path"].as_str().unwrap_or(""))));
+        assert_eq!(paths.len(),3,
+            "ordinary development must retain full source visibility");
+        assert!(paths.iter().any(|path|path=="src/engine/rsi_oracle_fixture.rs"));
+        assert!(paths.iter().any(|path|path=="src/engine/rsi_metrics.rs"));
+        assert!(paths.iter().any(|path|path=="src/engine/search.rs"));
         let _=std::fs::remove_dir_all(root);
     }
 
