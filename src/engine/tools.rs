@@ -51,7 +51,7 @@ pub fn definitions() -> Vec<Value> {
         tool("algorithm_propose", "Propose domain selection and optional source-targeting formulas. Trial is independent and does not activate a proposal.", object(json!({
             "name": text("Algorithm name"),
             "expression": text("Domain score over attempts, accepted, regressions, inconclusive, novelty, successRate, usefulGenerations, barrenRate, tokenCost, objectiveMatch, unresolved, exploration"),
-            "targetExpression": text("Optional file score over pathEvidence, symbolEvidence, summaryEvidence, domainEvidence, repeatPenalty, novelty, sourceCost"),
+            "targetExpression": text("Optional file score over pathEvidence, symbolEvidence, summaryEvidence, bodyEvidence, domainEvidence, repeatPenalty, novelty, sourceCost"),
             "description": text("Why this formula should choose better improvement targets"),
             "evidence": json!({"type":"array","items":{"type":"string"},"description":"Observed failures or regressions that justify the formula"})
         }), vec!["expression"])),
