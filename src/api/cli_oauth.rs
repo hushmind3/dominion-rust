@@ -76,7 +76,7 @@ pub(super) async fn credential_verified(source:&str)->bool{
     }
     let name=match source{"claude"=>"claude","opencode"=>"opencode",_=>return false};
     let Some(exe)=binary(name)else{return false;};
-    let args:&[&str]=if source=="claude"{&["auth","status","--json"]}else{&["auth","list","--format","json"]};
+    let args:&[&str]=if source=="claude"{&["auth","status"]}else{&["auth","list","--format","json"]};
     let output=tokio::time::timeout(Duration::from_secs(5),Command::new(exe).args(args).kill_on_drop(true).output()).await;
     let Ok(Ok(output))=output else{return false;};
     if !output.status.success(){return false;}

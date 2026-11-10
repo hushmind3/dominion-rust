@@ -456,7 +456,7 @@ async fn claude_cli_authenticated() -> bool {
         .unwrap_or_else(|| std::path::PathBuf::from("claude"));
     let status = tokio::time::timeout(
         Duration::from_secs(4),
-        tokio::process::Command::new(binary).args(["auth", "status", "--json"]).kill_on_drop(true).output(),
+        tokio::process::Command::new(binary).args(["auth", "status"]).kill_on_drop(true).output(),
     ).await;
     matches!(status,
         Ok(Ok(output)) if output.status.success()
