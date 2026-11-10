@@ -2113,7 +2113,7 @@ pub async fn details(repo: &str) -> Result<Value, String> {
     Ok(json!({
         "id": repo,
         "author": author,
-        "name": repo.split('/').nth(1).unwrap_or(repo),
+        "name": repo.split('/').nth(1).unwrap_or(&repo),
         "library": value.get("library_name").and_then(|v| v.as_str()).unwrap_or("gguf"),
         "downloads": value.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0),
         "likes": value.get("likes").and_then(|v| v.as_u64()).unwrap_or(0),
