@@ -83,6 +83,8 @@ pub const SELFIMPROVE_FEATURES: &[&str] = &[
     "inconclusive",
     "novelty",
     "successRate",
+    "usefulGenerations",
+    "barrenRate",
     "tokenCost",
     "objectiveMatch",
     "unresolved",
@@ -90,7 +92,9 @@ pub const SELFIMPROVE_FEATURES: &[&str] = &[
 ];
 
 fn expression_sample(kind: &str) -> std::collections::BTreeMap<String, f64> {
-    let names: &[&str] = if kind == "selfimprove.search" {
+    let names: &[&str] = if kind == "selfimprove.target" {
+        SELFIMPROVE_TARGET_FEATURES
+    } else if kind == "selfimprove.search" {
         SELFIMPROVE_FEATURES
     } else {
         &[
@@ -144,6 +148,14 @@ pub fn kind_label(kind: &str) -> &str {
     }
 }
 
+/// Features supplied by the real indexed source selector to an AI-authored
+/// targeting formula. Unlike a hardcoded path table, these are measured from
+/// the current checkout and previous generations.
+pub const SELFIMPROVE_TARGET_FEATURES: &[&str] = &[
+    "pathEvidence", "symbolEvidence", "summaryEvidence", "bodyEvidence", "productiveEvidence",
+    "domainEvidence", "repeatPenalty", "novelty", "sourceCost",
+];
+
 /// Safe arithmetic expression over named candidate features. This lets a new
 /// selection rule be added as an executable algorithm record without a Rust
 /// rebuild, while the harness still owns the candidate features.
@@ -151,21 +163,6 @@ pub fn eval_expression(
     expression: &str,
     variables: &std::collections::BTreeMap<String, f64>,
 ) -> Result<f64, String> {
-    // Model-authored expressions are bounded before recursive descent.
-    if expression.chars().count()>512 {
-        return Err("expression exceeds the 512-character limit".into());
-    }
-    let mut depth=0usize;
-    for ch in expression.chars() {
-        if ch=='(' {
-            depth+=1;
-            if depth>32 {return Err("expression nesting exceeds 32 levels".into());}
-        } else if ch==')' {
-            if depth==0 {return Err("unbalanced expression brackets".into());}
-            depth-=1;
-        }
-    }
-    if depth!=0 {return Err("unbalanced expression brackets".into());}
     struct Parser<'a> {
         chars: Vec<char>,
         index: usize,
@@ -259,6 +256,22 @@ pub fn eval_expression(
     if expression.trim().is_empty() {
         return Err("expression is empty".into());
     }
+    // Generated arithmetic must be bounded, finite and free of stack-exhaustion
+    // inputs. It cannot call arbitrary Rust functions or external tools.
+    if expression.chars().count()>512 {
+        return Err("expression exceeds 512 characters".into());
+    }
+    let mut nesting=0usize;
+    let mut depth=0usize;
+    for ch in expression.chars() {
+        if ch=='(' {
+            nesting+=1;
+            depth=depth.max(nesting);
+            if depth>32 {return Err("expression nesting exceeds 32".into());}
+        } else if ch==')' {
+            nesting=nesting.saturating_sub(1);
+        }
+    }
     let mut parser = Parser {
         chars: expression.chars().collect(),
         index: 0,
@@ -268,7 +281,9 @@ pub fn eval_expression(
     if parser.peek().is_some() {
         return Err("trailing tokens in expression".into());
     }
-    if !value.is_finite() {return Err("non-finite expression result".into());}
+    if !value.is_finite() {
+        return Err("expression produced a non-finite score".into());
+    }
     Ok(value)
 }
 
@@ -1538,26 +1553,28 @@ pub fn register(state: &AppState, body: &Value) -> Result<Value, String> {
             .ok_or("expression kernel requires parameters.expression")?;
         eval_expression(expression, &expression_sample(kind))?;
     }
-    // Domain selection and file discovery are distinct policy outputs. A
-    // model can evolve both, but target expressions must be executable for
-    // positive *and* zero-evidence files before entering a real trial.
-    if let Some(raw)=body["parameters"].get("targetExpression") {
-        if kind!="selfimprove.search" || implementation!="expression" {
-            return Err("targetExpression requires an executable selfimprove.search expression".into());
+    if let Some(target_expression) = body["parameters"]["targetExpression"].as_str() {
+        if kind != "selfimprove.search" || implementation != "expression" {
+            return Err("targetExpression requires selfimprove.search expression kernel".into());
         }
-        let expression=raw.as_str().filter(|text|!text.trim().is_empty())
-            .ok_or("targetExpression must be a non-empty expression string")?;
-        let sample=std::collections::BTreeMap::from([
-            ("pathEvidence".to_string(),1.0),
-            ("symbolEvidence".to_string(),1.0),
-            ("summaryEvidence".to_string(),1.0),
-            ("bodyEvidence".to_string(),1.0),
-            ("novelty".to_string(),1.0),
-            ("sourceCost".to_string(),1.0),
-        ]);
-        eval_expression(expression,&sample)?;
-        let zero=sample.keys().map(|key|(key.clone(),0.0)).collect();
-        eval_expression(expression,&zero)?;
+        // The one-value synthetic sample is not representative of sparse
+        // source files. Require a valid result for zero evidence and costly
+        // files before allowing a model-authored expression to be promoted.
+        let base=expression_sample("selfimprove.target");
+        let mut zero=base.clone();
+        for value in zero.values_mut() { *value=0.0; }
+        zero.insert("novelty".into(),1.0);
+        let mut costly=zero.clone();
+        costly.insert("sourceCost".into(),100.0);
+        costly.insert("repeatPenalty".into(),10.0);
+        costly.insert("novelty".into(),1.0/11.0);
+        let mut high=base.clone();
+        for feature in ["pathEvidence","symbolEvidence","summaryEvidence","bodyEvidence"] {
+            high.insert(feature.into(),50.0);
+        }
+        for sample in [&base,&zero,&costly,&high] {
+            eval_expression(target_expression,sample)?;
+        }
     }
     let variant = body["variant"].as_str().unwrap_or(implementation);
     let parameters = body["parameters"]
@@ -1998,32 +2015,47 @@ mod tests {
     }
 
     #[test]
-    fn model_created_source_targeting_is_checked_before_trial_registration() {
+    fn generated_source_targeting_formula_is_validated_and_versioned() {
         let (state,dir)=state();
-        let policy=json!({"kind":"selfimprove.search","name":"bounded-target-exploration",
-            "implementation":"expression","parameters":{
-                "expression":"novelty + exploration - tokenCost",
-                "targetExpression":"novelty + bodyEvidence - sourceCost"
-            }});
-        let saved=register(&state,&policy).unwrap();
-        assert_eq!(saved["parameters"]["targetExpression"],
-            "novelty + bodyEvidence - sourceCost");
-        let bad=json!({"kind":"selfimprove.search","name":"broken-target",
-            "implementation":"expression","parameters":{
-                "expression":"novelty",
-                "targetExpression":"1 / pathEvidence"
-            }});
-        assert!(register(&state,&bad).is_err(),
-            "zero lexical evidence must not trigger a queued-but-broken target policy");
-        let bad=json!({"kind":"selfimprove.search","name":"unknown-feature",
-            "implementation":"expression","parameters":{
-                "expression":"novelty",
-                "targetExpression":"notAFeature + 1"
-            }});
-        assert!(register(&state,&bad).is_err());
-        let nested=format!("{}1{}","(".repeat(33),")".repeat(33));
-        assert!(eval_expression(&nested,&std::collections::BTreeMap::new()).is_err());
-        assert!(eval_expression(&"1 + ".repeat(200),&std::collections::BTreeMap::new()).is_err());
+        let valid=json!({"kind":"selfimprove.search","name":"evolvable-target-v1",
+            "implementation":"expression",
+            "parameters":{"expression":"objectiveMatch * 5 + exploration",
+                "targetExpression":"pathEvidence * 3 + symbolEvidence - repeatPenalty - sourceCost"}});
+        let registered=register(&state,&valid).unwrap();
+        assert_eq!(registered["parameters"]["targetExpression"],
+            "pathEvidence * 3 + symbolEvidence - repeatPenalty - sourceCost");
+        assert_eq!(registered["status"],"available");
+        let body_aware = register(&state, &json!({
+            "kind":"selfimprove.search", "name":"body-evidence-target-v1",
+            "implementation":"expression",
+            "parameters":{"expression":"objectiveMatch + exploration",
+                "targetExpression":"bodyEvidence * 2 + pathEvidence - repeatPenalty"}
+        })).unwrap();
+        assert_eq!(body_aware["status"], "available");
+        assert!(register(&state,&json!({"kind":"selfimprove.search","name":"unknown-feature",
+            "implementation":"expression","parameters":{"expression":"novelty",
+                "targetExpression":"unguardedVariable + pathEvidence"}})).is_err());
+        assert!(register(&state,&json!({"kind":"selfimprove.search","name":"invalid-score",
+            "implementation":"expression","parameters":{"expression":"novelty",
+                "targetExpression":"pathEvidence / (novelty - novelty)"}})).is_err());
+        assert!(register(&state,&json!({
+            "kind":"selfimprove.search","name":"sparse-file-zero-division",
+            "implementation":"expression",
+            "parameters":{"expression":"objectiveMatch + exploration",
+                "targetExpression":"1 / pathEvidence"}
+        })).is_err(),"empty lexical evidence must fail validation, not production indexing");
+        assert!(register(&state,&json!({
+            "kind":"selfimprove.search","name":"bounded-sparse-file-score",
+            "implementation":"expression",
+            "parameters":{"expression":"objectiveMatch + exploration",
+                "targetExpression":"pathEvidence / (1 + sourceCost)"}
+        })).is_ok());
+        // A model-authored targeting rule cannot be silently attached to a
+        // different algorithm or a display-only kernel.
+        assert!(register(&state,&json!({"kind":"memory.rerank","name":"wrong-kind",
+            "implementation":"bm25","parameters":{"targetExpression":"sourceCost"}})).is_err());
+        assert!(eval_expression(&"(".repeat(36),&expression_sample("selfimprove.target")).is_err());
+        assert!(eval_expression(&"a".repeat(513),&expression_sample("selfimprove.target")).is_err());
         let _=std::fs::remove_dir_all(dir);
     }
 
