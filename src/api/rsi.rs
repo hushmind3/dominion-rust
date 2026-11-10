@@ -37,6 +37,20 @@ fn apply_capability(record: &mut Value) {
     record["capabilityDemonstrated"] = json!(crate::engine::rsi_evolve::capability_demonstrated(&history));
 }
 
+/// Public RSI status must recheck original frozen paired reports instead of
+/// trusting an editable per-generation pairedRevalidated flag.
+fn apply_verified_capability(state:&AppState, record:&mut Value) {
+    let history=record["history"].as_array().cloned().unwrap_or_default();
+    let checked=crate::engine::rsi_evolve::revalidated_history(state,&history);
+    let mut verified_record=record.clone();
+    verified_record["history"]=json!(checked);
+    apply_capability(&mut verified_record);
+    for field in ["acceptedStreak","maxAcceptedStreak","maxVerifiedStreak",
+        "metaTransferProven","capabilityDemonstrated"] {
+        record[field]=verified_record[field].clone();
+    }
+}
+
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
     let status = crate::engine::dev::status(state).await;
     let raw = status["config"]["sourceDir"].as_str().unwrap_or("");
@@ -154,7 +168,7 @@ pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Respo
         record[field]=job["input"][key].clone();
     }
     record["selectedVersionRunning"]=json!(record["headCommit"].as_str()==option_env!("DOMINION_BUILD_COMMIT"));
-    apply_capability(&mut record);
+    apply_verified_capability(&state,&mut record);
     if record["phase"]=="diagnosing_and_editing" {
         if let Some(session)=record["activeGenerationJobId"].as_str().and_then(|id|state.store.get("job",id))
             .and_then(|j|j["sessionId"].as_str().map(str::to_string)) {
@@ -170,14 +184,13 @@ pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Respo
 }
 
 pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
-    let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|record|{
+    let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|mut record|{
         let job=record["id"].as_str().and_then(|id|state.store.get("job",id)).unwrap_or(Value::Null);
-        let (_,max_streak)=accepted_streak(&record);
-        let history=record["history"].as_array().cloned().unwrap_or_default();
-        let (_,verified)=crate::engine::rsi_evolve::verified_capability_streak(&history);
-        let meta=crate::engine::rsi_evolve::meta_transfer_proven(&history);
+        apply_verified_capability(&state,&mut record);
         json!({"id":record["id"],"phase":record["phase"],
-            "maxAcceptedStreak":max_streak,"maxVerifiedStreak":verified,"metaTransferProven":meta,"capabilityDemonstrated":crate::engine::rsi_evolve::capability_demonstrated(&history),
+            "maxAcceptedStreak":record["maxAcceptedStreak"],"maxVerifiedStreak":record["maxVerifiedStreak"],
+            "metaTransferProven":record["metaTransferProven"],
+            "capabilityDemonstrated":record["capabilityDemonstrated"],
             "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
     }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
