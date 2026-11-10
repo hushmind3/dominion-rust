@@ -1037,12 +1037,19 @@ mod tests {
         assert!(validate(&s, &c).is_err());
         c["allowedUserIds"] = json!("30");
         assert!(validate(&s, &c).is_ok());
-        s.store.put(
-            "room",
-            &json!({"id":"r","agentIds":["a","a","a","a","a","a","a","a","a","a"]}),
-        );
+        let mut agents=(0..MAX_PARTICIPANTS)
+            .map(|index|format!("agent-{index}")).collect::<Vec<_>>();
+        for id in &agents {
+            s.store.put("agent",&json!({"id":id,"name":id}));
+        }
+        s.store.put("room",&json!({"id":"r","agentIds":agents}));
         c["roomId"] = json!("r");
-        assert!(validate(&s, &c).is_err());
+        assert!(validate(&s,&c).is_ok(),
+            "Discord must accept the room engine's 32-agent limit");
+        agents.push("one-more".into());
+        s.store.put("room",&json!({"id":"r","agentIds":agents}));
+        assert!(validate(&s,&c).unwrap_err().contains("1~32"),
+            "the 33rd participant still exceeds the shared limit");
         drop(s);
         let _ = std::fs::remove_dir_all(dir);
     }
