@@ -563,7 +563,7 @@ mod capability_tests {
         apply_capability(&mut derived);
         assert_eq!(derived["capabilityDemonstrated"], false);
 
-        let verified = json!({"accepted":true,"domain":"memory","evaluation":{
+        let verified = json!({"accepted":true,"pairedRevalidated":true,"domain":"memory","evaluation":{
             "candidateStatus":"verified","measurementScope":"frozen_native_cases_only",
             "evidenceSha256":"a".repeat(64),
             "metrics":{"eligible":true,"holdoutCases":2,"regressions":0,
