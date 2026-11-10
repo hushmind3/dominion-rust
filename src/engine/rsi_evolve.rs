@@ -1056,9 +1056,13 @@ fn selection_objective(input:&Value)->String {
     // using them as a domain selector permanently biases free exploration.
     let objective=if input["rsiAutonomous"]==true {""}
         else {input["rsiObjective"].as_str().unwrap_or("")};
-    let hints=input["rsiFocusFiles"].as_array().into_iter().flatten()
-        .filter_map(Value::as_str).map(focus_domain_hint)
-        .collect::<Vec<_>>();
+    // Engine-suggested focus files are observations, not owner constraints:
+    // otherwise the first heuristic guess feeds back as a permanent objective.
+    let hints=if input["rsiAutoFocus"]==true {Vec::new()} else {
+        input["rsiFocusFiles"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str).map(focus_domain_hint)
+            .collect::<Vec<_>>()
+    };
     if hints.is_empty() { objective.to_string() } else { format!("{objective} {}",hints.join(" ")) }
 }
 
@@ -2113,6 +2117,9 @@ async fn run_loop(
             .is_none_or(|files| files.is_empty())
         {
             child_input["rsiFocusFiles"] = json!(auto_focus_files(&lab, &child_input));
+            child_input["rsiAutoFocus"] = json!(true);
+        } else {
+            child_input["rsiAutoFocus"] = json!(false);
         }
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
@@ -3752,6 +3759,13 @@ mod tests {
         let latest=json!({"rsiAutonomous":true,"rsiFocusFiles":["src/engine/memory.rs"]});
         assert!(selection_objective(&latest).contains("memory"),
             "explicit focus files retain their intended capability even for open objectives");
+        let automatically_focused=json!({
+            "rsiAutonomous":true,"rsiAutoFocus":true,
+            "rsiObjective":"지식과 경험을 활용해 개선",
+            "rsiFocusFiles":["src/engine/memory.rs"]
+        });
+        assert_eq!(selection_objective(&automatically_focused),"",
+            "automatic file discovery must never turn into an owner constraint");
     }
 
     #[test]
