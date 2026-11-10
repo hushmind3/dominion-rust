@@ -20,7 +20,7 @@ const FILE_KIND: &str = "code_index_file";
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SYMBOLS_PER_FILE: usize = 400;
 const MAP_MAX_CHARS: usize = 6_000;
-const PARSER_VERSION: u64 = 3;
+const PARSER_VERSION: u64 = 4;
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -259,6 +259,9 @@ fn parse_file(rel: &str, content: &str) -> Value {
     let mut todos = Vec::new();
     let mut summary = Vec::new();
     let mut patterns = BTreeMap::<&'static str, u64>::new();
+    // Compact lexical evidence allows target discovery even when file and symbol names are opaque.
+    // Indexed once per source hash; never sent wholesale to the model.
+    let mut body_terms = BTreeSet::<String>::new();
     let mut test_pending = false;
     let mut in_tests = rel.starts_with("tests/")
         || rel.contains("/tests/")
@@ -336,8 +339,15 @@ fn parse_file(rel: &str, content: &str) -> Value {
             continue;
         }
         let code = comment_start(line)
-            .map(|position| &line[..position])
+            .map(|position| &line[..position.saturating_sub(2)])
             .unwrap_or(line);
+        // Include identifiers and string-literal vocabulary (API routes, prompts,
+        // SQL, etc.), but never classify comment-only mentions as implementation.
+        for word in code.split(|ch: char| !ch.is_alphanumeric()) {
+            if (3..=80).contains(&word.chars().count()) {
+                body_terms.insert(word.to_lowercase());
+            }
+        }
         let code = code_only(code);
         for (key, needle) in [
             ("unwrap", ".unwrap()"),
@@ -363,6 +373,7 @@ fn parse_file(rel: &str, content: &str) -> Value {
         "lines": content.lines().count(),
         "bytes": content.len(),
         "symbols": symbols,
+        "bodyLexicon": body_terms.into_iter().collect::<Vec<_>>().join(" "),
         "symbolsTruncated": symbols.len() >= MAX_SYMBOLS_PER_FILE,
         "tests": tests,
         "todos": todos,
@@ -731,31 +742,35 @@ pub fn rank_focus_files(
             .collect::<Vec<_>>().join(" ").to_lowercase();
         let summary=file["summary"].as_array().into_iter().flatten()
             .filter_map(Value::as_str).collect::<Vec<_>>().join(" ").to_lowercase();
-        (path,symbols,summary)
+        let body=file["bodyLexicon"].as_str().unwrap_or("").to_lowercase();
+        (path,symbols,summary,body)
     }).collect::<Vec<_>>();
 
     let document_count=files.len() as f64;
     let frequencies=query.iter().map(|term| {
-        let count=fields.iter().filter(|(path,symbols,summary)|
-            path.contains(term) || symbols.contains(term) || summary.contains(term)).count();
+        let count=fields.iter().filter(|(path,symbols,summary,body)|
+            path.contains(term) || symbols.contains(term) || summary.contains(term)
+                || body.contains(term)).count();
         (term.as_str(), ((document_count+1.0)/(count as f64+1.0)).ln()+1.0)
     }).collect::<BTreeMap<_,_>>();
     let target_expression=algorithm.and_then(|value|value["parameters"]["targetExpression"].as_str());
 
     let mut ranked=Vec::new();
-    for (file,(path,symbols,summary)) in files.iter().zip(fields.iter()) {
+    for (file,(path,symbols,summary,body)) in files.iter().zip(fields.iter()) {
         let mut path_evidence=0.0;
         let mut symbol_evidence=0.0;
         let mut summary_evidence=0.0;
+        let mut body_evidence=0.0;
         for term in &query {
             let idf=frequencies.get(term.as_str()).copied().unwrap_or(0.0);
             if path.contains(term) {path_evidence+=idf;}
             if symbols.contains(term) {symbol_evidence+=idf;}
             if summary.contains(term) {summary_evidence+=idf;}
+            if body.contains(term) {body_evidence+=idf;}
         }
         let domain_evidence=if !domain.is_empty()
             && (path.contains(domain)||symbols.contains(domain)) {1.0} else {0.0};
-        let evidence=path_evidence+symbol_evidence+summary_evidence+domain_evidence;
+        let evidence=path_evidence+symbol_evidence+summary_evidence+body_evidence+domain_evidence;
         if evidence==0.0 {continue;}
         let prior=prior_unproductive.get(path).copied().unwrap_or(0) as f64;
         let source_cost=(file["bytes"].as_u64().unwrap_or(0) as f64/8_192.0).min(100.0);
@@ -763,13 +778,14 @@ pub fn rank_focus_files(
             ("pathEvidence".to_string(),path_evidence),
             ("symbolEvidence".to_string(),symbol_evidence),
             ("summaryEvidence".to_string(),summary_evidence),
+            ("bodyEvidence".to_string(),body_evidence),
             ("domainEvidence".to_string(),domain_evidence),
             ("repeatPenalty".to_string(),prior.min(10.0)),
             ("novelty".to_string(),1.0/(1.0+prior)),
             ("sourceCost".to_string(),source_cost),
         ]);
         let default=3.0*path_evidence+symbol_evidence+0.5*summary_evidence+
-            domain_evidence-0.8*prior.min(10.0)-0.15*source_cost;
+            0.8*body_evidence+domain_evidence-0.8*prior.min(10.0)-0.15*source_cost;
         let attempted=target_expression.map(|expression|
             crate::engine::algorithms::eval_expression(expression,&features));
         let (score,policy_error)=match attempted {
@@ -783,7 +799,7 @@ pub fn rank_focus_files(
             "sourceHash":file["hash"],
             "score":score,
             "evidence":{"path":path_evidence,"symbols":symbol_evidence,
-                "summary":summary_evidence,"domain":domain_evidence,
+                "summary":summary_evidence,"body":body_evidence,"domain":domain_evidence,
                 "priorUnproductive":prior,"sourceCost":source_cost},
             "policyRevision":algorithm.map(|policy|policy["revision"].clone()).unwrap_or(Value::Null),
             "scoring":if target_expression.is_some() && policy_error.is_none() {"expression"} else {"corpus-evidence"}
@@ -901,6 +917,30 @@ mod tests {
     use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
 
+
+    #[test]
+    fn opaque_implementation_is_discovered_from_body_without_a_filename_hint() {
+        let (state, root) = temp_state();
+        let source = root.join("repo");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        std::fs::write(source.join("src/neutral.rs"),
+            "fn unrelated() {} // bm25 retrieval appears only in a comment\n").unwrap();
+        std::fs::write(source.join("src/opaque.rs"),
+            "fn hidden_worker() {\n    let api_marker = \"bm25\";\n    println!(\"{api_marker}\");\n}\n").unwrap();
+        let index = refresh(&state, &source).unwrap();
+        let id = index["id"].as_str().unwrap();
+        let candidates = rank_focus_files(&state, id, "bm25", "", &BTreeMap::new(), None, 2);
+        assert_eq!(candidates.len(), 1, "{candidates:?}");
+        assert_eq!(candidates[0]["path"], "src/opaque.rs");
+        assert!(candidates[0]["evidence"]["body"].as_f64().unwrap() > 0.0);
+        // A file edit invalidates the old body terms on the next index refresh.
+        std::fs::write(source.join("src/opaque.rs"),
+            "fn hidden_worker() { println!(\"different\"); }\n").unwrap();
+        let refreshed = refresh(&state, &source).unwrap();
+        assert_eq!(refreshed["changedFiles"], 1);
+        assert!(rank_focus_files(&state, id, "bm25", "", &BTreeMap::new(), None, 2).is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn bounded_focus_discovers_opaque_function_body_and_its_caller() {
