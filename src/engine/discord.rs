@@ -967,6 +967,29 @@ mod tests {
         json!({"id":"100","channel_id":"20","author":{"id":"30","bot":false},"content":"안녕","mentions":[{"id":"40"}],"type":0})
     }
     #[test]
+    fn discord_room_uses_generic_participant_capacity_not_nine() {
+        let (state,dir)=state();
+        let mut ids=Vec::new();
+        for index in 0..MAX_PARTICIPANTS {
+            let id=format!("member-{index}");
+            state.store.put("agent",&json!({"id":id,"name":id}));
+            ids.push(id);
+        }
+        let mut config=config();
+        config["roomId"]=json!("test-room");
+        state.store.put("room",&json!({"id":"test-room","agentIds":ids}));
+        assert!(validate(&state,&config).is_ok(),
+            "All agents permitted by the room engine should be valid on Discord");
+        state.store.put("agent",&json!({"id":"overflow","name":"overflow"}));
+        let mut overflow=state.store.get("room","test-room").unwrap();
+        overflow["agentIds"].as_array_mut().unwrap().push(json!("overflow"));
+        state.store.put("room",&overflow);
+        assert!(validate(&state,&config).is_err(),
+            "The shared resource ceiling still prevents unlimited fanout");
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn routing_rejects_self_webhooks_other_channels_and_unapproved_bots() {
         let c = config();
         let mut m = message();
