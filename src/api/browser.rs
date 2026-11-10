@@ -14,6 +14,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
         &json!({}),
         &state.config.data_dir,
         &state.config.workspace,
+        "dashboard",
     )
     .await
     .unwrap_or_else(|error| json!({ "available": false, "running": false, "error": error }));
@@ -34,6 +35,7 @@ pub async fn action(
         &body,
         &state.config.data_dir,
         &state.config.workspace,
+        "dashboard",
     )
     .await
     {
