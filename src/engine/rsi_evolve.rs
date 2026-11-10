@@ -2563,9 +2563,10 @@ async fn run_loop(
         record["maxVerifiedStreak"] = json!(verified_max);
         let mut history_now = record["history"].as_array().cloned().unwrap_or_default();
         history_now.push(generation.clone());
-        let meta_transfer = meta_transfer_proven(&history_now);
+        let proven_history=revalidated_history(&context.state,&history_now);
+        let meta_transfer = meta_transfer_proven(&proven_history);
         record["metaTransferProven"] = json!(meta_transfer);
-        record["capabilityDemonstrated"] = json!(capability_demonstrated(&history_now));
+        record["capabilityDemonstrated"] = json!(capability_demonstrated(&proven_history));
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
@@ -2658,6 +2659,35 @@ pub fn generation_is_verified(generation: &Value) -> bool {
         && metrics["eligible"] == true
         && metrics["holdoutCases"].as_u64().unwrap_or(0) >= 2
         && metrics["regressions"].as_u64().unwrap_or(0) == 0
+}
+
+/// Read the original paired-run receipts again before displaying or
+/// persisting a claimed recursive capability. A mutable generation flag is
+/// only a cache; it must never be the final proof.
+pub fn revalidated_history(state:&AppState, history:&[Value]) -> Vec<Value> {
+    history.iter().map(|generation| {
+        let mut checked=generation.clone();
+        let valid=if generation_is_verified(generation) {
+            generation["candidateId"].as_str()
+                .and_then(|id|state.store.get("rsi_candidate",id))
+                .is_some_and(|candidate| {
+                    candidate["status"]=="verified"
+                        && candidate["evaluation"]["status"]=="verified"
+                        && candidate["evaluation"]["metrics"]==generation["evaluation"]["metrics"]
+                        && candidate["evaluation"]["evidenceSha256"]==generation["evaluation"]["evidenceSha256"]
+                        && candidate["evaluation"]["id"].is_string()
+                        && candidate["experimentAdoption"]["commit"]==generation["acceptedCommit"]
+                        && candidate["experimentAdoption"]["generatorCommit"]==generation["generatorCommit"]
+                        && candidate["experimentAdoption"]["campaignId"]==generation["campaignId"]
+                        && candidate["target"]==generation["candidateTarget"]
+                        && crate::engine::rsi::verify_paired_receipt(state,&candidate).is_ok()
+                })
+        } else {
+            false
+        };
+        checked["pairedRevalidated"]=json!(valid);
+        checked
+    }).collect()
 }
 
 /// Only a locally paired, evidence-hashed comparison can establish a
@@ -4395,6 +4425,24 @@ mod tests {
         assert!(!capability_demonstrated(&[parent.clone(),no_native_plan,grandchild.clone()]));
         let same_domain=make("improver",&b,&c,"harness");
         assert!(!capability_demonstrated(&[parent,same_domain,grandchild]));
+    }
+
+    #[test]
+    fn forged_generation_flag_cannot_replace_missing_original_paired_receipt() {
+        let (state,root)=state();
+        let forged=json!({"accepted":true,"pairedRevalidated":true,
+            "campaignId":"fake","candidateId":"missing-candidate",
+            "candidateTarget":"improver",
+            "generatorCommit":"a".repeat(40),"acceptedCommit":"b".repeat(40),
+            "evaluation":{"candidateStatus":"verified","measurementScope":"frozen_native_cases_only",
+                "evidenceSha256":"c".repeat(64),
+                "metrics":{"eligible":true,"holdoutCases":2,"regressions":0}}});
+        assert!(generation_is_verified(&forged),"fixture pretends to be verified");
+        let audited=revalidated_history(&state,&[forged.clone(),forged.clone(),forged]);
+        assert!(audited.iter().all(|generation|generation["pairedRevalidated"]==false));
+        assert_eq!(verified_capability_streak(&audited),(0,0));
+        assert!(!capability_demonstrated(&audited));
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
