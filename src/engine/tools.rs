@@ -50,8 +50,9 @@ pub fn definitions() -> Vec<Value> {
         tool("skill_propose", "Draft a reusable skill for user review", object(json!({"name": text("Skill name"), "instructions": text("Reusable instructions")}), vec!["name", "instructions"])),
         tool("algorithm_propose", "Propose a new self-improvement search formula. It may be tried in the next scheduled generation; replay match is context only and never activates it.", object(json!({
             "name": text("Algorithm name"),
-            "expression": text("Arithmetic over attempts, accepted, regressions, inconclusive, novelty, successRate, tokenCost, objectiveMatch, unresolved, exploration"),
-            "description": text("Why this formula should choose better improvement targets"),
+            "expression": text("Domain search arithmetic: attempts, accepted, regressions, inconclusive, novelty, successRate, tokenCost, objectiveMatch, unresolved, exploration"),
+            "targetExpression": text("Optional source discovery arithmetic: pathEvidence, symbolEvidence, summaryEvidence, bodyEvidence, novelty, sourceCost. Can explore beyond lexical matches; must be valid at zero evidence."),
+            "description": text("Why these formulas should discover better improvement targets"),
             "evidence": json!({"type":"array","items":{"type":"string"},"description":"Observed failures or regressions that justify the formula"})
         }), vec!["expression"])),
         tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
@@ -320,6 +321,10 @@ pub async fn execute(
             let name = string_arg(args, "name")
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("rsi-search-expression");
+            let mut parameters=json!({"expression":expression});
+            if let Some(target)=args.get("targetExpression") {
+                parameters["targetExpression"]=target.clone();
+            }
             let record = crate::engine::algorithms::register(
                 ctx.state,
                 &json!({
@@ -327,7 +332,7 @@ pub async fn execute(
                     "name": name,
                     "variant": name,
                     "implementation": "expression",
-                    "parameters": {"expression": expression},
+                    "parameters": parameters,
                     "description": args["description"].as_str().unwrap_or(""),
                     "source": "rsi-generated",
                 }),
@@ -1437,6 +1442,19 @@ mod tests {
             .store
             .get("algorithm", saved["algorithmId"].as_str().unwrap())
             .is_some());
+        let source_policy=json!({"name":"cross-module-research",
+            "expression":"exploration + objectiveMatch",
+            "targetExpression":"novelty + bodyEvidence - sourceCost"});
+        let selection=execute(&ctx,"algorithm_propose",&source_policy,"run").await.unwrap();
+        let saved_policy=state.store.get("algorithm",
+            selection["algorithmId"].as_str().unwrap()).unwrap();
+        assert_eq!(saved_policy["parameters"]["targetExpression"],
+            "novelty + bodyEvidence - sourceCost");
+        let invalid_target=json!({"name":"broken-source-research",
+            "expression":"objectiveMatch",
+            "targetExpression":"1 / pathEvidence"});
+        assert!(execute(&ctx,"algorithm_propose",&invalid_target,"run").await.is_err(),
+            "an invalid zero-evidence expression cannot enter the trial queue");
         let invalid = json!({"expression":"unknownVariable * 2"});
         assert!(execute(&ctx, "algorithm_propose", &invalid, "run").await.is_err());
         let _ = std::fs::remove_dir_all(dir);
