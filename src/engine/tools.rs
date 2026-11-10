@@ -48,13 +48,13 @@ pub fn definitions() -> Vec<Value> {
         tool("memory_store", "Save a grounded memory for this agent. Quote the user's exact words; invented facts are rejected. Shared memories are managed by the user.", object(json!({"text": text("Fact to remember, maximum 1600 characters"), "evidenceQuote": text("Exact quote from the current user message supporting the fact"), "sourceMessageId": text("Optional earlier source message ID"), "type": json!({"type":"string","enum":["fact","preference","decision","procedure","lesson"]}), "key": text("Optional stable fact key; a new value replaces the previous value for this key"), "scope": json!({"type":"string","enum":["agent"]})}), vec!["text", "evidenceQuote"])),
         tool("memory_search", "Find saved knowledge relevant to a topic", object(json!({"query": text("Search query")}), vec!["query"])),
         tool("skill_propose", "Draft a reusable skill for user review", object(json!({"name": text("Skill name"), "instructions": text("Reusable instructions")}), vec!["name", "instructions"])),
-        tool("algorithm_propose", "Propose domain selection and optional source-targeting formulas. Trial is independent and does not activate a proposal.", object(json!({
+        tool("algorithm_propose", "Propose domain selection and/or source-targeting formulas. A target-only proposal inherits the active expression domain selector. Every candidate receives an independent trial; proposals are never activated automatically.", object(json!({
             "name": text("Algorithm name"),
             "expression": text("Domain score over attempts, accepted, regressions, inconclusive, novelty, successRate, usefulGenerations, barrenRate, tokenCost, objectiveMatch, unresolved, exploration"),
             "targetExpression": text("Optional file score over pathEvidence, symbolEvidence, summaryEvidence, bodyEvidence, productiveEvidence, domainEvidence, repeatPenalty, novelty, sourceCost"),
             "description": text("Why this formula should choose better improvement targets"),
             "evidence": json!({"type":"array","items":{"type":"string"},"description":"Observed failures or regressions that justify the formula"})
-        }), vec!["expression"])),
+        }), vec![])),
         tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
@@ -330,7 +330,18 @@ pub async fn execute(
             if !running {
                 return Err("진행 중인 자기개선 캠페인이 없습니다.".into());
             }
-            let expression = required_arg(args, "expression")?;
+            // Evolve the file target score independently without silently
+            // changing the active domain selector. This avoids attributing
+            // a combined two-variable change to either formula.
+            let supplied = string_arg(args, "expression").filter(|s| !s.trim().is_empty());
+            let target_only = string_arg(args, "targetExpression").filter(|s| !s.trim().is_empty());
+            if supplied.is_none() && target_only.is_none() {
+                return Err("expression 또는 targetExpression이 필요합니다.".into());
+            }
+            let active = crate::engine::algorithms::active(ctx.state, "selfimprove.search");
+            let expression = supplied.or_else(|| active.as_ref().and_then(|item|
+                item["parameters"]["expression"].as_str().filter(|s| !s.trim().is_empty())))
+                .ok_or("파일 탐색식만 제안하려면 먼저 실행 가능한 분야 선택식이 활성화되어야 합니다." )?;
             let name = string_arg(args, "name")
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("rsi-search-expression");
@@ -1500,6 +1511,26 @@ mod tests {
         assert_eq!(both["algorithm"]["parameters"]["targetExpression"],
             "pathEvidence * 2 + symbolEvidence - repeatPenalty");
         assert_eq!(both["algorithm"]["status"],"available");
+        // A source-only experiment keeps the active domain score unchanged,
+        // so its paired outcome can be attributed to the targeting change.
+        let baseline=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"active-domain",
+            "implementation":"expression",
+            "parameters":{"expression":"objectiveMatch * 6 + exploration"}
+        })).unwrap();
+        crate::engine::algorithms::activate(&state,
+            baseline["id"].as_str().unwrap()).unwrap();
+        let source_only=execute(&ctx,"algorithm_propose",&json!({
+            "name":"source-only-trial",
+            "targetExpression":"bodyEvidence + productiveEvidence - sourceCost"
+        }),"run").await.unwrap();
+        assert_eq!(source_only["algorithm"]["parameters"]["expression"],
+            "objectiveMatch * 6 + exploration");
+        assert_eq!(source_only["algorithm"]["parameters"]["targetExpression"],
+            "bodyEvidence + productiveEvidence - sourceCost");
+        assert_eq!(source_only["algorithm"]["status"],"available");
+        assert!(execute(&ctx,"algorithm_propose",&json!({}),"run").await.is_err());
+
         assert!(execute(&ctx,"algorithm_propose",&json!({
             "expression":"novelty","targetExpression":"untrusted_system_call"
         }),"run").await.is_err());
