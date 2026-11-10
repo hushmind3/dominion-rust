@@ -4607,6 +4607,102 @@ mod tests {
     }
 
     #[test]
+    fn model_authored_search_formulas_receive_every_advertised_runtime_feature() {
+        let history=vec![
+            json!({"domain":"tools","accepted":false,"newFindings":3,"tokens":1000}),
+            json!({"domain":"tools","accepted":false,"newFindings":0,"tokens":2000})
+        ];
+        let features=search_features(&history,"tools","tools");
+        for key in crate::engine::algorithms::SELFIMPROVE_FEATURES {
+            assert!(features.contains_key(*key),"advertised feature missing: {key}");
+        }
+        assert_eq!(features["usefulGenerations"],1.0);
+        assert_eq!(features["barrenRate"],0.5);
+        let candidate=json!({"implementation":"expression","parameters":{
+            "expression":"usefulGenerations + verifiedOutcomes + holdoutGains + gainPer10kTokens - barrenRate"
+        }});
+        assert!(score_domain(&candidate,&features).is_some(),
+            "a registered model-authored formula must not silently fall back at runtime");
+    }
+
+    #[test]
+    fn original_paired_holdout_gains_change_the_next_improvement_target() {
+        let (state,root)=state();
+        let policy=json!({"implementation":"failure-clusters"});
+        let base="a".repeat(40);
+        let accepted_commit="b".repeat(40);
+        let plan=(0..8).map(|n|json!({"id":format!("case-{n}"),
+            "domain":"tools","holdout":n<3,"metrics":[]}))
+            .collect::<Vec<_>>();
+        let raw=(0..8).map(|n|json!({"id":format!("case-{n}"),
+            "baselinePass":n!=0,"candidatePass":true}))
+            .collect::<Vec<_>>();
+        let metrics=crate::engine::rsi::evaluate_cases(&plan,&raw,"harness").unwrap();
+        assert_eq!(metrics["eligible"],true);
+        let report=json!({"baseCommit":base,"patchSha256":"p".repeat(64),
+            "oracleVersion":"frozen-v1","reportSha256":"e".repeat(64),
+            "baselineBuildOk":true,"candidateBuildOk":true,"cases":raw});
+        let candidate=json!({"id":"tools-verified","status":"verified",
+            "baseCommit":base,"patchSha256":"p".repeat(64),"oracleVersion":"frozen-v1",
+            "target":"harness","cases":plan,
+            "experimentAdoption":{"commit":accepted_commit},
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "evidenceSha256":"e".repeat(64),"metrics":metrics,"verdict":metrics["verdict"]}});
+        state.store.put("rsi_candidate",&candidate).unwrap();
+        state.store.put("rsi_pair",&json!({"id":"rsi-pair-tools-verified",
+            "candidateId":"tools-verified","runner":"local_gitrepo_not_os_sandbox",
+            "evidenceSha256":"e".repeat(64),"report":report,
+            "metrics":metrics,"verdict":metrics["verdict"]})).unwrap();
+        // The older accepted-count heuristic sees both domains as equal
+        // and chooses the first domain, not the one with the actual gain.
+        let history=vec![
+            json!({"domain":"memory","candidateId":"memory-unproven",
+                "accepted":true,"tokens":10000,"generatorCommit":base,
+                "acceptedCommit":accepted_commit}),
+            json!({"domain":"tools","candidateId":"tools-verified",
+                "accepted":true,"tokens":10000,"generatorCommit":base,
+                "acceptedCommit":accepted_commit})
+        ];
+        assert_eq!(select_domain(&policy,&history,"memory tools"),"memory");
+        let verified=history_with_verified_payoffs(&state,&history);
+        assert_eq!(verified[0]["evidenceVerified"],false);
+        assert_eq!(verified[1]["verifiedHoldoutGains"],1);
+        assert_eq!(select_domain(&policy,&verified,"memory tools"),"tools",
+            "replayed verified outcome must guide the next actual domain selection");
+        assert_eq!(select_domain(&policy,&verified,"memory"),"memory",
+            "the user's explicit objective stays authoritative");
+        // A forged generation summary without a matching raw paired receipt
+        // must not earn meta-learning credit.
+        let mut forged=history.clone();
+        forged[0]["evidenceVerified"]=json!(true);
+        forged[0]["verifiedHoldoutGains"]=json!(64);
+        let rechecked=history_with_verified_payoffs(&state,&forged);
+        assert_eq!(rechecked[0]["verifiedHoldoutGains"],0);
+        let mut tampered=state.store.get("rsi_pair","rsi-pair-tools-verified").unwrap();
+        tampered["report"]["cases"][0]["candidatePass"]=json!(false);
+        state.store.put("rsi_pair",&tampered).unwrap();
+        assert_eq!(select_domain(&policy,&history_with_verified_payoffs(&state,&history),
+            "memory tools"),"memory","altered raw evidence cannot steer the search policy");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_generation_changes_the_next_model_experiment_instructions() {
+        let (state,root)=state();
+        state.store.put("rsi_candidate",&json!({"id":"failed-patch",
+            "hypothesis":"과거 가설을 반복해도 성능이 향상될 것이다"}));
+        let record=json!({"history":[{"attempt":1,"domain":"memory",
+            "accepted":false,"candidateId":"failed-patch",
+            "evaluation":{"verdict":"regressed"},"error":"baseline 대비 품질 하락"}]});
+        let prompt=generation_context(&state,&json!({
+            "rsiTargetDomain":"memory","rsiObjective":"기억 성능 개선"}),&record);
+        assert!(prompt.contains("실패를 반영한 다음 개선 실험"),"{prompt}");
+        assert!(prompt.contains("과거 가설을 반복해도 성능이 향상될 것이다"),"{prompt}");
+        assert!(prompt.contains("수정 범위·가설·기대하는 작업 성능 지표를 바꾼 실험"),"{prompt}");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn search_selection_follows_the_user_goal_before_unrelated_domains() {
         let baseline = json!({"implementation":"failure-clusters","parameters":{}});
         assert_eq!(select_domain(&baseline, &[], "improver"), "improver");
