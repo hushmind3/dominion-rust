@@ -21,7 +21,23 @@ fn sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// Frozen measurement implementations are kept out of RSI source discovery.
+/// The evaluator runs them separately, so the agent may improve the harness
+/// without learning the answers it will be judged against.
+pub(crate) fn sealed_measurement_path(path:&str)->bool {
+    let normalized=path.replace('\\',"/");
+    let normalized=normalized.trim_start_matches("./");
+    [
+        "src/engine/rsi_oracle_fixture.rs",
+        "src/engine/rsi_metrics.rs",
+        "scripts/rsi-measure.mjs",
+        "tests/fixtures/rsi-generation-worker.rs",
+    ].into_iter().any(|sealed|
+        normalized==sealed || normalized.ends_with(&format!("/{sealed}")))
+}
+
 pub(crate) fn safe_path(path: &str) -> bool {
+    !sealed_measurement_path(path)
     !path.contains('\\')
         && !path.starts_with('/')
         && !path.split('/').any(|part|part.is_empty() || part.starts_with('.'))
@@ -547,6 +563,23 @@ mod tests {
             "baselineBuildOk":true,"candidateBuildOk":true,
             "cases":(0..8).map(|i|json!({"id":format!("case-{i}"),"baselinePass":i!=0,"candidatePass":true})).collect::<Vec<_>>()})
     }
+    #[test]
+    fn frozen_measurement_sources_cannot_be_improvement_targets() {
+        for sealed in [
+            "src/engine/rsi_oracle_fixture.rs",
+            "src/engine/rsi_metrics.rs",
+            "scripts/rsi-measure.mjs",
+            "tests/fixtures/rsi-generation-worker.rs"
+        ] {
+            assert!(sealed_measurement_path(sealed),"{sealed}");
+            assert!(sealed_measurement_path(&format!("/tmp/lab/{sealed}")));
+            assert!(!safe_path(sealed),"{sealed}");
+        }
+        assert!(!sealed_measurement_path("src/engine/rsi_evolve.rs"));
+        assert!(safe_path("src/engine/rsi_evolve.rs"),
+            "the improver implementation itself remains evolvable");
+    }
+
     #[test]
     fn three_accepted_patches_do_not_prove_recursive_growth_without_meta_transfer() {
         let (state,root)=state();
