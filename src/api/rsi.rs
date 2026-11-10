@@ -16,25 +16,21 @@ fn accepted_streak(record: &Value) -> (u64, u64) {
         if generation["accepted"] == true {
             streak += 1;
             max = max.max(streak);
-        } else if generation["evaluation"].is_object() {
+        } else {
+            // Research-only and failed attempts interrupt a consecutive run.
             streak = 0;
         }
     }
     (streak, max)
 }
 
-fn apply_capability(record: &mut Value) {
-    let (streak, max) = if record["maxAcceptedStreak"].is_u64() {
-        (
-            record["acceptedStreak"].as_u64().unwrap_or(0),
-            record["maxAcceptedStreak"].as_u64().unwrap_or(0),
-        )
-    } else {
-        accepted_streak(record)
-    };
+fn apply_capability(state: &AppState, record: &mut Value) {
+    let (streak, measured_max) = accepted_streak(record);
+    let max = measured_max.max(record["maxAcceptedStreak"].as_u64().unwrap_or(0));
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
-    record["capabilityDemonstrated"] = json!(max >= 3);
+    record["capabilityDemonstrated"] = json!(max>=3
+        && engine::campaign_capability_proven(state,record));
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
@@ -154,7 +150,7 @@ pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Respo
         record[field]=job["input"][key].clone();
     }
     record["selectedVersionRunning"]=json!(record["headCommit"].as_str()==option_env!("DOMINION_BUILD_COMMIT"));
-    apply_capability(&mut record);
+    apply_capability(&state, &mut record);
     if record["phase"]=="diagnosing_and_editing" {
         if let Some(session)=record["activeGenerationJobId"].as_str().and_then(|id|state.store.get("job",id))
             .and_then(|j|j["sessionId"].as_str().map(str::to_string)) {
@@ -172,9 +168,11 @@ pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Respo
 pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
     let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|record|{
         let job=record["id"].as_str().and_then(|id|state.store.get("job",id)).unwrap_or(Value::Null);
-        let (_,max_streak)=accepted_streak(&record);
+        let mut verified = record.clone();
+        apply_capability(&state,&mut verified);
         json!({"id":record["id"],"phase":record["phase"],
-            "maxAcceptedStreak":max_streak,"capabilityDemonstrated":max_streak>=3,
+            "maxAcceptedStreak":verified["maxAcceptedStreak"],
+            "capabilityDemonstrated":verified["capabilityDemonstrated"],
             "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
     }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
@@ -554,16 +552,15 @@ mod capability_tests {
             {"accepted":true,"evaluation":{}}
         ]});
         assert_eq!(accepted_streak(&partial), (1, 2));
-        let mut derived = partial.clone();
-        apply_capability(&mut derived);
-        assert_eq!(derived["capabilityDemonstrated"], false);
-
         let full = json!({"history":[
             {"accepted":true},{"accepted":true},{"accepted":true}
         ]});
-        let mut derived = full.clone();
-        apply_capability(&mut derived);
-        assert_eq!(derived["maxAcceptedStreak"], 3);
-        assert_eq!(derived["capabilityDemonstrated"], true);
+        assert_eq!(accepted_streak(&full),(3,3));
+        let research_break = json!({"history":[
+            {"accepted":true},{"accepted":false},{"accepted":true}
+        ]});
+        assert_eq!(accepted_streak(&research_break),(1,1));
+        // Three boolean flags only measure a streak; the independent lineage
+        // oracle is enforced by apply_capability and tested in engine::rsi.
     }
 }
