@@ -1,10 +1,29 @@
-import {useEffect,useState} from 'react'
+import {createContext,useContext,useEffect,useState,type ReactNode} from 'react'
 import {Check,ImagePlus,LoaderCircle,Pencil,UserRound,X} from 'lucide-react'
-import {post} from '../api'
+import {get,post} from '../api'
 import {Button,TextInput} from './Primitives'
 
 export type OwnerProfile={id?:string;name:string;avatar:string;updatedAt?:string|null}
 export const defaultOwnerProfile:OwnerProfile={name:'나',avatar:''}
+
+type OwnerProfileState={profile:OwnerProfile;setProfile:(profile:OwnerProfile)=>void}
+const OwnerProfileContext=createContext<OwnerProfileState>({
+ profile:defaultOwnerProfile,setProfile:()=>{}
+})
+export const useOwnerProfile=()=>useContext(OwnerProfileContext)
+export function OwnerProfileProvider({children}:{children:ReactNode}){
+ const [profile,setProfile]=useState<OwnerProfile>(defaultOwnerProfile)
+ useEffect(()=>{
+  let live=true
+  const load=()=>{void get<OwnerProfile>('/api/settings/owner-profile')
+   .then(value=>{if(live)setProfile(value)}).catch(()=>{})}
+  load()
+  const onFocus=()=>{if(document.visibilityState==='visible')load()}
+  window.addEventListener('focus',onFocus)
+  return()=>{live=false;window.removeEventListener('focus',onFocus)}
+ },[])
+ return <OwnerProfileContext.Provider value={{profile,setProfile}}>{children}</OwnerProfileContext.Provider>
+}
 
 /** One owner identity, shared by the workspace, chats and multi-agent rooms. */
 export function OwnerAvatar({profile,size='normal',className=''}:{profile:OwnerProfile;size?:'small'|'normal';className?:string}){
@@ -13,7 +32,8 @@ export function OwnerAvatar({profile,size='normal',className=''}:{profile:OwnerP
  </span>
 }
 
-export function OwnerProfileEditor({profile,onSaved}:{profile:OwnerProfile;onSaved:(profile:OwnerProfile)=>void}){
+export function OwnerProfileEditor(){
+ const {profile,setProfile}=useOwnerProfile()
  const [open,setOpen]=useState(false),[name,setName]=useState(profile.name),[avatar,setAvatar]=useState(profile.avatar)
  const [working,setWorking]=useState(false),[error,setError]=useState('')
  useEffect(()=>{if(!open){setName(profile.name);setAvatar(profile.avatar)}},[profile,open])
@@ -23,7 +43,7 @@ export function OwnerProfileEditor({profile,onSaved}:{profile:OwnerProfile;onSav
   setWorking(true);setError('')
   try{
    const next=await post<OwnerProfile>('/api/settings/owner-profile',{name:name.trim(),avatar})
-   onSaved(next);close()
+   setProfile(next);close()
   }catch(e){setError((e as Error).message)}finally{setWorking(false)}
  }
  const upload=(file?:File)=>{
