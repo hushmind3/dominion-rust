@@ -862,6 +862,26 @@ fn verified_candidate_id(result: &Value) -> Option<&str> {
         .filter(|_| result["rsi"]["checksPassed"] == true)
 }
 
+/// Only reuse another campaign's source-specific observations when its
+/// selected generator is the exact ancestor resumed by this campaign.
+/// A matching goal name alone is not proof that source ranges or paired results
+/// still apply to the current revision.
+fn matching_prior_campaign(state:&AppState,input:&Value,record:&Value)->Option<Value> {
+    if record["lineage"]["reused"]!=true {return None;}
+    let prior_id=input["rsiContinueFrom"].as_str()?;
+    let prior=state.store.get("rsi_campaign",prior_id)?;
+    let selected=record["lineage"]["selectedCommit"].as_str()?;
+    if prior["headCommit"].as_str()!=Some(selected)
+        || record["sourceDir"]!=prior["sourceDir"]
+        || record["sourceBranch"]!=prior["sourceBranch"]
+        || record["baseCommit"]!=prior["baseCommit"]
+        || record["sourceFingerprint"]!=prior["sourceFingerprint"]
+        || !lineage_fingerprint_valid(record["sourceFingerprint"].as_str().unwrap_or("")) {
+        return None;
+    }
+    Some(prior)
+}
+
 /// Collect the exact files, ranges and searches earlier generations already
 /// looked at. Without this, every generation starts from scratch and burns
 /// tokens re-reading the same source.
@@ -871,10 +891,8 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
     let executions = state.store.all("execution");
     let operations = state.store.all("execution_operation");
     let mut generations = Vec::new();
-    if let Some(prior_id) = input["rsiContinueFrom"].as_str() {
-        if let Some(prior) = state.store.get("rsi_campaign", prior_id) {
-            generations.extend(prior["history"].as_array().cloned().unwrap_or_default());
-        }
+    if let Some(prior)=matching_prior_campaign(state,input,record) {
+        generations.extend(prior["history"].as_array().cloned().unwrap_or_default());
     }
     generations.extend(record["history"].as_array().cloned().unwrap_or_default());
     for generation in generations {
@@ -1015,7 +1033,10 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
         text.push_str(&block);
         text.push('\n');
     }
-    if let Some(history) = record["history"].as_array() {
+    let mut history=matching_prior_campaign(state,input,record)
+        .and_then(|prior|prior["history"].as_array().cloned()).unwrap_or_default();
+    history.extend(record["history"].as_array().cloned().unwrap_or_default());
+    {
         let recent = history.iter().rev().take(2).collect::<Vec<_>>();
         if !recent.is_empty() {
             text.push_str("\n### 이전 시도의 실제 결과\n");
@@ -2846,10 +2867,20 @@ mod tests {
         assert!(text.contains("src/engine/memory.rs 10-20"));
         assert!(text.contains("다시 읽지 마세요"));
         assert_eq!(research_digest(&state, &json!({}), &json!({"history":[]})), "");
-        // A continuation must also see the previous campaign's reads.
-        state.store.put("rsi_campaign", &json!({"id":"digest-prior","history":[{"jobId":"digest-job"}]}));
-        let continued = research_digest(&state, &json!({"rsiContinueFrom":"digest-prior"}), &json!({"history":[]}));
+        // Only the verified selected lineage may inherit source-specific reads.
+        let source="a".repeat(40);let fingerprint="b".repeat(64);
+        state.store.put("rsi_campaign", &json!({"id":"digest-prior","history":[{"jobId":"digest-job"}],
+            "sourceDir":"/source","sourceBranch":"dominion-sub4","baseCommit":source,
+            "headCommit":"c".repeat(40),"sourceFingerprint":fingerprint}));
+        let record=json!({"history":[],"sourceDir":"/source","sourceBranch":"dominion-sub4",
+            "baseCommit":source,"sourceFingerprint":fingerprint,
+            "lineage":{"reused":true,"selectedCommit":"c".repeat(40)}});
+        let continued = research_digest(&state, &json!({"rsiContinueFrom":"digest-prior"}), &record);
         assert!(continued.contains("src/engine/memory.rs 10-20"));
+        let mut sibling=record.clone();
+        sibling["sourceBranch"]=json!("dominion-sub3");
+        assert_eq!(research_digest(&state,&json!({"rsiContinueFrom":"digest-prior"}),&sibling),"",
+            "another team's read ledger must not be inherited");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2946,6 +2977,36 @@ mod tests {
         assert!(text.contains("\"memory-quality\""), "case-level paired evidence should be preserved: {text}");
         assert!(!text.contains("\"calls\""),"tool frequency is not an inherited implementation: {text}");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn continued_generator_receives_prior_paired_evidence_not_sibling_claims() {
+        let (state,root)=state();
+        let base="a".repeat(40);let adopted="c".repeat(40);let fingerprint="f".repeat(64);
+        state.store.put("rsi_candidate",&json!({"id":"prior-patch",
+            "hypothesis":"채택된 개선기는 먼저 실패 경계를 검사한다.",
+            "paths":["src/engine/rsi.rs"]})).unwrap();
+        state.store.put("rsi_campaign",&json!({"id":"prior","history":[{
+            "attempt":3,"candidateId":"prior-patch","accepted":true,
+            "acceptedCommit":adopted,
+            "evaluation":{"verdict":"improved","metrics":{"gains":1,"improvedHoldouts":1,"regressions":0,
+                "measurements":[{"id":"holdout-memory","metrics":[{"key":"quality","improved":true}]}]}}
+        }],
+            "sourceDir":"/source","sourceBranch":"dominion-sub4","baseCommit":base,
+            "headCommit":adopted,"sourceFingerprint":fingerprint})).unwrap();
+        let record=json!({"history":[],"sourceDir":"/source","sourceBranch":"dominion-sub4",
+            "baseCommit":base,"sourceFingerprint":fingerprint,
+            "lineage":{"reused":true,"selectedCommit":adopted}});
+        let prompt=generation_context(&state,&json!({"rsiContinueFrom":"prior"}),&record);
+        assert!(prompt.contains("채택된 개선기는 먼저 실패 경계를 검사한다."));
+        assert!(prompt.contains("holdout-memory"));
+        assert!(prompt.contains("improvedHoldouts"));
+        let mut unrelated=record.clone();
+        unrelated["sourceBranch"]=json!("dominion-sub2");
+        let blocked=generation_context(&state,&json!({"rsiContinueFrom":"prior"}),&unrelated);
+        assert!(!blocked.contains("holdout-memory"),
+            "other Sub's evaluation must never become this model's evidence");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
