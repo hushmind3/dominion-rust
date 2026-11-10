@@ -740,7 +740,10 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
         .ok_or("A/B 평가 후보 갱신에 실패했습니다.")?;
     state.store.put("rsi_evaluation",&updated["evaluation"]);
     let receipt=json!({
-        "id":format!("rsi-pair-{}",context.job_id),
+        // A campaign can run multiple candidate comparisons. The old
+        // job-scoped receipt ID overwrote earlier generations' original
+        // paired results and made later lineage verification impossible.
+        "id":format!("rsi-pair-{}-{}",id,updated["evaluation"]["id"].as_str().unwrap_or("")),
         "candidateId":id,"jobId":context.job_id,
         "evaluationId":updated["evaluation"]["id"],
         "report":report,"verdict":verdict,"metrics":metrics,
