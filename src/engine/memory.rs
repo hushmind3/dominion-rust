@@ -378,9 +378,54 @@ fn retrieve_ranked_with_rerank(
     let query_terms = terms(query);
     let compact_query = normalize(query);
     let mut cache = RecallCache::default();
-    let mut records = store.all("memory").into_iter()
+    let all_records = store.all("memory");
+    let mut records = all_records.iter()
         .filter(|record| recallable_cached(store, record, scope, &mut cache))
+        .cloned()
         .collect::<Vec<_>>();
+    // Compression archives evidence without deleting it. A summary may omit
+    // the one term the owner later asks for; reopen only archived originals
+    // whose own evidence matches BETTER than the currently visible summary.
+    // The active summary must authorize access, and every original must pass
+    // the same visibility/provenance checks after a temporary lifecycle override.
+    let summaries = records.iter()
+        .filter(|record| record["source"] == "compression"
+            && record["status"] == "active")
+        .filter_map(|record| record["id"].as_str().map(|id| (id.to_string(), record.clone())))
+        .collect::<HashMap<_, _>>();
+    let mut restored = 0usize;
+    for original in &all_records {
+        if restored >= MAX_RETRIEVAL_CANDIDATES || query_terms.is_empty()
+            || original["status"] != "archived"
+            || original["archiveReason"] != "extractive compression; original evidence preserved"
+        { continue; }
+        let Some(parent_id) = original["compressedInto"].as_str() else { continue; };
+        let Some(summary) = summaries.get(parent_id) else { continue; };
+        if !summary["compressedFrom"].as_array()
+            .is_some_and(|ids| ids.contains(&original["id"]))
+        { continue; }
+        if !["scope", "partitionKey", "agentId", "sessionId", "sourceAuthorKey", "type"]
+            .iter().all(|key| original[*key] == summary[*key])
+        { continue; }
+        let original_text = original["text"].as_str().unwrap_or("");
+        let original_terms = terms(original_text);
+        let summary_terms = terms(summary["text"].as_str().unwrap_or(""));
+        if query_terms.intersection(&original_terms).count()
+            <= query_terms.intersection(&summary_terms).count()
+        { continue; }
+        let mut eligibility_check = original.clone();
+        eligibility_check["status"] = json!("active");
+        if !recallable_cached(store, &eligibility_check, scope, &mut cache) {
+            continue;
+        }
+        // Return the original archived identity and evidence, not a fabricated
+        // new memory or a durable status change. The selection manifest can
+        // now attribute this recall to the actual source.
+        let mut recovered = original.clone();
+        recovered["retrievalSource"] = json!("compressed_archive");
+        records.push(recovered);
+        restored += 1;
+    }
     records.sort_by(|a, b| {
         b.get("learnedAt")
             .unwrap_or(&b["createdAt"])
