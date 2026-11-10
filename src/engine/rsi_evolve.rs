@@ -4776,6 +4776,35 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_trial_cannot_be_claimed_by_sibling_campaign() {
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let first=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"first-owned",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"objectiveMatch + novelty"}
+        })).unwrap();
+        let second=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"second-owned",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"objectiveMatch + exploration"}
+        })).unwrap();
+        assert_eq!(queue_search_trial(&state,&first,&active,&[],"context","campaign-a",1)["status"],"pending_trial");
+        assert_eq!(queue_search_trial(&state,&second,&active,&[],"context","campaign-b",1)["status"],"pending_trial");
+        assert_eq!(pending_trial_candidate(&state,"context",&["campaign-a".into()]).unwrap()["id"],first["id"]);
+        assert_eq!(pending_trial_candidate(&state,"context",&["campaign-b".into()]).unwrap()["id"],second["id"]);
+        assert!(pending_trial_candidate(&state,"context",&["unknown".into()]).is_none());
+        // Requeue the old in-memory object: ownership must be checked against
+        // the latest stored copy, not overwritten by a stale proposal.
+        let duplicate=queue_search_trial(&state,&first,&active,&[],"context","campaign-b",2);
+        assert_eq!(duplicate["status"],"owned_by_other_campaign");
+        assert_eq!(duplicate["ownerCampaignId"],"campaign-a");
+        assert_eq!(state.store.get("algorithm",first["id"].as_str().unwrap()).unwrap()
+            ["rsiTrial"]["campaignId"],"campaign-a");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn pending_trial_candidate_survives_for_a_later_scheduled_generation() {
         let (state, root) = state();
         let active = crate::engine::algorithms::active(&state, "selfimprove.search").unwrap();
@@ -4791,12 +4820,12 @@ mod tests {
         .unwrap();
         queue_search_trial(&state, &candidate, &active, &[], "context", "campaign", 1);
         assert_eq!(
-            pending_trial_candidate(&state, "context").unwrap()["id"],
+            pending_trial_candidate(&state, "context", &["campaign".into()]).unwrap()["id"],
             candidate["id"],
             "a pending candidate is reused by a later scheduled generation"
         );
         assert!(
-            pending_trial_candidate(&state, "a different objective").is_none(),
+            pending_trial_candidate(&state, "a different objective", &["campaign".into()]).is_none(),
             "a pending candidate is scoped to its objective"
         );
         let _ = std::fs::remove_dir_all(root);
