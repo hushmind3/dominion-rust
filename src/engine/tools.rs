@@ -249,11 +249,13 @@ pub async fn execute(
         }
         "browser_control" => {
             let action = required_arg(args, "action")?;
-            crate::engine::browser::execute(
+            crate::engine::browser::execute_for_actor(
                 &action,
                 args,
                 &ctx.state.config.data_dir,
                 ctx.workspace,
+                ctx.session_id,
+                ctx.agent_id,
             )
             .await
         }
