@@ -3,8 +3,8 @@ export type TargetCandidate={
  path:string
  score?:number
  scoring?:string
- evidence?:{path?:number;symbols?:number;summary?:number;domain?:number;
-  priorUnproductive?:number;sourceCost?:number}
+ evidence?:{path?:number;symbols?:number;summary?:number;body?:number;domain?:number;
+  priorUnproductive?:number;priorProductive?:number;sourceCost?:number}
  policyError?:string
 }
 export type RsiTargetSelection={
@@ -25,6 +25,8 @@ export function RsiTargetEvidence({selection}:{selection?:RsiTargetSelection}){
    <p className="break-all font-medium text-[#40392F]">{item.path}</p>
    <p className="mt-0.5 text-[#7C7469]">파일명·함수·설명 일치 기반
     {item.evidence?.priorUnproductive?' · 이전 무성과 '+item.evidence.priorUnproductive+'회 반영':''}
+    {item.evidence?.priorProductive?' · 검증된 성공 '+item.evidence.priorProductive+'회 반영':''}
+    {item.evidence?.body?' · 코드 본문 근거 '+item.evidence.body.toFixed(2):''}
     {item.scoring==='expression'?' · 실험용 계산식 적용':''}
    </p>
    {item.policyError&&<p className="mt-0.5 text-[#A94E30]">계산식 오류로 기본 탐색 사용: {item.policyError}</p>}

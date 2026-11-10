@@ -12,6 +12,9 @@ const MODEL_KIND: &str = "model_job";
 const EXTERNAL_KIND: &str = "external_model";
 pub static RUNTIME_CHANGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static DOWNLOAD_COMMIT: Mutex<()> = Mutex::new(());
+// Serialize the file ownership check and job registration. Per-job locks alone
+// do not protect two jobs that target the same on-disk model file.
+static DOWNLOAD_REGISTRATION: Mutex<()> = Mutex::new(());
 static ACTIVE_DOWNLOADS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
 
 fn active_downloads() -> &'static Mutex<std::collections::HashSet<String>> {
@@ -2237,6 +2240,8 @@ pub fn start_download_at_revision(
     if option.is_empty() {
         return Err("다운로드할 배포 형식을 선택하세요.".into());
     }
+    let _registration = DOWNLOAD_REGISTRATION.lock()
+        .map_err(|_|"모델 다운로드 등록 잠금을 획득하지 못했습니다.".to_string())?;
     for existing in state.store.all(MODEL_KIND) {
         if existing["repo"].as_str() == Some(repo.as_str())
             && existing["optionId"].as_str() == Some(option.as_str())
@@ -2266,6 +2271,23 @@ pub fn start_download_at_revision(
         validated_gguf_files(&option, requested_files)?
     };
     let dir = target_root(&state, format, &repo);
+    let targets = files.iter().map(|path|dir.join(path))
+        .collect::<std::collections::HashSet<_>>();
+    for existing in state.store.all(MODEL_KIND) {
+        if !matches!(existing["status"].as_str(),Some("downloading" | "paused")) {
+            continue;
+        }
+        let Some(previous_dir)=existing["targetDir"].as_str() else {continue};
+        if previous_dir.is_empty(){continue;}
+        let previous_dir=Path::new(previous_dir);
+        let overlapping=existing["files"].as_array().into_iter().flatten()
+            .filter_map(|file|file["path"].as_str())
+            .filter(|path|safe_relative(path))
+            .any(|path|targets.contains(&previous_dir.join(path)));
+        if overlapping {
+            return Err("동일한 대상 파일을 사용하는 다른 모델 다운로드가 진행 중입니다. 기존 작업을 먼저 완료하거나 취소하세요.".into());
+        }
+    }
     let mut total = 0u64;
     let mut entries = Vec::new();
     for path in &files {
@@ -3097,6 +3119,25 @@ mod tests {
             "gguf".into(), Vec::new(), Some("bad/revision")
         ).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn different_mlx_options_cannot_write_the_same_snapshot_files() {
+        let (state,dir)=temp_state();
+        let target=target_root(&state,"mlx","owner/model");
+        state.store.put(MODEL_KIND,&json!({
+            "repo":"owner/model","optionId":"separate-selection",
+            "revision":"a".repeat(40),"format":"mlx","status":"paused",
+            "targetDir":target.to_string_lossy(),
+            "files":[{"path":"config.json"},{"path":"model.safetensors"}]
+        }));
+        let requested="b".repeat(40);
+        let error=start_download_at_revision(state,"owner/model".into(),
+            "different-selection".into(),"mlx".into(),
+            vec!["config.json".into(),"model.safetensors".into()],
+            Some(&requested)).unwrap_err();
+        assert!(error.contains("동일한 대상 파일"),"{error}");
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -229,6 +229,9 @@ fn classify(patch:&str)->&'static str {
             || line.contains("src/engine/rsi_worktree.rs ")
             || line.contains("src/engine/rsi_evolve.rs ")
             || line.contains("src/engine/rsi_metrics.rs ")
+            || line.contains("src/engine/algorithms.rs ")
+            || line.contains("src/engine/algorithm_eval.rs ")
+            || line.contains("src/engine/policy_patch.rs ")
             || line.contains("src/api/rsi.rs "))) {
         "improver"
     } else if patch.lines().filter(|line|line.starts_with("diff --git "))
@@ -876,6 +879,11 @@ mod tests {
         assert_eq!(classify("diff --git a/src/engine/rsi.rs b/src/engine/rsi.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/api/rsi.rs b/src/api/rsi.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/engine/rsi_evolve.rs b/src/engine/rsi_evolve.rs\n"),"improver");
+        for path in ["src/engine/algorithms.rs","src/engine/algorithm_eval.rs",
+            "src/engine/policy_patch.rs"] {
+            assert_eq!(classify(&format!("diff --git a/{path} b/{path}\n")),
+                "improver","{path} must be eligible for meta evaluation");
+        }
         assert_eq!(classify("diff --git a/src/engine/room_state.rs b/src/engine/room_state.rs\n"),"algorithm");
         assert_eq!(classify("diff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\n"),"harness");
     }

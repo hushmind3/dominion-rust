@@ -191,6 +191,7 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     let mut holdouts = 0usize;
     let mut improved_holdouts = 0usize;
     let mut holdout_domains = BTreeSet::new();
+    let mut improved_holdout_domains = BTreeSet::new();
     let mut metric_gains = 0;
     let mut metric_losses = 0;
     let mut measurements = Vec::new();
@@ -224,11 +225,18 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
             meta_gains += mg;
             if planned["holdout"] == true {meta_holdout_gains += mg;}
         }
-        measurements.push(json!({"id":id,"metrics":detail}));
+        measurements.push(json!({"id":id,"domain":planned["domain"],
+            "holdout":planned["holdout"],"baselinePass":before,"candidatePass":after,
+            "metrics":detail}));
         if planned["holdout"] == true {
             holdouts += 1;
             holdout_domains.insert(planned["domain"].as_str().unwrap_or("").to_string());
-            if (!before && after) || mg > 0 { improved_holdouts += 1; }
+            if (!before && after) || mg > 0 {
+                improved_holdouts += 1;
+                if let Some(domain)=planned["domain"].as_str(){
+                    improved_holdout_domains.insert(domain.to_string());
+                }
+            }
         }
     }
     let ready = plan.len() >= MIN_PAIRED_CASES
@@ -244,6 +252,7 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     Ok(json!({
         "pairedCases":plan.len(),"holdoutCases":holdouts,
         "holdoutDomains":holdout_domains.into_iter().collect::<Vec<_>>(),
+        "improvedHoldoutDomains":improved_holdout_domains.into_iter().collect::<Vec<_>>(),
         "baselineSuccesses":baseline_successes,"candidateSuccesses":candidate_successes,
         "gains":gains,"regressions":losses+metric_losses,"improvedHoldouts":improved_holdouts,
         "metricGains":metric_gains,"metricRegressions":metric_losses,
@@ -378,7 +387,9 @@ pub fn confirm_deployment(
 /// verified cross-domain gain from the newly compiled descendant generator.
 /// A three-generation chain without independent evidence is not capability.
 pub fn capability_proven(state:&AppState, history:&[Value])->bool {
-    let mut chain:Vec<(String,bool,bool)>=Vec::new();
+    // Every transfer must be grounded in the domains of improved frozen cases.
+    // Merely labelling the next patch as "harness" is not cross-domain evidence.
+    let mut chain:Vec<(String,bool,String,BTreeSet<String>)>=Vec::new();
     for generation in history {
         if generation["accepted"]!=true {
             // A research-only or failed generation also interrupts a
@@ -409,15 +420,25 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
             && candidate["experimentAdoption"]["commit"]==generation["acceptedCommit"]
             && candidate["baseCommit"]==generation["generatorCommit"];
         if !verified {chain.clear();continue;}
-        if chain.last().is_some_and(|(prior,_,_)|prior!=generator) {chain.clear();}
+        if chain.last().is_some_and(|(prior,_,_,_)|prior!=generator) {chain.clear();}
+        // Domains are frozen in the evaluation plan and earned only by paired
+        // baseline/candidate holdout measurements, not inferred from target labels.
+        let improved_domains=evaluation["metrics"]["improvedHoldoutDomains"]
+            .as_array().into_iter().flatten()
+            .filter_map(Value::as_str).map(str::to_string)
+            .collect::<BTreeSet<_>>();
         let meta=candidate["target"]=="improver"
-            && evaluation["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0;
-        let cross_domain=candidate["target"]!="improver";
-        chain.push((commit.to_string(),meta,cross_domain));
-        // A meta improvement needs evidence of changed successor behavior.
+            && evaluation["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0
+            && improved_domains.contains("improver");
+        let target=candidate["target"].as_str().unwrap_or("").to_string();
+        chain.push((commit.to_string(),meta,target,improved_domains));
+        // Prove a distinct, newly improved frozen domain after the meta gain.
+        // Improving memory twice cannot masquerade as transfer to planning.
         if chain.len()>=3 && chain.windows(3).any(|window|
-            window.iter().enumerate().any(|(index,(_,meta,_))|
-                *meta && window[index+1..].iter().any(|(_,_,cross)|*cross))) {
+            window.iter().enumerate().any(|(index,(_,meta,_,meta_domains))|
+                *meta && window[index+1..].iter().any(|(_,_,target,domains)|
+                    target!="improver" && domains.iter().any(|domain|
+                        domain!="improver" && !meta_domains.contains(domain))))) {
             return true;
         }
     }
@@ -512,12 +533,28 @@ mod tests {
                 "evaluation":{"id":evaluation_id,"source":"server_invoked_local_paired_git_worktrees",
                     "evidenceSha256":"a".repeat(64),
                     "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":1,
-                        "metaHoldoutGains":if i==0{1}else{0}}}}));
+                        "metaHoldoutGains":if i==0{1}else{0},
+                        "improvedHoldoutDomains":if i==0 {json!(["improver","memory"])}
+                            else if i==1 {json!(["memory"])} else {json!(["planning"])}}}}));
             history.push(json!({"accepted":true,"candidateId":id,
                 "generatorCommit":revisions[i],"acceptedCommit":revisions[i+1],
                 "evaluation":{"evidenceSha256":"a".repeat(64)}}));
         }
         assert!(capability_proven(&state,&history),"validated meta improvement followed by verified transfer");
+        // A later patch in the same previously improved domain is not transfer.
+        let mut same_domain=state.store.get("rsi_candidate","proof-2").unwrap();
+        same_domain["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
+        state.store.put("rsi_candidate",&same_domain);
+        assert!(!capability_proven(&state,&history),"same-domain replay cannot prove transfer");
+        same_domain["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["planning"]);
+        state.store.put("rsi_candidate",&same_domain);
+        // Missing domain receipts are not retroactively accepted as proof.
+        let mut missing_domains=state.store.get("rsi_candidate","proof-2").unwrap();
+        missing_domains["evaluation"]["metrics"].as_object_mut().unwrap()
+            .remove("improvedHoldoutDomains");
+        state.store.put("rsi_candidate",&missing_domains);
+        assert!(!capability_proven(&state,&history));
+        state.store.put("rsi_candidate",&same_domain);
         let mut interrupted=history.clone();
         interrupted.insert(1,json!({"accepted":false,"reason":"research_only"}));
         assert!(!capability_proven(&state,&interrupted),
