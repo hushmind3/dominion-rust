@@ -741,15 +741,22 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     state.store.put("rsi_candidate",&updated)
         .ok_or("A/B 평가 후보 갱신에 실패했습니다.")?;
     state.store.put("rsi_evaluation",&updated["evaluation"]);
+    // Each frozen evaluation has its own permanent receipt. A campaign may
+    // compare multiple revisions, and retrying inconclusive candidates must
+    // never destroy earlier evidence.
+    let evaluation_id=updated["evaluation"]["id"].as_str()
+        .ok_or("독립 A/B 평가 식별자가 없습니다.")?;
     let receipt=json!({
-        "id":format!("rsi-pair-{}",context.job_id),
+        "id":format!("rsi-pair-{evaluation_id}"),
+        "evaluationId":evaluation_id,
         "candidateId":id,"jobId":context.job_id,
         "report":report,"verdict":verdict,"metrics":metrics,
         "evidenceSha256":evidence_sha,
         "runner":"local_gitrepo_not_os_sandbox",
         "createdAt":chrono::Utc::now().to_rfc3339()
     });
-    state.store.put("rsi_pair",&receipt);
+    state.store.put("rsi_pair",&receipt)
+        .ok_or("독립 비교 증거를 영구 저장하지 못했습니다.")?;
     let origin_id=format!("rsi-run-{}",candidate["rsiJobId"].as_str().unwrap_or(""));
     if let Some(mut origin)=state.store.get("rsi_run",&origin_id) {
         origin["paired"]=json!({"verdict":verdict,"metrics":metrics,

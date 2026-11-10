@@ -1011,9 +1011,22 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
             text.push_str("\n### 이전 시도의 실제 결과\n");
             for generation in recent.into_iter().rev() {
                 let candidate=generation["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id));
+                let measured=&generation["evaluation"]["metrics"];
+                // Feed the next generator the independent paired outcome,
+                // not a vague "success" label or its own self-reported grade.
+                // Include bounded case-level differences, enough to learn
+                // from regressions without stuffing the entire report.
+                let changed_cases=measured["measurements"].as_array()
+                    .into_iter().flatten().filter(|row|
+                        row["metrics"].as_array().is_some_and(|metrics|
+                            metrics.iter().any(|m|m["improved"]==true||m["regressed"]==true)))
+                    .take(3).cloned().collect::<Vec<_>>();
                 let evidence=json!({"accepted":generation["accepted"],"commit":generation["acceptedCommit"],
                     "hypothesis":candidate.as_ref().map(|c|&c["hypothesis"]),"paths":candidate.as_ref().map(|c|&c["paths"]),
-                    "verdict":generation["evaluation"]["verdict"],"error":generation["error"]});
+                    "verdict":generation["evaluation"]["verdict"],"error":generation["error"],
+                    "pairedGains":measured["gains"],"improvedHoldouts":measured["improvedHoldouts"],
+                    "regressions":measured["regressions"],"metricGains":measured["metricGains"],
+                    "metricRegressions":measured["metricRegressions"],"changedCases":changed_cases});
                 text.push_str(&format!("- {}세대: {}\n",generation["attempt"],
                     evidence.to_string().chars().take(1800).collect::<String>()));
             }
@@ -2791,6 +2804,9 @@ mod tests {
         state.store.put("rsi_candidate",&json!({"id":"candidate","hypothesis":"검증된 검색 전략과 적용 조건","paths":["src/engine/memory.rs"]}));
         let record = json!({"history":[{
             "attempt":1,"accepted":true,"acceptedCommit":"accepted-source-revision","candidateId":"candidate",
+            "evaluation":{"verdict":"improved","metrics":{"gains":1,"improvedHoldouts":1,
+                "regressions":0,"metricGains":2,"metricRegressions":0,
+                "measurements":[{"id":"memory-quality","metrics":[{"key":"quality","improved":true,"regressed":false,"baseline":0.5,"candidate":0.9}]}]}},
             "toolsUsed":[{"tool":"code_search","calls":2},{"tool":"workspace_read_range","calls":1}]
         }]});
         let text = generation_context(&state, &input, &record);
@@ -2800,6 +2816,9 @@ mod tests {
         assert!(text.contains("검증된 검색 전략과 적용 조건"), "{text}");
         assert!(text.contains("src/engine/memory.rs"), "{text}");
         assert!(text.contains("accepted-source-revision"), "{text}");
+        assert!(text.contains("\"improvedHoldouts\":1"), "held-out gains must reach the next generation: {text}");
+        assert!(text.contains("\"regressions\":0"), "real regression counts must be forwarded: {text}");
+        assert!(text.contains("\"memory-quality\""), "case-level paired evidence should be preserved: {text}");
         assert!(!text.contains("\"calls\""),"tool frequency is not an inherited implementation: {text}");
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3491,6 +3510,8 @@ mod tests {
         assert_eq!(evolution["acceptedGenerations"], 1, "{result}");
         let history = evolution["history"].as_array().unwrap();
         assert_eq!(history.len(), 4);
+        assert!(state.store.all("rsi_pair").len()>=2,
+            "separate generations must preserve distinct immutable paired evaluation receipts");
         assert!(history[0]["candidateId"].is_null());
         assert!(history[0]["newFindings"].as_u64().unwrap() > 0);
         assert!(history[0]["knowledgeId"].as_str().is_some());
