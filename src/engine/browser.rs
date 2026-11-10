@@ -7,9 +7,11 @@
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -17,12 +19,27 @@ struct Session {
     child: Child,
     port: u16,
     profile: PathBuf,
+    target_id: Option<String>,
 }
 
-static SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
+// Each agent owns its own Chrome profile, process, and pinned page target.
+// Per-owner async gates also serialize observe/click/type sequences so commands
+// cannot race with a close or a second navigation from the same agent.
+static SESSIONS: OnceLock<Mutex<HashMap<String,Session>>> = OnceLock::new();
+static OWNER_GATES: OnceLock<tokio::sync::Mutex<HashMap<String,Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
 
-fn session() -> &'static Mutex<Option<Session>> {
-    SESSION.get_or_init(|| Mutex::new(None))
+fn sessions() -> &'static Mutex<HashMap<String,Session>> {
+    SESSIONS.get_or_init(||Mutex::new(HashMap::new()))
+}
+
+fn owner_gates() -> &'static tokio::sync::Mutex<HashMap<String,Arc<tokio::sync::Mutex<()>>>> {
+    OWNER_GATES.get_or_init(||tokio::sync::Mutex::new(HashMap::new()))
+}
+
+fn profile_for_owner(data_dir:&Path,owner:&str)->PathBuf {
+    if owner=="dashboard" { return data_dir.join("browser-profile"); }
+    let hash=format!("{:x}",Sha256::digest(owner.as_bytes()));
+    data_dir.join("browser-profiles").join(hash)
 }
 
 fn chrome_bin() -> Option<PathBuf> {
@@ -89,19 +106,19 @@ async fn wait_for_port(profile: &Path, child: &mut Child) -> Result<u16, String>
     }
 }
 
-async fn ensure_session(data_dir: &Path) -> Result<u16, String> {
-    if let Ok(mut guard) = session().lock() {
-        if let Some(existing) = guard.as_mut() {
+async fn ensure_session(data_dir: &Path,owner:&str) -> Result<u16, String> {
+    if let Ok(mut guard) = sessions().lock() {
+        if let Some(existing) = guard.get_mut(owner) {
             if existing.child.try_wait().ok().flatten().is_none() {
                 return Ok(existing.port);
             }
-            *guard = None;
+            guard.remove(owner);
         }
     }
     let bin = chrome_bin().ok_or(
         "Chrome 또는 Chromium을 찾을 수 없습니다. DOMINION_CHROME 환경 변수로 실행 파일을 지정할 수 있습니다.",
     )?;
-    let profile = data_dir.join("browser-profile");
+    let profile = profile_for_owner(data_dir,owner);
     std::fs::create_dir_all(&profile).map_err(|error| error.to_string())?;
     let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
     let mut child = Command::new(&bin)
@@ -131,17 +148,18 @@ async fn ensure_session(data_dir: &Path) -> Result<u16, String> {
             return Err(error);
         }
     };
-    if let Ok(mut guard) = session().lock() {
-        *guard = Some(Session {
-            child,
-            port,
-            profile,
+    if let Ok(mut guard) = sessions().lock() {
+        guard.insert(owner.to_string(),Session {
+            child, port, profile, target_id:None,
         });
+    } else {
+        let _=child.kill();
+        return Err("브라우저 세션 저장 실패".into());
     }
     Ok(port)
 }
 
-async fn page_target(port: u16) -> Result<Value, String> {
+async fn page_target(port: u16, pinned: Option<&str>) -> Result<Value, String> {
     let client = reqwest::Client::new();
     let targets = client
         .get(format!("http://127.0.0.1:{port}/json/list"))
@@ -154,12 +172,16 @@ async fn page_target(port: u16) -> Result<Value, String> {
         .json::<Value>()
         .await
         .map_err(|error| format!("브라우저 대상 응답 오류: {error}"))?;
-    if let Some(page) = targets
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|target| target["type"] == "page" && target["webSocketDebuggerUrl"].is_string())
-    {
+    // A previous target disappearing must not silently hand this agent a
+    // different tab, including a popup opened by an unrelated extension.
+    if let Some(id)=pinned {
+        if let Some(page)=targets.as_array().into_iter().flatten().find(|target|
+            target["id"].as_str()==Some(id) && target["type"]=="page"
+                && target["webSocketDebuggerUrl"].is_string()) {
+            return Ok(page.clone());
+        }
+    } else if let Some(page)=targets.as_array().into_iter().flatten().find(|target|
+        target["type"]=="page" && target["webSocketDebuggerUrl"].is_string()) {
         return Ok(page.clone());
     }
     let created = client
@@ -376,7 +398,7 @@ async fn press(ws_url: &str, key: &str) -> Result<Value, String> {
     Ok(json!({ "pressed": key }))
 }
 
-async fn screenshot(ws_url: &str, workspace: &Path) -> Result<Value, String> {
+async fn screenshot(ws_url: &str, workspace: &Path,owner:&str) -> Result<Value, String> {
     let result = cdp(
         ws_url,
         "Page.captureScreenshot",
@@ -390,7 +412,10 @@ async fn screenshot(ws_url: &str, workspace: &Path) -> Result<Value, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .map_err(|error| format!("스크린샷 디코딩 실패: {error}"))?;
-    let dir = workspace.join(".dominion").join("browser");
+    let mut dir=workspace.join(".dominion").join("browser");
+    if owner!="dashboard" {
+        dir=dir.join(format!("{:x}",Sha256::digest(owner.as_bytes())));
+    }
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let path = dir.join(format!(
         "screenshot-{}.png",
@@ -403,10 +428,10 @@ async fn screenshot(ws_url: &str, workspace: &Path) -> Result<Value, String> {
     }))
 }
 
-fn close_session() -> Value {
+fn close_session(owner:&str) -> Value {
     let mut closed = false;
-    if let Ok(mut guard) = session().lock() {
-        if let Some(mut current) = guard.take() {
+    if let Ok(mut guard) = sessions().lock() {
+        if let Some(mut current) = guard.remove(owner) {
             let _ = current.child.kill();
             let _ = current.child.wait();
             let _ = std::fs::remove_file(current.profile.join("DevToolsActivePort"));
@@ -423,18 +448,25 @@ pub async fn execute(
     args: &Value,
     data_dir: &Path,
     workspace: &Path,
+    owner: &str,
 ) -> Result<Value, String> {
+    if owner.is_empty() {return Err("브라우저 세션 소유자 ID가 필요합니다.".into());}
+    let gate={
+        let mut gates=owner_gates().lock().await;
+        gates.entry(owner.to_string()).or_insert_with(||Arc::new(tokio::sync::Mutex::new(()))).clone()
+    };
+    let _owner_lock=gate.lock().await;
     match action {
         "status" => {
             let mut running = false;
             let mut port = None;
-            if let Ok(mut guard) = session().lock() {
-                if let Some(current) = guard.as_mut() {
+            if let Ok(mut guard) = sessions().lock() {
+                if let Some(current) = guard.get_mut(owner) {
                     if current.child.try_wait().ok().flatten().is_none() {
                         running = true;
                         port = Some(current.port);
                     } else {
-                        *guard = None;
+                        guard.remove(owner);
                     }
                 }
             }
@@ -445,11 +477,16 @@ pub async fn execute(
                 "browser": chrome_bin().map(|path| path.to_string_lossy().to_string()),
             }));
         }
-        "close" => return Ok(close_session()),
+        "close" => return Ok(close_session(owner)),
         _ => {}
     }
-    let port = ensure_session(data_dir).await?;
-    let target = page_target(port).await?;
+    let port = ensure_session(data_dir,owner).await?;
+    let pinned=sessions().lock().ok().and_then(|guard|
+        guard.get(owner).and_then(|session|session.target_id.clone()));
+    let target = page_target(port,pinned.as_deref()).await?;
+    if let (Some(id),Ok(mut guard))=(target["id"].as_str(),sessions().lock()){
+        if let Some(session)=guard.get_mut(owner){session.target_id=Some(id.to_string());}
+    }
     let ws_url = target["webSocketDebuggerUrl"]
         .as_str()
         .ok_or("브라우저 페이지 WebSocket 주소가 없습니다.")?;
@@ -477,7 +514,7 @@ pub async fn execute(
             let key = args["key"].as_str().ok_or("key 인자가 필요합니다.")?;
             press(ws_url, key).await
         }
-        "screenshot" => screenshot(ws_url, workspace).await,
+        "screenshot" => screenshot(ws_url, workspace, owner).await,
         other => Err(format!(
             "지원하지 않는 브라우저 동작입니다: {other} (status, open, observe, click, type, press, screenshot, close)"
         )),
@@ -502,7 +539,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let status = execute("status", &json!({}), &dir, &dir).await.unwrap();
+        let status = execute("status", &json!({}), &dir, &dir,"dashboard").await.unwrap();
         if status["available"] != true {
             return;
         }
@@ -512,11 +549,11 @@ mod tests {
             "data:text/html;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(html)
         );
-        let opened = execute("open", &json!({ "url": url }), &dir, &dir)
+        let opened = execute("open", &json!({ "url": url }), &dir, &dir,"dashboard")
             .await
             .unwrap();
         assert_eq!(opened["title"], "Start");
-        let snapshot = execute("observe", &json!({}), &dir, &dir).await.unwrap();
+        let snapshot = execute("observe", &json!({}), &dir, &dir,"dashboard").await.unwrap();
         let button = snapshot["elements"]
             .as_array()
             .unwrap()
@@ -525,10 +562,10 @@ mod tests {
             .expect("button element")
             .clone();
         let index = button["index"].as_u64().unwrap();
-        execute("click", &json!({ "index": index }), &dir, &dir)
+        execute("click", &json!({ "index": index }), &dir, &dir,"dashboard")
             .await
             .unwrap();
-        let after = execute("observe", &json!({}), &dir, &dir).await.unwrap();
+        let after = execute("observe", &json!({}), &dir, &dir,"dashboard").await.unwrap();
         assert_eq!(after["title"], "Clicked");
         let input = after["elements"]
             .as_array()
@@ -546,19 +583,48 @@ mod tests {
         )
         .await
         .unwrap();
-        let typed = execute("observe", &json!({}), &dir, &dir).await.unwrap();
+        let typed = execute("observe", &json!({}), &dir, &dir,"dashboard").await.unwrap();
         assert!(typed["elements"]
             .as_array()
             .unwrap()
             .iter()
             .any(|element| element["text"] == "dominion"));
-        let shot = execute("screenshot", &json!({}), &dir, &dir)
+        let shot = execute("screenshot", &json!({}), &dir, &dir,"dashboard")
             .await
             .unwrap();
         assert!(std::path::Path::new(shot["path"].as_str().unwrap()).is_file());
         assert!(shot["bytes"].as_u64().unwrap() > 0);
-        execute("close", &json!({}), &dir, &dir).await.unwrap();
+        execute("close", &json!({}), &dir, &dir,"dashboard").await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn browser_profile_identity_is_agent_isolated() {
+        let dir=Path::new("/tmp/dominion-browser-test");
+        assert_eq!(profile_for_owner(dir,"dashboard"),dir.join("browser-profile"));
+        assert_ne!(profile_for_owner(dir,"agent-1"),profile_for_owner(dir,"agent-2"));
+        assert_ne!(profile_for_owner(dir,"agent-1"),profile_for_owner(dir,"dashboard"));
+        assert!(profile_for_owner(dir,"../../untrusted").starts_with(dir));
+    }
+
+    #[tokio::test]
+    async fn agent_close_does_not_close_other_browser_sessions() {
+        let root=std::env::temp_dir().join(format!("dominion-browser-owner-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let available=execute("status",&json!({}),&root,&root,"agent-2").await.unwrap();
+        if available["available"]!=true{return;}
+        let a=execute("open",&json!({"url":"data:text/html,<title>Agent A</title>"}),
+            &root,&root,"agent-1").await.unwrap();
+        let b=execute("open",&json!({"url":"data:text/html,<title>Agent B</title>"}),
+            &root,&root,"agent-2").await.unwrap();
+        assert_eq!(a["title"],"Agent A");
+        assert_eq!(b["title"],"Agent B");
+        assert_ne!(a["targetId"],b["targetId"],"independent Chrome profiles cannot own a shared tab");
+        execute("close",&json!({}),&root,&root,"agent-1").await.unwrap();
+        let still=execute("observe",&json!({}),&root,&root,"agent-2").await.unwrap();
+        assert_eq!(still["title"],"Agent B");
+        execute("close",&json!({}),&root,&root,"agent-2").await.unwrap();
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
