@@ -2195,7 +2195,7 @@ async fn run_loop(
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
-        let original = child_input["prompt"].as_str().unwrap_or("");
+        let original = child_input["prompt"].as_str().unwrap_or("").to_string();
         // Preserve the unmixed prompt parts so an evolved descendant worker
         // can replan without inheriting a stale source excerpt or a stale
         // coordinator-selected file as apparent evidence.
