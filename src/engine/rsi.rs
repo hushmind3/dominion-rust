@@ -422,6 +422,41 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
     false
 }
 
+/// Prove recursive capability across a continued campaign only when the
+/// previous campaign is the exact binary and source lineage being resumed.
+/// Campaign labels or inherited streak counters alone never establish proof.
+pub fn campaign_capability_proven(state: &AppState, campaign: &Value) -> bool {
+    let mut segments = Vec::new();
+    let mut visited = BTreeSet::new();
+    let mut current = campaign.clone();
+    for _ in 0..32 {
+        let Some(id) = current["id"].as_str() else {break};
+        if !visited.insert(id.to_string()) {break;}
+        segments.push(current["history"].as_array().cloned().unwrap_or_default());
+        if current["lineage"]["reused"] != true {break;}
+        let Some(prior_id) = current["continuedFrom"].as_str() else {break};
+        let Some(prior) = state.store.get("rsi_campaign", prior_id) else {break};
+        let selected = current["lineage"]["selectedCommit"].as_str().unwrap_or("");
+        let fingerprint = current["sourceFingerprint"].as_str().unwrap_or("");
+        let same_origin = current["sourceDir"] == prior["sourceDir"]
+            && current["sourceBranch"] == prior["sourceBranch"]
+            && current["baseCommit"] == prior["baseCommit"];
+        if !same_origin
+            || !sha(selected)
+            || prior["headCommit"].as_str() != Some(selected)
+            || fingerprint.len() != 64
+            || !fingerprint.bytes().all(|b|b.is_ascii_hexdigit())
+            || fingerprint == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            || prior["sourceFingerprint"].as_str() != Some(fingerprint) {
+            break;
+        }
+        current = prior;
+    }
+    segments.reverse();
+    let history=segments.into_iter().flatten().collect::<Vec<_>>();
+    capability_proven(state,&history)
+}
+
 pub fn list(state: &AppState) -> Vec<Value> {
     let mut items = state.store.all("rsi_candidate");
     items.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
@@ -481,6 +516,30 @@ mod tests {
                 "evaluation":{"evidenceSha256":"a".repeat(64)}}));
         }
         assert!(capability_proven(&state,&history),"validated meta improvement followed by verified transfer");
+        let shared_fingerprint="b".repeat(64);
+        let origin=json!({"sourceDir":"/tmp/dominion-sub4","sourceBranch":"dominion-sub4",
+            "baseCommit":revisions[0],"sourceFingerprint":shared_fingerprint});
+        let mut prior=origin.clone();
+        prior["id"]=json!("proof-prior");
+        prior["headCommit"]=json!(revisions[2]);
+        prior["history"]=json!(history[..2].to_vec());
+        state.store.put("rsi_campaign",&prior).unwrap();
+        let mut next=origin.clone();
+        next["id"]=json!("proof-next");
+        next["headCommit"]=json!(revisions[3]);
+        next["continuedFrom"]=json!("proof-prior");
+        next["lineage"]=json!({"reused":true,"selectedCommit":revisions[2]});
+        next["history"]=json!(history[2..].to_vec());
+        assert!(campaign_capability_proven(&state,&next),
+            "three proven descendants may span two campaigns on the same source lineage");
+        let mut unrelated=next.clone();
+        unrelated["sourceBranch"]=json!("dominion-sub3");
+        assert!(!campaign_capability_proven(&state,&unrelated),
+            "a different sub branch must not inherit capability proof");
+        let mut mismatched=next.clone();
+        mismatched["lineage"]["selectedCommit"]=json!(revisions[1]);
+        assert!(!campaign_capability_proven(&state,&mismatched),
+            "a non-descendant must not borrow another campaign's accepted chain");
         let mut false_claim=history.clone();
         false_claim[1]["generatorCommit"]=json!("9".repeat(40));
         assert!(!capability_proven(&state,&false_claim),"broken binary lineage cannot be counted");
