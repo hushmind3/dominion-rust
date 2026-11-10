@@ -2725,7 +2725,7 @@ mod tests {
 
     #[test]
     fn focus_file_context_inlines_the_target() {
-        let root = std::env::temp_dir().join(format!("focus-{}", uuid::Uuid::new_v4()));
+        let (state, root) = state();
         std::fs::create_dir_all(root.join("src/engine")).unwrap();
         std::fs::write(root.join("src/engine/x.rs"), "fn a() {}\n").unwrap();
         let meta = crate::engine::code_index::refresh(&state, &root).unwrap();
