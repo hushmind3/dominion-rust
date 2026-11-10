@@ -542,7 +542,7 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
 /// integration branch. Other branches, including production refs, are never
 /// valid RSI sources or application targets.
 pub(crate) fn is_work_branch(name: &str) -> bool {
-    name == "dominion-champion" || name.starts_with("dominion-sub")
+    matches!(name, "dominion-champion" | "dominion-sub" | "dominion-sub1" | "dominion-sub2" | "dominion-sub3" | "dominion-sub4")
 }
 
 pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expected:&str)->Result<Value,String>{
@@ -556,8 +556,15 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     let source=std::fs::canonicalize(campaign["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     let status=crate::engine::dev::status(state).await;
     let configured=status["config"]["sourceDir"].as_str().and_then(|s|std::fs::canonicalize(s).ok());
-    if configured.as_ref()!=Some(&source) || !is_work_branch(status["branch"].as_str().unwrap_or("")) {
-        return Err("연결된 dominion-sub 작업 브랜치에만 적용합니다.".into());
+    let branch=status["branch"].as_str().unwrap_or("");
+    if configured.as_ref()!=Some(&source) || !is_work_branch(branch) {
+        return Err("연결된 DOMINION 검증 작업 브랜치에만 적용합니다.".into());
+    }
+    // The selected campaign must belong to this exact checkout. Never let a
+    // previously finished campaign silently publish to another experiment.
+    let expected_branch=campaign["sourceBranch"].as_str().unwrap_or(branch);
+    if expected_branch!=branch {
+        return Err("캠페인을 실행한 작업 브랜치와 적용 대상이 다릅니다.".into());
     }
     if !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
         return Err("미저장 코드를 보존했습니다. 현재 소스를 정리한 뒤 반영하세요.".into());
@@ -609,12 +616,12 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     }
     if commits.is_empty() {return Err("적용할 검증 변경이 없습니다.".into());}
     if git(&source,&["rev-parse","HEAD"]).await?!=base
-        || git(&source,&["symbolic-ref","--quiet","HEAD"]).await?!="refs/heads/dominion-sub"
+        || git(&source,&["symbolic-ref","--quiet","HEAD"]).await?!=format!("refs/heads/{branch}")
         || !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
         return Err("적용 직전에 작업 브랜치나 소스가 바뀌었습니다.".into());
     }
     git(&source,&["-c","core.hooksPath=","merge","--ff-only","--no-edit",expected]).await?;
-    let application=json!({"commit":expected,"branch":"dominion-sub","sourceDir":source,
+    let application=json!({"commit":expected,"branch":branch,"sourceDir":source,
         "requiresRebuild":true,"productionDeployed":false,"appliedAt":chrono::Utc::now().to_rfc3339()});
     campaign["application"]=application.clone();
     state.store.put("rsi_campaign",&campaign).ok_or("소스 반영 후 기록 저장 실패")?;
@@ -784,6 +791,18 @@ mod tests {
             "unexpected node path: {node:?}"
         );
     }
+    #[test]
+    fn only_known_work_branches_can_receive_a_verified_campaign() {
+        for branch in ["dominion-sub", "dominion-sub1", "dominion-sub2",
+            "dominion-sub3", "dominion-sub4", "dominion-champion"] {
+            assert!(is_work_branch(branch), "{branch}");
+        }
+        for branch in ["main", "master", "dominion-sub1-other",
+            "dominion-sub5", "dominion-champion-old", "refs/heads/main", ""] {
+            assert!(!is_work_branch(branch), "{branch}");
+        }
+    }
+
     #[test]
     fn later_generations_see_prior_compile_failures_without_fabricated_gains(){
         use crate::{config::Config,db::Store,state::AppState,vault::Vault};
