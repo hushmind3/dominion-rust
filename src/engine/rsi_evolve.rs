@@ -840,12 +840,19 @@ fn verified_candidate_id(result: &Value) -> Option<&str> {
 /// Collect the exact files, ranges and searches earlier generations already
 /// looked at. Without this, every generation starts from scratch and burns
 /// tokens re-reading the same source.
-fn research_digest(state: &AppState, record: &Value) -> String {
+fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
     let mut reads = BTreeSet::new();
     let mut searches = BTreeSet::new();
     let executions = state.store.all("execution");
     let operations = state.store.all("execution_operation");
-    for generation in record["history"].as_array().cloned().unwrap_or_default() {
+    let mut generations = Vec::new();
+    if let Some(prior_id) = input["rsiContinueFrom"].as_str() {
+        if let Some(prior) = state.store.get("rsi_campaign", prior_id) {
+            generations.extend(prior["history"].as_array().cloned().unwrap_or_default());
+        }
+    }
+    generations.extend(record["history"].as_array().cloned().unwrap_or_default());
+    for generation in generations {
         let Some(job_id) = generation["jobId"].as_str() else { continue };
         let Some(session_id) = state
             .store
@@ -1969,7 +1976,7 @@ async fn run_loop(
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
         let inherited = generation_context(&context.state, input, record);
-        let digest = research_digest(&context.state, record);
+        let digest = research_digest(&context.state, input, record);
         child_input["prompt"] = json!(format!(
             "{}\n\n{}{}",
             child_input["prompt"].as_str().unwrap_or(""),
@@ -2619,10 +2626,14 @@ mod tests {
                 "arguments":{"path":"src/engine/memory.rs","startLine":10,"endLine":20}}),
         );
         let record = json!({"history":[{"jobId":"digest-job"}]});
-        let text = research_digest(&state, &record);
+        let text = research_digest(&state, &json!({}), &record);
         assert!(text.contains("src/engine/memory.rs 10-20"));
         assert!(text.contains("다시 읽지 마세요"));
-        assert_eq!(research_digest(&state, &json!({"history":[]})), "");
+        assert_eq!(research_digest(&state, &json!({}), &json!({"history":[]})), "");
+        // A continuation must also see the previous campaign's reads.
+        state.store.put("rsi_campaign", &json!({"id":"digest-prior","history":[{"jobId":"digest-job"}]}));
+        let continued = research_digest(&state, &json!({"rsiContinueFrom":"digest-prior"}), &json!({"history":[]}));
+        assert!(continued.contains("src/engine/memory.rs 10-20"));
         let _ = std::fs::remove_dir_all(root);
     }
 
