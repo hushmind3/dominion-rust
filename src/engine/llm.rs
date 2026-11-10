@@ -15,6 +15,18 @@ async fn try_complete(
     session_id: Option<&str>,
 ) -> Result<String, String> {
     let route = gateway::resolve(state, provider_id, Some(model))?;
+    if route.kind=="cli"{
+        let source=route.base_url.strip_prefix("cli://").ok_or("CLI 제공자 주소 오류")?;
+        let text=crate::engine::cli_model::generate(source,&route.model,&[
+            json!({"role":"system","content":system}),
+            json!({"role":"user","content":prompt})
+        ]).await?;
+        let prompt_tokens=(system.len()+prompt.len()).div_ceil(4) as u64;
+        let output_tokens=text.len().div_ceil(4) as u64;
+        gateway::record_usage_tokens(state,&route.id,&route.model,true,"helper",session_id,
+            prompt_tokens,output_tokens,prompt_tokens+output_tokens,true);
+        return Ok(text);
+    }
     // Thinking models can consume the entire completion budget on reasoning
     // and return empty content. Start with a practical budget and retry once
     // with a larger one before reporting an empty response.

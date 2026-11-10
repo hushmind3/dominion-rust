@@ -705,6 +705,30 @@ async fn stream_completion_once_body(
     request:&TurnRequest,session_id:&str,tx:&UnboundedSender<Value>,convert_native_history:bool,
     continuity:&mut Value,
 ) -> Result<Completion,String> {
+    if provider.kind == "cli" {
+        let started=std::time::Instant::now();
+        let source=provider.base_url.strip_prefix("cli://").ok_or("CLI 제공자 주소가 올바르지 않습니다.")?;
+        let mut projected=messages.to_vec();
+        if !tools.is_empty(){
+            let manual=super::protocol::tool_manual(tools,&request.input).await;
+            projected.insert(0,json!({"role":"system","content":manual}));
+        }
+        let content=crate::engine::cli_model::generate(source,&provider.model,&projected).await?;
+        if state.is_cancelled(session_id){return Err("실행이 중단되었습니다.".into());}
+        let (calls,visible)=super::protocol::parse_text_tool_calls(&content);
+        let mut completed=Completion::default();
+        completed.content=visible;
+        completed.tool_calls=calls.into_iter().map(|(name,arguments)|ToolCall{id:uuid::Uuid::new_v4().to_string(),name,arguments}).collect();
+        if !completed.content.is_empty(){let _=tx.send(json!({"type":"text","text":completed.content}));}
+        let (prompt_tokens,completion_tokens)=estimate_usage(&projected,&[],&completed);
+        completed.prompt_tokens=prompt_tokens;
+        completed.completion_tokens=completion_tokens;
+        completed.usage=prompt_tokens+completion_tokens;
+        completed.first_delta_ms=Some(started.elapsed().as_millis() as u64);
+        crate::engine::gateway::record_usage_tokens(state,&provider.id,&provider.model,true,"chat",Some(session_id),
+            prompt_tokens,completion_tokens,completed.usage,true);
+        return Ok(completed);
+    }
     if provider.kind == "codex" {
         return stream_codex_once(
             state, client, provider, messages, tools, request, session_id, tx, continuity,

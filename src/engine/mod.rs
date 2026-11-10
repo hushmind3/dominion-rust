@@ -25,6 +25,7 @@ pub mod verification;
 pub mod reflect;
 pub mod goals;
 pub mod gateway;
+pub mod cli_model;
 pub mod improve;
 pub mod code_index;
 pub mod rsi;

@@ -86,6 +86,31 @@ export function ModelHub(){
  const cliLoginPopup=useRef<Window|null>(null)
  const cliLoginPopupUrl=useRef('')
  const [openCodeAuthProvider,setOpenCodeAuthProvider]=useState('openai')
+ const [cliModelCatalog,setCliModelCatalog]=useState<Record<string,string[]>>({})
+ const [cliModelSelection,setCliModelSelection]=useState<Record<string,string>>({})
+ const [cliModelBusy,setCliModelBusy]=useState('')
+ const fetchCliModels=async(source:string)=>{
+  const providerId='cli-'+source
+  setCliModelBusy(source)
+  try{
+   const rows=await get<{id:string}[]>('/api/providers/'+providerId+'/models')
+   const available=rows.map(r=>r.id).filter(Boolean)
+   setCliModelCatalog(old=>({...old,[source]:available}))
+   if(available.length)setCliModelSelection(old=>({...old,[source]:old[source]&&available.includes(old[source])?old[source]:available[0]}))
+  }catch(e){setError((e as Error).message)}
+  finally{setCliModelBusy('')}
+ }
+ const saveCliModel=async(source:string)=>{
+  const model=cliModelSelection[source]
+  if(!model)return
+  setCliModelBusy(source)
+  try{
+   await post('/api/providers/cli/'+source+'/model',{model})
+   await Promise.all([providers.reload(),cli.reload()])
+   setLoginMessage('사용할 모델을 저장했습니다. 이제 채팅에서 바로 선택할 수 있습니다.')
+  }catch(e){setError((e as Error).message)}
+  finally{setCliModelBusy('')}
+ }
  const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[defaultModel,setDefaultModel]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
  const [defaultEffort,setDefaultEffort]=useState('')
  const editModels=useProviderModels(modal&&edit?edit.id:'')
@@ -232,8 +257,10 @@ export function ModelHub(){
     if(!live)return
     setCliAuth(current=>current?.source===source?next:current)
     if(['completed','failed','cancelled'].includes(next.status)){
-     void cli.reload()
-     if(next.status==='completed')setLoginMessage('공식 CLI 인증이 완료됐습니다. DOMINION의 모델 연결 상태는 별도로 확인하세요.')
+     void Promise.all([cli.reload(),providers.reload()]).then(()=>{
+      if(next.status==='completed')void fetchCliModels(source)
+     })
+     if(next.status==='completed')setLoginMessage('로그인 완료. 모델 목록을 불러옵니다.')
     }
    }).catch(e=>{if(live)setError((e as Error).message)})
   },1200)
@@ -340,6 +367,17 @@ export function ModelHub(){
      {item.id==='opencode-go'&&<Button type="button" variant="primary" size="sm" onClick={connectOpencodeGo}><KeyRound size={13}/> {goProvider?'키 / 모델 설정':'API 키 연결'}</Button>}
      {item.supported&&(item.importAvailable??item.available)&&<Button type="button" variant="secondary" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void importCli(item.id)}><KeyRound size={13}/> {item.id==='opencode-go'?'기존 키 가져오기':'기존 인증 가져오기'}</Button>}
      {(item.id==='claude'||item.id==='gemini')&&<Button type="button" variant="secondary" size="sm" onClick={()=>openPreset(providerPresets.find(p=>p.name===(item.id==='claude'?'Anthropic':'Google Gemini'))!)}><KeyRound size={13}/> API 키 연결</Button>}
+     {item.connected&&['claude','gemini','opencode'].includes(item.id)&&<div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-[#E7E0D5] bg-white p-2">
+      <SelectInput aria-label={item.name+' 사용 모델 선택'} className="min-w-[145px] flex-1 !py-1 !text-[12px]"
+       value={cliModelSelection[item.id]||item.model||'default'}
+       onChange={event=>setCliModelSelection(old=>({...old,[item.id]:event.target.value}))}>
+       {(!cliModelCatalog[item.id]?.length)&&<option value={item.model||'default'}>{item.model||'CLI 기본 모델'}</option>}
+       {(cliModelCatalog[item.id]||[]).map(model=><option key={model} value={model}>{model}</option>)}
+      </SelectInput>
+      <Button size="sm" type="button" variant="ghost" disabled={Boolean(cliModelBusy)} onClick={()=>void fetchCliModels(item.id)}><RefreshCw size={13}/> 모델 조회</Button>
+      <Button size="sm" type="button" variant="secondary" disabled={Boolean(cliModelBusy)} onClick={()=>void saveCliModel(item.id)}>모델 적용</Button>
+      <a className="rounded-lg bg-[#C96442] px-3 py-2 text-[12px] font-semibold text-white" href={'#/chat?provider=cli-'+item.id+'&model='+encodeURIComponent(cliModelSelection[item.id]||item.model||'default')}>채팅 시작</a>
+     </div>}
      {item.id==='codex'&&item.connected&&<Button type="button" variant="ghost" size="sm" onClick={()=>{setTab('providers');const p=providers.value.find(p=>p.id==='codex-oauth');if(p)void probe(p)}}><RefreshCw size={13}/> 모델 확인</Button>}
      {item.id==='opencode-go'&&goProvider?.hasKey&&<Button type="button" variant="ghost" size="sm" disabled={counts[goProvider.id]?.busy} onClick={()=>void probe(goProvider)}><RefreshCw size={13}/> 모델 확인</Button>}
      <Button type="button" variant="ghost" size="sm" disabled={Boolean(oauthBusy)} onClick={()=>void cli.reload()}><RefreshCw size={13}/> 상태 새로고침</Button>

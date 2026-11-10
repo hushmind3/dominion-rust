@@ -465,6 +465,40 @@ async fn claude_cli_authenticated() -> bool {
     )
 }
 
+fn cli_provider_id(source:&str)->String{format!("cli-{source}")}
+
+fn ensure_cli_provider(state:&AppState,source:&str,authenticated:bool)->bool{
+ if !authenticated{return false;}
+ let id=cli_provider_id(source);
+ if state.store.get("provider",&id).is_none(){
+  let (name,default_model)=match source{
+   "claude"=>("Claude Code (CLI 계정)","default"),
+   "gemini"=>("Gemini CLI (Google 계정)","auto"),
+   "opencode"=>("OpenCode (CLI 계정)","default"),
+   _=>return false
+  };
+  let record=json!({"id":id,"name":name,"baseUrl":format!("cli://{source}"),
+      "kind":"cli","model":default_model,"enabled":true,"local":true,
+      "toolMode":"compat","reasoningProtocol":"openai"});
+  if let Some(saved)=state.store.put("provider",&record){state.bus.record("provider",&saved);}
+ }
+ state.store.get("provider",&id).is_some()
+}
+
+pub async fn set_cli_model(State(state): State<AppState>,Path(source): Path<String>,Json(body): Json<Value>)->Response{
+ if !matches!(source.as_str(),"claude"|"gemini"|"opencode"){return error(StatusCode::BAD_REQUEST,"지원하지 않는 CLI입니다.");}
+ let id=cli_provider_id(&source);
+ let Some(mut record)=state.store.get("provider",&id) else{return error(StatusCode::NOT_FOUND,"먼저 CLI 계정을 연결하세요.");};
+ let Some(model)=body["model"].as_str().map(str::trim).filter(|v|!v.is_empty()&&v.len()<160&&!v.chars().any(char::is_whitespace)) else{
+  return error(StatusCode::BAD_REQUEST,"모델 ID가 올바르지 않습니다.");
+ };
+ record["model"]=json!(model);
+ match state.store.put("provider",&record){
+  Some(saved)=>{state.bus.record("provider",&saved);Json(public_provider(&state,saved)).into_response()},
+  None=>error(StatusCode::INTERNAL_SERVER_ERROR,"모델 선택을 저장하지 못했습니다.")
+ }
+}
+
 pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
     let codex = codex_auth().ok();
     let connected = state.store.get("provider", "codex-oauth");
@@ -477,6 +511,9 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
     let go_provider = direct_opencode_go(&state);
     let go_connected = go_provider.as_ref().and_then(|p| p["id"].as_str())
         .is_some_and(|id| state.store.has_secret(&format!("provider:{id}")));
+    let claude_connected=ensure_cli_provider(&state,"claude",claude);
+    let gemini_connected=ensure_cli_provider(&state,"gemini",gemini);
+    let opencode_connected=ensure_cli_provider(&state,"opencode",opencode);
     let opencode_importable = opencode_auth
         .as_ref()
         .map(|auth| {
@@ -503,6 +540,8 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
         {
             "id":"claude",
             "name":"Claude Code (OAuth)",
+            "connected":claude_connected,
+            "model":state.store.get("provider","cli-claude").and_then(|p|p["model"].as_str().map(str::to_string)),
             "loginSupported":true,
             "loginMethod":"browser-cli",
             "available":claude,
@@ -512,6 +551,8 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
         {
             "id":"gemini",
             "name":"Gemini CLI (OAuth)",
+            "connected":gemini_connected,
+            "model":state.store.get("provider","cli-gemini").and_then(|p|p["model"].as_str().map(str::to_string)),
             "loginSupported":true,
             "loginMethod":"browser-cli",
             "available":gemini,
@@ -539,6 +580,8 @@ pub async fn cli_credentials(State(state): State<AppState>) -> Json<Value> {
         {
             "id":"opencode",
             "name":"OpenCode (OAuth/CLI)",
+            "connected":opencode_connected,
+            "model":state.store.get("provider","cli-opencode").and_then(|p|p["model"].as_str().map(str::to_string)),
             "loginSupported":true,
             "loginMethod":"browser-cli",
             "available":opencode,
@@ -1349,6 +1392,13 @@ pub async fn test_provider(
             provider[field] = json!(value);
         }
     }
+    if provider["kind"]=="cli"{
+        let Some(source)=provider["baseUrl"].as_str().and_then(|s|s.strip_prefix("cli://")) else{
+            return Json(json!({"ok":false,"message":"CLI 주소 오류"})).into_response();
+        };
+        let valid=super::cli_oauth::credential_verified(source).await;
+        return Json(json!({"ok":valid,"message":if valid{"CLI 계정 인증을 확인했습니다."}else{"CLI 로그인이 필요합니다."}})).into_response();
+    }
     let key = body
         .get("apiKey")
         .and_then(Value::as_str)
@@ -1629,6 +1679,15 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
     let Some(mut provider) = state.store.get("provider", &id) else {
         return error(StatusCode::NOT_FOUND, "제공자를 찾을 수 없습니다.");
     };
+    if provider["kind"]=="cli"{
+        let Some(source)=provider["baseUrl"].as_str().and_then(|s|s.strip_prefix("cli://")) else{
+            return error(StatusCode::BAD_REQUEST,"CLI 제공자 주소 오류");
+        };
+        return match crate::engine::cli_model::models(source).await{
+            Ok(models)=>Json(json!(models)).into_response(),
+            Err(message)=>error(StatusCode::BAD_GATEWAY,&message)
+        };
+    }
     let key = state.read_secret(&format!("provider:{id}")).unwrap_or_default();
     if needs_account_discovery(&provider) {
         if let Some(account) = discover_cloudflare_account(&key).await {

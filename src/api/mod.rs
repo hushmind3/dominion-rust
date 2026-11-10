@@ -163,6 +163,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/providers/free-catalog", get(providers::free_catalog))
         .route("/api/providers/free-catalog/refresh", post(providers::free_catalog_refresh))
         .route("/api/providers/cli", get(providers::cli_credentials))
+        .route("/api/providers/cli/:source/model", post(providers::set_cli_model))
         .route("/api/providers/cli/:source/login", post(cli_oauth::start))
         .route("/api/providers/cli/:source/login/status", get(cli_oauth::status))
         .route("/api/providers/cli/:source/login/input", post(cli_oauth::input))
