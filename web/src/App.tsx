@@ -1,4 +1,5 @@
 import { ContextMenu } from './components/ContextMenu'
+import {OwnerProfileProvider} from './components/OwnerProfile'
 import {Component,lazy,Suspense,useCallback,useEffect,useLayoutEffect,useState,type ReactNode} from 'react'
 import {get} from './api'
 import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
@@ -173,7 +174,7 @@ export default function App(){
   window.addEventListener('keydown',shortcuts)
   return()=>{mounted=false;clearInterval(poll);clearTimeout(refreshTimer);stream.close();window.removeEventListener('keydown',shortcuts)}
  },[])
- return <div className="min-h-dvh bg-[#F6F3EC] font-sans text-[#24211D]">
+ return <OwnerProfileProvider><div className="min-h-dvh bg-[#F6F3EC] font-sans text-[#24211D]">
    <ContextMenu />
   <WorkspaceSidebar page={page} open={sidebar} collapsed={collapsed} online={online} running={running} pending={pending} onNavigate={navigate} onNewChat={()=>{setChatDraft(value=>value+1);navigate('chat')}} onClose={()=>setSidebar(false)}/>
   <main className={'min-h-dvh min-w-0 transition-[margin] duration-200 '+(collapsed?'ml-0':'ml-[216px] max-[519px]:ml-0')}>
@@ -200,5 +201,5 @@ export default function App(){
    </div>
   </main>
   {palette&&<CommandPalette onNavigate={navigate} onClose={()=>setPalette(false)}/>}
- </div>
+ </div></OwnerProfileProvider>
 }
