@@ -2085,7 +2085,9 @@ async fn catalog_filtered(
 
 pub async fn details(repo: &str) -> Result<Value, String> {
     let repo = safe_repo(repo)?;
-    let url = format!("https://huggingface.co/api/models/{repo}?blobs=true");
+    // Card metadata and model configuration are opt-in fields on the Hub API.
+    // Without these flags the UI still receives empty license/architecture.
+    let url = format!("https://huggingface.co/api/models/{repo}?blobs=true&cardData=true&config=true");
     let response = reqwest::Client::new()
         .get(&url)
         .timeout(Duration::from_secs(25))
