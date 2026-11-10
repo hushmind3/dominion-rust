@@ -1037,12 +1037,13 @@ mod tests {
         assert!(validate(&s, &c).is_err());
         c["allowedUserIds"] = json!("30");
         assert!(validate(&s, &c).is_ok());
-        s.store.put(
-            "room",
-            &json!({"id":"r","agentIds":["a","a","a","a","a","a","a","a","a","a"]}),
-        );
-        c["roomId"] = json!("r");
-        assert!(validate(&s, &c).is_err());
+        let room_at_limit=vec!["a";MAX_PARTICIPANTS];
+        s.store.put("room",&json!({"id":"r","agentIds":room_at_limit}));
+        c["roomId"]=json!("r");
+        assert!(validate(&s,&c).is_ok(),"32 agents must be accepted");
+        let room_over_limit=vec!["a";MAX_PARTICIPANTS+1];
+        s.store.put("room",&json!({"id":"r","agentIds":room_over_limit}));
+        assert!(validate(&s, &c).is_err(),"33 agents must be rejected");
         drop(s);
         let _ = std::fs::remove_dir_all(dir);
     }
