@@ -879,7 +879,7 @@ async fn run_turn_body(
         "toolsExecutionEnabled": request.tools_execution_enabled,
         "maxRounds": max_rounds,
         "maxToolCalls": max_tools,
-        "maxTokens": MAX_TOKENS,
+        "maxTokens": if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {Value::Null}else{json!(MAX_TOKENS)},
         "maxElapsedMs": MAX_ELAPSED.as_millis() as u64,
     });
     record_selection_snapshot(
@@ -1079,7 +1079,9 @@ async fn run_turn_body(
             }
         }
         let wire_messages = messages.clone();
-        if session["rsiRun"]==true {
+        // Campaigns enforce the owner's cumulative budget below. The generic
+        // standalone turn ceiling must not terminate a budgeted research run.
+        if session["rsiRun"]==true && !session["rsiCampaignId"].is_string() {
             let input=super::room_context::input_estimate(&wire_messages,&round_tools) as u64;
             let limit=rsi_output_allowance(total_tokens,input)?;
             provider.max_output_tokens=Some(provider.max_output_tokens.unwrap_or(8192).min(limit));
@@ -1210,7 +1212,7 @@ async fn run_turn_body(
             }
         }
         metrics.lock().unwrap().tokens = total_tokens;
-        if total_tokens > MAX_TOKENS {
+        if total_tokens > MAX_TOKENS && !(session["rsiRun"]==true && session["rsiCampaignId"].is_string()) {
             return Err(format!(
                 "토큰 예산({MAX_TOKENS})을 초과했습니다. 요청을 나눠 다시 시도하세요."
             ));

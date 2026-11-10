@@ -93,7 +93,7 @@ pub fn limits(body: &Value) -> Result<Value, String> {
             }
         }
     };
-    Ok(json!({"maxAttempts":bound("maxAttempts",1,1,100)?,
+    Ok(json!({"maxAttempts":bound("maxAttempts",3,1,100)?,
         "tokenBudget":token_budget,
         "timeBudgetSeconds":time_budget}))
 }
@@ -709,6 +709,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     }
     let mut record = json!({"id":context.job_id,"status":"running","phase":"building_generator",
         "sourceDir":source,"labDir":lab,"baseCommit":base,"headCommit":head,"sourceSnapshot":snapshot,"sourceFingerprint":fingerprint,
+        "objective":input["rsiObjective"],"providerId":input["providerId"],"model":input["model"],
+        "continuedFrom":input["rsiContinueFrom"],"nextDecision":input["rsiPreviousDecision"],
         "nativeApproved":true,"limits":limits,"attempts":0,"acceptedGenerations":0,"tokens":0,
         "history":[],"activeGenerationJobId":null,"createdAt":chrono::Utc::now().to_rfc3339(),
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
@@ -1055,6 +1057,8 @@ fn research_artifacts(state:&AppState,session:&str)->Vec<Value>{
             "workspace_read_range"|"http_fetch"=>result["content"].as_str().or_else(||result["text"].as_str()).unwrap_or("").to_string(),
             "code_search" if result["matchCount"].as_u64().unwrap_or(0)>0=>result["matches"].to_string(),
             "web_search" if result["results"].as_array().is_some_and(|rows|!rows.is_empty())=>result["results"].to_string(),
+            "rsi_method_propose" if result["method"]["verification"].is_object()=>result["method"]["verification"].to_string(),
+            "algorithm_propose" if result["algorithm"]["parameters"].is_object()=>result["algorithm"]["parameters"].to_string(),
             _=>continue,
         };
         if content.trim().is_empty(){continue;}
@@ -1645,6 +1649,16 @@ fn should_stop_no_progress(streak: u64, research: bool, changed: bool) -> bool {
     streak>=1 && (!research || !changed)
 }
 
+fn new_research_findings(state:&AppState,input:&Value,job_id:&str,hashes:&[Value],history:&[Value])->usize{
+    let mut known=history.iter().flat_map(|g|g["knowledgeArtifactHashes"].as_array().into_iter().flatten()).filter_map(Value::as_str).map(str::to_string).collect::<BTreeSet<_>>();
+    for experience in state.store.all("experience").into_iter().filter(|e|
+        e["status"]=="active" && e["generationJobId"]!=job_id
+            && e["partitionKey"]==research_scope(input).partition_key) {
+        known.extend(experience["researchArtifacts"].as_array().into_iter().flatten().filter_map(|a|a["hash"].as_str().map(str::to_string)));
+    }
+    hashes.iter().filter(|hash|hash.as_str().is_some_and(|hash|!known.contains(hash))).count()
+}
+
 fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
     let mut counts = BTreeMap::<String, u64>::new();
     for operation in state.store.all("execution_operation") {
@@ -1675,7 +1689,7 @@ async fn run_loop(
         .config
         .data_dir
         .join("rsi-build")
-        .join(&context.job_id);
+        .join("generator");
     std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
     let target = std::fs::canonicalize(target).map_err(|e| e.to_string())?;
     let binary = target
@@ -1793,12 +1807,20 @@ async fn run_loop(
             child_input["rsiDecisionInput"] = Value::Null;
         }
         child_input["rsiIndexId"]=crate::engine::code_index::refresh(&context.state,&lab)?["id"].clone();
-        let inherited_implementations=context.state.store.all("experience").into_iter()
+        let inherited_candidates=context.state.store.all("experience").into_iter()
             .filter(|item|item["status"]=="active" && item["partitionKey"]==research_scope(&child_input).partition_key
-                && item["outcome"]=="success" && item["evidence"]["accepted"]==true
-                && item["implementation_ref"]["commit"]==head)
-            .map(|item|json!({"experienceId":item["id"],"implementation_ref":item["implementation_ref"],
-                "status":"available_in_binary","generatorCommit":head,"binarySha256":record["generatorBinarySha256"]})).take(4).collect::<Vec<_>>();
+                && item["outcome"]=="success" && item["evidence"]["accepted"]==true)
+            .collect::<Vec<_>>();
+        let mut inherited_implementations=Vec::new();
+        for item in inherited_candidates {
+            let Some(commit)=item["implementation_ref"]["commit"].as_str() else {continue};
+            // Earlier accepted capabilities remain in descendant binaries.
+            if git(context,&lab,&["merge-base","--is-ancestor",commit,&head]).await.is_ok() {
+                inherited_implementations.push(json!({"experienceId":item["id"],"implementation_ref":item["implementation_ref"],
+                    "status":"available_in_binary","generatorCommit":head,"binarySha256":record["generatorBinarySha256"]}));
+            }
+            if inherited_implementations.len()>=4 {break;}
+        }
         child_input["rsiInheritedImplementations"]=json!(inherited_implementations);
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
@@ -1976,18 +1998,15 @@ async fn run_loop(
                     .unwrap_or(0)
                     .saturating_sub(waiting_before)
             ));
-        context
-            .state
-            .store
-            .put("rsi_generation", &generation)
-            .ok_or("세대 실험 증거 저장 실패")?;
         let artifacts=session.map(|s|research_artifacts(&context.state,s)).unwrap_or_default();
         let hashes=artifacts.iter().map(|a|a["hash"].clone()).collect::<Vec<_>>();
-        let known=record["history"].as_array().into_iter().flatten()
-            .flat_map(|g|g["knowledgeArtifactHashes"].as_array().into_iter().flatten()).collect::<Vec<_>>();
-        let new_findings=hashes.iter().filter(|hash|!known.contains(hash)).count();
+        let new_findings=new_research_findings(&context.state,&current["input"],child_id,
+            &hashes,record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]));
         generation["knowledgeArtifactHashes"]=json!(hashes);
         generation["newFindings"]=json!(new_findings);
+        if candidate_id.is_none() && new_findings>0 && output.is_ok() {
+            generation["error"]=Value::Null;
+        }
         if let Some(session)=session {
             generation["methodExecutions"]=json!(record_method_feedback(&context.state,&generation,session));
         }
@@ -2049,6 +2068,11 @@ async fn run_loop(
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
         let generation_verdict = generation["evaluation"]["verdict"].clone();
+        // Workers read this durable table, not the coordinator's in-memory
+        // history. Publish only after research, method feedback and trial
+        // outcomes are complete so the next worker can actually continue.
+        context.state.store.put("rsi_generation", &generation)
+            .ok_or("완성된 세대의 연구·실행 결과 저장 실패")?;
         record["history"]
             .as_array_mut()
             .ok_or("세대 목록 손상")?
@@ -2246,12 +2270,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     }) {
         return Err("자동 개선이 중단되었습니다.".into());
     }
-    let history = state
+    let mut history = state
         .store
         .all("rsi_generation")
         .into_iter()
         .filter(|g| g["campaignId"] == campaign)
         .collect::<Vec<_>>();
+    history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
     let latest=history.iter().max_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let continuation = latest.filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)
@@ -2275,7 +2300,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["input"]["rsiDomainSelection"] = json!(domain_selection);
     job["input"]["rsiSearchStrategy"] = strategy;
     let feedback = history
-        .iter()
+        .iter().rev()
         .take(8)
         .map(|row| {
             json!({"domain":row["domain"],"accepted":row["accepted"],
@@ -2333,6 +2358,21 @@ mod tests {
         state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve","status":"running","input":{"rsiNativeApproved":true}})).unwrap();
         JobContext::new(state.clone(), "campaign".into())
     }
+    #[test]
+    fn method_only_research_survives_worker_presave_and_is_novel_only_once(){
+        let (state,root)=state();let input=json!({"rsiSourceDir":root,"rsiObjective":"memory lookup"});
+        state.store.put("execution_operation",&json!({"id":"proposal-op","sessionId":"s","tool":"rsi_method_propose","status":"completed",
+            "result":{"method":{"verification":{"type":"procedure","nodes":[{"id":"read","tool":"code_search","arguments":{"query":"memory"}}],"after":[{"kind":"tool_succeeded","tool":"code_search"}]}}}}));
+        let artifacts=research_artifacts(&state,"s");assert_eq!(artifacts.len(),1);
+        state.store.put("experience",&json!({"id":"current","partitionKey":research_scope(&input).partition_key,
+            "status":"active","generationJobId":"current-worker","researchArtifacts":artifacts}));
+        let hashes=artifacts.iter().map(|a|a["hash"].clone()).collect::<Vec<_>>();
+        assert_eq!(new_research_findings(&state,&input,"current-worker",&hashes,&[]),1,"worker pre-save must not erase its own progress");
+        assert!(!should_stop_no_progress(1,true,true));
+        assert_eq!(new_research_findings(&state,&input,"next-worker",&hashes,&[]),0,"re-proposing the same program is not new research");
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn capability_usage_is_read_from_real_operation_records() {
         let (state, root) = state();
@@ -3092,6 +3132,40 @@ mod tests {
             accepted_commit
         );
         assert_eq!(git(&context, &source, &["rev-parse", "HEAD"]).await.unwrap(), base);
+        for row in history {
+            let stored=state.store.get("rsi_generation",row["id"].as_str().unwrap()).unwrap();
+            for field in ["newFindings","knowledgeId","knowledgeArtifactHashes","methodExecutions","accepted"] {
+                assert_eq!(stored[field],row[field],"next workers must read the completed {field}");
+            }
+        }
+        // The same accepted chain can reach the real test branch through an
+        // explicit product action. Untracked research and main are preserved.
+        git(&context,&source,&["update-ref","refs/heads/main",&base]).await.unwrap();
+        crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
+        assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap_err().contains("dominion-sub"),"main must never be an application target");
+        git(&context,&source,&["checkout","-b","dominion-sub"]).await.unwrap();
+        std::fs::write(source.join("my-research.txt"),"keep my unrelated research").unwrap();
+        crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
+        context.checkpoint(json!({"status":"completed"})).unwrap();
+        let original=state.store.all("rsi_candidate").into_iter()
+            .find(|c|c["experimentAdoption"]["commit"]==accepted_commit).unwrap();
+        let mut tampered=original.clone();tampered["patch"]=json!("unverified replacement");
+        state.store.put("rsi_candidate",&tampered);
+        assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.is_err());
+        state.store.put("rsi_candidate",&original);
+        let mut stopped=state.store.get("rsi_campaign","campaign").unwrap();
+        stopped["status"]=json!("cancelled");stopped["acceptedGenerations"]=json!(0);
+        state.store.put("rsi_campaign",&stopped);
+        // A later stopped campaign may carry an earlier verified selection.
+        // No new model generation is needed merely to publish that selection.
+        let applied=rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap();
+        assert_eq!(applied["commit"],accepted_commit);
+        assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.is_ok(),"retry must not apply twice");
+        assert_eq!(std::fs::read_to_string(source.join("my-research.txt")).unwrap(),"keep my unrelated research");
+        let rev=|reference:&str|String::from_utf8(std::process::Command::new("git").current_dir(&source)
+            .args(["rev-parse",reference]).output().unwrap().stdout).unwrap().trim().to_string();
+        assert_eq!(rev("HEAD"),accepted_commit);assert_eq!(rev("main"),base);
+        context.checkpoint(json!({"status":"running"})).unwrap();
         let lab = PathBuf::from(evolution["labDir"].as_str().unwrap());
         git(&context, &source, &["worktree", "remove", "--force", lab.to_str().unwrap()]).await.unwrap();
         let _ = std::fs::remove_dir_all(root);

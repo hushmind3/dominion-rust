@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react'
-import {ArrowLeft,ArrowRight,BrainCircuit,Check,LoaderCircle,Play,RefreshCw,Square} from 'lucide-react'
+import {ArrowLeft,ArrowRight,BrainCircuit,Check,LoaderCircle,Play,RefreshCw,Square,Download} from 'lucide-react'
 import {Provider,get,post} from '../api'
 import {ModelPicker} from '../components/ModelPicker'
 import {Button,SelectInput,TextArea} from '../components/Primitives'
@@ -8,16 +8,33 @@ import {FormField,Headline,Notice,Panel,useRemote} from '../components/UI'
 type Measurement={id:string;metrics:{key:string;baseline:number;candidate:number;improved:boolean;regressed:boolean}[]}
 type Comparison={attempt:number;candidateId:string;winner:'baseline'|'candidate'|'inconclusive';
  canSelectCandidate:boolean;selected?:string;metrics:{pairedCases:number;regressions:number;measurements?:Measurement[]}}
+type InstallJob={id:string;status:string;error?:string;result?:{installed?:string}}
 type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
+ objective?:string;providerId?:string;model?:string;headCommit?:string;baseCommit?:string;sourceSnapshot?:boolean;
+ continuedFrom?:string;selectedVersionRunning?:boolean;installJobId?:string;
+ limits?:{maxAttempts?:number;tokenBudget?:number;timeBudgetSeconds?:number};
+ application?:{commit?:string;requiresRebuild?:boolean;restartRequested?:boolean};
  tokensEstimated?:boolean;
  error?:string;stopReason?:string;selectionPolicy?:string;comparison?:Comparison;
- history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string}}[]}
+ history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string}}[]}
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
-function preferences():{selection:'manual'|'automatic'}{
- try{const saved=JSON.parse(localStorage.getItem(PREFERENCES)||'null');return {selection:saved?.selection==='automatic'?'automatic':'manual'}}
- catch{return {selection:'manual'}}
+const workloads={
+ short:{label:'짧게',maxAttempts:3,tokenBudget:60000,timeBudgetSeconds:900},
+ normal:{label:'보통',maxAttempts:6,tokenBudget:180000,timeBudgetSeconds:1800},
+ long:{label:'넉넉히',maxAttempts:12,tokenBudget:600000,timeBudgetSeconds:3600},
+} as const
+type Workload=keyof typeof workloads
+function preferences():{selection:'manual'|'automatic';workload:Workload;providerId:string;model:string}{
+ try{const saved=JSON.parse(localStorage.getItem(PREFERENCES)||'null');return {
+  selection:saved?.selection==='automatic'?'automatic':'manual',
+  workload:saved?.workload in workloads?saved.workload:'short',providerId:saved?.providerId||'',model:saved?.model||''}}
+ catch{return {selection:'manual',workload:'short',providerId:'',model:''}}
 }
+const stops:Record<string,string>={attempt_limit:'선택한 작업량을 마쳤습니다. 같은 목표로 이어갈 수 있습니다.',
+ token_budget:'설정한 사용량에 도달했습니다. 연구와 선택 버전은 보존했습니다.',
+ time_budget:'설정한 작업 시간이 끝났습니다. 연구와 선택 버전은 보존했습니다.',
+ no_progress:'새로운 근거나 변경이 없어 반복 호출을 멈췄습니다.'}
 const terminal=(status:string)=>['completed','failed','cancelled','needs_review'].includes(status)
 const phases:Record<string,string>={preparing_lab:'개선 준비 중',building_generator:'선택한 버전 준비 중',
  diagnosing_and_editing:'문제를 찾고 개선하는 중',measuring:'기존 버전과 개선 버전 비교 중',
@@ -31,7 +48,7 @@ function pair(comparison:Comparison,key:string){
 }
 function Results({comparison,waiting,busy,onChoose}:{comparison:Comparison;waiting:boolean;busy:boolean;onChoose:(side:'baseline'|'candidate')=>void}){
  const accuracy=pair(comparison,'quality'),time=pair(comparison,'elapsedMs'),tokens=pair(comparison,'tokens')
- const rows=[{label:'검증 문제 정확도',values:accuracy,format:(v:number)=>(v*100).toFixed(1)+'%'},
+ const rows=[{label:'기능 검사 정확도',values:accuracy,format:(v:number)=>(v*100).toFixed(1)+'%'},
   {label:'같은 검사에 걸린 시간',values:time,format:(v:number)=>v.toFixed(1)+' ms'},
   {label:'같은 문제의 사용량',values:tokens,format:(v:number)=>v.toLocaleString()+' 토큰'}]
  return <Panel className="mt-4 overflow-hidden p-5 sm:p-7">
@@ -62,18 +79,17 @@ export function SelfImprovementPage(){
  const algorithms=useRemote<{kinds:{kind:string;active?:{id:string;name:string;implementation:string;revision:string}}[]}>('/api/algorithms',{kinds:[]})
  const activeSearch=algorithms.value.kinds?.find(item=>item.kind==='selfimprove.search')?.active
  const enabledAll=providers.value.filter(provider=>provider.enabled!==false)
- const preferredProvider=enabledAll.find(provider=>/opencode|open code/i.test(provider.name)&&/deepseek/i.test(provider.model||''))
-  ||enabledAll.find(provider=>/opencode|open code/i.test(provider.name))
-  ||enabledAll.find(provider=>/deepseek/i.test(provider.model||''))
-  ||enabledAll[0]
- const enabled=preferredProvider?[preferredProvider,...enabledAll.filter(provider=>provider.id!==preferredProvider.id)]:enabledAll
- const [providerId,setProviderId]=useState(''),[model,setModel]=useState('')
+ const enabled=enabledAll
+ const [providerId,setProviderId]=useState(()=>preferences().providerId),[model,setModel]=useState(()=>preferences().model)
+ const [workload,setWorkload]=useState<Workload>(()=>preferences().workload)
+ const budget=workloads[workload]
  const [request,setRequest]=useState(''),[selection,setSelection]=useState<'manual'|'automatic'>(()=>preferences().selection)
  const [busy,setBusy]=useState(false),[error,setError]=useState('')
- const [settingsOpen,setSettingsOpen]=useState(true)
+ const [settingsOpen,setSettingsOpen]=useState(()=>{try{return !localStorage.getItem(SAVED)}catch{return true}})
  const [jobId,setJobId]=useState(()=>{try{return localStorage.getItem(SAVED)||''}catch{return ''}})
  const [campaign,setCampaign]=useState<Campaign|null>(null)
- useEffect(()=>{try{localStorage.setItem(PREFERENCES,JSON.stringify({selection}))}catch{}},[selection])
+ const [install,setInstall]=useState<InstallJob|null>(null)
+ useEffect(()=>{try{localStorage.setItem(PREFERENCES,JSON.stringify({selection,workload,providerId,model}))}catch{}},[selection,workload,providerId,model])
  useEffect(()=>{
   if(enabled.length&&!enabled.some(provider=>provider.id===providerId)){
    setProviderId(enabled[0].id);setModel(enabled[0].model||'')
@@ -95,20 +111,34 @@ export function SelfImprovementPage(){
   void refresh();const timer=window.setInterval(()=>void refresh(),1500)
   return()=>{alive=false;window.clearInterval(timer)}
  },[jobId])
+ const installId=campaign?.installJobId||install?.id
+ useEffect(()=>{
+  if(!installId)return
+  let alive=true
+  const refresh=async()=>{try{const next=await get<InstallJob>('/api/dev/jobs/'+encodeURIComponent(installId));if(alive)setInstall(next)}catch{/* The service can restart after a completed installation. */}}
+  void refresh();const timer=window.setInterval(()=>void refresh(),1500)
+  return()=>{alive=false;window.clearInterval(timer)}
+ },[installId])
+ const installing=!!install&&!terminal(install.status)
  const working=!!campaign&&!terminal(campaign.status)
+ const adopted=campaign?.acceptedGenerations||0
+ const hasSelected=!!campaign?.headCommit&&!!campaign?.baseCommit&&campaign.headCommit!==campaign.baseCommit
+ const research=campaign?.history?.reduce((n,row)=>n+(row.newFindings||0),0)||0
+ const inherited=campaign?.history?.filter((row,index,rows)=>rows.slice(0,index).some(prior=>prior.acceptedCommit&&prior.acceptedCommit===row.generatorCommit)).length||0
+ const executedMethods=campaign?.history?.reduce((n,row)=>n+(row.methodExecutions?.length||0),0)||0
  const backToSetup=()=>{
   setSettingsOpen(true);setError('')
   window.scrollTo({top:0,behavior:'smooth'})
  }
- const start=async()=>{
-  if(busy||working||!providerId||!model.trim())return
+ const start=async(continuing=false)=>{
+  if(busy||working||installing||!providerId||!model.trim())return
   setBusy(true);setError('')
   try{
    const job=await post<{id:string;status:string}>('/api/rsi/start',{
-    providerId,model,request,mode:'continuous',confirmation:'START_RSI_EVOLUTION',
-    selectionPolicy:selection,maxAttempts:1
+    providerId,model,...(continuing&&campaign?{continueFrom:campaign.id}:{request}),mode:'continuous',confirmation:'START_RSI_EVOLUTION',
+    selectionPolicy:selection,maxAttempts:budget.maxAttempts,tokenBudget:budget.tokenBudget,timeBudgetSeconds:budget.timeBudgetSeconds
    })
-   setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setSettingsOpen(false)
+   setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setInstall(null);setSettingsOpen(false)
    try{localStorage.setItem(SAVED,job.id)}catch{}
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
@@ -126,12 +156,21 @@ export function SelfImprovementPage(){
   try{await post('/api/jobs/'+encodeURIComponent(jobId)+'/cancel',{});setCampaign(old=>old?{...old,status:'cancelled'}:old)}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
- const status=campaign?campaign.status==='completed'?'이번 발전 작업을 마쳤습니다':campaign.status==='cancelled'?'중단했습니다':
+ const apply=async()=>{
+  if(!campaign?.headCommit||busy||working||installing)return
+  setBusy(true);setError('')
+  try{
+   const next=await post<InstallJob>('/api/rsi/campaigns/'+encodeURIComponent(campaign.id)+'/apply',{
+    commit:campaign.headCommit,confirmation:'APPLY_VERIFIED_CAMPAIGN_TO_SUB'})
+   setInstall(next);setCampaign({...campaign,installJobId:next.id})
+  }catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
+ const status=campaign?campaign.status==='completed'?(adopted>0?'검증된 개선본을 선택했습니다':research>0?'연구를 보존했습니다 · 채택한 코드 없음':'개선 근거가 없어 종료했습니다'):campaign.status==='cancelled'?'중단했습니다':
   campaign.status==='needs_review'||campaign.status==='failed'?'이번 작업을 계속하지 못했습니다':phases[campaign.phase]||'개선을 준비하고 있습니다':''
  return <div className="mx-auto w-full max-w-[920px] px-5 py-6 sm:px-7">
-  <Headline eyebrow="DOMINION" title="계속 발전하기" description="개선할 부분을 스스로 찾고, 기존 버전과 비교합니다. 어느 쪽이 더 나은지 보고 선택하세요."
+  <Headline eyebrow="DOMINION" title="계속 발전하기" description="기존 지식으로 연구하고 새 방법과 코드를 만들며, 검증된 버전이 다음 개선을 이어갑니다."
    actions={<Button variant="secondary" onClick={()=>{void providers.reload();void catalogue.reload()}} aria-label="새로고침"><RefreshCw size={15}/></Button>}/>
-  <Notice message={error||providers.error||(campaign?.error?'이번 개선을 완료하지 못해 기존 버전을 유지했습니다. 다시 시작할 수 있습니다.':'')}/>
+  <Notice message={error||providers.error||install?.error||campaign?.error||''}/>
   {campaign&&!working&&<div className="mb-3 flex justify-end"><Button variant="ghost" onClick={()=>setSettingsOpen(v=>!v)}>{settingsOpen?'설정 닫기':'모델 바꾸기'}</Button></div>}
   {(!campaign||settingsOpen)&&<Panel className="p-5 sm:p-7">
    <div className="mb-5 flex items-center gap-3"><BrainCircuit size={25} className="text-[#A94E30]"/><div><h2 className="font-bold">더 나은 버전이 다음 개선을 이어갑니다</h2><p className="mt-1 text-[12px] text-[#7C7469]">코딩 없이 모델과 선택 방식만 고르면 됩니다.</p></div></div>
@@ -144,15 +183,20 @@ export function SelfImprovementPage(){
      <strong className="text-[13px]">{option.label}</strong><span className="mt-1 block text-[11px] text-[#7C7469]">{option.detail}</span></button>)}
    </div></div>
    <div className="mt-5"><FormField label="중점적으로 나아졌으면 하는 점 (선택)"><TextArea rows={2} value={request} onChange={e=>setRequest(e.target.value)} disabled={working||busy} placeholder="예: 기억을 더 잘하고, 같은 일을 적은 비용으로 해 줘. 비워 두어도 됩니다."/></FormField></div>
-   <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-[11px] leading-5 text-[#8A8176]">1회 수정 · 시간 상한 없음 · 토큰 상한 없음</p><Button variant="primary" onClick={()=>void start()} disabled={busy||working||!providerId||!model.trim()}><Play size={15}/>발전 시작</Button></div>
-   <p className="mt-3 text-[11px] leading-5 text-[#8A8176]">시작하면 프로그램 복사본에서 수정과 실제 비교를 실행합니다. 선택한 버전은 다음 개선에 사용되며, 이전 선택은 다음 작업에도 이어집니다. 선택을 기다리는 시간은 작업 시간에 포함하지 않습니다.</p>
+   <div className="mt-5"><FormField label="한 번에 진행할 작업량"><SelectInput value={workload} disabled={working||busy||installing} onChange={e=>setWorkload(e.target.value as Workload)}>{Object.entries(workloads).map(([key,value])=><option key={key} value={key}>{value.label} · 최대 {value.maxAttempts}단계 · {(value.tokenBudget/10000).toLocaleString()}만 토큰 · {value.timeBudgetSeconds/60}분</option>)}</SelectInput></FormField></div>
+   <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-[11px] leading-5 text-[#8A8176]">연구만 한 단계도 다음 구현으로 이어집니다. 중단해도 지식은 남습니다.</p><Button variant="primary" onClick={()=>void start()} disabled={busy||working||installing||!providerId||!model.trim()}><Play size={15}/>발전 시작</Button></div>
+   <p className="mt-3 text-[11px] leading-5 text-[#8A8176]">시작하면 프로그램 복사본에서 수정과 실제 비교를 실행합니다. 선택한 버전은 다음 개선에 사용됩니다. 완료 후 ‘검증본을 4317에 반영’을 누르면 작업 브랜치에 적용하고 서버를 다시 빌드합니다. 메인은 바뀌지 않습니다. 선택을 기다리는 시간은 제외하며, 사용량은 호출 전 추정치와 제공자 보고로 제한합니다.</p>
   </Panel>}
   {campaign&&<Panel className="mt-4 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2">{working?<LoaderCircle size={16} className="animate-spin text-[#A94E30]"/>:<Check size={16}/>}<strong className="text-[14px]">{status}</strong></div>
    {working?<Button variant="secondary" disabled={busy} onClick={()=>void stop()}><Square size={13}/>중단</Button>:
-    <div className="flex flex-wrap gap-2"><Button variant="ghost" onClick={backToSetup}><ArrowLeft size={14}/>돌아가기</Button><Button variant="primary" disabled={busy||!providerId||!model.trim()} onClick={()=>void start()}><Play size={14}/>이어서 발전하기</Button></div>}</div>
+    <div className="flex flex-wrap gap-2"><Button variant="ghost" onClick={backToSetup}><ArrowLeft size={14}/>돌아가기</Button><Button variant="primary" disabled={busy||installing||!providerId||!model.trim()} onClick={()=>void start(true)}><Play size={14}/>같은 목표로 이어가기</Button></div>}</div>
+   {campaign.objective&&<p className="mt-3 text-[13px] leading-6 text-[#5C544A]">목표: {campaign.objective}</p>}
    <p className="mt-3 text-[12px] text-[#7C7469]">개선 시도 {campaign.attempts||0}회 <ArrowRight size={12} className="mx-1 inline"/>채택 {campaign.acceptedGenerations||0}회 · 생성에 사용한 토큰 {campaign.tokensEstimated?'약 ':''}{(campaign.tokens||0).toLocaleString()}</p>
-   {activeSearch&&<div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-2 text-[11px] text-[#7C7469]"><span className="font-semibold text-[#5C544A]">탐색 알고리즘</span><span>{activeSearch.name}</span><span className="rounded bg-[#F1ECE3] px-1.5 py-0.5 text-[10px] text-[#8A8176]">{activeSearch.implementation}</span>{activeSearch.revision&&<span className="text-[10px] text-[#9C9388]">revision {activeSearch.revision.slice(0,10)}</span>}</div>}
-   {campaign.history&&campaign.history.length>0&&<details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[#7C7469]">지난 비교 결과</summary><div className="mt-2 grid gap-2">{campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-2">{item.attempt}번째 · {item.accepted?'개선 버전 선택':item.error?'개선 효과 확인 못함':'기존 유지'}{item.domainSelection==='algorithm_trial'?' · 전략 시험':item.domainSelection==='research_continuation'?' · 연구 계속':''}{item.trialOutcome?.verdict?` · 시험 ${item.trialOutcome.verdict}`:''}</div>)}</div></details>}
+   <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">{[{label:'새 연구 근거',value:research},{label:'검증·선택한 코드',value:adopted},{label:'선택 버전으로 후속 실행',value:inherited},{label:'저장된 방법의 실제 실행',value:executedMethods}].map(item=><div key={item.label} className="rounded-lg bg-[#FAF7F1] p-3"><span className="block text-[#7C7469]">{item.label}</span><strong className="mt-1 block text-lg">{item.value}</strong></div>)}</div>
+   {!working&&campaign.stopReason&&<p className="mt-3 text-[12px] text-[#7C7469]">{stops[campaign.stopReason]||campaign.stopReason}</p>}
+   {!working&&hasSelected&&<div className="mt-4 rounded-xl border border-[#D9E3D3] bg-[#F2F6EF] p-4"><p className="text-[13px] font-semibold">{campaign.selectedVersionRunning?'검증한 버전이 현재 4317에서 실행 중입니다':installing?'검증본을 빌드하고 있습니다':install?.status==='completed'?'빌드 완료 · 서버 재연결 확인 중':'선택한 개선본을 실제 사용하는 프로그램에 반영할 수 있습니다'}</p><p className="mt-1 text-[12px] text-[#7C7469]">{campaign.sourceSnapshot?'작업 시작 시 미저장 코드가 있었습니다. 파일을 보존하기 위해 자동 반영은 제한합니다.':'작업 브랜치만 반영하며 메인과 다른 서비스의 설정은 유지합니다.'}</p>{!campaign.selectedVersionRunning&&!campaign.sourceSnapshot&&<Button className="mt-3" variant="primary" disabled={busy||installing} onClick={()=>void apply()}>{installing?<LoaderCircle size={14} className="animate-spin"/>:<Download size={14}/>}검증본을 4317에 반영</Button>}</div>}
+   {activeSearch&&<div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-2 text-[11px] text-[#7C7469]"><span className="font-semibold text-[#5C544A]">다음 연구를 고르는 방식</span><span>{activeSearch.name}</span></div>}
+   {campaign.history&&campaign.history.length>0&&<details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[#7C7469]">지난 비교 결과</summary><div className="mt-2 grid gap-2">{campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-2">{item.attempt}번째 · {item.accepted?'검증 버전 선택':(item.newFindings||0)>0?'연구 보존':item.error?'개선 효과 확인 못함':'새로운 진전 없음'}{item.domainSelection==='algorithm_trial'?' · 전략 시험':item.domainSelection==='research_continuation'?' · 연구 계속':''}{item.trialOutcome?.verdict?` · 시험 ${item.trialOutcome.verdict}`:''}</div>)}</div></details>}
   </Panel>}
   {campaign?.comparison&&<Results comparison={campaign.comparison} waiting={working&&campaign.phase==='waiting_for_choice'} busy={busy} onChoose={side=>void choose(side)}/>}
  </div>

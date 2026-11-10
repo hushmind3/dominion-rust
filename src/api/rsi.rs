@@ -99,11 +99,40 @@ pub async fn choose(State(state):State<AppState>,Path(id):Path<String>,Json(body
     }
 }
 
+pub async fn apply_campaign(State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>)->Response{
+    let Some(campaign)=state.store.get("rsi_campaign",&id) else {return error("개선 작업을 찾지 못했습니다.".into())};
+    if body["confirmation"]!="APPLY_VERIFIED_CAMPAIGN_TO_SUB" || body["commit"]!=campaign["headCommit"]
+        || !matches!(campaign["status"].as_str(),Some("completed"|"cancelled"|"needs_review"|"failed"))
+        || campaign["headCommit"]==campaign["baseCommit"] {
+        return error("완료된 작업에서 선택한 검증 버전의 적용 버튼을 눌러 주세요.".into());
+    }
+    match crate::engine::dev::start_rsi_install(state.clone(),&id,body["commit"].as_str().unwrap_or("")) {
+        Ok(job)=>{
+            state.store.patch_if("rsi_campaign",&id,"headCommit",&campaign["headCommit"],&json!({"installJobId":job["id"]}));
+            (StatusCode::ACCEPTED,Json(job)).into_response()
+        },
+        Err(message)=>error(message),
+    }
+}
+
 pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Response{
     let Some(job)=state.store.get("job",&id).filter(|job|job["kind"]=="rsi_evolve")else{
         return error("개선 작업을 찾을 수 없습니다.".into());
     };
     let mut record=state.store.get("rsi_campaign",&id).unwrap_or_else(||json!({"id":id,"phase":"preparing_lab"}));
+    for (field,key) in [("objective","rsiObjective"),("providerId","providerId"),("model","model")] {
+        record[field]=job["input"][key].clone();
+    }
+    record["selectedVersionRunning"]=json!(record["headCommit"].as_str()==option_env!("DOMINION_BUILD_COMMIT"));
+    if record["phase"]=="diagnosing_and_editing" {
+        if let Some(session)=record["activeGenerationJobId"].as_str().and_then(|id|state.store.get("job",id))
+            .and_then(|j|j["sessionId"].as_str().map(str::to_string)) {
+            let usage=state.store.session_usage(&session);
+            record["tokens"]=json!(record["activeBaseTokens"].as_u64().unwrap_or(0)
+                .saturating_add(usage["totalTokens"].as_u64().unwrap_or(0)));
+            record["tokensEstimated"]=json!(record["tokensEstimated"]==true || usage["estimatedCalls"].as_u64().unwrap_or(0)>0);
+        }
+    }
     if job["status"]!="running"||record["status"].is_null(){record["status"]=job["status"].clone();}
     if !job["error"].is_null(){record["error"]=job["error"].clone();}
     Json(record).into_response()
@@ -158,12 +187,27 @@ pub async fn apply(
     }
 }
 
+fn continued_request(state:&AppState,mut body:Value)->Result<Value,String>{
+    let Some(id)=body["continueFrom"].as_str().map(str::to_string) else {return Ok(body)};
+    let previous=state.store.get("job",&id).filter(|j|j["kind"]=="rsi_evolve")
+        .ok_or("이어서 진행할 작업을 찾지 못했습니다.")?;
+    if !matches!(previous["status"].as_str(),Some("completed"|"cancelled"|"failed"|"needs_review")) {
+        return Err("이전 작업이 끝난 뒤 이어서 진행할 수 있습니다.".into());
+    }
+    for (field,key) in [("request","rsiObjective"),("focusFiles","rsiFocusFiles"),("providerId","providerId"),("model","model")] {
+        if body[field].is_null() || body[field].as_str()==Some("") {body[field]=previous["input"][key].clone();}
+    }
+    Ok(body)
+}
+
 pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    if crate::engine::dev::installation_running() {return error("버전 반영이 끝난 뒤 발전 작업을 시작하세요.".into());}
+    let body=match continued_request(&state,body){Ok(body)=>body,Err(message)=>return error(message)};
     let continuous=body["mode"]=="continuous";
     let _start_guard=if continuous{
         if !state.begin_session("rsi-evolution-start"){return error("개선 시작을 처리 중입니다.".into());}
         let guard=state.session_guard("rsi-evolution-start");
-        if state.store.all("job").iter().any(|job|job["kind"]=="rsi_evolve"&&matches!(job["status"].as_str(),Some("queued"|"running"))){
+        if state.store.all("job").iter().any(|job|matches!(job["kind"].as_str(),Some("rsi_evolve"|"rsi_generation"))&&matches!(job["status"].as_str(),Some("queued"|"running"))){
             return error("진행 중인 개선이 있습니다. 기존 작업에서 계속하거나 중단해 주세요.".into());
         }
         Some(guard)
@@ -240,6 +284,11 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         request.to_string()
     };
     let source_dir = source.to_string_lossy().to_string();
+    if let Some(id)=body["continueFrom"].as_str() {
+        let prior=state.store.get("job",id).unwrap_or(Value::Null);
+        let prior_source=prior["input"]["rsiSourceDir"].as_str().and_then(|s|std::fs::canonicalize(s).ok());
+        if prior_source.as_ref()!=Some(&source) {return error("다른 소스의 작업은 이어서 진행할 수 없습니다.".into());}
+    }
     let (index_meta, index_context) =
         match crate::engine::code_index::prompt_context(&state, &source, &focus_files) {
             Ok(value) => value,
@@ -293,6 +342,16 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         ],
         "autoLearning": false
     });
+    if let Some(id)=body["continueFrom"].as_str() {
+        input["rsiContinueFrom"]=json!(id);
+        if let Some(prior)=state.store.get("rsi_campaign",id) {
+            // Reuse decisions refer to the exact selected implementation.
+            // Source changes still reuse indexed research, but force a fresh decision.
+            if prior["headCommit"]==status["commit"] || prior["baseCommit"]==status["commit"] {
+                input["rsiPreviousDecision"]=prior["nextDecision"].clone();
+            }
+        }
+    }
     if let Some(effort) = body["reasoningEffort"].as_str().filter(|v| !v.is_empty()) {
         if !crate::engine::reasoning::valid_effort(effort) {
             return error("선택한 추론 강도가 유효하지 않습니다.".into());
@@ -325,6 +384,22 @@ mod tests {
     fn git(dir: &Path, args: &[&str]) {
         let output = Command::new("git").current_dir(dir).args(args).output().unwrap();
         assert!(output.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[test]
+    fn continuing_uses_the_saved_goal_and_refuses_a_running_campaign(){
+        let root=std::env::temp_dir().join(format!("dominion-rsi-resume-{}",uuid::Uuid::new_v4()));
+        let config=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
+        let mut prior=json!({"id":"old","kind":"rsi_evolve","status":"completed","input":{
+            "rsiObjective":"retain the actual user goal","rsiFocusFiles":["src/engine/memory.rs"],"providerId":"p","model":"m"}});
+        state.store.put("job",&prior);
+        let resumed=continued_request(&state,json!({"continueFrom":"old"})).unwrap();
+        assert_eq!(resumed["request"],"retain the actual user goal");assert_eq!(resumed["providerId"],"p");
+        assert_eq!(resumed["focusFiles"],json!(["src/engine/memory.rs"]));
+        prior["status"]=json!("running");state.store.put("job",&prior);
+        assert!(continued_request(&state,json!({"continueFrom":"old"})).is_err());
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]

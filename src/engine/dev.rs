@@ -318,6 +318,8 @@ pub async fn diff(state: &AppState) -> Result<Value, String> {
 
 static UPDATING: AtomicBool = AtomicBool::new(false);
 
+pub fn installation_running()->bool {UPDATING.load(Ordering::Acquire)}
+
 fn toolchain_path() -> Option<std::ffi::OsString> {
     let mut paths = vec![
         PathBuf::from("/opt/homebrew/bin"),
@@ -460,9 +462,95 @@ pub fn start_job(state: AppState, kind: &str, input: Value) -> Option<Value> {
     Some(job)
 }
 
+/// Reuse the existing installation job for a verified test-branch lineage.
+/// No fetch, main merge, model call or extra research generation is involved.
+pub fn start_rsi_install(state:AppState,campaign:&str,commit:&str)->Result<Value,String>{
+    live_source_root(&state)?;
+    if state.config.port!=4317 {return Err("이 버튼은 4317 작업 브랜치 서버에서 사용하세요.".into());}
+    if UPDATING.swap(true,Ordering::AcqRel) {return Err("버전 적용을 진행 중입니다.".into());}
+    match start_job(state,"rsi_apply",json!({"campaignId":campaign,"commit":commit})) {
+        Some(job)=>Ok(job),
+        None=>{UPDATING.store(false,Ordering::Release);Err("적용 작업을 저장하지 못했습니다.".into())}
+    }
+}
+
+fn publish_web(from:&Path,to:&Path)->Result<(),String>{
+    std::fs::create_dir_all(to).map_err(|e|e.to_string())?;
+    for entry in std::fs::read_dir(from).map_err(|e|e.to_string())? {
+        let entry=entry.map_err(|e|e.to_string())?;
+        if entry.file_name()=="index.html" {continue;}
+        if entry.file_type().map_err(|e|e.to_string())?.is_dir() {publish_web(&entry.path(),&to.join(entry.file_name()))?;}
+        else {std::fs::copy(entry.path(),to.join(entry.file_name())).map_err(|e|e.to_string())?;}
+    }
+    // Assets arrive first. An existing browser can still request old hashes.
+    if from.join("index.html").is_file() {
+        std::fs::copy(from.join("index.html"),to.join("index.next.html")).map_err(|e|e.to_string())?;
+        std::fs::rename(to.join("index.next.html"),to.join("index.html")).map_err(|e|e.to_string())?;
+    }
+    Ok(())
+}
+
+fn installation_has_active_work(state:&AppState)->bool {
+    state.store.all("execution").iter().any(|e|e["status"]=="running")
+        || state.store.all("job").iter().any(|j|matches!(j["status"].as_str(),Some("queued"|"running")))
+}
+
+async fn install_rsi_source(state:&AppState,input:&Value)->Result<(Vec<String>,Value),(Vec<String>,String)>{
+    let dir=live_source_root(state).map_err(|e|(vec![],e))?;
+    if installation_has_active_work(state) {
+        return Err((vec![],"실행 중인 대화나 작업이 끝난 뒤 적용하세요.".into()));
+    }
+    let id=input["campaignId"].as_str().ok_or_else(||(vec![],"개선 작업 없음".into()))?;
+    let commit=input["commit"].as_str().ok_or_else(||(vec![],"선택 버전 없음".into()))?;
+    let application=crate::engine::rsi_worktree::apply_campaign_to_sub(state,id,commit).await.map_err(|e|(vec![],e))?;
+    let staged=state.config.data_dir.join("rsi-web").join(uuid::Uuid::new_v4().to_string());
+    let build_target=state.config.data_dir.join("rsi-build").join("generator");
+    let mut logs=vec!["검증된 계보를 dominion-sub에 반영했습니다. 실행 중인 서버는 빌드가 끝날 때까지 유지합니다.".into()];
+    let commands=vec![
+        (crate::engine::rsi_worktree::cargo_executable(),vec!["build".into(),"--locked".into(),"--release".into(),"--bin".into(),"dominion-rust".into(),"--target-dir".into(),build_target.to_string_lossy().to_string()],900),
+        (PathBuf::from(npm()),vec!["--prefix".into(),"web".into(),"run".into(),"typecheck".into()],180),
+        (PathBuf::from(npm()),vec!["--prefix".into(),"web".into(),"run".into(),"build".into(),"--".into(),"--outDir".into(),staged.to_string_lossy().to_string()],180),
+    ];
+    for (program,args,seconds) in commands {
+        if git(&dir,&["rev-parse","HEAD"]).await.map_err(|e|(logs.clone(),e))?.trim()!=commit {
+            return Err((logs,"빌드 중 소스 버전이 바뀌어 재시작하지 않았습니다.".into()));
+        }
+        let mut cmd=Command::new(program);cmd.current_dir(&dir).args(args).stdin(Stdio::null());
+        if let Some(path)=toolchain_path(){cmd.env("PATH",path);}
+        let output=crate::engine::tools::run_command(&mut cmd,Duration::from_secs(seconds)).await.map_err(|e|(logs.clone(),e))?;
+        logs.extend(String::from_utf8_lossy(&output.stderr).lines().rev().take(12).map(str::to_string));
+        if !output.status.success(){return Err((logs,"선택 버전의 빌드를 완료하지 못했습니다. 실행 서버는 유지되며 적용을 다시 시도할 수 있습니다.".into()));}
+    }
+    if git(&dir,&["rev-parse","HEAD"]).await.map_err(|e|(logs.clone(),e))?.trim()!=commit
+        || !git(&dir,&["status","--porcelain","--untracked-files=no"]).await.map_err(|e|(logs.clone(),e))?.trim().is_empty() {
+        return Err((logs,"소스가 바뀌어 실행 서버를 교체하지 않았습니다.".into()));
+    }
+    if installation_has_active_work(state) {
+        return Err((logs,"빌드 중 새 작업이 시작되어 서버를 재시작하지 않았습니다. 작업이 끝나면 반영 버튼을 다시 눌러 주세요.".into()));
+    }
+    let binary=build_target.join("release").join("dominion-rust");
+    let mut identity=Command::new(&binary);identity.arg("--rsi-worker-identity");
+    let checked=crate::engine::tools::run_command(&mut identity,Duration::from_secs(10)).await.map_err(|e|(logs.clone(),e))?;
+    if !checked.status.success() || String::from_utf8_lossy(&checked.stdout).trim()!=commit {
+        return Err((logs,"실제 빌드한 실행 파일이 선택 버전과 달라 설치하지 않았습니다.".into()));
+    }
+    let installed=dir.join("target/release/dominion-rust");
+    let next=dir.join("target/release/dominion-rust.next");
+    std::fs::copy(&binary,&next).map_err(|e|(logs.clone(),e.to_string()))?;
+    publish_web(&staged,&state.config.web_dir).map_err(|e|(logs.clone(),e))?;
+    std::fs::rename(next,installed).map_err(|e|(logs.clone(),e.to_string()))?;
+    let _=std::fs::remove_dir_all(staged);
+    if let Some(mut campaign)=state.store.get("rsi_campaign",id) {
+        campaign["application"]["requiresRebuild"]=json!(false);
+        campaign["application"]["restartRequested"]=json!(true);
+        state.store.put("rsi_campaign",&campaign);
+    }
+    Ok((logs,json!({"installed":commit,"branch":"dominion-sub","application":application,"restartRequired":true})))
+}
+
 async fn run_job(state: AppState, job_id: String, kind: String, input: Value) {
-    let result = if kind=="update" { update_source(&state).await } else { execute(&state, &kind, &input).await };
-    let needs_restart = kind=="update" && result.as_ref().ok()
+    let result = match kind.as_str() {"update"=>update_source(&state).await,"rsi_apply"=>install_rsi_source(&state,&input).await,_=>execute(&state,&kind,&input).await};
+    let needs_restart = matches!(kind.as_str(),"update"|"rsi_apply") && result.as_ref().ok()
         .and_then(|(_,value)|value["restartRequired"].as_bool()).unwrap_or(false);
     let mut job = state
         .store
@@ -485,6 +573,28 @@ async fn run_job(state: AppState, job_id: String, kind: String, input: Value) {
         state.bus.record("dev_job", &saved);
     }
     state.store.audit("dev.job", json!({ "jobId": job_id, "kind": kind }));
+    if kind=="rsi_apply" {
+        UPDATING.store(false,Ordering::Release);
+        if needs_restart {
+            // The result was saved before restarting. A failed service command
+            // must be visible instead of leaving the UI waiting indefinitely.
+            let restarted=async {
+                let uid=Command::new("/usr/bin/id").arg("-u").output().await.map_err(|e|e.to_string())?;
+                let uid=String::from_utf8_lossy(&uid.stdout).trim().to_string();
+                if uid.is_empty() || !uid.bytes().all(|b|b.is_ascii_digit()) {return Err("사용자 서비스 ID를 확인하지 못했습니다.".to_string());}
+                let output=Command::new("/bin/launchctl").args(["kickstart","-k",&format!("gui/{uid}/com.hushmind.dominion.rust")])
+                    .output().await.map_err(|e|e.to_string())?;
+                if !output.status.success(){return Err(String::from_utf8_lossy(&output.stderr).chars().take(600).collect::<String>());}
+                Ok::<(),String>(())
+            }.await;
+            if let Err(error)=restarted {
+                if let Some(saved)=state.store.patch_if("dev_job",&job_id,"status",&json!("completed"),
+                    &json!({"status":"failed","error":format!("빌드는 완료했지만 4317 재시작에 실패했습니다: {error}")})) {
+                    state.bus.record("dev_job",&saved);
+                }
+            }
+        }
+    }
     if kind=="update" {
         UPDATING.store(false,Ordering::Release);
         if needs_restart {
@@ -710,6 +820,20 @@ pub fn stop_preview() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publishing_web_preserves_old_assets_and_replaces_the_entrypoint_last(){
+        let dir=std::env::temp_dir().join(format!("dominion-web-install-{}",uuid::Uuid::new_v4()));
+        let staged=dir.join("staged");let live=dir.join("live");
+        std::fs::create_dir_all(staged.join("assets")).unwrap();std::fs::create_dir_all(live.join("assets")).unwrap();
+        std::fs::write(staged.join("assets/new.js"),"new bundle").unwrap();
+        std::fs::write(staged.join("index.html"),"new entry").unwrap();
+        std::fs::write(live.join("assets/old.js"),"old open tab").unwrap();
+        publish_web(&staged,&live).unwrap();
+        assert_eq!(std::fs::read_to_string(live.join("index.html")).unwrap(),"new entry");
+        assert!(live.join("assets/new.js").is_file() && live.join("assets/old.js").is_file());
+        let _=std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn package_dir_prefers_root_then_web() {
