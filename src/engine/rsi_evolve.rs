@@ -2360,7 +2360,10 @@ async fn run_loop(
             child_input["rsiSelectedDomain"] = Value::Null;
             child_input["rsiDecisionInput"] = Value::Null;
         }
-        child_input["rsiIndexId"]=crate::engine::code_index::refresh(&context.state,&lab)?["id"].clone();
+        let current_index=crate::engine::code_index::refresh(&context.state,&lab)?;
+        child_input["rsiIndexId"]=current_index["id"].clone();
+        child_input["rsiIndexFingerprint"]=current_index["fingerprint"].clone();
+        child_input["rsiIndexSourceCommit"]=json!(head);
         let inherited_candidates=context.state.store.all("experience").into_iter()
             .filter(|item|item["status"]=="active" && item["partitionKey"]==research_scope(&child_input).partition_key
                 && item["outcome"]=="success" && item["evidence"]["accepted"]==true)
@@ -2986,8 +2989,17 @@ fn reconcile_descendant_target(
     if job["input"]["rsiAutoFocus"]==true {
         let source=PathBuf::from(job["input"]["rsiSourceDir"].as_str()
             .ok_or("자기개선 소스 경로가 없습니다.")?);
-        let index=crate::engine::code_index::refresh(state,&source)?;
+        // Parent already indexed this immutable generation checkout. A pure
+        // descendant replan must reuse its matching snapshot, not scan every
+        // source file a second time. Mismatch still triggers full revalidation.
+        let index=crate::engine::code_index::get(state,&source)
+            .filter(|stored|stored["id"]==job["input"]["rsiIndexId"]
+                && stored["fingerprint"]==job["input"]["rsiIndexFingerprint"]
+                && job["input"]["rsiIndexSourceCommit"]==commit)
+            .map_or_else(||crate::engine::code_index::refresh(state,&source),Ok)?;
         job["input"]["rsiIndexId"]=index["id"].clone();
+        job["input"]["rsiIndexFingerprint"]=index["fingerprint"].clone();
+        job["input"]["rsiIndexSourceCommit"]=json!(commit);
         let policy=strategy["id"].as_str()
             .and_then(|id|state.store.get("algorithm",id))
             .or_else(||crate::engine::algorithms::active(state,"selfimprove.search"));
@@ -3349,6 +3361,31 @@ mod tests {
         let file_focus=json!({"rsiAutonomous":true,"rsiObjective":"기본 목표",
             "rsiFocusFiles":["web/src/Example.tsx"]});
         assert_eq!(eligible_domains(&selection_objective(&file_focus)),vec!["ui"]);
+    }
+
+    #[test]
+    fn descendant_replan_reuses_the_exact_parent_source_index() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/memory.rs"),"fn memory_retrieve() {}\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let mut marked=index.clone();
+        marked["parentPrepared"]=json!(true);
+        state.store.put("code_index",&marked).unwrap();
+        let mut job=json!({"input":{
+            "rsiSourceDir":root,"rsiAutoFocus":true,
+            "rsiIndexId":index["id"],"rsiIndexFingerprint":index["fingerprint"],
+            "rsiIndexSourceCommit":"source-commit",
+            "rsiPromptBase":"study memory","rsiPromptEvidence":"",
+            "rsiPromptResearch":"","rsiTargetPlan":generation_target_plan(
+                "learning","algorithm_active",&json!({}),"source-commit")
+        }});
+        assert!(reconcile_descendant_target(&state,&mut job,&[],
+            "memory","algorithm_active",&json!({}),"source-commit").unwrap());
+        let retained=crate::engine::code_index::get(&state,&root).unwrap();
+        assert_eq!(retained["parentPrepared"],true,
+            "replanning an unchanged source must not rescan or replace the parent index");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
