@@ -216,6 +216,9 @@ fn classify(patch:&str)->&'static str {
             || line.contains("src/engine/rsi_worktree.rs ")
             || line.contains("src/engine/rsi_evolve.rs ")
             || line.contains("src/engine/rsi_metrics.rs ")
+            || line.contains("src/engine/algorithms.rs ")
+            || line.contains("src/engine/algorithm_eval.rs ")
+            || line.contains("src/engine/policy_patch.rs ")
             || line.contains("src/api/rsi.rs "))) {
         "improver"
     } else if patch.lines().filter(|line|line.starts_with("diff --git "))
@@ -799,6 +802,9 @@ mod tests {
         assert_eq!(classify("diff --git a/src/engine/rsi.rs b/src/engine/rsi.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/api/rsi.rs b/src/api/rsi.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/engine/rsi_evolve.rs b/src/engine/rsi_evolve.rs\n"),"improver");
+        assert_eq!(classify("diff --git a/src/engine/algorithms.rs b/src/engine/algorithms.rs\n"),"improver",
+            "a change to how algorithm candidates are selected must be measured as meta improvement");
+        assert_eq!(classify("diff --git a/src/engine/algorithm_eval.rs b/src/engine/algorithm_eval.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/engine/room_state.rs b/src/engine/room_state.rs\n"),"algorithm");
         assert_eq!(classify("diff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\n"),"harness");
     }
