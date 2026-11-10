@@ -240,10 +240,11 @@ pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &st
         .or_else(||valid_domain_scores(&json!({"implementation":"failure-clusters"}),
             history,objective)).unwrap_or_default();
     // Strict comparison preserves declared domain order as a stable tie break.
-    scores.into_iter().max_by(|left,right|
-        left.1.total_cmp(&right.1).then_with(||right.0.cmp(left.0)))
-        .map(|(domain,_)|domain.to_string())
-        .unwrap_or_else(||eligible_domains(objective)[0].to_string())
+    let mut best=(f64::NEG_INFINITY,eligible_domains(objective)[0]);
+    for (domain,score) in scores {
+        if score>best.0 {best=(score,domain);}
+    }
+    best.1.to_string()
 }
 
 fn search_strategy(algorithm: &Value, mode: &str) -> Value {
