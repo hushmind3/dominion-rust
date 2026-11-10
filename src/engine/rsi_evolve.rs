@@ -3016,6 +3016,145 @@ mod tests {
     }
 
     #[test]
+    fn descendant_replans_its_own_source_and_drops_stale_parent_excerpt() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/memory.rs"),
+            "fn memory_static() { println!(\"unrelated\"); }\n").unwrap();
+        std::fs::write(root.join("src/context.rs"),
+            "fn context_worker() { println!(\"revised\"); }\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let mut job=json!({"input":{
+            "rsiSourceDir":root,"rsiKnowledgeSource":root,
+            "rsiIndexId":index["id"],"rsiAutoFocus":true,
+            "rsiTargetDomain":"memory",
+            "rsiFocusFiles":["src/memory.rs"],
+            "rsiTargetPlan":{"domain":"memory","selection":"algorithm_active",
+                "strategy":{"implementation":"failure-clusters"},"generatorCommit":"before"},
+            "rsiObjective":"","rsiPromptBase":"OWNER BASE",
+            "rsiPromptEvidence":"\nVERIFIED PRIOR EVIDENCE",
+            "rsiPromptResearch":"\nRESEARCH RECEIPT",
+            "rsiRemainingCampaignTokens":5000,
+            "model":"test-model","providerId":"test-provider",
+            "rsiDecisionInput":{"nextDomain":"memory"}
+        }});
+        let revised=json!({"implementation":"failure-clusters"});
+        assert!(reconcile_descendant_target(&state,&mut job,&[],"context",
+            "algorithm_active",&revised,"after").unwrap());
+        assert_eq!(job["input"]["rsiTargetDomain"],"context");
+        assert_eq!(job["input"]["rsiFocusFiles"][0],"src/context.rs");
+        assert_eq!(job["input"]["rsiFocusSelection"]["source"],"descendant_indexed_evidence");
+        let new_prompt=job["input"]["prompt"].as_str().unwrap();
+        assert!(new_prompt.starts_with("OWNER BASE"));
+        assert!(new_prompt.contains("VERIFIED PRIOR EVIDENCE"));
+        assert!(new_prompt.contains("context_worker"));
+        assert!(!new_prompt.contains("memory_static"),
+            "a wrong parent-selected source excerpt must not survive child replanning");
+        assert_eq!(job["input"]["rsiDecisionInput"]["nextDomain"],"context");
+        assert_eq!(job["rsiTargetReplan"]["reason"],"descendant_authoritative_selection");
+        assert!(!reconcile_descendant_target(&state,&mut job,&[],"context",
+            "algorithm_active",&revised,"after").unwrap(),
+            "unchanged descendant plans must not reselect sources or append prompt text");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verified_success_becomes_revision_scoped_target_learning_not_a_patch_counter() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let beta=root.join("src/beta.rs");
+        let original="fn search_dispatch() { println!(\"search\"); }\n";
+        let improved="fn search_dispatch() { println!(\"search improved\"); }\n";
+        for name in ["alpha","beta"] {
+            std::fs::write(root.join("src").join(format!("{name}.rs")),original).unwrap();
+        }
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let input=json!({"rsiIndexId":index["id"],"rsiKnowledgeSource":root,
+            "rsiObjective":"search dispatch","rsiTargetDomain":"tools"});
+        let initial=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(initial[0]["path"],"src/alpha.rs");
+        let selected_beta=crate::engine::code_index::rank_focus_files(
+            &state,index["id"].as_str().unwrap(),"search dispatch","tools",
+            &BTreeMap::new(),None,2).into_iter()
+            .find(|v|v["path"]=="src/beta.rs").unwrap();
+        std::fs::write(&beta,improved).unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        let accepted_hash=crate::engine::code_index::indexed_source_hash(
+            &state,index["id"].as_str().unwrap(),"src/beta.rs").unwrap();
+        assert_ne!(selected_beta["sourceHash"],accepted_hash);
+        state.store.put("rsi_candidate",&json!({
+            "id":"verified-patch","status":"verified",
+            "paths":["src/beta.rs"],
+            "evaluation":{"metrics":{"eligible":true}}
+        })).unwrap();
+        state.store.put("rsi_generation",&json!({
+            "id":"prior-success","knowledgePartition":research_scope(&input).partition_key,
+            "objectiveId":crate::engine::memory::stable_id(&["search dispatch"]),
+            "accepted":true,"candidateId":"verified-patch","newFindings":0,
+            "focusFiles":["src/beta.rs"],"focusSelection":{"candidates":[selected_beta.clone()]},
+            "acceptedSourceHashes":{"src/beta.rs":accepted_hash},
+            "createdAt":"2026-11-10T00:00:00Z"
+        })).unwrap();
+        let learned=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(learned[0]["path"],"src/beta.rs");
+        assert_eq!(learned[0]["evidence"]["priorProductive"],1.0);
+        std::fs::write(&beta,original).unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        let reverted=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(reverted[0]["path"],"src/alpha.rs",
+            "reverting to the pre-patch version must not earn a success reward");
+        assert_eq!(reverted.iter().find(|row|row["path"]=="src/beta.rs").unwrap()
+            ["evidence"]["priorProductive"],0.0);
+        std::fs::write(&beta,"fn search_dispatch() { println!(\"new revision\"); }\n").unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        let stale=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(stale[0]["evidence"]["priorProductive"],0.0);
+        // A falsely declared acceptance must not contribute feedback.
+        state.store.put("rsi_candidate",&json!({
+            "id":"verified-patch","status":"rejected",
+            "paths":["src/beta.rs"],"evaluation":{"metrics":{"eligible":false}}
+        })).unwrap();
+        std::fs::write(&beta,improved).unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        let unverified=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(unverified[0]["path"],"src/alpha.rs");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_campaign_target_failures_are_reused_only_at_same_source_revision() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let first=root.join("src/search_first.rs");
+        let second=root.join("src/search_second.rs");
+        std::fs::write(&first,"fn search_dispatch() { /* scan alpha */ }\n").unwrap();
+        std::fs::write(&second,"fn search_dispatch() { /* scan alpha */ }\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let input=json!({"rsiIndexId":index["id"],"rsiKnowledgeSource":root,
+            "rsiObjective":"search dispatch","rsiTargetDomain":"tools"});
+        let initial=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(initial[0]["path"],"src/search_first.rs");
+        let prior=json!({"id":"persisted-prior","knowledgePartition":research_scope(&input).partition_key,
+            "objectiveId":crate::engine::memory::stable_id(&["search dispatch"]),
+            "accepted":false,"candidateId":null,"newFindings":0,
+            "focusFiles":["src/search_first.rs"],
+            "focusSelection":{"candidates":initial},
+            "createdAt":"2026-11-10T00:00:00Z"});
+        state.store.put("rsi_generation",&prior).unwrap();
+        let learned=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(learned[0]["path"],"src/search_second.rs",
+            "the later campaign should not re-spend its tokens on the same unproductive target");
+        // Same-length edit is a different revision, so old failure evidence
+        // can no longer drive the new source choice.
+        std::fs::write(&first,"fn search_dispatch() { /* scan bravo */ }\n").unwrap();
+        crate::engine::code_index::refresh(&state,&root).unwrap();
+        let refreshed=choose_focus_files(&state,&input,&[],None);
+        assert_eq!(refreshed[0]["path"],"src/search_first.rs",
+            "stale failure evidence must not penalize changed code");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn indexed_focus_finds_opaque_sources_and_model_can_explore_new_targets() {
         let (state,root)=state();
         std::fs::create_dir_all(root.join("src/engine")).unwrap();
