@@ -90,7 +90,9 @@ pub const SELFIMPROVE_FEATURES: &[&str] = &[
 ];
 
 fn expression_sample(kind: &str) -> std::collections::BTreeMap<String, f64> {
-    let names: &[&str] = if kind == "selfimprove.search" {
+    let names: &[&str] = if kind == "selfimprove.target" {
+        SELFIMPROVE_TARGET_FEATURES
+    } else if kind == "selfimprove.search" {
         SELFIMPROVE_FEATURES
     } else {
         &[
@@ -143,6 +145,14 @@ pub fn kind_label(kind: &str) -> &str {
         _ => "기타",
     }
 }
+
+/// Features supplied by the real indexed source selector to an AI-authored
+/// targeting formula. Unlike a hardcoded path table, these are measured from
+/// the current checkout and previous generations.
+pub const SELFIMPROVE_TARGET_FEATURES: &[&str] = &[
+    "pathEvidence", "symbolEvidence", "summaryEvidence",
+    "domainEvidence", "repeatPenalty", "novelty", "sourceCost",
+];
 
 /// Safe arithmetic expression over named candidate features. This lets a new
 /// selection rule be added as an executable algorithm record without a Rust
@@ -244,6 +254,22 @@ pub fn eval_expression(
     if expression.trim().is_empty() {
         return Err("expression is empty".into());
     }
+    // Generated arithmetic must be bounded, finite and free of stack-exhaustion
+    // inputs. It cannot call arbitrary Rust functions or external tools.
+    if expression.chars().count()>512 {
+        return Err("expression exceeds 512 characters".into());
+    }
+    let mut nesting=0usize;
+    let mut depth=0usize;
+    for ch in expression.chars() {
+        if ch=='(' {
+            nesting+=1;
+            depth=depth.max(nesting);
+            if depth>32 {return Err("expression nesting exceeds 32".into());}
+        } else if ch==')' {
+            nesting=nesting.saturating_sub(1);
+        }
+    }
     let mut parser = Parser {
         chars: expression.chars().collect(),
         index: 0,
@@ -252,6 +278,9 @@ pub fn eval_expression(
     let value = parser.expr()?;
     if parser.peek().is_some() {
         return Err("trailing tokens in expression".into());
+    }
+    if !value.is_finite() {
+        return Err("expression produced a non-finite score".into());
     }
     Ok(value)
 }
@@ -1522,6 +1551,12 @@ pub fn register(state: &AppState, body: &Value) -> Result<Value, String> {
             .ok_or("expression kernel requires parameters.expression")?;
         eval_expression(expression, &expression_sample(kind))?;
     }
+    if let Some(target_expression) = body["parameters"]["targetExpression"].as_str() {
+        if kind != "selfimprove.search" || implementation != "expression" {
+            return Err("targetExpression requires selfimprove.search expression kernel".into());
+        }
+        eval_expression(target_expression, &expression_sample("selfimprove.target"))?;
+    }
     let variant = body["variant"].as_str().unwrap_or(implementation);
     let parameters = body["parameters"]
         .as_object()
@@ -1958,6 +1993,32 @@ mod tests {
         )
         .is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn generated_source_targeting_formula_is_validated_and_versioned() {
+        let (state,dir)=state();
+        let valid=json!({"kind":"selfimprove.search","name":"evolvable-target-v1",
+            "implementation":"expression",
+            "parameters":{"expression":"objectiveMatch * 5 + exploration",
+                "targetExpression":"pathEvidence * 3 + symbolEvidence - repeatPenalty - sourceCost"}});
+        let registered=register(&state,&valid).unwrap();
+        assert_eq!(registered["parameters"]["targetExpression"],
+            "pathEvidence * 3 + symbolEvidence - repeatPenalty - sourceCost");
+        assert_eq!(registered["status"],"available");
+        assert!(register(&state,&json!({"kind":"selfimprove.search","name":"unknown-feature",
+            "implementation":"expression","parameters":{"expression":"novelty",
+                "targetExpression":"unguardedVariable + pathEvidence"}})).is_err());
+        assert!(register(&state,&json!({"kind":"selfimprove.search","name":"invalid-score",
+            "implementation":"expression","parameters":{"expression":"novelty",
+                "targetExpression":"pathEvidence / (novelty - novelty)"}})).is_err());
+        // A model-authored targeting rule cannot be silently attached to a
+        // different algorithm or a display-only kernel.
+        assert!(register(&state,&json!({"kind":"memory.rerank","name":"wrong-kind",
+            "implementation":"bm25","parameters":{"targetExpression":"sourceCost"}})).is_err());
+        assert!(eval_expression(&"(".repeat(36),&expression_sample("selfimprove.target")).is_err());
+        assert!(eval_expression(&"a".repeat(513),&expression_sample("selfimprove.target")).is_err());
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[test]
