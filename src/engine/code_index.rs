@@ -638,6 +638,143 @@ pub fn prompt_context(
     Ok((meta,block))
 }
 
+
+/// Rank implementation files from the actual code index, not a fixed table of
+/// paths. The ranking is deterministic, model-free, and remains bounded by the
+/// indexed source snapshot. A model-authored targeting expression can replace
+/// the scoring equation without replacing the Rust harness.
+pub fn rank_focus_files(
+    state: &AppState,
+    index_id: &str,
+    objective: &str,
+    domain: &str,
+    prior_unproductive: &BTreeMap<String, u64>,
+    algorithm: Option<&Value>,
+    limit: usize,
+) -> Vec<Value> {
+    let mut query = objective.to_lowercase()
+        .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .filter(|word| word.chars().count() >= 2)
+        .map(str::to_string).collect::<Vec<_>>();
+    // Language bridge is vocabulary, not a file selection table. Paths,
+    // symbols and documentation decide which concrete implementation is read.
+    let lower = objective.to_lowercase();
+    for (word, aliases) in [
+        ("기억", &["memory","recall","retrieve","retrieval"][..]),
+        ("검색", &["search","rank","query","retrieval"][..]),
+        ("망각", &["forget","decay","sweep"][..]),
+        ("압축", &["compact","compress","compression"][..]),
+        ("문맥", &["context","continuity","prompt"][..]),
+        ("학습", &["learning","experience","distill"][..]),
+        ("알고리즘", &["algorithm","strategy","policy"][..]),
+        ("자기개선", &["rsi","evolve","improve"][..]),
+        ("토큰", &["token","budget","usage"][..]),
+        ("비용", &["cost","budget","usage"][..]),
+        ("대화", &["chat","room","conversation"][..]),
+        ("메신저", &["telegram","discord","channel","messenger"][..]),
+        ("화면", &["ui","page","component"][..]),
+    ] {
+        if lower.contains(word) {
+            query.extend(aliases.iter().map(|word| word.to_string()));
+        }
+    }
+    if !domain.is_empty() {query.push(domain.to_lowercase());}
+    query.retain(|word| !matches!(word.as_str(),
+        "개선"|"최적화"|"하기"|"함수"|"코드"|"the"|"and"|"for"|"with"|
+        "improve"|"improvement"|"fix"|"code"|"function"|"dominion"));
+    query.sort();
+    query.dedup();
+    if query.is_empty() || limit == 0 {return Vec::new();}
+
+    let files=index_files(state,index_id).into_iter()
+        .filter(|file| {
+            let path=file["path"].as_str().unwrap_or("");
+            let ext=path.rsplit_once('.').map(|(_,ext)|ext).unwrap_or("");
+            matches!(ext,"rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"css"|"html"|"toml")
+                && !path.starts_with("tests/")
+                && !path.contains("/tests/")
+                && !path.contains("_test.")
+                && !path.contains(".test.")
+                && !path.contains(".spec.")
+                && !path.contains("_fixture.")
+                && file["bytes"].as_u64().unwrap_or(0)<=2*1024*1024
+        })
+        .collect::<Vec<_>>();
+    if files.is_empty() {return Vec::new();}
+
+    let fields=files.iter().map(|file| {
+        let path=file["path"].as_str().unwrap_or("").to_lowercase();
+        let symbols=file["symbols"].as_array().into_iter().flatten()
+            .filter_map(|item|item["name"].as_str())
+            .collect::<Vec<_>>().join(" ").to_lowercase();
+        let summary=file["summary"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str).collect::<Vec<_>>().join(" ").to_lowercase();
+        (path,symbols,summary)
+    }).collect::<Vec<_>>();
+
+    let document_count=files.len() as f64;
+    let frequencies=query.iter().map(|term| {
+        let count=fields.iter().filter(|(path,symbols,summary)|
+            path.contains(term) || symbols.contains(term) || summary.contains(term)).count();
+        (term.as_str(), ((document_count+1.0)/(count as f64+1.0)).ln()+1.0)
+    }).collect::<BTreeMap<_,_>>();
+    let target_expression=algorithm.and_then(|value|value["parameters"]["targetExpression"].as_str());
+
+    let mut ranked=Vec::new();
+    for (file,(path,symbols,summary)) in files.iter().zip(fields.iter()) {
+        let mut path_evidence=0.0;
+        let mut symbol_evidence=0.0;
+        let mut summary_evidence=0.0;
+        for term in &query {
+            let idf=frequencies.get(term.as_str()).copied().unwrap_or(0.0);
+            if path.contains(term) {path_evidence+=idf;}
+            if symbols.contains(term) {symbol_evidence+=idf;}
+            if summary.contains(term) {summary_evidence+=idf;}
+        }
+        let domain_evidence=if !domain.is_empty()
+            && (path.contains(domain)||symbols.contains(domain)) {1.0} else {0.0};
+        let evidence=path_evidence+symbol_evidence+summary_evidence+domain_evidence;
+        if evidence==0.0 {continue;}
+        let prior=prior_unproductive.get(path).copied().unwrap_or(0) as f64;
+        let source_cost=(file["bytes"].as_u64().unwrap_or(0) as f64/8_192.0).min(100.0);
+        let features=BTreeMap::from([
+            ("pathEvidence".to_string(),path_evidence),
+            ("symbolEvidence".to_string(),symbol_evidence),
+            ("summaryEvidence".to_string(),summary_evidence),
+            ("domainEvidence".to_string(),domain_evidence),
+            ("repeatPenalty".to_string(),prior.min(10.0)),
+            ("novelty".to_string(),1.0/(1.0+prior)),
+            ("sourceCost".to_string(),source_cost),
+        ]);
+        let default=3.0*path_evidence+symbol_evidence+0.5*summary_evidence+
+            domain_evidence-0.8*prior.min(10.0)-0.15*source_cost;
+        let attempted=target_expression.map(|expression|
+            crate::engine::algorithms::eval_expression(expression,&features));
+        let (score,policy_error)=match attempted {
+            Some(Ok(value)) if value.is_finite() => (value,None),
+            Some(Ok(_)) => (default,Some("nonfinite_target_score".to_string())),
+            Some(Err(error)) => (default,Some(error)),
+            None => (default,None),
+        };
+        let mut record=json!({
+            "path":file["path"],
+            "score":score,
+            "evidence":{"path":path_evidence,"symbols":symbol_evidence,
+                "summary":summary_evidence,"domain":domain_evidence,
+                "priorUnproductive":prior,"sourceCost":source_cost},
+            "policyRevision":algorithm.map(|policy|policy["revision"].clone()).unwrap_or(Value::Null),
+            "scoring":if target_expression.is_some() && policy_error.is_none() {"expression"} else {"corpus-evidence"}
+        });
+        if let Some(error)=policy_error {record["policyError"]=json!(error);}
+        ranked.push(record);
+    }
+    ranked.sort_by(|left,right|
+        right["score"].as_f64().unwrap_or(0.0).total_cmp(&left["score"].as_f64().unwrap_or(0.0))
+        .then_with(||left["path"].as_str().cmp(&right["path"].as_str())));
+    ranked.truncate(limit.min(8));
+    ranked
+}
+
 /// Returns compact, source-hash-verified RSI context instead of repeatedly
 /// sending an entire large source file to the model on every tool round.
 pub fn bounded_focus_context(
