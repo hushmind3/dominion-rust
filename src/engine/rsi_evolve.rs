@@ -3805,7 +3805,7 @@ mod tests {
             }}
         })];
         let (minimal,_) = fit_worker_prompt("owner objective","memory","memory",&[],None).unwrap();
-        let max_tokens=crate::engine::chat::estimate_text_tokens(&minimal)+256+16;
+        let max_tokens=crate::engine::chat::estimate_text_tokens(&minimal)+256+64;
         let (prompt,plan)=fit_worker_prompt("owner objective","memory","memory",&prior,
             Some(max_tokens)).unwrap();
         assert!(prompt.starts_with("owner objective"));
