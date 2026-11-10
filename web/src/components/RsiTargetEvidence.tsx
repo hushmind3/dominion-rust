@@ -13,6 +13,31 @@ export type RsiTargetSelection={
  policyRevision?:string|null
  candidates?:TargetCandidate[]
 }
+export type RsiTrialProof={
+ status?:string;verdict?:string;
+ comparison?:{matchedFrozenCases?:boolean;holdoutCases?:number;holdoutWins?:number;
+ holdoutRegressions?:number;reason?:string}
+}
+export type RsiReplanProof={
+ reason?:string;
+ coordinatorPlan?:{domain?:string;generatorCommit?:string};
+ descendantPlan?:{domain?:string;generatorCommit?:string};
+}
+
+export function RsiTrialEvidence({trial,replan}:{trial?:RsiTrialProof;replan?:RsiReplanProof}){
+ const result=trial?.comparison
+ if(!trial&&!replan)return null
+ return <div className="mt-2 space-y-1 text-[11px] text-[#655D51]">
+  {replan&&<p>자식 개선기의 독립 재계획: {replan.coordinatorPlan?.domain||'기존'} → {replan.descendantPlan?.domain||'재선택'} · 소스 근거 재구성</p>}
+  {trial&&<p>탐색 정책 실험: {trial.verdict||trial.status||'미결'}
+   {result?.matchedFrozenCases===true
+    ?` · 동일 동결 평가 ${result.holdoutCases??0}개 · 개선 ${result.holdoutWins??0}개 · 악화 ${result.holdoutRegressions??0}개`
+    :' · 동일 동결 평가 증거 부족'}
+   {result?.reason?` · ${result.reason}`:''}
+  </p>}
+ </div>
+}
+
 export function RsiTargetEvidence({selection}:{selection?:RsiTargetSelection}){
  if(!selection)return null
  if(selection.source==='user_selected'){
