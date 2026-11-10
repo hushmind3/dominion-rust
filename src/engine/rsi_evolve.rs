@@ -2831,13 +2831,15 @@ fn select_generation_strategy(
             if comparable_trial_baseline(history, &generation, &algorithm).is_some() {
                 return (domain, "algorithm_trial", search_strategy(&algorithm, "trial"));
             }
-            // Use this already scheduled generation normally. Do not spend a
-            // trial on a missing/reused control or create another generation.
+            // The active policy must supply a control in the domain actually
+            // selected by the candidate; unrelated controls cannot test it.
             let active = active
                 .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
             let mut selected = search_strategy(&active, "active");
-            selected["trialFallback"] = json!("unused_comparable_baseline_missing");
-            return (select_domain(&active, history, objective), "algorithm_active", selected);
+            selected["trialFallback"] = json!("collecting_same_domain_control");
+            selected["decisionSource"] = json!("candidate_target_active_control");
+            selected["pendingCandidateId"] = json!(id);
+            return (domain, "algorithm_active", selected);
         }
         let algorithm = active
             .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
@@ -4788,7 +4790,7 @@ mod tests {
         let (_, mode, strategy) =
             select_generation_strategy(&state, &[], "context", None, Some(id.to_string()), None, "commit-1");
         assert_eq!(mode, "algorithm_active");
-        assert_eq!(strategy["trialFallback"], "unused_comparable_baseline_missing");
+        assert_eq!(strategy["trialFallback"], "collecting_same_domain_control");
 
         let baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
         let (_, mode, _) = select_generation_strategy(
@@ -4850,6 +4852,27 @@ mod tests {
         candidate["evaluation"]["metrics"]["measurements"][1]["candidatePass"]=json!(false);
         assert_eq!(trial_verdict(&candidate,&active).0,"rejected",
             "a frozen regression must override savings and accepted flags");
+    }
+
+    #[test]
+    fn queued_policy_produces_same_domain_control_before_trial() {
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"alternate-domain",
+            "source":"rsi-generated","implementation":"expression",
+            "parameters":{"expression":"novelty + exploration"}
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap().to_string();
+        let intended=select_domain(&candidate,&[],"autonomous domain discovery");
+        let (domain,mode,strategy)=select_generation_strategy(&state,&[],
+            "autonomous domain discovery",None,Some(id.clone()),None,"commit-1");
+        assert_eq!(mode,"algorithm_active");
+        assert_eq!(domain,intended);
+        assert_eq!(strategy["id"],active["id"]);
+        assert_eq!(strategy["decisionSource"],"candidate_target_active_control");
+        assert_eq!(strategy["pendingCandidateId"],id);
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -4919,7 +4942,7 @@ mod tests {
         let (_, mode, strategy) = select_generation_strategy(
             &state, &[baseline.clone(), first.clone()], "context", None, Some(id.into()), None, "commit-1");
         assert_eq!(mode, "algorithm_active", "a second trial must not reuse the first control");
-        assert_eq!(strategy["trialFallback"], "unused_comparable_baseline_missing");
+        assert_eq!(strategy["trialFallback"], "collecting_same_domain_control");
         let saved = state.store.get("algorithm", id).unwrap();
         assert_eq!(saved["rsiTrial"]["trials"].as_array().unwrap().len(), 1);
         assert!(comparable_trial_baseline(&[baseline.clone()], &first, &saved).is_none());
