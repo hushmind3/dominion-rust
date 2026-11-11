@@ -3158,6 +3158,42 @@ fn adaptive_search_expression(history: &[Value]) -> Option<String> {
     ))
 }
 
+/// Breed a new executable strategy from quality-diverse generation history.
+/// Unlike the older measured-only formula, repeated *observed failures* can
+/// create an exploratory offspring even before the first accepted patch.
+fn queue_population_search_trial(
+    state:&AppState, history:&[Value], active:&Value,
+    objective:&str, campaign_id:&str, attempt:u64,
+)->Option<Value>{
+    let ancestors=state.store.all("algorithm");
+    let child=crate::engine::rsi_population::breed(history,&ancestors,objective)?;
+    let expression=child["expression"].as_str()?;
+    if active["parameters"]["expression"].as_str()==Some(expression) {
+        return None;
+    }
+    let candidate=crate::engine::algorithms::register(state,&json!({
+        "kind":"selfimprove.search",
+        "name":"rsi-evolved-quality-diversity-search",
+        "implementation":"expression",
+        "source":"rsi-generated",
+        "parameters":{
+            "expression":expression,
+            "genome":child["genome"],
+            "mutationOperators":child["operator"],
+            "parentId":child["parentId"],
+            "parentRevision":child["parentRevision"],
+            "evidence":child["evidence"]
+        },
+        "description":"자체 관측한 분야별 실패와 독립 검증 성과로 진화시킨 실행형 탐색 유전자. 미실험 후보이며 기존 평가·승격 게이트를 거칩니다."
+    })).ok()?;
+    let mut report=queue_search_trial(state,&candidate,active,history,objective,campaign_id,attempt);
+    report["genome"]=child["genome"].clone();
+    report["operators"]=child["operator"].clone();
+    report["parentId"]=child["parentId"].clone();
+    report["evidence"]=child["evidence"].clone();
+    (report["status"]=="pending_trial").then_some(report)
+}
+
 /// Registers a bounded hypothesis and queues it for the existing real
 /// generation/evaluation pipeline. No synthetic replay can activate it.
 fn queue_adaptive_search_trial(
@@ -4567,15 +4603,22 @@ async fn run_loop(
                     .and_then(|prior|prior["history"].as_array().cloned()).unwrap_or_default();
                 measured_history.extend(prior_history.iter().cloned());
                 measured_history.push(generation.clone());
-                if let Some(report)=queue_adaptive_search_trial(
+                if let Some(report)=queue_population_search_trial(
                     &context.state,&measured_history,&active,
                     &trial_objective,&context.job_id,attempt
-                ){
+                ).or_else(||queue_adaptive_search_trial(
+                    &context.state,&measured_history,&active,
+                    &trial_objective,&context.job_id,attempt
+                )){
                     if let Some(id)=report["candidateId"].as_str(){
                         queued.push(id.to_string());
                         generation["autoEvolvedSearch"]=json!({
                             "candidateId":id,"hypothesis":report["candidateRevision"],
-                            "source":"matched_independently_measured_generation_outcomes",
+                            "source":"observed_generation_population",
+                            "genome":report["genome"],
+                            "mutationOperators":report["operators"],
+                            "parentId":report["parentId"],
+                            "evidence":report["evidence"],
                             "status":"pending_future_trial_not_performance_proof"
                         });
                     }
