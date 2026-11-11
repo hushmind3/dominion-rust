@@ -535,6 +535,19 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             crate::engine::rsi_evolve::configure_method_session(&context.state, &input, &mut session);
             session["rsiCodeIndexId"]=input["rsiIndexId"].clone();
             session["rsiSourceDir"]=input["rsiSourceDir"].clone();
+            // The parent failed patch has already been restored by prepare().
+            // Read the REAL compiler-failing portion of that restored source.
+            let repair=&input["rsiSourceIntegrityRepair"];
+            if context.state.store.get("job",&context.job_id)
+                .is_some_and(|job|job["rsiRepairDraftRestored"]==true) {
+                let focus=session["rsiFocusFile"].as_str().unwrap_or("");
+                if repair["focusPath"].as_str()==Some(focus) {
+                    if let Some(start)=crate::engine::rsi_worktree::repair_focus_start(
+                        &repair["failures"],focus) {
+                        session["rsiRepairFocusStartLine"]=json!(start);
+                    }
+                }
+            }
             if let Some(id)=input["rsiCampaignId"].as_str(){
                 session["rsiCampaignId"]=json!(id);
                 session["rsiGenerationJobId"]=json!(context.job_id);
@@ -603,6 +616,18 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             });
             context.state.store.put("rsi_iteration",&iteration);
             attempts.push(iteration);
+            // Within this generation, a failed compiler check can point at
+            // a different line than the original code-index hit. Update the
+            // observation target before another model invocation, rather than
+            // consuming another call on the same irrelevant source excerpt.
+            if let Some(mut session)=context.state.store.get("session",&session_id) {
+                let focus=session["rsiFocusFile"].as_str().unwrap_or("").to_string();
+                if let Some(start)=crate::engine::rsi_worktree::repair_focus_start(
+                    &prior["rsi"]["checks"],&focus) {
+                    session["rsiRepairFocusStartLine"]=json!(start);
+                    context.state.store.put("session",&session);
+                }
+            }
             let mut retry=request.clone();
             retry.input=feedback;
             message=run_quiet(&scoped_state,&retry).await;
