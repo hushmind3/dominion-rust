@@ -578,6 +578,16 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         ));
         prompt.push_str(&current_excerpts);
     }
+    // The coordinator, verifier and learned DAG synthesizer must all use
+    // the same *restored* source index and prompt as the worker actually saw.
+    // Otherwise a child can edit real code while its next-generation method
+    // builder silently reads stale pre-restoration source hashes.
+    let mut prepared_job=job.clone();
+    if recovered["status"]=="restored_unverified" {
+        input["prompt"]=json!(prompt);
+        prepared_job["input"]=input.clone();
+        context.checkpoint(json!({"input":input.clone()}))?;
+    }
     // The dedicated source checkout is validated and detached before a model
     // call, never modified directly by the RSI execution.
     let session_id = job
@@ -693,7 +703,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         let mut no_edit_retried=false;
         let mut failed_edit_retried=false;
         let mut finished=crate::engine::rsi_worktree::finish(
-            context,job,worktree,message,&session_id
+            context,&prepared_job,worktree,message,&session_id
         ).await;
         for revision in 0..MAX_REPAIRS {
             let Some(prior)=finished.as_ref().ok() else {break;};
@@ -736,7 +746,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             retry.input=feedback;
             message=run_quiet(&scoped_state,&retry).await;
             finished=crate::engine::rsi_worktree::finish(
-                context,job,worktree,message,&session_id
+                context,&prepared_job,worktree,message,&session_id
             ).await;
         }
         let candidate_id=finished.as_ref().ok().map(|result|result["rsi"]["candidateId"].clone()).unwrap_or(Value::Null);
