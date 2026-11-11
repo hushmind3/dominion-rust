@@ -108,9 +108,13 @@ fn rsi_tool_advertised(name: &str, round_tools: &[Value]) -> bool {
 /// straight to the independent worktree verifier. The verifier, not the model's
 /// closing prose, decides whether the resulting patch compiles or improves.
 /// This avoids paying another full model context after source modification.
-fn rsi_patch_ready_for_verification(session: &Value, tool: &str, result: &Value, ok: bool) -> bool {
+fn rsi_patch_ready_for_verification(
+    session: &Value, tool: &str, args: &Value, result: &Value, ok: bool,
+) -> bool {
     ok && session["rsiRun"] == true && session["rsiExplicitFocus"] == true
         && session["rsiCampaignId"].is_string()
+        && session["rsiFocusFiles"].as_array().is_some_and(|files|
+            files.len() == 1 && files[0].as_str() == args["path"].as_str())
         && matches!(tool, "workspace_replace_range" | "workspace_replace")
         && result["written"] == true
         && result["postSha256"].as_str().is_some_and(|sha|
@@ -2026,7 +2030,7 @@ async fn run_turn_body(
             if !ok {
                 ordering_ok = false;
             }
-            if rsi_patch_ready_for_verification(&session, &call.name, &result, ok) {
+            if rsi_patch_ready_for_verification(&session, &call.name, &arguments, &result, ok) {
                 rsi_patch_written = true;
                 state.store.audit("rsi.patch_submitted_for_verification", json!({
                     "sessionId": session_id, "executionId": execution_id,
@@ -6306,13 +6310,20 @@ mod harness_tool_selection_tests {
 
     #[test]
     fn focused_rsi_routes_a_verified_edit_to_compilation_without_another_model_call() {
-        let focused = json!({"rsiRun":true,"rsiExplicitFocus":true,"rsiCampaignId":"c"});
+        let focused = json!({"rsiRun":true,"rsiExplicitFocus":true,
+            "rsiCampaignId":"c","rsiFocusFiles":["src/engine/decompose.rs"]});
+        let args = json!({"path":"src/engine/decompose.rs"});
         let written = json!({"written":true,"postSha256":"a".repeat(64)});
-        assert!(rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &written, true));
-        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &written, false));
-        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_read_range", &written, true));
-        assert!(!rsi_patch_ready_for_verification(&json!({"rsiRun":true}), "workspace_replace_range", &written, true));
-        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &json!({"written":false}), true));
+        assert!(rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &args, &written, true));
+        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &args, &written, false));
+        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_read_range", &args, &written, true));
+        assert!(!rsi_patch_ready_for_verification(&json!({"rsiRun":true}), "workspace_replace_range", &args, &written, true));
+        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &args, &json!({"written":false}), true));
+        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range",
+            &json!({"path":"src/engine/other.rs"}), &written, true));
+        let multi = json!({"rsiRun":true,"rsiExplicitFocus":true,"rsiCampaignId":"c",
+            "rsiFocusFiles":["src/engine/decompose.rs","src/engine/other.rs"]});
+        assert!(!rsi_patch_ready_for_verification(&multi, "workspace_replace_range", &args, &written, true));
     }
 
     #[test]
