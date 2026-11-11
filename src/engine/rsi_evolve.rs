@@ -2636,6 +2636,17 @@ fn post_adoption_objective(input: &Value, history: &[Value]) -> Option<Value> {
         .any(|row|row["evaluation"]["metrics"]["eligible"]==true
             && row["evaluation"]["metrics"]["metaHoldoutGains"]
                 .as_u64().unwrap_or(0)>0);
+    // Once the improver itself has a measured gain, prioritize a second
+    // domain with a known source transformation, if the native source
+    // generator was opted into the campaign. Its benefit is still entirely
+    // decided by the independent frozen evaluator.
+    if meta_seen && input["rsiNativeInduction"]==true {
+        costs.sort_by_key(|row| {
+            if row["domain"]=="memory" && row["metric"]=="elapsedMs" {0}
+            else if row["domain"]=="context" && row["metric"]=="contextChars" {1}
+            else {2}
+        });
+    }
     let meta_cost=if meta_seen {None} else {
         costs.iter().find(|row|row["domain"]=="improver")
     };
