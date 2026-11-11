@@ -5085,6 +5085,92 @@ mod tests {
     }
 
     #[test]
+    fn independent_matched_source_program_trials_promote_only_measured_quality() {
+        let root=json!({"revision":"root","sequence":["workspace_read_range",
+            "workspace_replace"],"status":"trial_unverified"});
+        let child=json!({"revision":"child","mutatedFrom":"root",
+            "sequence":["workspace_read_range","workspace_replace_range"],
+            "status":"trial_unverified"});
+        let run=|id:&str,program:&Value,verified:bool,commit:&str|{
+            let execution=format!("exec-{id}");
+            json!({
+                "id":id,"jobId":id,
+                "objectiveId":"objective","domain":"memory",
+                "generatorCommit":commit,"generatorModel":"qwen-local",
+                "generatorProviderId":"local","focusFiles":["src/engine/memory.rs"],
+                "executionMethod":{"actionProgram":program},
+                "methodActions":[{"executionId":execution,
+                    "inducedProgramDecision":{"programRevision":program["revision"],
+                        "chosenTool":"workspace_read_range","actionCount":0}}],
+                "actionTrace":[{"runId":execution,"opSeq":1,
+                    "tool":"workspace_read_range","status":"completed","executed":true}],
+                "accepted":verified,"pairedRevalidated":verified,
+                "evaluation":{"candidateStatus":"verified",
+                    "measurementScope":"frozen_native_cases_only",
+                    "metrics":{"eligible":true,"holdoutCases":2,"regressions":0}},
+                "error":"","tokens":1000,"elapsedMs":1000
+            })
+        };
+        let source="a".repeat(40);
+        let mut rows=vec![
+            run("baseline-1",&root,false,&source),
+            run("baseline-2",&root,false,&source),
+            run("challenger-1",&child,true,&source),
+            run("challenger-2",&child,true,&source)
+        ];
+        let (promoted,comparison)=select_evaluated_action_program(&rows,child.clone());
+        assert_eq!(promoted["revision"],"child");
+        assert_eq!(comparison["status"],"quality_promoted");
+        assert_eq!(comparison["independentWins"],2);
+        rows[3]["actionTrace"]=json!([]); // A selected but unused tool is no trial.
+        let (unproven,receipt)=select_evaluated_action_program(&rows,child.clone());
+        assert_eq!(unproven["revision"],"child");
+        assert_eq!(receipt["status"],"trial_unverified");
+        rows[3]=run("challenger-2",&child,true,&"b".repeat(40));
+        let (_,mismatch)=select_evaluated_action_program(&rows,child.clone());
+        assert_eq!(mismatch["status"],"trial_unverified",
+            "Different source commits cannot be paired as a controlled trial");
+        rows[3]=run("challenger-2",&child,true,&source);
+        rows[3]["jobId"]=json!("challenger-1");
+        let (_,duplicate)=select_evaluated_action_program(&rows,child);
+        assert_eq!(duplicate["status"],"trial_unverified",
+            "Duplicate worker identity cannot establish two independent wins");
+    }
+
+    #[test]
+    fn a_measured_regressing_descendant_returns_to_its_executed_parent() {
+        let parent=json!({"revision":"parent","sequence":["workspace_replace"]});
+        let child=json!({"revision":"child","mutatedFrom":"parent",
+            "sequence":["workspace_replace_range"]});
+        let run=|id:&str,program:&Value,accepted:bool| {
+            let execution=format!("exec-{id}");
+            json!({"id":id,"jobId":id,
+                "objectiveId":"same","domain":"memory","generatorCommit":"a".repeat(40),
+                "generatorModel":"one-model","generatorProviderId":"provider",
+                "focusFiles":["src/engine/memory.rs"],
+                "executionMethod":{"actionProgram":program},
+                "methodActions":[{"executionId":execution,
+                    "inducedProgramDecision":{"programRevision":program["revision"],
+                        "chosenTool":"workspace_read_range","actionCount":0}}],
+                "actionTrace":[{"runId":execution,"opSeq":1,
+                    "tool":"workspace_read_range","status":"completed"}],
+                "accepted":accepted,"pairedRevalidated":accepted,
+                "evaluation":{"candidateStatus":"verified",
+                    "measurementScope":"frozen_native_cases_only",
+                    "metrics":{"eligible":true,"holdoutCases":2,"regressions":0}},
+                "error":""})
+        };
+        let history=vec![
+            run("p1",&parent,true),run("p2",&parent,true),
+            run("c1",&child,false),run("c2",&child,false)
+        ];
+        let (selected,receipt)=select_evaluated_action_program(&history,child);
+        assert_eq!(selected["revision"],"parent");
+        assert_eq!(selected["status"],"quality_rejected_child_fallback");
+        assert_eq!(receipt["status"],"quality_rejected");
+    }
+
+    #[test]
     fn failed_edit_can_synthesize_a_multi_step_repair_from_real_receipts() {
         let failed=json!({"id":"repair-episode","accepted":false,
             "candidateCapture":{"checksPassed":true},
