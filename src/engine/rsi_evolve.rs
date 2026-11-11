@@ -7800,11 +7800,12 @@ mod tests {
             "id":"measured","target":"harness","status":"verified","cases":plan,
             "baseCommit":base,"patchSha256":"p".repeat(64),
             "oracleVersion":"frozen-v1","experimentAdoption":{"commit":accepted_commit},
-            "evaluation":{"metrics":metrics,"verdict":metrics["verdict"],
+            "evaluation":{"id":"measured-evaluation-1","metrics":metrics,"verdict":metrics["verdict"],
                 "source":"server_invoked_local_paired_git_worktrees","evidenceSha256":"e".repeat(64)}
         })).unwrap();
         state.store.put("rsi_pair",&json!({
-            "id":"rsi-pair-measured","candidateId":"measured",
+            "id":"rsi-pair-measured-evaluation-1","evaluationId":"measured-evaluation-1",
+            "candidateId":"measured",
             "runner":"local_gitrepo_not_os_sandbox","evidenceSha256":"e".repeat(64),
             "report":{"baseCommit":base,"patchSha256":"p".repeat(64),
                 "oracleVersion":"frozen-v1","reportSha256":"e".repeat(64),
@@ -7830,7 +7831,7 @@ mod tests {
         assert!(new_policy["parameters"]["expression"].as_str().unwrap().contains("holdoutYield"));
         assert_eq!(crate::engine::algorithms::active(&state,"selfimprove.search").unwrap()["id"],
             baseline,"automatic proposal must not activate without later real trials");
-        let old=state.store.get("rsi_pair","rsi-pair-measured").unwrap();
+        let old=state.store.get("rsi_pair","rsi-pair-measured-evaluation-1").unwrap();
         let mut tampered=old.clone();
         tampered["report"]["cases"][0]["candidatePass"]=json!(false);
         state.store.put("rsi_pair",&tampered).unwrap();
