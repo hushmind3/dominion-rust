@@ -2366,6 +2366,7 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         }
     }
     policy["executionPrograms"]=json!(programs);
+    rescore_execution_programs(&mut policy);
     policy["evidence"]=json!(evidence);
     // A negative matched trial changes the evaluator itself. Do not erase
     // that newborn candidate at the very next feedback write merely because
@@ -2382,8 +2383,8 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     policy["status"]=json!(if cross_domain{"cross_domain_observed"}else{"candidate"});
     policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([&policy["transitions"],
         &policy["executionPrograms"],&policy["rejectedProgramIds"],
-        &policy["programMutations"],&policy["evidence"],
-        &policy["scoringKernel"]]).to_string().as_bytes())));
+        &policy["programMutations"],&policy["programMeasuredEvidence"],
+        &policy["evidence"],&policy["scoringKernel"]]).to_string().as_bytes())));
     policy["causalImprovement"]="unmeasured_until_matched_policy_trials".into();
     policy["updatedAt"]=json!(chrono::Utc::now().to_rfc3339());
     let saved=state.store.put("rsi_method_policy",&policy)?;
@@ -2394,6 +2395,96 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
 /// A candidate learnt in one domain is deliberately offered in another.
 /// Tool ordering is a trial, not proof: unchanged and failed edits carry no
 /// credit, and a failed method trace reduces rather than raises a transition.
+/// This is observational feedback, not a matched-policy winner. It allows
+/// a composed program to learn from its OWN witnessed source edit while a
+/// four-generation A/B cohort is still incomplete or the source has evolved.
+fn rescore_execution_programs(policy:&mut Value) {
+    let evidence=policy["programMeasuredEvidence"].as_array().cloned().unwrap_or_default();
+    if let Some(programs)=policy["executionPrograms"].as_array_mut() {
+        for program in programs {
+            let (mut gains,mut losses)=(0i64,0i64);
+            for row in &evidence {
+                if row["programId"]!=program["id"] {continue;}
+                if row["outcome"]=="accepted_gain" {gains+=1;}
+                if row["outcome"]=="paired_regression" {losses+=1;}
+            }
+            let original=program["baseScore"].as_i64()
+                .or_else(||program["score"].as_i64()).unwrap_or(0);
+            program["baseScore"]=json!(original);
+            program["measuredGains"]=json!(gains);
+            program["measuredRegressions"]=json!(losses);
+            program["score"]=json!((original+gains*4-losses*4).clamp(-100,100));
+            if losses>=2 && gains==0 {
+                program["status"]=json!("held_after_repeated_paired_regressions");
+            }
+        }
+    }
+}
+
+/// Outcome is credited only to an actual model-authored, hash-verified source
+/// write selected by the exact candidate execution program. A tool suggestion
+/// in a prompt cannot receive this reward.
+fn record_measured_program_feedback(
+    state:&AppState,input:&Value,generation:&Value
+)->Option<Value> {
+    let outcome=if measured_system_improvement(generation) {"accepted_gain"}
+        else if generation["candidateId"].is_string()
+            && generation["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+            && matches!(generation["evaluation"]["metrics"]["verdict"].as_str(),
+                Some("regressed"|"build_failed")) {"paired_regression"}
+        else{return None};
+    if generation["methodPolicyTrial"]["arm"]=="control"{return None;}
+    let job_id=generation["jobId"].as_str()?;
+    let id=format!("rsi-method-policy-{}",
+        crate::engine::memory::stable_id(&[&research_scope(input).partition_key]));
+    let mut policy=state.store.get("rsi_method_policy",&id)?;
+    let programs=policy["executionPrograms"].as_array()?.clone();
+    let seen=policy["programMeasuredEvidence"].as_array().cloned().unwrap_or_default();
+    let mut updated=seen.clone();
+    let mut credited=Vec::<Value>::new();
+    for receipt in generation["inducedMethodApplications"].as_array().into_iter().flatten() {
+        if receipt["policyId"]!=policy["id"]
+            || receipt["performed"]!=true || receipt["verifiedSourceWrite"]!=true
+            || receipt["domain"]!=generation["domain"]
+            || receipt["effectOperationIds"].as_array().is_none_or(Vec::is_empty) {
+            continue;
+        }
+        if generation["methodPolicyTrial"]["arm"]=="learned"
+            && receipt["revision"]!=generation["methodPolicyTrial"]["policyRevision"] {
+            continue;
+        }
+        let Some(program_id)=receipt["executionProgramId"].as_str() else{continue};
+        if !programs.iter().any(|program|program["id"].as_str()==Some(program_id)) {
+            continue;
+        }
+        if updated.iter().any(|row|row["jobId"]==job_id && row["programId"]==program_id) {
+            continue;
+        }
+        let row=json!({"jobId":job_id,"programId":program_id,
+            "policyRevision":receipt["revision"],"domain":generation["domain"],
+            "generatorCommit":generation["generatorCommit"],
+            "operationIds":receipt["effectOperationIds"],
+            "outcome":outcome,"evaluationId":generation["evaluation"]["id"],
+            "causalProof":false});
+        credited.push(row.clone());
+        updated.push(row);
+    }
+    if credited.is_empty(){return None;}
+    if updated.len()>64{updated.drain(..updated.len()-64);}
+    policy["programMeasuredEvidence"]=json!(updated);
+    rescore_execution_programs(&mut policy);
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([
+        &policy["transitions"],&policy["executionPrograms"],
+        &policy["programMeasuredEvidence"],&policy["scoringKernel"],
+        &policy["rejectedProgramIds"],&policy["programMutations"]
+    ]).to_string().as_bytes())));
+    policy["updatedAt"]=json!(chrono::Utc::now().to_rfc3339());
+    let saved=state.store.put("rsi_method_policy",&policy)?;
+    state.bus.record("rsi_method_policy",&saved);
+    Some(json!({"policyRevision":saved["revision"],"credited":credited,
+        "status":"observational_program_feedback_not_causal_proof"}))
+}
+
 fn current_induced_method_policy(state:&AppState,input:&Value)->Option<Value> {
     let scope=research_scope(input);
     let id=format!("rsi-method-policy-{}",
@@ -3896,6 +3987,9 @@ async fn run_loop(
                     "revision":policy["revision"],"status":policy["status"],
                     "evidence":policy["evidence"].as_array().map(Vec::len).unwrap_or(0)});
             }
+            generation["executionProgramFeedback"]=
+                record_measured_program_feedback(&context.state,&current["input"],&generation)
+                    .unwrap_or(Value::Null);
         }
         generation["methodPolicyTrialReport"]=
             method_policy_trial_report(&context.state,&generation);
@@ -4876,6 +4970,47 @@ mod tests {
         assert_eq!(policy["executionPrograms"][0]["origin"],"trial_counterexample_mutation");
         assert!(mutate_programs_after_trial(&mut policy,&frozen,&rows,"cohort-a")
             .is_empty(),"recovered work must not replay an already-accounted mutation");
+    }
+
+    #[test]
+    fn a_witnessed_program_gains_online_feedback_before_ab_cohort_finishes() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root});
+        let id=format!("rsi-method-policy-{}",
+            crate::engine::memory::stable_id(&[&research_scope(&input).partition_key]));
+        let policy=json!({"id":id,"kind":"harness.method-transitions",
+            "revision":"rev-a","transitions":[{"from":"workspace_read_range",
+                "to":"workspace_replace","positive":2,"negative":0}],
+            "executionPrograms":[{"id":"learned-2step","domain":"tools",
+                "score":3,"status":"candidate_requires_descendant_execution",
+                "steps":["workspace_read_range","workspace_replace"]}]});
+        state.store.put("rsi_method_policy",&policy).unwrap();
+        let evaluation=json!({"id":"measured-1",
+            "source":"server_invoked_local_paired_git_worktrees",
+            "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":1}});
+        let generation=json!({"jobId":"g1","domain":"tools",
+            "generatorCommit":"a".repeat(40),"accepted":true,
+            "evaluation":evaluation,
+            "acceptedProof":{"status":"verified","evaluation":evaluation},
+            "inducedMethodApplications":[{"policyId":id,"revision":"rev-a",
+                "executionProgramId":"learned-2step","domain":"tools",
+                "performed":true,"verifiedSourceWrite":true,
+                "effectOperationIds":["op-1"]}]});
+        let first=record_measured_program_feedback(&state,&input,&generation).unwrap();
+        assert_eq!(first["credited"][0]["outcome"],"accepted_gain");
+        let updated=state.store.get("rsi_method_policy",&id).unwrap();
+        assert_eq!(updated["executionPrograms"][0]["measuredGains"],1);
+        assert_eq!(updated["executionPrograms"][0]["score"],7);
+        assert!(record_measured_program_feedback(&state,&input,&generation).is_none(),
+            "a retried coordinator cannot count the same source result twice");
+        let ignored=json!({"jobId":"g2","domain":"tools","accepted":true,
+            "evaluation":evaluation,"acceptedProof":{"status":"verified","evaluation":evaluation},
+            "inducedMethodApplications":[{"policyId":id,"revision":"rev-a",
+                "executionProgramId":"learned-2step","domain":"tools",
+                "performed":false,"verifiedSourceWrite":false,
+                "effectOperationIds":[]}]});
+        assert!(record_measured_program_feedback(&state,&input,&ignored).is_none());
+        drop(state);let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
