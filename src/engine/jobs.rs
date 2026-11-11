@@ -528,8 +528,23 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             }
         }
     }else{None};
+    let neutral_restored=if restored.is_none() {
+        if let Some(worktree)=rsi_workspace.as_ref(){
+            match crate::engine::rsi_worktree::restore_neutral_candidate(
+                context,&input,worktree).await{
+                Ok(receipt)=>receipt,
+                Err(error)=>{
+                    let _=crate::engine::rsi_worktree::cleanup(worktree).await;
+                    return Err(error);
+                }
+            }
+        }else{None}
+    }else{None};
     let repair_context=if let Some(receipt)=restored.as_ref() {
         format!("\n\n이전 세대의 실제 컴파일 실패 패치를 분리 작업공간에 복원했습니다. 복원 후보: {}. 이전 파일이 아니라 현재 복원된 파일의 정확한 해시·줄 번호를 읽고 컴파일 오류만 교정하세요. 실패 패치를 그대로 두면 새로운 후보로 인정되지 않습니다.",
+            receipt["candidateId"].as_str().unwrap_or(""))
+    }else if let Some(receipt)=neutral_restored.as_ref() {
+        format!("\n\n이전 세대의 독립 A/B 평가에서 품질 향상이 없던 실제 소스 후보 {}를 격리 작업공간에 복원했습니다. 이는 채택된 개선이 아닙니다. 지금 복원된 Rust 원문과 해시를 읽고 NEW 수정으로 품질을 높이세요. 동일 패치 재제출은 새 후보가 아닙니다.",
             receipt["candidateId"].as_str().unwrap_or(""))
     }else{String::new()};
     // The dedicated source checkout is validated and detached before a model

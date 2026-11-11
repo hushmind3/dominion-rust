@@ -3011,6 +3011,8 @@ async fn run_loop(
         let target_trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
         let follow_up=transfer_failure_repair(&recorded_history)
             .and_then(|plan|plan["domain"].as_str().map(str::to_string))
+            .or_else(||neutral_source_continuation(&context.state,&recorded_history,&head)
+                .and_then(|plan|plan["domain"].as_str().map(str::to_string)))
             .or_else(||adopted_source_continuation(&recorded_history,&head)
                 .and_then(|plan|plan["domain"].as_str().map(str::to_string)))
             .or_else(||research_continuation(&recorded_history));
@@ -3075,6 +3077,7 @@ async fn run_loop(
                 .map(str::to_string).collect::<Vec<_>>();
             let repair=transfer_repair_focus(&recorded_history,&target_domain,&head)
                 .or_else(||integrity_repair_focus(&recorded_history,&target_domain,&head))
+                .or_else(||neutral_source_focus(&context.state,&recorded_history,&target_domain,&head))
                 .or_else(||adopted_source_focus(&recorded_history,&target_domain,&head))
                 .filter(|path|crate::engine::code_index::indexed_source_hash(
                     &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),path).is_some());
@@ -3325,6 +3328,14 @@ async fn run_loop(
                 "error":check["stderr"].as_str().or_else(||check["error"].as_str())
                     .unwrap_or("").chars().take(850).collect::<String>()}))
             .collect::<Vec<_>>();
+        generation["inheritedNeutralCandidateId"]=
+            current["input"]["rsiSourceNeutralCandidateId"].clone();
+        generation["inheritedNeutralPatchChanged"]=
+            current["result"]["rsi"]["inheritedNeutralPatchChanged"].clone();
+        generation["inheritedNeutralVerifiedEdit"]=json!(
+            current["input"]["rsiSourceNeutralCandidateId"].is_string()
+            && current["result"]["rsi"]["inheritedNeutralPatchChanged"]==true
+            && actual_source_edits>0);
         generation["sourceIntegrity"]=json!({
             "diffBytes":source["diffBytes"],"sourceClean":source["sourceClean"],
             "failedCandidateId":source["candidateId"],
@@ -4168,6 +4179,55 @@ fn transfer_failure_repair(history:&[Value])->Option<Value> {
 /// another research observation. The next descendant repairs that SAME
 /// source capability, using the real diagnostic and a fresh source read.
 /// The failed patch is NOT automatically accepted or replayed.
+/// Reuse a measured but zero-gain source implementation as a disposable
+/// starting point, never as an adopted revision. Preserve the ORIGINAL frozen
+/// baseline for the descendant's independent A/B comparison.
+fn neutral_source_continuation(
+    state:&AppState, history:&[Value], commit:&str,
+)->Option<Value>{
+    let last=history.last()?;
+    let id=last["candidateId"].as_str()?;
+    if last["accepted"]==true
+        || last["generatorCommit"].as_str()!=Some(commit)
+        || last["sourceIntegrity"]["checksPassed"]!=true
+        || last["sourceIntegrity"]["sourceClean"]!=true
+        || last["evaluation"]["verdict"]!="inconclusive"
+        || last["evaluation"]["metrics"]["gains"].as_u64()!=Some(0)
+        || last["evaluation"]["metrics"]["metricGains"].as_u64()!=Some(0)
+        || last["evaluation"]["metrics"]["regressions"].as_u64()!=Some(0)
+        || last["evaluation"]["metrics"]["metricRegressions"].as_u64()!=Some(0) {
+        return None;
+    }
+    let candidate=state.store.get("rsi_candidate",id)?;
+    if candidate["baseCommit"]!=commit
+        || candidate["origin"]!="model_driven_detached_worktree"
+        || candidate["pairedComparisonComplete"]!=true
+        || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+        || candidate["evaluation"]["metrics"]["eligible"]!=false
+        || candidate["evaluation"]["evidenceSha256"].as_str().is_none_or(|sha|sha.len()!=64)
+        || candidate["patchSha256"].as_str().is_none_or(|sha|sha.len()!=64)
+        || candidate["patch"].as_str().is_none_or(str::is_empty) {
+        return None;
+    }
+    let path=last["focusFiles"].as_array()?.iter().filter_map(Value::as_str)
+        .find(|path|crate::engine::rsi::safe_path(path)
+            && candidate["paths"].as_array().is_some_and(|paths|
+                paths.iter().any(|item|item.as_str()==Some(*path))))?;
+    let domain=last["domain"].as_str().filter(|d|DOMAINS.contains(d))?;
+    Some(json!({"domain":domain,"focusPath":path,"candidateId":id,
+        "generatorCommit":commit,"sourceGenerationId":last["id"],
+        "reason":"paired_neutral_source_available_for_real_descendant_edit",
+        "qualityProven":false}))
+}
+
+fn neutral_source_focus(
+    state:&AppState,history:&[Value],domain:&str,commit:&str,
+)->Option<String>{
+    let plan=neutral_source_continuation(state,history,commit)?;
+    (plan["domain"].as_str()==Some(domain))
+        .then(||plan["focusPath"].as_str().map(str::to_string)).flatten()
+}
+
 fn source_integrity_repair(history:&[Value])->Option<Value> {
     let last=history.last()?;
     if last["accepted"]==true || last["domainSelection"]=="source_integrity_repair" {
@@ -4529,6 +4589,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .and_then(|plan|plan["domain"].as_str().map(str::to_string))
         .or_else(||source_integrity_repair(&history)
             .and_then(|plan|plan["domain"].as_str().map(str::to_string)))
+        .or_else(||neutral_source_continuation(&state,&history,
+            job["input"]["rsiGeneratorCommit"].as_str().unwrap_or(""))
+            .and_then(|plan|plan["domain"].as_str().map(str::to_string)))
         .or_else(||adopted_source_continuation(&history,
             job["input"]["rsiGeneratorCommit"].as_str().unwrap_or(""))
             .and_then(|plan|plan["domain"].as_str().map(str::to_string)))
@@ -4608,6 +4671,29 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     }
     job["input"]["rsiSourceIntegrityRepair"]=
         integrity_repair.unwrap_or(Value::Null);
+    // A compiler-passing, independently measured zero-gain candidate is a
+    // useful research artifact only when the next worker really edits its
+    // SOURCE. It remains rejected and cannot earn adoption by replay alone.
+    let neutral=if job["input"]["rsiSourceIntegrityRepair"].is_null() {
+        neutral_source_continuation(&state,&history,&commit).filter(|plan|
+            plan["domain"].as_str()==Some(domain.as_str())
+            && plan["focusPath"].as_str().is_some_and(|path|
+                job["input"]["rsiFocusFiles"].as_array().is_some_and(|paths|
+                    paths.iter().any(|item|item.as_str()==Some(path)))))
+    } else {None};
+    if let Some(plan)=neutral.as_ref(){
+        job["input"]["rsiSourceNeutralCandidateId"]=plan["candidateId"].clone();
+        action_prompt.push_str(&format!(
+            "
+
+### 후손의 실소스 개선
+이전 후보 {}는 실제 Rust 컴파일과 독립 A/B 비교를 완료했지만 품질 향상이 0건이었습니다. 해당 미채택 후보의 실제 변경 소스가 분리된 작업공간에 복원됩니다. 같은 파일의 현재 SHA와 원문을 읽고 그 구현이 놓친 행동을 수정하세요. 이전 패치를 반복하거나 그대로 두면 새 후보로 등록되지 않습니다. 독립 holdout을 다시 통과해야 채택됩니다.
+",
+            plan["candidateId"].as_str().unwrap_or("")));
+    } else {
+        job["input"]["rsiSourceNeutralCandidateId"]=Value::Null;
+    }
+    job["input"]["rsiNeutralInheritance"]=neutral.unwrap_or(Value::Null);
     let (full_prompt,worker_plan)=match fit_worker_context(
         &action_prompt,&domain,&capability,
         &feedback,job["input"]["rsiRemainingCampaignTokens"].as_u64()

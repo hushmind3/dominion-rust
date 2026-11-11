@@ -393,6 +393,74 @@ pub async fn restore_failed_candidate(
         "qualityProven":false})))
 }
 
+/// Carry a previously measured, compiler-passing but neutral source patch
+/// into a fresh detached worktree. This is *not* a source adoption: the original
+/// HEAD and frozen evaluator remain unchanged and the child must edit again.
+pub async fn restore_neutral_candidate(
+    context:&JobContext,input:&Value,worktree:&Worktree,
+)->Result<Option<Value>,String>{
+    let Some(id)=input["rsiSourceNeutralCandidateId"].as_str() else{return Ok(None);};
+    if input["rsiSourceRepairCandidateId"].is_string(){
+        return Err("컴파일 실패와 중립 후보를 동시에 복원하지 않습니다.".into());
+    }
+    let candidate=context.state.store.get("rsi_candidate",id)
+        .ok_or("중립 후보 원본이 저장소에 없습니다.")?;
+    let origin_id=candidate["rsiJobId"].as_str().ok_or("중립 후보의 실제 모델 실행 증거 없음")?;
+    let observation=context.state.store.get("rsi_run",&format!("rsi-run-{origin_id}"))
+        .ok_or("중립 후보의 소스 검사 기록 없음")?;
+    let metrics=&candidate["evaluation"]["metrics"];
+    if candidate["baseCommit"]!=worktree.base
+        || candidate["actualGeneratorCommit"]!=worktree.base
+        || candidate["sourceBranch"]!=input["rsiSourceBranch"]
+        || candidate["experimentCampaignId"]!=input["rsiCampaignId"]
+        || candidate["origin"]!="model_driven_detached_worktree"
+        || candidate["status"]!="inconclusive"
+        || candidate["pairedComparisonComplete"]!=true
+        || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+        || metrics["eligible"]!=false
+        || metrics["gains"].as_u64()!=Some(0)
+        || metrics["metricGains"].as_u64()!=Some(0)
+        || metrics["regressions"].as_u64()!=Some(0)
+        || metrics["metricRegressions"].as_u64()!=Some(0)
+        || observation["candidateId"]!=id
+        || observation["diffSha256"]!=candidate["patchSha256"]
+        || observation["checksPassed"]!=true
+        || observation["sourceClean"]!=true
+        || observation["pairedComparisonComplete"]!=true
+        || observation["paired"]["reportSha256"]!=candidate["evaluation"]["evidenceSha256"]{
+        return Err("동일 계보에서 독립 검증된 무개선 후보가 아닙니다.".into());
+    }
+    let paths=candidate["paths"].as_array().ok_or("중립 후보 소스 경로가 없습니다.")?;
+    let focused=input["rsiFocusFiles"].as_array().ok_or("후손 수정 대상 없음")?;
+    if paths.is_empty()||paths.len()>focused.len()
+        || paths.iter().any(|path|!path.as_str().is_some_and(|p|
+            rsi::safe_path(p)&&focused.iter().any(|f|f.as_str()==Some(p)))){
+        return Err("후손이 현재 복원하려는 후보의 소스 범위를 벗어납니다.".into());
+    }
+    let patch=candidate["patch"].as_str().ok_or("중립 후보 실제 소스 패치 없음")?;
+    if patch.trim().is_empty()||patch.len()>=MAX_CAPTURE_BYTES
+        || digest(patch)!=candidate["patchSha256"].as_str().unwrap_or(""){
+        return Err("중립 후보 패치 내용 또는 해시가 일치하지 않습니다.".into());
+    }
+    let file=std::env::temp_dir().join(format!("dominion-rsi-neutral-{}.patch",uuid::Uuid::new_v4()));
+    std::fs::write(&file,patch).map_err(|e|e.to_string())?;
+    let argument=file.to_str().ok_or("중립 패치 파일 경로 오류")?.to_string();
+    let applied=async{
+        git(&worktree.path,&["apply","--check",&argument]).await?;
+        git(&worktree.path,&["apply",&argument]).await?;
+        Ok::<(),String>(())
+    }.await;
+    let _=std::fs::remove_file(&file);
+    applied?;
+    context.state.store.audit("rsi.neutral_patch_restored_for_descendant",json!({
+        "jobId":context.job_id,"candidateId":id,
+        "baseCommit":worktree.base,"patchSha256":candidate["patchSha256"],
+        "status":"unadopted_measured_source_ready_for_new_edit"
+    }));
+    Ok(Some(json!({"candidateId":id,"patchSha256":candidate["patchSha256"],
+        "status":"neutral_source_restored","qualityProven":false})))
+}
+
 pub async fn finish(
     context:&JobContext, job:&Value, worktree:&Worktree, model_result:Result<Option<Value>,String>,
     session_id:&str,
@@ -417,9 +485,14 @@ pub async fn finish(
     let mut capture_error=String::new();
     let mut checks=Vec::<Value>::new();
     let mut unsafe_audit=Value::Null;
-    let unchanged_seed=input["rsiSourceRepairCandidateId"].as_str()
+    let unchanged_seed=["rsiSourceRepairCandidateId","rsiSourceNeutralCandidateId"]
+        .iter().filter_map(|key|input[*key].as_str())
+        .filter_map(|id|context.state.store.get("rsi_candidate",id))
+        .any(|seed|seed["patchSha256"]==patch_sha);
+    let inherited_neutral_changed=input["rsiSourceNeutralCandidateId"].as_str()
         .and_then(|id|context.state.store.get("rsi_candidate",id))
-        .is_some_and(|seed|seed["patchSha256"]==patch_sha);
+        .is_some_and(|seed|seed["patchSha256"]!=patch_sha
+            && !patch.trim().is_empty());
     if patch.trim().is_empty(){
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
     } else if unchanged_seed {
@@ -481,6 +554,8 @@ pub async fn finish(
         "unsafeAudit":unsafe_audit,
         "pairedComparisonComplete":false,"autoMerged":false,"autoDeployed":false,
         "modelError":model_error,"captureError":capture_error,
+        "inheritedNeutralCandidateId":input["rsiSourceNeutralCandidateId"],
+        "inheritedNeutralPatchChanged":inherited_neutral_changed,
         "sourceReadback":if all_checks_pass {Value::Null}
             else {current_patch_readback(&worktree.path,&patch,&checks).unwrap_or(Value::Null)},
         "modelMessageId":model_result.ok().flatten().and_then(|m|m["id"].as_str().map(str::to_string)),
