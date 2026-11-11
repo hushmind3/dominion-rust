@@ -228,6 +228,59 @@ async fn restore_failed_draft(
     Ok(())
 }
 
+/// Continue a genuinely evaluated, compiler-passing but quality-neutral
+/// implementation in a fresh detached worktree. This is NOT adoption: the
+/// child must make a new witnessed edit and beat the original frozen baseline.
+async fn restore_neutral_candidate(
+    context:&JobContext,worktree:&Path,base:&str,id:&str
+)->Result<(),String>{
+    let candidate=context.state.store.get("rsi_candidate",id)
+        .ok_or("후손에게 계승할 중립 후보가 없습니다.")?;
+    let source_job=candidate["rsiJobId"].as_str().ok_or("중립 후보 작업 ID 없음")?;
+    let prior=context.state.store.get("rsi_run",&format!("rsi-run-{source_job}"))
+        .ok_or("중립 후보 원본 실행 증거가 없습니다.")?;
+    let patch=candidate["patch"].as_str()
+        .filter(|text|!text.is_empty()&&text.len()<MAX_CAPTURE_BYTES)
+        .ok_or("중립 후보 패치가 없습니다.")?;
+    if candidate["baseCommit"]!=base
+        || candidate["origin"]!="model_driven_detached_worktree"
+        || candidate["pairedComparisonComplete"]!=true
+        || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+        || candidate["evaluation"]["metrics"]["metricGains"].as_u64()!=Some(0)
+        || candidate["evaluation"]["metrics"]["regressions"].as_u64()!=Some(0)
+        || prior["checksPassed"]!=true || prior["candidateId"]!=id
+        || prior["sourceClean"]!=true
+        || prior["diffSha256"]!=candidate["patchSha256"]
+        || digest(patch)!=candidate["patchSha256"].as_str().unwrap_or("")
+        || candidate["paths"].as_array().is_none_or(|paths|
+            paths.is_empty()||paths.iter().any(|p|
+                !p.as_str().is_some_and(rsi::safe_path)))
+    {
+        return Err("컴파일·독립 평가·패치 원본이 일치하는 중립 후보만 이어받습니다.".into());
+    }
+    let file=std::env::temp_dir()
+        .join(format!("dominion-neutral-{}.patch",uuid::Uuid::new_v4()));
+    std::fs::write(&file,patch).map_err(|e|e.to_string())?;
+    let name=file.to_str().ok_or("중립 패치 경로 인코딩 오류")?;
+    let apply=async {
+        git(worktree,&["apply","--check",name]).await?;
+        git(worktree,&["apply",name]).await?;
+        if git(worktree,&["status","--porcelain"]).await?.is_empty(){
+            return Err("중립 패치가 실제 소스 차이를 남기지 않았습니다.".into());
+        }
+        Ok::<(),String>(())
+    }.await;
+    let _=std::fs::remove_file(&file);
+    apply?;
+    context.checkpoint(json!({"rsiNeutralDraftRestored":true,
+        "rsiNeutralCandidateId":id,"rsiNeutralBaseCommit":base,
+        "rsiNeutralPatchSha256":candidate["patchSha256"]}))?;
+    context.state.store.audit("rsi.neutral_draft_inherited",
+        json!({"jobId":context.job_id,"candidateId":id,
+            "baseCommit":base,"patchSha256":candidate["patchSha256"]}));
+    Ok(())
+}
+
 /// Only disposable RSI work branches are eligible for source application.
 /// The champion and main refs are intentionally never mutation targets.
 pub fn is_rsi_work_branch(branch:&str)->bool {
@@ -266,6 +319,17 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     // The prior generation's source is otherwise destroyed at cleanup. A
     // repair must start with its actual failed patch, not a clean baseline
     // accompanied only by compiler diagnostics.
+    if let Some(id)=input["rsiInheritedNeutralCandidateId"].as_str()
+        .filter(|id|!id.is_empty()) {
+        if input["rsiSourceIntegrityRepair"].is_object(){
+            let _=git(&source,&["worktree","remove","--force",name]).await;
+            return Err("컴파일 실패 교정과 중립 후보 계승을 동시에 적용할 수 없습니다.".into());
+        }
+        if let Err(error)=restore_neutral_candidate(context,&path,base,id).await {
+            let _=git(&source,&["worktree","remove","--force",name]).await;
+            return Err(format!("차세대 중립 후보 계승 실패: {error}"));
+        }
+    }
     if let Err(error)=restore_failed_draft(context,input,&path,base).await {
         let _=git(&source,&["worktree","remove","--force",name]).await;
         return Err(format!("차세대 실패 패치 복구 실패: {error}"));
@@ -367,10 +431,24 @@ pub async fn finish(
         .and_then(|id|context.state.store.get("rsi_candidate",id))
         .is_some_and(|previous|
             previous["patchSha256"].as_str()==Some(patch_sha.as_str()));
+    let neutral_id=input["rsiInheritedNeutralCandidateId"].as_str()
+        .filter(|id|!id.is_empty());
+    let neutral_changed=neutral_id.and_then(|id|
+        context.state.store.get("rsi_candidate",id))
+        .is_some_and(|prior|prior["patchSha256"].as_str()!=Some(patch_sha.as_str()));
+    let fresh_verified_write=context.state.store.all("execution_operation")
+        .into_iter().any(|op|op["sessionId"].as_str()==Some(session_id)
+            && op["status"]=="completed"
+            && matches!(op["tool"].as_str(),
+                Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))
+            && op["result"]["written"]==true
+            && op["toolReceipt"]["verified"]==true);
     if patch.trim().is_empty(){
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
     } else if inherited_unchanged {
         capture_error="후손이 상속받은 실패 패치를 수정하지 않았습니다.".into();
+    } else if neutral_id.is_some() && (!neutral_changed || !fresh_verified_write) {
+        capture_error="후손이 중립 후보를 이어받았으나 검증된 새 소스 수정이 없습니다.".into();
     } else if patch_size>=MAX_CAPTURE_BYTES {
         capture_error="코드 변경량이 79KB를 초과해 증거를 안전하게 수집하지 않았습니다.".into();
     } else {
@@ -421,6 +499,9 @@ pub async fn finish(
         "id":format!("rsi-run-{}",context.job_id),
         "jobId":context.job_id,"sessionId":session_id,
         "baseCommit":worktree.base,"candidateId":candidate_id,
+        "inheritedNeutralCandidateId":input["rsiInheritedNeutralCandidateId"],
+        "inheritedNeutralPatchChanged":neutral_id.is_some()
+            && neutral_changed && fresh_verified_write,
         "sourceClean":source_clean,"diffSha256":patch_sha,"diffBytes":patch_size,
         "checks":checks,"checksPassed":all_checks_pass,
         "unsafeAudit":unsafe_audit,
