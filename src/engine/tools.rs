@@ -1598,6 +1598,33 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[tokio::test]
+    async fn isolated_rsi_range_read_returns_model_usable_relative_path() {
+        use crate::{config::Config,db::Store,vault::Vault};
+        let dir=std::env::temp_dir().join(format!("sub1-rsi-path-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src/engine")).unwrap();
+        let path=dir.join("src/engine/target.rs");
+        std::fs::write(&path,"fn target() {\n    good();\n}\n").unwrap();
+        let cfg=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),
+            workspace:dir.clone()};
+        let state=crate::state::AppState::new(cfg.clone(),
+            Store::open(&cfg.db_path()).unwrap(),Vault::open(&cfg.key_path()));
+        state.store.put("session",&json!({"id":"rsi","rsiRun":true}));
+        let ctx=ToolContext{workspace:&dir,store:&state.store,state:&state,
+            session_id:"rsi",agent_id:None,tools_enabled:true,
+            tools_execution_enabled:true};
+        let read=execute(&ctx,"workspace_read_range",
+            &json!({"path":"src/engine/target.rs","startLine":1,"endLine":3}),
+            "run").await.unwrap();
+        assert_eq!(read["path"],"src/engine/target.rs");
+        assert!(!read["path"].as_str().unwrap().starts_with('/'));
+        assert_eq!(read["sourceSha256"],
+            format!("{:x}",Sha256::digest(std::fs::read(&path).unwrap())));
+        assert!(read["fileObservation"]["path"].as_str().unwrap().starts_with(
+            dir.to_str().unwrap()),"Internal observation retains its canonical evidence path");
+        let _=std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn rsi_can_read_only_a_range_or_replace_a_block() {
         assert!(rsi_allowed("code_search"));
