@@ -256,7 +256,7 @@ fn rsi_compiler_requires_current_read(session:&Value, operations:&[Value])->bool
                 && read["finishedAt"].as_str().is_some_and(|at|at>finished))
     } else {
         session["rsiRestoredCandidateId"].is_string()
-            && !operations.iter().any(valid_read)
+            && operations.iter().filter(valid_read).next().is_none()
     }
 }
 
