@@ -682,9 +682,14 @@ async fn run_turn_body(
         .and_then(|algorithm| algorithm["parameters"]["maxRounds"].as_u64())
         .unwrap_or(MAX_ROUNDS as u64)
         .clamp(2, 24) as usize;
-    if session["rsiRun"] == true {
-        // RSI generations mix reading, checkpointing and editing. Eight rounds
-        // is enough to abort a real attempt before the edit lands.
+    if session["rsiRepairPath"].is_string() && session["rsiRun"] == true {
+        // A compiler-directed repair is not a second open-ended generation.
+        // The exact file/line is already supplied by the independent verifier:
+        // allow a short fresh-read/edit/re-read/edit sequence, then return to
+        // verification instead of spending the entire next generation budget.
+        max_rounds = 6;
+    } else if session["rsiRun"] == true {
+        // Unfocused source discovery still needs the regular edit budget.
         max_rounds = max_rounds.max(16);
     }
     let max_tools = budget_algorithm
@@ -742,7 +747,7 @@ async fn run_turn_body(
     } else {
         None
     };
-    let (prompt_context, history_messages) = if let Some(compiled) = compiled {
+    let (prompt_context, mut history_messages) = if let Some(compiled) = compiled {
         let delivered_memories = compiled.system.items.iter()
             .filter(|item| item["kind"] == "memory")
             .filter_map(|item| item["id"].as_str().and_then(|id| state.store.get("memory", id)))
@@ -772,6 +777,15 @@ async fn run_turn_body(
         )?;
         (prompt_context, history_messages)
     };
+    if session["rsiRun"] == true && session["rsiRepairPath"].is_string() {
+        // Prior model transcripts contain failed tool calls and large read
+        // outputs. They do not describe the CURRENT broken source version.
+        // Replaying them in each repair round multiplies token cost and
+        // encourages the model to resend stale hashes/oldText. Preserve the
+        // append-only record in the store, but give the repair turn only the
+        // independently extracted compiler diagnostic and a fresh source read.
+        history_messages.clear();
+    }
     let mut messages = vec![json!({"role":"system","content":prompt_context.prompt,"_dominion_source":reply_to,
         "_dominion_dependencies":super::continuity::dependencies(state,&prompt_context.items)})];
     if is_room {
