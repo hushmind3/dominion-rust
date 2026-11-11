@@ -1697,10 +1697,17 @@ fn propose_autonomous_search_trial(
     // Content-addressed IDs are campaign-specific: two independent trials
     // must not share mutable ownership just because their formulas match.
     hypothesis["name"]=json!(format!("{}-{}",hypothesis["name"].as_str().unwrap_or("autonomous"),campaign_id));
-    let candidate=match crate::engine::algorithms::register(state,&hypothesis) {
+    let mut candidate=match crate::engine::algorithms::register(state,&hypothesis) {
         Ok(candidate)=>candidate,
         Err(error)=>return json!({"status":"invalid_hypothesis","error":error})
     };
+    // Store the source-generation receipts with the executable candidate.
+    // Later generations must be able to inspect *why* this search formula
+    // existed without depending on a transient model prompt.
+    candidate["hypothesisEvidence"]=hypothesis["hypothesisEvidence"].clone();
+    if state.store.put("algorithm",&candidate).is_none() {
+        return json!({"status":"hypothesis_not_persisted"});
+    }
     let active=crate::engine::algorithms::active(state,"selfimprove.search")
         .unwrap_or_else(||json!({"implementation":"failure-clusters","parameters":{}}));
     let mut receipt=queue_search_trial(state,&candidate,&active,history,objective,campaign_id,attempt);
@@ -3309,6 +3316,8 @@ mod tests {
         assert_eq!(report["hypothesisEvidence"]["repeatedFiles"],1);
         let saved=state.store.get("algorithm",report["candidateId"].as_str().unwrap()).unwrap();
         assert_eq!(saved["rsiTrial"]["status"],"pending_trial");
+        assert_eq!(saved["hypothesisEvidence"]["generationIds"],json!(["failed-2","failed-1","failed-0"]),
+            "every new policy must preserve the failure history that caused it");
         assert_ne!(saved["status"],"active","a synthesized hypothesis must not auto-promote");
         let repeated=propose_autonomous_search_trial(
             &state,&history,"","campaign-synth",4,true);
