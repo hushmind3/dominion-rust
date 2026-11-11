@@ -75,3 +75,12 @@
 - `da71da359306567e65000c42b1e94ca26de49fc5`: `.github/workflows/sub4-live-rsi.yml`로 외부 무료 `openai-fast`를 실제 DOMINION 바이너리와 연결한 격리된 RSI 캠페인 자동 실험 시작. 해당 실행: https://github.com/hushmind3/dominion-rust/actions/runs/42951068895 . 작성 시 probe 성공 후 native Rust 바이너리 빌드 단계 진행 중. **실모델 수정·채택·계승 성과는 결과가 나오기 전까지 미확인**.
 - 변경 범위를 모두 포함한 신규 CI: https://github.com/hushmind3/dominion-rust/actions/runs/42951068772 . 코어 교정 경로 `98379a7` CI는 https://github.com/hushmind3/dominion-rust/actions/runs/42950244534 에서 성공, Rust 16+646+3+99=764건 통과. 중간 `7a2d8cd` 한 번의 브라우저 원격 디버깅 포트 실패는 다음 같은 핵심 코드의 CI에서 정상 통과했으므로 코드 개선의 근거로 취급하지 않음.
 - 다음 세션은 실모델 `42951068895`의 artifact `sub4-genuine-model-proof`에서 `generations[].toolsUsed`와 `sourceWriteCalls` 및 `acceptedCommit`를 반드시 대조. `rsiActionRetry` 발생 여부는 각 execution 영수증으로 확인. model endpoint 실패는 개선 실패와 구별. 실제 수정과 held-out 품질 개선은 별도 증명해야 함.
+
+
+### 5세대 후속 CI 피드백과 수정
+
+- `25d2127`의 실모델 소스 read→edit 추가 선택이 일반 조사용 `rsiRun`에도 적용되어 기존 E2E `rsi_context_is_not_reinterpreted_as_tasks_or_forced_into_a_write`가 **실패**했음. 정확히 모델 호출 3회 예상→4회 실제로 늘어나는 회귀였고, 실제 로그 `42950867421`의 647 Rust 단위 테스트 전부 성공 뒤 99 E2E 중 1개 실패로 확인.
+- `1d7cf90662e3d1198b69fb51adb7aab1403b4f78`: 이미 선택된 RSI 탐색 도구 제한 상태를 모델의 모든 후속 라운드에도 유지. 한번 제한한 code_search가 다음 모델 호출에서 재개되는 결함을 고침.
+- `da026d29da62a1ec3456000f8e0fdf0668b77c11`: `rsi_generation_has_action_target` 추가. 추가 편집 결정은 실제 `rsiCampaignId`, `rsiGenerationJobId`, 안전한 `rsiFocusFile`이 있는 native source-improvement worker로 한정; 일반 조사 전용 RSI 채팅은 3회 후 그대로 종료. 유닛 회귀 검증도 추가. **이 수정의 전체 CI 통과는 GitHub Actions 확인 전까지 미확인**.
+- 최신 수정의 CI URL: https://github.com/hushmind3/dominion-rust/actions/runs/42951710133 . 별도 real-model workflow `42951068895`는 이전 `da71da3` 기준 실험이므로 새 수정에 대한 실모델 증명으로 세지 않는다.
+- 실제 구현 후 바로 해야 할 일: 새 `da026d2` E2E 전체 통과 확인, 실패 시 동일 테스트부터 원인 분석. 현재 연구 전용 세션의 무작정 추가 호출을 다시 도입하지 않는다. 실모델 결과가 오면 `sourceWriteCalls`와 실제 후보 holdout 채택을 먼저 본다.
