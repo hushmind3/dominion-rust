@@ -252,6 +252,40 @@ fn classify(patch:&str)->&'static str {
         "algorithm"
     } else {"harness"}
 }
+/// Link edit proposals to their actual executable receipts. Merely seeing
+/// workspace_replace_range in a model response is not evidence that the
+/// isolated source changed. This observation is persisted with each RSI run.
+fn edit_outcomes(state:&crate::state::AppState, session_id:&str)->Value {
+    let mut attempts=0u64;
+    let mut verified_writes=0u64;
+    let mut failures=Vec::<String>::new();
+    let mut operations=state.store.all("execution_operation");
+    operations.sort_by(|a,b| a["startedAt"].as_str().cmp(&b["startedAt"].as_str()));
+    for operation in operations {
+        if operation["sessionId"].as_str()!=Some(session_id)
+            || operation["origin"].as_str()!=Some("model")
+            || !matches!(operation["tool"].as_str(),
+                Some("workspace_write"|"workspace_replace"|"workspace_replace_range")) {
+            continue;
+        }
+        attempts+=1;
+        if operation["status"]=="completed" && operation["result"]["written"]==true
+            && operation["toolReceipt"]["verified"]==true {
+            verified_writes+=1;
+        } else {
+            let reason=operation["result"]["error"].as_str()
+                .or_else(||operation["error"].as_str())
+                .unwrap_or(if operation["result"]["unchanged"]==true {
+                    "source was not changed"
+                }else{"the edit was not verified"});
+            failures.push(format!("{}: {}",operation["tool"].as_str().unwrap_or("edit"),
+                reason.chars().take(300).collect::<String>()));
+        }
+    }
+    json!({"attempts":attempts,"verifiedWrites":verified_writes,
+        "recentFailures":failures.into_iter().rev().take(3).collect::<Vec<_>>()})
+}
+
 fn check_result(label:&str, result:Result<std::process::Output,String>)->Value {
     match result {
         Ok(output)=>json!({
@@ -356,6 +390,7 @@ pub async fn finish(
             Err(err)=>capture_error=format!("후보 등록 거부: {err}"),
         }
     }
+    let edit_evidence=edit_outcomes(&context.state,session_id);
     let source_clean=git(&worktree.source,&["status","--porcelain","--untracked-files=normal"])
         .await.map(|v|v.is_empty()).unwrap_or(false);
     let model_error=model_result.as_ref().err().cloned().unwrap_or_default();
@@ -369,6 +404,7 @@ pub async fn finish(
         "unsafeAudit":unsafe_audit,
         "pairedComparisonComplete":false,"autoMerged":false,"autoDeployed":false,
         "modelError":model_error,"captureError":capture_error,
+        "editEvidence":edit_evidence,
         "modelMessageId":model_result.ok().flatten().and_then(|m|m["id"].as_str().map(str::to_string)),
         "createdAt":chrono::Utc::now().to_rfc3339(),
     });
@@ -457,11 +493,27 @@ fn run_status(
 /// calls for provider errors, missing diffs or checkout integrity failures.
 pub fn repair_feedback(result:&Value)->Option<String>{
     if result["status"]!="needs_review"
-        ||!matches!(result["reason"].as_str(),
+        || result["rsi"]["sourceClean"]!=true
+        || !result["rsi"]["modelError"].as_str().unwrap_or("").is_empty(){
+        return None;
+    }
+    // A model tried to edit, yet left zero source bytes changed. Give it a
+    // bounded, evidence-driven correction rather than abandoning the whole
+    // generation as research-only. Never retry an ordinary no-edit answer.
+    if result["reason"]=="no_valid_candidate"
+        && result["rsi"]["captureError"]=="모델이 실제 소스 파일을 변경하지 않았습니다."
+        && result["rsi"]["editEvidence"]["attempts"].as_u64().unwrap_or(0)>0 {
+        let problems=result["rsi"]["editEvidence"]["recentFailures"].as_array()
+            .into_iter().flatten().filter_map(Value::as_str)
+            .take(3).collect::<Vec<_>>().join("; ");
+        return Some(format!(
+            "이전 편집은 실제 Git 변경을 남기지 못했습니다. 편집 도구 호출은 완료된 코드 수정이 아닙니다. 최신 workspace_read_range의 sourceSha256과 줄 범위를 확인하고 원본과 다른 새 구현을 workspace_replace_range로 작성하세요. 앞서 나온 오류: {}. 성공했다고 설명만 하지 말고 파일 변경을 실행하세요.",
+            if problems.is_empty() {"실제 변경 없음"}else{&problems}
+        ));
+    }
+    if !matches!(result["reason"].as_str(),
             Some("build_or_typecheck_failed"|"unsafe_safety_failed"))
-        ||result["rsi"]["sourceClean"]!=true
-        ||!result["rsi"]["captureError"].as_str().unwrap_or("").is_empty()
-        ||!result["rsi"]["modelError"].as_str().unwrap_or("").is_empty(){
+        ||!result["rsi"]["captureError"].as_str().unwrap_or("").is_empty(){
         return None;
     }
     let checks=result["rsi"]["checks"].as_array()?;
@@ -862,6 +914,24 @@ mod tests {
         no_retry["rsi"]["modelError"]=json!("provider unavailable");
         assert!(repair_feedback(&no_retry).is_none());
     }
+    #[test]
+    fn failed_real_edit_attempt_receives_grounded_same_generation_repair() {
+        let evidence=json!({"status":"needs_review","reason":"no_valid_candidate",
+            "rsi":{"sourceClean":true,"modelError":"",
+                "captureError":"모델이 실제 소스 파일을 변경하지 않았습니다.",
+                "editEvidence":{"attempts":2,"verifiedWrites":0,
+                    "recentFailures":["workspace_replace_range: source was not changed"]}}});
+        let feedback=repair_feedback(&evidence).unwrap();
+        assert!(feedback.contains("workspace_replace_range"));
+        assert!(feedback.contains("source was not changed"));
+        let mut none=evidence.clone();
+        none["rsi"]["editEvidence"]["attempts"]=json!(0);
+        assert!(repair_feedback(&none).is_none());
+        let mut timeout=evidence;
+        timeout["rsi"]["modelError"]=json!("rsi_token_budget: exhausted");
+        assert!(repair_feedback(&timeout).is_none());
+    }
+
     #[test]
     fn requires_complete_sha(){
         assert!(valid_sha("1234567890abcdef1234567890abcdef12345678"));
