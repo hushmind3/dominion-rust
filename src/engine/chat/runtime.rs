@@ -1146,7 +1146,7 @@ async fn run_turn_body(
                 }
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system",
-                        "content":"실제 소스 읽기 결과가 있습니다. 지금은 탐색을 반복하지 말고 읽은 원문을 근거로 workspace_replace(oldText,newText)로 수정하세요. 적합한 수정이 불가능하다면 근거를 최종 응답에 남기세요. 수정 도구를 실행하기 전에 완료를 주장하지 마세요."
+                        "content":"실제 소스 읽기 결과가 있습니다. 탐색 대신 workspace_replace(startLine,endLine,newText,expectedSha256)를 사용하세요. expectedSha256에는 workspace_read_range의 sourceSha256를 그대로 넣고 번호 없는 새 코드만 newText로 전달하세요. 최대 120줄입니다. 원문 해시가 없으면 해당 범위만 읽으세요. 수정 전 완료를 주장하지 마세요."
                     }));
                     rsi_edit_only_announced = true;
                 } else if !rsi_decision_checkpoint {
@@ -1385,7 +1385,7 @@ async fn run_turn_body(
                 let _ = tx.send(json!({"type":"rsi_edit_retry","round":round}));
                 messages.push(json!({"role":"assistant","content":completion.content}));
                 messages.push(json!({"role":"system",
-                    "content":"제공된 코드 발췌 또는 직전 읽기 결과에 소스 근거가 있습니다. 아직 파일 수정 도구를 실행하지 않았습니다. 해당 원문을 근거로 workspace_replace(oldText,newText)를 실행해 구체적인 수정을 시도하세요. 소스가 불충분하면 추측으로 작성하지 말고 이유를 설명하고 종료하세요."
+                    "content":"제공된 코드 발췌 또는 직전 읽기 결과에 근거가 있습니다. 아직 파일을 수정하지 않았습니다. workspace_read_range로 SHA와 줄 범위를 확인한 후 workspace_replace(startLine,endLine,newText,expectedSha256)로 실제 최소 수정을 실행하세요. SHA 없이 수정하거나 근거 없는 코드 변경은 하지 마세요."
                 }));
                 continue;
             }
