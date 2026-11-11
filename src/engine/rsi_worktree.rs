@@ -499,14 +499,16 @@ pub fn compiler_repair_context(workspace:&Path,result:&Value)->Option<String>{
             if line>lines.len() || lines.is_empty(){continue;}
             let start=line.saturating_sub(9).max(1);
             let end=line.saturating_add(9).min(lines.len());
-            let excerpt=(start..=end).map(|i|
-                format!("{i:>5} | {}",lines[i-1])
-            ).collect::<Vec<_>>().join("\n");
+            // Do not prepend source line numbers to the repair payload.
+            // The real-model log showed the model pasting decorated excerpts
+            // directly into workspace_replace_range, corrupting Rust syntax.
+            // Exact line locations and the full-file SHA remain separate.
+            let excerpt=lines[start-1..end].join("\n");
             let sha=format!("{:x}",Sha256::digest(source.as_bytes()));
             output.push(format!(
                 "실제 컴파일 오류 파일: {relative}; 오류 줄: {line}; \
-                 현재 전체 파일 sourceSha256: {sha}; 검증된 원문 {start}~{end}줄:\n{excerpt}\n\
-                 이 파일의 오류를 원문 기준으로 고치세요. 수정 도구: \
+                 현재 전체 파일 sourceSha256: {sha}; 검증된 원문 {start}~{end}줄                  (아래 원문에는 줄 번호가 포함되지 않습니다):\n{excerpt}\n\
+                 이 파일의 오류를 원문 기준으로 고치세요. newText에는 소스 코드만 넣고                  줄 번호와 마크다운 장식은 넣지 마세요. 수정 도구: \
                  workspace_replace_range(path, startLine, endLine, newText, expectedSha256={sha}) \
                  또는 workspace_replace(path, oldText, newText). \
                  이전 변경을 유지하고 필요한 부분만 고치세요."
