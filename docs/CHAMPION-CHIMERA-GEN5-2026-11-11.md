@@ -39,3 +39,10 @@
 - 로컬 CPU 모델의 60초 넘는 정상 추론을 provider failure로 간주해 중간 격리하지 말 것.
 - 선택적 2개 파일 병합으로 영수증의 `focusPath` 등 실행 데이터가 빠지는 일을 반복하지 말 것.
 - `main`, Sub1~4 수정하지 말 것. 작업은 반드시 현재 배정받은 `dominion-champion`.
+
+## 최신 실측 업데이트 (GitHub Actions 재확인)
+- **실제 Qwen 4B 도구 왕복 완주 확인**: `9b5782b` run **42951558544**는 성공으로 끝났고 실제 SSE 영수증에서 첫 turn `text → assistant_saved → done` (오류 0), 다음 turn `workspace_list tool_start → tool_end → text → assistant_saved → done` (오류 0). `transportConnected=true`, `toolDispatchObserved=true`, `toolExecutionObserved=true`. 첫 실험 run 42950479339의 `toolExecutionObserved=false` 실패를 `4a11c6f`가 수정한 실측 개선. 단, 작업공간 파일을 고치는 RSI 완주와는 별개.
+- **추가 확인된 전체 CI 성공**: `0a15947` run 42950992665 (grounded edit-only 단계), `4a11c6f` run 42951437155 (로컬 모델 중도 격리 수정), `9b5782b` run 42951558595 (실모델 테스트 엄격화), `1993e31` run 42951655389 (실패한 전이의 1회 교정).
+- **Sub1에서 추가 도입한 핵심 계승 개선**: `3439285`에서 첫 세대 명시적 소스 수정은 `implement_research` 모드로 곧바로 들어가고, 동일 지식 분할·동일 목표에서 최근 실제 결과의 시각과 소스 버전을 비교해 다음 캠페인으로 전달. 오래된 연구보다 뒤의 무성과 구현 실패를 우선하며 새로운 소스 revision에는 이전 실패를 적용하지 않는다. `completedAt` 밀리초 영수증과 회귀 테스트 4개 추가. 해당 커밋 CI run **42952429110**, 실측 결과 확인 전에는 통과라고 보고 금지.
+- **별도 실제 RSI 캠페인**: `4118688` run **42951864296** 은 `openai-fast` 무료 실모델로 현실적 한국어 동작 연결 결함을 수정하고 독립 평가·후속 계승까지 측정. 이 문서 작성 중 해당 실행은 진행 중; 실제 `sourceEditCalls`, `candidateCount`, `acceptedGenerations` 및 실제 실험 오류를 판독하기 전까지 완주로 인정하지 않는다.
+- 다음 세션 최우선: latest CI 및 실제 RSI 실험의 **소스 쓰기 횟수와 채택 실패 원인**을 읽어 수정한 뒤 재실행. 4B 로컬 모델의 도구 왕복은 이미 확인된 성과이므로 같은 기본 연결 점검을 처음부터 반복하지 말 것.
