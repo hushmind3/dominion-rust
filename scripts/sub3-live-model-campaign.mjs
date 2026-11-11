@@ -95,15 +95,15 @@ if(mode==='probe'){
       request:"Fix real Korean multi-action decomposition behavior in src/engine/decompose.rs, not documentation or tests. First read split_markers() and nearby helpers with workspace_read_range and use CURRENT sourceSha256. Preserve existing markers, numbered input and original phrase order. Two behaviors are missing in the historical source: (1) standalone 다음 and 나서 split ordered steps; (2) -고 after an action verb followed by whitespace divides actions while preserving -고 on the preceding action (읽고/하고/쓰고, NOT nouns 사고/최고). Frozen evaluation expects three ordered steps for 설정을 읽고 결과를 저장한 다음 검증해. Prefer SMALL source-grounded workspace_replace or workspace_replace_range edits using exact original text. You may add a small helper and change the scanner separately; do not regenerate the entire function at once. If a tool rejects syntax, re-read current source and repair that exact failure. In a descendant the earlier compiler-passing neutral patch may already be restored: CORRECT its remaining missing behavior instead of restarting the old candidate. Do not edit tests, validators, or fixtures. Do not stop after planning, only adding a marker, or an identical write.",
       // Reserve capacity for a genuine second-generation correction of a
       // compiler-passing but zero-gain source candidate. No paid model.
-      focusFiles:['src/engine/decompose.rs'],maxAttempts:4,
-      tokenBudget:240000,timeBudgetSeconds:2400
+      focusFiles:['src/engine/decompose.rs'],expandAfterGain:true,maxAttempts:9,
+      tokenBudget:520000,timeBudgetSeconds:6000
     };
     trace.submittedRequest={...request,request:request.request.slice(0,320)};
     const queued=await call('/api/rsi/start',request);
     trace.jobId=queued.id;
     if(typeof trace.jobId!=='string'||!trace.jobId)throw Error(`RSI did not return a job id: ${content(queued)}`);
     trace.phase='running';save(trace);
-    const deadline=Date.now()+42*60*1000;
+    const deadline=Date.now()+102*60*1000;
     let last=null;
     while(Date.now()<deadline){
       await new Promise(resolve=>setTimeout(resolve,10000));
@@ -123,6 +123,8 @@ if(mode==='probe'){
       inheritedCandidateId:g.inheritedCandidateId,
       inheritedPatchChanged:g.inheritedPatchChanged,
       editPolicy:g.editPolicy,programStages:g.programStages,
+      compilerRepairReceipts:g.compilerRepairReceipts,
+      scopeExpanded:g.scopeExpanded,residualEvidence:g.residualEvidence,
       ruleExecutions:g.ruleExecutions,toolTimeline:g.toolTimeline,
       acceptedSourceHashes:g.acceptedSourceHashes,
       competitionEvidence:g.editPolicy?.competitionEvidence,
@@ -194,6 +196,8 @@ if(mode==='probe'){
             detail:(c.detail||'').slice(0,900)}))).slice(0,8),
       acceptedGenerations:accepted.length,
       acceptedCommits:accepted.map(g=>g.acceptedCommit),
+      compilerAssistedGenerations:trace.generationEvidence.filter(g=>(g.compilerRepairReceipts||[]).length>0).length,
+      postAdoptionScopeExpansions:trace.generationEvidence.filter(g=>g.scopeExpanded===true).length,
       readOnlyGenerations:trace.generationEvidence.filter(g=>!g.candidateId
         && (g.editEvidence?.verifiedWrites||0)===0
         && countCalls(g,new Set(['code_search','workspace_read_range']))>0).length,
@@ -207,7 +211,11 @@ if(mode==='probe'){
         g.competitionEvidence?.promotion===true).length,
       note:'CI completed does not imply an accepted model-generated RSI improvement'
     };
-    trace.actualCompletion=trace.summary.independentlyVerifiedImprovement;
+    const evolution=last.evolution||last.result?.evolution||{};
+    trace.summary.maxAcceptedStreak=evolution.maxAcceptedStreak||0;
+    trace.summary.capabilityDemonstrated=evolution.capabilityDemonstrated===true;
+    trace.actualCompletion=trace.summary.maxAcceptedStreak>=3
+      && trace.summary.capabilityDemonstrated;
     if(trace.phase==='campaign_timeout')trace.errors.push('campaign did not finish before runner deadline');
     save(trace);
     console.log(JSON.stringify({phase:trace.phase,status:trace.status,jobId:trace.jobId,
