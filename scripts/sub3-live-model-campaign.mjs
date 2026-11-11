@@ -122,6 +122,7 @@ if(mode==='probe'){
       ruleExecutions:g.ruleExecutions,toolTimeline:g.toolTimeline,
       acceptedSourceHashes:g.acceptedSourceHashes,
       competitionEvidence:g.editPolicy?.competitionEvidence,
+      contrastEvidence:g.editPolicy?.contrastEvidence,
       verification:g.verification,
       rewriteProgram:g.editPolicy?.rewriteProgram,
       editMethodReward:g.editMethodReward,
@@ -154,6 +155,8 @@ if(mode==='probe'){
         attempt:g.attempt,
         method:g.editPolicy?.method||null,
         synthesizedRuleIds:(g.editPolicy?.rules||[]).map(rule=>rule.id),
+        contrastTrial:g.editPolicy?.mutation===
+          'induce_new_judgment_from_success_failure_contrast',
         firedRuleIds:(g.ruleExecutions||[]).map(receipt=>receipt.ruleId),
         policyRevision:g.editPolicy?.revision||null,
         parentRevision:g.editPolicy?.parentRevision||null,
