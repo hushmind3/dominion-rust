@@ -3660,6 +3660,25 @@ async fn run_loop(
             &tools_used,&current["result"]["rsi"]["editActions"],
             candidate_id.is_some(),
             current["result"]["rsi"]["diffBytes"].as_u64().unwrap_or(0));
+        let repair_modes=current["result"]["previousAttempts"].as_array()
+            .into_iter().flatten()
+            .filter_map(|item|item["repairMethod"].as_str())
+            .take(2).collect::<Vec<_>>();
+        let repair_attempts=current["result"]["repairAttempts"].as_u64()
+            .unwrap_or(0);
+        let changed_source=current["result"]["rsi"]["diffBytes"].as_u64()
+            .unwrap_or(0)>0;
+        generation["selfRepair"]=json!({
+            "attempts":repair_attempts,
+            "modes":repair_modes,
+            "sourceEdited":changed_source,
+            "candidateCaptured":candidate_id.is_some(),
+            "outcome":if repair_attempts==0 {"not_attempted"}
+                else if candidate_id.is_some() {"candidate_after_recovery"}
+                else if changed_source {"source_changed_no_candidate"}
+                else {"no_patch_after_recovery"},
+            "qualityGain":Value::Null
+        });
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
         if let Some(id) = candidate_id {
             record["phase"] = json!("measuring");
@@ -4090,6 +4109,9 @@ fn action_learning_context(row:&Value)->&'static str {
         || observed["editToolCalls"].as_u64().unwrap_or(0)>0 {
         return "uncaptured_edit";
     }
+    if row["selfRepair"]["outcome"]=="no_patch_after_recovery" {
+        return "exhausted_recovery";
+    }
     if row["newFindings"].as_u64().unwrap_or(0)>0 {return "research_only";}
     "barren"
 }
@@ -4105,6 +4127,7 @@ fn action_choices(context:&str)->&'static [&'static str] {
         "failed_edit"=>&["repair_failed_edit","change_approach","implement_research"],
         "uncaptured_edit"=>&["complete_candidate","repair_failed_edit","change_approach"],
         "research_only"=>&["implement_research","change_approach","complete_candidate"],
+        "exhausted_recovery"=>&["change_approach","repair_failed_edit","implement_research"],
         _=>&["change_approach","implement_research","repair_failed_edit"],
     }
 }
@@ -4329,6 +4352,9 @@ fn next_execution_action(history:&[Value])->Value {
             if previous=="revise_candidate" {"change_approach"} else {"revise_candidate"}
         } else if failed_edit {"repair_failed_edit"}
         else if edited {"complete_candidate"}
+        else if last["selfRepair"]["outcome"]=="no_patch_after_recovery" {
+            "change_approach"
+        }
         else if last["newFindings"].as_u64().unwrap_or(0)>0
             && previous!="implement_research" {"implement_research"}
         else {"change_approach"};
