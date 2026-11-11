@@ -1,11 +1,7 @@
 name: Sub4 actual local Ollama RSI attempt
-# One additional bounded run to execute the repaired autonomous lineage.
+# Manual opt-in only; the repaired real-model campaign has been queued.
 on:
   workflow_dispatch:
-  push:
-    branches: [dominion-sub4]
-    paths:
-      - '.github/sub4-autonomous-lineage-20261112'
 permissions:
   contents: read
 jobs:
