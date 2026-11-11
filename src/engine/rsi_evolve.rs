@@ -2183,8 +2183,11 @@ fn synthesize_observed_dag_pruning(
     let edges=method["verification"]["edges"].as_array()?;
     let operation_ids=receipt["operationIds"].as_array()?;
     for node in nodes {
+        // A source read may be a stateful preflight prerequisite even if
+        // its JSON result has no consumers. Search/fetch nodes are the
+        // observation-only operators this general pruning rule handles.
         if !matches!(node["tool"].as_str(),
-            Some("code_search"|"web_search"|"http_fetch"|"workspace_read_range")) {
+            Some("code_search"|"web_search"|"http_fetch")) {
             continue
         }
         let Some(id)=node["id"].as_str() else {continue};
