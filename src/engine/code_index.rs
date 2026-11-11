@@ -978,6 +978,27 @@ fn rank_focus_spans(
     ranking
 }
 
+/// Choose the FIRST native RSI observation from the existing symbol index.
+/// The index is only a navigation hint. The read still runs through the
+/// normal tool gateway, returning the actual current file hash/line content.
+pub fn bootstrap_source_start(
+    state:&AppState,index_id:&str,path:&str,objective:&str,domain:&str
+)->Option<u64> {
+    if !crate::engine::rsi::safe_path(path){return None;}
+    let indexed=state.store.get(FILE_KIND,&file_id(index_id,path))?;
+    let bytes=std::fs::read(state.config.workspace.join(path)).ok()?;
+    if bytes.len()>MAX_FILE_BYTES as usize || indexed["hash"].as_str()!=Some(digest(&bytes).as_str()) {
+        return None;
+    }
+    let content=String::from_utf8(bytes).ok()?;
+    let lines=content.lines().collect::<Vec<_>>();
+    let symbols=indexed["symbols"].as_array()?;
+    let terms=focus_terms(objective,domain);
+    let ranked=rank_focus_spans(symbols,indexed["tests"].as_array(),&lines,&terms);
+    let (_,line,_,_)=ranked.first()?;
+    Some((*line as u64).saturating_sub(4).max(1))
+}
+
 /// Returns compact, source-hash-verified RSI context instead of repeatedly
 /// sending an entire large source file to the model on every tool round.
 pub fn bounded_focus_context(
