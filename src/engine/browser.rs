@@ -66,11 +66,23 @@ fn devtools_port(profile: &Path) -> Option<u16> {
 }
 
 async fn wait_for_port(profile: &Path, child: &mut Child) -> Result<u16, String> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    // Shared CI runners can delay Chrome's DevToolsActivePort publication
+    // while Rust's parallel source-evolution integration tests compile binaries.
+    // Preserve the interactive desktop startup bound; only the existing
+    // explicitly configured no-sandbox CI mode gets the longer cold-start.
+    let timeout = if std::env::var("DOMINION_BROWSER_NO_SANDBOX").as_deref() == Ok("1") {
+        Duration::from_secs(60)
+    } else {
+        Duration::from_secs(20)
+    };
+    let deadline = tokio::time::Instant::now() + timeout;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build().map_err(|error| error.to_string())?;
     loop {
         if let Some(port) = devtools_port(profile) {
-            let ready = reqwest::get(format!("http://127.0.0.1:{port}/json/version"))
-                .await
+            let ready = client.get(format!("http://127.0.0.1:{port}/json/version"))
+                .send().await
                 .map(|response| response.status().is_success())
                 .unwrap_or(false);
             if ready {
