@@ -264,11 +264,15 @@ pub(crate) fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -
 }
 
 pub(crate) fn verified_pair_receipt(state: &AppState, candidate: &Value) -> bool {
-    let Some(id) = candidate["id"].as_str() else { return false; };
+    // Paired reports are stored by the immutable EVALUATION id, not the
+    // candidate id. Looking up rsi-pair-{candidateId} silently hid every
+    // genuine accepted improvement from descendant learning.
+    let evaluation = &candidate["evaluation"];
+    let Some(id) = evaluation["id"].as_str() else { return false; };
     let Some(receipt) = state.store.get("rsi_pair", &format!("rsi-pair-{id}")) else {
         return false;
     };
-    let evaluation = &candidate["evaluation"];
+    if receipt["evaluationId"] != id { return false; }
     let report = &receipt["report"];
     let Some(plan) = candidate["cases"].as_array() else { return false; };
     let Some(measured) = report["cases"].as_array() else { return false; };
@@ -616,6 +620,40 @@ mod tests {
             "baselineBuildOk":true,"candidateBuildOk":true,
             "cases":(0..8).map(|i|json!({"id":format!("case-{i}"),"baselinePass":i!=0,"candidatePass":true})).collect::<Vec<_>>()})
     }
+    #[test]
+    fn independent_pair_receipt_follows_evaluation_id_not_candidate_id() {
+        let (state, root) = state();
+        let candidate = propose(&state, &proposal("harness")).unwrap();
+        let original_report = report(&candidate);
+        let id = candidate["id"].as_str().unwrap();
+        let mut scored = evaluate(&state, id, &original_report).unwrap();
+        assert_eq!(scored["status"], "verified");
+        let evaluation_id = scored["evaluation"]["id"].as_str().unwrap().to_owned();
+        assert_ne!(evaluation_id, id);
+        let evidence_hash = original_report["reportSha256"].clone();
+        scored["evaluation"]["source"] = json!("server_invoked_local_paired_git_worktrees");
+        scored["evaluation"]["evidenceSha256"] = evidence_hash.clone();
+        state.store.put("rsi_candidate", &scored).unwrap();
+        state.store.put("rsi_pair", &json!({
+            "id":format!("rsi-pair-{evaluation_id}"),
+            "evaluationId":evaluation_id,
+            "candidateId":id,
+            "runner":"local_gitrepo_not_os_sandbox",
+            "evidenceSha256":evidence_hash,
+            "report":original_report,
+            "metrics":scored["evaluation"]["metrics"],
+            "verdict":scored["evaluation"]["verdict"]
+        })).unwrap();
+        assert!(verified_pair_receipt(&state, &scored),
+            "an independently measured improvement must be reusable by the descendant");
+        let mut forged = scored.clone();
+        forged["evaluation"]["id"] = json!("another-evaluation");
+        assert!(!verified_pair_receipt(&state, &forged),
+            "an unrelated evaluation cannot borrow a stored independent receipt");
+        drop(state);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn three_accepted_patches_do_not_prove_recursive_growth_without_meta_transfer() {
         let (state,root)=state();
