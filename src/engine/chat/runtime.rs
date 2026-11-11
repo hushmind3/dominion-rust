@@ -1259,8 +1259,12 @@ async fn run_turn_body(
             let operations=state.store.all("execution_operation").into_iter()
                 .filter(|operation|operation["runId"].as_str()==Some(execution_id))
                 .collect::<Vec<_>>();
-            let induced_next=rsi_action_program_next(
-                &session["rsiExecutionMethod"]["actionProgram"],&operations,execution_id);
+            let induced_next=if session["rsiCompilerRepair"]==true {
+                None // A failing compile takes priority over old discovery.
+            } else {
+                rsi_action_program_next(
+                    &session["rsiExecutionMethod"]["actionProgram"],&operations,execution_id)
+            };
             let completed=operations.iter()
                 .filter(|operation|operation["status"].as_str()==Some("completed"))
                 .cloned().collect::<Vec<_>>();
@@ -1328,6 +1332,16 @@ async fn run_turn_body(
                     state.store.audit("rsi.action_program_selected",evidence);
                 }
             }
+            if session["rsiCompilerRepair"]==true {
+                // Preserve exactly the compiler-repair actions. The previous
+                // generation's search method is not a useful plan for fixing
+                // a known syntax/type error in a known file.
+                round_tools.retain(|definition|matches!(tool_name(definition),
+                    "workspace_read_range"|"workspace_replace"|"workspace_replace_range"));
+                round_tools.sort_by_key(|definition|match tool_name(definition){
+                    "workspace_replace_range"=>0usize,"workspace_replace"=>1,_=>2
+                });
+            }
             // Method learning changes the next tool decision at runtime,
             // independent of what the model says in its final message.
             // A range edit requires the SHA produced by a real read.
@@ -1335,7 +1349,8 @@ async fn run_turn_body(
             // receipts. Exact replacement remains available from context.
             let method_has_read=read_calls>0
                 || session["rsiExecutionMethod"]["preferredTool"]=="workspace_replace";
-            if grounded && method_has_read && !has_write && !action_program_applied {
+            if session["rsiCompilerRepair"]!=true
+                && grounded && method_has_read && !has_write && !action_program_applied {
                 if let Some((chosen,corrected))=rsi_method_edit_choice(
                     &session["rsiExecutionMethod"],&operations,execution_id) {
                     if round_tools.iter().any(|row|tool_name(row)==chosen) {
