@@ -1431,7 +1431,8 @@ pub(crate) fn remember_research(state:&AppState,input:&Value,generation:&Value,s
     let lesson=candidate.as_ref().and_then(|c|c["hypothesis"].as_str()).unwrap_or("검증 전 연구 자료. 출처와 현재 코드 버전을 확인하고 다음 구현에 활용하세요.");
     let mut applications=state.store.get("session",session).and_then(|s|s["rsiKnowledgeReuse"].as_array().cloned()).unwrap_or_default();
     let writes=state.store.all("execution_operation").into_iter().filter(|op|op["sessionId"]==session && op["status"]=="completed"
-        && op["result"]["written"]==true && matches!(op["tool"].as_str(),
+        && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true
+        && matches!(op["tool"].as_str(),
             Some("workspace_write"|"workspace_replace"|"workspace_replace_range"))).collect::<Vec<_>>();
     for receipt in &mut applications {
         let actions=writes.iter().filter(|op|op["arguments"]["path"]==receipt["path"]).map(|op|op["id"].clone()).collect::<Vec<_>>();
@@ -2186,7 +2187,8 @@ fn session_write_receipts(state:&AppState, session_id:&str) -> Vec<Value> {
             continue;
         }
         let actual_write=operation["status"]=="completed"
-            && operation["result"]["written"]==true;
+            && operation["result"]["written"]==true
+            && operation["toolReceipt"]["verified"]==true;
         let error=operation["error"].as_str()
             .or_else(||operation["result"]["error"].as_str())
             .unwrap_or(if actual_write {""} else {"tool call has no confirmed file write"});
