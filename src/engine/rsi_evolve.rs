@@ -1179,6 +1179,15 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
         ));
         text.push_str("이 알고리즘은 개선 분야와 코드 파일 후보를 고르는 데 사용됩니다. 새 expression 및 targetExpression은 다음 예정된 세대에서 시험하며 실제 검증 결과가 없으면 승격하지 않습니다.\n");
     }
+    let scope_key=scope.partition_key.as_str();
+    if let Some(latest)=state.store.all("rsi_method_trial_decision").into_iter()
+        .filter(|row|row["partitionKey"].as_str()==Some(scope_key))
+        .max_by(|a,b|a["createdAt"].as_str().cmp(&b["createdAt"].as_str())) {
+        text.push_str("\n### 학습 방법에 대한 실제 비교 결과\n");
+        text.push_str(&format!("이전 고정 집단 비교: {}. 다음 방법 생성 때 승격·기각 이유를 반영하세요. 실험 결과는 관측 비교이며 인과 증명은 아닙니다.\n",
+            json!({"verdict":latest["verdict"],"control":latest["control"],
+                "learned":latest["learned"],"nextPolicyRevision":latest["nextPolicyRevision"]})));
+    }
     if let Some(block) = prior_experience.filter(|block| !block.trim().is_empty()) {
         text.push_str("\n### 기존 RSI 경험·지식\n");
         text.push_str(&block);
@@ -1502,14 +1511,9 @@ fn method_policy_trial_plan(state:&AppState,input:&Value)->Value {
     let before=completed_for(&cohort);
     let control=before.iter().filter(|row|row["methodPolicyTrial"]["arm"]=="control").count();
     let learned=before.len().saturating_sub(control);
-    let arm=match cohort["preference"].as_str().unwrap_or("balanced") {
-        "learned" if before.len()%4!=3=>"learned",
-        "control" if before.len()%4!=3=>"control",
-        "learned"=>"control",
-        "control"=>"learned",
-        _ if control<=learned=>"control",
-        _=>"learned",
-    };
+    // The winner is used for the next policy revision, not to take away the
+    // comparator's sample. A 3:1 cohort is not a matched 2:2 evaluation.
+    let arm=if control<=learned {"control"} else {"learned"};
     json!({"key":key,"cohortId":cohort["id"],"arm":arm,
         "policyRevision":cohort["policyRevision"],
         "policy":cohort["policy"],"preference":cohort["preference"],
@@ -1562,6 +1566,131 @@ fn method_policy_trial_report(state:&AppState,generation:&Value)->Value {
         } else {"waiting_for_matched_control_and_learned_generations"},
         "causalProof":false,
         "qualityEvidence":"accepted_frozen_paired_worktree_results_only"})
+}
+
+/// Close a frozen 2+2 method-policy experiment and feed its measured result
+/// back into DOMINION's *next method-scoring algorithm*. No claim of causal
+/// superiority is made: the attempts are sequential, not paired replays.
+fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
+    let trial=&generation["methodPolicyTrial"];
+    let Some(cohort_id)=trial["cohortId"].as_str() else{return Value::Null};
+    if let Some(saved)=state.store.get("rsi_method_trial_decision",cohort_id) {
+        return saved;
+    }
+    let Some(cohort)=state.store.get("rsi_method_trial_cohort",cohort_id) else {
+        return Value::Null;
+    };
+    let mut rows=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["methodPolicyTrial"]["cohortId"].as_str()==Some(cohort_id))
+        .collect::<Vec<_>>();
+    if !rows.iter().any(|row|row["jobId"]==generation["jobId"]) {
+        rows.push(generation.clone());
+    }
+    if rows.len()!=4 {return Value::Null;}
+    let mut seen=BTreeSet::new();
+    // A matched source/model policy experiment must not silently mix work
+    // from a changed descendant binary, different task or different scorer.
+    let lineage_valid=rows.iter().all(|row|{
+        let assigned=&row["methodPolicyTrial"];
+        let id=row["jobId"].as_str().unwrap_or("");
+        !id.is_empty() && seen.insert(id.to_string())
+            && assigned["key"]==cohort["key"]
+            && assigned["policyRevision"]==cohort["policyRevision"]
+            && assigned["sourceCommit"]==trial["sourceCommit"]
+            && assigned["sourceCommit"]==row["generatorCommit"]
+            && assigned["model"]==trial["model"]
+            && assigned["provider"]==trial["provider"]
+            && assigned["domain"]==trial["domain"]
+            && assigned["focus"]==trial["focus"]
+    });
+    let stats=|arm:&str|{
+        let samples=rows.iter().filter(|row|row["methodPolicyTrial"]["arm"]==arm)
+            .collect::<Vec<_>>();
+        let paired=samples.iter().filter(|row|
+            row["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+                && row["evaluation"]["metrics"].is_object()).count();
+        let gains=samples.iter().filter(|row|measured_system_improvement(row)).count();
+        let regressions=samples.iter().filter(|row|
+            row["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+                && matches!(row["evaluation"]["metrics"]["verdict"].as_str(),
+                    Some("regressed"|"build_failed"))).count();
+        (samples.len(),paired,gains,regressions)
+    };
+    let control=stats("control");
+    let learned=stats("learned");
+    let comparable=lineage_valid && control.0==2 && learned.0==2
+        && control.1>0 && learned.1>0;
+    let control_score=3i64*control.2 as i64-2i64*control.3 as i64;
+    let learned_score=3i64*learned.2 as i64-2i64*learned.3 as i64;
+    let verdict=if !comparable {"insufficient_matched_quality"}
+        else if learned.2>0 && learned.3==0 && learned_score>=control_score+2 {
+            "promote_observational"
+        } else if (control.2>0 || learned.3>0)
+            && control_score>=learned_score+2 {
+            "reject_and_mutate"
+        } else {"inconclusive"};
+    let mut decision=json!({"id":cohort_id,"cohortId":cohort_id,
+        "partitionKey":cohort["policy"]["partitionKey"],"key":cohort["key"],
+        "policyId":cohort["policy"]["id"],"policyRevision":cohort["policyRevision"],
+        "verdict":verdict,"comparison":"frozen_source_model_focus_2_by_2",
+        "causalProof":false,"independentlyEvaluated":comparable,
+        "control":{"generations":control.0,"pairedEvaluations":control.1,
+            "acceptedGains":control.2,"pairedRegressions":control.3,"score":control_score},
+        "learned":{"generations":learned.0,"pairedEvaluations":learned.1,
+            "acceptedGains":learned.2,"pairedRegressions":learned.3,"score":learned_score},
+        "nextPolicyRevision":Value::Null,
+        "createdAt":chrono::Utc::now().to_rfc3339()});
+    if matches!(verdict,"promote_observational"|"reject_and_mutate") {
+        let Some(policy_id)=cohort["policy"]["id"].as_str() else{return Value::Null};
+        let Some(mut policy)=state.store.get("rsi_method_policy",policy_id) else {
+            return Value::Null;
+        };
+        if verdict=="promote_observational" {
+            // It is the FROZEN tested revision that earned the result. Never
+            // label a meanwhile-mutated scorer as a measured winner.
+            policy=cohort["policy"].clone();
+            policy["status"]=json!("promoted_observational");
+            policy["lastMethodTrial"]=json!({"cohortId":cohort_id,
+                "verdict":verdict,"causalProof":false});
+        } else {
+            // Negative method-policy comparisons alter DOMINION's evaluator,
+            // not just a text instruction. Increase penalties and re-explore
+            // alternative transitions; the result starts as a NEW candidate.
+            let previous=&policy["scoringKernel"]["rule"];
+            let weight=|key:&str,default:f64|{
+                previous[key].as_f64().filter(|value|value.is_finite())
+                    .unwrap_or(default)
+            };
+            let extra=learned.3.saturating_sub(control.3).max(1) as f64;
+            let rule=json!({
+                "rewardWeight":weight("rewardWeight",1.0).clamp(0.5,5.0),
+                "failureWeight":(weight("failureWeight",1.0)+extra).clamp(0.5,6.0),
+                "smoothing":(weight("smoothing",1.0)+1.0).clamp(0.5,8.0),
+                "exploration":(weight("exploration",0.0)+0.5).clamp(0.0,2.0)
+            });
+            policy["scoringKernel"]=json!({"rule":rule,
+                "validation":{"status":"new_trial_candidate_not_proven",
+                    "source":"frozen_method_policy_trial","cohortId":cohort_id,
+                    "rejectedRevision":cohort["policyRevision"]}});
+            policy["status"]=json!("candidate");
+            policy["lastMethodTrial"]=json!({"cohortId":cohort_id,
+                "verdict":verdict,"causalProof":false});
+            policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([
+                &policy["transitions"],&policy["evidence"],&policy["scoringKernel"],
+                cohort_id
+            ]).to_string().as_bytes())));
+        }
+        let Some(saved)=state.store.put("rsi_method_policy",&policy) else{
+            return Value::Null;
+        };
+        state.bus.record("rsi_method_policy",&saved);
+        decision["nextPolicyRevision"]=saved["revision"].clone();
+    }
+    let Some(saved)=state.store.put("rsi_method_trial_decision",&decision) else{
+        return Value::Null;
+    };
+    state.bus.record("rsi_method_trial_decision",&saved);
+    saved
 }
 
 pub(crate) fn configure_method_session(state: &AppState, input: &Value, session: &mut Value) {
@@ -3506,6 +3635,8 @@ async fn run_loop(
         }
         generation["methodPolicyTrialReport"]=
             method_policy_trial_report(&context.state,&generation);
+        generation["methodPolicyTrialDecision"]=
+            settle_method_policy_trial(&context.state,&generation);
         generation["knowledgeId"]=json!(remember_research(&context.state,&current["input"],&generation,session.unwrap_or("")));
         if let Some(session)=session {
             generation["knowledgeReuse"]=context.state.store.get("session",session).map(|s|s["rsiKnowledgeReuse"].clone()).unwrap_or(Value::Null);
