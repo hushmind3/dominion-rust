@@ -838,10 +838,19 @@ async fn stream_completion_once_body(
             op["sessionId"]==session_id && op["status"]=="completed"
                 && matches!(op["tool"].as_str(),
                     Some("workspace_read_range" | "workspace_read")));
-        if state.store.get("session",session_id).is_some_and(|session|
-            rsi_edit_requires_tool(&session,tools,observed_read)
-                || rsi_source_read_requires_tool(&session,tools,observed_read)) {
-            body["tool_choice"]=json!("required");
+        if let Some(session)=state.store.get("session",session_id) {
+            let focused_edit=rsi_edit_requires_tool(&session,tools,observed_read);
+            if focused_edit || rsi_source_read_requires_tool(&session,tools,observed_read) {
+                body["tool_choice"]=json!("required");
+            }
+            // Small local models previously returned a completed source read,
+            // then dropped the HTTP chunked stream during the REQUIRED edit.
+            // The final grounded edit is a single atomic response; no partial
+            // tool-call chunks or visible text need to be replayed.
+            if provider.local && focused_edit {
+                body["stream"]=json!(false);
+                body.as_object_mut().unwrap().remove("stream_options");
+            }
         }
     }
     if let Some(limit) = provider.max_output_tokens {
@@ -895,6 +904,65 @@ async fn stream_completion_once_body(
             provider.name,
             text.chars().take(600).collect::<String>()
         ));
+    }
+
+    if body["stream"]==false {
+        // Only focused local RSI edits use this path. A complete response
+        // either supplies a tool call or is handed to the existing text/JSON
+        // tool decoder. A broken connection cannot masquerade as a write.
+        let answer:Value=response.json().await
+            .map_err(|error|format!("로컬 소스 수정 응답 오류: {error}"))?;
+        let message=&answer["choices"][0]["message"];
+        if !message.is_object() {
+            return Err("로컬 소스 수정 응답에 assistant message가 없습니다.".into());
+        }
+        let mut completion=Completion::default();
+        completion.content=message["content"].as_str().unwrap_or("").to_string();
+        completion.reasoning=message["reasoning_content"].as_str()
+            .or_else(||message["reasoning"].as_str()).unwrap_or("").to_string();
+        for call in message["tool_calls"].as_array().into_iter().flatten() {
+            if completion.tool_calls.len()>=MAX_TOOL_CALLS {
+                return Err("모델이 너무 많은 도구 호출을 반환했습니다.".into());
+            }
+            let Some(name)=call["function"]["name"].as_str().filter(|s|!s.is_empty())
+                else{continue};
+            let arguments=match &call["function"]["arguments"] {
+                Value::String(raw)=>raw.clone(),
+                Value::Object(_) =>call["function"]["arguments"].to_string(),
+                _=>"{}".to_string(),
+            };
+            completion.tool_calls.push(ToolCall{
+                id:call["id"].as_str().filter(|s|!s.is_empty())
+                    .map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string()),
+                name:name.to_string(),arguments
+            });
+        }
+        if completion.content.len()+completion.reasoning.len()
+            +completion.tool_calls.iter().map(|call|call.arguments.len()).sum::<usize>()
+            >2_000_000 {
+            return Err("모델 응답 크기 제한을 초과했습니다.".into());
+        }
+        completion.first_delta_ms=Some(started.elapsed().as_millis() as u64);
+        if !completion.reasoning.is_empty() {
+            let _=tx.send(json!({"type":"reasoning","text":completion.reasoning}));
+        }
+        if !completion.content.is_empty() {
+            let _=tx.send(json!({"type":"text","text":completion.content}));
+        }
+        let usage=&answer["usage"];
+        let exact=usage["prompt_tokens"].as_u64()
+            .zip(usage["completion_tokens"].as_u64());
+        let (prompt,generated)=exact.unwrap_or_else(||
+            estimate_usage(&provider_messages,if compatible{&[]}else{tools},&completion));
+        completion.prompt_tokens=prompt;
+        completion.completion_tokens=generated;
+        completion.usage=usage["total_tokens"].as_u64().unwrap_or(prompt+generated);
+        completion.usage_exact=exact.is_some();
+        completion.cached_prompt_tokens=cached_prompt_tokens(usage);
+        crate::engine::gateway::record_usage_tokens(state,&provider.id,&provider.model,
+            provider.local,"chat",Some(session_id),prompt,generated,
+            completion.usage,!completion.usage_exact);
+        return Ok(completion);
     }
 
     let mut completion = Completion::default();
