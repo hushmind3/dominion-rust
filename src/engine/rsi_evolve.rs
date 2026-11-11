@@ -3797,10 +3797,15 @@ async fn run_loop(
         let target_objective=selection_objective(&child_input);
         // Compute the same domain decision that the worker will use. Keep it
         // distinct from rsiSelectedDomain, which represents an explicit choice.
-        let target_trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
-        // The parent can suggest a next domain, but the descendant's rebuilt
-        // selector owns the actual choice; operator focus stays in the objective.
-        let repair_domain=pending_method_recovery_domain(&child_input);
+        let failed_patch_domain=pending_failed_patch_domain(
+            &context.state,&child_input,&head);
+        let target_trial=if failed_patch_domain.is_some(){None}
+            else {child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string)};
+        // Use the same actual broken-file pin in coordinator and worker.
+        // Otherwise the second process rejects or replans the stale target
+        // before it can repair the inherited candidate.
+        let repair_domain=failed_patch_domain
+            .or_else(||pending_method_recovery_domain(&child_input));
         let (target_domain,target_selection,target_strategy)=select_generation_strategy(
             &context.state,&recorded_history,&target_objective,
             if repair_domain.is_some(){None}else{research_continuation(&recorded_history)},
