@@ -2738,9 +2738,13 @@ async fn run_loop(
             })
             .cloned()
             .collect::<Vec<_>>();
-        let mut program_stages = session.map(|id|context.state.store.all("rsi_program_phase")
-            .into_iter().filter(|row|row["sessionId"].as_str()==Some(id))
-            .collect::<Vec<_>>()).unwrap_or_default();
+        // A reused session must never attribute an older worker's stage
+        // transitions to this descendant. Match the worker and exact policy.
+        let mut program_stages = context.state.store.all("rsi_program_phase")
+            .into_iter().filter(|row|
+                row["generationJobId"].as_str()==Some(child_id.as_str())
+                && row["policyRevision"]==current["input"]["rsiEditPolicy"]["revision"])
+            .collect::<Vec<_>>();
         program_stages.sort_by(|left,right|
             left["recordedAt"].as_str().unwrap_or("").cmp(
                 right["recordedAt"].as_str().unwrap_or("")));

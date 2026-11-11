@@ -1223,6 +1223,8 @@ async fn run_turn_body(
                             execution_id, decision.phase, &tool_calls.to_string()
                         ]),
                         "sessionId":session_id,"runId":execution_id,
+                        "generationJobId":session["rsiGenerationJobId"],
+                        "campaignId":session["rsiCampaignId"],
                         "policyRevision":session["rsiEditPolicy"]["revision"],
                         "phase":decision.phase,"toolCalls":tool_calls,
                         "observedOperations":all_operations.len(),
