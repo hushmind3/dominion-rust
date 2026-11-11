@@ -239,7 +239,23 @@ if(mode==='probe'){
     const evolution=last.evolution||last.result?.evolution||{};
     trace.summary.maxAcceptedStreak=evolution.maxAcceptedStreak||0;
     trace.summary.capabilityDemonstrated=evolution.capabilityDemonstrated===true;
-    trace.actualCompletion=trace.summary.maxAcceptedStreak>=3
+    // Do not report completion for an interrupted/timeout job even if it
+    // already earned isolated improvements. The authoritative Rust proof
+    // also verifies the exact chain, paired source receipts and meta transfer.
+    trace.summary.acceptedLineage=accepted.map(g=>({
+      attempt:g.attempt,base:g.generatorCommit,child:g.acceptedCommit,
+      domain:g.domain,metaHoldoutGains:g.evaluation?.metaHoldoutGains||0,
+      improvedHoldoutDomains:g.evaluation?.improvedHoldoutDomains||[],
+      tokens:g.tokenUsage?.promptTokens!=null
+        ? (g.tokenUsage.promptTokens||0)+(g.tokenUsage.completionTokens||0)
+        : null
+    }));
+    trace.summary.tokensPerAccepted=accepted.length?
+      trace.generationEvidence.reduce((sum,g)=>sum+(g.tokenUsage?.promptTokens||0)
+        +(g.tokenUsage?.completionTokens||0),0)/accepted.length:null;
+    trace.actualCompletion=trace.phase==='campaign_finished'
+      && trace.status==='completed'
+      && trace.summary.maxAcceptedStreak>=3
       && trace.summary.capabilityDemonstrated;
     if(trace.phase==='campaign_timeout')trace.errors.push('campaign did not finish before runner deadline');
     save(trace);
