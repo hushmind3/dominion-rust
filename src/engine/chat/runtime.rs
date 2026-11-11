@@ -42,6 +42,15 @@ fn task_input<'a>(session: &'a Value, input: &'a str) -> &'a str {
     } else {input}
 }
 
+/// A model-driven RSI worker has its own parent budget. Give a slow local
+/// model enough time to finish the edit-and-tool round without raising the
+/// normal chat limit or extending the campaign's global deadline.
+fn elapsed_limit_for_session(session:&Value)->Duration {
+    if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {
+        Duration::from_secs(840)
+    } else { MAX_ELAPSED }
+}
+
 fn rsi_output_allowance(spent: u64, input: u64) -> Result<u64,String> {
     let remaining=MAX_TOKENS.saturating_sub(spent).saturating_sub(input);
     if remaining<256 {return Err(format!("토큰 예산({MAX_TOKENS})이 부족해 다음 호출 전에 중단했습니다."));}
@@ -309,9 +318,10 @@ async fn run_turn_with_policy(
             state.store.put("execution", &execution);
         }
     }
+    let elapsed_limit=elapsed_limit_for_session(&session);
     let result = tokio::select! {
-        result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
-            result.unwrap_or_else(|_| Err("실행 시간 제한(10분)을 초과했습니다.".into())),
+        result = tokio::time::timeout(elapsed_limit, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
+            result.unwrap_or_else(|_| Err(format!("실행 시간 제한({}분)을 초과했습니다.",elapsed_limit.as_secs()/60))),
         // A closed SSE client must not destroy work already in flight. The turn
         // keeps running in its spawned task; only an explicit cancel or the
         // elapsed budget stops it. Results stay durable for later reads.
@@ -918,7 +928,7 @@ async fn run_turn_body(
         "maxRounds": max_rounds,
         "maxToolCalls": max_tools,
         "maxTokens": if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {Value::Null}else{json!(MAX_TOKENS)},
-        "maxElapsedMs": MAX_ELAPSED.as_millis() as u64,
+        "maxElapsedMs": elapsed_limit_for_session(&session).as_millis() as u64,
     });
     record_selection_snapshot(
         state,
@@ -969,7 +979,8 @@ async fn run_turn_body(
     let mut adaptation_attempts = 0usize;
     let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
-    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
+    let elapsed_limit=elapsed_limit_for_session(&session);
+    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, elapsed_limit);
     let mut rsi_decision_checkpoint = false;
     let mut rsi_edit_only_announced = false;
     let mut rsi_edit_retry = false;
@@ -1006,14 +1017,14 @@ async fn run_turn_body(
             return Err("모델 라운드 예산을 초과했습니다.".into());
         }
         if budget.expired() {
-            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
+            return Err(format!("실행 시간 제한({}분)을 초과했습니다.",elapsed_limit.as_secs()/60));
         }
         if state.is_cancelled(session_id) || state.cancellation_generation(session_id) != generation
         {
             return Err("실행이 중단되었습니다.".into());
         }
-        if started_at.elapsed() > MAX_ELAPSED {
-            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
+        if started_at.elapsed() > elapsed_limit {
+            return Err(format!("실행 시간 제한({}분)을 초과했습니다.",elapsed_limit.as_secs()/60));
         }
         if metrics.lock().unwrap().tool_calls as usize >= max_tools {
             mark_budget_exhausted(state, execution_id);
@@ -4553,6 +4564,15 @@ fn record_soft_tool_error(
     let _ = tx.send(json!({"type":"tool_error","name":name,"id":call_id,"error":error}));
     metrics.lock().unwrap().tool_calls += 1;
     state.store.audit("tool.soft_error", json!({"tool":name,"error":error,"executionId":execution_id}));
+    // A malformed tool call never becomes an execution_operation. Preserve
+    // that exact failure for the RSI coordinator and next-generation repair.
+    if state.store.get("session",session_id).is_some_and(|s|s["rsiRun"]==true) {
+        state.store.put("rsi_tool_rejection",&json!({
+            "id":format!("{execution_id}:{call_id}"),"sessionId":session_id,
+            "executionId":execution_id,"tool":name,"error":error,
+            "createdAt":chrono::Utc::now().to_rfc3339()
+        }));
+    }
     if let Some(saved) = state.store.write_message(&json!({
         "session_id":session_id,"role":"tool","content":json!({"error":error}).to_string(),
         "tool_call_id":call_id,"agent_id":request.agent_id,
@@ -5562,6 +5582,13 @@ mod outcome_tests {
             "acceptanceText": acceptance_text,
             "strategyCompliance": []
         })
+    }
+
+    #[test]
+    fn slow_rsi_generation_gets_edit_time_without_extending_normal_chat() {
+        assert_eq!(elapsed_limit_for_session(&json!({})).as_secs(),600);
+        assert_eq!(elapsed_limit_for_session(&json!({"rsiRun":true})).as_secs(),600);
+        assert_eq!(elapsed_limit_for_session(&json!({"rsiRun":true,"rsiCampaignId":"c"})).as_secs(),840);
     }
 
     #[test]

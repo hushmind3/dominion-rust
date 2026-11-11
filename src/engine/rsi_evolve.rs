@@ -2981,7 +2981,9 @@ async fn run_loop(
         let worker_timeout = if remaining == u64::MAX {
             7 * 24 * 3600
         } else {
-            remaining.clamp(1, 900)
+            // Preserve time for compiling and collecting a real source diff
+            // after an up-to-14-minute local model editing turn.
+            remaining.clamp(1, 1080)
         };
         let output = command(context, worker, Duration::from_secs(worker_timeout)).await;
         let current = context
@@ -3009,6 +3011,12 @@ async fn run_loop(
                 "error":operation["result"]["error"]
             })).collect::<Vec<_>>();
         let actual_source_edits=edit_operations.iter().filter(|op|op["written"]==true).count();
+        let tool_rejections=context.state.store.all("rsi_tool_rejection").into_iter()
+            .filter(|receipt|session.is_some_and(|id|receipt["sessionId"].as_str()==Some(id)))
+            .take(16).map(|receipt|json!({
+                "tool":receipt["tool"],"error":receipt["error"],
+                "executionId":receipt["executionId"]
+            })).collect::<Vec<_>>();
         let research_fingerprint = session
             .map(|session_id| session_research_fingerprint(&context.state, session_id))
             .unwrap_or_default();
@@ -3056,6 +3064,7 @@ async fn run_loop(
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
             "editOperations":edit_operations,"observedSourceEdits":actual_source_edits,
+            "toolRejections":tool_rejections,
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
@@ -3166,19 +3175,21 @@ async fn run_loop(
             &hashes,record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]));
         generation["knowledgeArtifactHashes"]=json!(hashes);
         generation["newFindings"]=json!(new_findings);
-        let writes=generation["toolsUsed"].as_array().into_iter().flatten()
-            .filter(|row|matches!(row["tool"].as_str(),
-                Some("workspace_write"|"workspace_replace"|"workspace_replace_range"|"file_write")))
-            .map(|row|row["calls"].as_u64().unwrap_or(0)).sum::<u64>();
+        let writes=actual_source_edits as u64;
+        let attempted_tool= !generation["editOperations"].as_array().is_none_or(Vec::is_empty)
+            || !generation["toolRejections"].as_array().is_none_or(Vec::is_empty);
         let bytes=current["result"]["rsi"]["diffBytes"].as_u64().unwrap_or(0);
-        let attempted=writes>0 || bytes>0 || candidate_id.is_some();
+        let attempted=attempted_tool || writes>0 || bytes>0 || candidate_id.is_some();
         let expected=matches!(generation["improvementDirective"]["mode"].as_str(),
-            Some("implement_research"|"repair_counterexample"|"revise_candidate"|"change_approach"));
+            Some("implement_research"|"repair_counterexample"|"revise_candidate"|"change_approach"|"repair_edit_execution"));
         generation["improvementActionObservation"]=json!({
             "status":if generation["accepted"]==true {"verified_adoption"}
-                else if attempted {"attempted"}
+                else if writes>0 || bytes>0 || candidate_id.is_some() {"attempted"}
+                else if attempted_tool {"edit_not_applied"}
                 else if expected {"not_followed"} else {"research_only"},
-            "attemptedCodeChange":attempted,"completedWrites":writes,"diffBytes":bytes
+            "attemptedCodeChange":attempted,"completedWrites":writes,
+            "rejectedOrFailedEdits":attempted_tool && writes==0,
+            "diffBytes":bytes
         });
         generation["stopReason"]=json!(stopped);
         if candidate_id.is_none() && new_findings>0 && output.is_ok() && stopped.is_none()
@@ -3465,6 +3476,7 @@ fn improvement_directive(history:&[Value]) -> Value {
     let patch=last["candidateId"].is_string();
     let findings=last["newFindings"].as_u64().unwrap_or(0);
     let mode=if last["accepted"]==true {"extend_verified_capability"}
+    else if last["improvementActionObservation"]["status"]=="edit_not_applied" {"repair_edit_execution"}
     else if last["improvementActionObservation"]["status"]=="not_followed"
         && !matches!(previous,""|"discover"|"change_approach") {"change_approach"}
     else if matches!(verdict,"regressed"|"build_failed") {
@@ -3484,6 +3496,10 @@ fn improvement_directive(history:&[Value]) -> Value {
         "domain":last["domain"],"candidateId":last["candidateId"],
         "newFindings":findings,"previousVerdict":last["evaluation"]["verdict"],
         "failureCaseIds":cases,
+        "previousToolRejections":last["toolRejections"].as_array().map(|rows|
+            rows.iter().take(8).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "previousEditOperations":last["editOperations"].as_array().map(|rows|
+            rows.iter().take(8).cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "previousFocusFiles":last["focusFiles"].as_array().map(|rows|
             rows.iter().take(4).cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "evidenceHashes":last["knowledgeArtifactHashes"].as_array().map(|rows|
@@ -3562,7 +3578,7 @@ fn improvement_history(state:&AppState,input:&Value,history:&[Value],campaign_id
     // Prior evidence remains in the experience store; it is not mistaken for
     // a fresh discovery when the model fails to turn it into source code.
     let attempted=matches!(latest["improvementDirective"]["mode"].as_str(),
-        Some("implement_research"|"repair_counterexample"|"revise_candidate"|"change_approach"))
+        Some("implement_research"|"repair_counterexample"|"revise_candidate"|"change_approach"|"repair_edit_execution"))
         && latest["newFindings"].as_u64().unwrap_or(0)==0;
     let source=input["rsiBaseCommit"].as_str()
         .or_else(||input["rsiGeneratorCommit"].as_str())
@@ -3578,6 +3594,7 @@ fn improvement_work_contract(directive:&Value)->&'static str {
         "repair_counterexample" => "이전 후보가 실패한 holdout 사례와 실패한 코드 경로를 분석하여 다른 수정안을 실행하고 재평가하세요.",
         "revise_candidate" => "이전 후보의 미달 원인을 확인하고 가설 또는 수정 위치를 바꾼 다음 검증 가능한 새 후보를 실행하세요.",
         "change_approach" => "반복 실패한 원인을 근거로 기존과 다른 파일·구현 전략을 선택해 실제 코드 변경을 시도하세요.",
+        "repair_edit_execution" => "지난 세대의 쓰기 도구 요청이 실제 파일 변경으로 이어지지 않았습니다. previousToolRejections와 previousEditOperations의 오류를 고쳐 유효한 JSON·줄 번호·해시로 workspace_replace_range 또는 workspace_replace를 실행하세요. 이전 요청을 그대로 반복하지 마세요.",
         "extend_verified_capability" => "이전 독립 평가에서 채택한 기능은 유지하고 다음 결함을 해결하여 별도 holdout에서 개선을 증명하세요.",
         _ => "원인이 있는 결함 하나를 선택하고 구현·검증까지 수행하세요. 조사 요약 자체는 완료가 아닙니다."
     }
@@ -3592,7 +3609,7 @@ fn corrective_retry_allowed(history:&[Value],streak:u64)->bool {
     last["accepted"]!=true && last["candidateId"].is_null()
         && last["newFindings"].as_u64().unwrap_or(0)==0
         && matches!(last["improvementDirective"]["mode"].as_str(),
-            Some("implement_research"|"repair_counterexample"|"revise_candidate"))
+            Some("implement_research"|"repair_counterexample"|"revise_candidate"|"repair_edit_execution"))
 }
 
 // A generation's research continuation must be decided identically by the
@@ -3992,6 +4009,21 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_edit_dispatch_becomes_a_specific_executable_repair_directive() {
+        let failed=json!({
+            "id":"g1","jobId":"j1","accepted":false,"candidateId":null,
+            "newFindings":0,"improvementDirective":{"mode":"implement_research"},
+            "improvementActionObservation":{"status":"edit_not_applied"},
+            "toolRejections":[{"tool":"workspace_replace_range","error":"invalid JSON arguments"}],
+            "editOperations":[]
+        });
+        let directive=improvement_directive(&[failed]);
+        assert_eq!(directive["mode"],"repair_edit_execution");
+        assert_eq!(directive["previousToolRejections"][0]["error"],"invalid JSON arguments");
+        assert!(improvement_work_contract(&directive).contains("workspace_replace_range"));
+    }
+
     #[test]
     fn explicit_owner_patch_starts_with_execution_without_wasting_a_discovery_generation() {
         let patch=json!({"rsiAutonomous":false,
