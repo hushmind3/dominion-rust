@@ -3092,6 +3092,26 @@ fn select_generation_strategy(
             if comparable_trial_baseline(history, &generation, &algorithm).is_some() {
                 return (domain, "algorithm_trial", search_strategy(&algorithm, "trial"));
             }
+            // Repeated active-policy generations may produce no patch at all.
+            // They have no frozen measurements, and can never satisfy the
+            // comparable-control gate. Try the proposed policy once to let a
+            // different target search actually produce a source patch. Its
+            // policy trial is still INCONCLUSIVE without a verified control;
+            // a separately verified patch may still improve the next binary.
+            let no_patch_controls=history.iter().rev()
+                .filter(|row|row["generatorCommit"]==generator_commit
+                    && row["domain"]==domain
+                    && row["domainSelection"]=="algorithm_active"
+                    && row["candidateId"].is_null()
+                    && row["accepted"]==false)
+                .count();
+            if no_patch_controls>=2 && algorithm["rsiTrial"]["trials"].as_array()
+                .is_none_or(Vec::is_empty) {
+                let mut exploratory=search_strategy(&algorithm,"trial");
+                exploratory["trialFallback"]=json!("exploratory_after_two_no_patch_controls");
+                exploratory["policyEvidence"]=json!("unpaired_exploration_not_promotion");
+                return (domain,"algorithm_trial",exploratory);
+            }
             // The active policy must supply a control in the domain actually
             // selected by the candidate; unrelated controls cannot test it.
             let active = active
@@ -5326,6 +5346,47 @@ mod tests {
         candidate["evaluation"]["metrics"]["measurements"][1]["candidatePass"]=json!(false);
         assert_eq!(trial_verdict(&candidate,&active).0,"rejected",
             "a frozen regression must override savings and accepted flags");
+    }
+
+    #[test]
+    fn barren_active_controls_trigger_one_real_policy_trial_without_false_promotion() {
+        let (state,root)=state();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"escape-stalled-search",
+            "source":"rsi-generated","implementation":"expression",
+            "parameters":{"expression":"novelty * 5 + exploration"}
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap().to_string();
+        let queued=queue_search_trial(&state,&candidate,
+            &crate::engine::algorithms::active(&state,"selfimprove.search").unwrap(),
+            &[],"","campaign-explore",1);
+        assert_eq!(queued["status"],"pending_trial");
+        let first=json!({"jobId":"control-one","domain":"memory",
+            "generatorCommit":"commit-1","domainSelection":"algorithm_active",
+            "candidateId":null,"accepted":false,"evaluation":null});
+        let second=json!({"jobId":"control-two","domain":"memory",
+            "generatorCommit":"commit-1","domainSelection":"algorithm_active",
+            "candidateId":null,"accepted":false,"evaluation":null});
+        // Force an explicit domain constraint; the policy has no evaluated
+        // active control after two attempts and must get to execute itself.
+        let objective="기억";
+        let (_domain,mode,strategy)=select_generation_strategy(
+            &state,&[first.clone(),second.clone()],objective,None,
+            Some(id.clone()),None,"commit-1");
+        assert_eq!(mode,"algorithm_trial");
+        assert_eq!(strategy["trialFallback"],"exploratory_after_two_no_patch_controls");
+        assert_eq!(strategy["policyEvidence"],"unpaired_exploration_not_promotion");
+        let trial=json!({"jobId":"experimental","attempt":3,"domain":"memory",
+            "domainSelection":"algorithm_trial",
+            "accepted":false,"generatorCommit":"commit-1",
+            "searchStrategy":{"id":id,"mode":"trial"}});
+        let result=record_trial_outcome(&state,&id,&trial,&[first,second]);
+        assert_eq!(result["reason"],"comparable_baseline_missing",
+            "running the policy alone is not evidence it is better");
+        assert_ne!(crate::engine::algorithms::active(&state,"selfimprove.search")
+            .unwrap()["id"],id,
+            "never automatically promote an exploratory search trial");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
