@@ -165,12 +165,24 @@ pub fn recover(state: &AppState) {
             })
         });
         let uncertain = flagged || unknown_external_result;
-        updated["status"] = json!(if attempts >= 3 || uncertain {
+        // A generation whose campaign is already finished can never become
+        // runnable again. Re-queueing it wedges the self-improvement start
+        // guard forever, so retire it during recovery.
+        let orphan_child = job["kind"].as_str() == Some("rsi_generation")
+            && job.pointer("/input/rsiCampaignId").and_then(Value::as_str).is_some_and(|id| {
+                state.store.get("job", id).is_none_or(|parent| {
+                    !matches!(parent["status"].as_str(), Some("running" | "queued"))
+                })
+            });
+        updated["status"] = json!(if orphan_child || attempts >= 3 || uncertain {
             "needs_review"
         } else {
             "queued"
         });
-        if uncertain {
+        if orphan_child {
+            updated["error"] =
+                json!("부모 캠페인이 종료되어 고아 세대 작업을 정리했습니다.");
+        } else if uncertain {
             updated["error"] =
                 json!("재시작 전 작업 결과를 확정할 수 없습니다. 실행 기록을 확인하세요.");
         }
@@ -227,6 +239,28 @@ pub fn recover(state: &AppState) {
             operation["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
             state.store.put("execution_operation", &operation);
         }
+    }
+    // Align campaign records with their job. A campaign stuck on "running"
+    // after its job finished also blocks the UI and later starts.
+    for mut campaign in state.store.all("rsi_campaign") {
+        if campaign["status"].as_str() != Some("running") {
+            continue;
+        }
+        let id = campaign["id"].as_str().unwrap_or("").to_string();
+        let job = state.store.get("job", &id);
+        let live = job
+            .as_ref()
+            .is_some_and(|job| matches!(job["status"].as_str(), Some("running" | "queued")));
+        if live {
+            continue;
+        }
+        campaign["status"] = job
+            .as_ref()
+            .and_then(|job| job["status"].as_str())
+            .map(|status| json!(status))
+            .unwrap_or_else(|| json!("needs_review"));
+        campaign["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        state.store.put("rsi_campaign", &campaign);
     }
     // After interrupted executions have been recorded, expire durable approvals
     // that outlived their live waiter before wake decisions are made.
@@ -993,6 +1027,37 @@ mod tests {
         recover(&state);
         let stored = state.store.get("job", job["id"].as_str().unwrap()).unwrap();
         assert_eq!(stored["status"], "needs_review");
+    }
+
+    #[test]
+    fn recover_retires_orphan_generations_and_stuck_campaigns() {
+        let state = temp_state();
+        let parent = enqueue(&state, "rsi_evolve", json!({})).unwrap();
+        let mut done = parent.clone();
+        done["status"] = json!("completed");
+        state.store.put("job", &done);
+        let child = enqueue(
+            &state,
+            "rsi_generation",
+            json!({"rsiCampaignId": parent["id"]}),
+        )
+        .unwrap();
+        let mut running = child.clone();
+        running["status"] = json!("running");
+        running["attempts"] = json!(1);
+        state.store.put("job", &running);
+        state.store.put(
+            "rsi_campaign",
+            &json!({"id": parent["id"], "status": "running"}),
+        );
+        recover(&state);
+        let stored = state.store.get("job", child["id"].as_str().unwrap()).unwrap();
+        assert_eq!(stored["status"], "needs_review", "orphan generation must not block starts");
+        let campaign = state
+            .store
+            .get("rsi_campaign", parent["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(campaign["status"], "completed");
     }
 
     #[test]
