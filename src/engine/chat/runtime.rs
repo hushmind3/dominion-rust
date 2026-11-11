@@ -1159,6 +1159,9 @@ async fn run_turn_body(
     let mut rsi_edit_retry_used = false;
     let mut rsi_force_edit_stage = false;
     let mut rsi_repair_read_allowed = false;
+    // A native edit reply without a tool call gets exactly one compat retry;
+    // do not change provider settings or repeatedly replay free-model output.
+    let mut rsi_text_edit_retry = false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1324,6 +1327,13 @@ async fn run_turn_body(
                 && session["rsiGenerationJobId"].is_string();
             let checkpoint = if focused_generation && rsi_force_edit_stage && !has_write {
                 Some(true)
+            } else if focused_generation && session["rsiNoEditGroundedTarget"]==true
+                && tool_calls==0 && !has_write {
+                // The exact file and its revision were indexed before this
+                // generation. Source excerpts already carry the observed SHA
+                // and line range: offer the versioned editor immediately
+                // instead of spending a full 4B inference call on rediscovery.
+                Some(true)
             } else if focused_generation && session["rsiFocusContextReady"] == true
                 && tool_calls >= 1 && !has_write {
                 // Quoted, indexed source came with the generation. After a
@@ -1423,10 +1433,26 @@ async fn run_turn_body(
             counters.model_calls += 1;
             counters.iterations = round as u32 + 1;
         }
+        // After a real edit-only native turn produced no executable tool
+        // call, use the same advertised editor via the bounded text protocol.
+        // This is a fallback for the observed missing-edit failure, not a
+        // second provider or another planning/research phase.
+        let mut round_provider=provider.clone();
+        if rsi_text_edit_retry && round_provider.tool_mode=="native"
+            && round_provider.kind=="openai"
+            && session["rsiRun"]==true && rsi_edit_only_announced {
+            round_provider.tool_mode="compat".into();
+            state.store.audit("rsi.edit_text_protocol_repair",json!({
+                "sessionId":session_id,"executionId":execution_id,
+                "round":round,"originalMode":"native",
+                "tools":round_tools.iter().map(tool_name).collect::<Vec<_>>(),
+                "qualityGain":Value::Null
+            }));
+        }
         let completion_result = stream_completion(
             state,
             &client,
-            &provider,
+            &round_provider,
             &wire_messages,
             &round_tools,
             request,
@@ -1551,7 +1577,7 @@ async fn run_turn_body(
         }
         if completion.tool_calls.is_empty()
             && request.tools_enabled
-            && (provider.tool_mode != "native" || has_dsml_call
+            && (round_provider.tool_mode != "native" || has_dsml_call
                 || (session["rsiExplicitFocus"] == true && rsi_edit_only_announced))
             && !force_final
         {
@@ -1628,6 +1654,7 @@ async fn run_turn_body(
             {
                 rsi_edit_retry_used = true;
                 rsi_force_edit_stage = true;
+                rsi_text_edit_retry = rsi_edit_only_announced && provider.tool_mode=="native";
                 state.store.audit("rsi.edit_retry", json!({
                     "sessionId":session_id, "executionId":execution_id,
                     "round":round, "sourceRead":has_successful_read,
