@@ -532,12 +532,14 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         if let Some(mut session)=context.state.store.get("session",&session_id) {
             session["rsiRun"]=json!(true);
             session["rsiObjective"]=input["rsiObjective"].clone();
-            // A concrete, owner-chosen source goal can advance from a real
-            // read to an edit-only stage. Autonomous exploration and generic
-            // research must retain the option to finish without extra writes.
+            // A user-selected source file is an execution target even in a
+            // continuous campaign. Previously rsiAutonomous disabled the edit
+            // checkpoint for every continuous job, including focused runs,
+            // leaving a small model free to spend its next generation reading.
+            // Auto-selected research remains optional and is never forced to
+            // write without an owner-selected source target.
             session["rsiExplicitFocus"]=json!(
-                input["rsiAutonomous"] != true
-                && input["rsiAutoFocus"] != true
+                input["rsiAutoFocus"] != true
                 && input["rsiFocusFiles"].as_array().is_some_and(|files|
                     files.iter().any(|file| file.as_str()
                         .is_some_and(crate::engine::rsi::safe_path)))
