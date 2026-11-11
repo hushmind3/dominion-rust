@@ -37,12 +37,12 @@
 ## 직접 확인한 실행 결과 / 검증 제한
 - 기존 기준 커밋 `b9d2598`: GitHub Actions `42928968277` **success**.
 - 첫 구현 커밋의 GitHub Actions `42934339145`: **failure**, Rust test 컴파일에서 종전 테스트 7개가 수정된 함수 인자 수와 불일치(E0061). 원인을 찾아 `8ddf66d`로 모두 수정.
-- 수정 직후 GitHub Actions `42934891498`: 2026-11-11 기준 npm ci / 타입 검사 / 웹 빌드 / bash 문법 **성공**, `cargo test --release` **진행 중**. 다음 세션은 반드시 결과 조회하고 실패하면 이어서 고쳐야 한다.
+- 수정 직후 GitHub Actions [`42934891498`](https://github.com/hushmind3/dominion-rust/actions/runs/42934891498): **SUCCESS**. npm ci / 타입 검사 / 웹 빌드 / bash 검사 성공, `cargo test --release` 성공: 16 benchmark + 621 unit + 3 + 99 e2e = **739개 통과, 실패 0개**. 새 `autonomous_barren_generations_execute_their_evolved_policy_without_false_promotion`, `autonomous_recovery_budget_is_bounded_but_does_not_stop_before_trial`, 기존 `goal_capability_loop_inherits_research_adopts_and_applies_next_decision`도 모두 실제 CI에서 성공.
 - 테스트 코드와 실제 GitHub CI를 사용했다. **실제 유료 모델 캠페인에서 3세대 연속 코드 품질 개선을 실행한 것으로 주장하지 않는다.**
 - 이 채팅 실행 컨테이너에는 `cargo`/`rustc`가 없어 로컬 Rust 직접 빌드가 불가하다. Rust 실행 검증 경로는 GitHub Actions다.
 
 ## 다음 세션이 바로 해야 할 일
-1. `https://github.com/hushmind3/dominion-rust/actions/runs/42934891498` 결과 확인. 실패하면 테스트 이름·원인을 재현해 수정할 것.
+1. 통과한 전체 CI `42934891498`의 회귀 기준을 유지할 것. 새 변경의 핵심 과제는 수동 단위 테스트 이후 **전체 캠페인에서 실험 후보가 정말 실행되는지** 증명하는 것이다.
 2. 실제 모델 호출 없이도 6세대 이상의 전체 작업 큐/DB/바이너리 경유로 **실패 피드백 → 새 정책 실행**이 관측되는 제어된 e2e fixture를 추가하고, `generation.domainSelection`, `searchStrategy.id`, 선택한 파일, 변경 내용과 `trialOutcome`을 끝까지 확인할 것.
 3. 실제 모델과 고정된 패치/holdout 평가로 3세대 연속 채택 + 계승 + 실사용 개선을 검증할 것. 결과가 없으면 부풀리지 말고 원인을 분리할 것.
 4. 캠페인 간 반복 무생산을 줄이도록 Sub1의 실행 가능한 연구 인계, Sub4의 전이 학습을 실제 세대 검색 경로에 접목할 것. 채택 조건은 Champion의 불변 paired 증거 기준을 참고할 것.
