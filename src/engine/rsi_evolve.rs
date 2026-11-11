@@ -1032,6 +1032,9 @@ pub(crate) fn policy_requests_source_edit(input:&Value)->bool {
     matches!(input["rsiActionDirective"]["mode"].as_str(),
         Some("repair_failed_edit"|"repair_failed_case"|"revise_candidate"|
              "complete_candidate"|"implement_research"|"change_approach"))
+        || pending_method_recovery_domain(input).is_some()
+            && input["rsiDecisionInput"]["reuseDecision"]["repairTarget"]
+                == input["rsiFocusFiles"][0]
 }
 
 /// The focused edit checkpoint requires indexed source bytes, not merely
@@ -1051,12 +1054,12 @@ fn focus_excerpt_has_source(input:&Value,excerpt:&str)->bool {
 fn bind_action_to_source(
     state:&AppState,input:&mut Value,history:&[Value]
 ) -> bool {
-    if input["rsiAutoFocus"]!=true || !matches!(
-        input["rsiActionDirective"]["mode"].as_str(),
+    if input["rsiAutoFocus"]!=true {return false;}
+    let method_repair=pending_method_recovery_domain(input).is_some();
+    let learned_action=matches!(input["rsiActionDirective"]["mode"].as_str(),
         Some("repair_failed_edit"|"repair_failed_case"|"revise_candidate"|
-             "complete_candidate"|"implement_research"|"change_approach")) {
-        return false;
-    }
+             "complete_candidate"|"implement_research"|"change_approach"));
+    if !learned_action && !method_repair {return false}
     let Some(index_id)=input["rsiIndexId"].as_str() else {return false};
     let first=input["rsiFocusFiles"].as_array().into_iter().flatten()
         .filter_map(Value::as_str)
@@ -1072,19 +1075,30 @@ fn bind_action_to_source(
                             state,index_id,path).is_some())))
             .and_then(|item|item["path"].as_str()).map(str::to_string)
     } else {None};
-    let Some(target)=failed_path.clone().or(first) else {return false};
+    let repair_path=if method_repair {
+        input["rsiDecisionInput"]["reuseDecision"]["repairTarget"].as_str()
+            .filter(|path|crate::engine::rsi::safe_path(path)
+                && crate::engine::code_index::indexed_source_hash(state,index_id,path).is_some())
+            .map(str::to_string)
+    } else {None};
+    let Some(target)=repair_path.clone().or(failed_path.clone()).or(first)
+        else {return false};
     let Some(hash)=crate::engine::code_index::indexed_source_hash(state,index_id,&target)
         else {return false};
     input["rsiFocusFiles"]=json!([target]);
     if !input["rsiFocusSelection"].is_object() {
         input["rsiFocusSelection"]=json!({});
     }
-    input["rsiFocusSelection"]["executionSource"]=json!("learned_action_policy");
+    input["rsiFocusSelection"]["executionSource"]=json!(
+        if repair_path.is_some() {"learned_executable_method"}else{"learned_action_policy"});
     input["rsiFocusSelection"]["executionTarget"]=json!(target);
     input["rsiFocusSelection"]["executionSourceHash"]=json!(hash);
     input["rsiFocusSelection"]["actionPolicyRevision"]=
         input["rsiActionDirective"]["policy"]["revision"].clone();
-    input["rsiFocusSelection"]["usedFailedWriteProvenance"]=json!(failed_path.is_some());
+    input["rsiFocusSelection"]["usedFailedWriteProvenance"]=json!(
+        failed_path.is_some() || repair_path.is_some());
+    input["rsiFocusSelection"]["methodRecoveryCandidateId"]=
+        input["rsiDecisionInput"]["methodRecoveryCandidateId"].clone();
     true
 }
 
