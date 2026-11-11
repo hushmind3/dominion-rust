@@ -3457,6 +3457,21 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }
         return Err(error);
     }
+    // The coordinator that queued this child may be the OLD generator. A
+    // recompiled descendant must actually use its own revised policy
+    // synthesis, not inherit an obsolete parent-selected edit method.
+    let mut descendant_method=learned_edit_method(&state,&job["input"],&history);
+    descendant_method["selectedByGeneratorCommit"]=json!(commit);
+    job["input"]["rsiEditPolicy"]=descendant_method.clone();
+    job["rsiEditPolicyDecision"]=json!({
+        "producer":"running_descendant_binary",
+        "generatorCommit":commit,
+        "methodRevision":descendant_method["revision"],
+        "observations":descendant_method["observations"],
+    });
+    state.store.audit("rsi.descendant_edit_method_selected",json!({
+        "jobId":job_id,"generatorCommit":commit,"method":descendant_method,
+    }));
     job["rsiDomain"] = json!(domain);
     job["rsiDomainSelection"] = json!(domain_selection);
     job["rsiSearchStrategy"] = strategy.clone();
