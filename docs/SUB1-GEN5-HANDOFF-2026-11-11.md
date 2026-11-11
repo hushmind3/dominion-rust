@@ -48,3 +48,11 @@
 - 첫세대 구현 정책의 실모델 실행: https://github.com/hushmind3/dominion-rust/actions/runs/42950166931 (source `c6566e4`)과 후속 https://github.com/hushmind3/dominion-rust/actions/runs/42950467997 (source `95c72f4`), 최종 outcome/실제 편집 도구 호출·패치·paired holdout 성공 여부를 확인하기 전엔 채택 성과로 간주하지 않음.
 - 첫 후손 재계획 + 테스트 `5d84194`: https://github.com/hushmind3/dominion-rust/actions/runs/42949616011 **성공**. Rust **732/732 (16+614+3+99)** 통과, 웹 타입 검사·빌드 성공.
 - 최신 전체 CI: https://github.com/hushmind3/dominion-rust/actions/runs/42950468115. 최종 status를 후속 확인.
+
+## 실제 실행의 추가 결과와 다음 교정
+- 첫 세대 직접 구현 정책이 들어간 `c6566e4`의 라이브 캠페인 https://github.com/hushmind3/dominion-rust/actions/runs/42950166931: **무료 실모델 실제 호출 5회**, prompt 16,586 tokens, completion 1,356 tokens, `code_search` **2회**, `workspace_read_range` **1회**, `newFindings=3`. 모델이 실제 수정 전에 HTTP 502 (`TimeoutError: The operation was aborted due to timeout`)로 중단됨. 결과 `needs_review`, 후보/채택/holdout 이득 0. Workflow SUCCESS 자체는 지능 개선 성공이 아니다.
+- 위 실패를 반영한 `4f9982afa39d17f332ce302c2b8e710f0efb28ff`: `src/engine/jobs.rs`에서 사용자의 실제 편집 지시를 받은 RSI 세대가 **실제 차이 0·모델 오류 없음·작업공간 정합**으로 끝나면 동일 작업공간/세션에서 한 번 더 도구 기반 수정을 요청하도록 실행 루프를 확장. 모형 호출을 도구 실행으로 위조하지 않으며, 제공자 장애/소스 무결성 오류에 무한 재시도하지 않음. `noEditRetryAttempts` 측정 필드와 회귀 테스트 추가.
+- `3fb9675484beaa3b482b8d542c53f2d62fe255bd` 실모델 워크플로에 `src/engine/jobs.rs` 감시 추가, `c1855831f6402c0687bb712af5272b10dc6c3b3c`은 프록시 타임아웃을 120→240초로 조정 (엔진 기본 non-room 제공자 제한 300초보다 짧게 유지). 무료 제공자 timeout에 의해 충분한 후속 모델 응답이 끊기는 현상 개선을 목표로 함.
+- 후손 재계획 `5d84194` CI **732/732 통과**; 직접 수정 정책 `366fd91` CI https://github.com/hushmind3/dominion-rust/actions/runs/42950015168 **733/733 Rust 테스트 성공**, 웹 타입검사/빌드 성공.
+- 후속 Rust CI: `4f9982a` https://github.com/hushmind3/dominion-rust/actions/runs/42951146157 ; `3fb9675` https://github.com/hushmind3/dominion-rust/actions/runs/42951164178 ; `c185583`은 그 이후. 최종 success/failure 재조회하고 실패면 코드를 수정할 것.
+- 실모델 회귀: `95c72f` https://github.com/hushmind3/dominion-rust/actions/runs/42950467997 ; 무편집 복구 `3fb9675` https://github.com/hushmind3/dominion-rust/actions/runs/42951164189 ; 타임아웃 연장 `c185583` https://github.com/hushmind3/dominion-rust/actions/runs/42951533077 . 세 실행의 원본 `generationEvidence`에서 `toolsUsed`, `candidateId`, `acceptedCommit`, `evaluation.metrics`를 반드시 확인. 모델이 직접 패치하지 못했다면 누적 연구/호출 수를 개선으로 환산 금지.
