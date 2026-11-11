@@ -1197,7 +1197,8 @@ async fn run_turn_body(
             let read_calls = completed.iter().filter(|operation| matches!(
                 operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read"))).count() as u64;
             let grounded = session["rsiFocusContextReady"] == true || read_calls > 0;
-            let focused=session["rsiExplicitFocus"]==true || session["rsiAutoFocus"]==true;
+            let focused=session["rsiExplicitFocus"]==true || session["rsiAutoFocus"]==true
+                || session["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty());
             let program_stage = crate::engine::rsi_edit_program::route(
                 &session["rsiEditPolicy"], &all_operations, tool_calls,
                 focused, session["rsiFocusContextReady"] == true,

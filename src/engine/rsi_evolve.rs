@@ -318,6 +318,10 @@ fn learned_edit_method(state:&AppState,input:&Value,history:&[Value])->Value {
         let Some(job)=row["jobId"].as_str().filter(|id|!id.is_empty()) else {continue};
         if seen.insert(job.to_string()) {rows.push(row.clone());}
     }
+    // Persisted generations are returned newest-first; method synthesis must
+    // mutate the last *executed* generation, never an arbitrary DB row.
+    rows.sort_by(|left,right|left["createdAt"].as_str().unwrap_or("")
+        .cmp(right["createdAt"].as_str().unwrap_or("")));
     // Proved payoff requires the original candidate's independent paired
     // receipt, matching adopted commit and verified source lineage.
     let verified=history_with_verified_payoffs(state,&rows);

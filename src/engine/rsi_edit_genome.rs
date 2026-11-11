@@ -47,11 +47,10 @@ fn observed_worker(row: &Value) -> bool {
         && row["editPolicy"]["method"].as_str().is_some_and(|m| !m.is_empty())
 }
 
-/// A valid source-edit procedure is a composable program of three executable
-/// decisions, not a selection from three hardcoded procedure names:
-/// * how many grounded discovery calls before forcing a source edit;
-/// * which edit operator the runtime tries first;
-/// * how many independent build/repair cycles the worker may perform.
+/// A controller now contains an executable stage program: discovery,
+/// grounding, optional counterexample search, editing, optional re-grounding
+/// after a failed edit and external verification. Stage transitions are driven
+/// by tool receipts; the numeric thresholds and repair budgets also evolve.
 /// Mutations are selected from real failure causes and accumulated payoff.
 fn mutate(mut program: Genome, last: &Value) -> (Genome, &'static str) {
     let error = last["error"].as_str().unwrap_or("").to_lowercase();

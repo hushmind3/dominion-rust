@@ -112,7 +112,7 @@ impl Route {
             "discover" => matches!(name,"code_search"|"workspace_read_range"),
             "ground" => matches!(name,"workspace_read_range"|"code_search"),
             "contrast" => matches!(name,"code_search"|"workspace_read_range"),
-            "reground" => matches!(name,"workspace_read_range"|"workspace_replace_range"|"workspace_replace"),
+            "reground" => name=="workspace_read_range",
             "edit" => matches!(name,"workspace_replace_range"|"workspace_replace"|"workspace_write"),
             _ => true,
         }
@@ -145,7 +145,8 @@ pub fn route(policy: &Value, operations: &[Value], calls: u64,
             if successful_read || source_in_prompt {post_ground_search=true;}
         }
         if matches!(name,"workspace_replace_range"|"workspace_replace") {
-            if completed && operation["result"]["written"]==true {
+            if completed && operation["result"]["written"]==true
+                && operation["toolReceipt"]["verified"]==true {
                 verified_write=true;
             } else if !completed || operation["result"]["written"]==false {
                 reground_needed=true;
@@ -220,11 +221,15 @@ mod tests {
         let recovery=route(&policy,&compared,4,true,false).unwrap();
         assert_eq!(recovery.phase,"reground");
         assert!(recovery.allows("workspace_read_range"));
+        assert!(!recovery.allows("workspace_replace_range"),
+            "a failed hash must be re-read before the next write");
         compared.push(op("workspace_read_range","completed",json!({"sourceSha256":"new"})));
         assert_eq!(route(&policy,&compared,5,true,false).unwrap().phase,"edit");
         compared.push(op("code_search","completed",json!({})));
         assert_eq!(route(&policy,&compared,6,true,false).unwrap().phase,"edit");
-        compared.push(op("workspace_replace_range","completed",json!({"written":true})));
+        let mut verified=op("workspace_replace_range","completed",json!({"written":true}));
+        verified["toolReceipt"]=json!({"verified":true});
+        compared.push(verified);
         assert!(route(&policy,&compared,7,true,false).is_none());
     }
     #[test]
