@@ -217,3 +217,15 @@
 - 실모델 Actions `42963950178`는 `8fd4884` 코드, `42964433317`은 `ac63c92` 코드로 실행되므로 **최신 `747a3dc` 코드를 시험한 것이 아니다**. 실행 후 `sub3-rsi-action-trace.json`의 실제 `written`, `toolReceipt.verified`, 오류·후보·independent holdout을 대조한다.
 - 다음 개발자는 이 데이터로 남은 실패(모델이 원본 동일하게 출력하는지, SHA 누락인지, 도구 인자 파싱 문제인지, 결과가 검사에서 탈락한 것인지)를 분리하고, 진짜 소스 패치 → 후보 등록 → paired holdout → 채택 → 개선된 바이너리로 후손 세대 재실행까지 완주해야 한다.
 - **완주 선언 금지:** 이번 변경은 코드 실행 경로를 개선한 것이며 독립 품질 상승 및 3세대 연속 채택 증명은 아직 없다.
+
+## Sub3 심판 48/100 이후 — 후보 미생성 재수정 및 실제 holdout 실패 계승
+
+- 독립 심판 최신 재채점: **Sub3 48/100, 2위**. Champion 49, Sub4 46, Sub1 45, Sub2 44. 자리 교환 없음. 80점은 세대 간 연속 자율 자기개선이 입증된 시제품 기준.
+- 새로 확인한 **완료된 실모델 캠페인 [42963950178](https://github.com/hushmind3/dominion-rust/actions/runs/42963950178)**: 3세대, 무료 `openai-fast` 실제 모델 13회 호출. 1세대 후보 0, 2세대 후보 1개 `rsi-85fcb08c...` 생성 후 frozen paired **13/13 baseline/candidate 모두 pass**이나 **planning-quality 0.75→0.75**, 다른 측정도 향상 0 → `inconclusive`, 채택 0. 3세대는 토큰 예산 중단. workflow success는 RSI 성과가 아니다.
+- `5348eba`: `rsi_worktree::finish`가 한 모델 세션에서 실제 수행된 `execution_operation`을 따라 편집 시도/독립 영수증/실패 원인을 수집해 `editEvidence`로 영구 저장. 편집을 시도했으나 Git 변경 0인 후보 미생성 세대에만 최대 기존 수리 한도 안에서 근거 기반 재수정을 수행. 단순 무편집 답변·모델 오류에는 맹목적 재호출 없음.
+- `3ffd92c`: 이전 세대의 실제 편집 시도·실패 원인을 다음 세대 프롬프트에 계승하고, `edit_attempt_without_candidate`라는 독립 실패 원인으로 다음 결정에 남김.
+- `0e85d68`: 세대 기록에 실제 `diffBytes`를 추가해 도구 호출과 소스 패치를 분리.
+- `d60edc4`: 실모델 실행 스크립트에 `verifiedWrites`, `unsuccessfulEdits`, `candidateCaptureFailures` 기록. [42967227955](https://github.com/hushmind3/dominion-rust/actions/runs/42967227955) 실모델 캠페인 자동 트리거.
+- `d189c8a`, `875a128`, `689a876`: 다음 세대가 기계적으로 동결된 holdout 품질 실패를 분석하도록 `planning-quality baseline=0.75, candidate=0.75` 같은 실제 수치/도메인을 프롬프트에 삽입. 후보가 존재해도 미채택 원인·실제 편집 실패 영수증을 보존. 회귀 테스트 추가.
+- 작성 시점에 최신 커밋들은 CI 대기 중이다. Rust 로컬 직접 빌드는 수행하지 않았으며, `42967227955`는 `d60edc4` 기준이라 이후 평가 피드백 3개 커밋을 포함하지 않는다.
+- 다음 핵심: CI 완료 확인 → 가장 최근 실모델 영수증의 `editEvidence`와 `diffBytes` 대조 → 모델이 수정한 코드가 `planning-quality`를 실제 높이는지 → frozen paired `eligible=true` → 채택 커밋과 변경된 바이너리의 후손 추가 개선까지 실증. 기존 성공하지 못한 실행은 재귀적 자기개선 완주로 세지 않는다.
