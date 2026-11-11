@@ -111,6 +111,20 @@ fn rsi_tool_advertised(name: &str, round_tools: &[Value]) -> bool {
     round_tools.iter().any(|definition| tool_name(definition) == name)
 }
 
+/// Some compatible model gateways leak a channel delimiter INTO the name of
+/// an otherwise valid native tool. Recover only an EXACT advertised tool with
+/// a known trailing protocol delimiter. Never introduce a tool that the RSI
+/// stage did not advertise: discovery restrictions remain enforceable.
+fn rsi_canonical_tool_name<'a>(name:&'a str, round_tools:&[Value])->Option<&'a str>{
+    if rsi_tool_advertised(name,round_tools) {return Some(name);}
+    for suffix in ["<|channel|>commentary","<|channel|>analysis"] {
+        if let Some(base)=name.strip_suffix(suffix) {
+            if rsi_tool_advertised(base,round_tools) {return Some(base);}
+        }
+    }
+    None
+}
+
 /// "completed" is not synonymous with a source change: an unchanged
 /// replacement can legitimately return success. Only a verified readback of
 /// written bytes may advance the RSI source-edit checkpoint.
@@ -1773,6 +1787,18 @@ async fn run_turn_body(
 
         let mut seen_ids = std::collections::HashSet::new();
         for call in completion.tool_calls.iter_mut() {
+            if session["rsiRun"]==true {
+                if let Some(canonical)=rsi_canonical_tool_name(&call.name,&round_tools)
+                    .map(str::to_string) {
+                    if canonical!=call.name {
+                        state.store.audit("rsi.tool_name_protocol_recovered",json!({
+                            "sessionId":session_id,"executionId":execution_id,
+                            "original":call.name,"canonical":canonical
+                        }));
+                        call.name=canonical;
+                    }
+                }
+            }
             if call.id.trim().is_empty() || !seen_ids.insert(call.id.clone()) {
                 call.id = uuid::Uuid::new_v4().to_string();
                 seen_ids.insert(call.id.clone());
@@ -6479,6 +6505,19 @@ mod harness_tool_selection_tests {
         assert!(rsi_tool_advertised("workspace_replace_range", &menu));
         assert!(!rsi_tool_advertised("workspace_read_range", &menu));
         assert!(!rsi_tool_advertised("workspace_read_range<|channel|>commentary", &menu));
+        assert_eq!(rsi_canonical_tool_name(
+            "workspace_replace_range<|channel|>commentary",&menu),
+            Some("workspace_replace_range"));
+        assert_eq!(rsi_canonical_tool_name(
+            "workspace_replace_range<|channel|>analysis",&menu),
+            Some("workspace_replace_range"));
+        assert_eq!(rsi_canonical_tool_name("workspace_replace_range",&menu),
+            Some("workspace_replace_range"));
+        assert_eq!(rsi_canonical_tool_name(
+            "workspace_read_range<|channel|>commentary",&menu),None);
+        assert_eq!(rsi_canonical_tool_name(
+            "workspace_replace_range<|channel|>final",&menu),None);
+        assert_eq!(rsi_canonical_tool_name("shell_exec<|channel|>commentary",&menu),None);
     }
 
     #[test]
