@@ -3877,12 +3877,16 @@ mod tests {
     #[test]
     fn repeated_verified_success_can_outweigh_exploration_of_failed_methods() {
         let mut generations=Vec::new();
-        for (method,reward) in [("balanced",true),("focused-range",false),
-            ("exact-context",false)] {
+        for (method,checkpoint,tool,reward) in [
+            ("balanced",3,"workspace_replace_range",true),
+            ("generated-early",2,"workspace_replace_range",false),
+            ("generated-exact",4,"workspace_replace",false)
+        ] {
             for i in 0..8 {
                 generations.push(json!({
                     "jobId":format!("{method}-{i}"),"tokens":10000,
-                    "editPolicy":{"method":method},
+                    "editPolicy":{"method":method,"checkpointAfter":checkpoint,
+                        "preferredTool":tool,"repairLimit":2},
                     "accepted":reward,"evidenceVerified":reward,
                     "candidateId":if reward {json!(format!("candidate-{i}"))} else {Value::Null},
                     "evaluation":{"metrics":{"eligible":reward}}
@@ -3890,7 +3894,7 @@ mod tests {
             }
         }
         assert_eq!(synthesize_edit_method(&generations)["method"],"balanced",
-            "measured quality, not raw tool use, must eventually dominate exploration");
+            "verified improvement must preserve the winning composed controller");
     }
 
     #[test]
