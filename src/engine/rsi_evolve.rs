@@ -4868,6 +4868,7 @@ mod tests {
         let failed=json!({"id":"repair-episode","accepted":false,
             "candidateCapture":{"checksPassed":true},
             "actionTrace":[
+                {"tool":"code_search","executed":true,"sourceChanged":false},
                 {"tool":"workspace_replace","executed":false,"sourceChanged":false},
                 {"tool":"workspace_read_range","executed":true,"sourceChanged":false},
                 {"tool":"workspace_replace_range","executed":true,"sourceChanged":true}
