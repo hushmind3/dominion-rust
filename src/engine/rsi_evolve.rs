@@ -1347,6 +1347,64 @@ fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective
     applicable_methods_with_focus(state,partition,domain,objective,None)
 }
 
+
+/*
+ * Evidence-driven improvement-method selection.
+ * A candidate's self-description and accumulated tool-call counts do not
+ * show that its procedure improved DOMINION. The next generation derives
+ * method ordering from verified historical execution outcomes. This changes
+ * the harness's future method selection without another model call.
+ */
+fn method_selection_evidence(method:&Value,domain:&str)->Value {
+    let all=method["applications"].as_array();
+    let own=all.into_iter().flatten()
+        .filter(|a|a["domain"].as_str()==Some(domain)).collect::<Vec<_>>();
+    let transferable=own.is_empty() && method["domain"].as_str()!=Some(domain);
+    let observations=if transferable {
+        all.into_iter().flatten().filter(|a|a["domain"]==method["domain"])
+            .collect::<Vec<_>>()
+    } else {own};
+    let passed=observations.iter().filter(|a|
+        a["verificationVerdict"]=="passed" && a["postconditionsPassed"]==true).count() as i64;
+    let failed=observations.iter().filter(|a|
+        a["verificationVerdict"]=="violated").count() as i64;
+    // Independent gain credit requires a verified method source write
+    // associated with the separately evaluated and adopted candidate.
+    let gains=observations.iter().filter(|a|a["independentGain"]==true).count() as i64;
+    let total=passed+failed;
+    let score=(400*passed+2200*gains-1200*failed)/(2+total)
+        +200/(1+total);
+    json!({"policy":"empirical-method-selection-v1",
+        "score":if transferable {score/2} else {score},
+        "verifiedPassed":passed,"verifiedFailed":failed,
+        "independentGains":gains,"measuredApplications":total,
+        "transferPrior":transferable})
+}
+
+/// Credit the procedure only for an actual verified source write that appears
+/// in the independently evaluated patch. A read-only method executed beside a
+/// good model change cannot borrow the model's outcome as its own result.
+fn method_has_independent_source_gain(state:&AppState,receipt:&Value,generation:&Value)->bool {
+    let proof=&generation["acceptedProof"];
+    if generation["accepted"]!=true || proof["status"]!="verified"
+        || proof["evaluation"]["metrics"]["eligible"]!=true
+        || proof["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+    {return false;}
+    let Some(candidate)=proof["candidateId"].as_str()
+        .and_then(|id|state.store.get("rsi_candidate",id)) else {return false;};
+    let paths=candidate["paths"].as_array();
+    receipt["operationIds"].as_array().into_iter().flatten().any(|id|{
+        let Some(op)=id.as_str().and_then(|id|state.store.get("execution_operation",id))
+            else {return false;};
+        op["status"]=="completed"
+            && op["toolReceipt"]["verified"]==true
+            && op["result"]["written"]==true
+            && matches!(op["tool"].as_str(),
+                Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))
+            && paths.is_some_and(|paths|paths.contains(&op["arguments"]["path"]))
+    })
+}
+
 fn applicable_methods_with_focus(state: &AppState, partition: &str, domain: &str,
     objective: &str, focus:Option<&str>) -> Vec<Value> {
     let mut methods = Vec::new();
@@ -1377,11 +1435,15 @@ fn applicable_methods_with_focus(state: &AppState, partition: &str, domain: &str
             if !crate::engine::procedure::applies(&method, objective, None, None) {continue;}
             if transferable { method["rsiTransferTrial"]=json!(true); }
             method["rsiMethodExperienceId"] = record["id"].clone();
+            method["rsiSelectionEvidence"] = method_selection_evidence(&method,domain);
             methods.push(method);
         }
     }
-    methods.sort_by(|a,b| b["successfulApplications"].as_u64().unwrap_or(0)
-        .cmp(&a["successfulApplications"].as_u64().unwrap_or(0))
+    methods.sort_by(|a,b|b["rsiSelectionEvidence"]["score"].as_i64().unwrap_or(0)
+        .cmp(&a["rsiSelectionEvidence"]["score"].as_i64().unwrap_or(0))
+        // Old, unmeasured counters are only tie-breakers.
+        .then(b["successfulApplications"].as_u64().unwrap_or(0)
+            .cmp(&a["successfulApplications"].as_u64().unwrap_or(0)))
         .then(a["id"].as_str().cmp(&b["id"].as_str())));
     let mut ids = BTreeSet::new();
     methods.retain(|m| ids.insert(m["id"].as_str().unwrap_or("").to_string()));
@@ -1410,7 +1472,15 @@ fn method_application_context(input: &Value, domain: &str) -> String {
 fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
     let methods = applicable_methods_with_focus(state, &research_scope(input).partition_key, domain,
         &method_application_context(input, domain),current_rsi_focus(input));
+    let ranked=methods.iter().map(|m|json!({
+        "methodId":m["id"],"revision":m["revision"],
+        "evidence":m["rsiSelectionEvidence"]
+    })).collect::<Vec<_>>();
+    let revision=format!("{:x}",Sha256::digest(
+        json!(["empirical-method-selection-v1",domain,&ranked]).to_string().as_bytes()));
     json!({"action":if methods.is_empty(){"research_only"}else{"execute_methods"},
+        "policy":"empirical-method-selection-v1","policyRevision":revision,
+        "rankedEvidence":ranked,
         "methodIds":methods.iter().map(|m|m["id"].clone()).collect::<Vec<_>>()})
 }
 
@@ -1490,6 +1560,7 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
         let violated = result["verified"] == true && (result["status"] == "violated"
             || result["violations"].as_array().is_some_and(|rows| !rows.is_empty()));
         let ok = !unknown && !violated && result["followed"] == true;
+        let independent_gain=ok && method_has_independent_source_gain(state,receipt,generation);
         let progress = generation["accepted"] == true || generation["newFindings"].as_u64().unwrap_or(0)>0;
         let target_domain=generation["domain"].as_str().unwrap_or("");
         let cross_domain=!target_domain.is_empty() && method["domain"].as_str()!=Some(target_domain);
@@ -1517,6 +1588,9 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             "postconditionsPassed":if !ok && !violated {Value::Null}else{json!(ok)},
             "verificationVerdict":if violated {"violated"}else if ok {"passed"}else{"inconclusive"},
             "accepted":generation["accepted"],"newFindings":generation["newFindings"],
+            "independentGain":independent_gain,
+            "gainEvidence":if independent_gain {"verified_procedure_write_in_independently_adopted_patch"}
+                else {"unmeasured_or_unrelated"},
             "tokens":generation["tokens"],"elapsedMs":generation["elapsedMs"],
             "reuse":method["status"],"gain":"observed_association_not_causal_proof"});
         if !method["applications"].is_array() {method["applications"]=json!([]);}
@@ -6575,6 +6649,71 @@ mod tests {
         unknown["methodExecutions"][0]["result"]["verified"]=json!(false);
         assert!(transfer_failure_repair(&[unknown]).is_none(),
             "uncertain checks cannot masquerade as a verified failure");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+
+    #[test]
+    fn next_generation_reorders_methods_by_independent_experience_not_old_counts() {
+        let (state,root)=state();
+        let partition=research_scope(&json!({"rsiSourceDir":root})).partition_key;
+        let verification=crate::engine::procedure::normalize(&json!({
+            "type":"procedure","appliesTo":{"requestContains":["search"]},
+            "nodes":[{"id":"inspect","tool":"code_search",
+                "arguments":{"query":"search"}}],"edges":[],
+            "after":[{"kind":"tool_called","tool":"code_search"}]}));
+        let legacy=json!({"id":"legacy","revision":"old","domain":"tools",
+            "status":"executable","successfulApplications":40,
+            "verification":verification,
+            "applications":[{"domain":"tools","verificationVerdict":"violated",
+                "postconditionsPassed":false,"independentGain":false}]});
+        let improved=json!({"id":"empirical","revision":"new","domain":"tools",
+            "status":"executable","successfulApplications":1,
+            "verification":legacy["verification"],
+            "applications":[{"domain":"tools","verificationVerdict":"passed",
+                "postconditionsPassed":true,"independentGain":true}]});
+        state.store.put("experience",&json!({"id":"policy-evidence",
+            "partitionKey":partition,"status":"active",
+            "executableMethods":[legacy,improved]})).unwrap();
+        let input=json!({"rsiSourceDir":root,"rsiObjective":"search","rsiDomain":"tools"});
+        let first=method_reuse_decision(&state,&input,"tools");
+        assert_eq!(first["methodIds"][0],"empirical");
+        assert_eq!(first["policy"],"empirical-method-selection-v1");
+        assert_eq!(first["rankedEvidence"][0]["evidence"]["independentGains"],1);
+        // A further verified failure changes the next generation's decision.
+        let mut record=state.store.get("experience","policy-evidence").unwrap();
+        record["executableMethods"][1]["applications"].as_array_mut().unwrap().push(json!({
+            "domain":"tools","verificationVerdict":"violated",
+            "postconditionsPassed":false,"independentGain":false
+        }));
+        state.store.put("experience",&record).unwrap();
+        let second=method_reuse_decision(&state,&input,"tools");
+        assert_ne!(first["policyRevision"],second["policyRevision"]);
+        assert!(second["rankedEvidence"][0]["evidence"]["score"].as_i64()
+            .unwrap() < first["rankedEvidence"][0]["evidence"]["score"].as_i64().unwrap());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unverified_or_unrelated_method_tool_cannot_borrow_an_adopted_gain() {
+        let (state,root)=state();
+        state.store.put("rsi_candidate",&json!({"id":"gain-candidate",
+            "paths":["src/engine/memory.rs"]})).unwrap();
+        state.store.put("execution_operation",&json!({"id":"edit-1",
+            "tool":"workspace_replace_range","status":"completed",
+            "arguments":{"path":"src/engine/memory.rs"},
+            "result":{"written":true},"toolReceipt":{"verified":true}})).unwrap();
+        let receipt=json!({"operationIds":["edit-1"]});
+        let generation=json!({"accepted":true,"acceptedProof":{
+            "candidateId":"gain-candidate","status":"verified",
+            "evaluation":{"metrics":{"eligible":true},
+                "source":"server_invoked_local_paired_git_worktrees"}}});
+        assert!(method_has_independent_source_gain(&state,&receipt,&generation));
+        assert!(!method_has_independent_source_gain(
+            &state,&json!({"operationIds":["missing"]}),&generation));
+        let mut unverified=generation.clone();
+        unverified["acceptedProof"]["evaluation"]["metrics"]["eligible"]=json!(false);
+        assert!(!method_has_independent_source_gain(&state,&receipt,&unverified));
         let _=std::fs::remove_dir_all(root);
     }
 
