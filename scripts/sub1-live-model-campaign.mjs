@@ -42,8 +42,23 @@ if(mode==='probe'){
     }
     try{
       const chunks=[];for await(const piece of req)chunks.push(piece);
+      const rawBody=Buffer.concat(chunks);
+      // Only the tool menu, not secrets or full source, is persisted. This
+      // distinguishes "required was never sent" from "model ignored required".
+      try {
+        const payload=JSON.parse(rawBody.toString('utf8'));
+        const names=(payload.tools||[]).map(t=>t.function?.name||t.name||'unknown');
+        const record={at:new Date().toISOString(),model:payload.model,
+          toolChoice:payload.tool_choice||null,tools:names,
+          messages:(payload.messages||[]).map(m=>({role:m.role,
+            chars:typeof m.content==='string'?m.content.length:0}))};
+        fs.mkdirSync('benchmark',{recursive:true});
+        fs.appendFileSync('benchmark/sub1-proxy-tool-choice.jsonl',JSON.stringify(record)+'\n');
+      } catch(error) {
+        console.error('SUB1_PROXY_TRACE_ERROR',String(error));
+      }
       const upstreamResponse=await fetch(upstream,{method:'POST',headers:{'content-type':'application/json'},
-        body:Buffer.concat(chunks),signal:AbortSignal.timeout(240000)});
+        body:rawBody,signal:AbortSignal.timeout(240000)});
       const raw=await upstreamResponse.text();
       res.writeHead(upstreamResponse.status,{'content-type':'application/json'});
       res.end(raw);
@@ -153,6 +168,30 @@ if(mode==='probe'){
       note:'CI completed does not imply an accepted model-generated RSI improvement'
     };
     trace.actualCompletion=trace.summary.independentlyVerifiedImprovement;
+    if(trace.summary.verifiedSourceWrites===0) {
+      trace.noEditModelResponses=[];
+      for(const generation of trace.generationEvidence) {
+        if(!generation.jobId) continue;
+        try {
+          const worker=await call(`/api/jobs/${encodeURIComponent(generation.jobId)}`);
+          const sessionId=worker.sessionId||worker.result?.sessionId;
+          if(!sessionId) {
+            trace.errors.push(`no sessionId for generation ${generation.jobId}`);
+            continue;
+          }
+          const messages=await call(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
+          const rows=Array.isArray(messages)?messages:[];
+          trace.noEditModelResponses.push({jobId:generation.jobId,sessionId,
+            assistantMessages:rows.filter(row=>row.role==='assistant').slice(-8).map(row=>({
+              content:String(row.content||'').slice(-2600),
+              toolCalls:(row.tool_calls||row.toolCalls||[]).map(t=>({
+                name:t.function?.name||t.name||null,
+                arguments:String(t.function?.arguments||t.arguments||'').slice(0,900)
+              }))
+            }))});
+        } catch(error) {trace.errors.push(`model transcript: ${String(error)}`);}
+      }
+    }
     if(trace.phase==='campaign_timeout')trace.errors.push('campaign did not finish before runner deadline');
     save(trace);
     console.log(JSON.stringify({phase:trace.phase,status:trace.status,jobId:trace.jobId,
