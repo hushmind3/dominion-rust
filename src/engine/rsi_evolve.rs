@@ -2426,7 +2426,7 @@ async fn run_loop(
         child_input["rsiBaseCommit"] = json!(head);
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
-        let objective = input["rsiObjective"].as_str().unwrap_or("");
+        let objective=selection_objective(input);
         let allowed_campaigns=allowed_trial_campaigns(
             &context.state,input,record,&context.job_id);
         let trial_algorithm = record["nextTrialAlgorithmId"]
@@ -2435,7 +2435,7 @@ async fn run_loop(
                 .is_some_and(|algorithm|trial_owned_by(&algorithm,&allowed_campaigns)))
             .map(str::to_string)
             .or_else(|| {
-                pending_trial_candidate(&context.state,objective,&allowed_campaigns)
+                pending_trial_candidate(&context.state,&objective,&allowed_campaigns)
                     .and_then(|algorithm| algorithm["id"].as_str().map(str::to_string))
             });
         if let Some(id) = trial_algorithm {
@@ -2767,7 +2767,7 @@ async fn run_loop(
                     candidate,
                     &active,
                     &prior_history,
-                    input["rsiObjective"].as_str().unwrap_or(""),
+                    &selection_objective(input),
                     &context.job_id,
                     attempt,
                 );
@@ -2785,7 +2785,7 @@ async fn run_loop(
                 observed.push(generation.clone());
                 let synthesized=propose_autonomous_search_trial(
                     &context.state,&observed,
-                    input["rsiObjective"].as_str().unwrap_or(""),
+                    &selection_objective(input),
                     &context.job_id,attempt,
                     current["input"]["rsiAutoFocus"]==true);
                 if synthesized["status"]=="pending_trial" {
@@ -2907,7 +2907,7 @@ async fn run_loop(
                 .is_some_and(|algorithm|matches!(algorithm["rsiTrial"]["status"].as_str(),
                     Some("pending_trial"|"pending_second_trial"))))
             || pending_trial_candidate(&context.state,
-                input["rsiObjective"].as_str().unwrap_or(""),
+                &selection_objective(input),
                 &allowed_trial_campaigns(&context.state,input,record,&context.job_id)).is_some();
         if no_edit && should_stop_no_progress(streak, research, changed,trial_pending) {
             return Ok("no_progress".into());
@@ -3334,6 +3334,28 @@ mod tests {
             &state,&history,"",None,Some(saved["id"].as_str().unwrap().into()),None,"base-1");
         assert_eq!(mode,"algorithm_active","the first comparison collects a baseline control");
         assert!(DOMAINS.contains(&domain.as_str()));
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn autonomous_objective_trial_can_be_retrieved_by_descendant_after_restart() {
+        let (state,root)=state();
+        let input=json!({"rsiAutonomous":true,
+            "rsiObjective":"전수조사 기반 자율 개선: 기억·도구·자기개선",
+            "rsiAutoFocus":true});
+        let objective=selection_objective(&input);
+        assert!(objective.is_empty(),
+            "the generated instruction is not an owner-imposed domain constraint");
+        let history=(0..2).map(|i|json!({"id":format!("failed-{i}"),
+            "accepted":false,"tokens":5000,"newFindings":0,"candidateId":null,
+            "domain":"memory","focusFiles":["src/engine/memory.rs"]})).collect::<Vec<_>>();
+        let queued=propose_autonomous_search_trial(
+            &state,&history,&objective,"campaign-autonomous",2,true);
+        assert_eq!(queued["status"],"pending_trial","{queued}");
+        let selected=pending_trial_candidate(
+            &state,&selection_objective(&input),&["campaign-autonomous".into()]);
+        assert_eq!(selected.as_ref().map(|a|a["id"].clone()),Some(queued["candidateId"].clone()),
+            "the child must discover the synthesized trial with the same scope and owner");
         let _=std::fs::remove_dir_all(root);
     }
 
