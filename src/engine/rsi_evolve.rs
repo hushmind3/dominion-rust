@@ -3967,6 +3967,52 @@ mod tests {
         JobContext::new(state.clone(), "campaign".into())
     }
     #[test]
+    fn autonomous_learned_action_enforces_a_real_single_file_edit_target() {
+        let (state,root)=state();
+        let source=root.join("source");
+        std::fs::create_dir_all(source.join("src/engine")).unwrap();
+        std::fs::write(source.join("src/engine/alpha.rs"),"fn alpha() {}\n").unwrap();
+        std::fs::write(source.join("src/engine/beta.rs"),"fn beta() {}\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&source).unwrap();
+        let mut input=json!({
+            "rsiAutoFocus":true,"rsiIndexId":index["id"],
+            "rsiFocusContextChars":240,
+            "rsiFocusFiles":["src/engine/alpha.rs","src/engine/beta.rs"],
+            "rsiFocusSelection":{"source":"indexed_evidence"},
+            "rsiActionDirective":{"mode":"repair_failed_edit",
+                "policy":{"revision":"learned-v2"}}
+        });
+        let previous=json!({"editActions":[
+            {"path":"src/engine/beta.rs","written":false,"error":"stale SHA"}]});
+        assert!(bind_action_to_source(&state,&mut input,&[previous]));
+        assert_eq!(input["rsiFocusFiles"],json!(["src/engine/beta.rs"]));
+        assert_eq!(input["rsiFocusSelection"]["usedFailedWriteProvenance"],true);
+        assert_eq!(input["rsiFocusSelection"]["actionPolicyRevision"],"learned-v2");
+        assert!(policy_requests_source_edit(&input),
+            "the next native worker must enter its actual edit checkpoint");
+        input["rsiFocusContextChars"]=json!(0);
+        assert!(!policy_requests_source_edit(&input),
+            "without verified source evidence an autonomous edit is not forced");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn autonomous_discovery_keeps_broad_source_search() {
+        let (state,root)=state();
+        let mut input=json!({"rsiAutoFocus":true,
+            "rsiIndexId":"idx","rsiFocusContextChars":100,
+            "rsiFocusFiles":["src/engine/example.rs"],
+            "rsiActionDirective":{"mode":"discover"}});
+        assert!(!policy_requests_source_edit(&input));
+        assert!(!bind_action_to_source(&state,&mut input,&[]));
+        assert_eq!(input["rsiFocusFiles"],json!(["src/engine/example.rs"]));
+        input["rsiActionDirective"]["mode"]=json!("repair_failed_edit");
+        assert!(!bind_action_to_source(&state,&mut input,&[]),
+            "stale or unindexed files cannot be promoted as edit targets");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn learned_recovery_policy_mutates_after_repeated_real_failures() {
         let (state,root)=state();
         let input=json!({"rsiObjective":"improve actual edit recovery",
