@@ -6642,6 +6642,75 @@ mod tests {
     }
 
     #[test]
+    fn missing_source_read_retargets_the_actual_indexed_file_and_postconditions() {
+        let (state,root)=state();
+        let repo=root.join("source");
+        let source_dir=repo.to_string_lossy().to_string();
+        let old="src/legacy/memory.rs";
+        let new="src/engine/memory.rs";
+        state.store.put("job",&json!({"id":"read-failure","kind":"rsi_generation",
+            "status":"running","input":{
+                "rsiSourceDir":source_dir,"rsiIndexId":"index-one"}})).unwrap();
+        state.store.put("code_index",&json!({"id":"index-one",
+            "sourceDir":source_dir,"files":1})).unwrap();
+        state.store.put("code_index_file",&json!({"id":"new-file",
+            "indexId":"index-one","path":new,"symbols":[]})).unwrap();
+        let method=json!({"id":"old-source","revision":"v1","name":"memory refactor",
+            "domain":"memory","assistanceMode":"harness_assisted",
+            "verification":{"type":"procedure",
+                "appliesTo":{"requestContains":["memory"]},
+                "nodes":[
+                    {"id":"read","tool":"workspace_read_range","arguments":{
+                        "path":old,"startLine":1,"endLine":1}},
+                    {"id":"edit","tool":"workspace_replace","arguments":{
+                        "path":old,"startLine":1,"endLine":1,
+                        "expectedSha256":"old-hash","newText":"fn improved() {}"}}
+                ],
+                "after":[{"kind":"file_contains","path":old,"text":"fn improved()"}]}});
+        let failed=json!({"id":"missing-file","origin":"procedure",
+            "status":"failed","tool":"workspace_read_range",
+            "procedureStrategyId":"old-source","procedureRevision":"v1",
+            "procedureNodeId":"read","arguments":{"path":old},
+            "result":{"error":"No such file or directory (os error 2)"}});
+        let generation=json!({"jobId":"read-failure","domain":"memory",
+            "accepted":false,"newFindings":0});
+        let repaired=synthesize_indexed_path_repair(&state,&method,&failed,&generation).unwrap();
+        assert_eq!(repaired["synthesis"]["kind"],"indexed_path_retarget");
+        assert_eq!(repaired["synthesis"]["oldPath"],old);
+        assert_eq!(repaired["synthesis"]["targetPath"],new);
+        assert_eq!(repaired["verification"]["nodes"][0]["arguments"]["path"],new);
+        assert_eq!(repaired["verification"]["nodes"][1]["arguments"]["path"],new);
+        assert_eq!(repaired["verification"]["after"][0]["path"],new);
+        let mut results=std::collections::HashMap::new();
+        let (read,tool,args)=crate::engine::procedure::ready_intent(
+            &repaired,&[],"memory",&results).unwrap();
+        assert_eq!(read,"read");
+        assert_eq!(tool,"workspace_read_range");
+        assert_eq!(args["path"],new);
+        results.insert("read".to_string(),json!({"sourceSha256":"new-sha"}));
+        let observed=json!({"origin":"procedure","status":"completed",
+            "procedureStrategyId":repaired["id"],"procedureRevision":repaired["revision"],
+            "procedureNodeId":"read","result":{"sourceSha256":"new-sha"}});
+        let (_,tool,args)=crate::engine::procedure::ready_intent(
+            &repaired,&[observed],"memory",&results).unwrap();
+        assert_eq!(tool,"workspace_replace");
+        assert_eq!(args["path"],new);
+        assert_eq!(args["expectedSha256"],"new-sha");
+        // The indexed identity is part of the compiler's evidence. If there
+        // are multiple possible targets it must not rewrite either of them.
+        state.store.put("code_index_file",&json!({"id":"ambiguous-file",
+            "indexId":"index-one","path":"src/other/memory.rs",
+            "symbols":[]})).unwrap();
+        assert!(synthesize_indexed_path_repair(
+            &state,&method,&failed,&generation).is_none());
+        let mut wrong=failed.clone();
+        wrong["result"]["error"]=json!("permission denied");
+        assert!(synthesize_indexed_path_repair(
+            &state,&method,&wrong,&generation).is_none());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn failed_existing_write_is_learned_for_next_generation_not_credited() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
