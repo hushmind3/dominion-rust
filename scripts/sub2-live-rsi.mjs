@@ -157,8 +157,8 @@ async function main() {
   const job = await json(base + "/api/rsi/start", "POST", {
     mode: "continuous", confirmation: "START_RSI_EVOLUTION",
     providerId: receipt.providerId, model, selectionPolicy: "automatic",
-    request: "src/engine/memory.rs의 bm25_scores 함수를 실제로 최적화하세요. 현재 구현은 query_terms 각 항목마다 documents 전체를 두 번 순회하고 term별 Vec<f64>를 할당한 뒤 fold합니다. 정확히 같은 BM25 결과와 모든 기억 회상 기능을 유지하면서 중간 Vec 할당을 줄이고 계산을 재사용하는 작은 Rust 수정 1개를 구현하세요. 제공된 코드 인덱스에서 bm25_scores 위치를 찾아 현재 함수 원문을 정확히 읽고, workspace_replace의 path/startLine/endLine/newText/expectedSha256 인자로 실제 파일을 수정하세요. 네이티브 함수 호출이 불가능하면 정확히 동일한 인자들의 단일 JSON 객체로 출력하세요. 설명이나 조사로 완료하지 마세요. 저장 후 Rust 컴파일과 동결 비교 품질 판정은 엔진이 독립 실행합니다.",
-    focusFiles: ["src/engine/memory.rs"],
+    request: "src/engine/room_state.rs의 context_block_at 함수(대략 327~369줄)를 실제로 최적화하세요. 긴 owner 기억을 선택하는 이 함수는 현재 여러 fact를 평가할 때 query_relevance(query,text)를 각각 호출하며 memory::terms(query)를 같은 질문에 대해 120번 반복 토큰화합니다. 질문 query의 memory::terms(query)를 context_block_at 시작 시 단 한 번 계산한 후, 같은 query_relevance 점수(도메인 일치 +32, 토큰 교집합 최대 12), 정렬·선택·정확한 owner fact가 완전히 유지되도록 작은 Rust 코드를 작성하세요. 함수 바깥까지 광범위하게 바꾸지 말고 context_block_at 안의 120줄 이내를 실제 workspace_replace(path,startLine,endLine,expectedSha256,newText) 도구로 변경하세요. 먼저 workspace_read_range로 정확한 범위와 sourceSha256를 받으세요. 네이티브 도구 호출이 실패한다면 동일한 인자들의 단일 JSON 객체를 출력하세요. 조사·설명만 하지 말고 실제 소스 파일을 고치세요. 성과는 별도 frozen long_owner_recall holdout의 정확도와 elapsedMs로 독립 검증합니다.",
+    focusFiles: ["src/engine/room_state.rs"],
     maxAttempts: 2, tokenBudget: 85_000, timeBudgetSeconds: 1800,
   }, 120_000);
   receipt.campaignId = job.id;
