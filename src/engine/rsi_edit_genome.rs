@@ -4,16 +4,18 @@
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Genome {
     checkpoint_after: u64,
     preferred_tool: &'static str,
     repair_limit: u64,
+    program: Vec<String>,
 }
 
 impl Genome {
     fn baseline() -> Self {
-        Self { checkpoint_after: 3, preferred_tool: "workspace_replace_range", repair_limit: 2 }
+        Self { checkpoint_after: 3, preferred_tool: "workspace_replace_range", repair_limit: 2,
+            program: crate::engine::rsi_edit_program::baseline() }
     }
 
     fn from_policy(policy: &Value) -> Self {
@@ -24,15 +26,17 @@ impl Genome {
             _ => "workspace_replace_range",
         };
         result.repair_limit = policy["repairLimit"].as_u64().unwrap_or(2).min(3);
+        result.program = crate::engine::rsi_edit_program::normalize(&policy["program"]);
         result
     }
 
-    fn revision(self) -> String {
+    fn revision(&self) -> String {
         crate::engine::memory::stable_id(&[
             "rsi.composed-edit-method.v2",
             &self.checkpoint_after.to_string(),
             self.preferred_tool,
             &self.repair_limit.to_string(),
+            &self.program.join(">"),
         ])
     }
 }
@@ -95,6 +99,7 @@ fn mutate(mut program: Genome, last: &Value) -> (Genome, &'static str) {
         } else { "workspace_replace_range" };
         mutation = "explore_alternative_edit_composition";
     }
+    program.program = crate::engine::rsi_edit_program::mutate(&program.program, last);
     (program, mutation)
 }
 
@@ -104,6 +109,7 @@ fn serialize(genome: Genome, method: &str, parent: &str, mutation: &str,
     json!({
         "method":method, "checkpointAfter":genome.checkpoint_after,
         "preferredTool":genome.preferred_tool, "repairLimit":genome.repair_limit,
+        "program":genome.program, "programKind":"receipt_driven_source_edit_procedure",
         "revision":revision, "parentRevision":parent,
         "mutation":mutation, "derivedFromJobId":cause,
         "observations":observations, "score":sample_score,
@@ -143,7 +149,7 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
             + (0.15 * (total + 1.0).ln() / *count as f64).sqrt()
             + if *proven>=2 {0.2} else {0.0};
         if best.as_ref().is_none_or(|(_,_,prior,_)| score>*prior) {
-            best=Some((*genome,revision.clone(),score,*proven));
+            best=Some((genome.clone(),revision.clone(),score,*proven));
         }
     }
     let (best_genome,best_revision,best_score,proven)=best.expect("observed cohort");
@@ -158,9 +164,9 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
     // Explore a variant of the most recent method unless there is a
     // verified high-performing parent. This means successive failures can
     // mutate the mutation path itself, rather than restart from a fixed list.
-    let parent=if proven>0 {best_genome} else {Genome::from_policy(&last["editPolicy"])};
+    let parent=if proven>0 {best_genome.clone()} else {Genome::from_policy(&last["editPolicy"])};
     let parent_revision=parent.revision();
-    let (mut generated,mutation)=mutate(parent,last);
+    let (mut generated,mutation)=mutate(parent.clone(),last);
     let used=cohorts.keys().map(String::as_str).collect::<BTreeSet<_>>();
     // If a failure would repeat a previously tried genome, compose a novel
     // combination by rotating the bounded execution parameters. No static
@@ -173,6 +179,10 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
                     "workspace_replace_range"
                 }else{"workspace_replace"},
                 repair_limit:(index + parent.repair_limit) % 4,
+                program: if index % 3 == 0 {
+                    crate::engine::rsi_edit_program::recombine(&parent.program,
+                        &Genome::from_policy(&last["editPolicy"]).program)
+                } else { parent.program.clone() },
             };
             if !used.contains(candidate.revision().as_str()) {
                 generated=candidate;
@@ -255,6 +265,25 @@ mod tests {
         let selected=evolve(&rows,reward);
         assert_eq!(selected["revision"],policy["revision"]);
         assert_eq!(selected["mutation"],"reuse_measured_successful_method");
+    }
+
+    #[test]
+    fn generated_source_program_inherits_failure_recovery_nodes() {
+        let initial=evolve(&[],reward);
+        assert!(initial["program"].as_array().unwrap().iter().any(|s|s=="ground"));
+        let mut failure=row("hash-failure",initial.clone());
+        failure["editEvidence"]["recentFailures"]=json!(["workspace_replace_range: sha mismatch"]);
+        let repaired=evolve(&[failure],reward);
+        assert!(repaired["program"].as_array().unwrap().iter().any(|s|s=="reground"));
+        assert_ne!(initial["revision"],repaired["revision"],
+            "changing executable stage topology must change revision");
+        let mut neutral=row("neutral-holdout",repaired.clone());
+        neutral["candidateId"]=json!("candidate");
+        neutral["evaluation"]=json!({"verdict":"unchanged"});
+        let again=evolve(&[row("hash-failure",initial),neutral],reward);
+        assert!(again["program"].as_array().unwrap().iter().any(|s|s=="contrast"));
+        assert!(again["program"].as_array().unwrap().iter().any(|s|s=="reground"));
+        assert_eq!(again["improvementProven"],false);
     }
 
     #[test]

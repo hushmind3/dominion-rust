@@ -32,6 +32,7 @@ pub mod rsi;
 pub mod rsi_metrics;
 pub mod rsi_evolve;
 pub mod rsi_edit_genome;
+pub mod rsi_edit_program;
 pub mod rsi_scan;
 pub mod rsi_worktree;
 pub mod recovery;

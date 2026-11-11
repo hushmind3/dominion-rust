@@ -1059,6 +1059,7 @@ async fn run_turn_body(
     let mut rsi_edit_only_announced = false;
     let mut rsi_edit_retry = false;
     let mut rsi_edit_stage_requested = false;
+    let mut rsi_last_program_phase = String::new();
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1182,27 +1183,58 @@ async fn run_turn_body(
         }
         if session["rsiRun"]==true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
-            let completed = state.store.all("execution_operation").into_iter()
-                .filter(|operation| operation["runId"].as_str() == Some(execution_id)
-                    && operation["status"].as_str() == Some("completed"))
+            let all_operations = state.store.all("execution_operation").into_iter()
+                .filter(|operation| operation["runId"].as_str() == Some(execution_id))
                 .collect::<Vec<_>>();
+            let completed = all_operations.iter().filter(|operation|
+                operation["status"] == "completed").cloned().collect::<Vec<_>>();
             let has_write = completed.iter().any(rsi_verified_write_operation);
             let read_calls = completed.iter().filter(|operation| matches!(
                 operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read"))).count() as u64;
             let grounded = session["rsiFocusContextReady"] == true || read_calls > 0;
             let focused=session["rsiExplicitFocus"]==true || session["rsiAutoFocus"]==true;
-            let stage = rsi_checkpoint_stage_with_method(
-                tool_calls, read_calls, has_write,
+            let program_stage = crate::engine::rsi_edit_program::route(
+                &session["rsiEditPolicy"], &all_operations, tool_calls,
                 focused, session["rsiFocusContextReady"] == true,
-                &session["rsiEditPolicy"],
-            ).or_else(|| {
+            );
+            if let Some(decision) = program_stage {
+                if rsi_last_program_phase != decision.phase {
+                    state.store.audit("rsi.program_stage_executed", json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "programRevision":session["rsiEditPolicy"]["revision"],
+                        "phase":decision.phase,"toolCalls":tool_calls,
+                        "observedOperations":all_operations.len(),
+                    }));
+                    if decision.phase == "reground" {
+                        messages.push(json!({"role":"system","content":
+                            "이전 편집 실행이 실패했습니다. 소스 버전이 변경됐을 수 있습니다. workspace_read_range로 현재 범위와 해시를 다시 관찰한 뒤 정확한 버전에서 재편집하세요."}));
+                    } else if decision.phase == "contrast" {
+                        messages.push(json!({"role":"system","content":
+                            "독립 평가에서 개선이 없었던 이전 방법과 다른 가설을 확인하는 단계입니다. code_search로 대안 실행 경로를 찾아 현재 소스 근거와 비교하세요. 확인 이후 편집 단계로 전환됩니다."}));
+                    }
+                    rsi_last_program_phase=decision.phase.to_string();
+                }
+            }
+            let stage = program_stage.map(|decision|decision.edit_only()).or_else(|| {
+                rsi_checkpoint_stage_with_method(
+                    tool_calls, read_calls, has_write,
+                    focused, session["rsiFocusContextReady"] == true,
+                    &session["rsiEditPolicy"],
+                )
+            }).or_else(|| {
                 (rsi_edit_stage_requested && grounded && !has_write).then_some(true)
             });
             if let Some(edit_only) = stage {
                 // Reapply the restriction on EVERY following model round.
                 // The old one-shot guard reopened code_search and all read
                 // tools after the first checkpoint, allowing read-only loops.
-                round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition), edit_only));
+                round_tools.retain(|definition| {
+                    if let Some(decision)=program_stage {
+                        decision.allows(tool_name(definition))
+                    } else {
+                        rsi_checkpoint_tool(tool_name(definition), edit_only)
+                    }
+                });
                 // The learned algorithm changes the executable edit menu's
                 // order after a real source observation, independently of
                 // the model's preference or prose. Both grounded edit tools
@@ -1222,7 +1254,7 @@ async fn run_turn_body(
                             preferred.unwrap_or("workspace_replace_range"))
                     }));
                     rsi_edit_only_announced = true;
-                } else if !rsi_decision_checkpoint {
+                } else if !rsi_decision_checkpoint && program_stage.is_none() {
                     messages.push(json!({"role":"system",
                         "content":"탐색 예산을 소진했습니다. code_search는 종료하고, 정확히 부족한 범위만 workspace_read_range로 보충하세요. 확보된 근거로 코드 편집이나 실행 가능한 방법을 시도한 뒤 실제 결과를 보고하세요. 근거가 없다면 그 이유를 보고하세요."
                     }));
