@@ -1550,6 +1550,58 @@ pub(crate) fn remember_research(state:&AppState,input:&Value,generation:&Value,s
 /// Algorithms proposed by the current RSI generation through the
 /// `algorithm_propose` tool. Only the stored records are returned; a proposal
 /// is never treated as adopted before deterministic replay evaluation.
+fn history_with_verified_payoffs(state:&AppState,history:&[Value])->Vec<Value>{
+    let mut seen=BTreeSet::new();
+    history.iter().map(|row|{
+        let mut enriched=row.clone();
+        enriched["evidenceVerified"]=json!(false);
+        enriched["verifiedHoldoutGains"]=json!(0);
+        if row["accepted"]!=true {return enriched;}
+        let Some(id)=row["candidateId"].as_str().filter(|id|seen.insert(id.to_string())) else {
+            return enriched;
+        };
+        let Some(candidate)=state.store.get("rsi_candidate",id) else {return enriched;};
+        let valid=candidate["status"]=="verified"
+            && candidate["baseCommit"]==row["generatorCommit"]
+            && candidate["experimentAdoption"]["commit"]==row["acceptedCommit"]
+            && candidate["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+            && candidate["evaluation"]["metrics"]["eligible"]==true
+            && crate::engine::rsi::verified_pair_receipt(state,&candidate);
+        if valid {
+            enriched["evidenceVerified"]=json!(true);
+            enriched["verifiedHoldoutGains"]=candidate["evaluation"]["metrics"]["improvedHoldouts"].clone();
+        }
+        enriched
+    }).collect()
+}
+
+fn adaptive_search_expression(history:&[Value])->Option<String>{
+    if history.len()<4 {return None;}
+    let distinct=history.iter().filter_map(|row|row["domain"].as_str())
+        .collect::<BTreeSet<_>>();
+    if distinct.len()<2 {return None;}
+    let measured=history.iter().filter(|row|row["evidenceVerified"]==true)
+        .collect::<Vec<_>>();
+    let gains=measured.iter().map(|row|
+        row["verifiedHoldoutGains"].as_u64().unwrap_or(0).min(64)).sum::<u64>();
+    if gains==0 {return None;}
+    let failures=history.iter().filter(|row|row["accepted"]!=true
+        && row["newFindings"].as_u64().unwrap_or(0)==0).count() as f64;
+    let attempts=history.len() as f64;
+    let fail_rate=failures/attempts;
+    let measured_rate=gains as f64/(measured.len() as f64+1.0);
+    let avg_tokens=history.iter().map(|row|row["tokens"].as_u64().unwrap_or(0))
+        .sum::<u64>() as f64/attempts;
+    let explore=(1.0+fail_rate).min(2.0);
+    let gain=(1.0+measured_rate).min(4.0);
+    let efficiency=(0.8+measured_rate*0.5).min(3.0);
+    let barren=1.0+fail_rate*2.0;
+    let cost=0.25+(avg_tokens/20000.0).min(1.0);
+    Some(format!(
+        "objectiveMatch * 2 + exploration * {explore:.3} + holdoutYield * {gain:.3} + gainPer10kTokens * {efficiency:.3} - barrenRate * {barren:.3} - tokenCost * {cost:.3}"
+    ))
+}
+
 fn proposed_algorithms(state: &AppState, session: &str) -> Vec<Value> {
     let mut ids = Vec::new();
     for operation in state.store.all("execution_operation") {
@@ -1579,6 +1631,27 @@ fn proposed_algorithms(state: &AppState, session: &str) -> Vec<Value> {
 /// Stores a proposed search algorithm as a trial candidate. The replay match
 /// rate is recorded for context only. It never activates the candidate and
 /// never replaces the globally active strategy.
+fn queue_adaptive_search_trial(
+    state:&AppState,history:&[Value],active:&Value,
+    objective:&str,campaign_id:&str,attempt:u64,
+)->Option<Value>{
+    let enriched=history_with_verified_payoffs(state,history);
+    let formula=adaptive_search_expression(&enriched)?;
+    if active["parameters"]["expression"].as_str()==Some(formula.as_str()){
+        return None;
+    }
+    let candidate=crate::engine::algorithms::register(state,&json!({
+        "kind":"selfimprove.search",
+        "name":"rsi-outcome-adaptive-search",
+        "implementation":"expression",
+        "parameters":{"expression":formula},
+        "source":"rsi-generated",
+        "description":"기존 세대의 원본 paired holdout 보상, 실패율과 실제 비용에서 계수를 재계산한 탐색 가설. 성공 판정에는 독립적인 후속 세대 시험이 필요합니다."
+    })).ok()?;
+    let report=queue_search_trial(state,&candidate,active,history,objective,campaign_id,attempt);
+    if report["status"]=="pending_trial"{Some(report)}else{None}
+}
+
 fn queue_search_trial(
     state: &AppState,
     candidate: &Value,
@@ -2822,6 +2895,7 @@ async fn run_loop(
             let active = crate::engine::algorithms::active(&context.state, "selfimprove.search")
                 .unwrap_or_else(|| json!({"id":Value::Null,"revision":Value::Null,"implementation":"failure-clusters","parameters":{}}));
             let mut queued = Vec::new();
+            let had_pending_trial=record["nextTrialAlgorithmId"].is_string();
             for candidate in proposals
                 .iter()
                 .filter(|candidate| candidate["kind"] == "selfimprove.search")
@@ -2843,6 +2917,31 @@ async fn run_loop(
             }
             if !queued.is_empty() {
                 generation["searchTrialsQueued"] = json!(queued);
+            }
+            // No model call is necessary to revise the search algorithm:
+            // independently replayed paired receipts determine its weights.
+            // Register a candidate and queue its ordinary trial; never activate
+            // or claim improvement from the proposal itself.
+            if queued.is_empty() && !had_pending_trial
+                && input["rsiAutonomous"]==true
+                && generation["domainSelection"]!="algorithm_trial" {
+                let mut complete=prior_history.clone();
+                complete.push(generation.clone());
+                if let Some(report)=queue_adaptive_search_trial(
+                    &context.state,&complete,&active,
+                    input["rsiObjective"].as_str().unwrap_or(""),
+                    &context.job_id,attempt,
+                ) {
+                    if let Some(id)=report["candidateId"].as_str() {
+                        queued.push(id.to_string());
+                        generation["autoEvolvedSearch"]=json!({
+                            "candidateId":id,
+                            "hypothesis":report["candidateRevision"],
+                            "source":"verified_paired_generation_outcomes",
+                            "status":"pending_future_real_trial_not_improvement_proof"
+                        });
+                    }
+                }
             }
             record["nextTrialAlgorithmId"] = Value::Null;
             if generation["domainSelection"].as_str() == Some("algorithm_trial") {
@@ -5764,6 +5863,95 @@ mod tests {
         assert_ne!(crate::engine::algorithms::active(&state,"selfimprove.search")
             .unwrap()["id"],id,
             "never automatically promote an exploratory search trial");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn self_improver_evolves_an_executable_search_formula_from_measured_history() {
+        let rows=vec![
+            json!({"domain":"memory","accepted":false,"newFindings":0,"tokens":5000}),
+            json!({"domain":"tools","accepted":true,"evidenceVerified":true,
+                "verifiedHoldoutGains":2,"tokens":6000}),
+            json!({"domain":"memory","accepted":false,"newFindings":0,"tokens":9000}),
+            json!({"domain":"tools","accepted":false,"newFindings":1,"tokens":11000})
+        ];
+        assert!(adaptive_search_expression(&rows[..3]).is_none());
+        let expression=adaptive_search_expression(&rows).unwrap();
+        let candidate=json!({"implementation":"expression","parameters":{"expression":expression}});
+        assert!(valid_domain_scores(&candidate,&rows,"").is_some(),
+            "self-generated policy must run in the ordinary search algorithm kernel");
+        let mut later=rows.clone();
+        later.push(json!({"domain":"memory","accepted":false,"newFindings":0,"tokens":40000}));
+        let revised=adaptive_search_expression(&later).unwrap();
+        assert_ne!(expression,revised,"the formula itself must evolve with observed outcomes");
+        let no_proof=rows.iter().map(|row|{
+            let mut row=row.clone();
+            row["evidenceVerified"]=json!(false);
+            row
+        }).collect::<Vec<_>>();
+        assert!(adaptive_search_expression(&no_proof).is_none(),
+            "claimed acceptance without independently verified payoff is insufficient");
+    }
+
+    #[test]
+    fn observed_quality_gain_autonomously_queues_a_real_policy_trial() {
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let baseline=active["id"].clone();
+        let base="a".repeat(40);
+        let accepted_commit="b".repeat(40);
+        let plan=(0..8).map(|n|json!({"id":format!("case-{n}"),
+            "domain":"tools","holdout":n<3,"metrics":[]}))
+            .collect::<Vec<_>>();
+        let measurements=(0..8).map(|n|json!({"id":format!("case-{n}"),
+            "baselinePass":n!=0,"candidatePass":true}))
+            .collect::<Vec<_>>();
+        let metrics=crate::engine::rsi::evaluate_cases(&plan,&measurements,"harness").unwrap();
+        state.store.put("rsi_candidate",&json!({
+            "id":"measured","target":"harness","status":"verified","cases":plan,
+            "baseCommit":base,"patchSha256":"p".repeat(64),
+            "oracleVersion":"frozen-v1","experimentAdoption":{"commit":accepted_commit},
+            "evaluation":{"metrics":metrics,"verdict":metrics["verdict"],
+                "source":"server_invoked_local_paired_git_worktrees","evidenceSha256":"e".repeat(64)}
+        })).unwrap();
+        state.store.put("rsi_pair",&json!({
+            "id":"rsi-pair-measured","candidateId":"measured",
+            "runner":"local_gitrepo_not_os_sandbox","evidenceSha256":"e".repeat(64),
+            "report":{"baseCommit":base,"patchSha256":"p".repeat(64),
+                "oracleVersion":"frozen-v1","reportSha256":"e".repeat(64),
+                "baselineBuildOk":true,"candidateBuildOk":true,"cases":measurements},
+            "metrics":metrics,"verdict":metrics["verdict"]
+        })).unwrap();
+        let history=vec![
+            json!({"id":"1","domain":"memory","accepted":false,"newFindings":0,"tokens":5000}),
+            json!({"id":"2","domain":"tools","accepted":true,"tokens":7000,
+                "candidateId":"measured","generatorCommit":base,
+                "acceptedCommit":accepted_commit}),
+            json!({"id":"3","domain":"memory","accepted":false,"newFindings":0,"tokens":14000}),
+            json!({"id":"4","domain":"tools","accepted":false,"newFindings":1,"tokens":18000})
+        ];
+        let queued=queue_adaptive_search_trial(&state,&history,&active,
+            "","campaign",4).expect("verified outcomes must generate a trialable policy");
+        assert_eq!(queued["status"],"pending_trial");
+        let id=queued["candidateId"].as_str().unwrap();
+        let new_policy=state.store.get("algorithm",id).unwrap();
+        assert_eq!(new_policy["source"],"rsi-generated");
+        assert_eq!(new_policy["rsiTrial"]["campaignId"],"campaign");
+        assert_eq!(new_policy["rsiTrial"]["status"],"pending_trial");
+        assert!(new_policy["parameters"]["expression"].as_str().unwrap().contains("holdoutYield"));
+        assert_eq!(crate::engine::algorithms::active(&state,"selfimprove.search").unwrap()["id"],
+            baseline,"automatic proposal must not activate without later real trials");
+        let old=state.store.get("rsi_pair","rsi-pair-measured").unwrap();
+        let mut tampered=old.clone();
+        tampered["report"]["cases"][0]["candidatePass"]=json!(false);
+        state.store.put("rsi_pair",&tampered).unwrap();
+        let revalidated=history_with_verified_payoffs(&state,&history);
+        assert_eq!(revalidated[1]["evidenceVerified"],false);
+        assert!(adaptive_search_expression(&revalidated).is_none(),
+            "mutable outcome claims cannot bootstrap an evolved policy");
+        let no_proof=queue_adaptive_search_trial(&state,&history,&active,
+            "","fresh-campaign",4);
+        assert!(no_proof.is_none(),"forged raw report must not generate an improved policy");
         let _=std::fs::remove_dir_all(root);
     }
 }

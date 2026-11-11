@@ -179,7 +179,7 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
     Ok(saved)
 }
 
-fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Value, String> {
+pub(crate) fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Value, String> {
     if plan.len() != measured.len() {
         return Err("실험 사례 수가 고정 계획과 일치하지 않습니다.".into());
     }
@@ -261,6 +261,36 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
         "eligible":ready,
         "verdict":if losses+metric_losses>0 {"regressed"} else if ready {"improved"} else {"inconclusive"}
     }))
+}
+
+pub(crate) pub(crate) fn verified_pair_receipt(state: &AppState, candidate: &Value) -> bool {
+    let Some(id) = candidate["id"].as_str() else { return false; };
+    let Some(receipt) = state.store.get("rsi_pair", &format!("rsi-pair-{id}")) else {
+        return false;
+    };
+    let evaluation = &candidate["evaluation"];
+    let report = &receipt["report"];
+    let Some(plan) = candidate["cases"].as_array() else { return false; };
+    let Some(measured) = report["cases"].as_array() else { return false; };
+    if receipt["candidateId"] != candidate["id"]
+        || receipt["runner"] != "local_gitrepo_not_os_sandbox"
+        || receipt["evidenceSha256"] != evaluation["evidenceSha256"]
+        || report["reportSha256"] != receipt["evidenceSha256"]
+        || report["baseCommit"] != candidate["baseCommit"]
+        || report["patchSha256"] != candidate["patchSha256"]
+        || report["oracleVersion"] != candidate["oracleVersion"]
+        || report["baselineBuildOk"] != true || report["candidateBuildOk"] != true
+    { return false; }
+    let Ok(recalculated) = evaluate_cases(
+        plan, measured, candidate["target"].as_str().unwrap_or("")) else {
+        return false;
+    };
+    recalculated["eligible"] == true
+        && verified_holdout_domains(&recalculated).is_some()
+        && recalculated == evaluation["metrics"]
+        && recalculated == receipt["metrics"]
+        && recalculated["verdict"] == evaluation["verdict"]
+        && recalculated["verdict"] == receipt["verdict"]
 }
 
 pub fn evaluate(state: &AppState, id: &str, body: &Value) -> Result<Value, String> {
