@@ -2337,11 +2337,12 @@ fn generation_fits_remaining_budget(record:&Value,input:&Value)->bool {
 /// Permit a bounded correction and a pending self-synthesized search trial,
 /// but do not pay endlessly for identical research without source changes.
 fn should_stop_no_progress(streak: u64, research: bool, changed: bool, trial_pending:bool) -> bool {
-    // Even genuinely novel reading without patches cannot consume the entire
-    // campaign forever. A pending trial gets one extra bounded opportunity.
+    // A genuinely new queued policy needs a descendant generation to execute.
+    // Exhaustion remains bounded by the six-empty-generation ceiling and by
+    // the owner's attempt, time, and token budgets.
     if streak>=6 {return true;}
     if research && changed {return false;}
-    streak>=2 && (!trial_pending || streak>=4)
+    streak>=2 && !trial_pending
 }
 
 fn new_research_findings(state:&AppState,input:&Value,job_id:&str,hashes:&[Value],history:&[Value])->usize{
@@ -4083,8 +4084,12 @@ mod tests {
         assert!(should_stop_no_progress(2,true,false,false));
         assert!(!should_stop_no_progress(2,true,false,true),
             "pending search trial must be allowed to run");
-        assert!(should_stop_no_progress(4,false,false,true),
-            "repeated stalled controls cannot consume an unbounded campaign");
+        assert!(!should_stop_no_progress(4,false,false,true),
+            "a replacement trial queued by the fourth generation needs an actual fifth run");
+        assert!(!should_stop_no_progress(5,false,false,true),
+            "a pending replacement is allowed only inside the fixed six-empty-turn bound");
+        assert!(should_stop_no_progress(5,false,false,false),
+            "no unfinished trial means another barren generation is wasteful");
         assert!(!should_stop_no_progress(3,true,true,false));
         assert!(should_stop_no_progress(6,true,true,true),
             "novel reading cannot postpone implementation forever");
