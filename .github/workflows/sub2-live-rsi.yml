@@ -76,6 +76,7 @@ jobs:
         run: |
           cargo test --release --locked --bin dominion-rust rsi_mutation::tests -- --nocapture
           cargo test --release --locked --bin dominion-rust rsi_compiler_repair::tests -- --nocapture
+          cargo test --release --locked --bin dominion-rust rsi::tests -- --nocapture
 
       - name: Verify the actual campaign objective selects memory and improver only
         run: |
