@@ -950,6 +950,18 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
     text
 }
 
+/// In autonomous campaigns the generic owner prompt names every capability.
+/// The *chosen* domain must steer indexed source search and excerpt selection;
+/// explicit owner requests still use their actual request text.
+fn source_focus_objective(input:&Value) -> &str {
+    let owner=input["rsiObjective"].as_str().unwrap_or("");
+    if input["rsiAutonomous"]==true {
+        input["rsiTargetDomain"].as_str()
+            .filter(|domain|DOMAINS.contains(domain))
+            .unwrap_or(owner)
+    } else {owner}
+}
+
 /// The domain score and the source target score are separate decisions.
 /// A failed research-only generation only down-ranks its previous files; it
 /// does not erase a verified source observation or count as an adopted patch.
@@ -958,7 +970,8 @@ fn choose_focus_files(
 ) -> Vec<Value> {
     let Some(index_id)=input["rsiIndexId"].as_str() else {return Vec::new()};
     let domain=input["rsiTargetDomain"].as_str().unwrap_or("");
-    let objective=input["rsiObjective"].as_str().unwrap_or("");
+    let objective=source_focus_objective(input);
+    let owner_objective=input["rsiObjective"].as_str().unwrap_or("");
     let mut failures=BTreeMap::<String,u64>::new();
     let mut successes=BTreeMap::<String,u64>::new();
     let mut seen=BTreeSet::<String>::new();
@@ -1000,7 +1013,7 @@ fn choose_focus_files(
     // Comparing source hashes prevents stale failures from poisoning a new
     // revision, while cross-campaign records survive process restarts.
     let partition=research_scope(input).partition_key;
-    let objective_id=crate::engine::memory::stable_id(&[objective]);
+    let objective_id=crate::engine::memory::stable_id(&[owner_objective]);
     let mut prior=state.store.all("rsi_generation").into_iter()
         .filter(|generation|generation["knowledgePartition"]==partition &&
             generation["objectiveId"]==objective_id)
@@ -1069,7 +1082,7 @@ fn choose_focus_files(
 fn focus_file_context(state: &AppState, record: &Value, input: &Value) -> String {
     let Some(lab) = record["labDir"].as_str() else { return String::new() };
     let Some(index_id) = input["rsiIndexId"].as_str() else { return String::new() };
-    let objective = input["rsiObjective"].as_str().unwrap_or("");
+    let objective = source_focus_objective(input);
     let domain = input["rsiTargetDomain"].as_str()
         .or_else(||input["rsiSelectedDomain"].as_str())
         .or_else(||input["rsiDomain"].as_str()).unwrap_or("");
@@ -3605,6 +3618,33 @@ mod tests {
         let safe=choose_focus_files(&state,&input,&[],Some(&corrupt));
         assert_eq!(safe[0]["path"],"src/engine/memory_first.rs");
         assert!(safe[0]["policyError"].as_str().is_some());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn autonomous_focus_uses_chosen_capability_instead_of_generic_owner_text() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::write(root.join("src/engine/memory_recall.rs"),
+            "fn memory_recall() { /* retrieve stored memory */ }\n").unwrap();
+        std::fs::write(root.join("src/engine/room_ui.rs"),
+            "fn room_ui() { /* UI conversation render */ }\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let owner="기존 코드 지식과 경험을 재사용해 실제 작업에 필요한 능력 하나를 개선한다";
+        let automatic=json!({"rsiIndexId":index["id"],"rsiObjective":owner,
+            "rsiAutonomous":true,"rsiTargetDomain":"memory"});
+        assert_eq!(source_focus_objective(&automatic),"memory");
+        let chosen=choose_focus_files(&state,&automatic,&[],None);
+        assert_eq!(chosen[0]["path"],"src/engine/memory_recall.rs",
+            "the selected memory capability must drive the source index");
+        let explicit=json!({"rsiIndexId":index["id"],"rsiObjective":"room UI",
+            "rsiAutonomous":false,"rsiTargetDomain":"ui"});
+        assert_eq!(source_focus_objective(&explicit),"room UI");
+        assert_eq!(choose_focus_files(&state,&explicit,&[],None)[0]["path"],
+            "src/engine/room_ui.rs");
+        assert_eq!(source_focus_objective(&json!({"rsiObjective":owner,
+            "rsiAutonomous":true,"rsiTargetDomain":"unknown"})),owner,
+            "unknown domains must not erase the owner's objective");
         let _=std::fs::remove_dir_all(root);
     }
 
