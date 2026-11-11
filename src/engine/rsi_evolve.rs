@@ -1710,8 +1710,11 @@ fn current_induced_method_policy(state:&AppState,input:&Value)->Option<Value> {
     let id=format!("rsi-method-policy-{}",
         crate::engine::memory::stable_id(&[&scope.partition_key]));
     let policy=state.store.get("rsi_method_policy",&id)?;
+    // Failure-only history must also affect the next generation: without
+    // this, the same failed source-edit method remains the default forever.
     let useful=policy["transitions"].as_array()?.iter().any(|row|
-        row["positive"].as_u64().unwrap_or(0)>row["negative"].as_u64().unwrap_or(0));
+        row["positive"].as_u64().unwrap_or(0)>0
+        || row["negative"].as_u64().unwrap_or(0)>0);
     useful.then_some(policy)
 }
 
@@ -3893,8 +3896,8 @@ mod tests {
             row["from"]=="workspace_read_range" && row["to"]=="workspace_replace_range"
                 && row["negative"]==2 && row["positive"]==0
                 && row["byDomain"]["tools"]["negative"]==2));
-        assert!(current_induced_method_policy(&state,&input).is_none(),
-            "a rejected method must not be recommended merely because it was executed");
+        assert!(current_induced_method_policy(&state,&input).is_some(),
+            "a negative-only history must guide the next trial away from the failing method");
         let stale=json!({"jobId":"unsupported-candidate","domain":"tools","candidateId":"candidate-2",
             "evaluation":{"source":"model_prose",
                 "metrics":{"verdict":"regressed"}}});
