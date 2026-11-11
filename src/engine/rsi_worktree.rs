@@ -422,6 +422,28 @@ pub async fn finish(
     // worker that makes NO change to an inherited neutral patch re-registers
     // the same candidate and overwrites its independent paired evaluation.
     let edit_evidence=edit_outcomes(&context.state,session_id);
+    // A native induction is a separate accountable code generator. Its
+    // receipt must match this job, source and patch bytes; never credit the
+    // model merely because the resulting code compiles.
+    let native_receipt=context.state.store.get("rsi_mutation",&context.job_id)
+        .filter(|receipt|input["rsiNativeInduction"]==true
+            && receipt["origin"]=="native_inductive_source_mutation"
+            && receipt["campaignId"]==input["rsiCampaignId"]
+            && receipt["sourceDir"].as_str()==Some(worktree.source.to_string_lossy().as_ref())
+            && receipt["path"].as_str().is_some_and(crate::engine::rsi::safe_path)
+            && receipt["path"].as_str().is_some_and(|p|
+                patch.contains(&format!("diff --git a/{p} b/{p}"))));
+    let mutation_after_matches=native_receipt.as_ref().is_some_and(|receipt|{
+        let Some(path)=receipt["path"].as_str() else {return false;};
+        std::fs::read(worktree.path.join(path)).ok().is_some_and(|bytes|
+            format!("{:x}",Sha256::digest(&bytes))==receipt["afterSha256"])
+    });
+    let prior_native=context.state.store.get("rsi_run",
+            &format!("rsi-run-{}",context.job_id))
+        .is_some_and(|row|row["candidateOrigin"]
+            .as_str().is_some_and(|origin|
+                origin.starts_with("native_inductive_source_mutation")));
+    let native_origin=mutation_after_matches || (native_receipt.is_some() && prior_native);
     let inherited_patch_changed=input["rsiInheritedCandidateId"].as_str()
         .and_then(|id|context.state.store.get("rsi_candidate",id))
         .is_some_and(|ancestor|ancestor["patchSha256"]!=patch_sha
@@ -449,7 +471,12 @@ pub async fn finish(
         match rsi::propose(&context.state,&proposal) {
             Ok(mut candidate)=>{
                 candidate["rsiJobId"]=json!(context.job_id);
-                candidate["origin"]="model_driven_detached_worktree".into();
+                candidate["origin"]=json!(if native_origin {
+                    "native_inductive_source_mutation"
+                }else{"model_driven_detached_worktree"});
+                if native_origin {
+                    candidate["nativeMutation"]=json!(native_receipt);
+                }
                 candidate["pairedComparisonComplete"]=json!(false);
                 candidate["reviewRequired"]=json!(true);
                 candidate["experimentCampaignId"]=input["rsiCampaignId"].clone();
@@ -484,6 +511,9 @@ pub async fn finish(
         "unsafeAudit":unsafe_audit,
         "pairedComparisonComplete":false,"autoMerged":false,"autoDeployed":false,
         "modelError":model_error,"captureError":capture_error,
+        "candidateOrigin":if native_origin{"native_inductive_source_mutation"}
+            else{"model_driven_detached_worktree"},
+        "nativeMutation":native_receipt,
         "editEvidence":edit_evidence,
         "inheritedCandidateId":input["rsiInheritedCandidateId"],
         "inheritedPatchChanged":inherited_patch_changed,
