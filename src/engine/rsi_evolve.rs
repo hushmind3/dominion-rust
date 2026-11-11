@@ -1481,7 +1481,8 @@ fn repair_exploration_order(method:&Value)->u8 {
         Some("indexed_source_rebase")=>2,
         Some("indexed_path_retarget")=>3,
         Some("successful_read_ablation"|"transferred_read_ablation")=>4,
-        _=>5,
+        Some("failed_model_tool_rebase")=>5,
+        _=>6,
     }
 }
 
@@ -1644,7 +1645,7 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
 /// its own future application passes the ordinary procedure evaluator.
 fn is_synthesized_source_repair(method:&Value)->bool {
     matches!(method["synthesis"]["kind"].as_str(),
-        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"|"successful_read_ablation"|"transferred_read_ablation"))
+        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"|"successful_read_ablation"|"transferred_read_ablation"|"failed_model_tool_rebase"))
 }
 
 /// Synthesize a new executable procedure, not just an action ranking.
@@ -2123,11 +2124,92 @@ fn synthesize_successful_dag_ablation(
     None
 }
 
+/// Bootstrap the self-improvement method pool from an *actual failed model
+/// edit*, without requiring the model to have first written a procedure
+/// definition. A zero-diff generation can therefore teach the next
+/// generation a different executable source-edit program. Its code change
+/// remains the model's observed intention, not a fabricated patch.
+fn synthesize_failed_model_edit(
+    session:&Value,op:&Value,generation:&Value
+)->Option<Value>{
+    if session["rsiRun"]!=true
+        || session["rsiGenerationJobId"]!=generation["jobId"]
+        || op["sessionId"]!=session["id"]
+        || op["origin"]=="procedure"
+        || op["tool"]!="workspace_replace"
+        || !matches!(op["status"].as_str(),Some("completed"|"failed"))
+        || op["result"]["staleVersion"]!=true {return None}
+    let path=op["arguments"]["path"].as_str()
+        .filter(|path|crate::engine::rsi::safe_path(path))?;
+    if !session["rsiFocusFiles"].as_array().is_some_and(|paths|
+        paths.iter().any(|item|item.as_str()==Some(path))){return None}
+    let start=op["arguments"]["startLine"].as_u64()
+        .or_else(||op["arguments"]["startLine"].as_str()?.parse::<u64>().ok())?;
+    let end=op["arguments"]["endLine"].as_u64()
+        .or_else(||op["arguments"]["endLine"].as_str()?.parse::<u64>().ok())?;
+    if start==0 || end<start || end-start>=120 {return None}
+    if op["arguments"]["oldText"].as_str().is_some_and(|s|!s.is_empty()) {return None}
+    let new_text=op["arguments"]["newText"].as_str()
+        .filter(|text|!text.trim().is_empty() && text.chars().count()<=2800)?;
+    let objective=session["rsiObjective"].as_str()
+        .filter(|s|!s.trim().is_empty())?;
+    // The reuse engine uses requestContains rather than a file-path guess to
+    // determine whether a learned program applies to the next objective.
+    let applicability=objective.chars().take(100).collect::<String>();
+    let fingerprint=format!("{:x}",Sha256::digest(
+        json!([op["id"],generation["jobId"],path,start,end,new_text]).to_string().as_bytes()));
+    let read_id=format!("observe_{}",&fingerprint[..12]);
+    let edit_id=format!("apply_{}",&fingerprint[..12]);
+    let program=crate::engine::procedure::normalize(&json!({
+        "type":"procedure",
+        "appliesTo":{"requestContains":[applicability]},
+        "nodes":[
+            {"id":read_id,"tool":"workspace_read_range",
+                "arguments":{"path":path,"startLine":start,"endLine":end}},
+            {"id":edit_id,"tool":"workspace_replace",
+                "arguments":{"path":path,"startLine":start,"endLine":end,
+                    "expectedSha256":format!("{}{}.sourceSha256",char::from(36),read_id),
+                    "newText":new_text}}
+        ],
+        "edges":[{"from":read_id,"to":edit_id}],
+        "after":[{"kind":"file_contains","path":path,
+            "text":new_text.trim()}]
+    }));
+    if program["type"]!="procedure" {return None}
+    let domain=focus_domain_hint(path);
+    let revision=format!("{:x}",Sha256::digest(
+        json!([domain,&program]).to_string().as_bytes()));
+    Some(json!({
+        "id":format!("rsi-method-{revision}"),"revision":revision,
+        "name":format!("Observed model edit · {}",path.chars().take(65).collect::<String>()),
+        "domain":domain,"verification":program,
+        "status":"candidate","assistanceMode":"harness_assisted",
+        "successfulApplications":0,
+        "synthesis":{"kind":"failed_model_tool_rebase",
+            "failedOperationId":op["id"],"sourceGenerationJobId":generation["jobId"],
+            "observedModelIntent":true,"qualityGain":Value::Null,
+            "causalProof":"awaiting_descendant_tool_and_paired_evaluation"}
+    }))
+}
+
 fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str) -> Vec<Value> {
     let receipts = state.store.get("session", session_id)
         .and_then(|s|s["rsiMethodExecutions"].as_array().cloned()).unwrap_or_default();
     let operations=state.store.all("execution_operation");
     let mut repairs=Vec::<Value>::new();
+    // Cold-start: an RSI generation with no learned procedure can still
+    // observe an actual model-side edit failure and compile a next-generation
+    // execution method. The method will not be credited until applied.
+    if let Some(session)=state.store.get("session",session_id) {
+        for op in operations.iter().filter(|op|op["sessionId"]==session_id) {
+            if let Some(repair)=synthesize_failed_model_edit(&session,op,generation) {
+                if !repairs.iter().any(|m|m["id"]==repair["id"]){
+                    repairs.push(repair);
+                }
+                if repairs.len()>=2 {break}
+            }
+        }
+    }
     for receipt in &receipts {
         let Some(mut record) = receipt["experienceId"].as_str().and_then(|id|state.store.get("experience",id)) else {continue};
         let Some(method) = record["executableMethods"].as_array_mut().and_then(|methods|
