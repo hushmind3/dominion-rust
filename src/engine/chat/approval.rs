@@ -217,6 +217,19 @@ pub(super) async fn request_approval(
         state.store.audit("rsi.isolated_write_authorized",json!({"sessionId":session_id,"runId":execution_id,"operationId":operation_id,"args":args}));
         return true;
     }
+    if let Some(reason)=crate::engine::rsi_evolve::auto_write_denial_reason(state,session_id,tool,args) {
+        // The native generation was explicitly authorized at campaign start.
+        // A mismatched tool/path/job cannot become an approval request nobody
+        // is present to resolve. Return the real reason immediately so the
+        // model can correct its next tool call within the same generation.
+        state.store.audit("rsi.isolated_write_rejected",json!({
+            "sessionId":session_id,"runId":execution_id,"operationId":operation_id,
+            "tool":tool,"reason":reason,"args":args
+        }));
+        let _=tx.send(json!({"type":"rsi_write_rejected","tool":tool,"reason":reason,
+            "operationId":operation_id}));
+        return false;
+    }
     let policy = state
         .store
         .get("policy", "default")
