@@ -4248,7 +4248,8 @@ async fn run_loop(
                 .unwrap_or(u64::MAX);
             let retries=record["modelErrorRecoveryCount"].as_u64().unwrap_or(0);
             if retry_learned_model_failure(
-                error, &generation, pending_repair.is_some(),
+                error, decision_history.last().unwrap_or(&Value::Null),
+                pending_repair.is_some(),
                 retries, remaining,
                 record["attempts"].as_u64().unwrap_or(0),
                 record["limits"]["maxAttempts"].as_u64().unwrap_or(10)
