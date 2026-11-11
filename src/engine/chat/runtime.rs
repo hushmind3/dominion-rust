@@ -104,6 +104,17 @@ fn rsi_tool_advertised(name: &str, round_tools: &[Value]) -> bool {
     round_tools.iter().any(|definition| tool_name(definition) == name)
 }
 
+/// "completed" is not synonymous with a source change: an unchanged
+/// replacement can legitimately return success. Only a verified readback of
+/// written bytes may advance the RSI source-edit checkpoint.
+fn rsi_verified_write_operation(operation: &Value) -> bool {
+    operation["status"] == "completed"
+        && matches!(operation["tool"].as_str(),
+            Some("workspace_write" | "workspace_replace" | "workspace_replace_range"))
+        && operation["result"]["written"] == true
+        && operation["toolReceipt"]["verified"] == true
+}
+
 /// A focused single-target RSI run should hand a real, hash-receipted edit
 /// straight to the independent worktree verifier. The verifier, not the model's
 /// closing prose, decides whether the resulting patch compiles or improves.
@@ -1167,8 +1178,7 @@ async fn run_turn_body(
                 .filter(|operation| operation["runId"].as_str() == Some(execution_id)
                     && operation["status"].as_str() == Some("completed"))
                 .collect::<Vec<_>>();
-            let has_write = completed.iter().any(|operation| matches!(
-                operation["tool"].as_str(), Some("workspace_write" | "workspace_replace" | "workspace_replace_range")));
+            let has_write = completed.iter().any(rsi_verified_write_operation);
             let read_calls = completed.iter().filter(|operation| matches!(
                 operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read"))).count() as u64;
             let grounded = session["rsiFocusContextReady"] == true || read_calls > 0;
@@ -1400,8 +1410,7 @@ async fn run_turn_body(
                     .filter(|operation| operation["runId"].as_str() == Some(execution_id)
                         && operation["status"].as_str() == Some("completed"))
                     .collect::<Vec<_>>();
-                let has_write = completed.iter().any(|operation| matches!(
-                    operation["tool"].as_str(), Some("workspace_write" | "workspace_replace" | "workspace_replace_range")));
+                let has_write = completed.iter().any(rsi_verified_write_operation);
                 let has_read = completed.iter().any(|operation| matches!(
                     operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read")));
                 // The model may try to finish after its FIRST read, before the
@@ -6310,6 +6319,22 @@ mod harness_tool_selection_tests {
         assert!(rsi_tool_advertised("workspace_replace_range", &menu));
         assert!(!rsi_tool_advertised("workspace_read_range", &menu));
         assert!(!rsi_tool_advertised("workspace_read_range<|channel|>commentary", &menu));
+    }
+
+    #[test]
+    fn rsi_checkpoint_never_confuses_unchanged_edit_calls_with_a_real_patch() {
+        let base=json!({"status":"completed","tool":"workspace_replace_range",
+            "result":{"written":true},"toolReceipt":{"verified":true}});
+        assert!(rsi_verified_write_operation(&base));
+        let mut unchanged=base.clone();
+        unchanged["result"]["written"]=json!(false);
+        assert!(!rsi_verified_write_operation(&unchanged));
+        let mut unknown=base.clone();
+        unknown["toolReceipt"]["verified"]=json!(false);
+        assert!(!rsi_verified_write_operation(&unknown));
+        let mut read=base;
+        read["tool"]=json!("workspace_read_range");
+        assert!(!rsi_verified_write_operation(&read));
     }
 
     #[test]
