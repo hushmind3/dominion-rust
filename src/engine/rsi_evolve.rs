@@ -4129,6 +4129,21 @@ async fn run_loop(
         child_input["rsiInheritedImplementations"]=json!(inherited_implementations);
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_replace_range", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
+        // An explicit source focus can bootstrap the first real gain.
+        // After a measured adoption, keeping the same file pinned for every
+        // descendant traps RSI at an already-solved quality ceiling. When
+        // explicitly opted in, let the evolved selector choose the next
+        // source based on domain/failed cases; keep the owner objective.
+        if input["rsiExpandFocusAfterAdoption"]==true
+            && record["acceptedGenerations"].as_u64().unwrap_or(0)>0 {
+            child_input["rsiFocusFiles"]=json!([]);
+            child_input["rsiFocusExpansion"]=json!({
+                "reason":"after_independently_accepted_implementation",
+                "fromInitialFocus":input["rsiFocusFiles"],
+                "acceptedCount":record["acceptedGenerations"],
+                "sourceCommit":head
+            });
+        }
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
         let target_objective=selection_objective(&child_input);
         // Compute the same domain decision that the worker will use. Keep it
