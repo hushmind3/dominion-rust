@@ -136,7 +136,7 @@ fn ground_observed_range_edit(mut args:Value, observations:&[Value])->Value {
 /// The local model authors replacement bytes; native tools still execute and
 /// independently verify every effect before the campaign can adopt it.
 fn rsi_compact_local_edit_context(
-    session:&Value,operations:&[Value],execution_id:&str
+    session:&Value,operations:&[Value],execution_id:&str,preferred_tool:&str
 )->Option<Vec<Value>>{
     if !rsi_generation_has_action_target(session){return None;}
     let path=session["rsiFocusFile"].as_str()?;
@@ -155,11 +155,16 @@ fn rsi_compact_local_edit_context(
     let end=read["result"]["endLine"].as_u64().unwrap_or(start+100);
     let objective=session["rsiObjective"].as_str()
         .filter(|goal|!goal.trim().is_empty()).unwrap_or("DOMINION의 개선 능력 강화");
+    let edit_contract=if preferred_tool=="workspace_replace" {
+        "workspace_replace(path,oldText,newText,expectedSha256)를 호출하세요. oldText는 실제 관측한 원문과 정확히 일치해야 합니다."
+    } else {
+        "workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 호출하세요. 정확한 줄 번호와 SHA-256이 필요합니다."
+    };
     let instruction=format!(
-        "목표: {}\n개선 분야: {}\n편집 대상: {}\n실제 관측 범위: {}..{}\n실제 SHA-256: {}\n\n현재 파일 내용(원문 번호 포함):\n{}\n\n위에서 읽은 범위 안에서 실제로 개선할 코드를 모델이 결정해 작성하세요. workspace_replace_range의 path/startLine/endLine/newText/expectedSha256 필드를 사용하세요. 변경할 근거가 없다면 가짜 수정은 하지 마세요. 다른 파일을 수정하지 마세요.",
+        "목표: {}\n개선 분야: {}\n편집 대상: {}\n실제 관측 범위: {}..{}\n실제 SHA-256: {}\n\n현재 파일 내용(원문 번호 포함):\n{}\n\n위에서 읽은 범위 안에서 실제로 개선할 코드를 모델이 결정해 작성하세요. {} 변경할 근거가 없다면 가짜 수정은 하지 마세요. 다른 파일을 수정하지 마세요.",
         objective.chars().take(1200).collect::<String>(),
         session["rsiDomain"].as_str().unwrap_or(""),
-        path,start,end,hash,source.chars().take(9500).collect::<String>());
+        path,start,end,hash,source.chars().take(9500).collect::<String>(),edit_contract);
     Some(vec![
         json!({"role":"system","content":
             "DOMINION 독립 개선기. 파일 쓰기는 제공된 native tool 호출로만 수행한다. 소스 해시·줄 번호를 검증하고 독립 품질 평가는 다른 엔진이 수행한다. JSON 또는 실제 도구 호출 이외의 긴 분석은 출력하지 않는다."}),
@@ -1723,7 +1728,8 @@ async fn run_turn_body(
             && matches!(tool_name(&round_tools[0]),
                 "workspace_replace_range"|"workspace_replace") {
             rsi_compact_local_edit_context(&session,
-                &state.store.all("execution_operation"),execution_id)
+                &state.store.all("execution_operation"),execution_id,
+                tool_name(&round_tools[0]))
                 .unwrap_or_else(||messages.clone())
         } else {messages.clone()};
         // Campaigns enforce the owner's cumulative budget below. The generic
@@ -7057,15 +7063,15 @@ mod harness_tool_selection_tests {
             "result":{"sourceSha256":"a".repeat(64),
                 "startLine":10,"endLine":15,
                 "content":"10 fn before() {}\\n11 fn after() {}"}});
-        let compact=rsi_compact_local_edit_context(&session,&[read.clone()],"run")
+        let compact=rsi_compact_local_edit_context(&session,&[read.clone()],"run","workspace_replace_range")
             .expect("real current source should be enough for edit decision");
         assert_eq!(compact.len(),2);
         let user=compact[1]["content"].as_str().unwrap();
         assert!(user.contains("src/engine/tools.rs"));
         assert!(user.contains(&"a".repeat(64)));
         assert!(user.contains("fn before"));
-        assert!(rsi_compact_local_edit_context(&session,&[read],"different").is_none());
-        assert!(rsi_compact_local_edit_context(&json!({"rsiRun":true}),&[],"run").is_none());
+        assert!(rsi_compact_local_edit_context(&session,&[read],"different","workspace_replace_range").is_none());
+        assert!(rsi_compact_local_edit_context(&json!({"rsiRun":true}),&[],"run","workspace_replace_range").is_none());
     }
 
     #[test]
