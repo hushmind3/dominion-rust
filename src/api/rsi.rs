@@ -319,7 +319,14 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     if request.chars().count() > 3000 {
         return error("개선 요청은 3,000자 이하로 입력하세요.".into());
     }
-    let autonomous = request.is_empty();
+    // A continuous RSI campaign can be owner-directed AND autonomously
+    // improve its own search policy. A nonempty objective is not evidence
+    // that the owner intends to supervise each descendant generation.
+    let autonomous = if continuous {
+        body["autonomous"].as_bool().unwrap_or(request.is_empty())
+    } else {
+        request.is_empty()
+    };
     let objective = if autonomous {
         "기존 코드 지식과 경험을 재사용해 실제 작업에 필요한 능력 하나를 개선한다. 필요한 부분만 확인하고 적용 조건과 검증 근거가 있는 변경을 제안한다. 오류 수정은 이 과정에서 필요할 때 수행하며, 개선 근거가 없으면 변경 없이 이유를 보고한다.".to_string()
     } else {
@@ -363,6 +370,8 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
+        "rsiExpandFocusAfterAdoption": continuous
+            && body["expandFocusAfterAdoption"]==true,
         "rsiIndexId": index_meta["id"],
         "rsiIndexFingerprint": index_meta["fingerprint"],
         "rsiIndexFiles": index_meta["files"],
