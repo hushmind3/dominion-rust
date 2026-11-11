@@ -145,17 +145,54 @@ fn rsi_method_tool_allowed(name:&str, chosen:&str, learned:bool)->bool {
 /// Execute the recombined, experience-induced tool sequence in the
 /// native harness, not as a suggestion embedded in a prompt. Failures can
 /// redirect to a different actual tool learned from earlier recoveries.
+fn rsi_action_failed(operation:&Value)->bool {
+    let edit=matches!(operation["tool"].as_str(),
+        Some("workspace_write"|"workspace_replace"|"workspace_replace_range"));
+    operation["status"]=="failed"
+        || (operation["status"]=="completed"
+            && (operation["result"]["error"].is_string()
+                || (edit && operation["result"]["written"]!=true)))
+}
+
+/// Interpret an induced multi-step failure recovery in the live worker.
+/// The first unmatched step is selected only if every preceding step ran
+/// successfully *after* the relevant failure in the current execution.
+/// A failed replay can never masquerade as a completed recovery.
+fn rsi_recovery_path_next(program:&Value,actual:&[&Value])->Option<String> {
+    for (position,failed) in actual.iter().enumerate().rev() {
+        if !rsi_action_failed(failed) {continue;}
+        for path in program["recoveryPaths"].as_array().into_iter().flatten() {
+            if path["onFailure"]!=failed["tool"] {continue;}
+            let Some(steps)=path["steps"].as_array() else {continue;};
+            let replay=&actual[position+1..];
+            if replay.len()>=steps.len() {continue;}
+            if replay.iter().enumerate().all(|(index,observed)|
+                observed["tool"]==steps[index]
+                    && observed["status"]=="completed"
+                    && !rsi_action_failed(observed)) {
+                if let Some(next)=steps[replay.len()].as_str() {
+                    return Some(next.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn rsi_action_program_next(
     program:&Value, operations:&[Value], execution_id:&str,
 )->Option<(String,String)> {
-    let sequence=program["sequence"].as_array()?;
-    if sequence.is_empty(){return None;}
+    // A receipt-verified edit is the handoff to detached candidate checking,
+    // not permission to circle back into research.
+    if rsi_confirmed_source_write(operations,execution_id) {return None;}
     let mut actual=operations.iter()
         .filter(|op|op["runId"].as_str()==Some(execution_id))
         .collect::<Vec<_>>();
     actual.sort_by_key(|op|op["opSeq"].as_u64().unwrap_or(u64::MAX));
-    if let Some(failed)=actual.last().copied().filter(|op|
-        op["status"]!="completed" || op["result"]["error"].is_string()) {
+    if let Some(tool)=rsi_recovery_path_next(program,&actual) {
+        return Some((tool,"learned_multi_step_recovery".into()));
+    }
+    if let Some(failed)=actual.last().copied().filter(|op|rsi_action_failed(op)) {
         if let Some(rule)=program["onFailure"].as_array().into_iter().flatten()
             .find(|rule|rule["onFailure"]==failed["tool"]) {
             if let Some(tool)=rule["tryTool"].as_str() {
@@ -163,12 +200,11 @@ fn rsi_action_program_next(
             }
         }
     }
+    let sequence=program["sequence"].as_array()?;
+    if sequence.is_empty(){return None;}
     let mut position=0usize;
     for operation in actual {
-        if operation["status"]!="completed" {continue;}
-        // A model may skip an optional discovery operation and inspect a
-        // source directly. Advance to its observed position rather than
-        // trapping the next round at the beginning of the learned program.
+        if rsi_action_failed(operation) {continue;}
         if let Some(offset)=sequence.iter().skip(position)
             .position(|step|step==&operation["tool"]) {
             position+=offset+1;
@@ -6454,6 +6490,36 @@ mod harness_tool_selection_tests {
             "workspace_replace_range"));
         assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range"));
         assert!(rsi_action_program_next(&plan,&[],"unrelated").is_some());
+    }
+
+    #[test]
+    fn induced_recovery_executes_verified_multi_step_path_and_stops_after_edit() {
+        let program=json!({"sequence":["code_search","workspace_read_range",
+            "workspace_replace"],
+            "recoveryPaths":[{"onFailure":"workspace_replace",
+                "steps":["workspace_read_range","workspace_replace_range"],
+                "observedRecoveries":2,"weightedEvidence":4}],
+            "onFailure":[{"onFailure":"workspace_replace",
+                "tryTool":"workspace_replace_range"}]});
+        let failure=json!({"runId":"run","opSeq":1,"tool":"workspace_replace",
+            "status":"completed","result":{"written":false}});
+        assert_eq!(rsi_action_program_next(&program,&[failure.clone()],"run"),
+            Some(("workspace_read_range".into(),"learned_multi_step_recovery".into())));
+        let read=json!({"runId":"run","opSeq":2,"tool":"workspace_read_range",
+            "status":"completed","result":{"content":"actual source"}});
+        assert_eq!(rsi_action_program_next(&program,&[failure.clone(),read.clone()],"run"),
+            Some(("workspace_replace_range".into(),"learned_multi_step_recovery".into())));
+        let written=json!({"runId":"run","opSeq":3,"tool":"workspace_replace_range",
+            "status":"completed","result":{"written":true},
+            "toolReceipt":{"verified":true}});
+        assert_eq!(rsi_action_program_next(&program,
+            &[failure.clone(),read.clone(),written],"run"),None,
+            "A verified edit must hand off to candidate evaluation");
+        let failed_read=json!({"runId":"run","opSeq":2,"tool":"workspace_read_range",
+            "status":"failed","result":{"error":"source unavailable"}});
+        assert_ne!(rsi_action_program_next(&program,
+            &[failure,failed_read],"run").unwrap().0,"workspace_replace_range",
+            "An unsuccessful prerequisite cannot advance a repair program");
     }
 
     #[test]
