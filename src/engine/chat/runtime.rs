@@ -5459,7 +5459,7 @@ fn record_tool_stat(state: &AppState, session_id: &str, agent_id: Option<&str>, 
 mod outcome_tests {
     #[test]
     fn native_rsi_turn_has_longer_but_bounded_model_window() {
-        use super::super::rsi_turn_limit;
+        use super::rsi_turn_limit;
         use serde_json::json;
         assert_eq!(rsi_turn_limit(&json!({"rsiRun":true,"rsiCampaignId":"campaign"})).as_secs(),840);
         assert_eq!(rsi_turn_limit(&json!({"rsiRun":true})),MAX_ELAPSED);
