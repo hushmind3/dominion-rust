@@ -1013,7 +1013,7 @@ pub fn bootstrap_source_start(
                     line>0 && line<test_boundary && line<=lines.len() as u64))
             .min_by_key(|item|(
                 item["kind"]!="fn",
-                item["line"].as_u64().unwrap_or(u64::MAX)))) {
+                item["line"].as_u64().unwrap_or(u64::MAX))) {
             if let Some(line)=symbol["line"].as_u64() {
                 return Some(line.saturating_sub(4).max(1));
             }
