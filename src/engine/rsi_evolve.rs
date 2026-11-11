@@ -8477,7 +8477,7 @@ mod tests {
     fn compiler_failed_candidate_remains_repairable_after_provider_disconnect() {
         let first=json!({
             "attempt":1,"id":"campaign-1","jobId":"first-worker",
-            "generatorCommit":"e".repeat(40),"domain":"planning",
+            "generatorCommit":"e".repeat(40),"domain":"improver",
             "domainSelection":"algorithm_active","accepted":false,
             "focusFiles":["src/engine/decompose.rs"],
             "sourceIntegrity":{
