@@ -1311,7 +1311,22 @@ async fn run_turn_body(
                 // Reapply the restriction on EVERY following model round.
                 // The old one-shot guard reopened code_search and all read
                 // tools after the first checkpoint, allowing read-only loops.
-                round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition), edit_only));
+                // A bounded learned program must remain executable after
+                // the generic discovery checkpoint. If the next witnessed
+                // step is code_search or a required source refresh, don't
+                // silently remove it before native program selection.
+                let next_program_tool=if session["rsiActionProgram"]["sequence"]
+                    .as_array().is_some_and(|sequence|!sequence.is_empty()) {
+                    let prior=state.store.all("execution_operation").into_iter()
+                        .filter(|row|row["runId"].as_str()==Some(execution_id))
+                        .collect::<Vec<_>>();
+                    crate::engine::rsi_action_program::next_tool(
+                        &session["rsiActionProgram"],&prior,execution_id)
+                        .map(|(tool,_)|tool)
+                } else {None};
+                round_tools.retain(|definition|
+                    rsi_checkpoint_tool(tool_name(definition),edit_only)
+                    || next_program_tool.as_deref()==Some(tool_name(definition)));
                 // Learned policy changes the actual model-visible tool menu,
                 // not just the action described in its prompt. A failed edit
                 // primitive may therefore be replaced by a different one in
