@@ -6381,6 +6381,94 @@ mod tests {
     }
 
     #[test]
+    fn indexed_hash_retry_is_a_different_executable_mutation() {
+        let method=json!({"id":"original","revision":"original-rev",
+            "name":"small edit","domain":"memory",
+            "assistanceMode":"harness_assisted",
+            "verification":{"type":"procedure","appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"edit","tool":"workspace_replace","arguments":{
+                    "path":"src/engine/memory.rs","startLine":3,"endLine":3,
+                    "expectedSha256":"stale-hash","newText":"fn fixed() {}"}}],
+                "after":[{"kind":"tool_called","tool":"workspace_replace",
+                    "path":"src/engine/memory.rs"}]}});
+        let op=json!({"id":"failed","origin":"procedure","status":"failed",
+            "tool":"workspace_replace","procedureStrategyId":"original",
+            "procedureRevision":"original-rev","procedureNodeId":"edit",
+            "arguments":{"path":"src/engine/memory.rs","startLine":3,"endLine":3},
+            "result":{"error":"stale","staleVersion":true}});
+        let observed=synthesize_stale_edit_repair(&method,&op).unwrap();
+        let indexed=synthesize_indexed_edit_repair(&method,&op).unwrap();
+        assert_ne!(observed["id"],indexed["id"]);
+        assert_eq!(indexed["synthesis"]["kind"],"indexed_source_rebase");
+        assert_eq!(indexed["verification"]["nodes"].as_array().unwrap().len(),1);
+        assert!(indexed["verification"]["nodes"][0]["arguments"]["expectedSha256"].is_null());
+        let (id,tool,args)=crate::engine::procedure::ready_intent(
+            &indexed,&[],"memory",&std::collections::HashMap::new()).unwrap();
+        assert_eq!(id,"edit");
+        assert_eq!(tool,"workspace_replace");
+        assert_eq!(args["startLine"],3);
+        assert!(args["expectedSha256"].is_null(),
+            "the tool must use the generation-bound repository index");
+        let mut old_text=method.clone();
+        old_text["verification"]["nodes"][0]["arguments"]["oldText"]=json!("before");
+        let mut old_op=op.clone();
+        old_op["arguments"]["oldText"]=json!("before");
+        assert!(synthesize_indexed_edit_repair(&old_text,&old_op).is_none(),
+            "unversioned oldText replacement is not an allowed alternative");
+    }
+
+    #[test]
+    fn real_method_feedback_changes_which_repair_variant_a_descendant_receives() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
+            "rsiObjective":"memory improvement"});
+        let scope=research_scope(&input).partition_key;
+        let original=json!({"id":"old","revision":"r0","name":"source patch",
+            "domain":"memory","assistanceMode":"harness_assisted",
+            "verification":{"type":"procedure","appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"edit","tool":"workspace_replace","arguments":{
+                    "path":"src/engine/memory.rs","startLine":1,"endLine":1,
+                    "expectedSha256":"stale","newText":"fn changed() {}"}}],
+                "after":[{"kind":"tool_called","tool":"workspace_replace",
+                    "path":"src/engine/memory.rs"}]}});
+        let failed=json!({"id":"failed","origin":"procedure","status":"failed",
+            "tool":"workspace_replace","procedureStrategyId":"old",
+            "procedureRevision":"r0","procedureNodeId":"edit",
+            "arguments":{"path":"src/engine/memory.rs","startLine":1,"endLine":1},
+            "result":{"error":"stale","staleVersion":true}});
+        let a=synthesize_stale_edit_repair(&original,&failed).unwrap();
+        let b=synthesize_indexed_edit_repair(&original,&failed).unwrap();
+        state.store.put("experience",&json!({"id":"two-variants",
+            "status":"active","partitionKey":scope,
+            "executableMethods":[a.clone(),b.clone()]})).unwrap();
+        let decision=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(decision["methodIds"].as_array().unwrap().len(),1,
+            "never execute two competing versions against the same source");
+        assert_eq!(decision["repairMethodId"],a["id"],
+            "read-and-rebase is the first untried conservative operator");
+        let mut experience=state.store.get("experience","two-variants").unwrap();
+        experience["executableMethods"][0]["applications"]=json!([{
+            "verificationVerdict":"passed","postconditionsPassed":true,
+            "accepted":false,"tokens":100}]);
+        experience["executableMethods"][0]["status"]=json!("executable");
+        state.store.put("experience",&experience).unwrap();
+        let next=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(next["repairMethodId"],b["id"],
+            "one verified method call without adoption is not proof of improvement");
+        experience["executableMethods"][1]["successfulApplications"]=json!(1);
+        experience["executableMethods"][1]["applications"]=json!([{
+            "verificationVerdict":"passed","postconditionsPassed":true,
+            "accepted":true,"tokens":60}]);
+        experience["executableMethods"][1]["status"]=json!("executable");
+        state.store.put("experience",&experience).unwrap();
+        let adopted=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(adopted["repairMethodId"],b["id"],
+            "observed adoption should determine the future execution method");
+        assert_eq!(adopted["repairTarget"],"src/engine/memory.rs");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn failed_existing_write_is_learned_for_next_generation_not_credited() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
