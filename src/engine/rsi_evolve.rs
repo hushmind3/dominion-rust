@@ -2217,7 +2217,10 @@ fn fit_worker_generation_context(
         "previousFocusFiles":directive["previousFocusFiles"],
         "failureCaseIds":directive["failureCaseIds"],
         "checksPassed":directive["candidateCapture"]["checksPassed"],
-        "failedChecks":failures
+        "failedChecks":failures,
+        "evidenceHashes":directive["evidenceHashes"].as_array().map(|hashes|
+            hashes.iter().take(8).filter_map(|hash|hash.as_str())
+                .filter(|hash|hash.len()<=128).collect::<Vec<_>>()).unwrap_or_default()
     });
     let mandatory=format!(
         "\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n\n### 이번 세대의 개선 실행 방식\n{}\n근거가 되는 실제 세대 기록: {compact_directive}\n이번 작업에서 코드 변경과 검증 여부를 분명히 기록하세요.",
