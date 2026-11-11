@@ -112,12 +112,15 @@ if(mode==='probe'){
       .filter(tool=>names.has(tool.tool)).reduce((sum,tool)=>sum+(tool.calls||0),0);
     const sourceEditCalls=trace.generationEvidence.reduce((sum,g)=>
       sum+countCalls(g,editTools),0);
+    const rangeEditCalls=trace.generationEvidence.reduce((sum,g)=>
+      sum+countCalls(g,new Set(['workspace_replace_range'])),0);
+    const legacyEditCalls=sourceEditCalls-rangeEditCalls;
     const candidateCount=trace.generationEvidence.filter(g=>g.candidateId).length;
     const accepted=trace.generationEvidence.filter(g=>g.accepted===true
       && typeof g.acceptedCommit==='string' && g.acceptedCommit.length>0);
     trace.summary={
       modelCalls:trace.generationEvidence.reduce((sum,g)=>sum+(g.tokenUsage?.calls||0),0),
-      sourceEditCalls,candidateCount,acceptedGenerations:accepted.length,
+      sourceEditCalls,rangeEditCalls,legacyEditCalls,candidateCount,acceptedGenerations:accepted.length,
       acceptedCommits:accepted.map(g=>g.acceptedCommit),
       readOnlyGenerations:trace.generationEvidence.filter(g=>!g.candidateId
         && countCalls(g,new Set(['code_search','workspace_read_range']))>0).length,
