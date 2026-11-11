@@ -89,6 +89,25 @@ fn rsi_generation_has_action_target(session:&Value)->bool {
 }
 
 /// A single, observed read-only completion gets a source-edit action round.
+/// Switch a genuine generation from repeated exploration to one concrete
+/// edit decision as soon as it has studied its chosen file. The model still
+/// authors all changed lines; the evaluator decides whether they improve it.
+fn rsi_focused_edit_due(
+    session: &Value, operations: &[Value], execution_id: &str,
+    tool_calls: u64, already_issued: bool,
+) -> bool {
+    if already_issued || tool_calls < 4 || !rsi_generation_has_action_target(session)
+        || !rsi_read_only_completion(operations,execution_id) {
+        return false;
+    }
+    let Some(path)=session["rsiFocusFile"].as_str() else { return false };
+    operations.iter().any(|op|
+        op["runId"].as_str()==Some(execution_id)
+        && op["status"]=="completed"
+        && op["tool"]=="workspace_read_range"
+        && op["arguments"]["path"].as_str()==Some(path))
+}
+
 fn rsi_final_edit_tools(available:&[Value])->Vec<Value> {
     // Prefer a short digest-bound edit to repeating oldText in a small model.
     available.iter().find(|tool|tool_name(tool)=="workspace_replace_range")
@@ -1131,6 +1150,22 @@ async fn run_turn_body(
                     }));
                     rsi_decision_checkpoint = true;
                 }
+            }
+        }
+        if !force_final && request.tools_execution_enabled
+            && !rsi_edit_action_pending
+            && rsi_focused_edit_due(
+                &session,&state.store.all("execution_operation"),execution_id,
+                metrics.lock().unwrap().tool_calls as u64,rsi_final_edit_retry)
+        {
+            rsi_final_edit_retry=true;
+            rsi_edit_action_pending=true;
+            messages.push(json!({"role":"system","content":
+                "선택된 소스 파일의 관련 구간을 이미 읽었습니다. 더 검색하지 말고 workspace_replace_range를 사용해 확인된 줄 번호, sourceSha256, 수정할 newText만 제출하세요. 코드 개선 근거가 없으면 근거 없는 변경을 주장하지 마세요."}));
+            if let Some(mut record)=state.store.get("execution",execution_id) {
+                record["rsiActionRetry"]=json!({"reason":"focused_source_observed",
+                    "issued":true,"priorToolCalls":metrics.lock().unwrap().tool_calls});
+                state.store.put("execution",&record);
             }
         }
         if rsi_edit_action_pending && rsi_generation_has_action_target(&session) {
@@ -6155,6 +6190,26 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn focused_source_observation_enters_real_edit_stage_before_six_searches() {
+        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"child","rsiFocusFile":"src/engine/memory.rs"});
+        let read=json!({"runId":"run","status":"completed",
+            "tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/memory.rs"}});
+        assert!(!rsi_focused_edit_due(&session,&[read.clone()],"run",3,false));
+        assert!(rsi_focused_edit_due(&session,&[read.clone()],"run",4,false));
+        assert!(!rsi_focused_edit_due(&session,&[read.clone()],"run",5,true));
+        assert!(!rsi_focused_edit_due(&session,&[read.clone()],"unrelated",4,false));
+        let wrong=json!({"runId":"run","status":"completed",
+            "tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/tools.rs"}});
+        assert!(!rsi_focused_edit_due(&session,&[wrong],"run",4,false));
+        let attempt=json!({"runId":"run","status":"failed","tool":"workspace_replace_range"});
+        assert!(!rsi_focused_edit_due(&session,&[read,attempt],"run",4,false),
+            "a failed edit attempt must not be silently classified as read-only");
     }
 
     #[test]
