@@ -2763,14 +2763,21 @@ async fn run_loop(
             "boundaryResult":current["rsiBoundaryResult"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
+            "editActions":current["result"]["rsi"]["editActions"],
+            "sourceDiffBytes":current["result"]["rsi"]["diffBytes"],
+            "sourceCaptureError":current["result"]["rsi"]["captureError"],
+            "unverifiedCandidateId":current["result"]["rsi"]["candidateId"],
+            "staticChecksPassed":current["result"]["rsi"]["checksPassed"],
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
             "actionDirective":current["rsiActionDirective"],
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         let candidate_id = verified_candidate_id(&current["result"]);
-        generation["actionObservation"]=actual_edit_observation(
-            &tools_used, candidate_id.is_some());
+        generation["actionObservation"]=observed_edit_outcome(
+            &tools_used,&current["result"]["rsi"]["editActions"],
+            candidate_id.is_some(),
+            current["result"]["rsi"]["diffBytes"].as_u64().unwrap_or(0));
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
         if let Some(id) = candidate_id {
             record["phase"] = json!("measuring");
@@ -3122,24 +3129,59 @@ fn actual_edit_observation(tools:&[Value], candidate_created:bool)->Value {
         "editToolCalls":calls,"candidateCreated":candidate_created})
 }
 
+/// Distinguish tool calls, verified writes, actual Git diff, and candidates.
+/// Failed edits are absent from session_tool_usage (which counts completed
+/// calls only); reading those counts alone caused a failed source write to
+/// appear indistinguishable from a research-only generation.
+fn observed_edit_outcome(
+    tools:&[Value], actions:&Value, candidate_created:bool, diff_bytes:u64,
+)->Value {
+    let mut result=actual_edit_observation(tools,candidate_created);
+    let Some(rows)=actions.as_array().filter(|rows|!rows.is_empty()) else {
+        result["sourceDiffBytes"]=json!(diff_bytes);
+        return result;
+    };
+    let applied=rows.iter().filter(|row|row["written"]==true).count() as u64;
+    let failed=rows.len() as u64-applied;
+    let last_error=rows.iter().rev().filter_map(|row|row["error"].as_str())
+        .find(|value|!value.trim().is_empty()).unwrap_or("");
+    result["editToolCalls"]=json!(rows.len());
+    result["appliedEditCalls"]=json!(applied);
+    result["failedEditCalls"]=json!(failed);
+    result["sourceDiffBytes"]=json!(diff_bytes);
+    result["lastError"]=json!(last_error.chars().take(500).collect::<String>());
+    result["status"]=json!(if candidate_created {"candidate_created"}
+        else if applied>0 && diff_bytes>0 {"source_changed_unverified"}
+        else if applied>0 {"write_without_diff"}
+        else {"edit_failed"});
+    result
+}
+
 /// Convert the latest observed outcome into a specific next executable action.
 fn next_execution_action(history:&[Value])->Value {
     let Some(last)=history.last() else {return json!({"mode":"discover","previousAttempt":null});};
     let previous=last["actionDirective"]["mode"].as_str().unwrap_or("");
     let verdict=last["evaluation"]["verdict"].as_str().unwrap_or("");
     let edited=last["actionObservation"]["editToolCalls"].as_u64().unwrap_or(0)>0;
+    let failed_edit=edited && last["actionObservation"]["appliedEditCalls"].as_u64()==Some(0)
+        || last["actionObservation"]["status"]=="write_without_diff";
     let mode=if last["accepted"]==true {"extend_verified_capability"}
         else if matches!(verdict,"regressed"|"build_failed") {
             if previous=="repair_failed_case" {"change_approach"} else {"repair_failed_case"}
         } else if last["candidateId"].is_string() {
             if previous=="revise_candidate" {"change_approach"} else {"revise_candidate"}
-        } else if edited {"complete_candidate"}
+        } else if failed_edit {"repair_failed_edit"}
+        else if edited {"complete_candidate"}
         else if last["newFindings"].as_u64().unwrap_or(0)>0
             && previous!="implement_research" {"implement_research"}
         else {"change_approach"};
     json!({"mode":mode,"previousAttempt":last["attempt"],
         "previousDomain":last["domain"],"previousCandidateId":last["candidateId"],
-        "previousError":last["error"].as_str().unwrap_or("").chars().take(240).collect::<String>(),
+        "previousError":last["error"].as_str()
+            .filter(|error|!error.is_empty())
+            .or_else(||last["actionObservation"]["lastError"].as_str())
+            .unwrap_or("").chars().take(500).collect::<String>(),
+        "previousEdit":last["actionObservation"],
         "previousTools":last["toolsUsed"]})
 }
 fn execution_action_contract(action:&Value)->&'static str {
@@ -3148,6 +3190,7 @@ fn execution_action_contract(action:&Value)->&'static str {
         "repair_failed_case" => "지난 후보의 실패한 holdout 경로를 수정하는 다른 코드 패치를 도구로 실행하세요. 실패한 패치의 재제출은 해결이 아닙니다.",
         "revise_candidate" => "지난 후보가 독립 평가를 통과하지 못한 원인을 좁히고 수정안을 실제 파일 편집 도구로 적용하세요.",
         "complete_candidate" => "지난 세대에는 파일 수정 도구를 호출했으나 유효한 후보가 없습니다. 변경의 저장·컴파일·검증 단계 오류를 고쳐 후보를 완성하세요.",
+        "repair_failed_edit" => "직전 파일 수정 도구 호출의 실측 오류와 파일 경로를 먼저 사용하세요. 읽었던 원문과 현재 내용을 맞춘 뒤 workspace_replace로 최소 수정하세요. 파일을 실제로 바꾸지 못한 호출은 성공으로 세지 마세요.",
         "change_approach" => "이전 세대는 수정 없이 종료됐습니다. 실패 원인에 따라 대상 범위나 수정 전략을 바꾸고 실제 파일 편집을 시도하세요.",
         "extend_verified_capability" => "검증된 개선은 보존하면서 다른 문제의 새 개선을 실제 코드 수정과 독립 평가로 증명하세요.",
         _ => "구체적인 문제 한 가지를 찾아 실제 소스 변경 도구와 검증을 실행하세요. 설명이나 조사만으로 완료하지 마세요."
