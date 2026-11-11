@@ -1480,7 +1480,8 @@ fn repair_exploration_order(method:&Value)->u8 {
         Some("existing_file_to_versioned_edit")=>1,
         Some("indexed_source_rebase")=>2,
         Some("indexed_path_retarget")=>3,
-        _=>4,
+        Some("successful_read_ablation")=>4,
+        _=>5,
     }
 }
 
@@ -1584,7 +1585,7 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
 /// its own future application passes the ordinary procedure evaluator.
 fn is_synthesized_source_repair(method:&Value)->bool {
     matches!(method["synthesis"]["kind"].as_str(),
-        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"))
+        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"|"successful_read_ablation"))
 }
 
 /// Synthesize a new executable procedure, not just an action ranking.
@@ -1863,6 +1864,120 @@ fn synthesize_indexed_path_repair(
             "oldPath":old,"targetPath":target,"changedReadNodeId":read_id}}))
 }
 
+/// A *successful* generation can improve its own method-generation program:
+/// propose a smaller DAG by removing a redundant source read. The original
+/// accepted program remains active. The new one is a candidate until its own
+/// isolated run and held-out evaluation pass; this is not a gain claim.
+///
+/// The source read may be removed only when its sole purpose was to bind the
+/// expected SHA of exactly one versioned line edit. DOMINION's RSI executor
+/// already implements an equivalent fresh-index CAS for a null SHA. Real
+/// operation receipts, a generation-bound source index and acceptance of the
+/// original implementation are all required before this mutation is formed.
+fn synthesize_successful_dag_ablation(
+    state:&AppState, method:&Value, receipt:&Value, operations:&[Value], generation:&Value
+)->Option<Value> {
+    if method["assistanceMode"]!="harness_assisted"
+        || method["verification"]["type"]!="procedure"
+        || generation["accepted"]!=true
+        || receipt["result"]["verified"]!=true
+        || receipt["result"]["followed"]!=true
+        || receipt["result"]["status"]=="violated" {return None}
+    let job=state.store.get("job",generation["jobId"].as_str()?)?;
+    let index_id=job["input"]["rsiIndexId"].as_str()?;
+    let index=state.store.get("code_index",index_id)?;
+    if index["sourceDir"]!=job["input"]["rsiSourceDir"]{return None}
+    let nodes=method["verification"]["nodes"].as_array()?;
+    if nodes.len()<2 {return None}
+    let ids=receipt["operationIds"].as_array()?;
+    for read in nodes.iter().filter(|n|n["tool"]=="workspace_read_range") {
+        let read_id=read["id"].as_str()?;
+        let path=read["arguments"]["path"].as_str()?;
+        if !crate::engine::rsi::safe_path(path)
+            || crate::engine::code_index::indexed_source_hash(
+                state,index_id,path).is_none() {continue}
+        let binding=format!("{}{}.sourceSha256",char::from(36),read_id);
+        let edits=nodes.iter().filter(|n|
+            n["tool"]=="workspace_replace"
+            && n["arguments"]["path"]==path
+            && n["arguments"]["oldText"].as_str().is_none_or(str::is_empty)
+            && n["arguments"]["expectedSha256"]==binding
+            && n["arguments"]["startLine"].as_u64().unwrap_or(0)>0
+            && n["arguments"]["endLine"].as_u64().unwrap_or(0)>=
+                n["arguments"]["startLine"].as_u64().unwrap_or(1))
+            .collect::<Vec<_>>();
+        if edits.len()!=1 {continue}
+        let edit_id=edits[0]["id"].as_str()?;
+        let edges=method["verification"]["edges"].as_array()?;
+        // Read cannot have any other consumer or a prerequisite that must
+        // remain satisfied. A DAG rewrite must preserve all remaining edges.
+        if edges.iter().any(|e|
+            (e["from"]==read_id && e["to"]!=edit_id)
+            || e["to"]==read_id) {continue}
+        if !edges.iter().any(|e|e["from"]==read_id && e["to"]==edit_id){continue}
+        if nodes.iter().any(|n|n["id"]!=edit_id && n["id"]!=read_id
+            && n["arguments"].to_string().contains(&format!("{}{}.",char::from(36),read_id))) {
+            continue
+        }
+        if method["verification"]["before"].as_array().into_iter().flatten()
+            .any(|v|v.to_string().contains(read_id)) {continue}
+        if method["verification"]["after"].as_array().into_iter().flatten()
+            .any(|v|v["tool"]=="workspace_read_range"
+                || v.to_string().contains(&format!("{}{}.",char::from(36),read_id))) {continue}
+        let read_ok=operations.iter().any(|op|
+            ids.contains(&op["id"]) && op["origin"]=="procedure"
+                && op["procedureStrategyId"]==method["id"]
+                && op["procedureRevision"]==method["revision"]
+                && op["procedureNodeId"]==read_id
+                && op["tool"]=="workspace_read_range"
+                && crate::engine::procedure::operation_succeeded(op)
+                && op["result"]["sourceSha256"].as_str()
+                    .is_some_and(|hash|hash.len()==64));
+        let edit_ok=operations.iter().any(|op|
+            ids.contains(&op["id"]) && op["origin"]=="procedure"
+                && op["procedureStrategyId"]==method["id"]
+                && op["procedureRevision"]==method["revision"]
+                && op["procedureNodeId"]==edit_id
+                && op["tool"]=="workspace_replace"
+                && crate::engine::procedure::operation_succeeded(op)
+                && op["result"]["written"]==true
+                && op["arguments"]["path"]==path);
+        if !read_ok || !edit_ok {continue}
+        let mut program=method["verification"].clone();
+        program["nodes"].as_array_mut()?.retain(|n|n["id"]!=read_id);
+        let edit=program["nodes"].as_array_mut()?.iter_mut()
+            .find(|n|n["id"]==edit_id)?;
+        edit["arguments"]["expectedSha256"]=Value::Null;
+        program["edges"].as_array_mut()?.retain(|e|
+            e["from"]!=read_id && e["to"]!=read_id);
+        let program=crate::engine::procedure::normalize(&program);
+        if program["type"]!="procedure" {continue}
+        let domain=method["domain"].as_str()?;
+        let revision=format!("{:x}",Sha256::digest(
+            json!([domain,&program]).to_string().as_bytes()));
+        if revision==method["revision"]{continue}
+        return Some(json!({
+            "id":format!("rsi-method-{revision}"),"revision":revision,
+            "name":format!("{} · success-ablation",method["name"].as_str()
+                .unwrap_or("Learned method").chars().take(65).collect::<String>()),
+            "domain":domain,"verification":program,"status":"candidate",
+            "assistanceMode":"harness_assisted","successfulApplications":0,
+            "synthesis":{
+                "kind":"successful_read_ablation",
+                "parentMethodId":method["id"],"parentRevision":method["revision"],
+                "sourceExecutionId":receipt["executionId"],
+                "sourceGenerationJobId":generation["jobId"],
+                "removedReadNode":read_id,"retainedEditNode":edit_id,
+                "sourceIndexId":index_id,"sourcePath":path,
+                "hypothesis":"remove_redundant_read_using_generation_bound_index",
+                "qualityGain":Value::Null,
+                "causalProof":"awaiting_separate_descendant_trial"
+            }
+        }))
+    }
+    None
+}
+
 fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str) -> Vec<Value> {
     let receipts = state.store.get("session", session_id)
         .and_then(|s|s["rsiMethodExecutions"].as_array().cloned()).unwrap_or_default();
@@ -1897,6 +2012,15 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             || result["violations"].as_array().is_some_and(|rows| !rows.is_empty()));
         let ok = !unknown && !violated && result["followed"] == true;
         let progress = generation["accepted"] == true || generation["newFindings"].as_u64().unwrap_or(0)>0;
+        if ok && generation["accepted"]==true {
+            if let Some(mut variant)=synthesize_successful_dag_ablation(
+                state,method,receipt,&operations,generation) {
+                variant["sourceGenerationJobId"]=generation["jobId"].clone();
+                if !repairs.iter().any(|r|r["id"]==variant["id"]) {
+                    repairs.push(variant);
+                }
+            }
+        }
         method["status"] = json!(if violated {"suspended"} else if ok && progress {"executable"} else {"held"});
         if ok && generation["accepted"] == true {
             method["successfulApplications"] = json!(method["successfulApplications"].as_u64().unwrap_or(0)+1);
