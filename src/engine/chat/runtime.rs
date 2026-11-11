@@ -1363,6 +1363,59 @@ async fn run_turn_body(
     };
     messages.extend(harness_messages);
 
+    // Bootstrapping an RSI generation must not depend on a 4B model
+    // voluntarily choosing to inspect the file. The NATIVE Rust harness
+    // performs a real, budgeted source observation through the same gateway;
+    // it never fabricates the source, a patch, or a quality result.
+    let mut rsi_bootstrap_observed=false;
+    if request.tools_enabled && request.tools_execution_enabled
+        && rsi_generation_has_action_target(&session)
+        && tool_definitions.iter().any(|def|tool_name(def)=="workspace_read_range")
+    {
+        if let Some(path)=session["rsiFocusFile"].as_str() {
+            let earlier=state.store.all("execution_operation").into_iter().any(|op|
+                op["runId"]==execution_id && op["tool"]=="workspace_read_range"
+                    && op["status"]=="completed" && op["arguments"]["path"]==path
+                    && op["result"]["sourceSha256"].as_str().is_some_and(|sha|sha.len()==64));
+            if !earlier && budget.can_execute_tool() {
+                let start=session["rsiFocusStartLine"].as_u64().unwrap_or(1).max(1);
+                let end=start.saturating_add(95);
+                let args=json!({"path":path,"startLine":start,"endLine":end});
+                if !budget.charge_tool() {
+                    return Err("RSI source bootstrap tool budget exhausted".into());
+                }
+                op_seq+=1;
+                let call=ToolCall{id:format!("rsi-observe-{}",uuid::Uuid::new_v4()),
+                    name:"workspace_read_range".into(),arguments:args.to_string()};
+                let (observation,ok,_)=dispatch_tool_call(
+                    state,tx,&session,request,session_id,execution_id,&call,
+                    args,metrics,op_seq,0,0,false,"rsi_native_bootstrap",
+                    None,None,None,
+                ).await?;
+                rsi_bootstrap_observed=ok
+                    && observation["sourceSha256"].as_str().is_some_and(|sha|
+                        sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
+                    && observation["path"].is_string();
+                if rsi_bootstrap_observed {
+                    messages.push(json!({"role":"system","content":format!(
+                        "DOMINION이 실제 선택 파일 {}의 현재 소스를 도구로 읽었습니다. 다음 코드와 sourceSha256이 검증 가능한 출발점입니다.\n{}\n이제 읽은 구간에 근거한 구체적인 개선을 모델이 작성하세요. workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 호출하세요. 추측으로 파일을 변경하지 마세요.",
+                        path,observation.to_string().chars().take(11_000).collect::<String>())}));
+                } else {
+                    messages.push(json!({"role":"system","content":format!(
+                        "선택 소스 {path}의 자동 읽기가 성공하지 못했습니다. 기존 읽기·탐색 도구를 사용해 현재 소스와 해시를 직접 확인하세요.")}));
+                }
+                if let Some(mut record)=state.store.get("execution",execution_id) {
+                    record["rsiNativeBootstrap"]=json!({"path":path,
+                        "readSucceeded":rsi_bootstrap_observed,
+                        "operationId":format!("{execution_id}:0:0:{}",call.id),
+                        "sourceSha256":observation["sourceSha256"],
+                        "mode":"harness_observation_not_synthetic_patch"});
+                    state.store.put("execution",&record);
+                }
+            } else {rsi_bootstrap_observed=earlier;}
+        }
+    }
+
     for round in 0..max_rounds {
         if finished { break; }
         if !budget.charge_round() {
@@ -1460,6 +1513,7 @@ async fn run_turn_body(
             round_tools = trim_tool_definitions(round_tools, budget);
         }
         if !force_final && request.tools_enabled && request.tools_execution_enabled
+            && !rsi_bootstrap_observed
             && rsi_bootstrap_read_due(&session,&tool_definitions,round) {
             // A broad schema budget can truncate the read tool before a
             // local model sees it. Select it from the original authorized
