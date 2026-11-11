@@ -1813,6 +1813,7 @@ fn comparable_trial_baseline(
         .rev()
         .find(|row| {
             row["domainSelection"].as_str() == Some("algorithm_active")
+                && row["searchStrategy"]["pendingCandidateId"] == candidate["id"]
                 && row["generatorCommit"] == generation["generatorCommit"]
                 && row["domain"] == generation["domain"]
                 && row["accepted"].is_boolean()
@@ -3136,7 +3137,19 @@ fn select_generation_strategy(
                 strategy["trialFallback"]=json!("candidate_expression_invalid_for_runtime_features");
                 return (select_domain(&baseline,history,objective),"algorithm_active",strategy);
             }
-            let domain = select_domain(&algorithm, history, objective);
+            // A prior control for this exact content-addressed policy pins
+            // its domain. Re-scoring after the control adds new history can
+            // otherwise change the domain and prevent the policy from ever
+            // reaching its comparable next-generation trial.
+            let pinned=history.iter().rev().find(|row|
+                row["generatorCommit"]==generator_commit
+                    && row["domainSelection"]=="algorithm_active"
+                    && row["searchStrategy"]["pendingCandidateId"]==algorithm["id"]
+                    && row["searchStrategy"]["pendingCandidateRevision"]==algorithm["revision"]
+                    && row["domain"].as_str().is_some_and(|domain|DOMAINS.contains(&domain)));
+            let domain=pinned.and_then(|row|row["domain"].as_str())
+                .map(str::to_string)
+                .unwrap_or_else(||select_domain(&algorithm, history, objective));
             let generation = json!({"domain":domain,"generatorCommit":generator_commit});
             if comparable_trial_baseline(history, &generation, &algorithm).is_some() {
                 return (domain, "algorithm_trial", search_strategy(&algorithm, "trial"));
@@ -3151,6 +3164,7 @@ fn select_generation_strategy(
                 .filter(|row|row["generatorCommit"]==generator_commit
                     && row["domain"]==domain
                     && row["domainSelection"]=="algorithm_active"
+                    && row["searchStrategy"]["pendingCandidateId"]==algorithm["id"]
                     && row["candidateId"].is_null()
                     && row["accepted"]==false)
                 .count();
@@ -3169,6 +3183,8 @@ fn select_generation_strategy(
             selected["trialFallback"] = json!("collecting_same_domain_control");
             selected["decisionSource"] = json!("candidate_target_active_control");
             selected["pendingCandidateId"] = json!(id);
+            selected["pendingCandidateRevision"] = algorithm["revision"].clone();
+            selected["controlDomainPinned"] = json!(domain);
             return (domain, "algorithm_active", selected);
         }
         let algorithm = active
@@ -5493,6 +5509,7 @@ mod tests {
                 "metrics":[]})
         }).collect::<Vec<_>>();
         baseline["evaluation"]["metrics"]["measurements"]=json!(cases("control"));
+        baseline["searchStrategy"]["pendingCandidateId"]=trial["searchStrategy"]["id"].clone();
         trial["evaluation"]["metrics"]["measurements"]=json!(cases("trial"));
     }
 
@@ -5531,10 +5548,12 @@ mod tests {
         assert_eq!(queued["status"],"pending_trial");
         let first=json!({"jobId":"control-one","domain":"memory",
             "generatorCommit":"commit-1","domainSelection":"algorithm_active",
-            "candidateId":null,"accepted":false,"evaluation":null});
+            "candidateId":null,"accepted":false,"evaluation":null,
+            "searchStrategy":{"pendingCandidateId":id,"pendingCandidateRevision":candidate["revision"]}});
         let second=json!({"jobId":"control-two","domain":"memory",
             "generatorCommit":"commit-1","domainSelection":"algorithm_active",
-            "candidateId":null,"accepted":false,"evaluation":null});
+            "candidateId":null,"accepted":false,"evaluation":null,
+            "searchStrategy":{"pendingCandidateId":id,"pendingCandidateRevision":candidate["revision"]}});
         // Force an explicit domain constraint; the policy has no evaluated
         // active control after two attempts and must get to execute itself.
         let objective="기억";
@@ -5554,6 +5573,46 @@ mod tests {
         assert_ne!(crate::engine::algorithms::active(&state,"selfimprove.search")
             .unwrap()["id"],id,
             "never automatically promote an exploratory search trial");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn candidate_scoped_active_control_pins_domain_and_unlocks_the_next_trial() {
+        let (state,root)=state();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"adaptive-control-pin",
+            "source":"rsi-generated","implementation":"expression",
+            "parameters":{"expression":"objectiveMatch * 5 + exploration * 3"}
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap().to_string();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        assert_eq!(queue_search_trial(&state,&candidate,&active,&[],
+            "multi domain objective","pin-campaign",1)["status"],"pending_trial");
+        let (domain,mode,control_strategy)=select_generation_strategy(
+            &state,&[],"multi domain objective",None,Some(id.clone()),None,"commit-1");
+        assert_eq!(mode,"algorithm_active");
+        assert_eq!(control_strategy["pendingCandidateId"],id);
+        assert_eq!(control_strategy["pendingCandidateRevision"],candidate["revision"]);
+        let mut control=active_generation("pin-control",1,&domain,false,"commit-1",4000,100);
+        control["searchStrategy"]=control_strategy;
+        let (next_domain,next_mode,_)=select_generation_strategy(
+            &state,&[control.clone()],"multi domain objective",None,
+            Some(id.clone()),None,"commit-1");
+        assert_eq!(next_domain,domain,"history updates must not move the pending trial target");
+        assert_eq!(next_mode,"algorithm_trial",
+            "the control's frozen evaluation should permit the candidate to run");
+        assert!(comparable_trial_baseline(&[control.clone()],
+            &json!({"domain":domain,"generatorCommit":"commit-1"}),&candidate).is_some());
+        let mut foreign=control.clone();
+        foreign["searchStrategy"]["pendingCandidateId"]=json!("another-candidate");
+        assert!(comparable_trial_baseline(&[foreign.clone()],
+            &json!({"domain":domain,"generatorCommit":"commit-1"}),&candidate).is_none(),
+            "an unrelated policy's control is not causal evidence for this candidate");
+        let (_,mode,_)=select_generation_strategy(
+            &state,&[foreign],"multi domain objective",None,
+            Some(id.clone()),None,"commit-1");
+        assert_eq!(mode,"algorithm_active",
+            "a foreign control cannot unlock the candidate trial");
         let _=std::fs::remove_dir_all(root);
     }
 
