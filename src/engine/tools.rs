@@ -815,8 +815,11 @@ async fn replace_text(
     }
     let updated = text.replacen(old_text, new_text, 1);
     let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
-    result["replaced"] = json!(true);
-    result["replacedChars"] = json!(old_text.chars().count());
+    if result["written"] == true {
+        result["replaced"] = json!(true);
+        result["replacedChars"] = json!(old_text.chars().count());
+        result["postSha256"] = json!(format!("{:x}", Sha256::digest(updated.as_bytes())));
+    }
     Ok(result)
 }
 
@@ -1617,6 +1620,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result["replaced"], true, "{result}");
+        assert_eq!(result["postSha256"],
+            format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap())));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "let new_value = 3;\nlet untouched = 2;\n"
