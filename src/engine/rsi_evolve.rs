@@ -1551,12 +1551,23 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
 fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str) -> Vec<Value> {
     let receipts = state.store.get("session", session_id)
         .and_then(|s|s["rsiMethodExecutions"].as_array().cloned()).unwrap_or_default();
+    let operations=state.store.all("execution_operation");
+    let mut proposed_repairs=Vec::<Value>::new();
     for receipt in &receipts {
         let Some(mut record) = receipt["experienceId"].as_str().and_then(|id|state.store.get("experience",id)) else {continue};
         let Some(method) = record["executableMethods"].as_array_mut().and_then(|methods|
             methods.iter_mut().find(|m|m["id"] == receipt["methodId"] && m["revision"] == receipt["revision"])) else {continue};
         // Recovered coordinator steps must not count a completed application twice.
         if method["applications"].as_array().is_some_and(|rows|rows.iter().any(|r|r["executionId"]==receipt["executionId"])) {continue;}
+        for op in operations.iter().filter(|op|receipt["operationIds"].as_array()
+            .is_some_and(|ids|ids.contains(&op["id"]))) {
+            for mut repair in crate::engine::rsi_repair_synthesis::propose(method,op) {
+                repair["sourceGenerationJobId"]=generation["jobId"].clone();
+                if !proposed_repairs.iter().any(|old:&Value|old["id"]==repair["id"]) {
+                    proposed_repairs.push(repair);
+                }
+            }
+        }
         let result = &receipt["result"];
         let unknown = result["unknown"] == true || result["status"] == "unknown"
             || result["verified"] != true;
@@ -1611,6 +1622,22 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             if !domains.contains(&target) {domains.push(target);}
         }
         state.store.put("experience", &record);
+    }
+    // Feed executable repair DAG candidates into the existing cross-generation
+    // experience ledger. New methods remain unverified until executed.
+    if !proposed_repairs.is_empty() {
+        if let Some(mut session)=state.store.get("session",session_id) {
+            if !session["rsiMethodProposals"].is_array() {
+                session["rsiMethodProposals"]=json!([]);
+            }
+            let methods=session["rsiMethodProposals"].as_array_mut().unwrap();
+            for repair in proposed_repairs {
+                if !methods.iter().any(|prior|prior["id"]==repair["id"]) {
+                    methods.push(repair);
+                }
+            }
+            state.store.put("session",&session);
+        }
     }
     receipts
 }

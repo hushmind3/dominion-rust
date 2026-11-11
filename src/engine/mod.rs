@@ -31,6 +31,7 @@ pub mod code_index;
 pub mod rsi;
 pub mod rsi_metrics;
 pub mod rsi_action_program;
+pub mod rsi_repair_synthesis;
 pub mod rsi_evolve;
 pub mod rsi_scan;
 pub mod rsi_worktree;
