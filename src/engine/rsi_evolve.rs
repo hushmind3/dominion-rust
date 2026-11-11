@@ -2751,6 +2751,31 @@ async fn run_loop(
         if program_stages.len()>48 {
             program_stages.drain(..program_stages.len()-48);
         }
+        // The next generator needs actual ordered tool outcomes, not merely
+        // a model-written description. Keep only bounded, non-secret fields.
+        let mut tool_timeline = session.map(|id| context.state.store.all("execution_operation")
+            .into_iter().filter(|op|op["sessionId"].as_str()==Some(id)
+                && op["origin"]=="model")
+            .map(|op| json!({
+                "runId":op["runId"],"opSeq":op["opSeq"],
+                "startedAt":op["startedAt"],
+                "tool":op["tool"],"status":op["status"],
+                "result":{"written":op["result"]["written"]},
+                "toolReceipt":{"verified":op["toolReceipt"]["verified"]},
+            })).collect::<Vec<_>>()).unwrap_or_default();
+        tool_timeline.sort_by(|a,b|a["startedAt"].as_str().unwrap_or("")
+            .cmp(b["startedAt"].as_str().unwrap_or(""))
+            .then_with(||a["opSeq"].as_u64().unwrap_or(0)
+                .cmp(&b["opSeq"].as_u64().unwrap_or(0))));
+        if tool_timeline.len()>64 {tool_timeline.drain(..tool_timeline.len()-64);}
+        let mut rule_executions=context.state.store.all("rsi_rule_execution")
+            .into_iter().filter(|row|
+                row["generationJobId"].as_str()==Some(child_id)
+                && row["policyRevision"]==current["input"]["rsiEditPolicy"]["revision"])
+            .collect::<Vec<_>>();
+        rule_executions.sort_by(|a,b|a["recordedAt"].as_str().unwrap_or("")
+            .cmp(b["recordedAt"].as_str().unwrap_or("")));
+        if rule_executions.len()>32 {rule_executions.drain(..rule_executions.len()-32);}
         let usage = session
             .map(|s| context.state.store.session_usage(s))
             .unwrap_or(Value::Null);
@@ -2787,6 +2812,8 @@ async fn run_loop(
             "editEvidence":current["result"]["rsi"]["editEvidence"],
             "editPolicy":current["input"]["rsiEditPolicy"],
             "programStages":program_stages,
+            "toolTimeline":tool_timeline,
+            "ruleExecutions":rule_executions,
             "editMethodReward":Value::Null,
             "diffBytes":current["result"]["rsi"]["diffBytes"],
             "captureError":current["result"]["rsi"]["captureError"],

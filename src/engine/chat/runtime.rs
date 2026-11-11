@@ -1060,6 +1060,7 @@ async fn run_turn_body(
     let mut rsi_edit_retry = false;
     let mut rsi_edit_stage_requested = false;
     let mut rsi_last_program_phase = String::new();
+    let mut rsi_last_rule_id = String::new();
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1203,6 +1204,34 @@ async fn run_turn_body(
                 &session["rsiEditPolicy"], &all_operations, tool_calls,
                 focused, session["rsiFocusContextReady"] == true,
             );
+            let rule_decision = crate::engine::rsi_decision_rules::choose(
+                &session["rsiEditPolicy"], &all_operations, tool_calls,
+                focused, session["rsiFocusContextReady"] == true,
+            );
+            if let Some(rule)=rule_decision.as_ref() {
+                if rsi_last_rule_id != rule.id {
+                    let receipt=json!({
+                        "id":crate::engine::memory::stable_id(&[
+                            execution_id,&rule.id,&tool_calls.to_string()
+                        ]),
+                        "sessionId":session_id,"runId":execution_id,
+                        "generationJobId":session["rsiGenerationJobId"],
+                        "policyRevision":session["rsiEditPolicy"]["revision"],
+                        "ruleId":rule.id,"toolCalls":tool_calls,
+                        "allow":rule.allow,
+                        "recordedAt":chrono::Utc::now().to_rfc3339(),
+                    });
+                    state.store.put("rsi_rule_execution",&receipt);
+                    state.store.audit("rsi.synthesized_rule_fired",receipt.clone());
+                    messages.push(json!({"role":"system","content":format!(
+                        "DOMINION이 실제 실행 경험으로 합성한 판단 조건이 충족되었습니다 (규칙 {}). 이번 단계에서는 다음 도구만 사용하세요: {}. 작업 결과를 관찰하면 실행 정책을 다시 평가합니다.",
+                        &rule.id[..rule.id.len().min(10)],rule.allow.join(", "))
+                    }));
+                    rsi_last_rule_id=rule.id.clone();
+                }
+            } else {
+                rsi_last_rule_id.clear();
+            }
             if let Some(decision) = program_stage {
                 if rsi_last_program_phase != decision.phase {
                     state.store.audit("rsi.program_stage_executed", json!({
@@ -1234,7 +1263,8 @@ async fn run_turn_body(
                     rsi_last_program_phase=decision.phase.to_string();
                 }
             }
-            let stage = program_stage.map(|decision|decision.edit_only()).or_else(|| {
+            let stage = rule_decision.as_ref().map(|decision|decision.edit_only())
+                .or_else(||program_stage.map(|decision|decision.edit_only())).or_else(|| {
                 rsi_checkpoint_stage_with_method(
                     tool_calls, read_calls, has_write,
                     focused, session["rsiFocusContextReady"] == true,
@@ -1247,7 +1277,11 @@ async fn run_turn_body(
                 // Reapply the restriction on EVERY following model round.
                 // The old one-shot guard reopened code_search and all read
                 // tools after the first checkpoint, allowing read-only loops.
-                if let Some(decision)=program_stage {
+                if let Some(rule)=rule_decision.as_ref() {
+                    round_tools=tool_definitions.iter()
+                        .filter(|definition|rule.allows(tool_name(definition)))
+                        .cloned().collect();
+                } else if let Some(decision)=program_stage {
                     // Restore the selected phase's tiny tool menu from the
                     // original catalog. A context-size trim of the general
                     // menu must never delete the only hash re-read tool.
@@ -1277,7 +1311,7 @@ async fn run_turn_body(
                             preferred.unwrap_or("workspace_replace_range"))
                     }));
                     rsi_edit_only_announced = true;
-                } else if !rsi_decision_checkpoint && program_stage.is_none() {
+                } else if !rsi_decision_checkpoint && program_stage.is_none() && rule_decision.is_none() {
                     messages.push(json!({"role":"system",
                         "content":"탐색 예산을 소진했습니다. code_search는 종료하고, 정확히 부족한 범위만 workspace_read_range로 보충하세요. 확보된 근거로 코드 편집이나 실행 가능한 방법을 시도한 뒤 실제 결과를 보고하세요. 근거가 없다면 그 이유를 보고하세요."
                     }));

@@ -4,18 +4,19 @@
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Genome {
     checkpoint_after: u64,
     preferred_tool: &'static str,
     repair_limit: u64,
     program: Vec<String>,
+    rules: Vec<Value>,
 }
 
 impl Genome {
     fn baseline() -> Self {
         Self { checkpoint_after: 3, preferred_tool: "workspace_replace_range", repair_limit: 2,
-            program: crate::engine::rsi_edit_program::baseline() }
+            program: crate::engine::rsi_edit_program::baseline(), rules:Vec::new() }
     }
 
     fn from_policy(policy: &Value) -> Self {
@@ -27,6 +28,7 @@ impl Genome {
         };
         result.repair_limit = policy["repairLimit"].as_u64().unwrap_or(2).min(3);
         result.program = crate::engine::rsi_edit_program::normalize(&policy["program"]);
+        result.rules = crate::engine::rsi_decision_rules::normalize(&policy["rules"]);
         result
     }
 
@@ -37,6 +39,7 @@ impl Genome {
             self.preferred_tool,
             &self.repair_limit.to_string(),
             &self.program.join(">"),
+            &serde_json::to_string(&self.rules).unwrap_or_default(),
         ])
     }
 }
@@ -99,6 +102,7 @@ fn mutate(mut program: Genome, last: &Value) -> (Genome, &'static str) {
         mutation = "explore_alternative_edit_composition";
     }
     program.program = crate::engine::rsi_edit_program::mutate(&program.program, last);
+    program.rules = crate::engine::rsi_decision_rules::evolve(&program.rules, last);
     (program, mutation)
 }
 
@@ -109,6 +113,7 @@ fn serialize(genome: Genome, method: &str, parent: &str, mutation: &str,
         "method":method, "checkpointAfter":genome.checkpoint_after,
         "preferredTool":genome.preferred_tool, "repairLimit":genome.repair_limit,
         "program":genome.program, "programKind":"receipt_driven_source_edit_procedure",
+        "rules":genome.rules,"ruleKind":"synthesized_boolean_execution_guards",
         "revision":revision, "parentRevision":parent,
         "mutation":mutation, "derivedFromJobId":cause,
         "observations":observations, "score":sample_score,
@@ -185,6 +190,7 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
                     crate::engine::rsi_edit_program::recombine(
                         &generated.program, &best_genome.program)
                 } else { generated.program.clone() },
+                rules: generated.rules.clone(),
             };
             if !used.contains(candidate.revision().as_str()) {
                 generated=candidate;
@@ -316,6 +322,22 @@ mod tests {
             "the real stage stall must not be overwritten by duplicate-genome exploration");
         assert!(fourth["program"].as_array().unwrap().contains(&json!("reground")));
         assert_eq!(fourth["improvementProven"],false);
+    }
+
+    #[test]
+    fn descendants_generate_novel_predicates_not_only_stage_labels(){
+        let baseline=evolve(&[],reward);
+        let mut generation=row("g1",baseline);
+        generation["toolTimeline"]=json!([
+            {"tool":"workspace_read_range","status":"completed"},
+            {"tool":"code_search","status":"completed"},
+            {"tool":"code_search","status":"completed"},
+            {"tool":"code_search","status":"completed"}
+        ]);
+        let evolved=evolve(&[generation],reward);
+        assert_eq!(evolved["rules"][0]["guard"]["all"][2]["value"],3);
+        assert_eq!(evolved["improvementProven"],false);
+        assert!(evolved["revision"]!=evolved["parentRevision"]);
     }
 
     #[test]
