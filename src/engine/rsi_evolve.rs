@@ -7020,6 +7020,89 @@ mod tests {
     }
 
     #[test]
+    fn accepted_tool_trace_persists_structural_mutation_for_descendant_execution() {
+        let (state,root)=state();
+        let source=root.join("source");
+        std::fs::create_dir_all(source.join("src/engine")).unwrap();
+        std::fs::write(source.join("src/engine/memory.rs"),"fn original() {}\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&source).unwrap();
+        state.store.put("job",&json!({"id":"accepted-generation",
+            "kind":"rsi_generation","status":"running",
+            "input":{"rsiIndexId":index["id"],"rsiSourceDir":source}})).unwrap();
+        let input=json!({"rsiSourceDir":source,"rsiObjective":"memory improve"});
+        let parent=json!({"id":"accepted-parent","revision":"p1",
+            "status":"candidate","assistanceMode":"harness_assisted",
+            "name":"repair memory","domain":"memory",
+            "verification":{"type":"procedure",
+                "appliesTo":{"requestContains":["memory"]},
+                "nodes":[
+                    {"id":"read","tool":"workspace_read_range",
+                        "arguments":{"path":"src/engine/memory.rs",
+                            "startLine":1,"endLine":1}},
+                    {"id":"edit","tool":"workspace_replace",
+                        "arguments":{"path":"src/engine/memory.rs",
+                            "startLine":1,"endLine":1,
+                            "newText":"fn improved() {}",
+                            "expectedSha256":"$read.sourceSha256"}}
+                ],
+                "edges":[{"from":"read","to":"edit"}],
+                "after":[{"kind":"file_contains","path":"src/engine/memory.rs",
+                    "text":"fn improved()"}]}});
+        state.store.put("experience",&json!({"id":"parent-experience",
+            "partitionKey":research_scope(&input).partition_key,
+            "status":"active","executableMethods":[parent]})).unwrap();
+        for op in [
+            json!({"id":"completed-read","sessionId":"accepted-session",
+                "status":"completed","origin":"procedure",
+                "tool":"workspace_read_range","procedureStrategyId":"accepted-parent",
+                "procedureRevision":"p1","procedureNodeId":"read",
+                "result":{"sourceSha256":"b".repeat(64)}}),
+            json!({"id":"completed-edit","sessionId":"accepted-session",
+                "status":"completed","origin":"procedure","tool":"workspace_replace",
+                "procedureStrategyId":"accepted-parent",
+                "procedureRevision":"p1","procedureNodeId":"edit",
+                "arguments":{"path":"src/engine/memory.rs"},
+                "result":{"written":true,"replaced":true}})
+        ] {
+            state.store.put("execution_operation",&op).unwrap();
+        }
+        state.store.put("session",&json!({"id":"accepted-session",
+            "rsiMethodExecutions":[{"experienceId":"parent-experience",
+                "methodId":"accepted-parent","revision":"p1",
+                "executionId":"accepted-execution",
+                "operationIds":["completed-read","completed-edit"],
+                "result":{"verified":true,"followed":true,"status":"followed"}}]})).unwrap();
+        let generation=json!({"jobId":"accepted-generation",
+            "domain":"memory","accepted":true,"newFindings":1,
+            "tokens":650,"elapsedMs":900});
+        let first=record_method_feedback(&state,&generation,"accepted-session");
+        assert_eq!(first.len(),1);
+        let revised=state.store.get("session","accepted-session").unwrap();
+        let candidate=revised["rsiMethodProposals"][0].clone();
+        assert_eq!(candidate["synthesis"]["kind"],"successful_read_ablation");
+        assert_eq!(candidate["status"],"candidate");
+        assert_eq!(candidate["successfulApplications"],0);
+        let baseline=state.store.get("experience","parent-experience").unwrap();
+        assert_eq!(baseline["executableMethods"][0]["successfulApplications"],1);
+        assert_eq!(baseline["executableMethods"][0]["status"],"executable");
+        // Restarted coordinators must not count a finished execution twice.
+        record_method_feedback(&state,&generation,"accepted-session");
+        let saved=state.store.get("session","accepted-session").unwrap();
+        assert_eq!(saved["rsiMethodProposals"].as_array().unwrap().len(),1);
+        assert_eq!(state.store.get("experience","parent-experience").unwrap()
+            ["executableMethods"][0]["applications"].as_array().unwrap().len(),1);
+        let experience=remember_research(&state,&input,&generation,"accepted-session").unwrap();
+        assert_eq!(state.store.get("experience",&experience).unwrap()
+            ["executableMethods"][0]["id"],candidate["id"]);
+        let decision=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(decision["repairMethodId"],candidate["id"]);
+        assert_eq!(decision["repairSelectionEvidence"]["selection"],
+            "success_ablation_trial");
+        assert_eq!(decision["repairTarget"],"src/engine/memory.rs");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn accepted_parent_tries_compacted_child_once_then_uses_observed_outcome() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
