@@ -1878,6 +1878,8 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     session["rsiDomain"] = json!(domain);
     session["rsiMethodContext"] = json!(method_application_context(input,domain));
     session["rsiFocusFile"] = json!(current_rsi_focus(input));
+    session["rsiIndexId"] = input["rsiIndexId"].clone();
+    session["rsiObjective"] = input["rsiObjective"].clone();
     // This is selected by DOMINION's learned transition weights. Neither
     // model instructions nor a copied old procedure are executable authority.
     let trial=&input["rsiMethodPolicyTrial"];
