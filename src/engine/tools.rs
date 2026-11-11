@@ -840,6 +840,7 @@ async fn replace_source_lines(
     let updated=format!("{}{}{}",
         lines[..first].concat(),replacement,lines[last..].concat());
     let mut result=checked_write(ctx,path,&updated,run_id,true,Some(&expected)).await?;
+    if result["preflightSyntaxRejected"]==true {return Ok(result);}
     if result["written"]!=true {
         return Err(format!(
             "workspace_replace_range 쓰기 거부: {}",
@@ -967,6 +968,7 @@ async fn replace_text(
     }
     let updated = text.replacen(old_text, new_text, 1);
     let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
+    if result["preflightSyntaxRejected"]==true {return Ok(result);}
     // checked_write can return an error *inside* an Ok(Value) for a stale
     // revision or a preflight refusal. Do not label that as a real edit.
     if result["written"] != true {
@@ -1014,7 +1016,22 @@ async fn checked_write(
         }
     };
     let _guard = lock.lock().await;
-    rsi_rust_parse_preview(ctx, path, content).await?;
+    if let Err(error)=rsi_rust_parse_preview(ctx,path,content).await {
+        if error.starts_with("rsi_rust_syntax_rejected:") {
+            // A recoverable model proposal failure, not a changed file.
+            // Return a typed receipt so same-turn editing can continue without
+            // launching expensive generic model adaptation.
+            return Ok(json!({
+                "path":path.to_string_lossy(),"written":false,
+                "preflightSyntaxRejected":true,"sourceUnchanged":true,
+                "syntaxValid":false,
+                "syntaxCheck":{"valid":false,"tool":"rustfmt_syntax_preflight",
+                    "diagnostic":error.chars().take(1800).collect::<String>()},
+                "error":error,
+            }));
+        }
+        return Err(error);
+    }
     let Some(policy) = policy else {
         // Even without the opt-in guard, a caller that supplies a frozen
         // version gets a compare-before-write under the same per-file lock.
@@ -1718,9 +1735,12 @@ mod tests {
         let sha = format!("{:x}", Sha256::digest(original.as_bytes()));
         let invalid = "fn marker_at() -> bool { true }\n\nfn split_markers() -> Vec<String> { vec![]\n]\n";
         let failure = replace_source_lines(&ctx, &path, 1, 3, invalid, &sha, "run")
-            .await.unwrap_err();
-        assert!(failure.contains("rsi_rust_syntax_rejected"), "{failure}");
-        assert!(failure.contains("source NOT modified"), "{failure}");
+            .await.unwrap();
+        assert_eq!(failure["preflightSyntaxRejected"],true,"{failure}");
+        assert_eq!(failure["syntaxValid"],false,"{failure}");
+        assert_eq!(failure["sourceUnchanged"],true,"{failure}");
+        assert_eq!(failure["written"],false,"{failure}");
+        assert!(failure["error"].as_str().unwrap().contains("rsi_rust_syntax_rejected"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         let valid = "fn marker_at() -> bool { true }\n\nfn split_markers() -> Vec<String> { vec![\"ok\".to_owned()] }\n";
         let result = replace_source_lines(&ctx, &path, 1, 3, valid, &sha, "run")

@@ -2551,7 +2551,8 @@ async fn run_turn_body(
                     &arguments,
                     &error_text,
                 );
-                if adaptation_attempts < 3 && !request.provider_id.as_deref().unwrap_or("").is_empty() {
+                if adaptation_attempts < 3 && result["preflightSyntaxRejected"]!=true
+                    && !request.provider_id.as_deref().unwrap_or("").is_empty() {
                     adaptation_attempts += 1;
                     match attempt_model_adaptation(
                         state, tx, &session, request, session_id, execution_id, round,
@@ -2615,9 +2616,12 @@ async fn run_turn_body(
                     "path":arguments["path"],"diagnostic":diagnostic,
                     "source":"actual_model_write_rustfmt"
                 }));
-                messages.push(json!({"role":"system","content":format!(
-                    "YOUR ACTUAL SOURCE EDIT FAILED RUST SYNTAX PARSING: {diagnostic}.                      The file changed, so its earlier source hash is stale.                      FIRST call workspace_read_range on the SAME changed file to                      observe current bytes and SHA. THEN use workspace_replace_range                      or workspace_replace to correct the Rust syntax in this same execution.                      Do not repeat the stale patch or finish with a description."
-                )}));
+                let instruction=if result["preflightSyntaxRejected"]==true {
+                    format!("RUST SYNTAX PREFLIGHT REJECTED YOUR PROPOSED EDIT: {diagnostic}. No disk mutation occurred; the last observed source SHA is still valid. Correct newText or the edit range and call workspace_replace_range or workspace_replace NOW. Re-reading unchanged bytes would waste tokens; do not finish with an explanation.")
+                }else{
+                    format!("YOUR ACTUAL SOURCE EDIT FAILED RUST SYNTAX PARSING: {diagnostic}. The file changed, so its earlier source hash is stale. FIRST call workspace_read_range on the SAME changed file, THEN use workspace_replace_range or workspace_replace to correct the Rust syntax.")
+                };
+                messages.push(json!({"role":"system","content":instruction}));
             }
         }
 
