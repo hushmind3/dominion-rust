@@ -274,6 +274,17 @@ fn rsi_compiler_repair_tool(name:&str)->bool {
     matches!(name,"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function")
 }
 
+/// A quality-plateau descendant starts from the original model's measured
+/// patch, not from a clean checkout. Require a fresh source read and then a
+/// function-scoped edit; historical discovery recipes cannot bury this work.
+fn rsi_quality_revision_tool(name:&str,has_current_read:bool)->bool{
+    if has_current_read {
+        matches!(name,"workspace_replace_function"|"workspace_replace_range"|"workspace_replace")
+    } else {
+        name=="workspace_read_range"
+    }
+}
+
 /// A compile failure after an actual mutation invalidates older read receipts.
 /// Force one new observed source read in the SAME repair session before another
 /// edit. Earlier code checked read_calls==0 only for inherited patches, which
@@ -1694,6 +1705,33 @@ async fn run_turn_body(
                 }
             }
         }
+        if session["rsiQualityRepair"]==true && !force_final
+            && !rsi_syntax_repair_pending {
+            let operations=state.store.all("execution_operation").into_iter()
+                .filter(|op|op["sessionId"].as_str()==Some(session_id))
+                .collect::<Vec<_>>();
+            let wrote=operations.iter().any(|op|
+                matches!(op["tool"].as_str(),
+                    Some("workspace_replace_function"|"workspace_replace"|"workspace_replace_range"))
+                && op["status"]=="completed" && op["result"]["written"]==true
+                && op["toolReceipt"]["verified"]==true);
+            if !wrote {
+                let stale_read=operations.iter().any(|op|
+                    op["status"]=="failed" && op["result"]["staleVersion"]==true);
+                let has_read=!stale_read && operations.iter().any(|op|
+                    op["status"]=="completed" && op["tool"]=="workspace_read_range"
+                    && op["result"]["sourceSha256"].as_str().is_some_and(|sha|
+                        sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())));
+                round_tools=tool_definitions.iter()
+                    .filter(|tool|rsi_quality_revision_tool(tool_name(tool),has_read))
+                    .cloned().collect();
+                state.store.audit("rsi.quality_revision_stage",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "hasCurrentRead":has_read,"round":round,
+                    "mode":if has_read{"revise_measured_patch"}else{"observe_measured_patch"}
+                }));
+            }
+        }
         if rsi_syntax_repair_pending && !force_final {
             let operations=state.store.all("execution_operation").into_iter()
                 .filter(|op|op["sessionId"].as_str()==Some(session_id))
@@ -1964,7 +2002,8 @@ async fn run_turn_body(
                 let has_write=rsi_confirmed_source_write(&completed,execution_id);
                 let has_read=completed.iter().any(|operation|matches!(
                     operation["tool"].as_str(),Some("workspace_read_range"|"workspace_read")));
-                if !has_write && (has_read || session["rsiFocusContextReady"]==true) {
+                if !has_write && (has_read || session["rsiFocusContextReady"]==true
+                    || session["rsiQualityRepair"]==true) {
                     rsi_edit_retry=true;
                     state.store.audit("rsi.edit_retry",json!({
                         "sessionId":session_id,"executionId":execution_id,
@@ -6993,6 +7032,17 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn measured_quality_descendant_reads_then_edits_not_researches() {
+        assert!(rsi_quality_revision_tool("workspace_read_range",false));
+        assert!(!rsi_quality_revision_tool("code_search",false));
+        assert!(!rsi_quality_revision_tool("workspace_replace_function",false));
+        assert!(rsi_quality_revision_tool("workspace_replace_function",true));
+        assert!(rsi_quality_revision_tool("workspace_replace_range",true));
+        assert!(rsi_quality_revision_tool("workspace_replace",true));
+        assert!(!rsi_quality_revision_tool("code_search",true));
     }
 
     #[test]
