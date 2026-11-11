@@ -1316,6 +1316,13 @@ async fn run_turn_body(
                     });
                     if let Some(mut execution)=state.store.get("execution",execution_id) {
                         execution["rsiActionProgramDecision"]=evidence.clone();
+                        let mut decisions=execution["rsiActionProgramDecisionHistory"]
+                            .as_array().cloned().unwrap_or_default();
+                        // Each model round can select a different action. Keep
+                        // bounded individual decisions for later effect attribution.
+                        if decisions.len()>=64 { decisions.remove(0); }
+                        decisions.push(evidence.clone());
+                        execution["rsiActionProgramDecisionHistory"]=json!(decisions);
                         state.store.put("execution",&execution);
                     }
                     state.store.audit("rsi.action_program_selected",evidence);
