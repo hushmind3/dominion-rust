@@ -226,6 +226,51 @@ fn rsi_grounded_json_edit(
         "newText":parsed["newText"],"expectedSha256":digest}))
 }
 
+/// Small models sometimes emit an exact-text patch as plain JSON. Accept it
+/// only if the old text is an unambiguous line in the current witnessed read;
+/// otherwise use the normal model tool-call path and its native validation.
+fn rsi_grounded_json_exact_edit(
+    content:&str,session:&Value,operations:&[Value],execution_id:&str,
+    offered:&[Value]
+)->Option<Value> {
+    if !rsi_generation_has_action_target(session)
+        || offered.len()!=1 || tool_name(&offered[0])!="workspace_replace" {
+        return None;
+    }
+    let candidate=content.trim();
+    let body=if let Some(fenced)=candidate.strip_prefix("```json") {
+        fenced.trim().strip_suffix("```")?.trim()
+    } else if let Some(fenced)=candidate.strip_prefix("```") {
+        fenced.trim().strip_suffix("```")?.trim()
+    } else {candidate};
+    let mut parsed=serde_json::from_str::<Value>(body).ok()?;
+    if parsed["tool"].is_string() || parsed["arguments"].is_object() {
+        if parsed["tool"]!="workspace_replace" {return None;}
+        parsed=parsed["arguments"].clone();
+    }
+    let path=parsed["path"].as_str()?;
+    if parsed["path"]!=session["rsiFocusFile"]
+        || !crate::engine::rsi::safe_path(path) {return None;}
+    let old=parsed["oldText"].as_str()?;
+    let new=parsed["newText"].as_str()?;
+    if old.trim().is_empty() || new.len()>20_000
+        || old.len()>4_000 || old.contains('\n') {return None;}
+    let read=operations.iter().filter(|op|
+        op["runId"].as_str()==Some(execution_id)
+            && op["tool"]=="workspace_read_range"
+            && op["status"]=="completed"
+            && op["arguments"]["path"].as_str()==Some(path)
+            && op["result"]["sourceSha256"].as_str().is_some_and(|h|
+                h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit())))
+        .max_by_key(|op|op["opSeq"].as_u64().unwrap_or(0))?;
+    let observed=read["result"]["content"].as_str()?;
+    if observed.matches(old).count()!=1 {return None;}
+    let hash=read["result"]["sourceSha256"].as_str()?;
+    if parsed["expectedSha256"].as_str().is_some_and(|h|h!=hash){return None;}
+    Some(json!({"path":path,"oldText":old,"newText":new,
+        "expectedSha256":hash}))
+}
+
 fn rsi_patch_ready_for_evaluation(
     session: &Value, tool: &str, args: &Value, result: &Value, receipt: &Value,
 ) -> bool {
@@ -1766,7 +1811,8 @@ async fn run_turn_body(
         }
         let rsi_edit_response_expected=rsi_generation_has_action_target(&session)
             && round_tools.len()==1
-            && tool_name(&round_tools[0])=="workspace_replace_range";
+            && matches!(tool_name(&round_tools[0]),
+                "workspace_replace_range"|"workspace_replace");
         let completion_result = stream_completion(
             state,
             &client,
@@ -1933,16 +1979,18 @@ async fn run_turn_body(
             && request.tools_enabled && request.tools_execution_enabled && !force_final {
             let ops=state.store.all("execution_operation");
             if let Some(arguments)=rsi_grounded_json_edit(
-                &completion.content,&session,&ops,execution_id,&round_tools) {
+                &completion.content,&session,&ops,execution_id,&round_tools)
+                .or_else(||rsi_grounded_json_exact_edit(
+                    &completion.content,&session,&ops,execution_id,&round_tools)) {
                 completion.tool_calls.push(ToolCall {
                     id:uuid::Uuid::new_v4().to_string(),
-                    name:"workspace_replace_range".into(),
+                    name:tool_name(&round_tools[0]).into(),
                     arguments:arguments.to_string(),
                 });
                 if let Some(mut execution)=state.store.get("execution",execution_id) {
                     execution["rsiStructuredEditAdaptation"]=json!({
                         "origin":"model_authored_grounded_json",
-                        "tool":"workspace_replace_range",
+                        "tool":tool_name(&round_tools[0]),
                         "sourceReadRequired":true,"round":round});
                     state.store.put("execution",&execution);
                 }
@@ -7051,6 +7099,29 @@ mod harness_tool_selection_tests {
         assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",&args,&result,&false_receipt));
         assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",
             &args,&json!({"written":false,"postSha256":digest}),&receipt));
+    }
+
+    #[test]
+    fn exact_json_patch_requires_real_witnessed_old_text() {
+        let session=json!({"rsiRun":true,"rsiCampaignId":"c","rsiGenerationJobId":"g",
+            "rsiFocusFile":"src/engine/tools.rs"});
+        let read=json!({"runId":"r","opSeq":1,"tool":"workspace_read_range",
+            "status":"completed","arguments":{"path":"src/engine/tools.rs"},
+            "result":{"sourceSha256":"a".repeat(64),
+                "content":"10 fn old() {}\\n11 fn next() {}"}});
+        let menu=vec![json!({"type":"function",
+            "function":{"name":"workspace_replace"}})];
+        let edit=json!({"path":"src/engine/tools.rs",
+            "oldText":"fn old() {}","newText":"fn improved() {}"}).to_string();
+        assert_eq!(rsi_grounded_json_exact_edit(&edit,&session,&[read.clone()],"r",&menu)
+            .unwrap()["expectedSha256"],"a".repeat(64));
+        assert!(rsi_grounded_json_exact_edit(&edit,&session,&[],"r",&menu).is_none());
+        assert!(rsi_grounded_json_exact_edit(&edit,&session,&[read.clone()],
+            "another",&menu).is_none());
+        let false_edit=json!({"path":"src/engine/tools.rs",
+            "oldText":"fn nonexistent() {}","newText":"fn improved() {}"}).to_string();
+        assert!(rsi_grounded_json_exact_edit(&false_edit,&session,&[read],"r",&menu)
+            .is_none());
     }
 
     #[test]
