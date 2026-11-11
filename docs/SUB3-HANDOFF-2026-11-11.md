@@ -186,3 +186,12 @@
 - GitHub Actions `success`를 실모델의 코드 채택 성공으로 혼동하지 말 것.
 - 오래된 실험 워커의 `BASE_SHA` 바이너리를 실행해 최신 코드를 검증했다고 주장하지 말 것.
 - `workspace_replace_range`의 부분 영수증만으로 인과적 품질 상승을 선언하지 말 것. 원본 SHA, 범위, 실제 readback, frozen quality 평가, 재빌드/계승은 서로 다른 단계다.
+
+
+### 5세대 후속 핵심 결함 수정 — 자동 승인 누락
+- `9519b46070d093a8694f2aebb247d23fdd8cbe16` `src/engine/rsi_evolve.rs::auto_write_allowed`: 신규 `workspace_replace_range`는 등록·provider 선택·직접 도구 실행까지 연결되었어도 **실제 RSI 쓰기 승인 자동 경로가 `workspace_write`/`workspace_replace` 두 가지만 허용**해 승인 대기/거부가 발생할 수 있었음. 현재 실행 중인 승인된 분리 작업공간, 살아 있는 캠페인·세대 작업, 안전한 소스 경로로 제한된 기존 자동 승인 조건에 새 도구를 추가. 같은 조건에서 새 도구 허용, 비허용 툴·경로·중단된 작업은 계속 차단하는 회귀 테스트 추가.
+- `31565837ab2d5c0b5cf3b440ee9f70e4f048dec4` `scripts/sub3-live-model-campaign.mjs`: 모델 생성 코드가 사용한 편집 수단을 `rangeEditCalls`와 `legacyEditCalls`로 나누어 실제 영수증 집계. 이 변경으로 승인 누락을 수정한 최신 런타임의 실제 원격 모델 캠페인을 재시도: https://github.com/hushmind3/dominion-rust/actions/runs/42958230759 .
+- 먼저 성공한 3번째 실행 CI: https://github.com/hushmind3/dominion-rust/actions/runs/42957662159 — **745/745 Rust 통과**, `research_survives_restart_and_executes_hash_checked_reuse_in_the_next_session` 실제 통과.
+- 승인 누락 수정 CI https://github.com/hushmind3/dominion-rust/actions/runs/42958151269 와 최신 스크립트 연동 CI https://github.com/hushmind3/dominion-rust/actions/runs/42958230828 는 이 기록 시점 진행 중. 성공 전 통과/완주 주장 금지.
+- 현재 브랜치는 Sub3 전용. 다른 4개 개발 브랜치나 `main`은 쓰지 않았다.
+- **다음 세션 첫 실행**: `42958230759`의 실모델 세대별 `rangeEditCalls`·`legacyEditCalls`, `candidateId`, `acceptedCommit`, 독립 `improvedHoldouts`를 확인. 도구 호출 실패/승인 단계 실패/모델 선택 미발생을 구분하고 새로운 실행 코드로 수정. 결과가 없는데 채택·전이 개선을 추가했다고 기록하지 말 것.
