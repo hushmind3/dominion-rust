@@ -96,6 +96,39 @@ fn rsi_generation_has_action_target(session:&Value)->bool {
 /// expensive LLM round. Only the exact selected source and independently
 /// verified post-write bytes qualify; neither a tool call nor an unchanged
 /// write is improvement evidence.
+/// Recover only the observed file digest from THIS execution when a small
+/// model omitted it in a focused range edit. The model must still supply the
+/// actual replacement and a range fully covered by its earlier source read.
+fn ground_observed_range_edit(mut args:Value, observations:&[Value])->Value {
+    let line=|value:&Value|value.as_u64()
+        .or_else(||value.as_str().and_then(|s|s.parse::<u64>().ok()));
+    for key in ["startLine","endLine"] {
+        if let Some(number)=line(&args[key]).filter(|n|*n>0) {
+            args[key]=json!(number);
+        }
+    }
+    if args["expectedSha256"].as_str().is_some_and(|s|!s.is_empty()) {return args;}
+    let (Some(path),Some(start),Some(end))=(
+        args["path"].as_str(),line(&args["startLine"]),line(&args["endLine"])) else {
+        return args;
+    };
+    if start==0 || end<start || end.saturating_sub(start)>=120 {return args;}
+    let digest=observations.iter().rev().find_map(|op|{
+        if op["status"]!="completed" || op["tool"]!="workspace_read_range"
+            || op["arguments"]["path"].as_str()!=Some(path)
+            || line(&op["result"]["startLine"]).is_none_or(|first|first>start)
+            || line(&op["result"]["endLine"]).is_none_or(|last|last<end) {
+            return None;
+        }
+        op["result"]["sourceSha256"].as_str().filter(|sha|
+            sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
+    });
+    if let Some(digest)=digest {
+        args["expectedSha256"]=json!(digest);
+    }
+    args
+}
+
 fn rsi_patch_ready_for_evaluation(
     session: &Value, tool: &str, args: &Value, result: &Value, receipt: &Value,
 ) -> bool {
@@ -1800,7 +1833,7 @@ async fn run_turn_body(
             {
                 return Err("실행이 중단되었습니다.".into());
             }
-            let arguments = match serde_json::from_str::<Value>(&call.arguments) {
+            let mut arguments = match serde_json::from_str::<Value>(&call.arguments) {
                 Ok(value) if value.is_object() => value,
                 _ => {
                     mark_tool_argument_signal(state, request, execution_id, false);
@@ -1828,6 +1861,11 @@ async fn run_turn_body(
                         && operation["status"].as_str() == Some("completed")
                 })
                 .collect::<Vec<_>>();
+            if call.name=="workspace_replace_range"
+                && rsi_generation_has_action_target(&session)
+                && arguments["path"]==session["rsiFocusFile"] {
+                arguments=ground_observed_range_edit(arguments,&completed_operations);
+            }
             let procedure_violation = strategy_candidates.iter().find_map(|strategy| {
                 if !crate::engine::procedure::applies(
                     strategy,
@@ -6252,6 +6290,31 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn small_model_range_edit_inherits_only_exact_prior_source_hash() {
+        let digest="a".repeat(64);
+        let prior=json!({"status":"completed","tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/decompose.rs"},
+            "result":{"startLine":20,"endLine":45,"sourceSha256":digest}});
+        let raw=json!({"path":"src/engine/decompose.rs",
+            "startLine":"24","endLine":"31","newText":"improved();"});
+        let grounded=ground_observed_range_edit(raw.clone(),&[prior.clone()]);
+        assert_eq!(grounded["expectedSha256"],digest);
+        assert_eq!(grounded["startLine"],24);
+        assert_eq!(grounded["endLine"],31);
+        assert_eq!(grounded["newText"],raw["newText"]);
+        let mut supplied=raw.clone();
+        supplied["expectedSha256"]=json!("f".repeat(64));
+        assert_eq!(ground_observed_range_edit(supplied.clone(),&[prior.clone()]),supplied,
+            "never overwrite model-supplied source version");
+        let mut outside=raw.clone();
+        outside["startLine"]=json!(12);
+        assert!(ground_observed_range_edit(outside,&[prior.clone()])["expectedSha256"].is_null());
+        let mut wrong=raw;
+        wrong["path"]=json!("src/engine/tools.rs");
+        assert!(ground_observed_range_edit(wrong,&[prior])["expectedSha256"].is_null());
     }
 
     #[test]
