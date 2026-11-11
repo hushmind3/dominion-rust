@@ -142,6 +142,18 @@ fn rsi_tool_advertised(name: &str, round_tools: &[Value]) -> bool {
     round_tools.iter().any(|definition| tool_name(definition) == name)
 }
 
+/// Some open-compatible local gateways append their channel delimiter to a
+/// function name. Recover ONLY an exact advertised RSI tool followed by a
+/// recognized channel token. No fuzzy tool lookup or invented authority.
+fn rsi_canonical_tool_name(name:&str,round_tools:&[Value])->Option<String>{
+    if rsi_tool_advertised(name,round_tools){return None;}
+    let (base,trailing)=name.split_once("<|channel|>")?;
+    if !matches!(trailing,"commentary"|"analysis"|"json"|"final")
+        || !crate::engine::tools::rsi_allowed(base)
+        || !rsi_tool_advertised(base,round_tools){return None;}
+    Some(base.to_string())
+}
+
 /// "completed" is not synonymous with a source change: an unchanged
 /// replacement can legitimately return success. Only a verified readback of
 /// written bytes may advance the RSI source-edit checkpoint.
@@ -1912,6 +1924,17 @@ async fn run_turn_body(
 
         let mut seen_ids = std::collections::HashSet::new();
         for call in completion.tool_calls.iter_mut() {
+            if session["rsiRun"]==true {
+                if let Some(canonical)=rsi_canonical_tool_name(&call.name,&round_tools){
+                    state.store.audit("rsi.recovered_malformed_tool_channel",json!({
+                        "executionId":execution_id,
+                        "advertisedTool":canonical,
+                        "originalTool":call.name,
+                        "claim":"name_normalized_not_execution"
+                    }));
+                    call.name=canonical;
+                }
+            }
             if call.id.trim().is_empty() || !seen_ids.insert(call.id.clone()) {
                 call.id = uuid::Uuid::new_v4().to_string();
                 seen_ids.insert(call.id.clone());
@@ -2104,9 +2127,18 @@ async fn run_turn_body(
                 Ok(value) if value.is_object() => value,
                 _ => {
                     mark_tool_argument_signal(state, request, execution_id, false);
-                    let error = format!(
-                        "{} 도구 인수가 올바른 JSON 객체가 아닙니다. 인자를 고쳐 다시 호출하세요.",
-                        call.name
+                    let guidance=match call.name.as_str(){
+                        "workspace_read_range"=>
+                            "JSON 객체 예시: {\"path\":\"src/engine/example.rs\",\"startLine\":1,\"endLine\":50}. path는 지정된 실제 파일로 바꾸고 정수 줄 번호를 사용하세요.",
+                        "workspace_replace_range"=>
+                            "JSON 객체 필수 필드: path, startLine(정수), endLine(정수), newText(문자열), expectedSha256(직전 성공한 읽기의 sourceSha256). 실제 관측한 값만 사용하세요.",
+                        "workspace_replace"=>
+                            "JSON 객체 필수 필드: path, oldText(실제 소스 원문), newText(수정 원문). 실제 관측한 값만 사용하세요.",
+                        _=>"유효한 JSON 객체로 다시 도구 호출하세요."
+                    };
+                    let error=format!(
+                        "{} 도구 인수가 올바른 JSON 객체가 아닙니다. {}",
+                        call.name,guidance
                     );
                     record_soft_tool_error(
                         state, tx, session_id, request, execution_id, &call.name, &call.id,
@@ -6610,6 +6642,23 @@ mod harness_tool_selection_tests {
         assert!(!rsi_first_round_tool("web_search",&program));
         let empty=json!({"sequence":[]});
         assert!(!rsi_first_round_tool("code_search",&empty));
+    }
+
+    #[test]
+    fn malformed_channel_suffix_recovers_only_advertised_rsi_tools(){
+        let menu=vec![json!({"function":{"name":"workspace_read_range"}})];
+        assert_eq!(rsi_canonical_tool_name(
+            "workspace_read_range<|channel|>commentary",&menu),
+            Some("workspace_read_range".to_string()));
+        assert_eq!(rsi_canonical_tool_name(
+            "workspace_read_range<|channel|>json",&menu),
+            Some("workspace_read_range".to_string()));
+        assert!(rsi_canonical_tool_name(
+            "workspace_replace<|channel|>commentary",&menu).is_none());
+        assert!(rsi_canonical_tool_name(
+            "github_api<|channel|>json",&menu).is_none());
+        assert!(rsi_canonical_tool_name(
+            "workspace_read_range<|channel|>unsupported",&menu).is_none());
     }
 
     #[test]
