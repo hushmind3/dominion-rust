@@ -1,0 +1,87 @@
+name: Sub2 live local-model RSI proof
+
+on:
+  push:
+    branches: [dominion-sub2]
+    paths:
+      - '.github/workflows/sub2-live-rsi.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-live-rsi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      DOMINION_LIVE_MODEL: qwen3:4b-instruct
+      DOMINION_LIVE_BASE: http://127.0.0.1:44327
+      DOMINION_LIVE_OLLAMA: http://127.0.0.1:11434
+      DOMINION_LIVE_TIMEOUT_MS: '1800000'
+      OLLAMA_CONTEXT_LENGTH: '16384'
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_KEEP_ALIVE: '45m'
+      DOMINION_PORT: '44327'
+      DOMINION_JOB_WORKERS: '1'
+      DOMINION_SOURCE_WORKSPACE: ${{ github.workspace }}
+      DOMINION_EXPERIMENT_SCHEDULER: '0'
+      DOMINION_BACKUP_INTERVAL_SECS: '0'
+      DOMINION_RSI_REAL_MODEL: '1'
+    steps:
+      - name: Checkout exact Sub2 source and full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Validate live probe script and build the real native engine
+        run: |
+          node --check scripts/sub2-live-rsi.mjs
+          cargo build --release --locked --bin dominion-rust
+
+      - name: Install actual local inference runtime
+        run: |
+          curl -fsSL https://ollama.com/install.sh -o "${RUNNER_TEMP}/ollama-install.sh"
+          sh "${RUNNER_TEMP}/ollama-install.sh"
+          ollama --version
+          nohup ollama serve > "${RUNNER_TEMP}/ollama-live.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull "${DOMINION_LIVE_MODEL}"
+
+      - name: Boot isolated DOMINION engine at same checked-out revision
+        run: |
+          mkdir -p "${RUNNER_TEMP}/dominion-live"
+          echo "DOMINION_DATA=${RUNNER_TEMP}/dominion-live/data" >> "${GITHUB_ENV}"
+          echo "DOMINION_WORKSPACE=${RUNNER_TEMP}/dominion-live/workspace" >> "${GITHUB_ENV}"
+          echo "DOMINION_LIVE_REPORT=${RUNNER_TEMP}/dominion-live/live-rsi-receipt.json" >> "${GITHUB_ENV}"
+          mkdir -p "${RUNNER_TEMP}/dominion-live/data" "${RUNNER_TEMP}/dominion-live/workspace"
+          DOMINION_DATA="${RUNNER_TEMP}/dominion-live/data" \
+            DOMINION_WORKSPACE="${RUNNER_TEMP}/dominion-live/workspace" \
+            nohup ./target/release/dominion-rust > "${RUNNER_TEMP}/dominion-live/engine.log" 2>&1 &
+
+      - name: Execute actual model improvement and frozen native A/B
+        run: node scripts/sub2-live-rsi.mjs
+
+      - name: Publish outcome and raw local-engine diagnostics, even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sub2-native-live-rsi-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/dominion-live/live-rsi-receipt.json
+            ${{ runner.temp }}/dominion-live/engine.log
+            ${{ runner.temp }}/ollama-live.log
