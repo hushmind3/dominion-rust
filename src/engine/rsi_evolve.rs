@@ -1520,10 +1520,21 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
 /// This changes the future harness's tool-selection policy. A transition
 /// learned from a passed procedural postcondition is operational evidence;
 /// only a frozen paired adoption is evidence of better system capability.
-fn witnessed_method_trace(state:&AppState,session_id:&str)->Vec<String> {
+fn witnessed_method_trace(state:&AppState,session_id:&str,generation:&Value)->Vec<String> {
+    // A repair sequence may re-use the same session for multiple separate
+    // model turns. Only the turn that actually produced the evaluated patch
+    // may train the next improver; earlier failed attempts are separate data.
+    let output_message=generation["hypothesisMessageId"].as_str();
+    let attributable_run=output_message
+        .and_then(|id|state.store.message(id))
+        .and_then(|message|message["metadata"]["executionId"].as_str().map(str::to_string));
+    if output_message.is_some() && attributable_run.is_none() {
+        return Vec::new();
+    }
     let mut operations=state.store.all("execution_operation").into_iter()
         .filter(|op|op["sessionId"].as_str()==Some(session_id)
-            && op["status"]=="completed")
+            && op["status"]=="completed"
+            && attributable_run.as_ref().is_none_or(|id|op["runId"].as_str()==Some(id)))
         .collect::<Vec<_>>();
     operations.sort_by(|a,b|a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64())
         .then(a["id"].as_str().cmp(&b["id"].as_str())));
@@ -1602,7 +1613,7 @@ fn induced_method_application_receipts(state:&AppState,session_id:&str)->Vec<Val
 }
 
 fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,session_id:&str)->Option<Value> {
-    let trace=witnessed_method_trace(state,session_id);
+    let trace=witnessed_method_trace(state,session_id,generation);
     if trace.len()<2 {return None;}
     let outcomes=generation["methodExecutions"].as_array();
     let procedural_pass=outcomes.is_some_and(|rows|rows.iter().any(|row|
