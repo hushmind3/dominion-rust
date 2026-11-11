@@ -2021,6 +2021,86 @@ fn generation_stop_reason(job:&Value,worker_error:Option<&str>)->Option<&'static
     else {None}
 }
 
+/// Budget the actual prompt rather than the short owner request. A caller
+/// reserves space for the native worker's required improvement directive.
+fn remaining_generation_tokens(record:&Value)->Option<u64> {
+    record["limits"]["tokenBudget"].as_u64().map(|budget|
+        budget.saturating_sub(record["tokens"].as_u64().unwrap_or(0)))
+}
+fn prompt_fits_allowance(prompt:&str,available:Option<u64>,reserve:u64)->bool {
+    available.is_none_or(|limit|
+        crate::engine::chat::estimate_text_tokens(prompt).saturating_add(reserve)<=limit)
+}
+
+/// Persisted research is an implementation input, not expendable decoration.
+/// Remove duplicated source excerpts before removing the research digest; keep
+/// the owner request intact in every variant and never truncate a JSON receipt.
+fn fit_parent_generation_context(
+    base:&str,inherited:&str,digest:&str,source_excerpt:&str,available:Option<u64>
+)->Option<(String,Value)> {
+    for (mode,context,research,source) in [
+        ("complete",inherited,digest,source_excerpt),
+        ("source_deferred",inherited,digest,""),
+        ("general_context_deferred","",digest,source_excerpt),
+        ("research_only","",digest,""),
+        ("prior_experience_only",inherited,"",""),
+        ("owner_core","","",""),
+    ] {
+        let prompt=format!("{base}\n\n{context}{research}{source}");
+        // The descendant generator also appends its strategy and measurements.
+        // The full final prompt is measured independently in that process.
+        if prompt_fits_allowance(&prompt,available,1280) {
+            return Some((prompt,json!({"mode":mode,
+                "priorExperienceDeferred":!inherited.is_empty() && context.is_empty(),
+                "researchDigestDeferred":!digest.is_empty() && research.is_empty(),
+                "sourceExcerptDeferred":!source_excerpt.is_empty() && source.is_empty(),
+                "estimatedInputTokens":crate::engine::chat::estimate_text_tokens(&prompt)})));
+        }
+    }
+    None
+}
+
+/// History compression is semantic and reversible: no partial JSON, no loss of
+/// owner objective or the causal action directive on a tight campaign budget.
+fn fit_worker_generation_context(
+    base:&str,domain:&str,capability:&str,history:&[Value],
+    directive:&Value,available:Option<u64>,
+)->Result<(String,Value),String> {
+    let mandatory=format!(
+        "\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n\n### 이번 세대의 개선 실행 방식\n{}\n근거가 되는 실제 세대 기록: {directive}\n이번 작업에서 코드 변경과 검증 여부를 분명히 기록하세요.",
+        improvement_work_contract(directive));
+    let full=history.iter().rev().take(8).map(|row|{
+        let measured=row["evaluation"]["metrics"]["measurements"].as_array()
+            .into_iter().flatten().filter(|case|case["holdout"]==true)
+            .take(3).cloned().collect::<Vec<_>>();
+        json!({"domain":row["domain"],"accepted":row["accepted"],
+            "tokens":row["tokens"],"elapsedMs":row["elapsedMs"],
+            "verdict":row["evaluation"]["verdict"],"measurements":measured,
+            "error":row["error"].as_str().unwrap_or("").chars().take(200).collect::<String>()})
+    }).collect::<Vec<_>>();
+    let compact=history.iter().rev().take(2).map(|row|json!({
+        "domain":row["domain"],"accepted":row["accepted"],
+        "verdict":row["evaluation"]["verdict"],"tokens":row["tokens"],
+        "error":row["error"].as_str().unwrap_or("").chars().take(100).collect::<String>()
+    })).collect::<Vec<_>>();
+    for (mode,rows) in [("measured",full),("compact",compact),("on_demand",Vec::new())] {
+        let mut prompt=format!("{base}{mandatory}");
+        if !rows.is_empty() {
+            prompt.push_str("\n이 실험 계보의 과거 결과: ");
+            prompt.push_str(&json!(rows).to_string());
+        } else if !history.is_empty() {
+            prompt.push_str("\n상세 세대 기록은 저장소에 보존되어 있습니다.");
+        }
+        if prompt_fits_allowance(&prompt,available,256) {
+            return Ok((prompt,json!({"mode":mode,"rows":rows.len(),
+                "availableRows":history.len(),
+                "estimatedInputTokens":crate::engine::chat::estimate_text_tokens(&prompt),
+                "improvementDirectivePreserved":true})));
+        }
+    }
+    Err("rsi_token_budget: 소유자 목표와 실제 개선 지시를 유지할 입력 예산이 부족합니다.".into())
+}
+
 fn generation_fits_remaining_budget(record:&Value,input:&Value)->bool {
     record["limits"]["tokenBudget"].as_u64().is_none_or(|budget|{
         let minimum=crate::engine::chat::estimate_text_tokens(input["prompt"].as_str().unwrap_or(""))+256;
@@ -2345,21 +2425,18 @@ async fn run_loop(
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
-        child_input["prompt"] = json!(format!(
-            "{}\n\n{}{}{}",
-            child_input["prompt"].as_str().unwrap_or(""),
-            inherited,
-            digest,
-            focus
-        ));
-        // The earlier preflight only sees the base prompt. Inherited research,
-        // source excerpts and method feedback can make the *real* generation
-        // substantially larger; never spawn a paid worker that cannot fit.
-        // Controlled native fixtures have no model/provider and spend no
-        // prompt tokens. Do not block those real-binary lineage tests merely
-        // because their small synthetic budget cannot fit an LLM prompt.
         let model_bound=child_input["model"].as_str().is_some_and(|s|!s.is_empty())
             && child_input["providerId"].as_str().is_some_and(|s|!s.is_empty());
+        // Fixture workers have no model costs. Real workers need both a
+        // budget-fitting inherited context and space for their own directives.
+        let available=if model_bound {remaining_generation_tokens(record)} else {None};
+        let Some((composed,fit))=fit_parent_generation_context(
+            child_input["prompt"].as_str().unwrap_or(""),
+            &inherited,&digest,&focus,available
+        ) else {return Ok("token_budget".into());};
+        child_input["prompt"]=json!(composed);
+        child_input["rsiParentContextFit"]=fit;
+        child_input["rsiRemainingCampaignTokens"]=json!(available);
         if model_bound && !generation_fits_remaining_budget(record,&child_input) {
             return Ok("token_budget".into());
         }
@@ -2458,6 +2535,8 @@ async fn run_loop(
                 "calls":usage["calls"],"estimatedCalls":usage["estimatedCalls"]},
             "sourceContextChars":current["input"]["rsiFocusContextChars"],
             "totalPromptChars":current["input"]["rsiPromptContextChars"],
+            "parentContextFit":current["input"]["rsiParentContextFit"],
+            "workerContextFit":current["rsiWorkerContextFit"],
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
@@ -3408,28 +3487,17 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiDecisionInput"] = job["input"]["rsiDecisionInput"].clone();
     job["input"]["rsiDomainSelection"] = json!(domain_selection);
     job["input"]["rsiSearchStrategy"] = strategy;
-    let feedback = history
-        .iter().rev()
-        .take(8)
-        .map(|row| {
-            json!({"domain":row["domain"],"accepted":row["accepted"],
-        "tokens":row["tokens"],"elapsedMs":row["elapsedMs"],"verdict":row["evaluation"]["verdict"],
-        "measurements":row["evaluation"]["metrics"]["measurements"],"error":row["error"]})
-        })
-        .collect::<Vec<_>>();
-    let feedback = json!(feedback)
-        .to_string()
-        .chars()
-        .take(12_000)
-        .collect::<String>();
     let focus = job["input"]["rsiFocusFiles"].as_array().into_iter().flatten()
         .filter_map(Value::as_str).take(8).collect::<Vec<_>>().join(", ");
     let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
+    let available=job["input"]["rsiRemainingCampaignTokens"].as_u64();
+    let (prompt,fit)=fit_worker_generation_context(
+        job["input"]["prompt"].as_str().unwrap_or(""),
+        &domain,&capability,&history,&directive,available)?;
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
-    job["input"]["prompt"]=json!(format!("{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}\n\n### 이번 세대의 개선 실행 방식\n{}\n근거가 되는 실제 세대 기록: {}\n이번 작업에서 코드 변경과 검증 여부를 분명히 기록하세요.",
-        job["input"]["prompt"].as_str().unwrap_or(""),feedback,
-        improvement_work_contract(&directive),directive));
+    job["input"]["prompt"]=json!(prompt);
+    job["rsiWorkerContextFit"]=fit;
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;
     let context = JobContext::new(state.clone(), job_id.into());
     let result = jobs::run_prompt(&context, &job).await;
@@ -3468,6 +3536,40 @@ mod tests {
         state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve","status":"running","input":{"rsiNativeApproved":true}})).unwrap();
         JobContext::new(state.clone(), "campaign".into())
     }
+    #[test]
+    fn research_is_used_before_deferring_source_context_under_budget() {
+        let base="OWNER GOAL: repair memory recall";
+        let experience="\nREUSABLE EXPERIENCE";
+        let research="\nVERIFIED RESEARCH LOCATION";
+        let source="\n".to_string()+&"SOURCE EXCERPT ".repeat(1200);
+        let enough=crate::engine::chat::estimate_text_tokens(
+            &format!("{base}\n\n{experience}{research}"))+1280;
+        let (prompt,receipt)=fit_parent_generation_context(
+            base,experience,research,&source,Some(enough)).unwrap();
+        assert_eq!(receipt["mode"],"source_deferred");
+        assert!(prompt.contains("OWNER GOAL") && prompt.contains("REUSABLE EXPERIENCE")
+            && prompt.contains("VERIFIED RESEARCH LOCATION"));
+        assert!(!prompt.contains("SOURCE EXCERPT"));
+        assert!(fit_parent_generation_context(&"x".repeat(30000),"","","",Some(100)).is_none());
+    }
+
+    #[test]
+    fn descendant_worker_preserves_implementation_directive_and_valid_feedback() {
+        let directive=json!({"mode":"implement_research","sourceGenerationId":"r1",
+            "evidenceHashes":["verified-hash"]});
+        let history=vec![json!({"domain":"memory","accepted":false,"tokens":2200,
+            "evaluation":{"verdict":"inconclusive","metrics":{
+                "measurements":[{"holdout":true,"details":"long".repeat(10000)}]}}})];
+        let (prompt,receipt)=fit_worker_generation_context(
+            "OWNER REQUEST","memory","memory source",&history,&directive,Some(2200)).unwrap();
+        assert!(prompt.contains("OWNER REQUEST") && prompt.contains("implement_research"));
+        assert!(prompt.contains("verified-hash"));
+        assert_ne!(receipt["mode"],"measured");
+        assert!(prompt_fits_allowance(&prompt,Some(2200),256));
+        assert!(fit_worker_generation_context(&"H".repeat(30000),
+            "memory","memory",&history,&directive,Some(100)).is_err());
+    }
+
     #[test]
     fn runtime_budget_stops_are_not_no_progress_or_another_generation(){
         let worker=json!({"status":"completed","result":{"status":"needs_review","reason":"model_error",
