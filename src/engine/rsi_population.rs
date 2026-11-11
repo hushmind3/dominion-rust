@@ -67,7 +67,9 @@ fn source_attempt(row: &Value) -> bool {
 pub fn breed(history: &[Value], parents: &[Value], objective: &str) -> Option<Value> {
     let observed: Vec<&Value> = history.iter().rev()
         .filter(|row| source_attempt(row)).take(24).collect();
-    if observed.len() < 2 || objective.trim().is_empty() {
+    // Autonomous campaigns intentionally use an empty selection objective
+    // to keep all capability domains eligible. It is a valid stable key.
+    if observed.len() < 2 {
         return None;
     }
     let objective_hash = crate::engine::memory::stable_id(&[objective]);
@@ -357,7 +359,9 @@ mod tests {
     #[test]
     fn repeated_real_no_patch_runs_create_an_executable_exploratory_hypothesis() {
         let history = vec![observed("one","memory",0),observed("two","memory",0)];
-        let result = breed(&history,&[],"improve memory").unwrap();
+        let result = breed(&history,&[],"").unwrap();
+        assert!(breed(&history,&[],"improve memory").is_some(),
+            "explicit goals and unrestricted autonomous campaigns must both evolve");
         assert_eq!(result["evidence"]["independentHoldoutGains"],0);
         assert!(result["operator"].as_array().unwrap().contains(&json!("search_diversification")));
         assert!(result["expression"].as_str().unwrap().contains("barrenRate"));
