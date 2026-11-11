@@ -1709,6 +1709,13 @@ fn synthesize_existing_file_write_repair(method:&Value,op:&Value)->Option<Value>
     // The program interpreter limits any argument string to 4096 chars.
     let content=node["arguments"]["content"].as_str()
         .filter(|text|!text.is_empty() && text.chars().count()<=4096)?;
+    // A create-only failure is not permission to destroy an existing source.
+    // Only a method that already specified exact full-file equality can be
+    // transformed into a versioned whole-file rewrite. File-contains alone
+    // cannot establish that removing the rest of the file is intentional.
+    if !method["verification"]["after"].as_array()?.iter().any(|check|
+        check["kind"]=="file_equals" && check["path"]==path
+            && check["text"]==content) {return None}
     let fingerprint=format!("{:x}",Sha256::digest(
         json!([method["revision"],node_id,"existing-file-v1"]).to_string().as_bytes()));
     let read_id=format!("source_rebase_{}",&fingerprint[..12]);
@@ -6328,7 +6335,8 @@ mod tests {
             "verification":{"type":"procedure","appliesTo":{"requestContains":["memory"]},
                 "nodes":[{"id":"write","tool":"workspace_write","arguments":{
                     "path":target,"content":"fn improved() {}\n"}}],
-                "after":[{"kind":"file_contains","path":target,"text":"fn improved()"}]}});
+                "after":[{"kind":"file_equals","path":target,
+                    "text":"fn improved() {}\n"}]}});
         let failed=json!({"id":"failed-create","origin":"procedure","status":"failed",
             "tool":"workspace_write","procedureStrategyId":"create",
             "procedureRevision":"old","procedureNodeId":"write",
@@ -6511,8 +6519,8 @@ mod tests {
                     "path":"src/engine/memory.rs","content":"fn improved() {}\n"}}],
                 "after":[{"kind":"tool_called","tool":"workspace_write",
                     "path":"src/engine/memory.rs"},
-                    {"kind":"file_contains","path":"src/engine/memory.rs",
-                    "text":"fn improved()"}]}});
+                    {"kind":"file_equals","path":"src/engine/memory.rs",
+                    "text":"fn improved() {}\n"}]}});
         let failed=json!({"id":"failed-write","origin":"procedure",
             "status":"failed","tool":"workspace_write",
             "procedureStrategyId":"write","procedureRevision":"write-v1",
@@ -6523,7 +6531,7 @@ mod tests {
         assert_eq!(learned["synthesis"]["kind"],"existing_file_to_versioned_edit");
         assert_ne!(learned["revision"],method["revision"]);
         assert_eq!(learned["verification"]["after"][0]["tool"],"workspace_replace");
-        assert_eq!(learned["verification"]["after"][1]["text"],"fn improved()");
+        assert_eq!(learned["verification"]["after"][1]["text"],"fn improved() {}\n");
         assert!(is_synthesized_source_repair(&learned));
         let mut results=std::collections::HashMap::new();
         let (read,tool,args)=crate::engine::procedure::ready_intent(
@@ -6722,7 +6730,9 @@ mod tests {
                 "nodes":[{"id":"write","tool":"workspace_write","arguments":{
                     "path":"src/engine/memory.rs","content":"fn improved() {}\n"}}],
                 "after":[{"kind":"tool_called","tool":"workspace_write",
-                    "path":"src/engine/memory.rs"}]}});
+                    "path":"src/engine/memory.rs"},
+                    {"kind":"file_equals","path":"src/engine/memory.rs",
+                    "text":"fn improved() {}\n"}]}});
         state.store.put("experience",&json!({"id":"old-method",
             "status":"active","partitionKey":partition,
             "executableMethods":[original]})).unwrap();
