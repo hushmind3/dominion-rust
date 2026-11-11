@@ -210,6 +210,60 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     }
     Ok(Worktree{source,path,base:base.to_string()})
 }
+/// Restore only a compiler-failed candidate from the same campaign and
+/// unchanged source revision. This is a repair starting point, not a
+/// successful generation. The prior patch is never applied to the checkout:
+/// it lives only in this new disposable descendant worktree.
+pub async fn restore_failed_patch(
+    context:&JobContext,input:&Value,worktree:&Worktree,
+)->Result<Value,String> {
+    let Some(recovery)=input.get("rsiFailedPatchRecovery")
+        .filter(|value|value.is_object()) else {
+        return Ok(Value::Null);
+    };
+    let id=recovery["candidateId"].as_str().ok_or("재개 후보 ID 없음")?;
+    let base=recovery["baseCommit"].as_str().ok_or("재개 기준 커밋 없음")?;
+    let campaign=input["rsiCampaignId"].as_str().ok_or("재개 캠페인 없음")?;
+    let candidate=context.state.store.get("rsi_candidate",id)
+        .ok_or("이전 세대의 소스 패치가 저장되지 않았습니다.")?;
+    let patch=candidate["patch"].as_str().ok_or("재개 패치 본문 없음")?;
+    if base!=worktree.base
+        || candidate["baseCommit"]!=base
+        || candidate["experimentCampaignId"]!=campaign
+        || candidate["patchSha256"]!=digest(patch)
+        || patch.is_empty() || patch.len()>=80_000
+        || candidate["paths"].as_array().is_none_or(|paths|
+            paths.is_empty() || paths.iter().any(|path|path.as_str()
+                .is_none_or(|path|!rsi::safe_path(path)))) {
+        return Err("이전 개선 패치의 계보·해시·수정 경로 검증 실패".into());
+    }
+    // Check before applying, and remove the temporary patch in all cases.
+    let file=std::env::temp_dir().join(format!(
+        "dominion-rsi-recover-{}.patch",uuid::Uuid::new_v4()));
+    std::fs::write(&file,patch).map_err(|e|e.to_string())?;
+    let target=file.to_str().ok_or("임시 패치 파일 경로 오류")?.to_string();
+    let applied=async {
+        git(&worktree.path,&["apply","--check",&target]).await?;
+        git(&worktree.path,&["apply",&target]).await?;
+        Ok::<(),String>(())
+    }.await;
+    let _=std::fs::remove_file(&file);
+    applied?;
+    let restored=json!({
+        "status":"restored_unverified",
+        "candidateId":id,"baseCommit":base,
+        "failedGenerationJobId":recovery["failedGenerationJobId"],
+        "paths":candidate["paths"],"patchSha256":candidate["patchSha256"],
+        "independentGain":Value::Null
+    });
+    context.checkpoint(json!({"rsiRecoveredPatch":restored}))?;
+    context.state.store.audit("rsi.descendant_failed_patch_restored",json!({
+        "jobId":context.job_id,"candidateId":id,
+        "campaignId":campaign,"baseCommit":base
+    }));
+    Ok(restored)
+}
+
 pub fn is_rsi_work_branch(branch:&str)->bool {
     if branch=="dominion-sub" {return true;}
     let Some(suffix)=branch.strip_prefix("dominion-sub") else{return false;};
