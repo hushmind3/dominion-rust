@@ -124,6 +124,12 @@ pub async fn execute(
         if !crate::engine::rsi::safe_path(path) {
             return Err("자기개선은 허용된 소스코드 경로만 수정할 수 있습니다.".into());
         }
+        if name=="workspace_write" {
+            let resolved=resolve_workspace(ctx.workspace,path)?;
+            if tokio::fs::metadata(&resolved).await.is_ok() {
+                return Err("RSI의 workspace_write는 새 파일 생성 전용입니다. 기존 소스는 workspace_read_range에서 startLine, endLine, sourceSha256를 확인하고 workspace_replace(startLine,endLine,expectedSha256,newText)로 부분 수정하세요.".into());
+            }
+        }
     }
     match name {
         "workspace_list" => {
