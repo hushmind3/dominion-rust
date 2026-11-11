@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+# Cancel an obsolete experimental harness when a new Sub3 revision lands.
+# A previous result cannot validate code that was added after its run started.
+concurrency:
+  group: dominion-sub3-live-model-cycle
+  cancel-in-progress: true
+
 jobs:
   real-model:
     runs-on: ubuntu-latest
