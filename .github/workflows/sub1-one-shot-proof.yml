@@ -1,6 +1,6 @@
-name: Sub1 one-shot genuine-model source-edit proof
+name: Sub1 three-generation actual quality improvement campaign
 
-# Proof: native read + required tool-choice; on empty tool outputs, retry with source-bound strict JSON and no advertised tool schemas.
+# Execute up to three real descendant generations and measure compiled, frozen holdout improvement and actual parent adoption.
 # Normal code pushes must never repeat model calls or incur model costs.
 on:
   push:
@@ -13,22 +13,22 @@ permissions:
   contents: read
 
 concurrency:
-  group: sub1-one-shot-real-model
+  group: sub1-real-rsi-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
   single-generation:
     runs-on: ubuntu-latest
-    timeout-minutes: 28
+    timeout-minutes: 70
     env:
       DOMINION_PORT: '43173'
       DOMINION_JOB_WORKERS: '1'
       DOMINION_EXPERIMENT_SCHEDULER: '0'
-      SUB1_LIVE_MAX_ATTEMPTS: '1'
-      SUB1_LIVE_TOKEN_BUDGET: '26000'
-      SUB1_LIVE_TIME_BUDGET: '840'
-      SUB1_LIVE_DEADLINE_MS: '930000'
-      SUB1_LIVE_REPORT: benchmark/sub1-one-shot-result.json
+      SUB1_LIVE_MAX_ATTEMPTS: '3'
+      SUB1_LIVE_TOKEN_BUDGET: '90000'
+      SUB1_LIVE_TIME_BUDGET: '3000'
+      SUB1_LIVE_DEADLINE_MS: '3300000'
+      SUB1_LIVE_REPORT: benchmark/sub1-three-generation-result.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,10 +55,11 @@ jobs:
       - name: Compile actual engine
         if: steps.probe.outputs.reachable == 'true'
         run: |
+          node --check scripts/sub1-live-model-campaign.mjs
           npm ci --prefix web
           npm run build --prefix web
           cargo build --release --locked --bin dominion-rust
-      - name: One real model generation, native writes, detached diff, frozen A/B
+      - name: Execute real-model generations, adopt measured source gains, rebuild actual descendants
         if: steps.probe.outputs.reachable == 'true'
         shell: bash
         run: |
@@ -83,8 +84,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sub1-genuine-model-source-proof
+          name: sub1-real-three-generation-quality-proof
           path: |
-            benchmark/sub1-one-shot-result.json
+            benchmark/sub1-three-generation-result.json
             benchmark/sub1-proxy-tool-choice.jsonl
           if-no-files-found: warn
