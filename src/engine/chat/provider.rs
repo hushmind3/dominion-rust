@@ -606,9 +606,13 @@ pub(super) async fn stream_completion(
             }
             (result, exposed)
         };
-        // A two-minute answer is not a usable room participant. Remember it
-        // so the next round does not pay the same price again.
-        if candidate_started.elapsed() >= std::time::Duration::from_secs(60) {
+        // A slow room participant may rotate, but a legitimate long-running
+        // source-repair generation must retain its selected model after reading
+        // real source. Quarantining that model here silently killed the NEXT
+        // tool step in the same RSI turn, even when the read had succeeded.
+        if state.store.get("session", session_id).is_some_and(|session|
+            should_quarantine_slow_room_route(&session, candidate_started.elapsed()))
+        {
             crate::engine::gateway::mark_slow(&candidate.base_url, &candidate.model);
         }
         match result {
@@ -668,6 +672,14 @@ fn compat_messages(messages: &[Value]) -> Vec<Value> {
             _ => message.clone(),
         }
     }).collect()
+}
+
+// Slow-response rotation optimizes conversational rooms, never the execution
+// of a task or RSI generation. Tool-call and campaign time budgets still apply.
+fn should_quarantine_slow_room_route(session:&Value,elapsed:std::time::Duration)->bool {
+    session["roomId"].as_str().is_some_and(|room|!room.is_empty())
+        && session["rsiRun"] != true
+        && elapsed >= std::time::Duration::from_secs(60)
 }
 
 async fn stream_completion_once(
@@ -1940,6 +1952,21 @@ mod tests {
         assert!(messages[0].get("reasoning_content").is_none());
         normalize_assistant_reasoning(&mut messages, false);
         assert!(messages[1].get("reasoning_content").is_none(), "{messages:?}");
+    }
+
+    #[test]
+    fn slow_source_repair_keeps_its_selected_model_between_tool_calls() {
+        let slow=std::time::Duration::from_secs(145);
+        let short=std::time::Duration::from_secs(22);
+        assert!(should_quarantine_slow_room_route(
+            &json!({"roomId":"room-slow"}),slow));
+        assert!(!should_quarantine_slow_room_route(
+            &json!({"roomId":"room-fast"}),short));
+        assert!(!should_quarantine_slow_room_route(
+            &json!({"rsiRun":true,"rsiCampaignId":"c","rsiGenerationJobId":"g"}),slow));
+        assert!(!should_quarantine_slow_room_route(
+            &json!({"roomId":"r","rsiRun":true,"rsiCampaignId":"c"}),slow));
+        assert!(!should_quarantine_slow_room_route(&json!({"kind":"task"}),slow));
     }
 
     #[test]
