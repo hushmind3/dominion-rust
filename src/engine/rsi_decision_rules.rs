@@ -223,31 +223,32 @@ fn proposed_success_compression(outcome:&Value)->Option<Value> {
         || outcome["evaluation"]["metrics"]["eligible"]!=true {return None;}
     let job=outcome["jobId"].as_str().filter(|s|!s.is_empty())?;
     let timeline=outcome["toolTimeline"].as_array()?;
-    let mut grounded=false;
+    // Never stitch together a read from one execution and an unrelated
+    // edit in a later repair execution: the source evidence is run-local.
+    let mut observations=std::collections::BTreeMap::<&str,(bool,u64)>::new();
     let mut winner=None;
-    let mut prior_searches=0u64;
     for op in timeline {
+        let Some(run)=op["runId"].as_str().filter(|s|!s.is_empty()) else {continue;};
         let name=op["tool"].as_str().unwrap_or("");
+        let entry=observations.entry(run).or_default();
         if name=="workspace_read_range" && op["status"]=="completed" {
-            grounded=true;
+            entry.0=true;
         }
-        if name=="code_search" && op["status"]=="completed" && grounded {
-            prior_searches+=1;
+        if name=="code_search" && op["status"]=="completed" && entry.0 {
+            entry.1+=1;
         }
         if matches!(name,"workspace_replace_range"|"workspace_replace")
-            && grounded && op["status"]=="completed"
+            && entry.0 && entry.1>0 && op["status"]=="completed"
             && op["result"]["written"]==true
             && op["toolReceipt"]["verified"]==true {
-            winner=Some(name);
+            winner=Some((name,run));
             break;
         }
     }
-    let winner=winner?;
-    // Compress at least one observed exploratory call. Do not infer that
-    // earlier search was redundant when none occurred.
-    if prior_searches==0 {return None;}
+    let (winner,winning_run)=winner?;
     let losing=outcome["ruleExecutions"].as_array().into_iter().flatten()
-        .last().and_then(|e|e["ruleId"].as_str()).unwrap_or("");
+        .rev().find(|e|e["runId"].as_str()==Some(winning_run))
+        .and_then(|e|e["ruleId"].as_str()).unwrap_or("");
     Some(new_rule(conjunction(vec![
         condition("completed:workspace_read_range","ge",1),
         condition("edit_attempts","eq",0),
@@ -305,13 +306,17 @@ pub fn evolve(parent:&[Value],outcome:&Value)->Vec<Value> {
         let timeline=outcome["toolTimeline"].as_array();
         let mut recovered_tool=None::<&str>;
         if let Some(operations)=timeline {
-            let mut failed=None::<&str>;
+            let mut failed=None::<(&str,&str)>;
             for op in operations {
+                let Some(run)=op["runId"].as_str().filter(|s|!s.is_empty()) else {continue;};
                 let name=op["tool"].as_str().unwrap_or("");
                 if matches!(name,"workspace_replace_range"|"workspace_replace")
-                    && op["status"]=="failed" {failed=Some(name);}
-                if name=="workspace_read_range" && op["status"]=="completed"
-                    && failed.is_some() {recovered_tool=failed;}
+                    && op["status"]=="failed" {failed=Some((name,run));}
+                if name=="workspace_read_range" && op["status"]=="completed" {
+                    if let Some((tool,failed_run))=failed {
+                        if run==failed_run {recovered_tool=Some(tool);}
+                    }
+                }
             }
         }
         if let Some(tool)=recovered_tool.filter(|_|outcome["candidateId"].is_null()) {
@@ -369,7 +374,7 @@ mod tests {
             "candidateId":null,"accepted":false,"toolTimeline":events})
     }
     fn event(tool:&str,status:&str)->Value {
-        json!({"tool":tool,"status":status,"result":{}})
+        json!({"runId":"test-run","tool":tool,"status":status,"result":{}})
     }
     #[test]
     fn synthesizes_predicate_from_a_real_failed_operator_and_runs_it(){
@@ -454,7 +459,7 @@ mod tests {
             event("workspace_read_range","completed"),
             event("code_search","completed"),
             event("code_search","completed"),
-            json!({"tool":"workspace_replace","status":"completed",
+            json!({"runId":"test-run","tool":"workspace_replace","status":"completed",
                 "result":{"written":true},"toolReceipt":{"verified":true}}),
         ]);
         result["accepted"]=json!(true);
@@ -478,7 +483,7 @@ mod tests {
         let base=worker("g1",&json!({}),vec![
             event("workspace_read_range","completed"),
             event("code_search","completed"),
-            json!({"tool":"workspace_replace_range","status":"completed",
+            json!({"runId":"test-run","tool":"workspace_replace_range","status":"completed",
                 "result":{"written":true},"toolReceipt":{"verified":true}})
         ]);
         let mut successful=base;
@@ -490,6 +495,19 @@ mod tests {
         // A policy proposal is not evidence that the next model used it.
         let next=worker("g2",&json!({"rules":child.clone()}),vec![]);
         assert!(evolve(&child,&next).len()>=1);
+    }
+    #[test]
+    fn source_evidence_from_different_runs_cannot_invent_a_success_transition(){
+        let mut outcome=worker("adopted",&json!({}),vec![
+            json!({"runId":"run-1","tool":"workspace_read_range","status":"completed"}),
+            json!({"runId":"run-1","tool":"code_search","status":"completed"}),
+            json!({"runId":"run-2","tool":"workspace_replace","status":"completed",
+                "result":{"written":true},"toolReceipt":{"verified":true}})
+        ]);
+        outcome["accepted"]=json!(true);
+        outcome["evidenceVerified"]=json!(true);
+        outcome["evaluation"]=json!({"metrics":{"eligible":true}});
+        assert!(evolve(&[],&outcome).is_empty());
     }
     #[test]
     fn false_success_and_unknown_tool_cannot_become_rules(){
