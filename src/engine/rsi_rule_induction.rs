@@ -194,8 +194,11 @@ fn induce_cohort(history:&[&Value])->Vec<Value> {
         // Synthesize candidate predicates from measurements AND causal event
         // order. One successful sample is never enough to establish a guard.
         let mut proposals=Vec::new();
+        // Runtime tool-call counters may include rejected attempts that are
+        // not durable operations. Induce guards only from reproducible,
+        // completed source events, never from a mismatched call total.
         for name in ["completed:workspace_read_range",
-            "completed:code_search","calls"] {
+            "completed:code_search"] {
             let lo=positive.iter().map(|s|metric(*s,name)).min().unwrap_or(0);
             let hi=positive.iter().map(|s|metric(*s,name)).max().unwrap_or(0);
             for (cmp,value) in [("ge",lo),("lt",hi.saturating_add(1))] {
