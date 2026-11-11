@@ -3740,6 +3740,30 @@ mod tests {
     }
 
     #[test]
+    fn next_generation_inherits_unchanged_holdout_quality_and_failed_edit_evidence() {
+        let (state,root)=state();
+        let input=json!({"rsiObjective":"plan better","rsiTargetDomain":"planning"});
+        let record=json!({"history":[{
+            "attempt":2,"domain":"planning","accepted":false,"candidateId":"candidate-failed",
+            "evaluation":{"verdict":"inconclusive","metrics":{"measurements":[
+                {"id":"planning-quality","domain":"planning","holdout":true,
+                 "metrics":[{"key":"quality","baseline":0.75,"candidate":0.75,
+                    "improved":false,"regressed":false}]}
+            ]}},
+            "editEvidence":{"attempts":3,"verifiedWrites":1,
+                "recentFailures":["workspace_replace_range: unchanged"]},
+            "error":"no quality gain"
+        }]});
+        let text=generation_context(&state,&input,&record);
+        assert!(text.contains("planning-quality"),"{text}");
+        assert!(text.contains("0.75"),"{text}");
+        assert!(text.contains("편집 시도 3회"),"{text}");
+        assert!(text.contains("workspace_replace_range: unchanged"),"{text}");
+        assert!(!text.contains("개선 확인"),"{text}");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn a_verified_patch_is_a_candidate_even_when_the_model_hit_the_budget() {
         let result = json!({
             "status": "needs_review",
