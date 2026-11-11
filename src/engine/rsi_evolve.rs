@@ -2557,6 +2557,31 @@ fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Turn a real, compiler-passing but neutral descendant into an editable
+/// starting point for its successor. Rejection remains rejection: this never
+/// changes the accepted HEAD or promotes an unmeasured patch.
+fn inherited_neutral_candidate(
+    state: &AppState, history: &[Value], base: &str,
+) -> Option<String> {
+    history.iter().rev().filter(|generation|
+        generation["accepted"]!=true
+            && generation["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+            && generation["evaluation"]["metrics"]["metricGains"]==0
+            && generation["evaluation"]["metrics"]["regressions"]==0
+            && generation["verification"]["checksPassed"]==true
+    ).find_map(|generation|{
+        let id=generation["candidateId"].as_str()?;
+        let candidate=state.store.get("rsi_candidate",id)?;
+        (candidate["baseCommit"]==base
+            && candidate["pairedComparisonComplete"]==true
+            && candidate["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+            && candidate["origin"]=="model_driven_detached_worktree"
+            && candidate["patch"].as_str().is_some_and(|patch|!patch.is_empty())
+            && candidate["patchSha256"].as_str().is_some())
+            .then(||id.to_string())
+    })
+}
+
 async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -2659,6 +2684,16 @@ async fn run_loop(
         child_input["rsiBaseCommit"] = json!(head);
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
+        // Give the next worker the REAL previous rejected source bytes as its
+        // detached starting point. Re-running on the pristine baseline loses
+        // the prior implementation and repeatedly produces a neutral patch.
+        // The original head remains the immutable A/B baseline.
+        let prior_history=record["history"].as_array().cloned().unwrap_or_default();
+        if let Some(id)=inherited_neutral_candidate(&context.state,&prior_history,&head) {
+            child_input["rsiInheritedCandidateId"]=json!(id);
+        } else {
+            child_input["rsiInheritedCandidateId"]=Value::Null;
+        }
         let objective = input["rsiObjective"].as_str().unwrap_or("");
         let mut allowed_campaigns = vec![context.job_id.to_string()];
         if let Some(prior)=matching_prior_campaign(&context.state,input,record) {
@@ -2794,6 +2829,14 @@ async fn run_loop(
         child_input["rsiFocusContextChars"] = json!(if defer_focus {0} else {focus.chars().count()});
         child_input["rsiPromptContextChars"] = json!(child_input["prompt"]
             .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
+        if child_input["rsiInheritedCandidateId"].is_string() {
+            let inherited_id=child_input["rsiInheritedCandidateId"].as_str().unwrap_or("");
+            let note=format!(
+                "\n\n### 실제 실패 패치를 계승한 수정 실험\n이번 작업공간에는 이미 독립 검사에서 컴파일을 통과했으나 품질이 개선되지 않은 후보 {inherited_id}의 소스 변경이 복원됩니다. 이전 수정은 채택되지 않았습니다. 해당 파일의 현재 코드를 다시 읽고, 개선되지 않은 행동을 고치도록 새 코드 차이를 작성하세요. 이전 패치를 그대로 되풀이하거나 되돌리는 것은 채택되지 않습니다."
+            );
+            let base=child_input["prompt"].as_str().unwrap_or_default().to_string();
+            child_input["prompt"]=json!(format!("{base}{note}"));
+        }
         let child = context
             .state
             .store
@@ -2974,6 +3017,8 @@ async fn run_loop(
                         .unwrap_or("").chars().take(1200).collect::<String>()
                 })
             }).collect::<Vec<_>>();
+        generation["inheritedCandidateId"]=current["input"]["rsiInheritedCandidateId"].clone();
+        generation["inheritedPatchChanged"]=current["result"]["rsi"]["inheritedPatchChanged"].clone();
         generation["verification"]=json!({
             "rawCandidateId":current["result"]["rsi"]["candidateId"],
             "checksPassed":current["result"]["rsi"]["checksPassed"],
