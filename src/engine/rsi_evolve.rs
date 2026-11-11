@@ -3265,7 +3265,20 @@ async fn run_loop(
         } else {
             "implementation_not_adopted"
         };
-        let next_domain = select_domain_for_state(&context.state, &decision_history, &decision_objective);
+        let pending_repair=session.and_then(|sid|context.state.store.get("session",sid))
+            .and_then(|saved|saved["rsiMethodProposals"].as_array().cloned())
+            .unwrap_or_default().into_iter().find(|method|
+                method["synthesis"]["kind"]=="stale_source_rebase"
+                && crate::engine::procedure::applies(method,
+                    input["rsiObjective"].as_str().unwrap_or(""),None,None));
+        let preferred_domain=pending_repair.as_ref()
+            .and_then(|method|method["domain"].as_str())
+            .filter(|domain|DOMAINS.contains(domain));
+        // A new executable procedure gets one concrete follow-up attempt.
+        // A pending source-search algorithm trial still wins at selection time.
+        let next_domain=preferred_domain.map(str::to_string)
+            .unwrap_or_else(||select_domain_for_state(
+                &context.state,&decision_history,&decision_objective));
         let reuse = method_reuse_decision(&context.state, input, &next_domain);
         record["nextDecision"] = json!({
             "basis": decision_basis,
@@ -3274,6 +3287,8 @@ async fn run_loop(
             "knowledgeId": generation_knowledge,
             "headCommit": record["headCommit"],
             "trialAlgorithmId": record["nextTrialAlgorithmId"],
+            "methodRecoveryCandidateId":pending_repair.as_ref().map(|m|m["id"].clone()),
+            "methodRecoverySource":"observed_failed_procedure",
             "actionPolicy":decision_history.last().map(|g|g["actionPolicyOutcome"].clone()),
             "observed": {
                 "accepted": generation_accepted,
@@ -3296,7 +3311,8 @@ async fn run_loop(
             || pending_trial_candidate(&context.state,
                 &selection_objective(input),
                 &allowed_trial_campaigns(&context.state,input,record,&context.job_id)).is_some();
-        if no_edit && should_stop_no_progress(streak, research, changed,trial_pending) {
+        if no_edit && pending_repair.is_none()
+            && should_stop_no_progress(streak, research, changed,trial_pending) {
             return Ok("no_progress".into());
         }
     }
