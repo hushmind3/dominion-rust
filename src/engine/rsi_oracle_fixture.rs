@@ -231,6 +231,20 @@ fn planning_quality() {
     }
     let quality = hits as f64 / (cases.len() * 3000) as f64;
     assert!(quality >= 0.5);
+    // An aggregate 0.75 does not tell the next source-improver WHICH behavior
+    // failed. Emit bounded deterministic observations from the same frozen
+    // cases in BOTH evaluated revisions, without changing the score or pass.
+    // The paired runner keeps this as feedback, not proof of generalization.
+    let observations=cases.iter().map(|(input,expected)|{
+        let result=decompose::decompose(
+            input,&json!({"implementation":"numbered-first",
+                "parameters":{"kernel":"numbered-first"}}));
+        json!({"input":input,"expectedSegments":expected,
+            "observedSegments":result["subtasks"].as_array().map(Vec::len).unwrap_or(0),
+            "steps":result["subtasks"].as_array().into_iter().flatten()
+                .filter_map(|item|item["text"].as_str()).collect::<Vec<_>>()})
+    }).collect::<Vec<_>>();
+    println!("DOMINION_RSI_BEHAVIOR {}",json!(observations));
     metric(quality, started, json!({}));
 }
 
