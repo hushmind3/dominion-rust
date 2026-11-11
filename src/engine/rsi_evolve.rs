@@ -1810,10 +1810,15 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
             }
             if rule_evidence.len()>64{rule_evidence.drain(..rule_evidence.len()-64);}
             policy["decisionRuleEvidence"]=json!(rule_evidence);
-            evolve_decision_grammar(&mut policy);
-            policy["decisionNodes"]=json!(synthesize_method_decision_nodes(
-                policy["evidence"].as_array().map(Vec::as_slice).unwrap_or(&[]),
-                &policy["decisionGrammar"]));
+            // Do not manufacture a new grammar merely by loading a frozen
+            // policy lacking any decision-rule evaluation. With no such
+            // observations the tested revision remains exactly the winner.
+            if policy["decisionRuleEvidence"].as_array().is_some_and(|r|!r.is_empty()) {
+                evolve_decision_grammar(&mut policy);
+                policy["decisionNodes"]=json!(synthesize_method_decision_nodes(
+                    policy["evidence"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+                    &policy["decisionGrammar"]));
+            }
             let rejected_ids=policy["rejectedProgramIds"].as_array()
                 .cloned().unwrap_or_default();
             if let Some(programs)=policy["executionPrograms"].as_array_mut() {
@@ -5320,7 +5325,12 @@ mod tests {
         assert_eq!(decision["learned"]["policyLinkedGains"],0);
         assert_eq!(decision["verdict"],"learned_policy_not_executed");
         assert!(decision["nextPolicyRevision"].is_null());
-        assert_eq!(state.store.get("rsi_method_policy",&id).unwrap(),policy);
+        let stored=state.store.get("rsi_method_policy",&id).unwrap();
+        // SQLite metadata is written by Store::put independently of RSI.
+        for key in ["id","partitionKey","kind","revision","transitions"] {
+            assert_eq!(stored[key],policy[key],"{key} must be unchanged");
+        }
+        assert!(stored["programSynthesisGrammar"].is_null());
         drop(state);let _=std::fs::remove_dir_all(root);
     }
 
@@ -5358,7 +5368,12 @@ mod tests {
         let decision=settle_method_policy_trial(&state,&last);
         assert_eq!(decision["verdict"],"insufficient_matched_quality");
         assert_eq!(decision["independentlyEvaluated"],false);
-        assert_eq!(state.store.get("rsi_method_policy",&id).unwrap(),policy);
+        let stored=state.store.get("rsi_method_policy",&id).unwrap();
+        // SQLite metadata is written by Store::put independently of RSI.
+        for key in ["id","partitionKey","kind","revision","transitions"] {
+            assert_eq!(stored[key],policy[key],"{key} must be unchanged");
+        }
+        assert!(stored["programSynthesisGrammar"].is_null());
         drop(state);let _=std::fs::remove_dir_all(root);
     }
 
