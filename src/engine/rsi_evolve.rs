@@ -3130,10 +3130,17 @@ fn adaptive_search_expression(history: &[Value]) -> Option<String> {
         .collect::<BTreeSet<_>>().len()<2 {return None;}
     let verified_gains=history.iter().filter_map(|row|{
         let proof=&row["acceptedProof"];
+        let frozen=&proof["evaluation"];
         let metrics=&row["evaluation"]["metrics"];
+        let full_match=proof["evaluation"]==row["evaluation"];
+        let paired_match=proof["evaluation"]["metrics"]==row["evaluation"]["metrics"]
+            && proof["evaluation"]["evidenceSha256"].as_str()
+                .is_some_and(|sha|sha.len()==64
+                    && sha.bytes().all(|byte|byte.is_ascii_hexdigit()))
+            && proof["evaluation"]["evidenceSha256"]==row["evaluation"]["evidenceSha256"];
         if row["accepted"]!=true || proof["status"]!="verified"
-            || proof["evaluation"]!=row["evaluation"]
-            || row["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+            || !(full_match || paired_match)
+            || frozen["source"]!="server_invoked_local_paired_git_worktrees"
             || metrics["eligible"]!=true || metrics["regressions"].as_u64()!=Some(0) {
             return None;
         }
