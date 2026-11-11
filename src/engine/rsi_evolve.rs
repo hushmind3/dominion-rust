@@ -2386,7 +2386,7 @@ async fn run_loop(
             (selected_domain,selected_mode,strategy,Some(rows))
         } else {
             let (domain,selection,strategy)=select_generation_strategy(
-                &context.state,&recorded_history,&target_objective,
+                &context.state,if target_trial.is_some(){&recorded_history}else{&action_history},&target_objective,
                 research_continuation(&action_history),target_trial,parent_domain,&head);
             (domain,selection.to_string(),strategy,None)
         };
@@ -3154,11 +3154,10 @@ fn improvement_directive(history:&[Value]) -> Value {
     })
 }
 
-/// Campaign boundaries must not erase unfinished, genuinely new research.
-/// Reuse the most recent evidence-bearing generation from this exact source
-/// partition and objective only when the new campaign has no own generations.
-/// Source bytes are rechecked by the indexed focus resolver; a past source
-/// path is never blindly accepted after a checkout changes.
+/// A new campaign inherits the last *outcome*, not only the last discovery.
+/// Otherwise a research→failed implementation sequence restarts as
+/// research→the identical failed implementation forever. A newer accepted
+/// candidate (or a newer changed source revision) ends that failed lineage.
 fn improvement_history(state:&AppState,input:&Value,history:&[Value],campaign_id:&str)->Vec<Value>{
     if !history.is_empty() {return history.to_vec();}
     let partition=research_scope(input).partition_key;
@@ -3167,16 +3166,35 @@ fn improvement_history(state:&AppState,input:&Value,history:&[Value],campaign_id
     let mut previous=state.store.all("rsi_generation").into_iter()
         .filter(|row|row["campaignId"]!=campaign_id
             && row["knowledgePartition"]==partition
-            && row["objectiveId"]==objective
-            && row["accepted"]!=true
-            && row["candidateId"].is_null()
-            && row["newFindings"].as_u64().unwrap_or(0)>0
-            && row["knowledgeId"].as_str().is_some_and(|id|
-                state.store.get("experience",id).is_some_and(|record|
-                    record["status"]=="active" && record["partitionKey"]==partition)))
+            && row["objectiveId"]==objective)
         .collect::<Vec<_>>();
-    previous.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
-    previous.into_iter().take(1).collect()
+    previous.sort_by(|a,b|
+        b["createdAt"].as_str().cmp(&a["createdAt"].as_str())
+            .then_with(||b["id"].as_str().cmp(&a["id"].as_str())));
+    let Some(latest)=previous.first() else {return Vec::new();};
+    // Never resurrect an old research directive after a newer implementation
+    // was adopted, rejected, or evaluated as a candidate.
+    if latest["accepted"]==true || latest["candidateId"].is_string() {
+        return Vec::new();
+    }
+    let active_research=latest["newFindings"].as_u64().unwrap_or(0)>0
+        && latest["knowledgeId"].as_str().is_some_and(|id|
+            state.store.get("experience",id).is_some_and(|record|
+                record["status"]=="active" && record["partitionKey"]==partition));
+    if active_research {return vec![latest.clone()];}
+    // An empty/no-patch generation matters only if it actually attempted to
+    // follow a prior improvement instruction on the SAME source revision.
+    // Prior evidence remains in the experience store; it is not mistaken for
+    // a fresh discovery when the model fails to turn it into source code.
+    let attempted=matches!(latest["improvementDirective"]["mode"].as_str(),
+        Some("implement_research"|"repair_counterexample"|"revise_candidate"|"change_approach"))
+        && latest["newFindings"].as_u64().unwrap_or(0)==0;
+    let source=input["rsiBaseCommit"].as_str()
+        .or_else(||input["rsiGeneratorCommit"].as_str())
+        .filter(|sha|!sha.is_empty());
+    let same_source=source.is_some_and(|sha|
+        latest["generatorCommit"].as_str()==Some(sha));
+    if attempted && same_source {vec![latest.clone()]} else {Vec::new()}
 }
 
 /// The directive is a real control input. It changes the worker's required
@@ -3371,7 +3389,8 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         .filter(|id|!id.is_empty()).map(str::to_string);
     let action_history=improvement_history(state,source_input,&history,campaign_id);
     let (domain,selection,strategy)=select_generation_strategy(
-        state,&history,&objective,research_continuation(&action_history),trial_id,
+        state,if trial_id.is_some(){&history}else{&action_history},&objective,
+        research_continuation(&action_history),trial_id,
         selected_domain,binary_commit);
     let mut focus_input=source_input.clone();
     focus_input["rsiTargetDomain"]=json!(domain);
@@ -3460,8 +3479,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .map(str::to_string);
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("");
     let (domain, domain_selection, strategy) =
-        select_generation_strategy(&state, &history, &objective, continuation, trial_id,
-            selected_domain, commit);
+        select_generation_strategy(&state,
+            if trial_id.is_some(){&history}else{&action_history},
+            &objective, continuation, trial_id, selected_domain, commit);
     // The improved generator must execute the same action it planned before
     // the model call. Reject an outdated or injected retry directive.
     let expected_directive=improvement_directive(&action_history);
@@ -3822,6 +3842,76 @@ mod tests {
             "rsiKnowledgeSource":root});
         assert!(improvement_history(&state,&unrelated,&[],"new-campaign").is_empty(),
             "Research from another objective must not control this campaign");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_campaign_handoff_uses_latest_failed_implementation_not_stale_research() {
+        let (state,root)=state();
+        let source=root.join("repository");
+        std::fs::create_dir_all(&source).unwrap();
+        let mut input=json!({"rsiObjective":"memory retrieval",
+            "rsiKnowledgeSource":source,"rsiBaseCommit":"revision-one"});
+        let partition=research_scope(&input).partition_key;
+        let objective=crate::engine::memory::stable_id(&["memory retrieval"]);
+        state.store.put("experience",&json!({"id":"found-source",
+            "status":"active","partitionKey":partition,
+            "researchArtifacts":[{"tool":"code_search","hash":"h1"}]})).unwrap();
+        state.store.put("rsi_generation",&json!({
+            "id":"discovered","campaignId":"old","jobId":"research-worker",
+            "generatorCommit":"revision-one","knowledgePartition":partition,
+            "objectiveId":objective,"newFindings":1,"knowledgeId":"found-source",
+            "accepted":false,"candidateId":null,
+            "createdAt":"2026-11-11T00:01:00Z"
+        })).unwrap();
+        let initial=improvement_history(&state,&input,&[],"new");
+        assert_eq!(improvement_directive(&initial)["mode"],"implement_research");
+        state.store.put("rsi_generation",&json!({
+            "id":"failed-implementation","campaignId":"old","jobId":"edit-worker",
+            "generatorCommit":"revision-one","knowledgePartition":partition,
+            "objectiveId":objective,"newFindings":0,
+            "accepted":false,"candidateId":null,
+            "improvementDirective":{"mode":"implement_research",
+                "sourceGenerationId":"discovered"},
+            "improvementActionObservation":{"status":"not_followed"},
+            "createdAt":"2026-11-11T00:02:00Z"
+        })).unwrap();
+        let inherited=improvement_history(&state,&input,&[],"new");
+        assert_eq!(inherited.len(),1);
+        assert_eq!(inherited[0]["id"],"failed-implementation");
+        assert_eq!(improvement_directive(&inherited)["mode"],"change_approach",
+            "Do not spend a new campaign repeating a failed implementation");
+        // The failure is scoped to the unchanged source revision only.
+        input["rsiBaseCommit"]=json!("revision-two");
+        assert!(improvement_history(&state,&input,&[],"new").is_empty());
+        // Another objective can never borrow this episode.
+        input["rsiBaseCommit"]=json!("revision-one");
+        input["rsiObjective"]=json!("browser automation");
+        assert!(improvement_history(&state,&input,&[],"new").is_empty());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn newer_candidate_prevents_old_research_from_restarting() {
+        let (state,root)=state();
+        let input=json!({"rsiObjective":"memory retrieval",
+            "rsiKnowledgeSource":root,"rsiBaseCommit":"revision-one"});
+        let partition=research_scope(&input).partition_key;
+        let objective=crate::engine::memory::stable_id(&["memory retrieval"]);
+        state.store.put("experience",&json!({"id":"old-research","status":"active",
+            "partitionKey":partition})).unwrap();
+        state.store.put("rsi_generation",&json!({
+            "id":"old","campaignId":"first","knowledgePartition":partition,
+            "objectiveId":objective,"newFindings":1,"knowledgeId":"old-research",
+            "accepted":false,"candidateId":null,"createdAt":"2026-11-11T00:00:00Z"
+        })).unwrap();
+        state.store.put("rsi_generation",&json!({
+            "id":"candidate","campaignId":"second","knowledgePartition":partition,
+            "objectiveId":objective,"newFindings":0,"accepted":false,
+            "candidateId":"not-adopted","createdAt":"2026-11-11T00:01:00Z"
+        })).unwrap();
+        assert!(improvement_history(&state,&input,&[],"third").is_empty(),
+            "A newer evaluated candidate supersedes an older research-only episode");
         let _=std::fs::remove_dir_all(root);
     }
 
