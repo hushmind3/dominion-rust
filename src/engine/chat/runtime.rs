@@ -1218,6 +1218,12 @@ async fn run_turn_body(
                         "generationJobId":session["rsiGenerationJobId"],
                         "policyRevision":session["rsiEditPolicy"]["revision"],
                         "ruleId":rule.id,"toolCalls":tool_calls,
+                        // opSeq and toolCalls are different counters when the
+                        // native harness runs deterministic steps. Persist
+                        // the actual last observed operation to attribute
+                        // only later verified source edits to this rule.
+                        "opSeqBefore":all_operations.iter()
+                            .filter_map(|op|op["opSeq"].as_u64()).max().unwrap_or(0),
                         "allow":rule.allow,
                         "recordedAt":chrono::Utc::now().to_rfc3339(),
                     });

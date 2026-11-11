@@ -130,10 +130,20 @@ pub fn evolve(parent:&[Value],observation:&Value)->Vec<Value>{
             else{"workspace_replace_range"};
         new_op=Some(json!({"kind":"switch_edit","from":from,"to":to}));
     }
+    let model_edit_matches_adoption=observation["toolTimeline"].as_array().is_some_and(|events|
+        events.iter().any(|event|{
+            let adopted=observation["acceptedSourceHashes"].as_object()
+                .and_then(|hashes|event["path"].as_str().and_then(|p|hashes.get(p)))
+                .and_then(Value::as_str);
+            event["status"]=="completed" && event["result"]["written"]==true
+                && event["toolReceipt"]["verified"]==true
+                && adopted.is_some_and(|digest|digest.len()==64
+                    && event["result"]["postSha256"].as_str()==Some(digest))
+        }));
     if new_op.is_none() && observation["accepted"]==true
         && observation["evidenceVerified"]==true
         && observation["evaluation"]["metrics"]["eligible"]==true
-        && observation["acceptedSourceHashes"].is_object()
+        && model_edit_matches_adoption
         && observation["toolTimeline"].as_array().is_some_and(|events|
             events.iter().any(|x|x["tool"]=="code_search" && x["status"]=="completed")) {
         // Remove an expensive search predicate *as a trial*, never as a
@@ -204,9 +214,13 @@ mod tests{
     #[test]
     fn accepted_source_experience_tries_eliminating_prior_search_conditions(){
         let accepted=json!({"jobId":"g2","tokens":5000,"accepted":true,
-            "evidenceVerified":true,"acceptedSourceHashes":{"src/main.rs":"a"},
+            "evidenceVerified":true,"acceptedSourceHashes":{"src/main.rs":"a".repeat(64)},
             "evaluation":{"metrics":{"eligible":true}},
-            "toolTimeline":[{"tool":"code_search","status":"completed"}]});
+            "toolTimeline":[{"tool":"code_search","status":"completed"},
+                {"tool":"workspace_replace_range","status":"completed",
+                    "path":"src/main.rs",
+                    "result":{"written":true,"postSha256":"a".repeat(64)},
+                    "toolReceipt":{"verified":true}}]});
         let grammar=evolve(&[],&accepted);
         assert_eq!(grammar[0]["kind"],"prune");
         let modified=apply(&grammar,&[rule()]);

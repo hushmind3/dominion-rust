@@ -286,7 +286,7 @@ fn executed_policy_rule(generation:&Value)->bool {
             return false;
         }
         let Some(run)=event["runId"].as_str().filter(|s|!s.is_empty()) else {return false;};
-        let Some(before)=event["toolCalls"].as_u64() else {return false;};
+        let Some(before)=event["opSeqBefore"].as_u64() else {return false;};
         // The generated action must actually have occurred *after* this rule
         // fired, and a verified source write must follow in the same run.
         // A rule observed after a patch cannot steal that patch's reward.
@@ -4018,7 +4018,8 @@ mod tests {
             "a policy that did not execute cannot claim the improvement");
         let mut real=invented;
         real["ruleExecutions"]=json!([{"ruleId":"rule-1","policyRevision":"rev-1",
-            "runId":"run-g1","toolCalls":1,"allow":["workspace_replace_range"]}]);
+            "runId":"run-g1","toolCalls":1,"opSeqBefore":1,
+            "allow":["workspace_replace_range"]}]);
         assert_eq!(edit_method_reward(&real),0.0,
             "a rule receipt without downstream tool execution is not causal evidence");
         real["toolTimeline"]=json!([
@@ -4030,10 +4031,10 @@ mod tests {
         ]);
         real["acceptedSourceHashes"]=json!({"src/engine/test.rs":"a".repeat(64)});
         assert_eq!(edit_method_reward(&real),1.0);
-        real["ruleExecutions"][0]["toolCalls"]=json!(3);
+        real["ruleExecutions"][0]["opSeqBefore"]=json!(3);
         assert_eq!(edit_method_reward(&real),0.0,
             "a rule activated after the patch must never inherit its reward");
-        real["ruleExecutions"][0]["toolCalls"]=json!(1);
+        real["ruleExecutions"][0]["opSeqBefore"]=json!(1);
         real["ruleExecutions"][0]["allow"]=json!(["code_search"]);
         assert_eq!(edit_method_reward(&real),0.0,
             "a rule whose advertised action did not run is uncredited");
