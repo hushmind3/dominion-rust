@@ -93,6 +93,18 @@ fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
     )
 }
 
+/// The focused editor receives a deliberately narrowed tool menu. Never
+/// instruct a 4B model to call workspace_read_range when that tool is absent:
+/// the next turn otherwise wastes the only bounded edit retry on an
+/// unavailable call instead of using the already indexed source snapshot.
+fn rsi_edit_checkpoint_guidance(read_available: bool) -> &'static str {
+    if read_available {
+        "실제 소스 근거가 있습니다. 필요하면 제공된 workspace_read_range로 현재 줄과 sourceSha256를 확인한 다음 workspace_replace(path,startLine,endLine,newText,expectedSha256)를 실행하세요. 소스 변경 여부는 파일 검증으로만 판정합니다. 네이티브 호출이 불가능하면 같은 인자의 JSON 객체 하나만 출력하세요."
+    } else {
+        "이 라운드에는 workspace_read_range가 제공되지 않습니다. 이미 전달된 색인 소스 발췌의 정확한 원문 줄 번호와 sourceSha256를 expectedSha256로 사용해 제공된 workspace_replace(path,startLine,endLine,newText,expectedSha256)를 지금 실행하세요. 범위는 최대 120줄이며 기존 코드를 최소한으로 수정하세요. 네이티브 호출이 불가능하면 동일한 인자의 JSON 객체 하나만 출력하세요. 설명만 남겨서는 소스가 수정되지 않습니다."
+    }
+}
+
 /// A finished source write is the handoff to the independent paired
 /// evaluator. A model's claimed completion, or even a tool's successful
 /// return, is insufficient: the operation must carry an independent SHA-256
@@ -1370,7 +1382,9 @@ async fn run_turn_body(
                 }
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system",
-                        "content":"실제 소스 읽기 결과가 있습니다. 지금 workspace_replace(path,startLine,endLine,newText,expectedSha256)를 실제 실행하세요. expectedSha256에는 workspace_read_range의 sourceSha256를 넣으세요. 최대 120줄입니다. 네이티브 도구 호출이 불가능하면 동일한 인자의 JSON 객체 하나만 출력하세요. 완전한 path·원문 SHA·줄 번호·새 코드를 포함하지 않은 설명은 편집으로 실행되지 않습니다."
+                        "content":rsi_edit_checkpoint_guidance(
+                            round_tools.iter().any(|definition|tool_name(definition)=="workspace_read_range")
+                        )
                     }));
                     // An action-policy trial only earns execution credit when
                     // the source-edit checkpoint really changed the runtime
@@ -1664,7 +1678,7 @@ async fn run_turn_body(
                 let _ = tx.send(json!({"type":"rsi_edit_retry","round":round}));
                 messages.push(json!({"role":"assistant","content":completion.content}));
                 messages.push(json!({"role":"system",
-                    "content":"제공된 코드 발췌 또는 직전 읽기 결과에 근거가 있습니다. 아직 파일을 수정하지 않았습니다. workspace_read_range로 SHA와 줄 범위를 확인한 후 workspace_replace(startLine,endLine,newText,expectedSha256)로 실제 최소 수정을 실행하세요. SHA 없이 수정하거나 근거 없는 코드 변경은 하지 마세요."
+                    "content":rsi_edit_checkpoint_guidance(rsi_repair_read_allowed)
                 }));
                 continue;
             }
@@ -6531,6 +6545,19 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn focused_editor_only_advertises_available_read_tool() {
+        let direct = rsi_edit_checkpoint_guidance(false);
+        assert!(direct.contains("workspace_replace"));
+        assert!(direct.contains("sourceSha256"));
+        assert!(direct.contains("제공되지 않습니다"));
+        assert!(!direct.contains("workspace_read_range로 현재"));
+        let repair = rsi_edit_checkpoint_guidance(true);
+        assert!(repair.contains("workspace_read_range로 현재"));
+        assert!(repair.contains("expectedSha256"));
+        assert!(!repair.contains("제공되지 않습니다"));
     }
 
     #[test]
