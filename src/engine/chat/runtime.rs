@@ -88,6 +88,15 @@ fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
     !is_room && !rsi_run
 }
 
+/// Small OpenAI-compatible models sometimes send a structured tool action as
+/// plain assistant text even after advertising native functions. Only recover
+/// such replies inside the focused RSI edit stage, where the available menu
+/// has already been reduced to source-editing tools. Ordinary native model
+/// answers remain untouched.
+fn rsi_textual_edit_fallback(rsi_run: bool, explicit_focus: bool, edit_stage: bool) -> bool {
+    rsi_run && explicit_focus && edit_stage
+}
+
 pub async fn run_turn(
     state: &AppState,
     request: &TurnRequest,
@@ -1286,7 +1295,9 @@ async fn run_turn_body(
         }
         if completion.tool_calls.is_empty()
             && request.tools_enabled
-            && (provider.tool_mode != "native" || has_dsml_call)
+            && (provider.tool_mode != "native" || has_dsml_call
+                || rsi_textual_edit_fallback(session["rsiRun"] == true,
+                    session["rsiExplicitFocus"] == true, rsi_edit_only_announced))
             && !force_final
         {
             let known = round_tools
@@ -6180,6 +6191,16 @@ mod harness_tool_selection_tests {
         assert!(tool_discovery_applies(false, false));
         assert!(!tool_discovery_applies(true, false));
         assert!(!tool_discovery_applies(false, true), "RSI must keep its full allowed toolset before the checkpoint");
+        assert!(rsi_textual_edit_fallback(true, true, true));
+        assert!(!rsi_textual_edit_fallback(true, false, true));
+        assert!(!rsi_textual_edit_fallback(true, true, false));
+        assert!(!rsi_textual_edit_fallback(false, true, true));
+        let known = std::collections::HashSet::from(["workspace_replace".to_string()]);
+        let (calls, cleaned) = super::protocol::parse_text_tool_calls_known(
+            r#"<tool_call>{"name":"workspace_replace","arguments":{"path":"src/engine/example.rs","oldText":"old","newText":"new"}}</tool_call>"#, &known);
+        assert_eq!(calls.len(), 1, "native textual tools must be converted to executable calls");
+        assert_eq!(calls[0].0, "workspace_replace");
+        assert!(cleaned.is_empty());
     }
 
     #[test]
