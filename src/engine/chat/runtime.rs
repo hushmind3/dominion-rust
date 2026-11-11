@@ -70,6 +70,23 @@ fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
     !is_room && !rsi_run
 }
 
+/// Only a real source observation without any attempted change/proposal
+/// warrants asking the RSI model once more to turn research into action.
+fn rsi_read_only_completion(operations: &[Value], execution_id: &str) -> bool {
+    let mut read = false;
+    for op in operations {
+        if op["runId"].as_str() != Some(execution_id) { continue; }
+        match op["tool"].as_str() {
+            Some("workspace_read_range" | "workspace_read")
+                if op["status"] == "completed" => read = true,
+            Some("workspace_replace" | "workspace_write" |
+                "rsi_method_propose" | "algorithm_propose") => return false,
+            _ => {}
+        }
+    }
+    read
+}
+
 pub async fn run_turn(
     state: &AppState,
     request: &TurnRequest,
@@ -948,6 +965,7 @@ async fn run_turn_body(
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
     let mut rsi_decision_checkpoint = false;
+    let mut rsi_final_edit_retry = false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1273,6 +1291,28 @@ async fn run_turn_body(
         }
 
         if completion.tool_calls.is_empty() {
+            // Actual live models have ended after reading source without
+            // calling any edit tool. Keep the existing source in context and
+            // offer one further choice, not a synthetic/automatic mutation.
+            if session["rsiRun"] == true && request.tools_execution_enabled
+                && !force_final && !rsi_final_edit_retry && round + 1 < max_rounds
+                && round_tools.iter().any(|tool| tool_name(tool)=="workspace_replace")
+                && rsi_read_only_completion(&state.store.all("execution_operation"), execution_id)
+            {
+                rsi_final_edit_retry = true;
+                if !completion.content.trim().is_empty() {
+                    messages.push(json!({"role":"assistant","content":
+                        completion.content.chars().take(1200).collect::<String>()}));
+                }
+                messages.push(json!({"role":"system","content":
+                    "지금까지 실제 소스 코드를 읽었으나 수정·재사용 방법 도구를 한 번도 실행하지 않았습니다. 현재 목표를 완주할 근거가 있다면 즉시 workspace_replace(oldText, newText)를 호출하여 실제 변경을 시도하세요. 코드 수정 대신 재사용 가능한 실제 절차를 찾았다면 rsi_method_propose를 호출할 수 있습니다. 근거가 없다면 파일을 수정했다고 주장하지 말고 마지막 답변에서 수정하지 못한 이유를 밝히세요. 같은 소스 구간을 다시 읽는 일만 반복하지 마세요."}));
+                if let Some(mut record)=state.store.get("execution",execution_id) {
+                    record["rsiActionRetry"]=json!({"reason":"read_only_completion",
+                        "issued":true,"priorRound":round});
+                    state.store.put("execution",&record);
+                }
+                continue;
+            }
             {
                 let mut operations = state
                     .store
@@ -6073,6 +6113,21 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn rsi_read_only_completion_is_not_fake_edit_evidence() {
+        let read=json!({"runId":"r1","status":"completed",
+            "tool":"workspace_read_range","arguments":{"path":"src/engine/memory.rs"}});
+        assert!(rsi_read_only_completion(&[read.clone()],"r1"));
+        assert!(!rsi_read_only_completion(&[read.clone()],"different"));
+        assert!(!rsi_read_only_completion(&[],"r1"));
+        for action in ["workspace_replace","workspace_write",
+            "rsi_method_propose","algorithm_propose"] {
+            assert!(!rsi_read_only_completion(&[read.clone(),
+                json!({"runId":"r1","status":"failed","tool":action})],"r1"),
+                "{action} is an attempted action, not read-only completion");
+        }
     }
 
     #[test]
