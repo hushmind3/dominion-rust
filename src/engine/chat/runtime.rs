@@ -98,6 +98,18 @@ fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
 }
 
 /// Parse recognized text-format actions only during a grounded RSI edit stage.
+
+fn meta_edit_instruction(session:&Value)->&'static str {
+    match session["rsiMetaPreferredTool"].as_str() {
+        Some("workspace_replace") =>
+            "소스 조사 단계가 끝났습니다. 이 세대에서 선택된 편집 도구는 workspace_replace입니다. 관측한 원문의 정확한 oldText와 변경할 newText를 사용하고, sourceSha256을 알면 expectedSha256으로 전달하세요. 수정하지 않았다면 완료를 주장하지 마세요.",
+        Some("workspace_replace_range") =>
+            "소스 조사 단계가 끝났습니다. 이 세대에서 선택된 편집 도구는 workspace_replace_range입니다. 앞서 읽은 동일 파일의 startLine/endLine/sourceSha256과 새 newText를 제출하세요. 수정하지 않았다면 완료를 주장하지 마세요.",
+        _ =>
+            "소스 조사 단계는 종료되었습니다. workspace_read_range에서 받은 startLine/endLine/sourceSha256으로 workspace_replace_range를 호출하고, 정확한 oldText가 있으면 workspace_replace도 가능합니다. 수정 후 실제 영수증을 확인하세요.",
+    }
+}
+
 fn rsi_textual_edit_fallback(rsi_run: bool, explicit_focus: bool, edit_stage: bool) -> bool {
     rsi_run && explicit_focus && edit_stage
 }
@@ -1302,7 +1314,7 @@ async fn run_turn_body(
                 }
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system",
-                        "content":"소스 근거 확인 단계는 종료되었습니다. workspace_read_range에서 받은 startLine/endLine/sourceSha256으로 workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 호출하고 변경할 코드만 제출하세요. 정확한 oldText가 있는 경우 workspace_replace도 가능합니다. 새 파일은 workspace_write로 생성합니다. 검증된 변경 전에는 완료를 주장하지 마세요."
+                        "content":meta_edit_instruction(&session)
                     }));
                     rsi_edit_only_announced = true;
                 } else if !rsi_decision_checkpoint {
@@ -1533,7 +1545,7 @@ async fn run_turn_body(
                         "sourceInPrompt":session["rsiFocusContextReady"] == true
                     }));
                     messages.push(json!({"role":"user",
-                        "content":"명시된 코드 수정이 아직 없습니다. 앞서 받은 sourceSha256과 startLine/endLine을 이용해 workspace_replace_range를 호출하고 변경할 부분만 newText로 제출하세요. 정확한 oldText가 있다면 workspace_replace도 사용하세요. 새 파일만 workspace_write를 사용합니다. 수정이 불가능하면 실제 도구 실패 이유를 보고하세요."
+                        "content":meta_edit_instruction(&session)
                     }));
                     continue;
                 }
@@ -6486,6 +6498,16 @@ mod harness_tool_selection_tests {
         assert!(rsi_harness_patch_ready_for_verification(
             &foreign,&[strategy],&[operation],&workspace).is_none());
         let _=std::fs::remove_dir_all(workspace);
+    }
+
+
+    #[test]
+    fn evolved_edit_tool_changes_instructions_as_well_as_native_menu() {
+        let exact=json!({"rsiMetaPreferredTool":"workspace_replace"});
+        assert!(meta_edit_instruction(&exact).contains("workspace_replace입니다"));
+        assert!(!meta_edit_instruction(&exact).contains("workspace_replace_range입니다"));
+        let range=json!({"rsiMetaPreferredTool":"workspace_replace_range"});
+        assert!(meta_edit_instruction(&range).contains("workspace_replace_range입니다"));
     }
 
     #[test]
