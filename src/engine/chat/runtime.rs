@@ -177,6 +177,7 @@ fn rsi_grounded_edit_messages(
         && matches!(op["tool"].as_str(),
             Some("workspace_write"|"workspace_replace"|"workspace_replace_range"))
         && op["status"]=="completed" && op["result"]["written"]==true
+        && op["result"]["syntaxValid"]!=false
         && op["toolReceipt"]["verified"]==true) {
         return None;
     }
@@ -247,8 +248,8 @@ fn rsi_compiler_requires_current_read(session:&Value, operations:&[Value])->bool
                 sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
     };
     if let Some(write)=confirmed_write {
-        let path=write["result"]["path"].as_str()
-            .or_else(||write["arguments"]["path"].as_str());
+        let path=write["arguments"]["path"].as_str()
+            .or_else(||write["result"]["path"].as_str());
         let finished=write["finishedAt"].as_str().unwrap_or("");
         if path.is_none() || finished.is_empty() {return true;}
         !operations.iter().filter(valid_read).any(|read|
@@ -269,6 +270,7 @@ fn rsi_confirmed_source_write(operations:&[Value], execution_id:&str)->bool {
         && matches!(row["tool"].as_str(),
             Some("workspace_write"|"workspace_replace"|"workspace_replace_range"))
         && row["result"]["written"]==true
+        && row["result"]["syntaxValid"]!=false
         && row["toolReceipt"]["verified"]==true)
 }
 
@@ -1334,6 +1336,8 @@ async fn run_turn_body(
     let mut rsi_decision_checkpoint = false;
     let mut rsi_edit_only_announced=false;
     let mut rsi_edit_retry=false;
+    // Keep the generation alive to repair a model-generated Rust syntax error.
+    let mut rsi_syntax_repair_pending=false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1612,6 +1616,22 @@ async fn run_turn_body(
                     }
                 }
             }
+        }
+        if rsi_syntax_repair_pending && !force_final {
+            let operations=state.store.all("execution_operation").into_iter()
+                .filter(|op|op["sessionId"].as_str()==Some(session_id))
+                .collect::<Vec<_>>();
+            let require_read=rsi_compiler_requires_current_read(
+                &json!({"rsiCompilerRepair":true}),&operations);
+            round_tools.retain(|tool|if require_read {
+                tool_name(tool)=="workspace_read_range"
+            }else{
+                matches!(tool_name(tool),"workspace_replace_range"|"workspace_replace")
+            });
+            state.store.audit("rsi.syntax_repair_stage",json!({
+                "executionId":execution_id,"sessionId":session_id,
+                "needsFreshRead":require_read,"round":round
+            }));
         }
         let grounded_edit=if session["rsiRun"]==true && !force_final {
             let ops=state.store.all("execution_operation");
@@ -2577,6 +2597,20 @@ async fn run_turn_body(
             messages.push(json!({
                 "role":"tool","tool_call_id":call.id,"content":tool_content,
             }));
+            if session["rsiRun"]==true && result["syntaxValid"]==false {
+                rsi_syntax_repair_pending=true;
+                let diagnostic=result["syntaxCheck"]["diagnostic"].as_str()
+                    .unwrap_or("Rust syntax parse failed.")
+                    .chars().take(1400).collect::<String>();
+                state.store.audit("rsi.syntax_repair_triggered",json!({
+                    "executionId":execution_id,"round":round,
+                    "path":arguments["path"],"diagnostic":diagnostic,
+                    "source":"actual_model_write_rustfmt"
+                }));
+                messages.push(json!({"role":"system","content":format!(
+                    "YOUR ACTUAL SOURCE EDIT FAILED RUST SYNTAX PARSING: {diagnostic}.                      The file changed, so its earlier source hash is stale.                      FIRST call workspace_read_range on the SAME changed file to                      observe current bytes and SHA. THEN use workspace_replace_range                      or workspace_replace to correct the Rust syntax in this same execution.                      Do not repeat the stale patch or finish with a description."
+                )}));
+            }
         }
 
         if ordering_used {
@@ -6651,6 +6685,18 @@ mod outcome_tests {
 mod harness_tool_selection_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sub1_syntax_invalid_write_must_be_repaired_before_candidate_capture() {
+        let invalid=json!({"runId":"execution","status":"completed",
+            "tool":"workspace_replace_range","result":{
+                "written":true,"syntaxValid":false},
+            "toolReceipt":{"verified":true}});
+        assert!(!rsi_confirmed_source_write(&[invalid.clone()],"execution"));
+        let mut corrected=invalid;
+        corrected["result"]["syntaxValid"]=json!(true);
+        assert!(rsi_confirmed_source_write(&[corrected],"execution"));
+    }
 
     #[test]
     fn sub1_compile_repair_requires_read_after_the_actual_write() {
