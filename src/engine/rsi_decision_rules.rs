@@ -175,6 +175,11 @@ pub fn choose(policy:&Value, ops:&[Value], calls:u64,
     if !focused {return None;}
     if fact("successful_write",ops,calls,prompt_grounded)==Some(1) {return None;}
     let ground=fact("grounded",ops,calls,prompt_grounded)==Some(1);
+    // A source excerpt alone is not a fresh editable file hash. Generated
+    // rules may propose writes only after this run actually observed the
+    // current source through the normal native tool.
+    let verified_source_read=ops.iter().any(|op|
+        op["status"]=="completed" && op["tool"]=="workspace_read_range");
     let failed=fact("unrecovered_edit_failure",ops,calls,prompt_grounded)==Some(1);
     for rule in normalize(&policy["rules"]) {
         if !matches_guard(&rule["guard"],ops,calls,prompt_grounded,0) {continue;}
@@ -183,7 +188,7 @@ pub fn choose(policy:&Value, ops:&[Value], calls:u64,
         // No generated predicate can authorize a speculative source write.
         // Failed edits must first regain a current source/hash observation.
         if allow.iter().any(|tool|EDIT_TOOLS.contains(&tool.as_str()))
-            && (!ground || failed) {continue;}
+            && (!ground || !verified_source_read || failed) {continue;}
         return Some(Decision{id:rule["id"].as_str().unwrap_or("").to_string(),allow});
     }
     None
@@ -425,7 +430,11 @@ mod tests {
         let revised=evolve(&original,&second);
         assert_eq!(revised.len(),1);
         assert_ne!(revised[0]["id"],original[0]["id"]);
-        assert_eq!(revised[0]["guard"]["all"][1]["metric"],"tool_calls");
+        let clauses=revised[0]["guard"]["all"].as_array().unwrap();
+        assert!(clauses.iter().any(|clause|clause["metric"]=="tool_calls"),
+            "the descendant must gain a measured call-budget guard");
+        assert!(clauses.iter().any(|clause|clause["metric"]=="failed:workspace_replace_range"),
+            "rewriting must preserve the observed failure predicate");
     }
     #[test]
     fn new_temporal_rule_requires_ordered_recovery_then_changes_edit_operator(){
@@ -521,6 +530,17 @@ mod tests {
         outcome["evidenceVerified"]=json!(true);
         outcome["evaluation"]=json!({"metrics":{"eligible":true}});
         assert!(evolve(&[],&outcome).is_empty());
+    }
+    #[test]
+    fn learned_edit_guard_needs_native_source_read_not_only_prompt_context(){
+        let policy=json!({"rules":[{"guard":
+            {"metric":"grounded","cmp":"eq","value":1},
+            "allow":["workspace_replace_range"]}]});
+        assert!(choose(&policy,&[],0,true,true).is_none(),
+            "an injected excerpt is not a current source hash");
+        let read=vec![event("workspace_read_range","completed")];
+        assert!(choose(&policy,&read,1,true,true).unwrap()
+            .allows("workspace_replace_range"));
     }
     #[test]
     fn false_success_and_unknown_tool_cannot_become_rules(){
