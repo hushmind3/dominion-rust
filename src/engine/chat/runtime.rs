@@ -1596,7 +1596,7 @@ async fn run_turn_body(
         let wire_messages=if let Some(mut grounded)=grounded_edit {
             if rsi_json_edit_fallback {
                 grounded.push(json!({"role":"system","content":
-                    "NATIVE TOOL CALLS ARE UNAVAILABLE FOR THIS RETRY. Respond with ONLY ONE JSON object and no Markdown or prose: {\\"path\\":\\"src/engine/decompose.rs\\",\\"startLine\\":1,\\"endLine\\":1,\\"newText\\":\\"valid Rust replacement\\"}. Use the actual observed path/line numbers, not these example values. The engine independently resolves the observed source SHA and verifies the actual write. Do not output a plan."}));
+                    "NATIVE TOOL CALLS ARE UNAVAILABLE FOR THIS RETRY. Respond with ONLY ONE standalone JSON object and no Markdown or prose. Required JSON keys: path, startLine, endLine, newText. Use the actual observed source file path and exact line numbers. The engine independently resolves the observed source SHA and verifies the write. Do not output a plan."}));
             }
             state.store.audit("rsi.native_edit_handoff",json!({
                 "sessionId":session_id,"executionId":execution_id,"round":round,
