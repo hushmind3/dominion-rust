@@ -304,6 +304,51 @@ mod tests {
             "toolTimeline":operations})
     }
     #[test]
+    fn durable_timeline_preserves_real_provenance_without_raw_tool_output() {
+        let root=std::env::temp_dir().join(format!(
+            "champion-contrastive-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config=crate::config::Config{
+            port:0,data_dir:root.clone(),web_dir:root.join("web"),
+            workspace:root.clone()};
+        let state=AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()));
+        state.store.put("execution_operation",&json!({
+            "id":"read-1","sessionId":"session","runId":"run","opSeq":1,
+            "tool":"workspace_read_range","status":"completed",
+            "arguments":{"path":"src/engine/test.rs"},
+            "result":{"sourceSha256":"b".repeat(64),
+                "rawSource":"private content must not reach learned rules"}
+        })).unwrap();
+        state.store.put("execution_operation",&json!({
+            "id":"write-1","sessionId":"session","runId":"run","opSeq":2,
+            "tool":"workspace_replace_range","status":"completed",
+            "arguments":{"path":"src/engine/test.rs"},
+            "result":{"written":true,"postSha256":"a".repeat(64),
+                "rawSource":"must remain private"},
+            "toolReceipt":{"verified":true}
+        })).unwrap();
+        state.store.put("execution_operation",&json!({
+            "id":"other","sessionId":"different","runId":"other","opSeq":1,
+            "tool":"workspace_replace_range","status":"completed",
+            "arguments":{"path":"unrelated.rs"},
+            "result":{"written":true}
+        })).unwrap();
+        let timeline=tool_timeline(&state,"session");
+        assert_eq!(timeline.len(),2);
+        assert_eq!(timeline[0]["path"],"src/engine/test.rs");
+        assert_eq!(timeline[1]["toolReceipt"]["verified"],true);
+        assert_eq!(timeline[1]["result"]["postSha256"],"a".repeat(64));
+        let encoded=serde_json::to_string(&timeline).unwrap();
+        assert!(!encoded.contains("private content"));
+        assert!(!encoded.contains("must remain private"));
+        assert!(!encoded.contains("unrelated.rs"));
+        drop(state);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn learned_contrast_is_wired_into_the_champion_runtime_trial() {
         let mut rows = [
             child("accepted-1", true, 0, "workspace_replace_range"),
