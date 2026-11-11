@@ -508,6 +508,20 @@ fn tool_allowed_with_read_limit(
 )->bool {
     if tool_allowed(name,chosen) {return true;}
     if name!="workspace_read_range" || !edit(chosen) {return false;}
+    // A witnessed SHA read already grounds the edit. Offering another read
+    // alongside the selected editor leaves native tool_choice optional and
+    // allowed the free model to spend entire generations only reading.
+    // This rule applies to the actual selected edit, not a recovery step:
+    // after a failed edit, next_tool explicitly selects workspace_read_range.
+    // A read without a verified digest still receives the bounded refresh
+    // allowance below.
+    let has_versioned_source=ops.iter().filter(|op|
+        op["runId"].as_str()==Some(execution_id)).any(|op|
+        op["tool"]=="workspace_read_range"
+        && op["status"]=="completed"
+        && op["result"]["sourceSha256"].as_str().is_some_and(|sha|
+            sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit())));
+    if has_versioned_source {return false;}
     let mut reads=0u64;
     for op in ops.iter().filter(|op|
         op["runId"].as_str()==Some(execution_id)) {
@@ -1180,15 +1194,16 @@ mod tests {
         assert_eq!(child["qualityProven"],false);
     }
     #[test]
-    fn grounded_edit_menu_has_two_reads_then_requires_a_write(){
+    fn grounded_edit_menu_closes_after_first_versioned_read(){
         let chosen="workspace_replace";
         assert!(tool_allowed_with_evidence(chosen,chosen,&[],"run"));
         assert!(tool_allowed_with_evidence("workspace_read_range",chosen,&[],"run"));
         assert!(!tool_allowed_with_evidence("code_search",chosen,&[],"run"));
         let first=json!({"runId":"run","opSeq":1,"tool":"workspace_read_range",
             "status":"completed","result":{"sourceSha256":"a".repeat(64)}});
-        assert!(tool_allowed_with_evidence("workspace_read_range",chosen,
-            &[first.clone()],"run"));
+        assert!(!tool_allowed_with_evidence("workspace_read_range",chosen,
+            &[first.clone()],"run"),
+            "a witnessed source hash must close repeated reads and require a native edit");
         let second=json!({"runId":"run","opSeq":2,"tool":"workspace_read_range",
             "status":"completed","result":{"sourceSha256":"a".repeat(64)}});
         assert!(!tool_allowed_with_evidence("workspace_read_range",chosen,

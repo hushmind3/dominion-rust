@@ -4003,7 +4003,8 @@ fn bind_meta_execution_focus(state:&AppState,input:&mut Value)->bool {
     if input["rsiAutoFocus"]!=true
         || !matches!(input["rsiImprovementDirective"]["mode"].as_str(),
             Some("implement_research"|"repair_edit_execution"|"repair_candidate_capture"
-                |"repair_counterexample"|"revise_candidate"|"change_approach"))
+                |"repair_counterexample"|"revise_candidate"|"change_approach"
+                |"extend_verified_capability"))
     {return false;}
     let Some(index)=input["rsiIndexId"].as_str() else {return false;};
     let Some(focus)=input["rsiFocusFiles"].as_array().into_iter().flatten()
