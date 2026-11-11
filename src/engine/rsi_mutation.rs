@@ -309,26 +309,35 @@ mod tests {
     use super::*;
     #[test]
     fn verified_owner_origin_cache_keeps_legacy_validation() {
+        // The compiled descendant may already contain these mutations. A
+        // source-evolution regression test must survive actual adoption.
         let original=include_str!("room_state.rs");
         let first=materialize_verified_owner_provenance(original)
-            .expect("authenticated owner provenance is a native optimization");
+            .unwrap_or_else(||original.to_string());
         assert!(first.contains("\"verifiedLocalOwner\": true"));
         assert!(first.contains("fact[\"verifiedLocalOwner\"]==true || !fact[\"sourceMessageId\"]"));
         assert!(first.contains(".and_then(|id| state.store.message(id))"));
         assert!(materialize_verified_owner_provenance(&first).is_none());
-        let second=hoist_invariant_query_terms(&first).expect("next code optimization");
-        let third=hoist_invariant_query_domain(&second).expect("third source generation");
-        assert_ne!(first,second);
-        assert_ne!(second,third);
+        let second=hoist_invariant_query_terms(&first)
+            .unwrap_or_else(||first.clone());
+        assert!(second.contains("let query_tokens = memory::terms(query);\n    let mut ranked = facts"));
+        let third=cache_invariant_fact_terms(&second)
+            .unwrap_or_else(||second.clone());
+        assert!(third.contains("\"factTokens\": fact_tokens"));
+        let fourth=hoist_invariant_query_domain(&third)
+            .unwrap_or_else(||third.clone());
+        assert!(fourth.contains("let asked_domain = fact_domain(query);"));
+        assert!(hoist_invariant_query_domain(&fourth).is_none());
     }
 
     #[test]
     fn current_engine_has_two_distinct_source_generations() {
         let original=include_str!("room_state.rs");
-        let first=hoist_invariant_query_terms(original).expect("first source generation");
-        assert_ne!(first,original);
-        let second=hoist_invariant_query_domain(&first).expect("descendant source generation");
-        assert_ne!(second,first);
+        let first=hoist_invariant_query_terms(original)
+            .unwrap_or_else(||original.to_string());
+        assert!(first.contains("let query_tokens = memory::terms(query);\n    let mut ranked = facts"));
+        let second=hoist_invariant_query_domain(&first)
+            .unwrap_or_else(||first.clone());
         assert!(second.contains("let asked_domain = fact_domain(query);"));
         assert!(hoist_invariant_query_terms(&second).is_none());
         assert!(hoist_invariant_query_domain(&second).is_none());
@@ -352,7 +361,8 @@ mod tests {
     #[test]
     fn meta_improver_evolves_streamed_policy_statistics_without_changing_rules() {
         let source = include_str!("rsi_evolve.rs");
-        let candidate = stream_search_policy_statistics(source).unwrap();
+        let candidate = stream_search_policy_statistics(source)
+            .unwrap_or_else(||source.to_string());
         assert!(candidate.contains("let mut last_row: Option<&Value> = None"));
         assert!(candidate.contains("f64::from(row[\"accepted\"]==true)"));
         assert!(candidate.contains("scores.first().map(|(domain,_)|*domain)"));
@@ -363,9 +373,10 @@ mod tests {
     #[test]
     fn recursive_fact_cache_preserves_legacy_fallback_and_original_ranking() {
         let source = include_str!("room_state.rs");
-        let hoisted = hoist_invariant_query_terms(source).unwrap();
-        let cached = cache_invariant_fact_terms(&hoisted).unwrap();
-        assert_ne!(hoisted, cached);
+        let hoisted = hoist_invariant_query_terms(source)
+            .unwrap_or_else(||source.to_string());
+        let cached = cache_invariant_fact_terms(&hoisted)
+            .unwrap_or_else(||hoisted.clone());
         assert!(cached.contains("\"factTokens\": fact_tokens"));
         assert!(cached.contains("memory::terms(&stored_text)"));
         assert!(cached.contains("fact[\"factTokens\"].as_array()"));
@@ -373,9 +384,8 @@ mod tests {
         assert!(cached.contains("score + matches.min(12)"));
         assert_eq!(cached.matches("let query_tokens = memory::terms(query);").count(), 1);
         assert!(cache_invariant_fact_terms(&cached).is_none());
-        // The existing next-generation domain optimization must still
-        // compose with the new immutable fact-token cache.
-        let descendant = hoist_invariant_query_domain(&cached).unwrap();
+        let descendant = hoist_invariant_query_domain(&cached)
+            .unwrap_or_else(||cached.clone());
         assert!(descendant.contains("let asked_domain = fact_domain(query);"));
         assert!(hoist_invariant_query_domain(&descendant).is_none());
     }
