@@ -6394,8 +6394,11 @@ mod harness_tool_selection_tests {
         assert_eq!(grounded["newText"],raw["newText"]);
         let mut supplied=raw.clone();
         supplied["expectedSha256"]=json!("f".repeat(64));
-        assert_eq!(ground_observed_range_edit(supplied.clone(),&[prior.clone()]),supplied,
+        let unchanged=ground_observed_range_edit(supplied.clone(),&[prior.clone()]);
+        assert_eq!(unchanged["expectedSha256"],supplied["expectedSha256"],
             "never overwrite model-supplied source version");
+        assert_eq!(unchanged["startLine"],24);
+        assert_eq!(unchanged["endLine"],31);
         let mut outside=raw.clone();
         outside["startLine"]=json!(12);
         assert!(ground_observed_range_edit(outside,&[prior.clone()])["expectedSha256"].is_null());
