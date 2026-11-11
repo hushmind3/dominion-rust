@@ -4234,8 +4234,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             None, &commit);
     // The rebuilt descendant makes its OWN newest meta-policy decision from
     // durable experience. The parent stores a provisional plan, not authority.
-    job["input"]["rsiImprovementDirective"]=
-        generation_improvement_directive(&job["input"],&history);
+    if !history.is_empty() {
+        job["input"]["rsiImprovementDirective"]=
+            generation_improvement_directive(&job["input"],&history);
+    }
+    // The first generation in a new campaign inherits the coordinator's
+    // matching earlier-campaign failure lesson. Empty local history must not
+    // erase the previously grounded meta-policy.
     // Child-authoritative decision: source targeting and the prompt are rebuilt
     // whenever the descendant's policy disagrees with the frozen coordinator.
     // The old plan is preserved as an audit receipt, never silently relabelled.
@@ -4325,6 +4330,75 @@ mod tests {
         assert_eq!(directive["mode"],"repair_candidate_capture");
         assert_eq!(directive["previousDiffBytes"],250);
         assert!(improvement_work_contract(&directive).contains("Git diff"));
+    }
+
+
+    #[test]
+    fn observed_edit_failures_change_the_real_tool_selection_policy() {
+        let events=vec![
+            json!({"domain":"memory","editOperations":[
+                {"tool":"workspace_replace_range","status":"failed","written":false,
+                    "error":"line mismatch","verified":false}]}),
+            json!({"domain":"memory","editOperations":[
+                {"tool":"workspace_replace","status":"completed","written":true,
+                    "verified":true}]}),
+        ];
+        let selected=learned_edit_primitive(&events,"memory");
+        assert_eq!(selected["selected"],"workspace_replace");
+        assert_eq!(selected["ranked"][0]["verifiedWrites"],1);
+        let unrelated=learned_edit_primitive(&events,"tools");
+        assert!(unrelated["selected"].is_null(),
+            "a tool learned for one domain cannot impersonate evidence elsewhere");
+    }
+
+    #[test]
+    fn failed_meta_actions_synthesize_an_executable_next_strategy() {
+        let history=(1..=5).map(|n|json!({
+            "id":format!("generation-{n}"),"campaignId":"campaign",
+            "attempt":n,"domain":"memory","accepted":false,
+            "candidateId":null,"newFindings":0,"tokens":400,
+            "improvementDirective":{"mode":"change_approach"},
+            "improvementActionObservation":{"status":"not_followed"}
+        })).collect::<Vec<_>>();
+        let learned=learned_improvement_directive(&history);
+        assert_eq!(learned["policy"]["kind"],"selfimprove.meta-action");
+        assert_eq!(learned["policy"]["implementation"],
+            "experience_synthesized_action_and_edit_selection");
+        assert!(learned["policy"]["scoreExpression"].as_str()
+            .unwrap().contains("failureRate"));
+        assert_ne!(learned["mode"],"change_approach",
+            "DOMINION must alter its next executed recovery method after repeated failure");
+        let mut newly_verified=history.clone();
+        newly_verified[4]["accepted"]=json!(true);
+        // An adopted result changes the meta-program's structure and revision.
+        let revised=learned_improvement_directive(&newly_verified);
+        assert_ne!(learned["policy"]["revision"],revised["policy"]["revision"]);
+    }
+
+    #[test]
+    fn executable_meta_policy_binds_one_real_indexed_source() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::write(root.join("src/engine/memory.rs"),
+            "pub fn recall()->bool {false}\n").unwrap();
+        std::fs::write(root.join("src/engine/other.rs"),
+            "pub fn other()->bool {false}\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let mut input=json!({
+            "rsiAutoFocus":true,"rsiIndexId":index["id"],
+            "rsiFocusFiles":["src/engine/memory.rs","src/engine/other.rs"],
+            "rsiImprovementDirective":{"mode":"implement_research",
+                "policy":{"revision":"meta-2","preferredEditTool":"workspace_replace"}}
+        });
+        assert!(bind_meta_execution_focus(&state,&mut input));
+        assert_eq!(input["rsiFocusFiles"],json!(["src/engine/memory.rs"]));
+        assert_eq!(input["rsiMetaFocusActive"],true);
+        assert_eq!(input["rsiFocusSelection"]["actionPolicyRevision"],"meta-2");
+        let mut explore=input.clone();
+        explore["rsiImprovementDirective"]["mode"]=json!("discover");
+        assert!(!bind_meta_execution_focus(&state,&mut explore));
+        assert_eq!(explore["rsiMetaFocusActive"],false);
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
