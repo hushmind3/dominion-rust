@@ -672,6 +672,15 @@ fn compat_messages(messages: &[Value]) -> Vec<Value> {
     }).collect()
 }
 
+/// Demand an executable tool action only for an RSI edit-only model menu.
+fn rsi_edit_requires_tool(session: &Value, tools: &[Value]) -> bool {
+    session["rsiRun"] == true && session["rsiExplicitFocus"] == true
+        && !tools.is_empty() && tools.iter().all(|tool| matches!(
+            tool["function"]["name"].as_str(),
+            Some("workspace_replace" | "workspace_replace_range" | "workspace_write")
+        ))
+}
+
 async fn stream_completion_once(
     state: &AppState,
     client: &reqwest::Client,
@@ -797,6 +806,10 @@ async fn stream_completion_once_body(
     });
     if !compatible && !tools.is_empty() {
         body["tools"] = json!(tools);
+        if state.store.get("session",session_id)
+            .is_some_and(|session| rsi_edit_requires_tool(&session,tools)) {
+            body["tool_choice"] = json!("required");
+        }
     }
     if let Some(limit) = provider.max_output_tokens {
         body["max_tokens"] = json!(limit);
@@ -1971,6 +1984,17 @@ mod tests {
         let mut api = json!({"model":"reasoning-model"});
         apply_reasoning_options(&mut api, "openai", Some(true), Some("high"));
         assert_eq!(api["reasoning_effort"], "high", "{api}");
+    }
+
+    #[test]
+    fn source_edit_only_menu_requires_action_without_forcing_research_to_write() {
+        let focus=json!({"rsiRun":true,"rsiExplicitFocus":true});
+        let edits=vec![json!({"function":{"name":"workspace_replace_range"}}),
+            json!({"function":{"name":"workspace_replace"}}),
+            json!({"function":{"name":"workspace_write"}})];
+        assert!(rsi_edit_requires_tool(&focus,&edits));
+        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&edits));
+        assert!(!rsi_edit_requires_tool(&focus,&[json!({"function":{"name":"workspace_read_range"}})]));
     }
 
     #[test]
