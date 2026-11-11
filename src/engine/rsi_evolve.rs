@@ -4378,6 +4378,14 @@ async fn run_loop(
             "captureError":source_result["captureError"],
             "sourceClean":source_result["sourceClean"],
             "repairAttempts":current["result"]["repairAttempts"],
+            "repairTrail":current["result"]["previousAttempts"].as_array()
+                .into_iter().flatten().take(2).map(|attempt|json!({
+                    "mode":attempt["mode"],"attempt":attempt["attempt"],
+                    "reason":attempt["reason"],
+                    "candidateId":attempt["result"]["candidateId"],
+                    "checksPassed":attempt["result"]["checksPassed"],
+                    "diffBytes":attempt["result"]["diffBytes"]
+                })).collect::<Vec<_>>(),
             "failedChecks":failed_checks,
             "evaluationStatus":if candidate_id.is_some(){"eligible_for_paired_comparison"}
                 else if source_result["diffBytes"].as_u64().unwrap_or(0)>0
