@@ -4526,6 +4526,56 @@ mod tests {
     }
 
     #[test]
+    fn policy_trial_never_rewards_a_model_gain_when_its_suggestion_was_ignored() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiDomain":"tools",
+            "rsiBaseCommit":"d".repeat(40),"rsiObjective":"improve edits",
+            "rsiFocusFiles":["src/engine/tools.rs"],
+            "model":"same-model","providerId":"same-provider"});
+        let partition=research_scope(&input).partition_key;
+        let id=format!("rsi-method-policy-{}",
+            crate::engine::memory::stable_id(&[&partition]));
+        let policy=json!({"id":id,"partitionKey":partition,
+            "revision":"suggested-but-ignored","kind":"harness.method-transitions",
+            "transitions":[{"from":"workspace_read_range",
+                "to":"workspace_replace","positive":2,"negative":1}]});
+        state.store.put("rsi_method_policy",&policy).unwrap();
+        let mut last=Value::Null;
+        for n in 0..4 {
+            let plan=method_policy_trial_plan(&state,&input);
+            let evaluation=json!({"source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"eligible":n==3,"regressions":0,
+                    "improvedHoldouts":if n==3 {1}else{0},
+                    "verdict":if n==3 {"improved"}else{"unchanged"}}});
+            let mut generation=json!({"id":format!("ignored-policy-{n}"),
+                "jobId":format!("ignored-policy-{n}"),
+                "generatorCommit":input["rsiBaseCommit"],
+                "methodPolicyTrial":plan,"accepted":n==3,
+                "evaluation":evaluation});
+            if n==3 {
+                generation["acceptedProof"]=json!({"status":"verified",
+                    "evaluation":evaluation});
+                // The source improved, but the model never performed the
+                // tool preference induced by DOMINION's candidate policy.
+                generation["inducedMethodApplications"]=json!([{
+                    "revision":"suggested-but-ignored","performed":false,
+                    "verifiedSourceWrite":false}]);
+                last=generation;
+            } else {
+                state.store.put("rsi_generation",&generation).unwrap();
+            }
+        }
+        let decision=settle_method_policy_trial(&state,&last);
+        assert_eq!(decision["independentlyEvaluated"],true);
+        assert_eq!(decision["learned"]["acceptedGains"],1);
+        assert_eq!(decision["learned"]["policyLinkedGains"],0);
+        assert_eq!(decision["verdict"],"learned_policy_not_executed");
+        assert!(decision["nextPolicyRevision"].is_null());
+        assert_eq!(state.store.get("rsi_method_policy",&id).unwrap(),policy);
+        drop(state);let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn policy_trial_abstains_without_independent_evidence_for_both_arms() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root,"rsiDomain":"tools",
