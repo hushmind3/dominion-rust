@@ -364,6 +364,8 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         // source search after independent adoption of the original goal.
         "rsiExpandAfterGain": continuous && body["expandAfterGain"] == true
             && body["selectionPolicy"] == "automatic",
+        "rsiNativeInduction": continuous && body["nativeInduction"] == true
+            && body["selectionPolicy"] == "automatic",
         "rsiIndexId": index_meta["id"],
         "rsiIndexFingerprint": index_meta["fingerprint"],
         "rsiIndexFiles": index_meta["files"],
