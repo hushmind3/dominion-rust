@@ -533,7 +533,16 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         let index=crate::engine::code_index::refresh(
             &context.state,&rsi_workspace.as_ref().unwrap().path)?;
         input["rsiIndexId"]=index["id"].clone();
-        input["rsiFocusFiles"]=recovered["paths"].clone();
+        // A failed multi-file patch needs the compiler's failing file, not
+        // an arbitrary first source. Keep all inherited changes in the
+        // worktree but give this edit turn one verified, concrete target.
+        let compile_target=input["rsiFailedPatchRecovery"]["focusPath"].as_str()
+            .filter(|path|crate::engine::rsi::safe_path(path)
+                && recovered["paths"].as_array().is_some_and(|paths|
+                    paths.iter().any(|value|value.as_str()==Some(*path))));
+        input["rsiFocusFiles"]=compile_target
+            .map(|path|json!([path]))
+            .unwrap_or_else(||recovered["paths"].clone());
         // Excerpts composed before restoration describe the old source.
         // Ground this child on the *repaired worktree's current bytes* and
         // compiler error line rather than making a small model guess the
@@ -542,7 +551,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         let mut current_excerpts=String::new();
         let checks=input["rsiFailedPatchRecovery"]["checks"].as_array()
             .cloned().unwrap_or_default();
-        for path in recovered["paths"].as_array().into_iter().flatten()
+        for path in input["rsiFocusFiles"].as_array().into_iter().flatten()
             .filter_map(Value::as_str).take(2) {
             if !crate::engine::rsi::safe_path(path){continue;}
             let bytes=std::fs::read(rsi_workspace.as_ref().unwrap().path.join(path))
