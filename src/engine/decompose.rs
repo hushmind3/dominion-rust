@@ -38,6 +38,25 @@ fn marker_at(text: &str, index: usize, marker: &str) -> bool {
     before_ok && after_ok
 }
 
+/// Korean connective '-고' occurs after the verb rather than as a standalone
+/// word. Keep that suffix attached to the preceding step so token coverage
+/// and the original instruction survive decomposition. Restrict to common
+/// action endings to avoid splitting nouns such as '최고' or '사고'.
+fn action_conjunction_at(input: &str, index: usize, current: &str) -> bool {
+    let Some(rest) = input.get(index..) else { return false };
+    let Some(after) = rest.strip_prefix('고') else { return false };
+    if !after.chars().next().is_some_and(char::is_whitespace) {
+        return false;
+    }
+    let Some(previous) = current.chars().last() else { return false };
+    matches!(
+        previous,
+        '읽' | '하' | '쓰' | '받' | '찾' | '풀' | '적' | '보' | '열'
+            | '닫' | '넣' | '켜' | '끄' | '내' | '주' | '잡' | '먹'
+            | '쌓' | '짚' | '옮' | '타' | '돌' | '맞' | '펴'
+    )
+}
+
 fn split_markers(input: &str) -> Vec<String> {
     // Suffix forms such as "실행한 뒤" keep the verb stem, so the marker is the
     // standalone word rather than the whole phrase.
@@ -45,6 +64,8 @@ fn split_markers(input: &str) -> Vec<String> {
         "그리고",
         "그 다음",
         "다음으로",
+        "다음",
+        "나서",
         "뒤",
         "후에",
         "then",
@@ -65,6 +86,13 @@ fn split_markers(input: &str) -> Vec<String> {
         let Some(ch) = input[index..].chars().next() else {
             break;
         };
+        if ch == '고' && action_conjunction_at(input, index, &current) {
+            current.push(ch);
+            pieces.push(current.trim().to_string());
+            current.clear();
+            index += ch.len_utf8();
+            continue;
+        }
         if ch == ';' || ch == '\n' {
             pieces.push(current.trim().to_string());
             current.clear();
@@ -279,6 +307,28 @@ mod tests {
         assert_eq!(texts[0], "저장소를 확인한다");
         assert_eq!(result["quality"]["orderPreserved"], true);
         assert!(result["qualityScore"].as_f64().unwrap() >= 0.9, "{result}");
+    }
+
+    #[test]
+    fn korean_unmarked_sequences_become_executable_steps() {
+        let cases = [
+            ("설정을 읽고 결과를 저장한 다음 검증해", 3),
+            ("문서를 읽고 파일을 저장하고 실행 결과를 검증해", 3),
+            ("모델을 선택하고 응답을 저장한 다음 결과를 비교해", 3),
+            ("서버를 켜고 로그를 보고 결과를 정리해", 3),
+            ("원본을 유지하고 변경을 확인해", 2),
+            ("로그를 읽고 오류를 찾아보고 수정한 다음 테스트해", 4),
+            ("명령을 실행하고 나서 결과를 보고해", 2),
+            ("최고 수준의 설계안을 작성해", 1),
+            ("교통사고 보고서를 확인해", 1),
+        ];
+        for (input, expected) in cases {
+            let result = decompose(input, &algorithm("numbered-first"));
+            let steps = result["subtasks"].as_array().unwrap();
+            assert_eq!(steps.len(), expected, "{input}: {result}");
+            assert_eq!(result["quality"]["orderPreserved"], true, "{input}");
+            assert!(result["qualityScore"].as_f64().unwrap() > 0.65, "{input}: {result}");
+        }
     }
 
     #[test]
