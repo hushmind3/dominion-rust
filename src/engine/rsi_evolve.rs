@@ -1682,6 +1682,42 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             "reuse":method["status"],"gain":"observed_association_not_causal_proof"});
         if !method["applications"].is_array() {method["applications"]=json!([]);}
         method["applications"].as_array_mut().unwrap().push(application);
+        // Champion recovery synthesis is causal only to the failed procedure
+        // OPERATION, not to a model-authored error summary. A revision can
+        // acquire a new executable DAG candidate, but no quality credit is
+        // awarded until a later run executes and independently evaluates it.
+        let method_snapshot=method.clone();
+        let operations=state.store.execution_operations(
+            receipt["executionId"].as_str().unwrap_or("")
+        ).unwrap_or_default();
+        let ids=receipt["operationIds"].as_array().cloned().unwrap_or_default();
+        let mut candidates=Vec::new();
+        for operation in operations.iter().filter(|op|
+            ids.contains(&op["id"]) && op["status"]=="failed"
+                && op["origin"]=="procedure") {
+            for proposed in crate::engine::rsi_repair_synthesis::propose(
+                &method_snapshot, operation) {
+                if !candidates.iter().any(|existing:&Value| existing["id"]==proposed["id"]) {
+                    candidates.push(proposed);
+                }
+                if candidates.len()>=4 {break;}
+            }
+            if candidates.len()>=4 {break;}
+        }
+        let mut added=Vec::new();
+        if let Some(methods)=record["executableMethods"].as_array_mut() {
+            for candidate in candidates {
+                if methods.iter().any(|method|method["id"]==candidate["id"]) {continue;}
+                added.push(candidate["id"].clone());
+                methods.push(candidate);
+            }
+        }
+        if !added.is_empty() {
+            state.store.audit("rsi.executable_recovery_synthesized",
+                json!({"executionId":receipt["executionId"],
+                    "parentMethodId":receipt["methodId"],"candidateIds":added,
+                    "qualityProven":false}));
+        }
         state.store.put("experience", &record);
     }
     receipts
