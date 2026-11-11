@@ -370,6 +370,66 @@ pub fn effects(state:&AppState,session_id:&str)->Vec<Value>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    fn measured_episode(id:&str,arm:&str,accepted:bool,source:&str)->Value {
+        json!({"jobId":id,"generatorCommit":"head","objectiveId":"goal",
+            "generatorModel":"model","generatorProviderId":"provider",
+            "domain":"tools","accepted":accepted,
+            "rsiJudgementTrial":{"revision":"judgement-v1","arm":arm},
+            "rsiJudgementEffects":[{"revision":"judgement-v1",
+                "performed":true,"verifiedSourceWrite":true}],
+            "evaluation":{"source":source,"metrics":{"eligible":accepted,
+                "regressions":0,"improvedHoldouts":if accepted{1}else{0}}}})
+    }
+    fn measured_policy()->Value {
+        json!({"revision":"judgement-v1","rules":[{"guard":{
+            "metric":"read_calls","cmp":"ge","value":1},
+            "allow":["workspace_replace_range"]}]})
+    }
+    #[test]
+    fn unequal_cohorts_are_compared_by_rate_not_absolute_adoption_count(){
+        let mut rows=vec![
+            measured_episode("b1","baseline",true,
+                "server_invoked_local_paired_git_worktrees"),
+            measured_episode("b2","baseline",false,
+                "server_invoked_local_paired_git_worktrees"),
+            measured_episode("c1","candidate",true,
+                "server_invoked_local_paired_git_worktrees"),
+            measured_episode("c2","candidate",true,
+                "server_invoked_local_paired_git_worktrees")];
+        for n in 3..=6{
+            rows.push(measured_episode(&format!("c-fail-{n}"),"candidate",false,
+                "server_invoked_local_paired_git_worktrees"));
+        }
+        // Two successes out of six are worse than the baseline's one in two.
+        let result=trial(&rows,measured_policy(),"head","goal","model","provider","tools");
+        assert_eq!(result["status"],"judgement_no_measured_gain");
+        assert_eq!(result["comparison"]["candidateHoldoutGains"],2);
+        assert_eq!(result["comparison"]["baselineHoldoutGains"],1);
+        assert_eq!(result["comparison"]["independentJobs"],8);
+    }
+    #[test]
+    fn independent_verified_cohorts_can_select_a_new_executable_rule(){
+        let mut rows=vec![
+            measured_episode("b1","baseline",false,
+                "server_invoked_local_paired_git_worktrees"),
+            measured_episode("b2","baseline",false,
+                "server_invoked_local_paired_git_worktrees"),
+            measured_episode("c1","candidate",true,
+                "server_invoked_local_paired_git_worktrees"),
+            measured_episode("c2","candidate",true,
+                "server_invoked_local_paired_git_worktrees")];
+        let positive=trial(&rows,measured_policy(),"head","goal","model","provider","tools");
+        assert_eq!(positive["status"],"judgement_holdout_candidate_preferred");
+        assert_eq!(positive["comparison"]["candidateSuccessRate"],1.0);
+        rows.push(rows[2].clone());
+        assert_eq!(trial(&rows,measured_policy(),"head","goal","model",
+            "provider","tools")["comparison"]["independentJobs"],4);
+        rows[2]["evaluation"]["source"]=json!("model_claim");
+        let unverified=trial(&rows,measured_policy(),"head","goal",
+            "model","provider","tools");
+        assert_ne!(unverified["status"],"judgement_holdout_candidate_preferred");
+    }
+
     #[test]
     fn cold_read_only_history_generates_live_edit_predicate(){
         let obj="objective";let domain="tools";
