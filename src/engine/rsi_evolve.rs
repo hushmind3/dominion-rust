@@ -1610,8 +1610,14 @@ fn autonomous_search_hypothesis(history:&[Value])->Option<Value> {
         && (row["newFindings"].as_u64().unwrap_or(0)==0
             || row["evaluation"]["verdict"]=="regressed")
     };
-    if !recent.iter().take(2).all(failure) {return None;}
-    let wasted=recent.iter().filter(|row|failure(row)).collect::<Vec<_>>();
+    let research_loop=recent.len()>=3 && recent.iter().take(3).all(|row|
+        row["accepted"]!=true
+        && row["candidateId"].is_null()
+        && row["tokens"].as_u64().unwrap_or(0)>0);
+    if !recent.iter().take(2).all(failure) && !research_loop {return None;}
+    let wasted=recent.iter().filter(|row|failure(row)
+        || research_loop && row["accepted"]!=true && row["candidateId"].is_null())
+        .collect::<Vec<_>>();
     let regressions=wasted.iter().filter(|row|
         row["evaluation"]["verdict"]=="regressed").count();
     let stalled=wasted.iter().filter(|row|row["candidateId"].is_null()).count();
@@ -1625,7 +1631,9 @@ fn autonomous_search_hypothesis(history:&[Value])->Option<Value> {
     let repeated=file_counts.values().filter(|count|**count>=2).count();
     let novelty_weight=(2+repeated.min(4)+stalled.min(2)) as u64;
     let repeat_weight=(3+2*repeated.min(3)) as u64;
-    let approach=if regressions>0 {"avoid_regressions"}else{"escape_barren_research"};
+    let approach=if regressions>0 {"avoid_regressions"}
+        else if research_loop {"escape_research_loop"}
+        else {"escape_barren_research"};
     let domain_expression=if regressions>0 {
         format!("objectiveMatch * 3 + successRate * 4 + exploration * 1.5 + novelty * {novelty_weight} - regressions * 2 - barrenRate - tokenCost * 0.3")
     } else {
@@ -2293,6 +2301,9 @@ fn generation_fits_remaining_budget(record:&Value,input:&Value)->bool {
 /// Permit a bounded correction and a pending self-synthesized search trial,
 /// but do not pay endlessly for identical research without source changes.
 fn should_stop_no_progress(streak: u64, research: bool, changed: bool, trial_pending:bool) -> bool {
+    // Even genuinely novel reading without patches cannot consume the entire
+    // campaign forever. A pending trial gets one extra bounded opportunity.
+    if streak>=6 {return true;}
     if research && changed {return false;}
     streak>=2 && (!trial_pending || streak>=4)
 }
@@ -2990,6 +3001,14 @@ pub(crate) async fn adopt(
 // (which actually runs the algorithm). Otherwise a trial policy can appear
 // in focusSelection even though no trial was executed.
 fn research_continuation(history: &[Value]) -> Option<String> {
+    // Research is useful only when it leads to an experiment. After three
+    // source-reading generations without an executable patch, force the
+    // next generation to change its strategy instead of endlessly reading.
+    let research_only=history.iter().rev().take(3)
+        .take_while(|row|row["accepted"]!=true && row["candidateId"].is_null()
+            && row["newFindings"].as_u64().unwrap_or(0)>0)
+        .count();
+    if research_only>=3 {return None;}
     history.last()
         .filter(|row| row["candidateId"].is_null()
             && row["newFindings"].as_u64().unwrap_or(0) > 0)
@@ -3356,6 +3375,27 @@ mod tests {
             &state,&selection_objective(&input),&["campaign-autonomous".into()]);
         assert_eq!(selected.as_ref().map(|a|a["id"].clone()),Some(queued["candidateId"].clone()),
             "the child must discover the synthesized trial with the same scope and owner");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repeated_research_without_code_switches_to_executable_policy_trial() {
+        let history=(0..3).map(|i|json!({
+            "id":format!("reading-{i}"),"domain":"memory","attempt":i+1,
+            "accepted":false,"candidateId":null,"newFindings":i+1,
+            "tokens":5000,"focusFiles":["src/engine/memory.rs"]
+        })).collect::<Vec<_>>();
+        assert_eq!(research_continuation(&history[..2]).as_deref(),Some("memory"));
+        assert!(research_continuation(&history).is_none(),
+            "three novel research passes without a patch must not monopolize the next generation");
+        let hypothesis=autonomous_search_hypothesis(&history).unwrap();
+        assert_eq!(hypothesis["hypothesisEvidence"]["class"],"escape_research_loop");
+        let (state,root)=state();
+        let report=propose_autonomous_search_trial(
+            &state,&history,"","research-loop",3,true);
+        assert_eq!(report["status"],"pending_trial","{report}");
+        let queued=pending_trial_candidate(&state,"",&["research-loop".to_string()]);
+        assert!(queued.is_some(),"next worker can execute the synthesized experiment");
         let _=std::fs::remove_dir_all(root);
     }
 
@@ -3833,6 +3873,8 @@ mod tests {
         assert!(should_stop_no_progress(4,false,false,true),
             "repeated stalled controls cannot consume an unbounded campaign");
         assert!(!should_stop_no_progress(3,true,true,false));
+        assert!(should_stop_no_progress(6,true,true,true),
+            "novel reading cannot postpone implementation forever");
     }
 
     #[test]
