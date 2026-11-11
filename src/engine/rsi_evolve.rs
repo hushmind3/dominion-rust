@@ -1680,10 +1680,18 @@ fn propose_autonomous_search_trial(
             && row["rsiTrial"]["status"]=="trial_rejected")
         .count().min(4);
     if prior_rejections>0 {
-        let original=hypothesis["parameters"]["targetExpression"].as_str().unwrap_or("");
-        let revised=format!("{original} + productiveEvidence * {} - repeatPenalty * {}",
-            2*prior_rejections,prior_rejections);
-        hypothesis["parameters"]["targetExpression"]=json!(revised);
+        if auto_focus {
+            let original=hypothesis["parameters"]["targetExpression"].as_str().unwrap_or("");
+            let revised=format!("{original} + productiveEvidence * {} - repeatPenalty * {}",
+                2*prior_rejections,prior_rejections);
+            hypothesis["parameters"]["targetExpression"]=json!(revised);
+        } else {
+            let original=hypothesis["parameters"]["expression"].as_str().unwrap_or("");
+            hypothesis["parameters"]["expression"]=json!(format!(
+                "{original} + exploration * {} - barrenRate * {}",
+                prior_rejections,prior_rejections
+            ));
+        }
         hypothesis["hypothesisEvidence"]["previousRejectedPolicies"]=json!(prior_rejections);
     }
     // Content-addressed IDs are campaign-specific: two independent trials
