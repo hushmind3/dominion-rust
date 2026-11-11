@@ -6595,6 +6595,105 @@ mod tests {
         let _=std::fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn success_compacted_descendant_edits_source_via_real_indexed_tool_runtime() {
+        use axum::{routing::post,Json,Router,response::IntoResponse};
+        async fn provider(Json(_body):Json<Value>)->axum::response::Response {
+            let response=format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                json!({"choices":[{"delta":{"content":"완료"}}]}),
+                json!({"choices":[{"delta":{},"finish_reason":"stop"}],
+                    "usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}));
+            ([(axum::http::header::CONTENT_TYPE,"text/event-stream")],response).into_response()
+        }
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {
+            axum::serve(listener,Router::new().route("/chat/completions",post(provider)))
+                .await.unwrap()
+        });
+        let (state,root)=state();
+        let _parent=parent(&state);
+        let path="src/engine/memory.rs";
+        std::fs::create_dir_all(state.config.workspace.join("src/engine")).unwrap();
+        std::fs::write(state.config.workspace.join(path),"fn old() {}\n").unwrap();
+        let index=crate::engine::code_index::refresh(
+            &state,&state.config.workspace).unwrap();
+        state.store.put("provider",&json!({"id":"index-provider","kind":"openai",
+            "baseUrl":format!("http://{address}"),"model":"test",
+            "toolMode":"native","enabled":true})).unwrap();
+        let input=json!({"rsiObjective":"memory improvement","rsiDomain":"memory",
+            "rsiKnowledgeSource":state.config.workspace,
+            "rsiSourceDir":state.config.workspace});
+        let parent=json!({"id":"accepted-parent","revision":"p1",
+            "name":"source patch","domain":"memory","status":"executable",
+            "assistanceMode":"harness_assisted","successfulApplications":1,
+            "applications":[{"accepted":true,"postconditionsPassed":true}],
+            "verification":{"type":"procedure",
+                "appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"read","tool":"workspace_read_range","arguments":{
+                    "path":path,"startLine":1,"endLine":1}},
+                    {"id":"edit","tool":"workspace_replace","arguments":{
+                        "path":path,"startLine":1,"endLine":1,
+                        "expectedSha256":"$read.sourceSha256",
+                        "newText":"fn improved() {}\n"}}],
+                "edges":[{"from":"read","to":"edit"}],
+                "after":[{"kind":"file_equals","path":path,
+                    "text":"fn improved() {}\n"}]}});
+        let child=json!({"id":"compacted-child","revision":"c1",
+            "name":"compact patch","domain":"memory","status":"candidate",
+            "assistanceMode":"harness_assisted","successfulApplications":0,
+            "synthesis":{"kind":"successful_read_ablation",
+                "parentMethodId":"accepted-parent","parentRevision":"p1"},
+            "verification":{"type":"procedure",
+                "appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"edit","tool":"workspace_replace","arguments":{
+                    "path":path,"startLine":1,"endLine":1,
+                    "expectedSha256":null,"newText":"fn improved() {}\n"}}],
+                "after":[{"kind":"file_equals","path":path,
+                    "text":"fn improved() {}\n"}]}});
+        state.store.put("experience",&json!({"id":"compact-experience",
+            "status":"active","partitionKey":research_scope(&input).partition_key,
+            "executableMethods":[parent,child]})).unwrap();
+        state.store.put("job",&json!({"id":"compact-generation",
+            "kind":"rsi_generation","status":"running",
+            "input":{"rsiCampaignId":"campaign",
+                "rsiSourceDir":state.config.workspace,"rsiIndexId":index["id"]}})).unwrap();
+        let mut session=json!({"id":"compact-session","providerId":"index-provider",
+            "rsiRun":true,"rsiObjective":"memory improvement",
+            "rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"compact-generation",
+            "rsiCodeIndexId":index["id"]});
+        configure_method_session(&state,&input,&mut session);
+        assert_eq!(session["rsiDecisionInput"]["reuseDecision"]["repairMethodId"],
+            "compacted-child");
+        assert_eq!(method_strategies(&state,&session).len(),1);
+        state.store.put("session",&session).unwrap();
+        let request=crate::engine::chat::TurnRequest::from_value(&json!({
+            "sessionId":"compact-session","input":"memory improvement",
+            "toolsEnabled":true,"toolsExecutionEnabled":true,"autoLearning":false
+        })).unwrap();
+        tokio::time::timeout(Duration::from_secs(10),
+            crate::engine::run_quiet(&state,&request)).await.unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(
+            state.config.workspace.join(path)).unwrap(),"fn improved() {}\n");
+        let operations=state.store.all("execution_operation").into_iter()
+            .filter(|op|op["sessionId"]=="compact-session"
+                && op["origin"]=="procedure").collect::<Vec<_>>();
+        assert_eq!(operations.iter().filter(|op|op["tool"]=="workspace_read_range").count(),0,
+            "learned compact program must truly omit the read");
+        assert!(operations.iter().any(|op|
+            op["tool"]=="workspace_replace" && op["status"]=="completed"
+                && op["result"]["written"]==true
+                && op["result"]["sourceHashRecoveredFromIndex"]==true));
+        collect_method_executions(&state,"compact-session",&state.config.workspace);
+        let receipt=state.store.get("session","compact-session").unwrap()
+            ["rsiMethodExecutions"].as_array().cloned().unwrap_or_default();
+        assert_eq!(receipt.len(),1);
+        assert_eq!(receipt[0]["result"]["followed"],true);
+        server.abort();
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn learned_method_unknown_verification_is_held_not_failed() {
         let (state,root)=state();
