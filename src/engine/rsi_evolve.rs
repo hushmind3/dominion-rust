@@ -278,10 +278,36 @@ fn search_strategy(algorithm: &Value, mode: &str) -> Value {
 fn executed_policy_rule(generation:&Value)->bool {
     let Some(rules)=generation["editPolicy"]["rules"].as_array() else {return true;};
     if rules.is_empty(){return true;}
-    generation["ruleExecutions"].as_array().is_some_and(|events|
-        events.iter().any(|event|
-            event["policyRevision"]==generation["editPolicy"]["revision"]
-            && rules.iter().any(|rule|rule["id"]==event["ruleId"])))
+    let Some(events)=generation["ruleExecutions"].as_array() else {return false;};
+    let Some(operations)=generation["toolTimeline"].as_array() else {return false;};
+    events.iter().any(|event|{
+        if event["policyRevision"]!=generation["editPolicy"]["revision"]
+            || !rules.iter().any(|rule|rule["id"]==event["ruleId"]) {
+            return false;
+        }
+        let Some(run)=event["runId"].as_str().filter(|s|!s.is_empty()) else {return false;};
+        let Some(before)=event["toolCalls"].as_u64() else {return false;};
+        // The generated action must actually have occurred *after* this rule
+        // fired, and a verified source write must follow in the same run.
+        // A rule observed after a patch cannot steal that patch's reward.
+        let acted=operations.iter().any(|op|{
+            op["runId"].as_str()==Some(run)
+                && op["opSeq"].as_u64().is_some_and(|seq|seq>before)
+                && op["status"]=="completed"
+                && event["allow"].as_array().is_some_and(|allowed|
+                    allowed.iter().any(|tool|tool==&op["tool"]))
+        });
+        let patched=operations.iter().any(|op|{
+            op["runId"].as_str()==Some(run)
+                && op["opSeq"].as_u64().is_some_and(|seq|seq>before)
+                && matches!(op["tool"].as_str(),
+                    Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))
+                && op["status"]=="completed"
+                && op["result"]["written"]==true
+                && op["toolReceipt"]["verified"]==true
+        });
+        acted && patched
+    })
 }
 fn edit_method_reward(generation:&Value)->f64 {
     if !executed_policy_rule(generation) {return 0.0;}
@@ -3977,8 +4003,23 @@ mod tests {
         assert_eq!(edit_method_reward(&invented),0.0,
             "a policy that did not execute cannot claim the improvement");
         let mut real=invented;
-        real["ruleExecutions"]=json!([{"ruleId":"rule-1","policyRevision":"rev-1"}]);
+        real["ruleExecutions"]=json!([{"ruleId":"rule-1","policyRevision":"rev-1",
+            "runId":"run-g1","toolCalls":1,"allow":["workspace_replace_range"]}]);
+        assert_eq!(edit_method_reward(&real),0.0,
+            "a rule receipt without downstream tool execution is not causal evidence");
+        real["toolTimeline"]=json!([
+            {"runId":"run-g1","opSeq":1,"tool":"workspace_read_range","status":"completed"},
+            {"runId":"run-g1","opSeq":2,"tool":"workspace_replace_range","status":"completed",
+                "result":{"written":true},"toolReceipt":{"verified":true}}
+        ]);
         assert_eq!(edit_method_reward(&real),1.0);
+        real["ruleExecutions"][0]["toolCalls"]=json!(3);
+        assert_eq!(edit_method_reward(&real),0.0,
+            "a rule activated after the patch must never inherit its reward");
+        real["ruleExecutions"][0]["toolCalls"]=json!(1);
+        real["ruleExecutions"][0]["allow"]=json!(["code_search"]);
+        assert_eq!(edit_method_reward(&real),0.0,
+            "a rule whose advertised action did not run is uncredited");
     }
 
     #[test]
