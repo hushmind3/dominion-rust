@@ -2861,9 +2861,12 @@ async fn run_loop(
         // Compute the same domain decision that the worker will use. Keep it
         // distinct from rsiSelectedDomain, which represents an explicit choice.
         let target_trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
+        let follow_up=transfer_failure_repair(&recorded_history)
+            .and_then(|plan|plan["domain"].as_str().map(str::to_string))
+            .or_else(||research_continuation(&recorded_history));
         let (target_domain,target_selection,target_strategy)=select_generation_strategy(
             &context.state,&recorded_history,&target_objective,
-            research_continuation(&recorded_history),target_trial,None,&head);
+            follow_up,target_trial,None,&head);
         // A previous coordinator's nextDomain is advice, not a frozen veto on
         // an evolved descendant selector. The worker rechecks the proposal.
         child_input["rsiTargetDomain"]=json!(target_domain);
@@ -2875,12 +2878,16 @@ async fn run_loop(
         if child_input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
             let ranked=choose_focus_files(&context.state,&child_input,&recorded_history,
                 target_policy.as_ref());
-            let selected=ranked.iter().filter_map(|row|row["path"].as_str())
+            let mut selected=ranked.iter().filter_map(|row|row["path"].as_str())
                 .map(str::to_string).collect::<Vec<_>>();
+            let repair=transfer_repair_focus(&recorded_history,&target_domain,&head)
+                .filter(|path|crate::engine::code_index::indexed_source_hash(
+                    &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),path).is_some());
+            if let Some(path)=repair.as_ref(){selected=vec![path.clone()];}
             child_input["rsiFocusFiles"]=json!(selected);
             child_input["rsiAutoFocus"]=json!(true);
             child_input["rsiFocusSelection"]=json!({
-                "source":"indexed_evidence",
+                "source":if repair.is_some(){"failed_method_transfer_repair"}else{"indexed_evidence"},
                 "candidates":ranked,
                 "policyRevision":target_policy.as_ref().map(|policy|policy["revision"].clone()),
                 "domain":target_domain,
@@ -3341,7 +3348,8 @@ async fn run_loop(
         if let Some(error)=generation_model_error(&current) {
             return Err(error.to_string());
         }
-        if no_edit && should_stop_no_progress(streak, research, changed) {
+        if no_edit && should_stop_no_progress(streak, research, changed)
+            && transfer_failure_repair(&decision_history).is_none() {
             // Sub1's corrective retry, bounded by evidence and attempt budget.
             // The next worker must CHANGE execution approach, not reread notes.
             if !(input["rsiAutonomous"]==true
@@ -3486,6 +3494,54 @@ fn corrective_retry_allowed(history:&[Value],streak:u64)->bool {
 // coordinator (which chooses source files) and by the native child worker
 // (which actually runs the algorithm). Otherwise a trial policy can appear
 // in focusSelection even though no trial was executed.
+/* A verified failed transfer is not just a rejected skill. The following
+ * generation should try a DIFFERENT implementation on the SAME actual source,
+ * using the observed failed tool and postcondition as its diagnosis.
+ * Only a real procedure-operation receipt can trigger this; neither an LLM
+ * assertion nor an unexecuted proposed method changes the execution plan.
+ * The retry is bounded to one generation and never bypasses paired adoption.
+ */
+fn transfer_failure_repair(history:&[Value])->Option<Value> {
+    let last=history.last()?;
+    let domain=last["domain"].as_str().filter(|domain| DOMAINS.contains(domain))?;
+    if last["accepted"]==true || last["domainSelection"]=="method_transfer_repair" {
+        return None;
+    }
+    let receipt=last["methodExecutions"].as_array()?.iter().find(|receipt|
+        receipt["crossDomain"]==true
+        && receipt["result"]["verified"]==true
+        && receipt["result"]["status"]=="violated"
+        && receipt["operationIds"].as_array().is_some_and(|ids|!ids.is_empty())
+        && receipt["focusPath"].as_str().is_some_and(crate::engine::rsi::safe_path)
+        && receipt["methodId"].as_str().is_some_and(|id|!id.is_empty())
+    )?;
+    Some(json!({
+        "domain":domain,"focusPath":receipt["focusPath"],
+        "methodId":receipt["methodId"],"revision":receipt["revision"],
+        "sourceGenerationId":last["id"],"generatorCommit":last["generatorCommit"],
+        "operationIds":receipt["operationIds"],"verification":receipt["result"]
+    }))
+}
+
+fn transfer_repair_focus(history:&[Value],domain:&str,commit:&str)->Option<String> {
+    let plan=transfer_failure_repair(history)?;
+    if plan["domain"].as_str()!=Some(domain) || plan["generatorCommit"].as_str()!=Some(commit) {
+        return None;
+    }
+    plan["focusPath"].as_str().map(str::to_string)
+}
+
+fn transfer_repair_instruction(plan:&Value)->String {
+    let reason=plan["verification"]["violations"].to_string()
+        .chars().take(480).collect::<String>();
+    format!("\n\n### 실제 실행에 실패한 학습 절차를 교정하세요\n실행 방법: {} (revision {}). 실행된 작업: {}. 현재 대상 파일: {}. 확인된 위반: {}.\n이전 절차는 이 분야에서 재사용이 차단되었습니다. 원본의 성공을 지우거나 같은 도구 인자를 재실행하지 마세요. 현재 파일을 조사한 후 다른 근거 있는 workspace_replace 수정 또는 새로운 rsi_method_propose 절차로 해결하세요. 실제 코드 변경과 후속 조건을 확인하고, 독립 holdout 평가 결과로 채택을 판단합니다. 절차 등록이나 설명만으로 완료하지 마세요.\n",
+        plan["methodId"].as_str().unwrap_or(""),
+        plan["revision"].as_str().unwrap_or(""),
+        plan["operationIds"],
+        plan["focusPath"].as_str().unwrap_or(""),
+        reason)
+}
+
 fn research_continuation(history: &[Value]) -> Option<String> {
     let last=history.last()?;
     let domain=last["domain"].as_str().filter(|domain| DOMAINS.contains(domain))?;
@@ -3517,6 +3573,13 @@ fn select_generation_strategy(
     generator_commit: &str,
 ) -> (String, &'static str, Value) {
     let active = crate::engine::algorithms::active(state, "selfimprove.search");
+    // A verified, actually executed source repair failure is an unfinished
+    // task. Give it one grounded correction before trying unrelated policies.
+    if let Some(repair)=transfer_failure_repair(history) {
+        if let Some(domain)=repair["domain"].as_str() {
+            return (domain.to_string(),"method_transfer_repair",Value::Null);
+        }
+    }
     // A queued executable policy trial must not be starved by a further
     // research-only turn. It still needs independent measurement before credit.
     let queued_trial = trial_id.as_deref()
@@ -3638,11 +3701,15 @@ fn reconcile_descendant_target(
             .and_then(|id|state.store.get("algorithm",id))
             .or_else(||crate::engine::algorithms::active(state,"selfimprove.search"));
         let ranked=choose_focus_files(state,&job["input"],history,policy.as_ref());
-        let selected=ranked.iter().filter_map(|item|item["path"].as_str())
+        let mut selected=ranked.iter().filter_map(|item|item["path"].as_str())
             .map(str::to_string).collect::<Vec<_>>();
+        let repair=transfer_repair_focus(history,domain,commit)
+            .filter(|path|crate::engine::code_index::indexed_source_hash(
+                state,index["id"].as_str().unwrap_or(""),path).is_some());
+        if let Some(path)=repair.as_ref(){selected=vec![path.clone()];}
         job["input"]["rsiFocusFiles"]=json!(selected);
         job["input"]["rsiFocusSelection"]=json!({
-            "source":"descendant_indexed_evidence",
+            "source":if repair.is_some(){"failed_method_transfer_repair"}else{"descendant_indexed_evidence"},
             "candidates":ranked,"domain":domain,
             "policyRevision":policy.as_ref().map(|item|item["revision"].clone()),
             "sourceIndexId":index["id"]
@@ -3727,7 +3794,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
-    let continuation = research_continuation(&history);
+    let continuation=transfer_failure_repair(&history)
+        .and_then(|plan|plan["domain"].as_str().map(str::to_string))
+        .or_else(||research_continuation(&history));
     let trial_id = job["input"]["rsiTrialAlgorithmId"]
         .as_str()
         .filter(|value| !value.is_empty())
@@ -3770,9 +3839,18 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
     let directive=job["input"]["rsiImprovementDirective"].clone();
-    let action_prompt=format!("{}\n\n### 이번 세대의 실행 방식\n{}\n실제 이전 세대 근거: {}\n",
+    let mut action_prompt=format!("{}\n\n### 이번 세대의 실행 방식\n{}\n실제 이전 세대 근거: {}\n",
         job["input"]["prompt"].as_str().unwrap_or(""),
         improvement_work_contract(&directive),directive);
+    // Preserve the Champion's action plan while adding exactly the *observed*
+    // failing method and target-specific violations for the next generator.
+    let transfer_repair=transfer_failure_repair(&history).filter(|plan|
+        plan["domain"].as_str()==Some(domain.as_str())
+        && plan["generatorCommit"].as_str()==Some(commit.as_str()));
+    job["input"]["rsiTransferRepair"]=transfer_repair.clone().unwrap_or(Value::Null);
+    if let Some(plan)=transfer_repair.as_ref(){
+        action_prompt.push_str(&transfer_repair_instruction(plan));
+    }
     let (full_prompt,worker_plan)=match fit_worker_context(
         &action_prompt,&domain,&capability,
         &feedback,job["input"]["rsiRemainingCampaignTokens"].as_u64()
@@ -6182,6 +6260,60 @@ mod tests {
         assert_eq!(session["rsiDecisionInput"]["reuseDecision"]["action"],"research_only");
         assert!(applicable_methods(&state,&partition,"memory",
             session["rsiMethodContext"].as_str().unwrap()).is_empty());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn real_failed_transfer_causes_one_targeted_corrective_generation() {
+        let (state,root)=state();
+        let failed=json!({
+            "id":"generation-tools-1","domain":"tools","generatorCommit":"same-commit",
+            "domainSelection":"algorithm_active","accepted":false,
+            "methodExecutions":[{
+                "methodId":"learned-from-memory","revision":"v1",
+                "crossDomain":true,"focusPath":"src/engine/tools.rs",
+                "operationIds":["real-dispatched-operation-42"],
+                "result":{"verified":true,"status":"violated",
+                    "violations":["file_contains: mismatch"]}
+            }]
+        });
+        let history=vec![failed.clone()];
+        let plan=transfer_failure_repair(&history).expect("verified tool failure must schedule repair");
+        assert_eq!(plan["methodId"],"learned-from-memory");
+        assert_eq!(transfer_repair_focus(&history,"tools","same-commit").as_deref(),
+            Some("src/engine/tools.rs"));
+        assert!(transfer_repair_focus(&history,"tools","changed-commit").is_none(),
+            "changed source cannot replay stale file-specific failure");
+        let directive=transfer_repair_instruction(&plan);
+        assert!(directive.contains("workspace_replace"));
+        assert!(directive.contains("src/engine/tools.rs"));
+        let (domain,selection,_)=select_generation_strategy(&state,&history,"tools",
+            Some("tools".to_string()),None,None,"same-commit");
+        assert_eq!(domain,"tools");
+        assert_eq!(selection,"method_transfer_repair");
+        let (domain_with_trial,mode_with_trial,_)=select_generation_strategy(
+            &state,&history,"tools",Some("tools".to_string()),
+            Some("pending-later-search-trial".to_string()),None,"same-commit");
+        assert_eq!(domain_with_trial,"tools");
+        assert_eq!(mode_with_trial,"method_transfer_repair",
+            "a concrete failed task outranks an unexecuted new hypothesis");
+        assert!(should_stop_no_progress(2,false,false),
+            "ordinary no-progress stop still applies");
+        assert!(transfer_failure_repair(&history).is_some(),
+            "the exact failed tool receipt earns a single corrective generation");
+
+        let mut already_repaired=failed.clone();
+        already_repaired["domainSelection"]=json!("method_transfer_repair");
+        assert!(transfer_failure_repair(&[failed.clone(),already_repaired]).is_none(),
+            "a failed repair must change approach rather than loop forever");
+        let mut unexecuted=failed.clone();
+        unexecuted["methodExecutions"][0]["operationIds"]=json!([]);
+        assert!(transfer_failure_repair(&[unexecuted]).is_none(),
+            "proposed but unexecuted methods are not repair evidence");
+        let mut unknown=failed;
+        unknown["methodExecutions"][0]["result"]["verified"]=json!(false);
+        assert!(transfer_failure_repair(&[unknown]).is_none(),
+            "uncertain checks cannot masquerade as a verified failure");
         let _=std::fs::remove_dir_all(root);
     }
 
