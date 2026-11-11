@@ -1,5 +1,9 @@
 name: Sub2 live local-model RSI proof
 
+# Experimental research is informed by GitHub AI-Scientist-v2's tested
+# experiment-tree approach and Agent Lightning's real-harness feedback.
+# Compiler-assisted patch repair is adapted from DOMINION sub3, with all
+# candidate gains still judged by the unchanged frozen A/B oracle.
 # Heavy Qwen/Ollama experiments are explicit opt-in, never auto-launched
 # by ordinary engine commits. The short native CI remains on every push.
 on:
@@ -67,8 +71,10 @@ jobs:
           node --check scripts/sub2-live-rsi.mjs
           cargo build --release --locked --bin dominion-rust
 
-      - name: Check source-induced descendants before expensive live inference
-        run: cargo test --release --locked --bin dominion-rust rsi_mutation::tests -- --nocapture
+      - name: Check source-derived descendants and compiler recovery before live inference
+        run: |
+          cargo test --release --locked --bin dominion-rust rsi_mutation::tests -- --nocapture
+          cargo test --release --locked --bin dominion-rust rsi_compiler_repair::tests -- --nocapture
 
       - name: Verify the actual campaign objective selects memory and improver only
         run: |
