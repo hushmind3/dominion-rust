@@ -3120,7 +3120,14 @@ fn select_generation_strategy(
     generator_commit: &str,
 ) -> (String, &'static str, Value) {
     let active = crate::engine::algorithms::active(state, "selfimprove.search");
-    if let Some(domain) = continuation {
+    // A genuine queued policy is work to execute, not another research note.
+    // Continue reading in the worker prompt, but give its trial/control turn
+    // priority so a four-generation budget can reach a real experiment.
+    let executable_trial=trial_id.as_deref()
+        .and_then(|id|state.store.get("algorithm",id))
+        .is_some_and(|algorithm|matches!(algorithm["rsiTrial"]["status"].as_str(),
+            Some("pending_trial"|"pending_second_trial")));
+    if let Some(domain) = continuation.filter(|_|!executable_trial) {
         return (domain, "research_continuation", Value::Null);
     }
     if let Some(id) = trial_id {
@@ -5573,6 +5580,33 @@ mod tests {
         assert_ne!(crate::engine::algorithms::active(&state,"selfimprove.search")
             .unwrap()["id"],id,
             "never automatically promote an exploratory search trial");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pending_executable_policy_gets_its_turn_before_another_research_continuation() {
+        let (state,root)=state();
+        let proposal=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"pending-before-research",
+            "source":"rsi-generated","implementation":"expression",
+            "parameters":{"expression":"objectiveMatch + exploration"}
+        })).unwrap();
+        let id=proposal["id"].as_str().unwrap().to_string();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        assert_eq!(queue_search_trial(&state,&proposal,&active,&[],
+            "memory","pending-owner",1)["status"],"pending_trial");
+        let history=vec![json!({"domain":"memory","accepted":false,
+            "candidateId":null,"newFindings":2})];
+        assert_eq!(research_continuation(&history).as_deref(),Some("memory"));
+        let (domain,selection,strategy)=select_generation_strategy(
+            &state,&history,"memory",research_continuation(&history),
+            Some(id.clone()),None,"commit-1");
+        assert_eq!(domain,"memory");
+        assert_eq!(selection,"algorithm_active",
+            "control for an executable policy must not wait behind another research generation");
+        assert_eq!(strategy["pendingCandidateId"],id);
+        assert_ne!(strategy["id"],proposal["id"],
+            "the first turn still executes the active control, not a false trial");
         let _=std::fs::remove_dir_all(root);
     }
 
