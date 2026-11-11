@@ -378,8 +378,20 @@ async fn validate(worktree:&Worktree,patch:&str)->Vec<Value> {
     let web_change=patch.lines().any(|line|line.starts_with("diff --git a/web/"));
     if rust_change {
         let mut command=Command::new(cargo_executable());
-        command.current_dir(&worktree.path).args(["check","--all-targets"]);
-        checks.push(check_result("cargo check --all-targets",run(command,CHECK_LIMIT).await));
+        command.current_dir(&worktree.path)
+            .args(["check","--release","--all-targets"]);
+        // Each generation uses a separate detached worktree. Without the
+        // coordinator's shared target dir every validation cold-compiles
+        // dependencies, exhausting the budget before it can examine the
+        // model-authored patch. Reuse build artifacts, NEVER source bytes.
+        if let Some(dir)=std::env::var_os("DOMINION_RSI_BUILD_TARGET_DIR") {
+            let target=PathBuf::from(dir);
+            if target.is_absolute() && target.is_dir(){
+                command.env("CARGO_TARGET_DIR",&target);
+            }
+        }
+        checks.push(check_result("cargo check --release --all-targets",
+            run(command,CHECK_LIMIT).await));
     }
     if web_change {
         let installed=worktree.source.join("web/node_modules");
