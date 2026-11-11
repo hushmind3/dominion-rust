@@ -273,12 +273,6 @@ fn search_strategy(algorithm: &Value, mode: &str) -> Value {
 /// presents first. Selection is re-estimated from actual *prior* executions.
 /// Candidate creation is useful intermediate evidence, never equal to quality
 /// improvement or permission to adopt an unverified policy.
-const RSI_EDIT_METHODS: &[(&str,u64,&str)] = &[
-    ("balanced",3,"workspace_replace_range"),
-    ("focused-range",2,"workspace_replace_range"),
-    ("exact-context",4,"workspace_replace"),
-];
-
 fn edit_method_reward(generation:&Value)->f64 {
     if generation["accepted"]==true
         && generation["evidenceVerified"]==true
@@ -303,48 +297,9 @@ fn edit_method_reward(generation:&Value)->f64 {
 /// supplies a reward. Untried methods get exploration priority so failure
 /// can alter the *next algorithm*, not just the next explanation.
 fn synthesize_edit_method(history:&[Value])->Value {
-    let observed=history.iter().filter(|g|
-        g["jobId"].as_str().is_some_and(|id|!id.is_empty())
-        && g["tokens"].as_u64().is_some_and(|tokens|tokens>0)
-        && g["editPolicy"]["method"].as_str().is_some_and(|name|
-            RSI_EDIT_METHODS.iter().any(|(candidate,_,_)|name==*candidate))
-    ).collect::<Vec<_>>();
-    if observed.is_empty() {
-        return json!({"method":"balanced","checkpointAfter":3,
-            "preferredTool":"workspace_replace_range",
-            "revision":crate::engine::memory::stable_id(&["rsi.edit-method","balanced"]),
-            "observations":0,"basis":"initial_exploration_not_improvement_proof"});
-    }
-    let total=observed.len() as f64;
-    let mut selection=("balanced",3u64,"workspace_replace_range",f64::NEG_INFINITY,0u64,0.0f64);
-    for (method,checkpoint,tool) in RSI_EDIT_METHODS {
-        let rows=observed.iter().filter(|g|g["editPolicy"]["method"]==*method)
-            .collect::<Vec<_>>();
-        let count=rows.len() as f64;
-        // The production budget is shared by every trial. Penalize costly
-        // attempts with no independent quality effect, but retain exploration.
-        let reward=rows.iter().map(|g| {
-            let cost=(g["tokens"].as_u64().unwrap_or(0) as f64 / 100_000.0).min(1.0);
-            (edit_method_reward(g)-cost*0.08).clamp(0.0,1.0)
-        }).sum::<f64>();
-        let estimate=(reward+0.15)/(count+1.0);
-        let exploration=(2.0*(total+1.0).ln()/(count+1.0)).sqrt();
-        let score=estimate+exploration;
-        if score>selection.3 {
-            selection=(method,*checkpoint,tool,score,count as u64,reward);
-        }
-    }
-    json!({
-        "method":selection.0,"checkpointAfter":selection.1,
-        "preferredTool":selection.2,
-        "revision":crate::engine::memory::stable_id(&[
-            "rsi.edit-method","ucb-v1",selection.0,
-            &format!("{}",observed.len()),&format!("{:.4}",selection.5)]),
-        "observations":observed.len(),
-        "selectedSamples":selection.4,
-        "score":selection.3,
-        "basis":"observed_worker_outcomes_ucb_not_causal_improvement_proof"
-    })
+    // DOMINION now composes new runnable edit/verification controllers from
+    // observed outcomes. It does not pick from the old three named modes.
+    crate::engine::rsi_edit_genome::evolve(history,edit_method_reward)
 }
 
 /// Learn across completed generations and follow-up campaigns for the same
