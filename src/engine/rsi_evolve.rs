@@ -1055,6 +1055,7 @@ fn choose_focus_files(
         // Revisit those exact patched files rather than a generic top-ranking
         // file. A new source revision invalidates the association.
         if let Some(candidate)=followup["candidateId"].as_str()
+            .or_else(||followup["attemptedCandidateId"].as_str())
             .and_then(|id|state.store.get("rsi_candidate",id)) {
             let current_commit=input["rsiGeneratorCommit"].as_str().unwrap_or("");
             if !current_commit.is_empty() && candidate["baseCommit"]==current_commit {
@@ -1130,12 +1131,26 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
         if !recent.is_empty() {
             text.push_str("\n### 이전 시도의 실제 결과\n");
             for generation in recent.into_iter().rev() {
-                let candidate=generation["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id));
+                let candidate=generation["candidateId"].as_str()
+                    .or_else(||generation["attemptedCandidateId"].as_str())
+                    .and_then(|id|state.store.get("rsi_candidate",id));
                 let evidence=json!({"accepted":generation["accepted"],"commit":generation["acceptedCommit"],
-                    "hypothesis":candidate.as_ref().map(|c|&c["hypothesis"]),"paths":candidate.as_ref().map(|c|&c["paths"]),
+                    "candidateId":candidate.as_ref().map(|c|&c["id"]),
+                    "hypothesis":candidate.as_ref().map(|c|&c["hypothesis"]),
+                    "paths":candidate.as_ref().map(|c|&c["paths"]),
+                    "validation":generation["candidateCapture"]["checksPassed"],
                     "verdict":generation["evaluation"]["verdict"],"error":generation["error"]});
                 text.push_str(&format!("- {}세대: {}\n",generation["attempt"],
                     evidence.to_string().chars().take(1800).collect::<String>()));
+                // The failed candidate's detached worktree is already removed.
+                // Rehydrate a bounded *real* patch excerpt, not a guessed edit.
+                if generation["accepted"]!=true {
+                    if let Some(patch)=candidate.as_ref().and_then(|c|c["patch"].as_str()) {
+                        text.push_str("  이전 후보의 실제 변경 일부 (기준 소스에서 수정하세요):\n");
+                        text.push_str(&patch.chars().take(2200).collect::<String>());
+                        text.push('\n');
+                    }
+                }
             }
         }
     }
@@ -3335,7 +3350,7 @@ fn improvement_work_contract(directive:&Value) -> &'static str {
     match directive["mode"].as_str().unwrap_or("discover") {
         "implement_research" => "이번 세대는 연구 반복이 아니라 구현 단계입니다. 사용자가 지정한 파일이나 이전 세대의 실제 소스 근거에서 구체적인 수정 지점을 찾아 workspace_replace 또는 workspace_write를 실행하고 검증 사례를 시험하세요. 제공된 발췌로 수정이 가능하면 같은 소스 검색·자료 요약만 반복하지 마세요. 편집 도구가 실패하면 오류를 읽고 다른 실제 수정안을 시도하세요.",
         "repair_counterexample" => "이전 후보는 검증에서 실패했습니다. 실패한 holdout 사례와 코드 차이를 먼저 확인하고 그 실패 원인을 해결하는 별도의 수정을 시험하세요. 과거 패치를 그대로 반복하지 마세요.",
-        "revise_candidate" => "이전 수정은 채택되지 않았습니다. 실제 실패하거나 미측정된 사례를 확인하고 가설·수정 위치를 바꿔 새 후보를 평가하세요. 이전 후보의 성공을 가정하지 마세요.",
+        "revise_candidate" => "이전 실제 수정 후보의 검증 실패를 교정하세요. 이전 후보의 경로·패치·컴파일 오류를 확인하고, 원래 소스 기준으로 새로운 workspace_replace 변경을 실행해 후보를 다시 평가하세요. 검사 실패를 단순 아이디어나 성공으로 취급하지 마세요.",
         "change_approach" => "같은 접근의 반복이 성과를 내지 못했습니다. 이전에 시도한 파일·가설·실패 원인을 근거로 다른 코드 위치나 구현 전략을 선택하여 변경과 검증을 시도하세요. 반복 연구만 하는 것은 실패입니다.",
         "extend_verified_capability" => "이전 세대에서 검증된 구현이 있습니다. 그 코드를 다시 만드는 대신 계승된 실행기의 개선 방법으로 새로운 결함이나 다른 능력을 찾아 독립적으로 검증하세요.",
         _ => "시스템의 실제 실패 원인을 찾고, 수정 가설과 검사 가능한 비교 사례를 만든 뒤 구현하고 비교하세요. 추측이나 연구 목록은 채택 성과가 아닙니다.",
