@@ -601,14 +601,17 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     if let Some(worktree)=&rsi_workspace {scoped_state.config.workspace=worktree.path.clone();}
     let mut message = run_quiet(&scoped_state, &request).await;
     let result = if let Some(worktree)=&rsi_workspace {
-        // At most 2 model repair calls after a grounded verifier failure.
-        // All attempts share the same detached worktree and model selection.
-        const MAX_REPAIRS:usize=2;
+        // The evolved verification controller sets a bounded number of
+        // verifier-guided source repairs. This is an executed decision, not a
+        // suggestion in the model prompt. Every attempt shares one isolated
+        // worktree and its source/version receipts.
+        let max_repairs=input["rsiEditPolicy"]["repairLimit"]
+            .as_u64().unwrap_or(2).min(3) as usize;
         let mut attempts=Vec::<Value>::new();
         let mut finished=crate::engine::rsi_worktree::finish(
             context,job,worktree,message,&session_id
         ).await;
-        for revision in 0..MAX_REPAIRS {
+        for revision in 0..max_repairs {
             let Some(feedback)=finished.as_ref().ok()
                 .and_then(crate::engine::rsi_worktree::repair_feedback) else {break;};
             // Cancellation or process restart is never a reason to replay a write.
