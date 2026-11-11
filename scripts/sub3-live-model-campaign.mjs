@@ -104,6 +104,24 @@ if(mode==='probe'){
       'campaign_finished':'campaign_timeout';
     trace.status=last.status;trace.result=last.result||null;
     trace.stopReason=last.evolution?.stopReason||last.result?.evolution?.stopReason||null;
+    const editTools=new Set(['workspace_replace','workspace_write']);
+    const countCalls=(generation,names)=>generation.toolsUsed
+      .filter(tool=>names.has(tool.tool)).reduce((sum,tool)=>sum+(tool.calls||0),0);
+    const sourceEditCalls=trace.generationEvidence.reduce((sum,g)=>
+      sum+countCalls(g,editTools),0);
+    const candidateCount=trace.generationEvidence.filter(g=>g.candidateId).length;
+    const accepted=trace.generationEvidence.filter(g=>g.accepted===true
+      && typeof g.acceptedCommit==='string' && g.acceptedCommit.length>0);
+    trace.summary={
+      modelCalls:trace.generationEvidence.reduce((sum,g)=>sum+(g.tokenUsage?.calls||0),0),
+      sourceEditCalls,candidateCount,acceptedGenerations:accepted.length,
+      acceptedCommits:accepted.map(g=>g.acceptedCommit),
+      readOnlyGenerations:trace.generationEvidence.filter(g=>!g.candidateId
+        && countCalls(g,new Set(['code_search','workspace_read_range']))>0).length,
+      independentlyVerifiedImprovement:accepted.some(g=>g.verdict==='improved'),
+      note:'CI completed does not imply an accepted model-generated RSI improvement'
+    };
+    trace.actualCompletion=trace.summary.independentlyVerifiedImprovement;
     if(trace.phase==='campaign_timeout')trace.errors.push('campaign did not finish before runner deadline');
     save(trace);
     console.log(JSON.stringify({phase:trace.phase,status:trace.status,jobId:trace.jobId,
