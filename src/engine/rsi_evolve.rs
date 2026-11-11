@@ -3653,7 +3653,8 @@ mod tests {
             "focusFiles":["src/engine/memory.rs"]});
         let directive=grounded_next_experiment(&state,&[generation.clone()]).unwrap();
         assert!(directive.contains("src/engine/memory.rs"));
-        assert!(directive.contains("실제 파일 수정 도구"));
+        assert!(directive.contains("workspace_replace"),
+            "next generation must receive the actual source-edit tool contract: {directive}");
         state.store.put("rsi_run",&json!({
             "id":"rsi-run-child-1","jobId":"child-1",
             "checks":[{"label":"cargo check --all-targets","passed":false,
