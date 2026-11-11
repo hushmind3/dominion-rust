@@ -42,6 +42,16 @@ fn task_input<'a>(session: &'a Value, input: &'a str) -> &'a str {
     } else {input}
 }
 
+/// RSI source edits are tool-heavy, model-dependent generations. The outer
+/// campaign has its own (usually longer) time budget and separately bounds
+/// the subprocess; a fixed conversational 10-minute kill was discarding real
+/// Qwen edits before the detached diff could be collected.
+fn elapsed_limit_for_session(session:&Value)->std::time::Duration {
+    if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {
+        std::time::Duration::from_secs(840)
+    } else {MAX_ELAPSED}
+}
+
 fn rsi_output_allowance(spent: u64, input: u64) -> Result<u64,String> {
     let remaining=MAX_TOKENS.saturating_sub(spent).saturating_sub(input);
     if remaining<256 {return Err(format!("토큰 예산({MAX_TOKENS})이 부족해 다음 호출 전에 중단했습니다."));}
@@ -304,9 +314,10 @@ async fn run_turn_with_policy(
             state.store.put("execution", &execution);
         }
     }
+    let elapsed_limit=elapsed_limit_for_session(&session);
     let result = tokio::select! {
-        result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
-            result.unwrap_or_else(|_| Err("실행 시간 제한(10분)을 초과했습니다.".into())),
+        result = tokio::time::timeout(elapsed_limit, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
+            result.unwrap_or_else(|_| Err(format!("실행 시간 제한({}분)을 초과했습니다.",elapsed_limit.as_secs()/60))),
         // A closed SSE client must not destroy work already in flight. The turn
         // keeps running in its spawned task; only an explicit cancel or the
         // elapsed budget stops it. Results stay durable for later reads.
@@ -913,7 +924,7 @@ async fn run_turn_body(
         "maxRounds": max_rounds,
         "maxToolCalls": max_tools,
         "maxTokens": if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {Value::Null}else{json!(MAX_TOKENS)},
-        "maxElapsedMs": MAX_ELAPSED.as_millis() as u64,
+        "maxElapsedMs": elapsed_limit_for_session(&session).as_millis() as u64,
     });
     record_selection_snapshot(
         state,
@@ -964,7 +975,8 @@ async fn run_turn_body(
     let mut adaptation_attempts = 0usize;
     let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
-    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
+    let elapsed_limit=elapsed_limit_for_session(&session);
+    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, elapsed_limit);
     let mut rsi_decision_checkpoint = false;
     let mut rsi_edit_only_announced=false;
     let mut rsi_edit_retry=false;
@@ -1000,14 +1012,14 @@ async fn run_turn_body(
             return Err("모델 라운드 예산을 초과했습니다.".into());
         }
         if budget.expired() {
-            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
+            return Err(format!("실행 시간 제한({}분)을 초과했습니다.",elapsed_limit.as_secs()/60));
         }
         if state.is_cancelled(session_id) || state.cancellation_generation(session_id) != generation
         {
             return Err("실행이 중단되었습니다.".into());
         }
-        if started_at.elapsed() > MAX_ELAPSED {
-            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
+        if started_at.elapsed() > elapsed_limit {
+            return Err(format!("실행 시간 제한({}분)을 초과했습니다.",elapsed_limit.as_secs()/60));
         }
         if metrics.lock().unwrap().tool_calls as usize >= max_tools {
             mark_budget_exhausted(state, execution_id);
@@ -6171,6 +6183,18 @@ mod harness_tool_selection_tests {
         assert_eq!(rsi_output_allowance(240_000,9_000).unwrap(),1000);
         assert!(rsi_output_allowance(249_000,1000).is_err());
         assert_eq!(rsi_output_allowance(0,1000).unwrap(),8192);
+    }
+
+    #[test]
+    fn long_running_rsi_uses_campaign_bounded_worker_time_not_chat_limit() {
+        let normal=json!({"kind":"conversation"});
+        let room=json!({"rsiRun":true,"roomId":"room1"});
+        let rsi=json!({"rsiRun":true,"rsiCampaignId":"rsi-123"});
+        let ad_hoc=json!({"rsiRun":true});
+        assert_eq!(elapsed_limit_for_session(&normal),MAX_ELAPSED);
+        assert_eq!(elapsed_limit_for_session(&room),MAX_ELAPSED);
+        assert_eq!(elapsed_limit_for_session(&ad_hoc),MAX_ELAPSED);
+        assert_eq!(elapsed_limit_for_session(&rsi).as_secs(),840);
     }
 
     #[test]

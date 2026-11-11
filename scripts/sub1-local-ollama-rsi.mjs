@@ -51,10 +51,10 @@ async function run(){
     mode:"continuous",confirmation:"START_RSI_EVOLUTION",selectionPolicy:"automatic",
     providerId:report.providerId,model,request,
     focusFiles:["src/engine/decompose.rs"],maxAttempts:3,
-    tokenBudget:70000,timeBudgetSeconds:1200},120000);
+    tokenBudget:70000,timeBudgetSeconds:2100},120000);
  report.jobId=started.id;if(!report.jobId)throw Error("RSI campaign job missing");
  report.status="running";persist();
- const deadline=Date.now()+22*60*1000;
+ const deadline=Date.now()+35*60*1000;
  while(Date.now()<deadline) {
   await sleep(10000);
   const result=await json(host+"/api/jobs/"+encodeURIComponent(report.jobId));
