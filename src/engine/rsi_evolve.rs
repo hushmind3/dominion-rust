@@ -3011,6 +3011,8 @@ async fn run_loop(
         let target_trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
         let follow_up=transfer_failure_repair(&recorded_history)
             .and_then(|plan|plan["domain"].as_str().map(str::to_string))
+            .or_else(||adopted_source_continuation(&recorded_history,&head)
+                .and_then(|plan|plan["domain"].as_str().map(str::to_string)))
             .or_else(||research_continuation(&recorded_history));
         let (target_domain,target_selection,target_strategy)=select_generation_strategy(
             &context.state,&recorded_history,&target_objective,
@@ -3071,6 +3073,7 @@ async fn run_loop(
                 .map(str::to_string).collect::<Vec<_>>();
             let repair=transfer_repair_focus(&recorded_history,&target_domain,&head)
                 .or_else(||integrity_repair_focus(&recorded_history,&target_domain,&head))
+                .or_else(||adopted_source_focus(&recorded_history,&target_domain,&head))
                 .filter(|path|crate::engine::code_index::indexed_source_hash(
                     &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),path).is_some());
             if let Some(path)=repair.as_ref(){selected=vec![path.clone()];}
@@ -4220,6 +4223,38 @@ fn transfer_repair_instruction(plan:&Value)->String {
         reason)
 }
 
+/// A real independent adoption is the start of a descendant improvement,
+/// not a signal to rotate to an unrelated source domain. The descendant is
+/// rebuilt from acceptedCommit; its first opportunity must remain on the
+/// exact improved capability, then it may freely explore other domains.
+fn adopted_source_continuation(history:&[Value],commit:&str)->Option<Value>{
+    let last=history.last()?;
+    if last["accepted"]!=true || last["acceptedCommit"].as_str()!=Some(commit)
+        || last["acceptedProof"]["status"]!="verified"
+        || last["acceptedProof"]["evaluation"]["metrics"]["eligible"]!=true
+        || last["acceptedProof"]["evaluation"]["metrics"]["regressions"].as_u64()!=Some(0)
+        || last["acceptedProof"]["evaluation"]["metrics"]["improvedHoldouts"]
+            .as_u64().unwrap_or(0)==0 {
+        return None;
+    }
+    let domain=last["domain"].as_str().filter(|d|DOMAINS.contains(d))?;
+    let hashes=last["acceptedSourceHashes"].as_object()?;
+    let file=last["focusFiles"].as_array()?.iter().filter_map(Value::as_str)
+        .find(|path|crate::engine::rsi::safe_path(path)
+            && hashes.get(*path).and_then(Value::as_str).is_some_and(|sha|
+                sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit())))?;
+    Some(json!({"domain":domain,"focusPath":file,
+        "adoptedCommit":commit,"parentGenerationId":last["id"],
+        "parentProgramRevision":last["actionProgramTrial"]["revision"],
+        "reason":"independent_adopted_source_followup"}))
+}
+
+fn adopted_source_focus(history:&[Value],domain:&str,commit:&str)->Option<String>{
+    let plan=adopted_source_continuation(history,commit)?;
+    (plan["domain"].as_str()==Some(domain))
+        .then(||plan["focusPath"].as_str().map(str::to_string)).flatten()
+}
+
 fn research_continuation(history: &[Value]) -> Option<String> {
     let last=history.last()?;
     let domain=last["domain"].as_str().filter(|domain| DOMAINS.contains(domain))?;
@@ -4263,6 +4298,11 @@ fn select_generation_strategy(
             if let Some(domain)=repair["domain"].as_str() {
                 return (domain.to_string(),"source_integrity_repair",Value::Null);
             }
+        }
+    }
+    if let Some(parent)=adopted_source_continuation(history,generator_commit){
+        if let Some(domain)=parent["domain"].as_str(){
+            return (domain.to_string(),"adopted_source_descendant",Value::Null);
         }
     }
     // A queued executable policy trial must not be starved by a further
@@ -4390,6 +4430,7 @@ fn reconcile_descendant_target(
             .map(str::to_string).collect::<Vec<_>>();
         let repair=transfer_repair_focus(history,domain,commit)
             .or_else(||integrity_repair_focus(history,domain,commit))
+            .or_else(||adopted_source_focus(history,domain,commit))
             .filter(|path|crate::engine::code_index::indexed_source_hash(
                 state,index["id"].as_str().unwrap_or(""),path).is_some());
         if let Some(path)=repair.as_ref(){selected=vec![path.clone()];}
@@ -4484,6 +4525,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let continuation=transfer_failure_repair(&history)
         .and_then(|plan|plan["domain"].as_str().map(str::to_string))
         .or_else(||source_integrity_repair(&history)
+            .and_then(|plan|plan["domain"].as_str().map(str::to_string)))
+        .or_else(||adopted_source_continuation(&history,
+            job["input"]["rsiGeneratorCommit"].as_str().unwrap_or(""))
             .and_then(|plan|plan["domain"].as_str().map(str::to_string)))
         .or_else(||research_continuation(&history));
     let trial_id = job["input"]["rsiTrialAlgorithmId"]
