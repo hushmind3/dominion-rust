@@ -2852,11 +2852,16 @@ async fn run_loop(
         // Warm-start an empty campaign from matching prior evidence rather
         // than sending the next model back to discovery-only research.
         let action_history=if recorded_history.is_empty() {
-            matching_prior_campaign(&context.state,input,record)
-                .and_then(|prior|prior["history"].as_array().cloned())
-                .unwrap_or_default()
+            let latest=improvement_history(
+                &context.state,&child_input,&recorded_history,&context.job_id);
+            if latest.is_empty() {
+                matching_prior_campaign(&context.state,input,record)
+                    .and_then(|prior|prior["history"].as_array().cloned())
+                    .unwrap_or_default()
+            } else {latest}
         } else {recorded_history.clone()};
-        child_input["rsiImprovementDirective"]=improvement_directive(&action_history);
+        child_input["rsiImprovementDirective"]=
+            generation_improvement_directive(&child_input,&action_history);
         let target_objective=selection_objective(&child_input);
         // Compute the same domain decision that the worker will use. Keep it
         // distinct from rsiSelectedDomain, which represents an explicit choice.
@@ -3293,6 +3298,9 @@ async fn run_loop(
         // Workers read this durable table, not the coordinator's in-memory
         // history. Publish only after research, method feedback and trial
         // outcomes are complete so the next worker can actually continue.
+        // Preserve ordering within the same SQLite createdAt second.
+        generation["completedAt"]=json!(chrono::Utc::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis,true));
         context.state.store.put("rsi_generation", &generation)
             .ok_or("완성된 세대의 연구·실행 결과 저장 실패")?;
         record["history"]
@@ -3465,6 +3473,87 @@ fn improvement_directive(history:&[Value]) -> Value {
         "evidenceHashes":last["knowledgeArtifactHashes"].as_array().map(|rows|
             rows.iter().take(6).cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "previousError":last["error"].as_str().unwrap_or("").chars().take(300).collect::<String>()})
+}
+
+fn generation_improvement_directive(input:&Value,history:&[Value])->Value{
+    if history.is_empty() && input["rsiAutonomous"]==false
+        && input["rsiFocusFiles"].as_array().is_some_and(|paths|!paths.is_empty())
+    {
+        let goal=input["rsiObjective"].as_str().unwrap_or("").to_lowercase();
+        if ["fix","repair","modify","implement","patch","고쳐","고치","수정","구현","교정","개선"]
+            .iter().any(|verb|goal.contains(*verb))
+        {
+            return json!({"mode":"implement_research",
+                "sourceGenerationId":null,
+                "reason":"explicit_owner_patch_request_with_source",
+                "attemptedAgain":false});
+        }
+    }
+    improvement_directive(history)
+}
+
+/// Preserve chronological ordering across new millisecond RFC3339 records
+/// and older SQLite-created timestamps (YYYY-MM-DD HH:MM:SS, UTC).
+fn generation_completion_millis(row:&Value)->i64 {
+    row["completedAt"].as_str()
+        .and_then(|text|chrono::DateTime::parse_from_rfc3339(text).ok())
+        .map(|date|date.timestamp_millis())
+        .or_else(||row["createdAt"].as_str().and_then(|text|
+            chrono::NaiveDateTime::parse_from_str(text,"%Y-%m-%d %H:%M:%S")
+                .ok().map(|date|date.and_utc().timestamp_millis())))
+        .unwrap_or(i64::MIN)
+}
+
+/// A new campaign inherits the last *outcome*, not only the last discovery.
+/// Otherwise a research→failed implementation sequence restarts as
+/// research→the identical failed implementation forever. A newer accepted
+/// candidate (or a newer changed source revision) ends that failed lineage.
+fn improvement_history(state:&AppState,input:&Value,history:&[Value],campaign_id:&str)->Vec<Value>{
+    if !history.is_empty() {return history.to_vec();}
+    let partition=research_scope(input).partition_key;
+    let objective=crate::engine::memory::stable_id(&[
+        input["rsiObjective"].as_str().unwrap_or("")]);
+    let mut previous=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["campaignId"]!=campaign_id
+            && row["knowledgePartition"]==partition
+            && row["objectiveId"]==objective)
+        .collect::<Vec<_>>();
+    // Preserve the actual latest outcome across campaign boundaries.
+    // completedAt is high-resolution and survives Store::get, which replaces
+    // createdAt with the SQLite-created seconds-resolution timestamp.
+    previous.sort_by(|a,b| {
+        generation_completion_millis(b).cmp(&generation_completion_millis(a))
+            .then_with(|| {
+                if a["campaignId"]==b["campaignId"] {
+                    b["attempt"].as_u64().cmp(&a["attempt"].as_u64())
+                } else {std::cmp::Ordering::Equal}
+            })
+            .then_with(||b["id"].as_str().cmp(&a["id"].as_str()))
+    });
+    let Some(latest)=previous.first() else {return Vec::new();};
+    // Never resurrect an old research directive after a newer implementation
+    // was adopted, rejected, or evaluated as a candidate.
+    if latest["accepted"]==true || latest["candidateId"].is_string() {
+        return Vec::new();
+    }
+    let active_research=latest["newFindings"].as_u64().unwrap_or(0)>0
+        && latest["knowledgeId"].as_str().is_some_and(|id|
+            state.store.get("experience",id).is_some_and(|record|
+                record["status"]=="active" && record["partitionKey"]==partition));
+    if active_research {return vec![latest.clone()];}
+    // An empty/no-patch generation matters only if it actually attempted to
+    // follow a prior improvement instruction on the SAME source revision.
+    // Prior evidence remains in the experience store; it is not mistaken for
+    // a fresh discovery when the model fails to turn it into source code.
+    let attempted=matches!(latest["improvementDirective"]["mode"].as_str(),
+        Some("implement_research"|"repair_counterexample"|"revise_candidate"|"change_approach"))
+        && latest["newFindings"].as_u64().unwrap_or(0)==0;
+    let source=input["rsiBaseCommit"].as_str()
+        .or_else(||input["rsiGeneratorCommit"].as_str())
+        .filter(|sha|!sha.is_empty());
+    let same_source=source.is_some_and(|sha|
+        latest["generatorCommit"].as_str()==Some(sha));
+    if attempted && same_source {vec![latest.clone()]} else {Vec::new()}
 }
 
 fn improvement_work_contract(directive:&Value)->&'static str {
@@ -3887,6 +3976,109 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explicit_owner_patch_starts_with_execution_without_wasting_a_discovery_generation() {
+        let patch=json!({"rsiAutonomous":false,
+            "rsiObjective":"Fix the failing Korean text splitting algorithm",
+            "rsiFocusFiles":["src/engine/decompose.rs"]});
+        let directive=generation_improvement_directive(&patch,&[]);
+        assert_eq!(directive["mode"],"implement_research");
+        assert_eq!(directive["reason"],"explicit_owner_patch_request_with_source");
+        let auto=json!({"rsiAutonomous":true,
+            "rsiObjective":"Improve DOMINION autonomously",
+            "rsiFocusFiles":["src/engine/decompose.rs"]});
+        assert_eq!(generation_improvement_directive(&auto,&[])["mode"],"discover");
+        let inspect=json!({"rsiAutonomous":false,
+            "rsiObjective":"Inspect current memory retrieval performance",
+            "rsiFocusFiles":["src/engine/memory.rs"]});
+        assert_eq!(generation_improvement_directive(&inspect,&[])["mode"],"discover");
+        let failure=json!({"id":"failed","improvementDirective":{"mode":"implement_research"},
+            "improvementActionObservation":{"status":"not_followed"},
+            "newFindings":0,"candidateId":null,"accepted":false});
+        assert_eq!(generation_improvement_directive(&patch,&[failure])["mode"],"change_approach",
+            "past execution failure must override first-generation shortcut");
+    }
+
+    #[test]
+    fn cross_campaign_handoff_uses_latest_failed_implementation_not_stale_research() {
+        let (state,root)=state();
+        let source=root.join("repository");
+        std::fs::create_dir_all(&source).unwrap();
+        let mut input=json!({"rsiObjective":"memory retrieval",
+            "rsiKnowledgeSource":source,"rsiBaseCommit":"revision-one"});
+        let partition=research_scope(&input).partition_key;
+        let objective=crate::engine::memory::stable_id(&["memory retrieval"]);
+        state.store.put("experience",&json!({"id":"found-source",
+            "status":"active","partitionKey":partition,
+            "researchArtifacts":[{"tool":"code_search","hash":"h1"}]})).unwrap();
+        state.store.put("rsi_generation",&json!({
+            "id":"discovered","campaignId":"old","jobId":"research-worker",
+            "generatorCommit":"revision-one","knowledgePartition":partition,
+            "objectiveId":objective,"newFindings":1,"knowledgeId":"found-source",
+            "accepted":false,"candidateId":null,
+            "completedAt":"2026-11-11T00:01:00.100Z"
+        })).unwrap();
+        let initial=improvement_history(&state,&input,&[],"new");
+        assert_eq!(improvement_directive(&initial)["mode"],"implement_research");
+        state.store.put("rsi_generation",&json!({
+            "id":"failed-implementation","campaignId":"old","jobId":"edit-worker",
+            "generatorCommit":"revision-one","knowledgePartition":partition,
+            "objectiveId":objective,"newFindings":0,
+            "accepted":false,"candidateId":null,
+            "improvementDirective":{"mode":"implement_research",
+                "sourceGenerationId":"discovered"},
+            "improvementActionObservation":{"status":"not_followed"},
+            "completedAt":"2026-11-11T00:02:00.200Z"
+        })).unwrap();
+        let inherited=improvement_history(&state,&input,&[],"new");
+        assert_eq!(inherited.len(),1);
+        assert_eq!(inherited[0]["id"],"failed-implementation");
+        assert_eq!(improvement_directive(&inherited)["mode"],"change_approach",
+            "Do not spend a new campaign repeating a failed implementation");
+        // The failure is scoped to the unchanged source revision only.
+        input["rsiBaseCommit"]=json!("revision-two");
+        assert!(improvement_history(&state,&input,&[],"new").is_empty());
+        // Another objective can never borrow this episode.
+        input["rsiBaseCommit"]=json!("revision-one");
+        input["rsiObjective"]=json!("browser automation");
+        assert!(improvement_history(&state,&input,&[],"new").is_empty());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completion_order_handles_legacy_sqlite_utc_and_new_rfc3339() {
+        let old=json!({"createdAt":"2026-11-11 11:00:00"});
+        let earlier_new=json!({"completedAt":"2026-11-11T10:59:59.999Z"});
+        let later_new=json!({"completedAt":"2026-11-11T11:00:00.001Z"});
+        assert!(generation_completion_millis(&earlier_new)<generation_completion_millis(&old));
+        assert!(generation_completion_millis(&later_new)>generation_completion_millis(&old));
+        assert_eq!(generation_completion_millis(&json!({"createdAt":"bad"})),i64::MIN);
+    }
+
+    #[test]
+    fn newer_candidate_prevents_old_research_from_restarting() {
+        let (state,root)=state();
+        let input=json!({"rsiObjective":"memory retrieval",
+            "rsiKnowledgeSource":root,"rsiBaseCommit":"revision-one"});
+        let partition=research_scope(&input).partition_key;
+        let objective=crate::engine::memory::stable_id(&["memory retrieval"]);
+        state.store.put("experience",&json!({"id":"old-research","status":"active",
+            "partitionKey":partition})).unwrap();
+        state.store.put("rsi_generation",&json!({
+            "id":"old","campaignId":"first","knowledgePartition":partition,
+            "objectiveId":objective,"newFindings":1,"knowledgeId":"old-research",
+            "accepted":false,"candidateId":null,"completedAt":"2026-11-11T00:00:00.100Z"
+        })).unwrap();
+        state.store.put("rsi_generation",&json!({
+            "id":"candidate","campaignId":"second","knowledgePartition":partition,
+            "objectiveId":objective,"newFindings":0,"accepted":false,
+            "candidateId":"not-adopted","completedAt":"2026-11-11T00:00:00.200Z"
+        })).unwrap();
+        assert!(improvement_history(&state,&input,&[],"third").is_empty(),
+            "A newer evaluated candidate supersedes an older research-only episode");
+        let _=std::fs::remove_dir_all(root);
+    }
+
     use super::*;
     fn state() -> (AppState, PathBuf) {
         let root =
