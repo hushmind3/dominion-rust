@@ -258,6 +258,37 @@ fn rsi_action_program_next(
         .map(|name|(name.to_string(),"induced_cross_episode_sequence".into()))
 }
 
+/// A generation can ask the model for a second turn after a failed/no-edit
+/// answer. Each turn gets a new execution ID, while the source, session and
+/// learned program are the same. Replay real completed operations across
+/// those executions so "read -> edit" does not restart at "read" forever.
+/// This is an observation-only projection: the original receipts and their
+/// run IDs remain immutable in the durable ledger.
+fn rsi_program_next_in_session(
+    program:&Value, all:&[Value], execution_id:&str, session_id:&str,
+)->Option<(String,String)> {
+    let mut actions=all.iter().filter(|op|
+        op["sessionId"].as_str()==Some(session_id)
+            && matches!(op["status"].as_str(),
+                Some("completed"|"failed"|"denied")))
+        .collect::<Vec<_>>();
+    actions.sort_by(|a,b|
+        a["startedAt"].as_str().unwrap_or("")
+            .cmp(b["startedAt"].as_str().unwrap_or(""))
+            .then_with(||a["opSeq"].as_u64().unwrap_or(0)
+                .cmp(&b["opSeq"].as_u64().unwrap_or(0)))
+            .then_with(||a["id"].as_str().cmp(&b["id"].as_str())));
+    let n=actions.len();
+    let normalized=actions.into_iter().skip(n.saturating_sub(64))
+        .enumerate().map(|(position,source)|{
+            let mut operation=source.clone();
+            operation["runId"]=json!(execution_id);
+            operation["opSeq"]=json!(position as u64+1);
+            operation
+        }).collect::<Vec<_>>();
+    rsi_action_program_next(program,&normalized,execution_id)
+}
+
 /// Keep the requested tool callable together with the minimum observation
 /// path so a stale source hash can be refreshed. This is a native action
 /// policy: the provider sees a *different set of available functions*.
@@ -1288,19 +1319,27 @@ async fn run_turn_body(
                 round_tools.retain(|definition|
                     rsi_initial_focused_tool(tool_name(definition)));
             }
-            let operations=state.store.all("execution_operation").into_iter()
-                .filter(|operation|operation["runId"].as_str()==Some(execution_id))
+            let session_operations=state.store.all("execution_operation").into_iter()
+                .filter(|operation|operation["sessionId"].as_str()==Some(session_id))
                 .collect::<Vec<_>>();
+            let operations=session_operations.iter().filter(|operation|
+                operation["runId"].as_str()==Some(execution_id))
+                .cloned().collect::<Vec<_>>();
             let induced_next=if session["rsiCompilerRepair"]==true {
                 None // A failing compile takes priority over old discovery.
             } else {
-                rsi_action_program_next(
-                    &session["rsiExecutionMethod"]["actionProgram"],&operations,execution_id)
+                rsi_program_next_in_session(
+                    &session["rsiExecutionMethod"]["actionProgram"],
+                    &session_operations,execution_id,session_id)
             };
-            let completed=operations.iter()
+            let completed=session_operations.iter()
                 .filter(|operation|operation["status"].as_str()==Some("completed"))
                 .cloned().collect::<Vec<_>>();
-            let has_write=rsi_confirmed_source_write(&completed,execution_id);
+            let has_write=completed.iter().any(|row|
+                matches!(row["tool"].as_str(),
+                    Some("workspace_write"|"workspace_replace"|"workspace_replace_range"))
+                && row["result"]["written"]==true
+                && row["toolReceipt"]["verified"]==true);
             let read_calls=completed.iter().filter(|operation|matches!(
                 operation["tool"].as_str(),Some("workspace_read_range"|"workspace_read"))).count() as u64;
             let grounded=read_calls>0 || session["rsiFocusContextReady"]==true;
@@ -6581,6 +6620,30 @@ mod harness_tool_selection_tests {
             "workspace_replace_range"));
         assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range"));
         assert!(rsi_action_program_next(&plan,&[],"unrelated").is_some());
+    }
+
+    #[test]
+    fn program_cursor_survives_multiple_model_turns_in_one_rsi_generation() {
+        let plan=json!({"sequence":["code_search","workspace_read_range",
+            "workspace_replace_range"],"onFailure":[],"recoveryPaths":[]});
+        let read=json!({"sessionId":"gen-session","runId":"old-turn",
+            "opSeq":2,"startedAt":"2026-11-11T08:00:01Z",
+            "id":"old-turn:2","tool":"workspace_read_range",
+            "status":"completed","result":{"sourceSha256":"exact-source"}});
+        assert_eq!(rsi_program_next_in_session(&plan,&[read.clone()],
+            "new-turn","gen-session").unwrap().0,"workspace_replace_range",
+            "Read proof from the preceding model turn must advance the program");
+        assert_eq!(rsi_program_next_in_session(&plan,&[read.clone()],
+            "new-turn","different-session").unwrap().0,"code_search",
+            "Another generation may not inherit a different session's tool cursor");
+        let written=json!({"sessionId":"gen-session","runId":"new-turn",
+            "opSeq":1,"startedAt":"2026-11-11T08:00:02Z",
+            "id":"new-turn:1","tool":"workspace_replace_range",
+            "status":"completed","result":{"written":true},
+            "toolReceipt":{"verified":true}});
+        assert!(rsi_program_next_in_session(&plan,&[read,written],
+            "third-turn","gen-session").is_none(),
+            "A verified edit hands the work to candidate checking, not another read");
     }
 
     #[test]
