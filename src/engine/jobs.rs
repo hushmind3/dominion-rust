@@ -702,6 +702,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         let mut attempts=Vec::<Value>::new();
         let mut no_edit_retried=false;
         let mut failed_edit_retried=false;
+        let mut inherited_correction_retried=false;
         let mut finished=crate::engine::rsi_worktree::finish(
             context,&prepared_job,worktree,message,&session_id
         ).await;
@@ -711,22 +712,33 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             let session=context.state.store.get("session",&session_id)
                 .unwrap_or(Value::Null);
             let operations=context.state.store.all("execution_operation");
-            let failed_edit=if compiler_feedback.is_none() && !failed_edit_retried {
+            let inherited_feedback=if compiler_feedback.is_none()
+                && !inherited_correction_retried {
+                crate::engine::rsi_worktree::inherited_unchanged_feedback(
+                    prior,&session,&input["rsiFailedPatchRecovery"],&operations)
+            } else {None};
+            let failed_edit=if compiler_feedback.is_none()
+                && inherited_feedback.is_none() && !failed_edit_retried {
                 crate::engine::rsi_worktree::failed_edit_feedback(
                     prior,&session,&operations)
             } else {None};
             let no_edit_feedback=if compiler_feedback.is_none()
+                && inherited_feedback.is_none()
                 && failed_edit.is_none() && !no_edit_retried {
                 crate::engine::rsi_worktree::no_edit_feedback(
                     prior,&session,&operations)
             } else {None};
             let mode=if compiler_feedback.is_some() {"verification_repair"}
+                else if inherited_feedback.is_some() {"inherited_patch_correction"}
                 else if failed_edit.is_some() {"observed_tool_repair"}
                 else {"source_edit_bootstrap"};
-            let Some(feedback)=compiler_feedback.or(failed_edit).or(no_edit_feedback)
-                else {break;};
+            let Some(feedback)=compiler_feedback.or(inherited_feedback)
+                .or(failed_edit).or(no_edit_feedback) else {break;};
             if mode=="source_edit_bootstrap" {no_edit_retried=true;}
             if mode=="observed_tool_repair" {failed_edit_retried=true;}
+            if mode=="inherited_patch_correction" {
+                inherited_correction_retried=true;
+            }
             // A no-diff recovery is permitted once; compile repair may follow,
             // but neither path silently turns a read-only turn into success.
             if context.checkpoint(json!({
