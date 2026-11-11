@@ -281,7 +281,7 @@ fn rsi_program_next_in_session(
     let n=actions.len();
     let normalized=actions.into_iter().skip(n.saturating_sub(64))
         .enumerate().map(|(position,source)|{
-            let mut operation=source.clone();
+            let mut operation=(**source).clone();
             operation["runId"]=json!(execution_id);
             operation["opSeq"]=json!(position as u64+1);
             operation
@@ -1309,7 +1309,6 @@ async fn run_turn_body(
             round_tools = trim_tool_definitions(round_tools, budget);
         }
         if session["rsiRun"]==true && !force_final {
-            let tool_calls=metrics.lock().unwrap().tool_calls as u64;
             // A concrete edit whose hash-checked source excerpt is already in
             // the prompt needs direct read/replace options from round zero.
             // General autonomous search and an excerpt-deferred task retain
@@ -1322,6 +1321,11 @@ async fn run_turn_body(
             let session_operations=state.store.all("execution_operation").into_iter()
                 .filter(|operation|operation["sessionId"].as_str()==Some(session_id))
                 .collect::<Vec<_>>();
+            // Counts must survive another model call for this same isolated
+            // generation; otherwise every retry sees zero calls and reopens
+            // research. This also makes the explicit-focus edit checkpoint
+            // active at the start of the resumed execution.
+            let tool_calls=session_operations.len() as u64;
             let operations=session_operations.iter().filter(|operation|
                 operation["runId"].as_str()==Some(execution_id))
                 .cloned().collect::<Vec<_>>();
