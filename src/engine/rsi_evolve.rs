@@ -1460,7 +1460,7 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     session["rsiInducedMethodPolicy"]=current_induced_method_policy(state,input)
         .unwrap_or(Value::Null);
     let mut decision = input["rsiDecisionInput"].clone();
-    if !decision.is_object() {decision=json!({});
+    if !decision.is_object() {decision=json!({});}
     // The parent predicted reuse BEFORE the descendant indexed and selected
     // the current source files. Replan at the execution boundary; otherwise
     // an old "research_only" decision vetoes a now-applicable learned method.
