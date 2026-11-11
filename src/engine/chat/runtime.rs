@@ -1727,7 +1727,7 @@ async fn run_turn_body(
         let wire_messages=if let Some(mut grounded)=grounded_edit {
             if rsi_json_edit_fallback {
                 grounded.push(json!({"role":"system","content":
-                    "NATIVE TOOL CALLS ARE UNAVAILABLE FOR THIS RETRY. Respond with ONLY ONE standalone JSON object and no Markdown or prose. Required JSON keys: path, startLine, endLine, newText. Use the actual observed source file path and exact line numbers. The engine independently resolves the observed source SHA and verifies the write. Do not output a plan."}));
+                    "NATIVE TOOL CALLS ARE UNAVAILABLE FOR THIS RETRY. Respond with ONLY ONE standalone JSON object and no Markdown or prose. If the owner names an existing Rust function, prefer keys path, functionName, newText, where newText is ONE COMPLETE revised fn declaration plus body; NEVER include neighboring functions. Otherwise use path, startLine, endLine, newText for an exact subrange edit. Use the actual observed source and function name. The engine independently binds the observed source SHA and verifies the edit. Do not output a plan."}));
             }
             state.store.audit("rsi.native_edit_handoff",json!({
                 "sessionId":session_id,"executionId":execution_id,"round":round,
@@ -1971,7 +1971,7 @@ async fn run_turn_body(
                         "round":round,"sourceRead":has_read
                     }));
                     messages.push(json!({"role":"user","content":
-                        "앞선 답변은 코드 변경이 아닙니다. workspace_replace 또는 파일 SHA와 줄 번호 기반 workspace_replace_range를 호출하세요. 모델이 함수 호출 형식을 생성하지 못한다면 설명문 없이 {\"path\":\"src/...\",\"startLine\":1,\"endLine\":1,\"newText\":\"...\"} JSON 객체만 출력하세요. DOMINION이 검증된 도구 실행으로 변환합니다. 불가능하면 구체적인 코드·도구 오류를 설명하세요."}));
+                        "앞선 답변은 코드 변경이 아닙니다. 기존 Rust 함수 1개가 목표라면 workspace_replace_function(path,functionName,newText: 완성된 함수 선언과 본문)을 우선 호출하세요. 함수 호출 형식을 생성하지 못하면 설명문 없이 {\"path\":\"src/...\",\"functionName\":\"목표함수명\",\"newText\":\"fn 목표함수명(...) {...}\"} JSON 객체만 출력하세요. 엔진이 읽어 둔 SHA를 바인딩하고 실제 쓰기를 검증합니다. 다른 소스 변경에는 workspace_replace 또는 workspace_replace_range를 사용하세요. 불가능하면 구체적 코드·도구 오류를 설명하세요."}));
                     continue;
                 }
             }
