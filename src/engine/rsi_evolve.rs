@@ -4783,6 +4783,29 @@ fn generation_target_plan(domain: &str, selection: &str, strategy: &Value, commi
 /// A synthesized method is a next-generation executable trial, not a
 /// permanent override of the search algorithm. Require that its ID is in
 /// the concrete reuse decision, and preserve higher-priority policy trials.
+/// A real compiler-failed parent candidate is concrete executable work.
+/// The child must select its source domain before the ordinary search policy
+/// can replan toward unrelated files. Match campaign/base/patch identity;
+/// only a saved failed source candidate can pin a descendant's work.
+fn pending_failed_patch_domain(
+    state:&AppState,input:&Value,generator_commit:&str
+)->Option<String> {
+    let recovery=&input["rsiFailedPatchRecovery"];
+    let id=recovery["candidateId"].as_str()?;
+    let candidate=state.store.get("rsi_candidate",id)?;
+    if recovery["baseCommit"]!=generator_commit
+        || candidate["baseCommit"]!=generator_commit
+        || candidate["experimentCampaignId"]!=input["rsiCampaignId"]
+        || candidate["patchSha256"].as_str().is_none_or(str::is_empty)
+        || recovery["checks"].as_array().is_none_or(Vec::is_empty) {
+        return None;
+    }
+    let path=candidate["paths"].as_array()?
+        .iter().filter_map(Value::as_str)
+        .find(|path|crate::engine::rsi::safe_path(path))?;
+    Some(focus_domain_hint(path).to_string())
+}
+
 fn pending_method_recovery_domain(input:&Value)->Option<String> {
     let id=input["rsiDecisionInput"]["methodRecoveryCandidateId"].as_str()?;
     let selected=input["rsiDecisionInput"]["reuseDecision"]["methodIds"].as_array()?;
@@ -5020,11 +5043,22 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             .is_some_and(|algorithm|trial_owned_by(&algorithm,&allowed_campaigns)))
         .map(str::to_string);
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
-    let repair_domain=pending_method_recovery_domain(&job["input"]);
+    let failed_patch_domain=pending_failed_patch_domain(
+        &state,&job["input"],&commit);
+    let repair_domain=failed_patch_domain.clone()
+        .or_else(||pending_method_recovery_domain(&job["input"]));
+    // Repair the real failed patch before running an unrelated queued
+    // search-policy trial. That trial remains pending for a later generation.
+    let selected_trial=if failed_patch_domain.is_some(){None}else{trial_id};
     let (domain, domain_selection, strategy) =
         select_generation_strategy(&state, &history, &objective,
-            if repair_domain.is_some(){None}else{continuation},trial_id,
+            if repair_domain.is_some(){None}else{continuation},selected_trial,
             repair_domain,&commit);
+    if failed_patch_domain.is_some() {
+        job["rsiRepairPinnedDomain"]=json!(domain);
+        job["rsiRepairCandidateId"]=
+            job["input"]["rsiFailedPatchRecovery"]["candidateId"].clone();
+    }
     // Rebuilt descendants independently recompute the learned policy. Make
     // its executable edit decision available before they replan the target.
     let action=evolved_execution_action(&state,&job["input"],&history);
