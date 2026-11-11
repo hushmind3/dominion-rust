@@ -309,7 +309,12 @@ fn rsi_grounded_json_exact_edit(
 
 /// A same-turn compiler repair must see real, versioned post-edit bytes.
 fn rsi_syntax_repair_prompt(path:&str,observation:&Value,diagnostics:&str)->Option<String>{
-    if observation["path"].as_str()!=Some(path){return None;}
+    // workspace_read_range records the resolved workspace path in its
+    // result, while the tool arguments and RSI focus use a relative path.
+    // Match complete path components, not a raw string suffix.
+    let observed_path=observation["path"].as_str()?;
+    if observed_path!=path && !std::path::Path::new(observed_path)
+        .ends_with(std::path::Path::new(path)) {return None;}
     let hash=observation["sourceSha256"].as_str()?;
     if hash.len()!=64 || !hash.bytes().all(|b|b.is_ascii_hexdigit()){
         return None;
@@ -7222,12 +7227,19 @@ mod harness_tool_selection_tests {
             "startLine":41,"endLine":43,
             "sourceSha256":hash,
             "content":"   41 fn improved( {\\n   42     new_result()\\n   43 }"});
+        // The real read gateway returns an absolute workspace path.
+        let mut source=source;
+        source["path"]=json!("/tmp/dominion/src/engine/memory.rs");
         let prompt=rsi_syntax_repair_prompt("src/engine/memory.rs",&source,
             "error: expected closing delimiter").unwrap();
         assert!(prompt.contains(&"b".repeat(64)));
         assert!(prompt.contains("fn improved("));
         assert!(prompt.contains("expected closing delimiter"));
         assert!(rsi_syntax_repair_prompt("src/engine/tools.rs",&source,"error").is_none());
+        let mut prefix_collision=source.clone();
+        prefix_collision["path"]=json!("/tmp/dominion/foo/src/engine/memory.rs.bak");
+        assert!(rsi_syntax_repair_prompt("src/engine/memory.rs",
+            &prefix_collision,"error").is_none());
         let mut stale=source.clone();
         stale["sourceSha256"]=Value::Null;
         assert!(rsi_syntax_repair_prompt("src/engine/memory.rs",&stale,"error").is_none());
