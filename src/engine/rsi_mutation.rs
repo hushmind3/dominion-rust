@@ -109,13 +109,13 @@ fn stream_search_policy_statistics(source: &str) -> Option<String> {
     let mut last_row: Option<&Value> = None;
     for row in history.iter().filter(|row|row["domain"]==domain) {
         attempts += 1.0;
-        accepted += f64::from(row["accepted"]==true);
-        regressions += f64::from(row["evaluation"]["verdict"]=="regressed");
-        inconclusive += f64::from(row["evaluation"]["verdict"]=="inconclusive");
+        accepted += (row["accepted"]==true) as u8 as f64;
+        regressions += (row["evaluation"]["verdict"]=="regressed") as u8 as f64;
+        inconclusive += (row["evaluation"]["verdict"]=="inconclusive") as u8 as f64;
         tokens += row["tokens"].as_u64().unwrap_or(0);
-        useful += f64::from(row["accepted"]==true
+        useful += (row["accepted"]==true
             || row["candidateId"].is_string()
-            || row["newFindings"].as_u64().unwrap_or(0)>0);
+            || row["newFindings"].as_u64().unwrap_or(0)>0) as u8 as f64;
         last_row=Some(row);
     }
     let barren_rate=if attempts==0.0 {0.0}else{1.0-useful/attempts};
@@ -364,7 +364,7 @@ mod tests {
         let candidate = stream_search_policy_statistics(source)
             .unwrap_or_else(||source.to_string());
         assert!(candidate.contains("let mut last_row: Option<&Value> = None"));
-        assert!(candidate.contains("f64::from(row[\"accepted\"]==true)"));
+        assert!(candidate.contains("(row[\"accepted\"]==true) as u8 as f64"));
         assert!(candidate.contains("scores.first().map(|(domain,_)|*domain)"));
         assert!(candidate.contains("(\"exploration\".to_string(),exploration)"));
         assert!(stream_search_policy_statistics(&candidate).is_none());
