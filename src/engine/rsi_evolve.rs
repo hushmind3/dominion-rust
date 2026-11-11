@@ -3367,6 +3367,15 @@ async fn run_loop(
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
+        let trial=&current["input"]["rsiMethodPolicyTrial"];
+        if trial.is_object() {
+            generation["methodPolicyTrial"]=json!({
+                "key":trial["key"],"cohortId":trial["cohortId"],"arm":trial["arm"],
+                "policyRevision":trial["policyRevision"],"domain":trial["domain"],
+                "focus":trial["focus"],"sourceCommit":trial["sourceCommit"],
+                "model":trial["model"],"provider":trial["provider"]
+            });
+        }
         let candidate_id = verified_candidate_id(&current["result"]);
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
         if let Some(id) = candidate_id {
@@ -3488,6 +3497,8 @@ async fn run_loop(
                     "evidence":policy["evidence"].as_array().map(Vec::len).unwrap_or(0)});
             }
         }
+        generation["methodPolicyTrialReport"]=
+            method_policy_trial_report(&context.state,&generation);
         generation["knowledgeId"]=json!(remember_research(&context.state,&current["input"],&generation,session.unwrap_or("")));
         if let Some(session)=session {
             generation["knowledgeReuse"]=context.state.store.get("session",session).map(|s|s["rsiKnowledgeReuse"].clone()).unwrap_or(Value::Null);
@@ -4066,6 +4077,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         plan["domain"].as_str()==Some(domain.as_str())
         && plan["generatorCommit"].as_str()==Some(commit.as_str()));
     job["input"]["rsiTransferRepair"]=repair.clone().unwrap_or(Value::Null);
+    // Assign this experiment inside the freshly rebuilt descendant binary,
+    // after it has chosen the actual source/domain. The selected policy
+    // snapshot stays fixed until the cohort completes.
+    if !job["input"]["rsiMethodPolicyTrial"].is_object() {
+        job["input"]["rsiMethodPolicyTrial"]=
+            method_policy_trial_plan(&state,&job["input"]);
+    }
     let mut worker_base=job["input"]["prompt"].as_str().unwrap_or("").to_string();
     if let Some(plan)=repair.as_ref() {worker_base.push_str(&transfer_repair_instruction(plan));}
     let (full_prompt,worker_plan)=match fit_worker_context(
