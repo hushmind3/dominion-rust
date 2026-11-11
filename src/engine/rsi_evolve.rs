@@ -3072,7 +3072,9 @@ async fn run_loop(
         } else if generation_accepted {
             "accepted_implementation"
         } else if candidate_id.is_none()
-            && generation["editEvidence"]["attempts"].as_u64().unwrap_or(0)>0 {
+            && record["history"].as_array().and_then(|rows|rows.last())
+                .and_then(|row|row["editEvidence"]["attempts"].as_u64())
+                .unwrap_or(0)>0 {
             "edit_attempt_without_candidate"
         } else if new_findings > 0 {
             "research_findings"
