@@ -25,11 +25,12 @@ on:
 # committed binary must generate and adopt the next improvement itself.
 # The probe exits as soon as three consecutive verified generations establish
 # actual improver gain and cross-domain transfer.
-# Only the latest source revision should consume the CPU-bound live Qwen
-# evaluation. Intermediate commits are diagnostic, not independent campaigns.
+# Preserve each admitted experiment to completion. New source commits
+# must not erase the only live A/B evidence of earlier descendants. The
+# immutable revision and run ID distinguish runs; no production ref is changed.
 concurrency:
-  group: sub2-native-live-${{ github.ref }}
-  cancel-in-progress: true
+  group: sub2-native-live-${{ github.run_id }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
