@@ -2397,14 +2397,19 @@ fn fit_worker_prompt(
     remaining_tokens: Option<u64>,
 ) -> Result<(String, Value), String> {
     let directive = format!(
-        "\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요."
+        "\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요. 이전 paired 사례의 baseline과 candidate가 같았다면 성공했다고 반복하지 말고, 그 사례를 바꿀 다른 소스 수정 가설을 실제로 구현하세요."
     );
     let full = history.iter().rev().take(8).map(|row| {
-        let cases = row["evaluation"]["metrics"]["measurements"].as_array()
-            .into_iter().flatten().filter(|case|case["metrics"].as_array()
-                .is_some_and(|metrics|metrics.iter().any(|m|
-                    m["improved"]==true || m["regressed"]==true)))
-            .take(3).cloned().collect::<Vec<_>>();
+        let measured=row["evaluation"]["metrics"]["measurements"].as_array();
+        let altered=measured.into_iter().flatten().filter(|case|case["metrics"].as_array()
+            .is_some_and(|metrics|metrics.iter().any(|m|
+                m["improved"]==true || m["regressed"]==true))).take(3).cloned();
+        // Zero-gain is evidence too. Previously a successful compilation
+        // followed by 13 unchanged paired cases was handed to the successor
+        // as an EMPTY measurement set, causing blind repeat attempts.
+        let stalled=measured.into_iter().flatten().filter(|case|case["metrics"].as_array()
+            .is_some_and(|metrics|!metrics.is_empty())).take(3).cloned();
+        let cases=altered.chain(stalled).take(3).collect::<Vec<_>>();
         json!({
             "domain":row["domain"],"accepted":row["accepted"],
             "tokens":row["tokens"],"elapsedMs":row["elapsedMs"],
@@ -2423,6 +2428,13 @@ fn fit_worker_prompt(
     let compact = history.iter().rev().take(2).map(|row|json!({
         "domain":row["domain"],"accepted":row["accepted"],
         "tokens":row["tokens"],"verdict":row["evaluation"]["verdict"],
+        // Compact mode must still disclose at least one unchanged measured
+        // case; otherwise low token budgets silently erase failure feedback.
+        "pairedCase":row["evaluation"]["metrics"]["measurements"].as_array()
+            .and_then(|cases|cases.iter().find(|case|
+                case["metrics"].as_array().is_some_and(|metrics|!metrics.is_empty())))
+            .map(|case|json!({"id":case["id"],"domain":case["domain"],
+                "firstMetric":case["metrics"].as_array().and_then(|m|m.first())})),
         "error":row["error"].as_str().map(|error|
             error.chars().take(120).collect::<String>()),
         "compilerDiagnostic":row["verification"]["checks"].as_array()
