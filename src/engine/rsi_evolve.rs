@@ -1060,6 +1060,30 @@ fn choose_focus_files(
 /// Empty focus is meaningful: the model searches the index instead of being
 /// steered toward a hard-coded file unrelated to the owner's real goal.
 
+/// Smaller local models were spending their entire 300-second streamed call
+/// on context prefill. Preserve selected indexed lines and let the model read
+/// missing exact ranges instead of dropping the entire large excerpt.
+fn source_excerpt_limit(state:&AppState,input:&Value)->usize {
+    let provider=input["providerId"].as_str()
+        .and_then(|id|state.store.get("provider",id));
+    if provider.as_ref().is_some_and(|provider|
+        provider["kind"]=="ollama"
+        && provider["contextTokens"].as_u64().unwrap_or(16384)<=16384)
+    {6000}else{16000}
+}
+fn append_bounded_excerpt(buffer:&mut String,excerpt:&str,max_chars:usize)->bool {
+    let available=max_chars.saturating_sub(buffer.chars().count());
+    if available<=160 {return false;}
+    if excerpt.chars().count()<=available {
+        buffer.push_str(excerpt);
+        return true;
+    }
+    let clipped=excerpt.chars().take(available.saturating_sub(110)).collect::<String>();
+    let boundary=clipped.rfind('\n').unwrap_or(clipped.len());
+    buffer.push_str(&clipped[..boundary]);
+    buffer.push_str("\n[발췌 제한: 빠진 범위는 workspace_read_range로 읽으세요.]\n");
+    false
+}
 fn focus_file_context(state: &AppState, record: &Value, input: &Value) -> String {
     let Some(lab) = record["labDir"].as_str() else { return String::new() };
     let Some(index_id) = input["rsiIndexId"].as_str() else { return String::new() };
@@ -1068,14 +1092,13 @@ fn focus_file_context(state: &AppState, record: &Value, input: &Value) -> String
         .or_else(||input["rsiSelectedDomain"].as_str())
         .or_else(||input["rsiDomain"].as_str()).unwrap_or("");
     let mut text = String::new();
-    // Total injected source is capped; large files only contribute relevant spans.
+    let limit=source_excerpt_limit(state,input);
     for path in input["rsiFocusFiles"].as_array().into_iter().flatten().filter_map(Value::as_str).take(2) {
         if !crate::engine::rsi::safe_path(path) { continue; }
         if let Some(excerpt) = crate::engine::code_index::bounded_focus_context(
             state, std::path::Path::new(lab), index_id, path, objective, domain
         ) {
-            if text.chars().count() + excerpt.chars().count() > 16_000 { break; }
-            text.push_str(&excerpt);
+            if !append_bounded_excerpt(&mut text,&excerpt,limit) {break;}
         }
     }
     text
@@ -3448,6 +3471,20 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn bounded_local_excerpts_keep_source_lines_and_request_exact_missing_ranges() {
+        let mut excerpt=String::from("src/engine/memory.rs\n");
+        excerpt.push_str(&"let result = retrieve_memory();\n".repeat(300));
+        let mut text=String::new();
+        assert!(!append_bounded_excerpt(&mut text,&excerpt,1500));
+        assert!(text.starts_with("src/engine/memory.rs\n"));
+        assert!(text.ends_with("[발췌 제한: 빠진 범위는 workspace_read_range로 읽으세요.]\n"));
+        assert!(text.chars().count()<=1500);
+        assert!(!text.contains("retrieve_memo\n"));
+        let mut short=String::new();
+        assert!(append_bounded_excerpt(&mut short,"src/engine/tools.rs\nfn helper() {}\n",6000));
+        assert!(short.contains("fn helper() {}"));
+    }
     #[test]
     fn action_feedback_replaces_repeated_research_with_real_edit_instructions() {
         let research=json!({"attempt":1,"domain":"memory","newFindings":2,
