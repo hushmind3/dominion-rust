@@ -3347,6 +3347,30 @@ async fn run_loop(
         } else {
             generation_improvement_directive(&child_input,&action_history)
         };
+        // A rejected source patch must be physically present in the next
+        // isolated worker. A prompt that only mentions the failed patch cannot
+        // repair it: each generation otherwise starts from a clean base.
+        // Preserve the pinned base, then let the child edit the restored bytes.
+        if matches!(child_input["rsiImprovementDirective"]["mode"].as_str(),
+            Some("revise_candidate"|"repair_counterexample")) {
+            if let Some(last)=action_history.last() {
+                if last["accepted"]!=true
+                    && last["generatorCommit"].as_str()==Some(head.as_str())
+                    && last["candidateCapture"]["checksPassed"]==false {
+                    if let Some(id)=last["attemptedCandidateId"].as_str() {
+                        let transferable=context.state.store.get("rsi_candidate",id)
+                            .is_some_and(|candidate|
+                                candidate["baseCommit"].as_str()==Some(head.as_str())
+                                && candidate["rsiJobId"]==last["jobId"]
+                                && candidate["status"]=="proposed");
+                        if transferable {
+                            child_input["rsiRepairCandidateId"]=json!(id);
+                            child_input["rsiRepairParentJobId"]=last["jobId"].clone();
+                        }
+                    }
+                }
+            }
+        }
         child_input["rsiTargetPlan"]=generation_target_plan(
             &target_domain,&target_selection,&target_strategy,&head);
         child_input["rsiNativePlan"]=if native_planning {
