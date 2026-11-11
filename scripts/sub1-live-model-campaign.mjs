@@ -89,7 +89,7 @@ if(mode==='probe'){
       mode:'continuous',confirmation:'START_RSI_EVOLUTION',
       selectionPolicy:'automatic',providerId:'sub1-free-proxy',model:'openai-fast',
       thinking:false,reasoningEffort:'low',
-      request:'Improve the source implementation of split_markers() in src/engine/decompose.rs to recognize sequential Korean actions connected with verbal -고 and 다음/나서 while retaining original task words and numbered-list behavior. Example: 문서를 열고 항목을 비교한 다음 알려줘 should produce three ordered subtasks; nouns like 사고 and 최고 are not action connectors. Change ONLY split_markers() and its directly necessary helpers; do NOT erase or repurpose marker_at(), which must remain a bool-returning standalone-marker predicate. After observing the exact source with workspace_read_range, PREFER workspace_replace_function(path,functionName=split_markers,newText=one complete valid Rust fn) to preserve sibling definitions and eliminate guessed line ranges. Otherwise use workspace_replace_range or workspace_replace. A compile failure is a request for an actual corrected source revision, not repeated research. The independent evaluator will execute previously withheld task examples and reject any regressions. A succeeding descendant must learn from the actual source changes and evaluation failures and improve a different behavior next. Do not end with analysis or a report if a real tool-backed source edit is still possible',
+      request:'Improve the source implementation of split_markers() in src/engine/decompose.rs to recognize sequential Korean actions connected with verbal -고 and 다음/나서 while retaining original task words and numbered-list behavior. Example: 문서를 열고 항목을 비교한 다음 알려줘 should produce three ordered subtasks; nouns like 사고 and 최고 are not action connectors. Change ONLY split_markers() and its directly necessary helpers; do NOT erase or repurpose marker_at(), which must remain a bool-returning standalone-marker predicate. After observing the exact source with workspace_read_range, PREFER workspace_replace_function(path,functionName=split_markers,newText=one complete valid Rust fn) to preserve sibling definitions and eliminate guessed line ranges. Otherwise use workspace_replace_range or workspace_replace. Study why marker_at() requires standalone word boundaries: putting just 고 in MARKERS cannot detect verb-attached -고. Keep marker_at() unchanged and implement a verb-connective-aware split within split_markers() while retaining the original fragments. A compile failure is a request for an actual corrected source revision, not repeated research. The independent evaluator will execute previously withheld task examples and reject any regressions. A succeeding descendant must learn from the actual source changes and evaluation failures and improve a different behavior next. Do not end with analysis or a report if a real tool-backed source edit is still possible',
       focusFiles:['src/engine/decompose.rs'],
       maxAttempts:Number(process.env.SUB1_LIVE_MAX_ATTEMPTS||3),
       tokenBudget:Number(process.env.SUB1_LIVE_TOKEN_BUDGET||90000),
@@ -186,10 +186,10 @@ if(mode==='probe'){
       note:'CI completed does not imply an accepted model-generated RSI improvement'
     };
     trace.actualCompletion=trace.summary.independentlyVerifiedImprovement;
-    if(trace.summary.verifiedSourceWrites===0) {
+    if(trace.generationEvidence.some(g=>countCalls(g,editTools)===0)) {
       trace.noEditModelResponses=[];
       for(const generation of trace.generationEvidence) {
-        if(!generation.jobId) continue;
+        if(!generation.jobId || countCalls(generation,editTools)>0) continue;
         try {
           const worker=await call(`/api/jobs/${encodeURIComponent(generation.jobId)}`);
           const sessionId=worker.sessionId||worker.result?.sessionId;
