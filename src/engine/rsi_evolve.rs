@@ -5181,23 +5181,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn learned_procedure_executes_on_two_distinct_source_domains_with_real_tool_receipts() {
+    async fn learned_procedure_repairs_two_distinct_source_domains_with_real_tool_receipts() {
         let (state,root)=state();
         let workspace=root.join("work");
         std::fs::create_dir_all(workspace.join("src/engine")).unwrap();
         // Different real source files, not two evaluations of the same path.
         std::fs::write(workspace.join("src/engine/memory.rs"),
-            "pub fn remember() -> bool { true }\n").unwrap();
+            "pub fn remember() -> bool { false }\n").unwrap();
         std::fs::write(workspace.join("src/engine/tools.rs"),
-            "pub fn invoke_tool() -> bool { true }\n").unwrap();
+            "pub fn invoke_tool() -> bool { false }\n").unwrap();
         let partition=research_scope(&json!({"rsiSourceDir":workspace})).partition_key;
         let verification=crate::engine::procedure::normalize(&json!({
             "type":"procedure","appliesTo":{"requestContains":["src/engine/"]},
             "bindings":{"rsiFocusPath":"__rsi_dynamic_focus__"},
-            "nodes":[{"id":"inspect_source","tool":"workspace_read_range",
-                "arguments":{"path":"$rsiFocusPath","startLine":1,"endLine":2}}],
+            "nodes":[{"id":"repair_source","tool":"workspace_replace",
+                "arguments":{"path":"$rsiFocusPath",
+                    "oldText":"false","newText":"true"}}],
             "edges":[],"after":[{"kind":"file_contains",
-                "path":"$rsiFocusPath","text":"pub fn"}]
+                "path":"$rsiFocusPath","text":"-> bool { true }"}]
         }));
         assert_eq!(verification["type"],"procedure");
         let method=json!({"id":"cross-domain-source-inspect","revision":"v1",
@@ -5238,8 +5239,10 @@ mod tests {
                 session_id:&session_id,agent_id:None,tools_enabled:true,
                 tools_execution_enabled:true};
             let result=tools::execute(&ctx,&tool,&args,&execution_id).await.unwrap();
-            assert!(result["content"].as_str().is_some_and(|s|s.contains("pub fn")),
-                "{domain} tool must read the actual source file");
+            assert!(result["error"].is_null(),
+                "{domain} tool must complete a real source edit");
+            assert!(std::fs::read_to_string(workspace.join(focus)).unwrap().contains("-> bool { true }"),
+                "{domain} workspace file must actually be repaired");
             state.store.put("execution",&json!({"id":execution_id,"sessionId":session_id,
                 "strategyCandidates":strategies})).unwrap();
             state.store.put("execution_operation",&json!({
