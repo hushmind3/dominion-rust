@@ -1315,12 +1315,24 @@ async fn run_turn_body(
             &state.store.all("execution_operation"),execution_id,&round_tools) {
             round_tools.sort_by_key(|definition|tool_name(definition)!=next);
             if let Some(mut record)=state.store.get("execution",execution_id) {
-                record["rsiInducedMethodDecision"]=json!({
+                let decision=json!({
                     "policyId":session["rsiInducedMethodPolicy"]["id"],
                     "revision":session["rsiInducedMethodPolicy"]["revision"],
                     "preferredTool":next,"mode":"empirical_tool_priority",
+                    "afterOpSeq":op_seq,"modelRound":round,
+                    "domain":session["rsiDomain"],
+                    "focusPath":session["rsiFocusFile"],
                     "claim":"experiment_not_verified_capability_gain"
                 });
+                record["rsiInducedMethodDecision"]=decision.clone();
+                if !record["rsiInducedMethodChoices"].is_array() {
+                    record["rsiInducedMethodChoices"]=json!([]);
+                }
+                let choices=record["rsiInducedMethodChoices"].as_array_mut().unwrap();
+                if !choices.iter().any(|row|row["afterOpSeq"]==decision["afterOpSeq"]
+                    && row["preferredTool"]==decision["preferredTool"]) {
+                    choices.push(decision);
+                }
                 state.store.put("execution",&record);
             }
         }
