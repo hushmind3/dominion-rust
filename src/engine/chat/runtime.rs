@@ -303,7 +303,7 @@ fn rsi_program_next_in_session(
     let n=actions.len();
     let normalized=actions.into_iter().skip(n.saturating_sub(64))
         .enumerate().map(|(position,source)|{
-            let mut operation=(**source).clone();
+            let mut operation=(*source).clone();
             operation["runId"]=json!(execution_id);
             operation["opSeq"]=json!(position as u64+1);
             operation
