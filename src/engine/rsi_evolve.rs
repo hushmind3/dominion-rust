@@ -3056,6 +3056,8 @@ async fn run_loop(
             "contextPlan":current["input"]["rsiContextPlan"],
             "workerContextPlan":current["rsiWorkerContextPlan"],
             "improvementDirective":current["input"]["rsiImprovementDirective"],
+            "diffBytes":current["result"]["rsi"]["diffBytes"],
+            "captureError":current["result"]["rsi"]["captureError"],
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
@@ -3181,7 +3183,7 @@ async fn run_loop(
         let bytes=current["result"]["rsi"]["diffBytes"].as_u64().unwrap_or(0);
         let attempted=attempted_tool || writes>0 || bytes>0 || candidate_id.is_some();
         let expected=matches!(generation["improvementDirective"]["mode"].as_str(),
-            Some("implement_research"|"repair_counterexample"|"revise_candidate"|"change_approach"|"repair_edit_execution"));
+            Some("implement_research"|"repair_counterexample"|"revise_candidate"|"change_approach"|"repair_edit_execution"|"repair_candidate_capture"));
         generation["improvementActionObservation"]=json!({
             "status":if generation["accepted"]==true {"verified_adoption"}
                 else if writes>0 || bytes>0 || candidate_id.is_some() {"attempted"}
@@ -3476,6 +3478,10 @@ fn improvement_directive(history:&[Value]) -> Value {
     let patch=last["candidateId"].is_string();
     let findings=last["newFindings"].as_u64().unwrap_or(0);
     let mode=if last["accepted"]==true {"extend_verified_capability"}
+    else if last["candidateId"].is_null()
+        && last["diffBytes"].as_u64().unwrap_or(0)>0
+        && last["captureError"].as_str().is_some_and(|error|!error.trim().is_empty())
+        {"repair_candidate_capture"}
     else if last["improvementActionObservation"]["status"]=="edit_not_applied" {"repair_edit_execution"}
     else if last["improvementActionObservation"]["status"]=="not_followed"
         && !matches!(previous,""|"discover"|"change_approach") {"change_approach"}
@@ -3504,7 +3510,9 @@ fn improvement_directive(history:&[Value]) -> Value {
             rows.iter().take(4).cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "evidenceHashes":last["knowledgeArtifactHashes"].as_array().map(|rows|
             rows.iter().take(6).cloned().collect::<Vec<_>>()).unwrap_or_default(),
-        "previousError":last["error"].as_str().unwrap_or("").chars().take(300).collect::<String>()})
+        "previousError":last["error"].as_str().unwrap_or("").chars().take(300).collect::<String>(),
+        "previousCaptureError":last["captureError"].as_str().unwrap_or("").chars().take(600).collect::<String>(),
+        "previousDiffBytes":last["diffBytes"]})
 }
 
 fn generation_improvement_directive(input:&Value,history:&[Value])->Value{
@@ -3578,7 +3586,7 @@ fn improvement_history(state:&AppState,input:&Value,history:&[Value],campaign_id
     // Prior evidence remains in the experience store; it is not mistaken for
     // a fresh discovery when the model fails to turn it into source code.
     let attempted=matches!(latest["improvementDirective"]["mode"].as_str(),
-        Some("implement_research"|"repair_counterexample"|"revise_candidate"|"change_approach"|"repair_edit_execution"))
+        Some("implement_research"|"repair_counterexample"|"revise_candidate"|"change_approach"|"repair_edit_execution"|"repair_candidate_capture"))
         && latest["newFindings"].as_u64().unwrap_or(0)==0;
     let source=input["rsiBaseCommit"].as_str()
         .or_else(||input["rsiGeneratorCommit"].as_str())
@@ -3595,6 +3603,7 @@ fn improvement_work_contract(directive:&Value)->&'static str {
         "revise_candidate" => "이전 후보의 미달 원인을 확인하고 가설 또는 수정 위치를 바꾼 다음 검증 가능한 새 후보를 실행하세요.",
         "change_approach" => "반복 실패한 원인을 근거로 기존과 다른 파일·구현 전략을 선택해 실제 코드 변경을 시도하세요.",
         "repair_edit_execution" => "지난 세대의 쓰기 도구 요청이 실제 파일 변경으로 이어지지 않았습니다. previousToolRejections와 previousEditOperations의 오류를 고쳐 유효한 JSON·줄 번호·해시로 workspace_replace_range 또는 workspace_replace를 실행하세요. 이전 요청을 그대로 반복하지 마세요.",
+        "repair_candidate_capture" => "지난 세대에는 실제 Git diff가 존재했으나 후보 등록에 실패했습니다. previousCaptureError와 previousDiffBytes를 검토하고 허용 경로·패치 크기·평가 사례 제약에 맞춰 더 작은 유효 패치로 고쳐 구현하세요. 코드 조사를 반복하는 대신 수정 후 독립 검증까지 연결하세요.",
         "extend_verified_capability" => "이전 독립 평가에서 채택한 기능은 유지하고 다음 결함을 해결하여 별도 holdout에서 개선을 증명하세요.",
         _ => "원인이 있는 결함 하나를 선택하고 구현·검증까지 수행하세요. 조사 요약 자체는 완료가 아닙니다."
     }
@@ -3609,7 +3618,7 @@ fn corrective_retry_allowed(history:&[Value],streak:u64)->bool {
     last["accepted"]!=true && last["candidateId"].is_null()
         && last["newFindings"].as_u64().unwrap_or(0)==0
         && matches!(last["improvementDirective"]["mode"].as_str(),
-            Some("implement_research"|"repair_counterexample"|"revise_candidate"|"repair_edit_execution"))
+            Some("implement_research"|"repair_counterexample"|"revise_candidate"|"repair_edit_execution"|"repair_candidate_capture"))
 }
 
 // A generation's research continuation must be decided identically by the
@@ -4009,6 +4018,18 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn actual_source_diff_without_candidate_triggers_capture_repair_not_research() {
+        let failed=json!({"id":"g1","jobId":"j1","accepted":false,
+            "candidateId":null,"newFindings":0,"diffBytes":250,
+            "captureError":"후보 등록 거부: missing valid frozen cases",
+            "improvementActionObservation":{"status":"attempted"}});
+        let directive=improvement_directive(&[failed]);
+        assert_eq!(directive["mode"],"repair_candidate_capture");
+        assert_eq!(directive["previousDiffBytes"],250);
+        assert!(improvement_work_contract(&directive).contains("Git diff"));
+    }
+
     #[test]
     fn failed_edit_dispatch_becomes_a_specific_executable_repair_directive() {
         let failed=json!({

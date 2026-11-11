@@ -42,7 +42,11 @@ async function liveTurn(input,toolsEnabled){
  const errs=events.filter(e=>e.type==="error");
  const done=events.some(e=>e.type==="done");
  const saved=events.some(e=>e.type==="assistant_saved");
- const tools=events.filter(e=>/tool|operation/.test(e.type||"")).map(e=>({type:e.type,tool:e.tool||e.name||null}));
+ const tools=events.filter(e=>/tool|operation/.test(e.type||"")).map(e=>({
+    type:e.type,tool:e.tool||e.name||null,
+    error:e.type==="tool_error"?String(e.error||e.result?.error||"").slice(0,480):undefined,
+    arguments:e.type==="tool_start"?(e.arguments||null):undefined
+  }));
  const turn={goal:toolsEnabled?"actual_tool_loop":"inference_connection",
    status:r.status,done,saved,error:errs.map(e=>e.message),
    eventTypes:[...new Set(events.map(e=>e.type))],tools,
@@ -61,7 +65,7 @@ async function main(){
  const first=await liveTurn("한국어로 준비 완료라고만 답해주세요.",false);
  evidence.transportConnected=first.status===200&&first.done&&first.saved&&first.error.length===0;
  if(!evidence.transportConnected)throw Error("native local-model chat did not complete: "+JSON.stringify(first));
- const second=await liveTurn("현재 작업공간의 최상위 파일 목록을 workspace_list 도구로 실제 조회한 후 한 문장으로 요약해주세요.",true);
+ const second=await liveTurn("현재 작업공간 최상위 파일 목록을 workspace_list 도구에 path="." 인자로 실제 조회하고, 도구 결과를 받은 뒤 한 문장으로 요약해주세요.",true);
  evidence.toolDispatchObserved=second.tools.some(x=>x.type==="tool_start")
    && second.tools.some(x=>x.type==="tool_end");
  evidence.toolExecutionObserved=evidence.toolDispatchObserved && second.saved
