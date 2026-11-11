@@ -221,9 +221,13 @@ fn rsi_induced_next_tool(
     ranked.into_iter().next().map(|(_,tool)|tool)
 }
 
-fn rsi_final_edit_tools(available:&[Value])->Vec<Value> {
-    // Prefer a short digest-bound edit to repeating oldText in a small model.
-    available.iter().find(|tool|tool_name(tool)=="workspace_replace_range")
+fn rsi_final_edit_tools(available:&[Value],learned_preference:Option<&str>)->Vec<Value> {
+    // An independently witnessed method can change the edit mechanism used
+    // by the next generation. With no learnt evidence, compact range editing
+    // remains the baseline. This changes the actual offered native tool.
+    learned_preference.filter(|name|matches!(*name,"workspace_replace_range"|"workspace_replace"))
+        .and_then(|name|available.iter().find(|tool|tool_name(tool)==name))
+        .or_else(||available.iter().find(|tool|tool_name(tool)=="workspace_replace_range"))
         .or_else(||available.iter().find(|tool|tool_name(tool)=="workspace_replace"))
         .into_iter().cloned().collect()
 }
@@ -1290,7 +1294,9 @@ async fn run_turn_body(
             // On ONE additional model call, offer the exact replacement schema
             // instead of another broad research menu. Provider native mode
             // requires an action; the model still authors oldText/newText.
-            round_tools=rsi_final_edit_tools(&tool_definitions);
+            let learned=rsi_induced_next_tool(&session,
+                &state.store.all("execution_operation"),execution_id,&tool_definitions);
+            round_tools=rsi_final_edit_tools(&tool_definitions,learned.as_deref());
             if let Some(mut record)=state.store.get("execution",execution_id) {
                 record["rsiActionRetry"]["toolChoice"]=json!("native_required_workspace_replace_range_or_exact");
                 state.store.put("execution",&record);
@@ -6468,10 +6474,14 @@ mod harness_tool_selection_tests {
             json!({"type":"function","function":{"name":"workspace_replace_range"}}),
             json!({"type":"function","function":{"name":"rsi_method_propose"}}),
         ];
-        let selected=rsi_final_edit_tools(&menu);
+        let selected=rsi_final_edit_tools(&menu,None);
         assert_eq!(selected.len(),1);
         assert_eq!(tool_name(&selected[0]),"workspace_replace_range");
-        assert!(rsi_final_edit_tools(&[]).is_empty());
+        assert!(rsi_final_edit_tools(&[],None).is_empty());
+        assert_eq!(tool_name(&rsi_final_edit_tools(&menu,Some("workspace_replace"))[0]),
+            "workspace_replace");
+        assert_eq!(tool_name(&rsi_final_edit_tools(&menu,Some("code_search"))[0]),
+            "workspace_replace_range");
     }
 
     #[test]
