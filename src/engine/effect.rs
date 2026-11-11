@@ -616,7 +616,8 @@ mod tests {
         tokio::fs::remove_dir_all(&dir).await.unwrap();
     }
 
-
+    #[tokio::test]
+    async fn a_missing_readback_is_applied_not_verified() {
         let dir = std::env::temp_dir().join(format!("dominion-effect-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let args = json!({"path":"missing/note.txt","content":"x"});
