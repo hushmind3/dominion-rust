@@ -179,6 +179,77 @@ fn rsi_focused_edit_due(
         && op["arguments"]["path"].as_str()==Some(path))
 }
 
+/// Run a source-work program COMPOSED from independently observed method
+/// edges. These are not model claims or canned edits: only witnessed native
+/// operations advance a program's cursor, and the source hash must be read
+/// before an edit tool can be prioritized.
+fn rsi_composed_program_next_tool(
+    session:&Value,operations:&[Value],execution_id:&str,offered:&[Value],
+)->Option<(String,String)> {
+    if !rsi_generation_has_action_target(session)
+        || session["rsiInducedMethodPolicy"]["kind"]!="harness.method-transitions" {
+        return None;
+    }
+    let domain=session["rsiDomain"].as_str()?;
+    let focus=session["rsiFocusFile"].as_str()?;
+    let programs=session["rsiInducedMethodPolicy"]["executionPrograms"].as_array()?;
+    let mut witnessed=operations.iter().filter(|op|
+        op["runId"].as_str()==Some(execution_id)
+            && op["status"]=="completed"
+            && op["opSeq"].as_u64().is_some()
+            && (op["tool"]=="code_search" ||
+                op["arguments"]["path"].as_str()==Some(focus)))
+        .filter(|op|match op["tool"].as_str().unwrap_or("") {
+            "code_search" => op["result"]["matchCount"].as_u64().unwrap_or(0)>0,
+            "workspace_read_range" => op["result"]["sourceSha256"].as_str()
+                .is_some_and(|sha|sha.len()==64
+                    && sha.bytes().all(|byte|byte.is_ascii_hexdigit())),
+            "workspace_replace"|"workspace_replace_range"|"workspace_write" =>
+                op["result"]["written"]==true && op["toolReceipt"]["verified"]==true,
+            _=>false,
+        }).collect::<Vec<_>>();
+    witnessed.sort_by(|a,b|a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64())
+        .then(a["id"].as_str().cmp(&b["id"].as_str())));
+    let completed=witnessed.iter().filter_map(|op|op["tool"].as_str())
+        .collect::<Vec<_>>();
+    let read_for_focus=witnessed.iter().any(|op|
+        op["tool"]=="workspace_read_range" &&
+        op["arguments"]["path"].as_str()==Some(focus));
+    let mut ranked=Vec::<(i64,usize,String,String)>::new();
+    for program in programs {
+        if program["domain"].as_str()!=Some(domain)
+            || program["status"]!="candidate_requires_descendant_execution" {
+            continue;
+        }
+        let Some(steps)=program["steps"].as_array() else{continue};
+        if !(3..=5).contains(&steps.len()) {continue;}
+        let Some(id)=program["id"].as_str() else{continue};
+        let mut progress=0usize;
+        // A valid prefix must be the most recent witnessed sequence, not an
+        // arbitrary occurrence earlier in the turn or in another execution.
+        for length in (1..steps.len()).rev() {
+            if completed.len()>=length
+                && steps[..length].iter().zip(
+                    completed[completed.len()-length..].iter())
+                    .all(|(step,tool)|step.as_str()==Some(*tool)) {
+                progress=length;
+                break;
+            }
+        }
+        if progress==0 {continue;}
+        let Some(next)=steps[progress].as_str() else{continue};
+        if !offered.iter().any(|tool|tool_name(tool)==next){continue;}
+        if matches!(next,"workspace_replace"|"workspace_replace_range"|"workspace_write")
+            && !read_for_focus {continue;}
+        let score=program["score"].as_i64().unwrap_or(0);
+        if score<=0 {continue;}
+        ranked.push((score,progress,next.to_string(),id.to_string()));
+    }
+    ranked.sort_by(|a,b|b.0.cmp(&a.0).then(b.1.cmp(&a.1))
+        .then(a.3.cmp(&b.3)));
+    ranked.into_iter().next().map(|(_,_,tool,id)|(tool,id))
+}
+
 /// Act on DOMINION's own learnt, revisioned transition weights. The code
 /// selects the likely next *tool*, never invents source bytes or skips frozen
 /// evaluation. This is a real change in the subsequent model's tool menu,
@@ -189,6 +260,10 @@ fn rsi_induced_next_tool(
     if !rsi_generation_has_action_target(session)
         || session["rsiInducedMethodPolicy"]["kind"]!="harness.method-transitions" {
         return None;
+    }
+    if let Some((tool,_))=rsi_composed_program_next_tool(
+        session,operations,execution_id,offered) {
+        return Some(tool);
     }
     let focus=session["rsiFocusFile"].as_str()?;
     let last=operations.iter().filter(|op|
@@ -1350,12 +1425,16 @@ async fn run_turn_body(
         }
         if let Some(next)=rsi_induced_next_tool(&session,
             &state.store.all("execution_operation"),execution_id,&round_tools) {
+            let composed=rsi_composed_program_next_tool(&session,
+                &state.store.all("execution_operation"),execution_id,&round_tools)
+                .and_then(|(preferred,id)|(preferred==next).then_some(id));
             round_tools.sort_by_key(|definition|tool_name(definition)!=next);
             if let Some(mut record)=state.store.get("execution",execution_id) {
                 let decision=json!({
                     "policyId":session["rsiInducedMethodPolicy"]["id"],
                     "revision":session["rsiInducedMethodPolicy"]["revision"],
-                    "preferredTool":next,"mode":"empirical_tool_priority",
+                    "preferredTool":next,"executionProgramId":composed,
+                    "mode":"empirical_tool_priority",
                     "afterOpSeq":op_seq,"modelRound":round,
                     "domain":session["rsiDomain"],
                     "focusPath":session["rsiFocusFile"],
@@ -6410,6 +6489,46 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn descendant_executes_a_composed_method_program_step_by_step() {
+        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"generation","rsiDomain":"tools",
+            "rsiFocusFile":"src/engine/tools.rs",
+            "rsiInducedMethodPolicy":{"kind":"harness.method-transitions",
+                "executionPrograms":[{
+                    "id":"generated-program","domain":"tools","score":5,
+                    "steps":["code_search","workspace_read_range","workspace_replace"],
+                    "status":"candidate_requires_descendant_execution"}],
+                "transitions":[{"from":"workspace_read_range",
+                    "to":"workspace_replace_range","positive":10,"negative":0}]}});
+        let search=json!({"id":"search","runId":"run","opSeq":1,
+            "tool":"code_search","status":"completed",
+            "result":{"matchCount":3}});
+        let read=json!({"id":"read","runId":"run","opSeq":2,
+            "tool":"workspace_read_range","status":"completed",
+            "arguments":{"path":"src/engine/tools.rs"},
+            "result":{"sourceSha256":"a".repeat(64)}});
+        let menu=vec![
+            json!({"type":"function","function":{"name":"workspace_read_range"}}),
+            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
+            json!({"type":"function","function":{"name":"workspace_replace"}})];
+        assert_eq!(rsi_composed_program_next_tool(&session,&[search.clone()],
+            "run",&menu),Some(("workspace_read_range".into(),
+            "generated-program".into())));
+        assert_eq!(rsi_induced_next_tool(&session,&[search.clone(),read.clone()],
+            "run",&menu),Some("workspace_replace".into()),
+            "a newly composed program beats the old single-transition scorer");
+        let mut invalid=read.clone();
+        invalid["result"]["sourceSha256"]=json!("no-source-proof");
+        assert!(rsi_composed_program_next_tool(&session,&[search.clone(),invalid],
+            "run",&menu).is_none(),"an unverified source read cannot advance a program");
+        assert!(rsi_composed_program_next_tool(&session,&[search,read],
+            "different-run",&menu).is_none(),
+            "a prior generation cannot be mistaken for this one's execution");
+        let wrong=menu[..1].to_vec();
+        assert!(rsi_composed_program_next_tool(&session,&[], "run",&wrong).is_none());
     }
 
     #[test]
