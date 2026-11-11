@@ -1613,6 +1613,115 @@ fn measured_system_improvement(generation:&Value)->bool {
 /// An induced policy is not successful merely because it appeared in a
 /// prompt or in the provider's tool list. Preserve both the suggested action
 /// and whether the real executor subsequently called it in this generation.
+/// DOMINION evolves the *rule used to evaluate a method*, not merely the
+/// ranking of a few hand-written tool names. Every candidate rule is evaluated
+/// against later, separately witnessed executions; this is an online
+/// predictive trial, NOT an independent causal comparison.
+pub(crate) fn method_rule_score(positive:u64,negative:u64,rule:&Value)->f64 {
+    let bound=|key:&str,default:f64,low:f64,high:f64|
+        rule[key].as_f64().filter(|x|x.is_finite()&&*x>=low&&*x<=high)
+            .unwrap_or(default);
+    let reward=bound("rewardWeight",1.0,0.5,5.0);
+    let penalty=bound("failureWeight",1.0,0.5,6.0);
+    let smoothing=bound("smoothing",1.0,0.5,8.0);
+    let exploration=bound("exploration",0.0,0.0,2.0);
+    let count=(positive+negative) as f64;
+    (reward*positive as f64-penalty*negative as f64)/(count+smoothing)
+        + exploration/(count+1.0).sqrt()
+}
+fn method_sample_outcome(sample:&Value)->Option<bool> {
+    if sample["pairedRegression"]==true || sample["toolFailure"]==true
+        || sample["operationalFailure"]==true {Some(false)}
+    else if sample["pairedImprovement"]==true || sample["operationalPass"]==true {
+        Some(true)
+    } else {None}
+}
+fn predict_method_by_rule(
+    history:&[Value],domain:&str,from:&str,rule:&Value
+)->Option<String> {
+    let mut observations=BTreeMap::<String,(u64,u64)>::new();
+    for sample in history {
+        if sample["domain"].as_str()!=Some(domain) {continue;}
+        let Some(ok)=method_sample_outcome(sample) else {continue};
+        let Some(sequence)=sample["sequence"].as_array() else{continue};
+        for pair in sequence.windows(2) {
+            if pair[0].as_str()!=Some(from){continue;}
+            let Some(to)=pair[1].as_str() else{continue};
+            let entry=observations.entry(to.to_string()).or_insert((0,0));
+            if ok{entry.0+=1;}else{entry.1+=1;}
+        }
+    }
+    // A single known transition cannot show that a new selection rule
+    // performs better than an alternative.
+    if observations.len()<2{return None;}
+    observations.into_iter().filter(|(_, (good,_))|*good>0)
+        .map(|(to,(good,bad))|(to,method_rule_score(good,bad,rule)))
+        .max_by(|a,b|a.1.total_cmp(&b.1).then_with(||b.0.cmp(&a.0)))
+        .map(|(to,_)|to)
+}
+fn score_method_rule_on_later_executions(
+    earlier:&[Value],later:&[Value],rule:&Value
+)->Option<(i64,u64)> {
+    let (mut score,mut trials)=(0i64,0u64);
+    for sample in later {
+        let (Some(domain),Some(ok),Some(seq))=(sample["domain"].as_str(),
+            method_sample_outcome(sample),sample["sequence"].as_array())
+        else{continue};
+        for pair in seq.windows(2) {
+            let (Some(from),Some(observed))=(pair[0].as_str(),pair[1].as_str())
+                else{continue};
+            let Some(predicted)=predict_method_by_rule(earlier,domain,from,rule)
+                else{continue};
+            let same=predicted==observed;
+            // This measures selection consistency and avoidance of witnessed
+            // failures. It is a diagnostic, NOT a counterfactual success.
+            score+=match (ok,same) {
+                (true,true)=>2,(true,false)=>-1,
+                (false,true)=>-3,(false,false)=>1,
+            };
+            trials+=1;
+        }
+    }
+    (trials>=3).then_some((score,trials))
+}
+fn synthesize_method_scoring_kernel(evidence:&[Value])->Option<Value> {
+    if evidence.len()<8 {return None;}
+    let split=evidence.len()*2/3;
+    let earlier=&evidence[..split];
+    let later=&evidence[split..];
+    let base=json!({"rewardWeight":1.0,"failureWeight":1.0,
+        "smoothing":1.0,"exploration":0.0});
+    let baseline=score_method_rule_on_later_executions(earlier,later,&base)?;
+    let mut best=base;
+    let mut best_score=baseline.0;
+    // Parameter combinations are synthesized from the outcome landscape.
+    // They alter DOMINION's future method scorer, not the model weights.
+    for reward in [1.0,2.0,4.0] {
+        for failure in [1.0,2.0,4.0] {
+            for smoothing in [1.0,3.0] {
+                for exploration in [0.0,0.5,1.0] {
+                    let rule=json!({"rewardWeight":reward,"failureWeight":failure,
+                        "smoothing":smoothing,"exploration":exploration});
+                    let Some((quality,n))=
+                        score_method_rule_on_later_executions(earlier,later,&rule)
+                        else{continue};
+                    if n!=baseline.1{continue;}
+                    if quality>best_score {
+                        best_score=quality;best=rule;
+                    }
+                }
+            }
+        }
+    }
+    if best_score<=baseline.0 {return None;}
+    Some(json!({"rule":best,
+        "validation":{"status":"predictive_not_causal",
+            "source":"later_witnessed_tool_outcomes",
+            "trainGenerations":earlier.len(),"testGenerations":later.len(),
+            "comparedTransitions":baseline.1,
+            "baselineScore":baseline.0,"selectedScore":best_score}}))
+}
+
 fn induced_method_application_receipts(state:&AppState,session_id:&str)->Vec<Value> {
     let operations=state.store.all("execution_operation");
     let mut receipts=state.store.all("execution").into_iter()
@@ -1752,9 +1861,14 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     let cross_domain=quality_domains.len()>=2;
     policy["transitions"]=json!(transitions);
     policy["evidence"]=json!(evidence);
+    if let Some(kernel)=synthesize_method_scoring_kernel(&evidence) {
+        policy["scoringKernel"]=kernel;
+    } else {
+        policy["scoringKernel"]=Value::Null;
+    }
     policy["status"]=json!(if cross_domain{"cross_domain_observed"}else{"candidate"});
     policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([&policy["transitions"],
-        &policy["evidence"]]).to_string().as_bytes())));
+        &policy["evidence"],&policy["scoringKernel"]]).to_string().as_bytes())));
     policy["causalImprovement"]="unmeasured_until_matched_policy_trials".into();
     policy["updatedAt"]=json!(chrono::Utc::now().to_rfc3339());
     let saved=state.store.put("rsi_method_policy",&policy)?;
