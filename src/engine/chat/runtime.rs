@@ -113,11 +113,28 @@ fn rsi_patch_ready_for_evaluation(
         && receipt["observedVersion"].as_str() == Some(format!("sha256:{digest}").as_str())
 }
 
+/// Native source-improvement work may need more time than an interactive
+/// conversation, while the supervising worker still enforces its own budget.
+fn source_generation_turn_limit(session:&Value)->Duration {
+    if rsi_generation_has_action_target(session) {
+        Duration::from_secs(840)
+    } else {
+        MAX_ELAPSED
+    }
+}
+fn turn_limit_error(limit:Duration)->String {
+    if limit==MAX_ELAPSED {
+        "실행 시간 제한(10분)을 초과했습니다.".into()
+    } else {
+        format!("자기개선 세대 실행 시간 제한({}초)을 초과했습니다.",limit.as_secs())
+    }
+}
+
 fn rsi_focused_edit_due(
     session: &Value, operations: &[Value], execution_id: &str,
     tool_calls: u64, already_issued: bool,
 ) -> bool {
-    if already_issued || tool_calls < 4 || !rsi_generation_has_action_target(session)
+    if already_issued || tool_calls < 2 || !rsi_generation_has_action_target(session)
         || !rsi_read_only_completion(operations,execution_id) {
         return false;
     }
@@ -367,9 +384,10 @@ async fn run_turn_with_policy(
             state.store.put("execution", &execution);
         }
     }
+    let turn_limit=source_generation_turn_limit(&session);
     let result = tokio::select! {
-        result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
-            result.unwrap_or_else(|_| Err("실행 시간 제한(10분)을 초과했습니다.".into())),
+        result = tokio::time::timeout(turn_limit, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
+            result.unwrap_or_else(|_| Err(turn_limit_error(turn_limit))),
         // A closed SSE client must not destroy work already in flight. The turn
         // keeps running in its spawned task; only an explicit cancel or the
         // elapsed budget stops it. Results stay durable for later reads.
@@ -1027,7 +1045,8 @@ async fn run_turn_body(
     let mut adaptation_attempts = 0usize;
     let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
-    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
+    let turn_limit=source_generation_turn_limit(&session);
+    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, turn_limit);
     let mut rsi_decision_checkpoint = false;
     let mut rsi_final_edit_retry = false;
     let mut rsi_edit_action_pending = false;
@@ -1064,14 +1083,14 @@ async fn run_turn_body(
             return Err("모델 라운드 예산을 초과했습니다.".into());
         }
         if budget.expired() {
-            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
+            return Err(turn_limit_error(turn_limit));
         }
         if state.is_cancelled(session_id) || state.cancellation_generation(session_id) != generation
         {
             return Err("실행이 중단되었습니다.".into());
         }
-        if started_at.elapsed() > MAX_ELAPSED {
-            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
+        if started_at.elapsed() > turn_limit {
+            return Err(turn_limit_error(turn_limit));
         }
         if metrics.lock().unwrap().tool_calls as usize >= max_tools {
             mark_budget_exhausted(state, execution_id);
@@ -6236,6 +6255,15 @@ mod harness_tool_selection_tests {
     }
 
     #[test]
+    fn native_generation_gets_bounded_extended_turn_only_with_real_source_target() {
+        assert_eq!(source_generation_turn_limit(&json!({"rsiRun":true})),MAX_ELAPSED);
+        let session=json!({"rsiRun":true,"rsiCampaignId":"c",
+            "rsiGenerationJobId":"w","rsiFocusFile":"src/engine/memory.rs"});
+        assert_eq!(source_generation_turn_limit(&session),Duration::from_secs(840));
+        assert!(turn_limit_error(Duration::from_secs(840)).contains("840초"));
+    }
+
+    #[test]
     fn source_patch_hand_off_requires_real_independently_verified_focus_edit() {
         let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
             "rsiGenerationJobId":"worker","rsiFocusFile":"src/engine/decompose.rs"});
@@ -6265,8 +6293,8 @@ mod harness_tool_selection_tests {
         let read=json!({"runId":"run","status":"completed",
             "tool":"workspace_read_range",
             "arguments":{"path":"src/engine/memory.rs"}});
-        assert!(!rsi_focused_edit_due(&session,&[read.clone()],"run",3,false));
-        assert!(rsi_focused_edit_due(&session,&[read.clone()],"run",4,false));
+        assert!(!rsi_focused_edit_due(&session,&[read.clone()],"run",1,false));
+        assert!(rsi_focused_edit_due(&session,&[read.clone()],"run",2,false));
         assert!(!rsi_focused_edit_due(&session,&[read.clone()],"run",5,true));
         assert!(!rsi_focused_edit_due(&session,&[read.clone()],"unrelated",4,false));
         let wrong=json!({"runId":"run","status":"completed",
