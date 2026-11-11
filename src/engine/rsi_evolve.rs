@@ -1240,8 +1240,13 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
             }
             let attempted=failure["editEvidence"]["attempts"].as_u64().unwrap_or(0);
             let verified=failure["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0);
-            if attempted>0 && failure["candidateId"].is_null(){
-                text.push_str(&format!("- 실제 실행 도구 편집 시도 {attempted}회, 읽어 확인된 변경 {verified}회, 후보 0개. 이번 세대는 도구 호출 자체가 아니라 실제 파일 diff와 독립 검증에 도달해야 합니다.\n"));
+            if attempted>0 {
+                let candidate_state=if failure["candidateId"].is_null() {
+                    "후보 0개"
+                } else {
+                    "후보는 생성됐으나 성능 개선 채택 실패"
+                };
+                text.push_str(&format!("- 실제 실행 도구 편집 시도 {attempted}회, 읽어 확인된 변경 {verified}회, {candidate_state}. 이번 세대는 도구 호출 자체가 아니라 실제 파일 diff와 독립 검증에 도달해야 합니다.\n"));
                 for reason in failure["editEvidence"]["recentFailures"].as_array()
                     .into_iter().flatten().filter_map(Value::as_str).take(2) {
                     text.push_str(&format!("- 지난 편집 실패: {}\n",
