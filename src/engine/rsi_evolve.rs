@@ -2333,6 +2333,8 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
     }
     let Some(parent)=plan["revision"].as_str().map(str::to_string) else {return plan;};
     let mut stalled=0u64;
+    let mut failed_compiles=0u64;
+    let mut regressed_quality=0u64;
     let mut seen=BTreeSet::<String>::new();
     for row in rows {
         let method=&row["executionMethod"]["actionProgram"];
@@ -2345,6 +2347,23 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
             actions.iter().any(|action|action["inducedProgramDecision"].is_object())) {
             continue;
         }
+        // A real source edit that fails compilation or the frozen oracle is
+        // *negative quality feedback*, not a successful method trial. The
+        // previous learner skipped it forever and kept repeating that method.
+        // Require operation-level attribution, not the model's policy narration.
+        let executed=observed_induced_program(row)==Some(parent.as_str());
+        if executed {
+            if row["attemptedCandidateId"].is_string()
+                && row["candidateCapture"]["checksPassed"]==false {
+                failed_compiles+=1;
+                continue;
+            }
+            if row["evaluation"]["verdict"]=="regressed"
+                || row["evaluation"]["candidateStatus"]=="rejected" {
+                regressed_quality+=1;
+                continue;
+            }
+        }
         if generation_is_verified(row) || row["attemptedCandidateId"].is_string()
             || row["writeReceipts"].as_array().is_some_and(|receipts|
                 receipts.iter().any(|receipt|receipt["written"]==true)) {
@@ -2352,14 +2371,46 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
         }
         stalled+=1;
     }
-    if stalled<2{return plan;}
+    if stalled<2 && failed_compiles<2 && regressed_quality<2{return plan;}
     let mut sequence=plan["sequence"].as_array().cloned().unwrap_or_default();
     // The highest-value mutation is to turn a research-only program into
     // an implementation program. Dropping discovery while keeping *no edit*
     // repeats the very failure we were supposed to learn from.
     let has_edit=|sequence:&[Value]|sequence.iter().any(|step|matches!(
         step.as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write")));
-    let transform=if !has_edit(&sequence) {
+    let transform=if failed_compiles>=2 || regressed_quality>=2 {
+        // Rejected quality is a counterexample against this specific
+        // execution algorithm. Compile failures demand refreshed grounded
+        // source before a different edit operator; regressions demand a
+        // fresh counterexample search rather than another blind write.
+        let mut proposed=sequence.clone();
+        if failed_compiles>=2 {
+            if let Some(index)=proposed.iter().position(|step|
+                matches!(step.as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))) {
+                if index==0 || proposed[index-1]!="workspace_read_range" {
+                    proposed.insert(index,json!("workspace_read_range"));
+                }
+            }
+        } else if proposed.first().and_then(Value::as_str)!=Some("code_search") {
+            proposed.insert(0,json!("code_search"));
+        }
+        if let Some(index)=proposed.iter().rposition(|step|
+            matches!(step.as_str(),Some("workspace_replace"|"workspace_replace_range"))) {
+            let alternative=if proposed[index]=="workspace_replace" {
+                "workspace_replace_range"
+            } else {"workspace_replace"};
+            proposed[index]=json!(alternative);
+        } else if !has_edit(&proposed) {
+            proposed.push(json!(fallback));
+        }
+        if proposed==sequence {
+            // A counterexample must never create a no-op new "revision".
+            proposed.insert(0,json!("workspace_read_range"));
+        }
+        sequence=proposed;
+        if failed_compiles>=2 {"repair_failed_compilation_method"}
+        else {"repair_regressed_quality_method"}
+    } else if !has_edit(&sequence) {
         sequence.push(json!(fallback));
         "append_source_mutation"
     } else if let Some(repair)=plan["recoveryPaths"].as_array()
@@ -2402,7 +2453,11 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
     plan["mutatedFrom"]=json!(parent);
     plan["mutationOperator"]=json!(transform);
     plan["failureEpisodes"]=json!(stalled);
-    plan["status"]=json!("trial_after_unproductive_predecessor");
+    plan["compileFailureEpisodes"]=json!(failed_compiles);
+    plan["qualityRegressionEpisodes"]=json!(regressed_quality);
+    plan["status"]=json!(if failed_compiles>=2||regressed_quality>=2 {
+        "trial_after_quality_counterexamples"
+    } else {"trial_after_unproductive_predecessor"});
     plan
 }
 
