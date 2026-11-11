@@ -6465,20 +6465,20 @@ mod harness_tool_selection_tests {
         let args=json!({"path":"src/engine/memory.rs",
             "startLine":10,"endLine":11,"newText":"fn changed() {}",
             "expectedSha256":sha});
-        let parsed=super::protocol::parse_rsi_unwrapped_edit(
+        let parsed=crate::engine::chat::protocol::parse_rsi_unwrapped_edit(
             &format!("```json\n{}\n```",args),&allowed).unwrap();
         assert_eq!(parsed.0,"workspace_replace_range");
         assert_eq!(serde_json::from_str::<Value>(&parsed.1).unwrap()["startLine"],10);
-        assert!(super::protocol::parse_rsi_unwrapped_edit(
+        assert!(crate::engine::chat::protocol::parse_rsi_unwrapped_edit(
             "I suggest changing your code next.",&allowed).is_none());
-        assert!(super::protocol::parse_rsi_unwrapped_edit(
+        assert!(crate::engine::chat::protocol::parse_rsi_unwrapped_edit(
             &json!({"path":"src/engine/memory.rs","startLine":1,"endLine":1,
                 "newText":"bad"}).to_string(),&allowed).is_none(),
             "No read source hash, no range write");
-        assert!(super::protocol::parse_rsi_unwrapped_edit(
+        assert!(crate::engine::chat::protocol::parse_rsi_unwrapped_edit(
             &json!({"path":"../escape.rs","oldText":"a","newText":"b"})
                 .to_string(),&allowed).is_none());
-        let block=super::protocol::parse_rsi_unwrapped_edit(
+        let block=crate::engine::chat::protocol::parse_rsi_unwrapped_edit(
             &json!({"path":"src/engine/memory.rs","oldText":"old","newText":"new"})
                 .to_string(),&allowed).unwrap();
         assert_eq!(block.0,"workspace_replace");
