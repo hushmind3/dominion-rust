@@ -4586,7 +4586,7 @@ mod tests {
         assert_eq!(learned["reason"],"counterexample_exploration");
         assert_eq!(learned["status"],"trial_unverified");
         assert_eq!(learned["evidence"]["workspace_replace"]["verifiedAdoptions"],0);
-        assert_eq!(learned["program"][1]["tool"],"workspace_replace_range");
+        assert_eq!(learned["program"][2]["tool"],"workspace_replace_range");
         state.store.put("rsi_run",&json!({
             "id":"rsi-run-g2-worker","jobId":"g2-worker",
             "candidateId":"proposed-g2","checksPassed":true
@@ -4597,7 +4597,7 @@ mod tests {
             "candidateCapture":{"checksPassed":true},
             "writeReceipts":[{"tool":"workspace_replace_range","written":true,
                 "status":"completed"}]});
-        let next=learn_execution_method(&state,&input,&[failed,succeeding]);
+        let next=learn_execution_method(&state,&input,&[failed,succeeding.clone()]);
         assert_eq!(next["preferredTool"],"workspace_replace_range");
         assert_eq!(next["evidence"]["workspace_replace_range"]["checkedCandidates"],1);
         assert_eq!(next["evidence"]["workspace_replace_range"]["verifiedAdoptions"],0);
