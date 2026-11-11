@@ -19,6 +19,9 @@ let receipt={schema:'sub4.real-model.rsi.v1',branch:'dominion-sub4',
   status:'initializing',
   actualModelCalls:0,sourceWriteCalls:0,modelMethodCalls:0,
   acceptedGenerations:0,measuredImprovement:false,transferEvidence:[],
+  completionProof:{capabilityDemonstrated:false,maxAcceptedStreak:0,
+    acceptedSourceGenerations:0,rebuiltDescendantGenerations:0,
+    productionChanged:false,complete:false},
   generations:[],errors:[]};
 function persist() {
   fs.mkdirSync(reportPath.slice(0,reportPath.lastIndexOf('/'))||'.',{recursive:true});
@@ -137,8 +140,26 @@ if(mode==='probe'){
       if(terminal.has(last.status))break;
     }
     if(!last)throw Error('campaign status never available');
-    const history=last.evolution?.history||last.result?.evolution?.history||[];
+    const evolution=last.evolution||last.result?.evolution||{};
+    const history=Array.isArray(evolution.history)?evolution.history:[];
     receipt.generations=history.map(summarize);
+    const acceptedSourceGenerations=history.filter(g=>g.accepted===true &&
+      typeof g.acceptedCommit==='string' && g.acceptedCommit.length===40 &&
+      typeof g.generatorCommit==='string' && g.generatorCommit.length===40 &&
+      g.acceptedCommit!==g.generatorCommit).length;
+    const rebuiltDescendantGenerations=history.filter((g,index)=>index>0 &&
+      typeof g.generatorCommit==='string' &&
+      history[index-1]?.acceptedCommit===g.generatorCommit).length;
+    const maxAcceptedStreak=Number(evolution.maxAcceptedStreak||0);
+    const capabilityDemonstrated=evolution.capabilityDemonstrated===true;
+    receipt.completionProof={
+      capabilityDemonstrated,maxAcceptedStreak,acceptedSourceGenerations,
+      rebuiltDescendantGenerations,
+      productionChanged:evolution.productionChanged===true,
+      complete:capabilityDemonstrated && maxAcceptedStreak>=3 &&
+        acceptedSourceGenerations>=3 && rebuiltDescendantGenerations>=2 &&
+        evolution.productionChanged!==true
+    };
     receipt.actualModelCalls=receipt.generations.reduce((n,g)=>n+g.actualModelCalls,0);
     receipt.sourceWriteCalls=receipt.generations.reduce((n,g)=>n+g.sourceWriteCalls,0);
     receipt.modelMethodCalls=receipt.generations.reduce((n,g)=>n+g.modelMethodCalls,0);
@@ -146,6 +167,9 @@ if(mode==='probe'){
     receipt.measuredImprovement=receipt.generations.some(g=>g.measuredGain);
     receipt.transferEvidence=receipt.generations.flatMap(g=>g.methodExecutions)
       .filter(r=>r.crossDomain===true);
+    receipt.repairModes=history.flatMap(g=>(g.sourceIntegrity?.previousAttempts||[])
+      .map(attempt=>({generation:g.attempt,mode:attempt.mode||null,
+        candidateId:attempt.result?.candidateId||null})));
     receipt.status=last.status;
     receipt.reason=last.evolution?.stopReason||last.result?.evolution?.stopReason||null;
     if(!terminal.has(last.status))receipt.errors.push('campaign deadline without terminal result');
@@ -154,6 +178,7 @@ if(mode==='probe'){
       calls:receipt.actualModelCalls,writes:receipt.sourceWriteCalls,
       proposedMethods:receipt.modelMethodCalls,accepted:receipt.acceptedGenerations,
       improved:receipt.measuredImprovement,reason:receipt.reason,
+      completionProof:receipt.completionProof,repairModes:receipt.repairModes,
       generations:receipt.generations.map(g=>({attempt:g.attempt,writes:g.sourceWriteCalls,
         tools:g.toolsUsed,accepted:g.accepted,sourceIntegrity:g.sourceIntegrity,
         error:g.error}))},null,2));
