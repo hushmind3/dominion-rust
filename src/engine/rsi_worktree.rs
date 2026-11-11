@@ -196,6 +196,50 @@ async fn git(dir:&Path, args:&[&str])->Result<String,String>{
 fn valid_sha(value:&str)->bool {
     value.len()==40 && value.bytes().all(|byte|byte.is_ascii_hexdigit())
 }
+/// Preload an independently measured, rejected patch into the next
+/// generation's disposable checkout. This patch does NOT update the accepted
+/// source revision: its child must change actual code and beat the ORIGINAL
+/// baseline in the frozen A/B test before any adoption is possible.
+async fn inherit_neutral_patch(
+    context:&JobContext, path:&Path, base:&str, id:&str,
+)->Result<(),String>{
+    let candidate=context.state.store.get("rsi_candidate",id)
+        .ok_or("계승할 실제 개선 후보를 찾을 수 없습니다.")?;
+    let patch=candidate["patch"].as_str().ok_or("계승 후보의 소스 패치 없음")?;
+    if candidate["baseCommit"]!=base
+        || candidate["origin"]!="model_driven_detached_worktree"
+        || candidate["pairedComparisonComplete"]!=true
+        || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+        || candidate["evaluation"]["metrics"]["metricGains"]!=0
+        || candidate["evaluation"]["metrics"]["regressions"]!=0
+        || digest(patch)!=candidate["patchSha256"].as_str().unwrap_or("")
+        || candidate["paths"].as_array().is_none_or(|paths|
+            paths.is_empty() || paths.iter().any(|p|
+                !p.as_str().is_some_and(crate::engine::rsi::safe_path))) {
+        return Err("독립 검증되지 않았거나 다른 기준 커밋의 패치는 계승하지 않습니다.".into());
+    }
+    let temporary=std::env::temp_dir().join(format!(
+        "dominion-rsi-neutral-{}.patch",uuid::Uuid::new_v4()));
+    std::fs::write(&temporary,patch).map_err(|e|e.to_string())?;
+    let name=temporary.to_str().ok_or("계승 패치 경로 오류")?;
+    let applied=async {
+        git(path,&["apply","--check",name]).await?;
+        git(path,&["apply",name]).await?;
+        if git(path,&["status","--porcelain","--untracked-files=normal"]).await?.is_empty(){
+            return Err("계승 패치가 실제 소스 차이를 남기지 않았습니다.".into());
+        }
+        Ok::<(),String>(())
+    }.await;
+    let _=std::fs::remove_file(&temporary);
+    applied?;
+    context.state.store.audit("rsi.neutral_patch_inherited",json!({
+        "generationJobId":context.job_id,"candidateId":id,
+        "baseCommit":base,"patchSha256":candidate["patchSha256"],
+        "sourceDir":path.to_string_lossy(),
+    }));
+    Ok(())
+}
+
 pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     let base=input["rsiBaseCommit"].as_str().filter(|v|valid_sha(v))
         .ok_or("자기개선 시작 시 기준 Git 커밋이 고정되지 않았습니다.")?;
@@ -225,6 +269,12 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     let name=path.to_str().ok_or("분리 작업공간 경로를 읽을 수 없습니다.")?;
     // Detached Git worktree, not a new branch; the running server checkout stays pristine.
     git(&source,&["worktree","add","--detach",name,base]).await?;
+    if let Some(id)=input["rsiInheritedCandidateId"].as_str().filter(|id|!id.is_empty()) {
+        if let Err(error)=inherit_neutral_patch(context,&path,base,id).await {
+            let _=git(&source,&["worktree","remove","--force",name]).await;
+            return Err(error);
+        }
+    }
     if let Err(error)=context.checkpoint(json!({
         "rsiWorkspace":name,"rsiBaseCommit":base,
         "rsiPhase":"model_editing","rsiIsolation":"detached_git_worktree_not_os_sandbox"
@@ -411,6 +461,10 @@ pub async fn finish(
         }
     }
     let edit_evidence=edit_outcomes(&context.state,session_id);
+    let inherited_patch_changed=input["rsiInheritedCandidateId"].as_str()
+        .and_then(|id|context.state.store.get("rsi_candidate",id))
+        .is_some_and(|ancestor|ancestor["patchSha256"]!=patch_sha
+            && edit_evidence["verifiedWrites"].as_u64().unwrap_or(0)>0);
     let source_clean=git(&worktree.source,&["status","--porcelain","--untracked-files=normal"])
         .await.map(|v|v.is_empty()).unwrap_or(false);
     let model_error=model_result.as_ref().err().cloned().unwrap_or_default();
@@ -425,6 +479,8 @@ pub async fn finish(
         "pairedComparisonComplete":false,"autoMerged":false,"autoDeployed":false,
         "modelError":model_error,"captureError":capture_error,
         "editEvidence":edit_evidence,
+        "inheritedCandidateId":input["rsiInheritedCandidateId"],
+        "inheritedPatchChanged":inherited_patch_changed,
         "modelMessageId":model_result.ok().flatten().and_then(|m|m["id"].as_str().map(str::to_string)),
         "createdAt":chrono::Utc::now().to_rfc3339(),
     });
