@@ -49,7 +49,8 @@ if(mode==='probe'){
         const payload=JSON.parse(rawBody.toString('utf8'));
         const names=(payload.tools||[]).map(t=>t.function?.name||t.name||'unknown');
         const record={at:new Date().toISOString(),model:payload.model,
-          toolChoice:payload.tool_choice||null,tools:names,
+          toolChoice:payload.tool_choice||null,reasoningEffort:payload.reasoning_effort||null,
+          maxOutputTokens:payload.max_tokens||null,tools:names,
           messages:(payload.messages||[]).map(m=>({role:m.role,
             chars:typeof m.content==='string'?m.content.length:0}))};
         fs.mkdirSync('benchmark',{recursive:true});
@@ -87,6 +88,7 @@ if(mode==='probe'){
     const request={
       mode:'continuous',confirmation:'START_RSI_EVOLUTION',
       selectionPolicy:'automatic',providerId:'sub1-free-proxy',model:'openai-fast',
+      thinking:false,reasoningEffort:'low',
       request:'Fix a reproducible behavior bug in src/engine/decompose.rs. The existing split_markers() recognizes isolated marker words (e.g. 그리고, 뒤) but misses Korean action suffix -고 and connective 다음/나서. On baseline, Korean text 설계를 읽고 결과를 저장한 다음 검증해 produces one step where three real ordered actions are required. Modify the Rust function now: after reading the exact existing source block, call workspace_replace with path=src/engine/decompose.rs, oldText=the exact source text and newText=your implementation. Distinguish action verb suffix -고 from nouns such as 사고/최고; preserve original subtask text and list handling. Do not end after code_search or workspace_read_range. If the first edit is rejected, inspect the tool error and retry with the exact current oldText. DOMINION will run independent frozen baseline/candidate tests after editing.',
       focusFiles:['src/engine/decompose.rs'],
       maxAttempts:Number(process.env.SUB1_LIVE_MAX_ATTEMPTS||3),
@@ -184,6 +186,7 @@ if(mode==='probe'){
           trace.noEditModelResponses.push({jobId:generation.jobId,sessionId,
             assistantMessages:rows.filter(row=>row.role==='assistant').slice(-8).map(row=>({
               content:String(row.content||'').slice(-2600),
+              reasoning:String(row.reasoning||'').slice(-1600),
               toolCalls:(row.tool_calls||row.toolCalls||[]).map(t=>({
                 name:t.function?.name||t.name||null,
                 arguments:String(t.function?.arguments||t.arguments||'').slice(0,900)
