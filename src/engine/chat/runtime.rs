@@ -223,7 +223,12 @@ fn rsi_induced_next_tool(
             // previously working domain. Untried domains only inherit a
             // transition after it has twice succeeded elsewhere; the
             // inherited suggestion is still an experiment.
-            let transferable=local_evidence || yes>=2;
+            let contradicted_elsewhere=row["byDomain"].as_object().is_some_and(|domains|
+                domains.values().any(|outcome|
+                    outcome["negative"].as_u64().unwrap_or(0)>0
+                    && outcome["negative"].as_u64().unwrap_or(0)
+                        >=outcome["positive"].as_u64().unwrap_or(0)));
+            let transferable=local_evidence || (yes>=2 && !contradicted_elsewhere);
             (transferable && yes>no).then_some((yes-no,to.to_string()))
         }).collect::<Vec<_>>();
     ranked.sort_by(|a,b|b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
