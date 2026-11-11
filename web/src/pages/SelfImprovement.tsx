@@ -13,6 +13,7 @@ type InstallJob={id:string;status:string;error?:string;result?:{installed?:strin
 type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
  objective?:string;providerId?:string;model?:string;headCommit?:string;baseCommit?:string;sourceSnapshot?:boolean;
  continuedFrom?:string;selectedVersionRunning?:boolean;installJobId?:string;
+ autonomousWarmStart?:{sourceGenerations?:number;proposal?:{status?:string;candidateId?:string}};
  limits?:{maxAttempts?:number;tokenBudget?:number;timeBudgetSeconds?:number};
  application?:{commit?:string;requiresRebuild?:boolean;restartRequested?:boolean};
  tokensEstimated?:boolean;
@@ -205,6 +206,9 @@ export function SelfImprovementPage(){
    <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">{[{label:'새 연구 근거',value:research},{label:'검증·선택한 코드',value:adopted},{label:'선택 버전으로 후속 실행',value:inherited},{label:'저장된 방법의 실제 실행',value:executedMethods}].map(item=><div key={item.label} className="rounded-lg bg-[#FAF7F1] p-3"><span className="block text-[#7C7469]">{item.label}</span><strong className="mt-1 block text-lg">{item.value}</strong></div>)}</div>
    {!working&&campaign.stopReason&&<p className="mt-3 text-[12px] text-[#7C7469]">{stops[campaign.stopReason]||campaign.stopReason}</p>}
    {!working&&hasSelected&&<div className="mt-4 rounded-xl border border-[#D9E3D3] bg-[#F2F6EF] p-4"><p className="text-[13px] font-semibold">{campaign.selectedVersionRunning?'검증한 버전이 현재 4317에서 실행 중입니다':installing?'검증본을 빌드하고 있습니다':install?.status==='completed'?'빌드 완료 · 서버 재연결 확인 중':'선택한 개선본을 실제 사용하는 프로그램에 반영할 수 있습니다'}</p><p className="mt-1 text-[12px] text-[#7C7469]">{campaign.sourceSnapshot?'작업 시작 시 미저장 코드가 있었습니다. 파일을 보존하기 위해 자동 반영은 제한합니다.':'작업 브랜치만 반영하며 메인과 다른 서비스의 설정은 유지합니다.'}</p>{!campaign.selectedVersionRunning&&!campaign.sourceSnapshot&&<Button className="mt-3" variant="primary" disabled={busy||installing} onClick={()=>void apply()}>{installing?<LoaderCircle size={14} className="animate-spin"/>:<Download size={14}/>}검증본을 4317에 반영</Button>}</div>}
+   {campaign.autonomousWarmStart?.proposal?.status==='pending_trial'&&<p className="mt-2 text-[11px] text-[#655D51]">
+    지난 캠페인의 실패 {campaign.autonomousWarmStart.sourceGenerations||0}세대를 분석해 새 탐색 알고리즘 실험을 준비했습니다. 실제 개선 성과는 대조 실험 후 판정됩니다.
+   </p>}
    {activeSearch&&<div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-2 text-[11px] text-[#7C7469]"><span className="font-semibold text-[#5C544A]">다음 연구를 고르는 방식</span><span>{activeSearch.name}</span></div>}
    {campaign.history&&campaign.history.length>0&&<details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[#7C7469]">지난 비교 결과</summary><div className="mt-2 grid gap-2">
     {campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-3">
