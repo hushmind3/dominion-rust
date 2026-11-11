@@ -1640,6 +1640,7 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
             "acceptedGains":learned.2,"pairedRegressions":learned.3,"score":learned_score},
         "nextPolicyRevision":Value::Null,
         "createdAt":chrono::Utc::now().to_rfc3339()});
+    let mut policy_change=Value::Null;
     if matches!(verdict,"promote_observational"|"reject_and_mutate") {
         let Some(policy_id)=cohort["policy"]["id"].as_str() else{return Value::Null};
         let Some(mut policy)=state.store.get("rsi_method_policy",policy_id) else {
@@ -1680,15 +1681,22 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
                 cohort_id
             ]).to_string().as_bytes())));
         }
-        let Some(saved)=state.store.put("rsi_method_policy",&policy) else{
-            return Value::Null;
-        };
-        state.bus.record("rsi_method_policy",&saved);
-        decision["nextPolicyRevision"]=saved["revision"].clone();
+        decision["nextPolicyRevision"]=policy["revision"].clone();
+        policy_change=policy;
     }
-    let Some(saved)=state.store.put("rsi_method_trial_decision",&decision) else{
-        return Value::Null;
-    };
+    // A recovered coordinator must never see a policy mutation without its
+    // decision receipt (or vice versa). Publish the pair as one SQLite commit.
+    let mut updates=Vec::<(String,Value)>::new();
+    if policy_change.is_object() {
+        updates.push(("rsi_method_policy".into(),policy_change.clone()));
+    }
+    updates.push(("rsi_method_trial_decision".into(),decision.clone()));
+    if state.store.transaction(&updates).is_err(){return Value::Null;}
+    if policy_change.is_object(){
+        state.bus.record("rsi_method_policy",&policy_change);
+    }
+    let saved=state.store.get("rsi_method_trial_decision",cohort_id)
+        .unwrap_or(decision);
     state.bus.record("rsi_method_trial_decision",&saved);
     saved
 }
@@ -2112,7 +2120,14 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     let cross_domain=quality_domains.len()>=2;
     policy["transitions"]=json!(transitions);
     policy["evidence"]=json!(evidence);
-    if let Some(kernel)=synthesize_method_scoring_kernel(&evidence) {
+    // A negative matched trial changes the evaluator itself. Do not erase
+    // that newborn candidate at the very next feedback write merely because
+    // the shorter, non-causal predictive sample disagrees or is insufficient.
+    // Its next matched trial, not a prompt heuristic, will decide its fate.
+    let previous_kernel=policy["scoringKernel"].clone();
+    if previous_kernel["validation"]["status"]=="new_trial_candidate_not_proven" {
+        policy["scoringKernel"]=previous_kernel;
+    } else if let Some(kernel)=synthesize_method_scoring_kernel(&evidence) {
         policy["scoringKernel"]=kernel;
     } else {
         policy["scoringKernel"]=Value::Null;
