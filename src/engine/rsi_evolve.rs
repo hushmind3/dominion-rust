@@ -2938,8 +2938,13 @@ async fn run_loop(
                     .unwrap_or_default()
             } else {latest}
         } else {recorded_history.clone()};
-        child_input["rsiImprovementDirective"]=
-            generation_improvement_directive(&child_input,&action_history);
+        let policy_training=meta_training_history(
+            &context.state,&child_input,&action_history);
+        child_input["rsiImprovementDirective"]=if action_history.is_empty() {
+            generation_improvement_directive(&child_input,&action_history)
+        } else {
+            learned_improvement_directive_with_training(&action_history,&policy_training)
+        };
         let target_objective=selection_objective(&child_input);
         // Compute the same domain decision that the worker will use. Keep it
         // distinct from rsiSelectedDomain, which represents an explicit choice.
@@ -3683,20 +3688,52 @@ fn learned_edit_primitive(history:&[Value],domain:&str)->Value {
         "selection":"observed_write_and_failure_not_model_claim"})
 }
 
+
+/*
+ * Carry learned meta-program evidence between campaigns that share both the
+ * owner's source partition and the concrete objective. Keep generation order,
+ * preserve campaign boundaries, and deduplicate a worker's local history
+ * against the durable ledger. This learns a policy across campaigns while the
+ * actual repair context still comes from the CURRENT unfinished lineage.
+ */
+fn meta_training_history(state:&AppState,input:&Value,current:&[Value])->Vec<Value> {
+    let partition=research_scope(input).partition_key;
+    let objective_id=crate::engine::memory::stable_id(&[
+        input["rsiObjective"].as_str().unwrap_or("")
+    ]);
+    let mut rows=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["knowledgePartition"]==partition
+            && row["objectiveId"]==objective_id).collect::<Vec<_>>();
+    rows.extend(current.iter().cloned());
+    rows.sort_by(|a,b|generation_completion_millis(a).cmp(&generation_completion_millis(b))
+        .then(a["campaignId"].as_str().cmp(&b["campaignId"].as_str()))
+        .then(a["attempt"].as_u64().cmp(&b["attempt"].as_u64())));
+    let mut seen=BTreeSet::<String>::new();
+    rows.retain(|row|{
+        let id=row["jobId"].as_str().or_else(||row["id"].as_str()).unwrap_or("");
+        !id.is_empty() && seen.insert(id.to_string())
+    });
+    rows.into_iter().rev().take(80).collect::<Vec<_>>().into_iter().rev().collect()
+}
+
 fn learned_improvement_directive(history:&[Value])->Value {
+    learned_improvement_directive_with_training(history,history)
+}
+
+fn learned_improvement_directive_with_training(history:&[Value],training:&[Value])->Value {
     let mut decision=improvement_directive(history);
     let Some(last)=history.last() else{return decision;};
     let context=meta_recovery_context(last);
     let choices=meta_action_alternatives(context);
     let baseline=decision["mode"].as_str().unwrap_or("change_approach").to_string();
-    let edit=learned_edit_primitive(history,last["domain"].as_str().unwrap_or(""));
+    let edit=learned_edit_primitive(training,last["domain"].as_str().unwrap_or(""));
     // Bind the source-tool policy even before action-formula training converges.
     if !decision["policy"].is_object() {decision["policy"]=json!({});}
     decision["policy"]["preferredEditTool"]=edit["selected"].clone();
     decision["policy"]["editEvidence"]=edit["ranked"].clone();
     if choices.len()<=1{return decision;}
     let mut rewards=BTreeMap::<String,Vec<(f64,String)>>::new();
-    for window in history.windows(2) {
+    for window in training.windows(2) {
         let prior=&window[0];let result=&window[1];
         if prior["campaignId"]!=result["campaignId"]
             || prior["attempt"].as_u64().and_then(|n|n.checked_add(1))
@@ -3718,7 +3755,7 @@ fn learned_improvement_directive(history:&[Value])->Value {
         return decision;
     }
     let has_loss=rewards.values().flatten().any(|(v,_)|*v<0.0);
-    let has_gain=history.iter().any(|r|r["accepted"]==true);
+    let has_gain=training.iter().any(|r|r["accepted"]==true);
     let failure_weight=if has_loss {(0.15+total as f64*0.05).min(0.65)}else{0.0};
     let adoption_weight=if has_gain {(0.2+total as f64*0.04).min(0.6)}else{0.0};
     let exploration=(0.7/(1.0+total as f64/12.0)).clamp(0.2,0.7);
@@ -3738,7 +3775,7 @@ fn learned_improvement_directive(history:&[Value])->Value {
             ("failureRate".to_string(),if n==0{0.0}else{
                 rows.iter().filter(|(v,_)|*v<0.0).count() as f64/n as f64}),
             ("verifiedAdoption".to_string(),if n==0{0.0}else{
-                rows.iter().filter(|(_,id)|history.iter().any(|g|
+                rows.iter().filter(|(_,id)|training.iter().any(|g|
                     g["id"].as_str()==Some(id.as_str()) && g["accepted"]==true))
                     .count() as f64/n as f64}),
         ]);
@@ -4235,8 +4272,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // The rebuilt descendant makes its OWN newest meta-policy decision from
     // durable experience. The parent stores a provisional plan, not authority.
     if !history.is_empty() {
+        let training=meta_training_history(&state,&job["input"],&history);
         job["input"]["rsiImprovementDirective"]=
-            generation_improvement_directive(&job["input"],&history);
+            learned_improvement_directive_with_training(&history,&training);
     }
     // The first generation in a new campaign inherits the coordinator's
     // matching earlier-campaign failure lesson. Empty local history must not
@@ -4332,6 +4370,39 @@ mod tests {
         assert!(improvement_work_contract(&directive).contains("Git diff"));
     }
 
+
+
+    #[test]
+    fn meta_policy_retains_real_history_across_campaigns_without_other_objectives() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiObjective":"memory-retrieval"});
+        let partition=research_scope(&input).partition_key;
+        let objective=crate::engine::memory::stable_id(&["memory-retrieval"]);
+        for i in 1..=3 {
+            state.store.put("rsi_generation",&json!({
+                "id":format!("past-{i}"),"jobId":format!("past-job-{i}"),
+                "campaignId":"past-campaign","attempt":i,
+                "knowledgePartition":partition,"objectiveId":objective,
+                "domain":"memory","accepted":false,"candidateId":null,
+                "newFindings":0,"tokens":100,
+                "improvementDirective":{"mode":"change_approach"},
+                "improvementActionObservation":{"status":"not_followed"},
+                "completedAt":format!("2026-11-11T00:00:0{i}Z")
+            })).unwrap();
+        }
+        state.store.put("rsi_generation",&json!({
+            "id":"foreign","jobId":"foreign-job","campaignId":"foreign","attempt":1,
+            "knowledgePartition":partition,"objectiveId":"another-goal"
+        })).unwrap();
+        let past=state.store.get("rsi_generation","past-3").unwrap();
+        let training=meta_training_history(&state,&input,&[past.clone()]);
+        assert_eq!(training.len(),3,"local overlap cannot double-count evidence");
+        assert_eq!(training[0]["campaignId"],"past-campaign");
+        let predicted=learned_improvement_directive_with_training(&[past],&training);
+        assert_eq!(predicted["policy"]["trainingTransitions"],2);
+        assert_eq!(predicted["policy"]["kind"],"selfimprove.meta-action");
+        let _=std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn observed_edit_failures_change_the_real_tool_selection_policy() {
