@@ -112,6 +112,32 @@ pub fn apply(program:&[Value],raw_rules:&[Value])->Vec<Value> {
     crate::engine::rsi_judgement::normalize(&json!(output))
 }
 
+
+/// Apply a descendant's rewrite grammar only once to inherited rules.
+/// Newly synthesized guards still receive the inherited grammar, but rules
+/// already rewritten in the parent must not be nested again each generation.
+pub fn apply_descendant(
+    program:&[Value], parent_program:&[Value], parent_rules:&Value,
+    candidates:&[Value],
+)->Vec<Value>{
+    let rules=crate::engine::rsi_judgement::normalize(&json!(candidates));
+    if normalize(&json!(program))!=normalize(&json!(parent_program)){
+        return apply(program,&rules);
+    }
+    let inherited=crate::engine::rsi_judgement::normalize(parent_rules)
+        .into_iter().filter_map(|rule|rule["id"].as_str().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let mut output=Vec::new();
+    for rule in rules {
+        if rule["id"].as_str().is_some_and(|id|inherited.contains(id)) {
+            output.push(rule);
+        } else {
+            output.extend(apply(program,&[rule]));
+        }
+    }
+    crate::engine::rsi_judgement::normalize(&json!(output))
+}
+
 /// Mutate the AST-generating algorithm from the actual previous execution.
 /// Operator identity is purely structural; job IDs do not split equivalent
 /// programs into artificial new generations.
@@ -272,4 +298,22 @@ mod tests{
             "value":10000})],&[rule()]);
         assert_eq!(malformed.len(),1);
     }
+    #[test]
+    fn inherited_rewrite_is_applied_once_across_descendant_generations(){
+        let program=vec![json!({"kind":"widen",
+            "metric":"completed:workspace_read_range","value":2})];
+        let first=apply(&program,&[rule()]);
+        let inherited=apply_descendant(&program,&program,&json!(first),&first);
+        assert_eq!(first,inherited,
+            "the same grammar must not rewrap the parent rule every generation");
+        let additional=json!({"guard":{"metric":"read_calls","cmp":"ge","value":1},
+            "allow":["workspace_replace_range"]});
+        let mut both=first.clone();both.push(additional);
+        let next=apply_descendant(&program,&program,&json!(first),&both);
+        assert_eq!(next.len(),2);
+        assert_eq!(next[0]["id"],first[0]["id"]);
+        assert!(next[1]["guard"]["any"].is_array(),
+            "only the newly synthesized rule receives the inherited rewriter");
+    }
+
 }
