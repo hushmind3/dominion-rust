@@ -1623,11 +1623,13 @@ async fn run_turn_body(
                 .collect::<Vec<_>>();
             let require_read=rsi_compiler_requires_current_read(
                 &json!({"rsiCompilerRepair":true}),&operations);
-            round_tools.retain(|tool|if require_read {
+            // Rebuild from the original advertised catalog: an earlier
+            // edit-only stage may have already removed the read primitive.
+            round_tools=tool_definitions.iter().filter(|tool|if require_read {
                 tool_name(tool)=="workspace_read_range"
             }else{
                 matches!(tool_name(tool),"workspace_replace_range"|"workspace_replace")
-            });
+            }).cloned().collect();
             state.store.audit("rsi.syntax_repair_stage",json!({
                 "executionId":execution_id,"sessionId":session_id,
                 "needsFreshRead":require_read,"round":round
