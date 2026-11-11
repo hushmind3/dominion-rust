@@ -3410,7 +3410,7 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
                 samples.iter().filter(|(v,_)|*v<0.0).count() as f64/n as f64}),
             ("verifiedAdoption".to_string(),if n==0 {0.0}else{
                 samples.iter().filter(|(_,id)|episodes.iter().any(|row|
-                    row["id"].as_str()==Some(id) && row["accepted"]==true))
+                    row["id"].as_str()==Some(id.as_str()) && row["accepted"]==true))
                     .count() as f64/n as f64}),
         ]);
         let score=crate::engine::algorithms::eval_expression(&program,&features)
