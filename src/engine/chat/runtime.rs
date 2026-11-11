@@ -141,10 +141,10 @@ fn rsi_grounded_json_edit(
         return None;
     }
     let candidate=content.trim();
-    let body=if let Some(fenced)=candidate.strip_prefix("\`\`\`json") {
-        fenced.trim().strip_suffix("\`\`\`")?.trim()
-    } else if let Some(fenced)=candidate.strip_prefix("\`\`\`") {
-        fenced.trim().strip_suffix("\`\`\`")?.trim()
+    let body=if let Some(fenced)=candidate.strip_prefix("```json") {
+        fenced.trim().strip_suffix("```")?.trim()
+    } else if let Some(fenced)=candidate.strip_prefix("```") {
+        fenced.trim().strip_suffix("```")?.trim()
     } else {candidate};
     let mut parsed=serde_json::from_str::<Value>(body).ok()?;
     // Some models return a full tool-call wrapper. Never accept a different
@@ -153,9 +153,9 @@ fn rsi_grounded_json_edit(
         if parsed["tool"]!="workspace_replace_range" {return None;}
         parsed=parsed["arguments"].clone();
     }
-    let path=parsed["path"].as_str()?;
+    let path=parsed["path"].as_str()?.to_string();
     if parsed["path"]!=session["rsiFocusFile"]
-        || !crate::engine::rsi::safe_path(path) {return None;}
+        || !crate::engine::rsi::safe_path(&path) {return None;}
     let count=|v:&Value|v.as_u64()
         .or_else(||v.as_str().and_then(|s|s.parse::<u64>().ok()));
     let (start,end)=(count(&parsed["startLine"])?,count(&parsed["endLine"])?);
@@ -6820,7 +6820,7 @@ mod harness_tool_selection_tests {
             .expect("the model's own patch may be adapted after a witnessed source read");
         assert_eq!(grounded["startLine"],24);
         assert_eq!(grounded["expectedSha256"],"a".repeat(64));
-        let fenced=format!("\`\`\`json\n{draft}\n\`\`\`");
+        let fenced=format!("```json\n{draft}\n```");
         assert_eq!(rsi_grounded_json_edit(&fenced,&session,&[read.clone()],"run",&menu),
             Some(grounded.clone()));
         assert!(rsi_grounded_json_edit(&draft,&session,&[read.clone()],"other",&menu).is_none());
