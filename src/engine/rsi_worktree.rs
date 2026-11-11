@@ -418,8 +418,19 @@ pub async fn finish(
     let mut capture_error=String::new();
     let mut checks=Vec::<Value>::new();
     let mut unsafe_audit=Value::Null;
+    // Compute the actual model-write proof BEFORE registration. Otherwise a
+    // worker that makes NO change to an inherited neutral patch re-registers
+    // the same candidate and overwrites its independent paired evaluation.
+    let edit_evidence=edit_outcomes(&context.state,session_id);
+    let inherited_patch_changed=input["rsiInheritedCandidateId"].as_str()
+        .and_then(|id|context.state.store.get("rsi_candidate",id))
+        .is_some_and(|ancestor|ancestor["patchSha256"]!=patch_sha
+            && edit_evidence["verifiedWrites"].as_u64().unwrap_or(0)>0);
     if patch.trim().is_empty(){
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
+    } else if input["rsiInheritedCandidateId"].is_string()
+        && !inherited_patch_changed {
+        capture_error="계승된 실패 패치에 새로 검증된 소스 수정이 없습니다. 이전 평가 후보는 그대로 보존합니다.".into();
     } else if patch_size>=MAX_CAPTURE_BYTES {
         capture_error="코드 변경량이 79KB를 초과해 증거를 안전하게 수집하지 않았습니다.".into();
     } else {
@@ -460,11 +471,6 @@ pub async fn finish(
             Err(err)=>capture_error=format!("후보 등록 거부: {err}"),
         }
     }
-    let edit_evidence=edit_outcomes(&context.state,session_id);
-    let inherited_patch_changed=input["rsiInheritedCandidateId"].as_str()
-        .and_then(|id|context.state.store.get("rsi_candidate",id))
-        .is_some_and(|ancestor|ancestor["patchSha256"]!=patch_sha
-            && edit_evidence["verifiedWrites"].as_u64().unwrap_or(0)>0);
     let source_clean=git(&worktree.source,&["status","--porcelain","--untracked-files=normal"])
         .await.map(|v|v.is_empty()).unwrap_or(false);
     let model_error=model_result.as_ref().err().cloned().unwrap_or_default();
