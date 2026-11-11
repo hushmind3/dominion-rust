@@ -256,6 +256,7 @@ fn rsi_verified_write_operation(operation: &Value) -> bool {
         && matches!(operation["tool"].as_str(),
             Some("workspace_write" | "workspace_replace" | "workspace_replace_range"))
         && operation["result"]["written"] == true
+        && operation["result"]["syntaxValid"] != false
         && operation["toolReceipt"]["verified"] == true
 }
 
@@ -273,6 +274,7 @@ fn rsi_patch_ready_for_verification(
             files.len() == 1 && files[0].as_str() == args["path"].as_str())
         && matches!(tool, "workspace_replace_range" | "workspace_replace")
         && result["written"] == true
+        && result["syntaxValid"] != false
         && result["postSha256"].as_str().is_some_and(|sha|
             sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
 }
@@ -1247,6 +1249,9 @@ async fn run_turn_body(
     let mut rsi_decision_checkpoint = false;
     let mut rsi_edit_only_announced = false;
     let mut rsi_edit_retry = false;
+    // A syntax-invalid model edit gets one fresh source observation and one
+    // focused same-turn correction before the normal compiler/evaluator.
+    let mut rsi_syntax_repair_issued = false;
     let mut rsi_edit_stage_requested = false;
 
     let mut program_finished = program_policy.is_none();
@@ -1676,6 +1681,10 @@ async fn run_turn_body(
                     }
                 }
             }
+        }
+        if rsi_syntax_repair_issued && !force_final {
+            round_tools.retain(|tool|matches!(tool_name(tool),
+                "workspace_replace_range"|"workspace_replace"));
         }
         let mut wire_messages = messages.clone();
         // The real source-read receipt can supply a fresh, small editor view.
@@ -2732,6 +2741,50 @@ async fn run_turn_body(
             messages.push(json!({
                 "role":"tool","tool_call_id":call.id,"content":tool_content,
             }));
+            // A write receipt is not a compileable patch when the real Rust
+            // parser has already rejected it. Re-read the current postimage
+            // (not the stale pre-edit SHA) and let the same model repair its
+            // own source once, without spending an entire new generation.
+            if result["syntaxValid"]==false && session["rsiRun"]==true
+                && !rsi_syntax_repair_issued {
+                rsi_syntax_repair_issued=true;
+                let path=arguments["path"].as_str().unwrap_or("");
+                let diagnostic=result["syntaxCheck"]["diagnostic"].as_str()
+                    .unwrap_or("Rust syntax parser rejected the source.")
+                    .chars().take(1400).collect::<String>();
+                let line=result["syntaxCheck"]["line"].as_u64()
+                    .or_else(||arguments["startLine"].as_u64()).unwrap_or(1);
+                let begin=line.saturating_sub(16).max(1);
+                if !path.is_empty() && budget.charge_tool(){
+                    op_seq+=1;
+                    let probe=json!({"path":path,"startLine":begin,
+                        "endLine":begin.saturating_add(63)});
+                    let call=ToolCall{
+                        id:format!("rsi-syntax-reobserve-{}",uuid::Uuid::new_v4()),
+                        name:"workspace_read_range".to_string(),
+                        arguments:probe.to_string()
+                    };
+                    let (source,read_ok,_)=dispatch_tool_call(
+                        state,tx,&session,request,session_id,execution_id,
+                        &call,probe,metrics,op_seq,round,call_index,false,
+                        "rsi_syntax_feedback",None,None,None,
+                    ).await?;
+                    if read_ok && source["sourceSha256"].as_str()
+                        .is_some_and(|sha|sha.len()==64) {
+                        messages.push(json!({"role":"system","content":format!(
+                            "Your actual Rust edit failed a read-only syntax parse. Error: {diagnostic}\nCURRENT SOURCE AFTER FAILED EDIT (numbered; prefixes not source bytes):\n{}\nCURRENT sourceSha256: {}\nRepair the actual source now with one workspace_replace_range or workspace_replace call. Use NEW SHA and observed current lines; never replay the stale prior hash. The original quality target still applies.",
+                            source["content"].as_str().unwrap_or(""),
+                            source["sourceSha256"].as_str().unwrap_or("")
+                        )}));
+                        state.store.audit("rsi.syntax_repair_reobserved",json!({
+                            "executionId":execution_id,"round":round,
+                            "path":path,"line":line,
+                            "sourceSha256":source["sourceSha256"],
+                            "claim":"new_source_observation_not_a_verified_correction"
+                        }));
+                    }
+                }
+            }
         }
 
         if ordering_used {
