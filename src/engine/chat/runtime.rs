@@ -914,9 +914,14 @@ async fn run_turn_body(
         .unwrap_or(MAX_ROUNDS as u64)
         .clamp(2, 24) as usize;
     if session["rsiRun"] == true {
-        // RSI generations mix reading, checkpointing and editing. Eight rounds
-        // is enough to abort a real attempt before the edit lands.
-        max_rounds = max_rounds.max(16);
+        // Full source exploration can take many rounds. A compiler repair is
+        // already grounded in a real candidate and must not burn the entire
+        // multi-generation budget re-reading the same file.
+        max_rounds = if session["rsiCompilerRepair"]==true {
+            max_rounds.min(4)
+        } else {
+            max_rounds.max(16)
+        };
     }
     let max_tools = budget_algorithm
         .as_ref()
@@ -1568,7 +1573,8 @@ async fn run_turn_body(
                     if requires_current_read {
                         tool_name(definition)=="workspace_read_range"
                     } else {
-                        rsi_compiler_repair_tool(tool_name(definition))
+                        matches!(tool_name(definition),
+                            "workspace_replace"|"workspace_replace_range")
                     });
                 round_tools.sort_by_key(|definition|match tool_name(definition){
                     "workspace_replace_range"=>0usize,"workspace_replace"=>1,_=>2
@@ -6687,6 +6693,24 @@ mod outcome_tests {
 mod harness_tool_selection_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sub1_compiler_repair_tool_menu_advances_from_read_to_actual_edit() {
+        let full=vec![
+            json!({"function":{"name":"code_search"}}),
+            json!({"function":{"name":"workspace_read_range"}}),
+            json!({"function":{"name":"workspace_replace_range"}}),
+            json!({"function":{"name":"workspace_replace"}}),
+        ];
+        let before=full.iter().filter(|tool|
+            tool_name(tool)=="workspace_read_range").count();
+        let after=full.iter().filter(|tool|
+            matches!(tool_name(tool),"workspace_replace_range"|"workspace_replace"))
+            .count();
+        assert_eq!((before,after),(1,2));
+        assert!(rsi_compiler_repair_tool("workspace_replace_range"));
+        assert!(!rsi_compiler_repair_tool("code_search"));
+    }
 
     #[test]
     fn sub1_syntax_invalid_write_must_be_repaired_before_candidate_capture() {
