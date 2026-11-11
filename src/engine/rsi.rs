@@ -263,7 +263,7 @@ pub(crate) fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -
     }))
 }
 
-pub(crate) pub(crate) fn verified_pair_receipt(state: &AppState, candidate: &Value) -> bool {
+pub(crate) fn verified_pair_receipt(state: &AppState, candidate: &Value) -> bool {
     let Some(id) = candidate["id"].as_str() else { return false; };
     let Some(receipt) = state.store.get("rsi_pair", &format!("rsi-pair-{id}")) else {
         return false;
