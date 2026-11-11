@@ -1797,6 +1797,23 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
             }
             if observed.len()>64{observed.drain(..observed.len()-64);}
             policy["programMeasuredEvidence"]=json!(observed);
+            // A frozen winner may have independently observed conditional
+            // failures or improvements while its source remained unchanged.
+            // Those evaluations must also reach the next grammar revision.
+            let mut rule_evidence=policy["decisionRuleEvidence"].as_array()
+                .cloned().unwrap_or_default();
+            for row in live["decisionRuleEvidence"].as_array().into_iter().flatten() {
+                if !rule_evidence.iter().any(|past|past["jobId"]==row["jobId"]
+                    && past["decisionNodeId"]==row["decisionNodeId"]) {
+                    rule_evidence.push(row.clone());
+                }
+            }
+            if rule_evidence.len()>64{rule_evidence.drain(..rule_evidence.len()-64);}
+            policy["decisionRuleEvidence"]=json!(rule_evidence);
+            evolve_decision_grammar(&mut policy);
+            policy["decisionNodes"]=json!(synthesize_method_decision_nodes(
+                policy["evidence"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+                &policy["decisionGrammar"]));
             let rejected_ids=policy["rejectedProgramIds"].as_array()
                 .cloned().unwrap_or_default();
             if let Some(programs)=policy["executionPrograms"].as_array_mut() {
@@ -1806,12 +1823,16 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
             // A later quality observation may change ranking after the
             // A/B snapshot. Keep its full history and mark the new revision
             // as a candidate rather than claiming it was the tested winner.
-            let changed=policy["executionPrograms"]!=cohort["policy"]["executionPrograms"];
+            let changed=policy["executionPrograms"]!=cohort["policy"]["executionPrograms"]
+                || policy["decisionGrammar"]!=cohort["policy"]["decisionGrammar"]
+                || policy["decisionNodes"]!=cohort["policy"]["decisionNodes"];
             if changed {
                 policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([
                     &policy["transitions"],&policy["executionPrograms"],
                     &policy["programMeasuredEvidence"],&policy["rejectedProgramIds"],
-                    &policy["programMutations"],&policy["scoringKernel"]
+                    &policy["programMutations"],&policy["decisionGrammar"],
+                    &policy["decisionNodes"],&policy["decisionRuleEvidence"],
+                    &policy["scoringKernel"]
                 ]).to_string().as_bytes())));
             }
             policy["status"]=json!(if changed {"candidate_from_promoted_recipe"}
@@ -2673,7 +2694,8 @@ fn record_decision_rule_feedback(
         let Some(node_id)=receipt["decisionRuleId"].as_str() else{continue};
         let known=|nodes:&Value|nodes.as_array().is_some_and(|rules|
             rules.iter().any(|node|node["id"].as_str()==Some(node_id)));
-        if !known(live) && !known(frozen){continue;}
+        let learned_before=witnessed.iter().any(|row|row["decisionNodeId"]==node_id);
+        if !known(live) && !known(frozen) && !learned_before{continue;}
         if witnessed.iter().any(|row|row["jobId"]==job_id
             && row["decisionNodeId"]==node_id) {continue;}
         let row=json!({"jobId":job_id,"decisionNodeId":node_id,
