@@ -1263,21 +1263,40 @@ async fn run_turn_body(
                     rsi_last_program_phase=decision.phase.to_string();
                 }
             }
-            let stage = rule_decision.as_ref().map(|decision|decision.edit_only())
-                .or_else(||program_stage.map(|decision|decision.edit_only())).or_else(|| {
-                rsi_checkpoint_stage_with_method(
-                    tool_calls, read_calls, has_write,
-                    focused, session["rsiFocusContextReady"] == true,
-                    &session["rsiEditPolicy"],
-                )
-            }).or_else(|| {
-                (rsi_edit_stage_requested && grounded && !has_write).then_some(true)
-            });
+            // An observed read followed by a textual non-edit must be
+            // eligible for a concrete editing retry. Learned search/contrast
+            // stages previously shadowed this flag and made the offered tool
+            // set read-only even while the system demanded a patch.
+            let failed_edit_since_read = all_operations.iter().rev()
+                .take_while(|op|op["tool"]!="workspace_read_range")
+                .any(|op|matches!(op["tool"].as_str(),
+                    Some("workspace_replace_range"|"workspace_replace"))
+                    && (op["status"]!="completed" || op["result"]["written"]==false));
+            let edit_retry_override=rsi_edit_stage_requested && grounded && !has_write
+                && !failed_edit_since_read;
+            let stage = if edit_retry_override {Some(true)} else {
+                rule_decision.as_ref().map(|decision|decision.edit_only())
+                    .or_else(||program_stage.map(|decision|decision.edit_only()))
+                    .or_else(||rsi_checkpoint_stage_with_method(
+                        tool_calls, read_calls, has_write,
+                        focused, session["rsiFocusContextReady"] == true,
+                        &session["rsiEditPolicy"],
+                    ))
+            };
             if let Some(edit_only) = stage {
                 // Reapply the restriction on EVERY following model round.
                 // The old one-shot guard reopened code_search and all read
                 // tools after the first checkpoint, allowing read-only loops.
-                if let Some(rule)=rule_decision.as_ref() {
+                if edit_retry_override {
+                    round_tools=tool_definitions.iter()
+                        .filter(|definition|matches!(tool_name(definition),
+                            "workspace_replace"|"workspace_replace_range"|"workspace_write"))
+                        .cloned().collect();
+                    state.store.audit("rsi.focused_edit_retry_unblocked",serde_json::json!({
+                        "executionId":execution_id,"sessionId":session_id,
+                        "toolCalls":tool_calls,"policyRevision":session["rsiEditPolicy"]["revision"]
+                    }));
+                } else if let Some(rule)=rule_decision.as_ref() {
                     round_tools=tool_definitions.iter()
                         .filter(|definition|rule.allows(tool_name(definition)))
                         .cloned().collect();
@@ -1517,7 +1536,7 @@ async fn run_turn_body(
             // A focused RSI job is not finished by another explanation of
             // its code. Give the model one bounded corrective opportunity to
             // issue a real source edit; never fabricate a patch or verdict.
-            if session["rsiExplicitFocus"] == true
+            if (session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true)
                 && !rsi_edit_retry && round + 1 < max_rounds {
                 let completed = state.store.all("execution_operation").into_iter()
                     .filter(|operation| operation["runId"].as_str() == Some(execution_id)

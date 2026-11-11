@@ -112,7 +112,7 @@ impl Route {
             "discover" => matches!(name,"code_search"|"workspace_read_range"),
             "ground" => matches!(name,"workspace_read_range"|"code_search"),
             "contrast" => matches!(name,"code_search"|"workspace_read_range"),
-            "reground" => name=="workspace_read_range",
+            "reground" | "focus_ground" => name=="workspace_read_range",
             "edit" => matches!(name,"workspace_replace_range"|"workspace_replace"|"workspace_write"),
             _ => true,
         }
@@ -154,6 +154,12 @@ pub fn route(policy: &Value, operations: &[Value], calls: u64,
         }
     }
     if verified_write {return None;}
+    // A focused worker with a source excerpt already injected by the
+    // coordinator needs the exact live hash, NOT another broad search loop.
+    // Require one real range-read before exposing edit operators.
+    if source_in_prompt && !successful_read && !reground_needed {
+        return Some(Route{phase:"focus_ground"});
+    }
     let grounded=source_in_prompt || successful_read;
     let checkpoint=policy["checkpointAfter"].as_u64().unwrap_or(3).clamp(2,5);
     if !grounded {
@@ -168,7 +174,11 @@ pub fn route(policy: &Value, operations: &[Value], calls: u64,
     if has("contrast") && !post_ground_search && calls < checkpoint+2 {
         return Some(Route{phase:"contrast"});
     }
-    if calls>=checkpoint || (has("contrast") && post_ground_search) {
+    // The focused task already supplied the exact source region. Once a
+    // current range/hash was observed, discovery is complete even if a tiny
+    // model has used fewer than checkpoint tool calls.
+    if (source_in_prompt && successful_read)
+        || calls>=checkpoint || (has("contrast") && post_ground_search) {
         return Some(Route{phase:"edit"});
     }
     None // Early grounded edits stay possible before the checkpoint.
@@ -246,6 +256,28 @@ mod tests {
         // parent campaign: rsi_edit_genome filters zero-token workers.
     }
 
+    #[test]
+    fn focused_source_hash_is_read_once_then_a_real_edit_is_required(){
+        let p=serde_json::json!({"program":["discover","ground","edit","verify"],
+            "checkpointAfter":5});
+        let first=route(&p,&[],0,true,true).unwrap();
+        assert_eq!(first.phase,"focus_ground");
+        assert!(first.allows("workspace_read_range"));
+        assert!(!first.allows("code_search"));
+        assert!(!first.allows("workspace_replace"));
+        let read=vec![op("workspace_read_range","completed",
+            serde_json::json!({"sourceSha256":"current"}) )];
+        let second=route(&p,&read,1,true,true).unwrap();
+        assert_eq!(second.phase,"edit");
+        assert!(second.allows("workspace_replace_range"));
+        // A failed hash forces re-grounding before any further edits.
+        let mut recovered=read;
+        recovered.push(op("workspace_replace_range","failed",
+            serde_json::json!({"error":"sha mismatch"})));
+        let p2=serde_json::json!({"program":["ground","edit","reground","verify"]});
+        assert_eq!(route(&p2,&recovered,2,true,true).unwrap().phase,"reground");
+        assert!(route(&p,&[],0,false,true).is_none());
+    }
     #[test]
     fn normal_chat_and_legacy_controller_are_unchanged() {
         assert!(route(&json!({}),&[],0,true,false).is_none());
