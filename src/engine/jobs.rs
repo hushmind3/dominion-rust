@@ -510,10 +510,13 @@ fn rsi_no_edit_retry_needed(input:&Value, outcome:&Result<Value,String>)->bool {
     let Some(result)=outcome.as_ref().ok() else {return false};
     matches!(input["rsiImprovementDirective"]["mode"].as_str(),
         Some("implement_research"|"change_approach"|"repair_counterexample"|"revise_candidate"))
-        && result["rsi"]["diffBytes"]==0
         && result["rsi"]["candidateId"].is_null()
         && result["rsi"]["sourceClean"]==true
-        && result["rsi"]["captureError"]=="모델이 실제 소스 파일을 변경하지 않았습니다."
+        && ((result["rsi"]["diffBytes"]==0
+            && result["rsi"]["captureError"]=="모델이 실제 소스 파일을 변경하지 않았습니다.")
+            || (input["rsiRepairCandidateId"].is_string()
+                && result["rsi"]["captureError"]==
+                    "복원한 컴파일 실패 패치를 이번 세대에서 실제로 수정하지 않았습니다."))
         && result["rsi"]["modelError"].as_str().is_some_and(str::is_empty)
         && input["toolsEnabled"]!=false
         && input["toolsExecutionEnabled"]!=false
@@ -555,7 +558,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             .filter_map(Value::as_str).take(3).collect::<Vec<_>>().join(", ");
         let errors=restored["compilerErrors"].as_array().into_iter().flatten()
             .filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
-        format!("\\n\\n[실제 실패 패치 복구] 이전 모델의 실패한 소스 변경이 지금 별도 작업공간에 실제로 복원돼 있습니다. 새 파일이나 조사 계획을 만들지 말고, 복구된 파일 ({paths})을 workspace_read_range로 읽으세요. 아래 컴파일 오류를 해결하도록 파일을 직접 수정하세요. 기존 패치를 다시 적용할 필요가 없습니다. 고친 코드만 workspace_replace 또는 workspace_replace_range로 쓰세요. 컴파일과 독립 평가는 엔진이 진행합니다.\\n{errors}")
+        format!("\n\n[실제 실패 패치 복구] 이전 모델의 실패한 소스 변경이 지금 별도 작업공간에 실제로 복원돼 있습니다. 새 파일이나 조사 계획을 만들지 말고, 복구된 파일 ({paths})을 workspace_read_range로 읽으세요. 아래 컴파일 오류를 해결하도록 파일을 직접 수정하세요. 기존 패치를 다시 적용할 필요가 없습니다. 고친 코드만 workspace_replace 또는 workspace_replace_range로 쓰세요. 컴파일과 독립 평가는 엔진이 진행합니다.\n{errors}")
     }).unwrap_or_default();
     // The dedicated source checkout is validated and detached before a model
     // call, never modified directly by the RSI execution.
@@ -866,6 +869,14 @@ mod tests {
         let mut edited=missing.clone();
         edited["rsi"]["diffBytes"]=json!(200);
         assert!(!rsi_no_edit_retry_needed(&base,&Ok(edited)));
+        let inherited=json!({"rsi":{"diffBytes":500,"candidateId":null,
+            "sourceClean":true,
+            "captureError":"복원한 컴파일 실패 패치를 이번 세대에서 실제로 수정하지 않았습니다.",
+            "modelError":""}});
+        let mut repair=base.clone();
+        repair["rsiRepairCandidateId"]=json!("failed-candidate");
+        assert!(rsi_no_edit_retry_needed(&repair,&Ok(inherited)),
+            "Restored but untouched source must get its one corrective edit opportunity");
         let mut unclean=missing.clone();
         unclean["rsi"]["sourceClean"]=json!(false);
         assert!(!rsi_no_edit_retry_needed(&base,&Ok(unclean)));
