@@ -1128,6 +1128,23 @@ fn grounded_next_experiment(state:&AppState,history:&[Value])->Option<String> {
         if !details.is_empty() {
             return Some(format!("\n### 다음 세대의 실험 과제 — 이전 빌드 실패\n이전 패치는 채택되지 않았습니다. 기준 커밋에서 아래 오류의 원인을 수정하는 최소 변경을 다시 구현하고, 기존 테스트를 통과시키세요. 무관한 파일을 넓게 수정하지 마세요.\n{}\n",details.join("\n")));
         }
+        // Rejected writes are a different failure from "the model only
+        // researched". Pass the exact observed tool failure to the next
+        // generation so it can repair the call instead of trying another
+        // broad search or claiming the write was already done.
+        if run["diffBytes"].as_u64()==Some(0) {
+            if let Some(action)=run["editActions"].as_array()
+                .and_then(|rows|rows.last()) {
+                let path=action["path"].as_str().unwrap_or("현재 집중 파일");
+                let error=action["error"].as_str().filter(|s|!s.is_empty())
+                    .unwrap_or("도구 호출 후 실제 Git 소스 차이가 0바이트입니다.");
+                let tool=action["tool"].as_str().unwrap_or("workspace_replace");
+                return Some(format!(
+                    "\n### 다음 세대의 실험 과제 — 실제 편집 실패\n이전 {tool} 호출의 대상은 {path}입니다. 검증된 실패: {}. 기존 소스가 바뀌지 않았습니다. 현재 소스 범위를 정확히 읽고, 받은 원문을 oldText로 전달하는 workspace_replace로 최소 수정하세요. 기존 파일 전체를 workspace_write로 덮는 접근은 피하고 독립 검증이 가능한 변경을 만드세요.\n",
+                    error.chars().take(400).collect::<String>()
+                ));
+            }
+        }
         if run["captureError"].as_str().is_some_and(|error|error.contains("실제 소스 파일을 변경하지")) {
             let focus=if files.is_empty(){"인덱스에서 확인한 실제 구현 파일".to_string()}else{files.join(", ")};
             return Some(format!(
