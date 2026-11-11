@@ -43,7 +43,7 @@ if(mode==='probe'){
     try{
       const chunks=[];for await(const piece of req)chunks.push(piece);
       const upstreamResponse=await fetch(upstream,{method:'POST',headers:{'content-type':'application/json'},
-        body:Buffer.concat(chunks),signal:AbortSignal.timeout(120000)});
+        body:Buffer.concat(chunks),signal:AbortSignal.timeout(240000)});
       const raw=await upstreamResponse.text();
       res.writeHead(upstreamResponse.status,{'content-type':'application/json'});
       res.end(raw);
