@@ -107,6 +107,13 @@ pub fn metric_cases()->Vec<Value>{
             {"key":"elapsedMs","direction":"lower","minRelativeGain":0.2,"minAbsoluteGain":1.0,"maxRelativeRegression":0.25}
         ]
     })).map(|mut case|{
+        if case["id"]=="planning-quality" {
+            // Independent planning evaluation contains 13 varied cases.
+            // Require at least two newly correct examples (~2/13 gain),
+            // not one overfitted benchmark phrase.
+            case["metrics"][0]["minRelativeGain"]=json!(0.2);
+            case["metrics"][0]["minAbsoluteGain"]=json!(0.14);
+        }
         if case["id"]=="long-recall-quality"{
             case["metrics"].as_array_mut().unwrap().push(json!({"key":"contextChars","direction":"lower",
                 "minRelativeGain":0.1,"minAbsoluteGain":20.0,"maxRelativeRegression":0.1}));
