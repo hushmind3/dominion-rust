@@ -202,6 +202,22 @@ async function main() {
     firstMeasuredImprovement: receipt.firstMeasuredImprovement,
     descendantInheritedImprovement: receipt.descendantInheritedImprovement,
     capabilityDemonstrated: receipt.capabilityDemonstrated, error: receipt.error,
+    // Keep real failure evidence visible even when artifact download is
+    // unavailable: the tool names, exact edited bytes, independent metric
+    // verdict and error are read from durable campaign records, never guessed.
+    generations: receipt.history.map(g => ({
+      attempt: g.attempt, model: g.model, domain: g.domain,
+      focusFiles: g.focusFiles, elapsedMs: g.elapsedMs,
+      sourceDiffBytes: g.sourceDiffBytes,
+      novelSourceDiffBytes: g.novelSourceDiffBytes,
+      toolCalls: g.toolsUsed.map(x => x.tool).slice(0, 20),
+      editActions: g.editActions.slice(0, 8),
+      candidateId: g.candidateId, unverifiedCandidateId: g.unverifiedCandidateId,
+      staticChecksPassed: g.staticChecksPassed, sourceCaptureError: g.sourceCaptureError,
+      independentVerdict: g.verdict, pairedCases: g.pairedCases,
+      metricGains: g.metricGains, improvedHoldouts: g.improvedHoldouts,
+      regressions: g.regressions, accepted: g.accepted, error: g.error,
+    })),
   }, null, 2));
   if (!receipt.firstMeasuredImprovement) {
     throw new Error("Actual-model independently measured first RSI improvement NOT demonstrated; evidence saved");
