@@ -100,6 +100,18 @@ fn rsi_checkpoint_tool(name: &str, edit_only:bool) -> bool {
     )
 }
 
+/// A learned repair may need to refresh a stale source version *after* an
+/// edit failure. Allow that exact read even in the edit-only checkpoint, but
+/// never reopen unrestricted search or unrelated tools.
+fn rsi_checkpoint_with_recovery(
+    tool:&str,edit_only:bool,next:Option<&(String,String)>
+)->bool {
+    rsi_checkpoint_tool(tool,edit_only)
+        || (edit_only && tool=="workspace_read_range"
+            && next.is_some_and(|(chosen,reason)|
+                chosen=="workspace_read_range" && reason=="learned_multi_step_recovery"))
+}
+
 /// RSI needs a real write, not a completed tool call whose result says error.
 /// The isolated candidate verifier remains the authority for quality.
 fn rsi_confirmed_source_write(operations:&[Value], execution_id:&str)->bool {
@@ -1247,6 +1259,8 @@ async fn run_turn_body(
             let operations=state.store.all("execution_operation").into_iter()
                 .filter(|operation|operation["runId"].as_str()==Some(execution_id))
                 .collect::<Vec<_>>();
+            let induced_next=rsi_action_program_next(
+                &session["rsiExecutionMethod"]["actionProgram"],&operations,execution_id);
             let completed=operations.iter()
                 .filter(|operation|operation["status"].as_str()==Some("completed"))
                 .cloned().collect::<Vec<_>>();
@@ -1266,7 +1280,8 @@ async fn run_turn_body(
                 // Repeat the menu restriction on every subsequent model round;
                 // a one-shot checkpoint silently reopened code_search.
                 round_tools.retain(|definition|
-                    rsi_checkpoint_tool(tool_name(definition),edit_only));
+                    rsi_checkpoint_with_recovery(tool_name(definition),edit_only,
+                        induced_next.as_ref()));
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system","content":
                         "이미 확인한 소스 원문으로 workspace_replace(oldText,newText) 또는 workspace_replace_range(startLine,endLine,newText,expectedSha256)를 호출해 실제 수정하세요. SHA와 줄 번호는 workspace_read_range 응답을 사용하세요. 이 단계에서는 실행 가능한 편집만 제시하세요."}));
@@ -1288,8 +1303,7 @@ async fn run_turn_body(
             // generation and a tested mutation from another. Apply only when
             // its next tool is genuinely offered by this provider.
             let mut action_program_applied=false;
-            if let Some((chosen,reason))=rsi_action_program_next(
-                &session["rsiExecutionMethod"]["actionProgram"],&operations,execution_id) {
+            if let Some((chosen,reason))=induced_next {
                 if round_tools.iter().any(|tool|tool_name(tool)==chosen) {
                     action_program_applied=true;
                     round_tools.retain(|tool|
@@ -6490,6 +6504,17 @@ mod harness_tool_selection_tests {
             "workspace_replace_range"));
         assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range"));
         assert!(rsi_action_program_next(&plan,&[],"unrelated").is_some());
+    }
+
+    #[test]
+    fn edit_only_checkpoint_preserves_only_the_learned_source_refresh() {
+        let recovery=("workspace_read_range".into(),"learned_multi_step_recovery".into());
+        assert!(rsi_checkpoint_with_recovery("workspace_read_range",true,Some(&recovery)));
+        assert!(rsi_checkpoint_with_recovery("workspace_replace",true,Some(&recovery)));
+        assert!(!rsi_checkpoint_with_recovery("code_search",true,Some(&recovery)));
+        assert!(!rsi_checkpoint_with_recovery("workspace_read_range",true,None));
+        let arbitrary=("workspace_read_range".into(),"induced_cross_episode_sequence".into());
+        assert!(!rsi_checkpoint_with_recovery("workspace_read_range",true,Some(&arbitrary)));
     }
 
     #[test]
