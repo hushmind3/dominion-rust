@@ -301,7 +301,7 @@ fn rsi_composed_program_next_tool(
             continue;
         }
         let Some(steps)=program["steps"].as_array() else{continue};
-        if !(3..=5).contains(&steps.len()) {continue;}
+        if !(2..=5).contains(&steps.len()) {continue;}
         let Some(id)=program["id"].as_str() else{continue};
         let mut progress=0usize;
         // A valid prefix must be the most recent witnessed sequence, not an
@@ -6605,6 +6605,31 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn shortened_success_method_drives_next_real_descendant_edit_tool() {
+        let session=json!({"rsiRun":true,"rsiCampaignId":"c",
+            "rsiGenerationJobId":"g","rsiDomain":"memory",
+            "rsiFocusFile":"src/engine/memory.rs",
+            "rsiInducedMethodPolicy":{"kind":"harness.method-transitions",
+                "executionPrograms":[{"id":"short","domain":"memory","score":6,
+                    "steps":["workspace_read_range","workspace_replace"],
+                    "status":"candidate_requires_descendant_execution"}],
+                "transitions":[{"from":"workspace_read_range",
+                    "to":"workspace_replace_range","positive":5,"negative":0}]}});
+        let read=json!({"id":"read","runId":"real-run","opSeq":1,
+            "status":"completed","tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/memory.rs"},
+            "result":{"sourceSha256":"a".repeat(64)}});
+        let offered=vec![
+            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
+            json!({"type":"function","function":{"name":"workspace_replace"}})];
+        assert_eq!(rsi_composed_program_next_tool(&session,&[read.clone()],
+            "real-run",&offered),Some(("workspace_replace".into(),"short".into())));
+        assert_eq!(rsi_induced_next_tool(&session,&[read],"real-run",&offered),
+            Some("workspace_replace".into()),
+            "descendant runtime must run the shortened learned edit method");
     }
 
     #[test]
