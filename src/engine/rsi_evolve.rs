@@ -2184,7 +2184,7 @@ fn session_action_trace(state:&AppState,session_id:&str)->Vec<Value>{
             "error":op["result"]["error"].as_str()
                 .or_else(||op["error"].as_str()).unwrap_or("")
                 .chars().take(200).collect::<String>(),
-            "operationId":op["id"]
+            "operationId":op["id"],"runId":op["runId"],"opSeq":op["opSeq"]
         })
     }).collect()
 }
@@ -3029,10 +3029,25 @@ async fn run_loop(
         let method_actions=session.map(|session_id|context.state.store.all("execution")
             .into_iter().filter(|execution|execution["sessionId"]==session_id
                 && (execution["rsiMethodDecision"].is_object()
-                    || execution["rsiActionProgramDecision"].is_object()))
-            .map(|execution|json!({"executionId":execution["id"],
-                "decision":execution["rsiMethodDecision"],
-                "inducedProgramDecision":execution["rsiActionProgramDecision"]}))
+                    || execution["rsiActionProgramDecision"].is_object()
+                    || execution["rsiActionProgramDecisionHistory"].is_array()))
+            .flat_map(|execution|{
+                let decisions=execution["rsiActionProgramDecisionHistory"]
+                    .as_array().cloned().filter(|rows|!rows.is_empty())
+                    .unwrap_or_else(||execution["rsiActionProgramDecision"]
+                        .is_object().then(||vec![execution["rsiActionProgramDecision"].clone()])
+                        .unwrap_or_default());
+                if decisions.is_empty() {
+                    return vec![json!({"executionId":execution["id"],
+                        "decision":execution["rsiMethodDecision"],
+                        "inducedProgramDecision":Value::Null})];
+                }
+                decisions.into_iter().map(|choice|json!({
+                    "executionId":execution["id"],
+                    "decision":execution["rsiMethodDecision"],
+                    "inducedProgramDecision":choice,
+                })).collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>()).unwrap_or_default();
         let usage = session
             .map(|s| context.state.store.session_usage(s))
