@@ -1180,6 +1180,20 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
                     evidence.to_string().chars().take(1800).collect::<String>()));
             }
         }
+        // A focused owner request that already produced verified source reads
+        // must switch from research to implementation in its next generation.
+        // A read-only result is valuable context, not the completed owner task.
+        if input["rsiAutonomous"]!=true
+            && input["rsiFocusFiles"].as_array().is_some_and(|files|!files.is_empty())
+            && history.iter().rev().any(|row|row["candidateId"].is_null()
+                && row["newFindings"].as_u64().unwrap_or(0)>0) {
+            let files=input["rsiFocusFiles"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).take(4).collect::<Vec<_>>().join(", ");
+            text.push_str("\n### 연구에서 실행으로 전환\n");
+            text.push_str(&format!(
+                "- 목표가 명시된 파일: {files}. 기존 세대의 읽기 결과는 이미 제공됐습니다. 지금은 같은 연구를 반복할 차례가 아닙니다.\n"));
+            text.push_str("- 검증된 원문에서 정확한 oldText 블록을 고르고 workspace_replace로 실제 소스 수정까지 완료하세요. 모르는 구간만 workspace_read_range로 짧게 보충하세요. 실행한 소스 변경이 없으면 개선 성과가 아닙니다.\n");
+        }
         // Make failure feedback actionable rather than another inert memory:
         // the next model receives the previous hypothesis, its measured
         // verdict, and an explicit requirement to change the experiment.
