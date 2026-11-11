@@ -1061,7 +1061,8 @@ mod tests {
             "domain":"memory","actionProgramTrial":{"revision":"r1",
                 "arm":arm,"frozen":{"domain":"memory"}},
             "accepted":arm=="candidate","actionProgramEffects":[],
-            "evaluation":{"metrics":{"eligible":true,
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"eligible":true,
                 "regressions":0,"improvedHoldouts":2}}});
         let rows=vec![mk("c1","candidate"),mk("b1","baseline"),
             mk("c2","candidate"),mk("b2","baseline")];
