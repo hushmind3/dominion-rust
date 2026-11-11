@@ -635,6 +635,16 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             attempts.push(iteration.clone());
             let mut retry=request.clone();
             retry.input=feedback;
+            // The independent verifier, not a model summary, selects the
+            // exact file whose compiler error must be repaired. The next
+            // model turn is then routed through fresh-read -> edit instead
+            // of repeating discovery over the entire repository.
+            if let Some(mut repair_session)=context.state.store.get("session",&session_id) {
+                repair_session["rsiRepairPath"]=
+                    crate::engine::rsi_worktree::repair_target(prior)
+                        .map(|(path,_)|json!(path)).unwrap_or(Value::Null);
+                context.state.store.put("session",&repair_session);
+            }
             message=run_quiet(&scoped_state,&retry).await;
             if let Err(error)=&message {
                 // Do not erase the existing candidate/checks merely because
