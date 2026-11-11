@@ -62,6 +62,7 @@ pub fn definitions() -> Vec<Value> {
             "name":text("Reusable method name"),
             "description":text("Principle, source and limits of the method"),
             "domain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
+            "transferDomains":json!({"type":"array","items":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},"description":"Optional extra domains; execute and verify in the original domain first, then independently retry in each requested domain."}),
             "verification":json!({"type":"object","description":"Existing procedure format: type=procedure, appliesTo.requestContains, nodes [{id,tool,arguments}], edges [{from,to}], after [{kind:file_equals/file_contains/file_exists/tool_called,path,text,tool}]. Arguments can bind a prior node result via $node.field. Include concrete postconditions."})
         }), vec!["name","domain","verification"])),
         tool("delegate_task", "Delegate a self-contained task to another agent and optionally wait for its result", object(json!({

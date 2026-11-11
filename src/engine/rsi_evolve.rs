@@ -131,9 +131,23 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
         .iter()
         .map(|row| row["tokens"].as_u64().unwrap_or(0))
         .sum::<u64>() as f64;
+    // Producing an unverified patch is not progress. Count either a selected
+    // implementation or research that added genuinely new findings.
     let useful=rows.iter().filter(|row|row["accepted"]==true ||
-        row["candidateId"].is_string() || row["newFindings"].as_u64().unwrap_or(0)>0)
+        row["newFindings"].as_u64().unwrap_or(0)>0)
         .count() as f64;
+    // Learn from independent measured improvements, not patch counts or a
+    // self-reported outcome. Keep all spent tokens in the denominator so
+    // expensive failed attempts reduce the observed reward per token.
+    let holdout_gains=rows.iter().filter(|row|
+        row["accepted"]==true
+        && row["evaluation"]["metrics"]["eligible"]==true
+        && row["evaluation"]["metrics"]["regressions"].as_u64()==Some(0))
+        .map(|row|row["evaluation"]["metrics"]["improvedHoldouts"]
+            .as_u64().unwrap_or(0).min(16) as f64)
+        .sum::<f64>();
+    let holdout_yield=holdout_gains/(attempts+1.0);
+    let gain_per_10k_tokens=holdout_gains/(1.0+tokens/10_000.0);
     let barren_rate=if attempts==0.0 {0.0}else{1.0-useful/attempts};
     let success_rate = if attempts == 0.0 { 0.0 } else { accepted / attempts };
     let token_cost = if attempts == 0.0 {
@@ -181,6 +195,8 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
         ("usefulGenerations".to_string(),useful),
         ("barrenRate".to_string(),barren_rate),
         ("tokenCost".to_string(), token_cost),
+        ("holdoutYield".to_string(),holdout_yield),
+        ("gainPer10kTokens".to_string(),gain_per_10k_tokens),
         ("objectiveMatch".to_string(), objective_match),
         ("unresolved".to_string(), unresolved),
         ("exploration".to_string(), exploration),
@@ -221,8 +237,13 @@ fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f
             let useful=get("usefulGenerations")/(tries+1.0);
             let cost=get("tokenCost").max(0.0);
             let penalty=get("barrenRate")*cost/(1.0+cost);
+            // When two domains have the same adoption rate, prefer the one
+            // whose independently measured improvement is larger and cheaper.
+            // A fixed cap prevents one easy benchmark from starving exploration.
+            let outcome_reward=0.55*get("holdoutYield").min(3.0)
+                +0.45*get("gainPer10kTokens").min(3.0);
             Some(3.0*posterior/(1.0+cost)+0.25*useful
-                +get("exploration")-penalty
+                +get("exploration")-penalty+outcome_reward
                 +get("objectiveMatch")*2.0)
         }
     }
@@ -1220,6 +1241,18 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
     let name = body["name"].as_str().filter(|s| !s.trim().is_empty() && s.chars().count() <= 100)
         .ok_or("100자 이내의 절차 이름이 필요합니다.")?;
     let domain = body["domain"].as_str().filter(|d| DOMAINS.contains(d)).ok_or("유효한 분야가 필요합니다.")?;
+    let transfer_domains=body.get("transferDomains").map(|value|{
+        let domains=value.as_array().ok_or("transferDomains는 분야 배열이어야 합니다.")?;
+        if domains.len()>5 {return Err("다른 분야 전이는 최대 5개까지 허용됩니다.");}
+        let mut unique=BTreeSet::new();
+        for item in domains {
+            let target=item.as_str().ok_or("전이 분야는 문자열이어야 합니다.")?;
+            if !DOMAINS.contains(&target) || target==domain || !unique.insert(target.to_string()) {
+                return Err("전이 대상은 중복되지 않는 다른 유효 분야여야 합니다.");
+            }
+        }
+        Ok(unique.into_iter().collect::<Vec<_>>())
+    }).transpose()?.unwrap_or_default();
     let verification = crate::engine::procedure::normalize(&body["verification"]);
     if verification["type"] != "procedure"
         || verification["nodes"].as_array().is_none_or(Vec::is_empty)
@@ -1243,9 +1276,10 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
             return Err("파일 내용 검증에는 명시적인 기대 값이 필요합니다.".into());
         }
     }
-    let revision = format!("{:x}", Sha256::digest(json!([domain, &verification]).to_string().as_bytes()));
+    let revision = format!("{:x}", Sha256::digest(json!([domain, &transfer_domains, &verification]).to_string().as_bytes()));
     let method = json!({"id":format!("rsi-method-{revision}"),"revision":revision,"name":name,
-        "domain":domain,"verification":verification,"status":"candidate",
+        "domain":domain,"transferDomains":transfer_domains,
+        "verification":verification,"status":"candidate",
         "assistanceMode":"harness_assisted","description":body["description"],
         "sourceGenerationJobId":session["rsiGenerationJobId"]});
     if !session["rsiMethodProposals"].is_array() { session["rsiMethodProposals"] = json!([]); }
@@ -1267,11 +1301,22 @@ fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective
         .filter_map(|m|m["id"].as_str()).collect::<BTreeSet<_>>();
     for record in &records {
         for method in record["executableMethods"].as_array().into_iter().flatten() {
-            if method["domain"] != domain
+            let original_domain=method["domain"].as_str()==Some(domain);
+            let transferable=!original_domain
+                && method["transferDomains"].as_array().is_some_and(|domains|
+                    domains.iter().any(|item|item.as_str()==Some(domain)))
+                && !method["transferBlockedDomains"].as_array().is_some_and(|domains|
+                    domains.iter().any(|item|item.as_str()==Some(domain)))
+                // A generated suggestion cannot transfer itself. It must
+                // first work in its original domain and be accepted.
+                && method["status"]=="executable"
+                && method["successfulApplications"].as_u64().unwrap_or(0)>0;
+            if !(original_domain || transferable)
                 || blocked.contains(method["id"].as_str().unwrap_or(""))
                 || !matches!(method["status"].as_str(), Some("candidate" | "executable"))
                 || !crate::engine::procedure::applies(method, objective, None, None) { continue; }
             let mut method = method.clone();
+            if transferable { method["rsiTransferTrial"]=json!(true); }
             method["rsiMethodExperienceId"] = record["id"].clone();
             methods.push(method);
         }
@@ -1285,9 +1330,24 @@ fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective
     methods
 }
 
+fn method_application_context(input: &Value, domain: &str) -> String {
+    let mut context=input["rsiObjective"].as_str().unwrap_or("").to_string();
+    context.push('\n');
+    context.push_str(domain);
+    // Include the bounded, current focus from the index (or user) rather than
+    // inherited excerpts or arbitrary model claims. Procedure applicability
+    // still checks the requested domain and its declared conditions.
+    for path in input["rsiFocusFiles"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).filter(|path|crate::engine::rsi::safe_path(path)).take(12) {
+        context.push('\n');
+        context.push_str(path);
+    }
+    context
+}
+
 fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
     let methods = applicable_methods(state, &research_scope(input).partition_key, domain,
-        input["rsiObjective"].as_str().unwrap_or(""));
+        &method_application_context(input, domain));
     json!({"action":if methods.is_empty(){"research_only"}else{"execute_methods"},
         "methodIds":methods.iter().map(|m|m["id"].clone()).collect::<Vec<_>>()})
 }
@@ -1296,11 +1356,13 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     let domain = input["rsiDomain"].as_str().unwrap_or("");
     session["rsiResearchPartition"] = json!(research_scope(input).partition_key);
     session["rsiDomain"] = json!(domain);
+    session["rsiMethodContext"] = json!(method_application_context(input,domain));
     let mut decision = input["rsiDecisionInput"].clone();
     if !decision.is_object() {decision=json!({});}
-    if decision["nextDomain"] != domain || !decision["reuseDecision"].is_object() {
-        decision["reuseDecision"] = method_reuse_decision(state,input,domain);
-    }
+    // The parent predicted reuse BEFORE the descendant indexed and selected
+    // the current source files. Replan at the execution boundary; otherwise
+    // an old "research_only" decision vetoes a now-applicable learned method.
+    decision["reuseDecision"] = method_reuse_decision(state,input,domain);
     session["rsiDecisionInput"] = decision;
 }
 
@@ -1313,7 +1375,8 @@ pub(crate) fn method_strategies(state: &AppState, session: &Value) -> Vec<Value>
     let ids = session["rsiDecisionInput"]["reuseDecision"]["methodIds"].as_array().cloned().unwrap_or_default();
     let prior = state.store.all("execution_operation");
     applicable_methods(state, session["rsiResearchPartition"].as_str().unwrap_or(""),
-        session["rsiDomain"].as_str().unwrap_or(""), session["rsiObjective"].as_str().unwrap_or(""))
+        session["rsiDomain"].as_str().unwrap_or(""),
+        session["rsiMethodContext"].as_str().or_else(||session["rsiObjective"].as_str()).unwrap_or(""))
         .into_iter().filter(|m| ids.contains(&m["id"]) && !prior.iter().any(|op|
             op["sessionId"] == session["id"] && op["origin"] == "procedure"
                 && op["procedureStrategyId"] == m["id"]))
@@ -1362,11 +1425,28 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             || result["violations"].as_array().is_some_and(|rows| !rows.is_empty()));
         let ok = !unknown && !violated && result["followed"] == true;
         let progress = generation["accepted"] == true || generation["newFindings"].as_u64().unwrap_or(0)>0;
-        method["status"] = json!(if violated {"suspended"} else if ok && progress {"executable"} else {"held"});
+        let target_domain=generation["domain"].as_str().unwrap_or("");
+        let cross_domain=!target_domain.is_empty() && method["domain"].as_str()!=Some(target_domain);
+        if cross_domain {
+            // A failed experiment in a *new* domain must not erase a capability
+            // already demonstrated in the original domain.
+            if !ok {
+                if !method["transferBlockedDomains"].is_array() {
+                    method["transferBlockedDomains"]=json!([]);
+                }
+                let blocked=method["transferBlockedDomains"].as_array_mut().unwrap();
+                let domain=json!(target_domain);
+                if !blocked.contains(&domain) {blocked.push(domain);}
+            }
+        } else {
+            method["status"] = json!(if violated {"suspended"} else if ok && progress {"executable"} else {"held"});
+        }
         if ok && generation["accepted"] == true {
             method["successfulApplications"] = json!(method["successfulApplications"].as_u64().unwrap_or(0)+1);
         }
         let application = json!({"jobId":generation["jobId"],"executionId":receipt["executionId"],
+            "domain":generation["domain"],
+            "crossDomain":generation["domain"]!=method["domain"],
             "operationIds":receipt["operationIds"],
             "postconditionsPassed":if !ok && !violated {Value::Null}else{json!(ok)},
             "verificationVerdict":if violated {"violated"}else if ok {"passed"}else{"inconclusive"},
@@ -1375,6 +1455,17 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             "reuse":method["status"],"gain":"observed_association_not_causal_proof"});
         if !method["applications"].is_array() {method["applications"]=json!([]);}
         method["applications"].as_array_mut().unwrap().push(application);
+        // Record a transfer only after the procedure actually followed its
+        // verified tool plan AND the descendant change was independently adopted.
+        if ok && generation["accepted"]==true
+            && generation["domain"].as_str().is_some_and(|d|d!=method["domain"].as_str().unwrap_or("")) {
+            let target=generation["domain"].clone();
+            if !method["transferVerifiedDomains"].is_array() {
+                method["transferVerifiedDomains"]=json!([]);
+            }
+            let domains=method["transferVerifiedDomains"].as_array_mut().unwrap();
+            if !domains.contains(&target) {domains.push(target);}
+        }
         state.store.put("experience", &record);
     }
     receipts
@@ -2937,12 +3028,20 @@ pub(crate) async fn adopt(
 // (which actually runs the algorithm). Otherwise a trial policy can appear
 // in focusSelection even though no trial was executed.
 fn research_continuation(history: &[Value]) -> Option<String> {
-    history.last()
-        .filter(|row| row["candidateId"].is_null()
-            && row["newFindings"].as_u64().unwrap_or(0) > 0)
-        .and_then(|row| row["domain"].as_str())
-        .filter(|domain| DOMAINS.contains(domain))
-        .map(str::to_string)
+    let last=history.last()?;
+    let domain=last["domain"].as_str().filter(|domain| DOMAINS.contains(domain))?;
+    let useful_research=|row:&Value| {
+        row["domain"]==domain && row["accepted"]!=true
+            && row["candidateId"].is_null()
+            && row["newFindings"].as_u64().unwrap_or(0)>0
+    };
+    if !useful_research(last) { return None; }
+    // Permit one follow-up to reuse research, then return to an execution
+    // decision: an endless series of new notes is not a code improvement.
+    if history.iter().rev().take_while(|row|useful_research(row)).take(2).count()>1 {
+        return None;
+    }
+    Some(domain.to_string())
 }
 
 fn generation_target_plan(domain: &str, selection: &str, strategy: &Value, commit: &str) -> Value {
@@ -4574,7 +4673,7 @@ mod tests {
         // explicit product action. Untracked research and main are preserved.
         git(&context,&source,&["update-ref","refs/heads/main",&base]).await.unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
-        assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap_err().contains("dominion-sub"),"main must never be an application target");
+        assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap_err().contains("개발 브랜치"),"main must never be an application target");
         git(&context,&source,&["checkout","-b","dominion-sub"]).await.unwrap();
         std::fs::write(source.join("my-research.txt"),"keep my unrelated research").unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
@@ -5455,5 +5554,151 @@ mod tests {
             "a pending candidate is scoped to its objective"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_uses_verified_holdout_gain_per_token_not_only_patch_count() {
+        let algorithm=json!({"implementation":"failure-clusters"});
+        // Identical accepted counts, attempted work and token costs: the
+        // old selector tied these domains and chose the first by ordering.
+        // The improved selector must learn that learning produced more
+        // independently validated held-out gains at the same cost.
+        let history=vec![
+            json!({"domain":"memory","tokens":10_000,"accepted":true,
+                "evaluation":{"metrics":{"eligible":true,"regressions":0,
+                    "improvedHoldouts":1}}}),
+            json!({"domain":"learning","tokens":10_000,"accepted":true,
+                "evaluation":{"metrics":{"eligible":true,"regressions":0,
+                    "improvedHoldouts":6}}})
+        ];
+        let low=search_features(&history,"memory","");
+        let high=search_features(&history,"learning","");
+        assert_eq!(low["accepted"],high["accepted"]);
+        assert_eq!(low["tokenCost"],high["tokenCost"]);
+        assert!(high["gainPer10kTokens"]>low["gainPer10kTokens"]);
+        assert!(score_domain(&algorithm,&high)>score_domain(&algorithm,&low));
+        assert_eq!(select_domain(&algorithm,&history,""),"learning");
+        // A model-authored executable search policy can use the same measured
+        // features instead of being locked to Rust's default coefficients.
+        let expression=json!({"implementation":"expression","parameters":{
+            "expression":"gainPer10kTokens + holdoutYield"}});
+        assert_eq!(select_domain(&expression,&history,""),"learning");
+    }
+
+    #[test]
+    fn failed_patches_do_not_become_useful_training_examples() {
+        let history=vec![
+            json!({"domain":"memory","tokens":60_000,"accepted":false,
+                "candidateId":"unverified-patch","newFindings":0}),
+            json!({"domain":"learning","tokens":4_000,"accepted":false,
+                "candidateId":null,"newFindings":2})
+        ];
+        let no_progress=search_features(&history,"memory","");
+        let research=search_features(&history,"learning","");
+        assert_eq!(no_progress["usefulGenerations"],0.0);
+        assert_eq!(no_progress["barrenRate"],1.0);
+        assert_eq!(research["usefulGenerations"],1.0);
+        assert_eq!(research["barrenRate"],0.0);
+        // Unverified candidate claims, even with huge invented gains, must
+        // not be rewarded as a validated improvement.
+        let forged=vec![json!({"domain":"memory","tokens":1_000,
+            "accepted":false,"evaluation":{"metrics":{"eligible":true,
+                "regressions":0,"improvedHoldouts":200}}})];
+        assert_eq!(search_features(&forged,"memory","")["gainPer10kTokens"],0.0);
+    }
+
+    #[test]
+    fn learned_method_replans_against_current_focus_instead_of_stale_parent_choice() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiDomain":"memory",
+            "rsiAutonomous":true,"rsiAutoFocus":true,
+            "rsiObjective":"Improve DOMINION autonomously",
+            "rsiFocusFiles":["src/engine/memory.rs"],
+            "rsiDecisionInput":{"nextDomain":"memory",
+                "reuseDecision":{"action":"research_only","methodIds":[]}}});
+        let partition=research_scope(&input).partition_key;
+        state.store.put("experience",&json!({"id":"source-knowledge","status":"active",
+            "partitionKey":partition,"executableMethods":[{
+                "id":"method-memory-file","revision":"v1","domain":"memory",
+                "status":"candidate","verification":{"type":"procedure",
+                    "appliesTo":{"requestContains":["src/engine/memory.rs"]},
+                    "nodes":[{"id":"inspect","tool":"code_search",
+                        "arguments":{"query":"memory"}}],
+                    "edges":[],"after":[{"kind":"tool_called","tool":"code_search"}]}
+            }]})).unwrap();
+        assert_eq!(method_reuse_decision(&state,&input,"memory")["action"],"execute_methods");
+        let mut session=json!({"id":"learned-replan","rsiObjective":"Improve DOMINION autonomously"});
+        configure_method_session(&state,&input,&mut session);
+        assert_eq!(session["rsiDecisionInput"]["reuseDecision"]["action"],"execute_methods");
+        assert_eq!(session["rsiDecisionInput"]["reuseDecision"]["methodIds"],
+            json!(["method-memory-file"]));
+        assert_eq!(applicable_methods(&state,&partition,"memory",
+            session["rsiMethodContext"].as_str().unwrap()).len(),1);
+        let mut changed=input;
+        changed["rsiFocusFiles"]=json!(["src/engine/tools.rs"]);
+        // Same domain, same owner objective, stale decision: the current
+        // selected source must win both when gaining and losing applicability.
+        configure_method_session(&state,&changed,&mut session);
+        assert_eq!(session["rsiDecisionInput"]["reuseDecision"]["action"],"research_only");
+        assert!(applicable_methods(&state,&partition,"memory",
+            session["rsiMethodContext"].as_str().unwrap()).is_empty());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verified_executable_method_can_be_retested_in_an_explicit_new_domain() {
+        let (state,root)=state();
+        let partition=research_scope(&json!({"rsiSourceDir":root})).partition_key;
+        let method=json!({"id":"learned-method","revision":"v1","domain":"memory",
+            "transferDomains":["tools"],"status":"executable","successfulApplications":1,
+            "verification":{"type":"procedure","appliesTo":{"requestContains":["search"]},
+                "nodes":[{"id":"find","tool":"code_search","arguments":{"query":"search"}}],
+                "edges":[],"after":[{"kind":"tool_called","tool":"code_search"}]}});
+        state.store.put("experience",&json!({"id":"research","status":"active",
+            "partitionKey":partition,"executableMethods":[method.clone()]})).unwrap();
+        let transfer=applicable_methods(&state,&partition,"tools","search indexing");
+        assert_eq!(transfer.len(),1);
+        assert_eq!(transfer[0]["rsiTransferTrial"],true);
+        assert!(applicable_methods(&state,&partition,"ui","search indexing").is_empty());
+        state.store.put("session",&json!({"id":"transfer-run",
+            "rsiMethodExecutions":[{"methodId":"learned-method","revision":"v1",
+                "experienceId":"research","executionId":"cross-domain-attempt",
+                "result":{"verified":true,"status":"violated","violations":["postcondition failed"]}}]}));
+        let feedback=record_method_feedback(&state,&json!({
+            "domain":"tools","accepted":false,"jobId":"trial-job",
+            "newFindings":0,"tokens":100,"elapsedMs":12}),"transfer-run");
+        assert_eq!(feedback.len(),1);
+        let original=state.store.get("experience","research").unwrap();
+        assert_eq!(original["executableMethods"][0]["status"],"executable",
+            "transfer failure must not invalidate original domain's working skill");
+        assert_eq!(original["executableMethods"][0]["transferBlockedDomains"],json!(["tools"]));
+        assert!(applicable_methods(&state,&partition,"tools","search indexing").is_empty());
+        assert_eq!(applicable_methods(&state,&partition,"memory","search indexing").len(),1);
+        let mut unverified=method;
+        unverified["status"]=json!("candidate");
+        unverified["successfulApplications"]=json!(0);
+        state.store.put("experience",&json!({"id":"research","status":"active",
+            "partitionKey":partition,"executableMethods":[unverified]})).unwrap();
+        assert!(applicable_methods(&state,&partition,"tools","search indexing").is_empty(),
+            "unproven methods cannot claim cross-domain success");
+        assert_eq!(applicable_methods(&state,&partition,"memory","search indexing").len(),1);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn productive_research_forces_at_most_one_continuation() {
+        let mut history=vec![json!({"domain":"memory","accepted":false,
+            "candidateId":null,"newFindings":3})];
+        assert_eq!(research_continuation(&history).as_deref(),Some("memory"));
+        history.push(json!({"domain":"memory","accepted":false,
+            "candidateId":null,"newFindings":2}));
+        assert_eq!(research_continuation(&history),None,
+            "repeated research must give a turn to implementation");
+        history.push(json!({"domain":"memory","accepted":false,
+            "candidateId":null,"newFindings":1}));
+        assert_eq!(research_continuation(&history),None);
+        history.push(json!({"domain":"tools","accepted":false,
+            "candidateId":null,"newFindings":1}));
+        assert_eq!(research_continuation(&history).as_deref(),Some("tools"));
     }
 }
