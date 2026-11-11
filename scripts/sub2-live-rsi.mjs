@@ -158,9 +158,9 @@ async function main() {
   const job = await json(base + "/api/rsi/start", "POST", {
     mode: "continuous", confirmation: "START_RSI_EVOLUTION",
     providerId: receipt.providerId, model, selectionPolicy: "automatic",
-    request: "src/engine/room_state.rs의 context_block_at 함수(대략 327~369줄)를 실제로 최적화하세요. 긴 owner 기억을 선택하는 이 함수는 현재 여러 fact를 평가할 때 query_relevance(query,text)를 각각 호출하며 memory::terms(query)를 같은 질문에 대해 120번 반복 토큰화합니다. 질문 query의 memory::terms(query)를 context_block_at 시작 시 단 한 번 계산한 후, 같은 query_relevance 점수(도메인 일치 +32, 토큰 교집합 최대 12), 정렬·선택·정확한 owner fact가 완전히 유지되도록 작은 Rust 코드를 작성하세요. 함수 바깥까지 광범위하게 바꾸지 말고 context_block_at 안의 120줄 이내를 실제 workspace_replace(path,startLine,endLine,expectedSha256,newText) 도구로 변경하세요. 이미 세대에 주어진 색인 소스 발췌의 실제 줄 번호와 sourceSha256가 있으면 그것을 expectedSha256로 사용해 즉시 workspace_replace를 실행하세요. workspace_read_range는 현재 도구 목록에 제공된 경우에만 사용하세요. 네이티브 도구 호출이 실패한다면 동일한 인자들의 단일 JSON 객체를 출력하세요. 조사·설명만 하지 말고 실제 소스 파일을 고치세요. 성과는 별도 frozen long_owner_recall holdout의 정확도와 elapsedMs로 독립 검증합니다.",
-    focusFiles: ["src/engine/room_state.rs"],
-    maxAttempts: 4, tokenBudget: 100_000, timeBudgetSeconds: 2400,
+    request: "DOMINION 자기개선기가 실제로 더 나은 알고리즘을 만들고 기억 능력으로 전이하여 독립 검증된 3세대 연속 채택을 달성하세요. 첫 세대는 src/engine/room_state.rs의 저장된 주인 사실을 반복 검증하는 비용을 줄이는 실행 가능한 소스 변형을 찾으세요. 다음 세대에는 src/engine/rsi_evolve.rs의 자기개선 후보 선택을 위한 반복 통계 스캔과 중복 도메인 탐색을 줄이는 새 계산 원리를 생성하세요. 후속 세대는 실제로 재빌드된 개선기가 다시 src/engine/room_state.rs의 동일 질문 반복 토큰화 또는 저장된 사실의 불변 토큰 계산을 최적화하세요. 선택은 각 세대가 기존 실행 결과와 실제 코드의 구조를 근거로 하며 다른 도메인으로의 전이는 동결된 독립 holdout 개선과 무회귀가 입증될 때만 인정하세요. 모든 세대에서 소스 diff, 독립 A/B 측정, 채택 커밋, 새로운 개선기 바이너리를 실제로 기록하세요. 특정 소스 형태가 사라졌다면 더 나은 대안을 생성하고 검증하며 효과 없는 시도를 개선으로 보고하지 마세요.",
+    focusFiles: [],
+    maxAttempts: 4, tokenBudget: 120_000, timeBudgetSeconds: 3000,
   }, 120_000);
   receipt.campaignId = job.id;
   if (!receipt.campaignId) throw new Error("No native RSI job ID returned");
