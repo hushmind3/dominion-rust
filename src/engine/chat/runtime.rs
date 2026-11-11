@@ -4718,10 +4718,10 @@ async fn dispatch_tool_call(
     }
     if session["rsiRun"]==true && call.name=="workspace_replace_range"
         && arguments["expectedSha256"].as_str().is_none_or(str::is_empty) {
-        if let Some(path)=arguments["path"].as_str() {
+        if let Some(path)=arguments["path"].as_str().map(str::to_string) {
             let operations=state.store.all("execution_operation");
             if let Some((source_op,hash))=
-                rsi_observed_source_hash(&operations,session_id,path) {
+                rsi_observed_source_hash(&operations,session_id,&path) {
                 arguments["expectedSha256"]=json!(hash);
                 state.store.audit("rsi.line_edit_observation_bound",json!({
                     "sessionId":session_id,"executionId":execution_id,
