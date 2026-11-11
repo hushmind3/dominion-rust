@@ -484,6 +484,50 @@ pub fn repair_feedback(result:&Value)->Option<String>{
         failures.join("\n\n")
     ))
 }
+/// The model attempted to modify a grounded source file but the native tool
+/// rejected its old revision or an inappropriate create-only write. Turn that
+/// observed failure into ONE targeted retry in the same detached worktree.
+/// The identical receipt also trains the following generation's repair DAG.
+pub fn failed_edit_feedback(
+    result:&Value,session:&Value,operations:&[Value]
+)->Option<String>{
+    if result["status"]!="needs_review" || result["reason"]!="no_valid_candidate"
+        || result["rsi"]["sourceClean"]!=true
+        || result["rsi"]["diffBytes"].as_u64().unwrap_or(0)!=0
+        || !result["rsi"]["modelError"].as_str().unwrap_or("").is_empty()
+        || session["rsiRun"]!=true || session["rsiExplicitFocus"]!=true {return None}
+    let focus=session["rsiFocusFiles"].as_array()?;
+    if focus.len()!=1 {return None}
+    let path=focus[0].as_str().filter(|path|crate::engine::rsi::safe_path(path))?;
+    let failure=operations.iter().rev().find(|op|
+        op["sessionId"]==session["id"] && op["arguments"]["path"]==path
+        && matches!(op["status"].as_str(),Some("completed"|"failed"))
+        && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_write"))
+        && op["result"]["written"]!=true
+        && (op["result"]["staleVersion"]==true
+            || op["result"]["preflightBlocked"]==true
+            || op["result"]["error"].as_str().is_some_and(|error|
+                error.contains("새 파일 생성 전용"))))?;
+    let old=failure["arguments"]["newText"].as_str()
+        .or_else(||failure["arguments"]["content"].as_str())
+        .unwrap_or("");
+    let excerpt=old.chars().take(1400).collect::<String>();
+    let error=failure["result"]["error"].as_str().unwrap_or("");
+    let advice=if failure["tool"]=="workspace_write" {
+        "기존 파일에 생성 전용 workspace_write를 다시 사용하지 마세요. 현재 파일을 읽고 필요한 범위만 workspace_replace 하세요."
+    } else {
+        "이전 expectedSha256 또는 파일 관측이 오래됐습니다. 현재 파일의 정확한 변경 범위를 workspace_read_range로 다시 읽고 그 응답의 sourceSha256를 사용하세요."
+    };
+    Some(format!(
+        "실제 도구 호출이 실패하여 소스 diff가 0건입니다. 실패했던 파일: {path}. \
+        엔진이 기록한 이유: {}. {advice} \
+        이미 의도한 수정 내용:\n~~~\n{excerpt}\n~~~\n\
+        정확한 현재 소스 원문과 비교해 여전히 유효할 때만 120줄 이내 수정으로 적용하세요. \
+        도구 실행이 끝나야 결과가 기록됩니다. 더 이상의 조사 반복으로 끝내지 마세요.",
+        error.chars().take(380).collect::<String>()
+    ))
+}
+
 /// Convert a grounded but read-only RSI model turn into a *single* concrete
 /// follow-up edit attempt. Previously run_prompt only retried failed builds;
 /// a generation that returned with zero writes was guaranteed to stop with
@@ -916,6 +960,38 @@ mod tests {
         assert_eq!(classify("diff --git a/src/engine/room_state.rs b/src/engine/room_state.rs\n"),"algorithm");
         assert_eq!(classify("diff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\n"),"harness");
     }
+    #[test]
+    fn observed_stale_tool_error_recovers_with_new_current_source_not_blind_retry(){
+        let result=json!({"status":"needs_review","reason":"no_valid_candidate",
+            "rsi":{"sourceClean":true,"diffBytes":0,"modelError":""}});
+        let session=json!({"id":"s","rsiRun":true,"rsiExplicitFocus":true,
+            "rsiFocusFiles":["src/engine/memory.rs"]});
+        let failed=json!({"sessionId":"s","status":"completed",
+            "tool":"workspace_replace","arguments":{
+                "path":"src/engine/memory.rs","startLine":4,"endLine":4,
+                "newText":"fn revised() {}"},
+            "result":{"written":false,"staleVersion":true,
+                "error":"읽은 뒤 소스가 변경되었습니다."}});
+        let feedback=failed_edit_feedback(&result,&session,&[failed.clone()]).unwrap();
+        assert!(feedback.contains("workspace_read_range"));
+        assert!(feedback.contains("fn revised() {}"));
+        let mut different=failed.clone();
+        different["sessionId"]=json!("someone-else");
+        assert!(failed_edit_feedback(&result,&session,&[different]).is_none());
+        different=failed.clone();
+        different["result"]["written"]=json!(true);
+        assert!(failed_edit_feedback(&result,&session,&[different]).is_none());
+        different=failed.clone();
+        different["result"]["staleVersion"]=json!(false);
+        assert!(failed_edit_feedback(&result,&session,&[different]).is_none());
+        different=failed.clone();
+        different["tool"]=json!("workspace_write");
+        different["result"]["staleVersion"]=json!(false);
+        different["result"]["error"]=json!("workspace_write는 새 파일 생성 전용입니다");
+        let instruction=failed_edit_feedback(&result,&session,&[different]).unwrap();
+        assert!(instruction.contains("workspace_replace"));
+    }
+
     #[test]
     fn no_edit_recovery_runs_only_for_grounded_source_and_once_per_job(){
         let result=json!({"status":"needs_review","reason":"no_valid_candidate",
