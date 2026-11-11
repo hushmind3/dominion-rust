@@ -1552,7 +1552,11 @@ mod tests {
             Store::open(&config.db_path()).unwrap(),
             Vault::open(&config.key_path()),
         );
-        let path = dir.join("large.rs");
+        // Repository indexing intentionally covers source paths, not ad-hoc
+        // root files. Use a genuine indexed Rust source for the hash-recovery
+        // stage of this otherwise standalone tool test.
+        let path = dir.join("src/engine/large.rs");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "let old_value = 1;\nlet untouched = 2;\n").unwrap();
         let expected = format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap()));
         let ctx = ToolContext {
