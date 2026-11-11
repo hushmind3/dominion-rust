@@ -56,6 +56,7 @@ jobs:
         if: steps.probe.outputs.reachable == 'true'
         run: |
           node --check scripts/sub1-live-model-campaign.mjs
+          node --check scripts/rsi-measure.mjs
           npm ci --prefix web
           npm run build --prefix web
           cargo build --release --locked --bin dominion-rust
