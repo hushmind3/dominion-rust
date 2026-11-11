@@ -4777,6 +4777,10 @@ mod tests {
         let mut tampered=old.clone();
         tampered["report"]["cases"][0]["candidatePass"]=json!(false);
         state.store.put("rsi_pair",&tampered).unwrap();
+        let revalidated=history_with_verified_payoffs(&state,&history);
+        assert_eq!(revalidated[1]["evidenceVerified"],false);
+        assert!(adaptive_search_expression(&revalidated).is_none(),
+            "mutable outcome claims cannot bootstrap an evolved policy");
         let no_proof=queue_adaptive_search_trial(&state,&history,&active,
             "","fresh-campaign",4);
         assert!(no_proof.is_none(),"forged raw report must not generate an improved policy");
