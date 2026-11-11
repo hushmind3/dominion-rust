@@ -2367,6 +2367,7 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
     let mut stalled=0u64;
     let mut failed_compiles=0u64;
     let mut regressed_quality=0u64;
+    let mut no_gain_candidates=0u64;
     let mut seen=BTreeSet::<String>::new();
     for row in rows {
         let method=&row["executionMethod"]["actionProgram"];
@@ -2395,6 +2396,19 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
                 regressed_quality+=1;
                 continue;
             }
+            // An independently measured, compiling patch with zero holdout
+            // gain is a *method counterexample*, not a productive trial.
+            // The old learner ignored every such candidate indefinitely.
+            if row["attemptedCandidateId"].is_string()
+                && row["candidateCapture"]["checksPassed"]==true
+                && row["evaluation"]["verdict"]=="inconclusive"
+                && row["evaluation"]["metrics"]["pairedCases"].as_u64().unwrap_or(0)
+                    >= crate::engine::rsi::MIN_PAIRED_CASES as u64
+                && row["evaluation"]["metrics"]["improvedHoldouts"].as_u64()==Some(0)
+                && row["evaluation"]["metrics"]["regressions"].as_u64()==Some(0) {
+                no_gain_candidates+=1;
+                continue;
+            }
         }
         if generation_is_verified(row) || row["attemptedCandidateId"].is_string()
             || row["writeReceipts"].as_array().is_some_and(|receipts|
@@ -2403,7 +2417,8 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
         }
         stalled+=1;
     }
-    if stalled<2 && failed_compiles<2 && regressed_quality<2{return plan;}
+    if stalled<2 && failed_compiles<2 && regressed_quality<2
+        && no_gain_candidates<2 {return plan;}
     let mut sequence=plan["sequence"].as_array().cloned().unwrap_or_default();
     // The highest-value mutation is to turn a research-only program into
     // an implementation program. Dropping discovery while keeping *no edit*
@@ -2442,6 +2457,30 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
         sequence=proposed;
         if failed_compiles>=2 {"repair_failed_compilation_method"}
         else {"repair_regressed_quality_method"}
+    } else if no_gain_candidates>=2 {
+        // The source mutation was real and independently evaluated, but it
+        // did not improve behavior. Change the *method*, not the verdict:
+        // ensure a grounded read and switch the actual replacement operator.
+        // The resulting child is a trial subject to the next frozen A/B.
+        let mut proposed=sequence.clone();
+        if !proposed.iter().any(|step|step=="workspace_read_range") {
+            let edit_position=proposed.iter().position(|step|
+                matches!(step.as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write")))
+                .unwrap_or(proposed.len());
+            proposed.insert(edit_position,json!("workspace_read_range"));
+        }
+        if let Some(index)=proposed.iter().rposition(|step|
+            matches!(step.as_str(),Some("workspace_replace"|"workspace_replace_range"))) {
+            let alternative=if proposed[index]=="workspace_replace" {
+                "workspace_replace_range"
+            } else {"workspace_replace"};
+            proposed[index]=json!(alternative);
+        } else if !has_edit(&proposed) {
+            proposed.push(json!(fallback));
+        }
+        if proposed==sequence {return plan;}
+        sequence=proposed;
+        "repair_zero_gain_candidate_method"
     } else if !has_edit(&sequence) {
         sequence.push(json!(fallback));
         "append_source_mutation"
@@ -2487,7 +2526,9 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
     plan["failureEpisodes"]=json!(stalled);
     plan["compileFailureEpisodes"]=json!(failed_compiles);
     plan["qualityRegressionEpisodes"]=json!(regressed_quality);
-    plan["status"]=json!(if failed_compiles>=2||regressed_quality>=2 {
+    plan["qualityNoGainEpisodes"]=json!(no_gain_candidates);
+    plan["status"]=json!(if failed_compiles>=2||regressed_quality>=2
+        || no_gain_candidates>=2 {
         "trial_after_quality_counterexamples"
     } else {"trial_after_unproductive_predecessor"});
     plan
@@ -5358,6 +5399,44 @@ mod tests {
             &[phantom,phantom2],"workspace_replace");
         assert_eq!(no_credited_failure["revision"],"compiler-policy",
             "A non-executed policy must not accumulate compile failure feedback");
+    }
+
+    #[test]
+    fn verified_no_gain_candidates_change_the_next_generation_method() {
+        let program=json!({"revision":"tested-source-method",
+            "sequence":["code_search","workspace_replace"],
+            "onFailure":[],"recoveryPaths":[]});
+        let episode=|job:&str,observed:bool| {
+            let execution=format!("run-{job}");
+            json!({"id":job,"jobId":job,
+                "executionMethod":{"actionProgram":program},
+                "methodActions":[{"executionId":execution,
+                    "inducedProgramDecision":{"programRevision":"tested-source-method",
+                        "chosenTool":"workspace_replace","actionCount":0}}],
+                "actionTrace":if observed {json!([{"runId":execution,"opSeq":1,
+                    "tool":"workspace_replace","status":"completed",
+                    "executed":true,"sourceChanged":true}])} else {json!([])},
+                "attemptedCandidateId":format!("candidate-{job}"),
+                "candidateCapture":{"checksPassed":true},
+                "evaluation":{"verdict":"inconclusive","metrics":{
+                    "pairedCases":13,"improvedHoldouts":0,"regressions":0}},
+                "accepted":false})
+        };
+        let once=evolve_stalled_action_program(program.clone(),
+            &[episode("one",true)],"workspace_replace");
+        assert_eq!(once["revision"],program["revision"],
+            "One measured no-gain patch is not enough to alter the controller");
+        let changed=evolve_stalled_action_program(program.clone(),
+            &[episode("one",true),episode("two",true)],"workspace_replace");
+        assert_eq!(changed["mutationOperator"],"repair_zero_gain_candidate_method");
+        assert_eq!(changed["qualityNoGainEpisodes"],2);
+        assert_eq!(changed["sequence"],json!([
+            "code_search","workspace_read_range","workspace_replace_range"]));
+        assert_ne!(changed["revision"],program["revision"]);
+        let phantom=evolve_stalled_action_program(program,
+            &[episode("one",true),episode("two",false)],"workspace_replace");
+        assert_eq!(phantom["qualityNoGainEpisodes"],Value::Null,
+            "A displayed method choice without an executed tool is not a trial");
     }
 
     #[test]
