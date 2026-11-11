@@ -2345,9 +2345,19 @@ fn generation_fits_remaining_budget(record:&Value,input:&Value)->bool {
 fn fit_generation_context(
     record:&Value, base:&str, evidence:&str, research_reads:&str, source_excerpt:&str
 ) -> Option<(String,Value)> {
+    // Sub1's context-retention principle: preserve complete inspected ranges
+    // before deferring the entire ledger. A full line is an actionable read
+    // receipt; cutting a serialized record mid-string is not.
+    let compact_reads=research_reads.lines()
+        .filter(|line|line.starts_with("- 읽음: ") || line.starts_with("- 검색함: "))
+        .filter(|line|line.chars().count()<=480)
+        .take(8).collect::<Vec<_>>().join("\n");
+    let compact_reads=if compact_reads.is_empty() {String::new()}
+        else {format!("\n### 이전 세대가 확인한 소스 (압축)\n{compact_reads}\n")};
     for (mode,reads,source) in [
         ("full",research_reads,source_excerpt),
         ("source_on_demand",research_reads,""),
+        ("compact_research",&compact_reads,""),
         ("source_and_reads_on_demand","",""),
     ] {
         let text=format!("{base}\n\n{evidence}{reads}{source}");
@@ -2357,6 +2367,7 @@ fn fit_generation_context(
                 "mode":mode,
                 "sourceExcerptDeferred":!source_excerpt.is_empty() && source.is_empty(),
                 "researchReadLedgerDeferred":!research_reads.is_empty() && reads.is_empty(),
+                "researchReadLedgerCompacted":mode=="compact_research",
                 "evidencePreserved":true,
                 "estimatedInputTokens":estimated
             })));
