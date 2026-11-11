@@ -185,7 +185,7 @@ fn rsi_target_function_window(
         if line.as_bytes().first().is_some_and(u8::is_ascii_whitespace) {
             return None; // nested declarations are not top-level siblings
         }
-        let rest=prefixes.iter().find_map(|prefix|line.strip_prefix(prefix))?;
+        let rest=prefixes.iter().find_map(|prefix|line.strip_prefix(*prefix))?;
         let name=rest.chars().take_while(|ch|
             ch.is_ascii_alphanumeric() || *ch=='_').collect::<String>();
         if name.is_empty() || !rest[name.len()..].trim_start().starts_with('(') {
