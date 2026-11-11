@@ -3431,6 +3431,10 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
         input["rsiObjective"].as_str().unwrap_or(""),
         context,&json!({"rank":ranking,"evidence":evidence,"program":program}).to_string()
     ]);
+    // The full evidence set contributes to the revision hash, but passing
+    // 80 source IDs back to a 4B model wastes tokens. Keep a bounded manifest.
+    let recent_evidence=evidence.iter().rev().take(12).cloned().collect::<Vec<_>>();
+    let evidence_count=evidence.len();
     decision["mode"]=json!(chosen);
     decision["policy"]=json!({
         "kind":"selfimprove.action","implementation":"synthesized_symbolic_action_program",
@@ -3438,7 +3442,8 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
         "scoreExpression":program,
         "programStructure":{"hasFailurePenalty":any_failures,
             "hasAdoptionReward":any_adoption},
-        "trainingGenerationIds":evidence,
+        "trainingGenerationIds":recent_evidence,
+        "trainingEvidenceCount":evidence_count,
         "scoreComponents":["observed_action_value","token_cost","posterior_utility","exploration"],
         "metaTuning":{"explorationCoefficient":exploration_coefficient,
             "retainedObservations":retained_scores.len(),
