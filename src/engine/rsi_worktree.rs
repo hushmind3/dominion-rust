@@ -500,12 +500,16 @@ fn run_status(
     model_error:&str,capture_error:&str,
 )->(&'static str,&'static str){
     if !source_clean {return ("needs_review","original_source_changed");}
-    if !model_error.is_empty(){return ("needs_review","model_error");}
     if !capture_error.is_empty()||!has_candidate {
         return ("needs_review","no_valid_candidate");
     }
+    // The model can exhaust its output budget AFTER a real source write.
+    // Preserve the actual compiler outcome instead of misclassifying a
+    // noncompiling patch as merely a model error. This distinction is what
+    // drives the next generation's source-repair method.
     if audit_failed{return ("needs_review","unsafe_safety_failed");}
     if !checks_passed{return ("needs_review","build_or_typecheck_failed");}
+    if !model_error.is_empty(){return ("needs_review","model_error");}
     ("completed","candidate_compiles_not_performance_verified")
 }
 
