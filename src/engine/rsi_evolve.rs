@@ -1754,12 +1754,51 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
             return Value::Null;
         };
         if verdict=="promote_observational" {
-            // It is the FROZEN tested revision that earned the result. Never
-            // label a meanwhile-mutated scorer as a measured winner.
+            // Promote ONLY the frozen tested execution recipe. Learning
+            // observations collected during the four-arm cohort must survive:
+            // overwriting the entire policy erased descendant experience.
+            let live=policy.clone();
             policy=cohort["policy"].clone();
+            let mut merged=policy["evidence"].as_array().cloned().unwrap_or_default();
+            for row in live["evidence"].as_array().into_iter().flatten() {
+                if !merged.iter().any(|old|old["jobId"]==row["jobId"]) {
+                    merged.push(row.clone());
+                }
+            }
+            if merged.len()>32 {merged.drain(..merged.len()-32);}
+            policy["evidence"]=json!(merged);
+            let mut rejected=BTreeSet::<String>::new();
+            for source in [&cohort["policy"],&live] {
+                for value in source["rejectedProgramIds"].as_array().into_iter().flatten() {
+                    if let Some(id)=value.as_str(){rejected.insert(id.to_string());}
+                }
+            }
+            policy["rejectedProgramIds"]=json!(rejected);
+            let mut inherited=policy["programMutations"].as_array().cloned().unwrap_or_default();
+            for mutation in live["programMutations"].as_array().into_iter().flatten() {
+                if !inherited.iter().any(|old|old["cohortId"]==mutation["cohortId"]
+                    && old["fromProgramId"]==mutation["fromProgramId"]) {
+                    inherited.push(mutation.clone());
+                }
+            }
+            policy["programMutations"]=json!(inherited);
+            if let Some(programs)=policy["executionPrograms"].as_array_mut() {
+                programs.retain(|program| !policy["rejectedProgramIds"]
+                    .as_array().is_some_and(|ids|ids.contains(&program["id"])));
+            }
+            // Keep the tested revision only when its executable recipe is
+            // unchanged; a concurrent program veto creates a new revision.
+            if policy["executionPrograms"]!=cohort["policy"]["executionPrograms"] {
+                policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([
+                    &policy["transitions"],&policy["executionPrograms"],
+                    &policy["rejectedProgramIds"],&policy["programMutations"],
+                    &policy["scoringKernel"]
+                ]).to_string().as_bytes())));
+            }
             policy["status"]=json!("promoted_observational");
             policy["lastMethodTrial"]=json!({"cohortId":cohort_id,
-                "verdict":verdict,"causalProof":false});
+                "verdict":verdict,"causalProof":false,
+                "retainedEvidence":policy["evidence"].as_array().map(Vec::len).unwrap_or(0)});
         } else {
             let mutations=mutate_programs_after_trial(
                 &mut policy,&cohort["policy"],&rows,cohort_id);
@@ -4621,6 +4660,8 @@ mod tests {
                 // New evidence may have changed the live revision during the
                 // trial. Only the original frozen scorer can be promoted.
                 policy["revision"]=json!("unmeasured-new-revision");
+                policy["evidence"]=json!([{"jobId":"later-generation",
+                    "domain":"tools","sequence":["workspace_read_range","workspace_replace"]}]);
                 state.store.put("rsi_method_policy",&policy).unwrap();
                 last=generation;
             } else {
@@ -4633,8 +4674,9 @@ mod tests {
         assert_eq!(decision["learned"]["acceptedGains"],1);
         assert_eq!(decision["learned"]["policyLinkedGains"],1);
         assert_eq!(decision["causalProof"],false);
-        assert_eq!(state.store.get("rsi_method_policy",&id).unwrap()["revision"],
-            "first-revision");
+        let promoted=state.store.get("rsi_method_policy",&id).unwrap();
+        assert_eq!(promoted["revision"],"first-revision");
+        assert_eq!(promoted["evidence"][0]["jobId"],"later-generation");
         assert_eq!(settle_method_policy_trial(&state,&last),decision,
             "a recovered coordinator cannot promote the same cohort twice");
         drop(state);let _=std::fs::remove_dir_all(root);
