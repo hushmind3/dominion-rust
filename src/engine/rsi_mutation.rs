@@ -59,6 +59,37 @@ fn hoist_invariant_query_terms(source: &str) -> Option<String> {
     None
 }
 
+/// A second-generation optimization is discoverable only after the first
+/// source transform changed the scoring call. It learns that a query domain
+/// is invariant across all candidate facts, and that no stated domain lookup
+/// is required when the requested domain is absent.
+fn hoist_invariant_query_domain(source: &str) -> Option<String> {
+    let marker = "    let query_tokens = memory::terms(query);\n    let mut ranked = facts\n";
+    let scorer = "fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>) -> usize {";
+    let call = "query_relevance(query, text, &query_tokens)";
+    let old = "    if let (Some(asked), Some(stated)) = (fact_domain(query), fact_domain(text)) {\n        if asked == stated {\n            score += 32;\n        }\n    }";
+    if source.matches(marker).count()!=1 || source.matches(scorer).count()!=1
+        || source.matches(call).count()!=1 || source.matches(old).count()!=1 {
+        return None;
+    }
+    let mut output=source.replacen(
+        marker,
+        "    let query_tokens = memory::terms(query);\n    let asked_domain = fact_domain(query);\n    let mut ranked = facts\n",1
+    );
+    output=output.replacen(
+        scorer,
+        "fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>, asked_domain: Option<&str>) -> usize {",1
+    );
+    output=output.replacen(
+        old,
+        "    if let Some(asked) = asked_domain {\n        if fact_domain(text) == Some(asked) {\n            score += 32;\n        }\n    }",1
+    );
+    output=output.replacen(
+        call,"query_relevance(query, text, &query_tokens, asked_domain)",1
+    );
+    Some(output)
+}
+
 /// One inductive change, isolated in the disposable git worktree. If the
 /// model or inherited descendant already changed bytes, do not mix authors.
 pub(crate) fn induce(
@@ -75,9 +106,15 @@ pub(crate) fn induce(
     let original = fs::read_to_string(source.join(relative)).map_err(|e| e.to_string())?;
     let existing = fs::read_to_string(isolated.join(relative)).map_err(|e| e.to_string())?;
     if original != existing { return Ok(None); }
-    let Some(transformed) = hoist_invariant_query_terms(&existing) else { return Ok(None); };
+    let (operator,transformed)=if let Some(next)=hoist_invariant_query_terms(&existing) {
+        ("loop_invariant_term_hoist_v1",next)
+    }else if let Some(next)=hoist_invariant_query_domain(&existing) {
+        ("loop_invariant_domain_hoist_v2",next)
+    }else{
+        return Ok(None);
+    };
     let receipt = json!({
-        "id": job_id, "operator": "loop_invariant_term_hoist_v1",
+        "id": job_id, "operator": operator,
         "origin": "native_inductive_source_mutation",
         "path": relative, "beforeSha256": digest(&existing),
         "afterSha256": digest(&transformed),
@@ -94,6 +131,36 @@ pub(crate) fn induce(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn derives_new_query_domain_hoist_after_first_generation() {
+        let source=r#"fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>) -> usize {
+    if query.trim().is_empty() { return 0; }
+    let mut score = 0usize;
+    if let (Some(asked), Some(stated)) = (fact_domain(query), fact_domain(text)) {
+        if asked == stated {
+            score += 32;
+        }
+    }
+    let text_tokens = memory::terms(text);
+    score + query_tokens.intersection(&text_tokens).count().min(12)
+}
+fn context(facts: &[Value], query: &str) {
+    let query_tokens = memory::terms(query);
+    let mut ranked = facts
+        .iter()
+        .filter_map(|(index, fact)| {
+            let text = fact["text"].as_str()?;
+            Some((query_relevance(query, text, &query_tokens), index, fact))
+        });
+}
+"#;
+        let next=hoist_invariant_query_domain(source).unwrap();
+        assert_eq!(next.matches("fact_domain(query)").count(),1);
+        assert!(next.contains("if let Some(asked) = asked_domain"));
+        assert!(next.contains("query_relevance(query, text, &query_tokens, asked_domain)"));
+        assert!(hoist_invariant_query_domain(&next).is_none());
+    }
+
     #[test]
     fn hoists_repeated_query_tokenization_without_changing_scoring() {
         let source = r#"fn relevance(query: &str, text: &str) -> usize {
