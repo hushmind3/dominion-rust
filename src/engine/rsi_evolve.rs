@@ -2722,6 +2722,12 @@ async fn run_loop(
         let write_receipts = session
             .map(|s| session_write_receipts(&context.state, s))
             .unwrap_or_default();
+        let method_actions=session.map(|session_id|context.state.store.all("execution")
+            .into_iter().filter(|execution|execution["sessionId"]==session_id
+                && execution["rsiMethodDecision"].is_object())
+            .map(|execution|json!({"executionId":execution["id"],
+                "decision":execution["rsiMethodDecision"]}))
+            .collect::<Vec<_>>()).unwrap_or_default();
         let usage = session
             .map(|s| context.state.store.session_usage(s))
             .unwrap_or(Value::Null);
@@ -2758,6 +2764,7 @@ async fn run_loop(
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
             "writeReceipts":write_receipts,
             "executionMethod":current["input"]["rsiExecutionMethod"],
+            "methodActions":method_actions,
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
@@ -2998,6 +3005,7 @@ async fn run_loop(
             "preferredTool":generation["executionMethod"]["preferredTool"],
             "jobId":child_id,"campaignId":context.job_id,
             "generatorCommit":head,"observedWrites":generation["writeReceipts"],
+            "methodActions":generation["methodActions"],
             "candidateId":generation["candidateId"],
             "attemptedCandidateId":generation["attemptedCandidateId"],
             "accepted":generation["accepted"],
@@ -4511,6 +4519,39 @@ mod tests {
             "accepted":true,"pairedRevalidated":false,"candidateId":"paired-1",
             "improvementDirective":{"mode":"implement_research"}}),0);
         assert_eq!(unproven["status"],"reported_adoption_unverified");
+    }
+
+    #[test]
+    fn real_edit_failures_induce_an_executable_next_generation_method() {
+        let (state,root)=state();
+        let input=json!({"rsiObjective":"장기 기억 검색 개선",
+            "rsiKnowledgeSource":root,"rsiTargetDomain":"memory"});
+        let partition=research_scope(&input).partition_key;
+        let objective=crate::engine::memory::stable_id(&["장기 기억 검색 개선"]);
+        let failed=json!({"id":"g1","knowledgePartition":partition,
+            "objectiveId":objective,"domain":"memory",
+            "writeReceipts":[{"tool":"workspace_replace","written":false,
+                "status":"failed","error":"oldText mismatch"}]});
+        let learned=learn_execution_method(&state,&input,&[failed.clone()]);
+        assert_eq!(learned["preferredTool"],"workspace_replace_range");
+        assert_eq!(learned["reason"],"counterexample_exploration");
+        assert_eq!(learned["status"],"trial_unverified");
+        assert_eq!(learned["evidence"]["workspace_replace"]["verifiedAdoptions"],0);
+        assert_eq!(learned["program"][1]["tool"],"workspace_replace_range");
+        let succeeding=json!({"id":"g2","knowledgePartition":partition,
+            "objectiveId":objective,"domain":"memory","accepted":false,
+            "candidateCapture":{"checksPassed":true},
+            "writeReceipts":[{"tool":"workspace_replace_range","written":true,
+                "status":"completed"}]});
+        let next=learn_execution_method(&state,&input,&[failed,succeeding]);
+        assert_eq!(next["preferredTool"],"workspace_replace_range");
+        assert_eq!(next["evidence"]["workspace_replace_range"]["checkedCandidates"],1);
+        assert_eq!(next["evidence"]["workspace_replace_range"]["verifiedAdoptions"],0);
+        assert_ne!(learned["revision"],next["revision"]);
+        let other=json!({"rsiObjective":"브라우저 자동화 개선",
+            "rsiKnowledgeSource":root,"rsiTargetDomain":"tools"});
+        assert_eq!(learn_execution_method(&state,&other,&[])["status"],"unmeasured_default");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
