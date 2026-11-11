@@ -583,7 +583,8 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             session["rsiObjective"]=input["rsiObjective"].clone();
             session["rsiExplicitFocus"]=json!(rsi_focused_edit_goal(&input));
             session["rsiFocusContextReady"]=json!(
-                input["rsiFocusContextChars"].as_u64().unwrap_or(0)>0
+                restored.is_none()
+                && input["rsiFocusContextChars"].as_u64().unwrap_or(0)>0
                 && input["rsiParentContextFit"]["sourceExcerptDeferred"]!=true);
             crate::engine::rsi_evolve::configure_method_session(&context.state, &input, &mut session);
             session["rsiCodeIndexId"]=input["rsiIndexId"].clone();
