@@ -2486,6 +2486,21 @@ async fn run_harness_nodes(
                 break;
             }
         }
+        // Finish all dependent nodes of the chosen DAG, but do not execute
+        // a different inherited editing program on top of a source patch
+        // whose persisted tool effect is independently verified. The frozen
+        // source evaluator must see that program's own final source tree.
+        if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {
+            let executed=state.store.execution_operations(execution_id)?;
+            let verified=executed.iter().any(|op|
+                op["origin"]=="procedure"
+                    && op["procedureStrategyId"]==strategy["id"]
+                    && op["procedureRevision"]==strategy["revision"]
+                    && rsi_patch_ready_for_verification(session,
+                        op["tool"].as_str().unwrap_or(""),
+                        &op["arguments"],op));
+            if verified { break; }
+        }
     }
     Ok(synthetic)
 }
