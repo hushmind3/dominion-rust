@@ -788,6 +788,9 @@ async fn replace_text(
     result["replaced"] = json!(result["written"] == true);
     if result["written"] == true {
         result["replacedChars"] = json!(old_text.chars().count());
+        // Expected post-image digest; effect::seal re-reads independent bytes
+        // before claiming the replacement is a verified source change.
+        result["postSha256"] = json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
     }
     Ok(result)
 }
@@ -848,6 +851,7 @@ async fn replace_line_span(
     if result["written"]==true {
         result["replacedLines"]=json!(end-start+1);
         result["editMode"]=json!("versioned_line_span");
+        result["postSha256"]=json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
     }
     Ok(result)
 }
