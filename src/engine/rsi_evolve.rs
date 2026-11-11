@@ -1782,9 +1782,10 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
                 }
             }
             policy["programMutations"]=json!(inherited);
+            let rejected_ids=policy["rejectedProgramIds"].as_array()
+                .cloned().unwrap_or_default();
             if let Some(programs)=policy["executionPrograms"].as_array_mut() {
-                programs.retain(|program| !policy["rejectedProgramIds"]
-                    .as_array().is_some_and(|ids|ids.contains(&program["id"])));
+                programs.retain(|program| !rejected_ids.contains(&program["id"]));
             }
             // Keep the tested revision only when its executable recipe is
             // unchanged; a concurrent program veto creates a new revision.
