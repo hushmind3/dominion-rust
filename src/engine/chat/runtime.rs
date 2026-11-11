@@ -4753,13 +4753,20 @@ async fn dispatch_tool_call(
             }
         }
     } else {
+        let autonomous_scope_failure=session["rsiRun"]==true
+            && session["rsiCampaignId"].is_string()
+            && matches!(call.name.as_str(),
+                "workspace_write"|"workspace_replace"|"workspace_replace_range");
+        let error=if autonomous_scope_failure {
+            "RSI scoped edit denied: use a relative src/... or tests/... path inside the active detached worktree. Re-read the source and retry with its current SHA."
+        }else{"Denied by the user"};
         let _ = tx.send(json!({
             "type": "tool_error",
             "name": call.name,
             "id": call.id,
-            "error": "사용자가 실행을 거부했습니다.",
+            "error": error,
         }));
-        (json!({ "error": "Denied by the user" }), false)
+        (json!({ "error": error }), false)
     };
 
     {
