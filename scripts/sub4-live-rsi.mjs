@@ -185,6 +185,13 @@ if(mode==='probe'){
       generations:receipt.generations.map(g=>({attempt:g.attempt,writes:g.sourceWriteCalls,
         tools:g.toolsUsed,accepted:g.accepted,sourceIntegrity:g.sourceIntegrity,
         error:g.error}))},null,2));
+    // CI must fail when a real-model run ends without three independently
+    // accepted, rebuilt generations and the engine's meta-transfer proof.
+    // A green workflow must never stand in for completed self-improvement.
+    if(process.env.SUB4_EXPECT_COMPLETION==='1' && !receipt.completionProof.complete){
+      console.error('SUB4_RSI_COMPLETION_NOT_PROVEN');
+      process.exitCode=1;
+    }
   }catch(error){
     receipt.status='experiment_error';receipt.errors.push(String(error));persist();
     console.error(error);process.exitCode=1;
