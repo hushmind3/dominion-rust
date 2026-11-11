@@ -123,9 +123,9 @@ fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
 fn meta_edit_instruction(session:&Value)->&'static str {
     match session["rsiMetaPreferredTool"].as_str() {
         Some("workspace_replace") =>
-            "소스 조사 단계가 끝났습니다. 이 세대에서 선택된 편집 도구는 workspace_replace입니다. 관측한 원문의 정확한 oldText와 변경할 newText를 사용하고, sourceSha256을 알면 expectedSha256으로 전달하세요. 수정하지 않았다면 완료를 주장하지 마세요.",
+            "소스 조사 단계가 끝났습니다. 지금 workspace_replace를 실제 호출하세요. 정확한 path, 관측한 oldText, 변경할 newText를 전달하세요. 네이티브 도구 호출이 불가능한 모델이라면 {\"path\":\"...\",\"oldText\":\"...\",\"newText\":\"...\"} JSON 객체 하나만 출력해도 동일한 도구 실행기로 연결됩니다. 수정하지 않았다면 완료를 주장하지 마세요.",
         Some("workspace_replace_range") =>
-            "소스 조사 단계가 끝났습니다. 이 세대에서 선택된 편집 도구는 workspace_replace_range입니다. 앞서 읽은 동일 파일의 startLine/endLine/sourceSha256과 새 newText를 제출하세요. 수정하지 않았다면 완료를 주장하지 마세요.",
+            "소스 조사 단계가 끝났습니다. 지금 workspace_replace_range를 실제 호출하세요. 앞서 읽은 동일 파일의 path,startLine,endLine,sourceSha256을 expectedSha256으로 넣고 newText를 작성하세요. 네이티브 호출이 안 되면 같은 인자를 담은 단일 JSON 객체로 제출하세요. 수정하지 않았다면 완료를 주장하지 마세요.",
         _ =>
             "소스 조사 단계는 종료되었습니다. workspace_read_range에서 받은 startLine/endLine/sourceSha256으로 workspace_replace_range를 호출하고, 정확한 oldText가 있으면 workspace_replace도 가능합니다. 수정 후 실제 영수증을 확인하세요.",
     }
@@ -180,6 +180,37 @@ fn rsi_canonical_arguments(raw:&str)->Option<String>{
 /// ONLY a fully specified mutation for a tool advertised in this round.
 /// Never invent oldText/newText, infer an edit from prose, or bypass the
 /// workspace's own path and source-version checks.
+/// Some free-model gateways emit the exact requested source mutation as a
+/// standalone JSON object rather than a native function call. Route ONLY a
+/// complete, focused replacement through the existing workspace executor.
+/// The JSON still undergoes source/version validation, approval and independent
+/// worktree measurement; text alone earns no edit or adoption credit.
+fn rsi_unnamed_exact_edit(
+    raw:&str,round_tools:&[Value],focus:&Value,
+)->Option<(String,String)>{
+    let parsed=serde_json::from_str::<Value>(&rsi_canonical_arguments(raw)?).ok()?;
+    if parsed.get("tool").is_some() || parsed.get("name").is_some()
+        || parsed.get("function").is_some() {return None;}
+    let path=parsed["path"].as_str()?;
+    if !crate::engine::rsi::safe_path(path)
+        || !focus.as_array().is_some_and(|files|
+            files.len()==1 && files[0].as_str()==Some(path)) {return None;}
+    let target=if parsed["oldText"].as_str().is_some_and(|old|
+        !old.is_empty() && parsed["newText"].as_str()
+            .is_some_and(|new|!new.is_empty() && new!=old)) {
+        "workspace_replace"
+    }else if parsed["startLine"].as_u64().is_some_and(|line|line>0)
+        && parsed["endLine"].as_u64().is_some_and(|end|
+            end>=parsed["startLine"].as_u64().unwrap_or(u64::MAX))
+        && parsed["newText"].as_str().is_some_and(|v|!v.is_empty())
+        && parsed["expectedSha256"].as_str().is_some_and(|sha|
+            sha.len()==64 && sha.bytes().all(|c|c.is_ascii_hexdigit())) {
+        "workspace_replace_range"
+    }else{return None;};
+    if !rsi_tool_advertised(target,round_tools){return None;}
+    Some((target.to_string(),parsed.to_string()))
+}
+
 fn rsi_recover_exact_edit_wrapper(
     name:&str,raw:&str,round_tools:&[Value],
 )->Option<(String,String)>{
@@ -1763,6 +1794,21 @@ async fn run_turn_body(
                 return Err(
                     "모델이 지원되지 않는 도구 호출 형식을 출력했습니다.".into(),
                 );
+            }
+        }
+
+        if completion.tool_calls.is_empty()
+            && session["rsiRun"]==true && rsi_edit_only_announced && !force_final {
+            if let Some((name,arguments))=rsi_unnamed_exact_edit(
+                &completion.content,&round_tools,&session["rsiFocusFiles"]) {
+                state.store.audit("rsi.model_text_exact_edit",json!({
+                    "executionId":execution_id,"tool":name,
+                    "source":"model_supplied_unnamed_json_not_verified_write"
+                }));
+                completion.content.clear();
+                completion.tool_calls.push(ToolCall{
+                    id:uuid::Uuid::new_v4().to_string(),name,arguments
+                });
             }
         }
 
