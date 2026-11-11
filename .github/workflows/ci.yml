@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
 
+# Each source revision supersedes its predecessor; obsolete concurrent runs
+# consume Chrome/CPU resources and can cause unrelated E2E timeouts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
