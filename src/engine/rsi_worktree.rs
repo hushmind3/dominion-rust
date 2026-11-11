@@ -648,6 +648,59 @@ pub fn no_edit_feedback(
     ))
 }
 
+/// A restored failed source patch creates a nonempty git diff *before* the
+/// descendant model acts. Do not use total diff bytes as a proxy for an edit.
+/// Give the descendant one concrete correction attempt when its output is
+/// byte-identical to the rejected parent patch, grounded on compiler evidence
+/// and the actual restored source. This does not manufacture a new candidate.
+pub fn inherited_unchanged_feedback(
+    result:&Value,session:&Value,failed_patch:&Value,operations:&[Value]
+)->Option<String>{
+    if result["status"]!="needs_review"
+        || result["reason"]!="no_valid_candidate"
+        || result["rsi"]["inheritedPatchUnchanged"]!=true
+        || result["rsi"]["sourceClean"]!=true
+        || result["rsi"]["candidateId"].is_string()
+        || !result["rsi"]["modelError"].as_str().unwrap_or("").is_empty()
+        || session["rsiRun"]!=true
+        || session["rsiRecoveredPatch"]["status"]!="restored_unverified"
+        || session["rsiRecoveredPatch"]["candidateId"]!=failed_patch["candidateId"]{
+        return None
+    }
+    let paths=session["rsiRecoveredPatch"]["paths"].as_array()?;
+    let path=paths.iter().filter_map(Value::as_str)
+        .find(|path|crate::engine::rsi::safe_path(path)
+            && session["rsiFocusFiles"].as_array().is_some_and(|focus|
+                focus.iter().any(|file|file.as_str()==Some(*path))))?;
+    let diagnostic=failed_patch["checks"].as_array()
+        .into_iter().flatten()
+        .filter_map(|check|check["diagnostic"].as_str())
+        .find(|text|text.contains(path))
+        .or_else(||failed_patch["checks"].as_array()
+            .into_iter().flatten()
+            .filter_map(|check|check["diagnostic"].as_str())
+            .next()).unwrap_or("");
+    let error=operations.iter().rev().find(|op|
+        op["sessionId"]==session["id"]
+        && op["arguments"]["path"]==path
+        && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_write"))
+        && op["result"]["written"]!=true)
+        .and_then(|op|op["result"]["error"].as_str())
+        .unwrap_or("");
+    Some(format!(
+        "이번 후손은 부모의 실패 패치를 복원했지만 실제로 새 코드를 수정하지 않았습니다. \
+         부모의 Git diff를 새로운 성과로 제출할 수 없습니다. \
+         작업 대상: {path}. 최초 컴파일 진단: {}. \
+         이 세대에서 관측된 도구 실패: {}. \
+         현재 복원된 파일을 workspace_read_range로 읽어 최신 sourceSha256와 정확한 줄 범위를 얻으세요. \
+         그 후 workspace_replace(startLine,endLine,expectedSha256,newText)로 \
+         컴파일 오류를 해결하는 *새 수정*을 실행하세요. 기존 실패 패치를 그대로 재적용하지 마세요. \
+         한 번만 재시도하며 결과는 독립 검증합니다.",
+        diagnostic.chars().take(900).collect::<String>(),
+        error.chars().take(350).collect::<String>()
+    ))
+}
+
 /// Apply a model-generated patch only after explicit owner review. A successful
 /// compile is NOT proof of improved behavior. Never commit, push or deploy.
 pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Result<Value,String>{
