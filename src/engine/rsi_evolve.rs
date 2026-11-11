@@ -2203,8 +2203,17 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         if working.len()!=1 {continue;}
         let name=working.iter().next().unwrap();
         let arm=if name=="workspace_replace" {&mut exact}else{&mut range};
-        if row["candidateCapture"]["checksPassed"]==true
-            || row["evaluation"]["candidateStatus"]=="verified" {
+        // Candidate quality evidence must exist in the *worker's original*
+        // rsi_run receipt. A copied generation field alone cannot train the
+        // next policy, even when a model or stale record calls it successful.
+        let compiled_candidate=row["jobId"].as_str().and_then(|job_id|
+            state.store.get("rsi_run",&format!("rsi-run-{job_id}")))
+            .is_some_and(|receipt|
+                receipt["checksPassed"]==true
+                && receipt["candidateId"].is_string()
+                && (receipt["candidateId"]==row["attemptedCandidateId"]
+                    || receipt["candidateId"]==row["candidateId"]));
+        if compiled_candidate {
             arm.candidates+=1;
         }
         if generation_is_verified(row) {
@@ -4547,8 +4556,13 @@ mod tests {
         assert_eq!(learned["status"],"trial_unverified");
         assert_eq!(learned["evidence"]["workspace_replace"]["verifiedAdoptions"],0);
         assert_eq!(learned["program"][1]["tool"],"workspace_replace_range");
-        let succeeding=json!({"id":"g2","knowledgePartition":partition,
+        state.store.put("rsi_run",&json!({
+            "id":"rsi-run-g2-worker","jobId":"g2-worker",
+            "candidateId":"proposed-g2","checksPassed":true
+        })).unwrap();
+        let succeeding=json!({"id":"g2","jobId":"g2-worker","knowledgePartition":partition,
             "objectiveId":objective,"domain":"memory","accepted":false,
+            "attemptedCandidateId":"proposed-g2",
             "candidateCapture":{"checksPassed":true},
             "writeReceipts":[{"tool":"workspace_replace_range","written":true,
                 "status":"completed"}]});
@@ -4557,6 +4571,12 @@ mod tests {
         assert_eq!(next["evidence"]["workspace_replace_range"]["checkedCandidates"],1);
         assert_eq!(next["evidence"]["workspace_replace_range"]["verifiedAdoptions"],0);
         assert_ne!(learned["revision"],next["revision"]);
+        let mut forged=succeeding.clone();
+        forged["id"]=json!("forged");
+        forged["jobId"]=json!("unknown-worker");
+        let untrusted=learn_execution_method(&state,&input,&[forged]);
+        assert_eq!(untrusted["evidence"]["workspace_replace_range"]["checkedCandidates"],0,
+            "A generation claim without an original rsi_run receipt must not train the policy");
         let other=json!({"rsiObjective":"브라우저 자동화 개선",
             "rsiKnowledgeSource":root,"rsiTargetDomain":"tools"});
         assert_eq!(learn_execution_method(&state,&other,&[])["status"],"unmeasured_default");
