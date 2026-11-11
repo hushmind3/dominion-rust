@@ -4155,7 +4155,8 @@ fn corrective_retry_allowed(history:&[Value],streak:u64)->bool {
     last["accepted"]!=true && last["candidateId"].is_null()
         && last["newFindings"].as_u64().unwrap_or(0)==0
         && matches!(last["improvementDirective"]["mode"].as_str(),
-            Some("implement_research"|"repair_counterexample"|"revise_candidate"|"repair_edit_execution"|"repair_candidate_capture"))
+            Some("implement_research"|"repair_counterexample"|"revise_candidate"
+                |"repair_edit_execution"|"repair_candidate_capture"|"change_approach"))
 }
 
 // A generation's research continuation must be decided identically by the
@@ -7665,6 +7666,19 @@ mod tests {
             "unproven methods cannot claim cross-domain success");
         assert_eq!(applicable_methods(&state,&partition,"memory","search indexing").len(),1);
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_change_approach_gets_one_bounded_implementation_retry() {
+        let row=json!({"accepted":false,"candidateId":null,"newFindings":0,
+            "improvementDirective":{"mode":"change_approach"}});
+        assert!(corrective_retry_allowed(&[row.clone()],2));
+        assert!(!corrective_retry_allowed(&[row.clone()],3));
+        let repeated=vec![row.clone(),row.clone(),row];
+        assert!(!corrective_retry_allowed(&repeated,3));
+        let mut honest_failure=repeated[0].clone();
+        honest_failure["improvementDirective"]["mode"]=json!("discover");
+        assert!(!corrective_retry_allowed(&[honest_failure],2));
     }
 
     #[test]
