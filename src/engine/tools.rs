@@ -1596,6 +1596,20 @@ mod tests {
         assert_eq!(stale["staleVersion"],true,"{stale}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(),
             "let new_value = 3;\nlet untouched = 7;\n");
+        // In a real RSI generation the coordinator already indexed the exact
+        // file revision. A small model may omit SHA and serialize line numbers
+        // as strings; that is repairable only while the indexed bytes match.
+        let index=crate::engine::code_index::refresh(&state,&dir).unwrap();
+        state.store.put("session",&json!({
+            "id":"s","rsiRun":true,"rsiCodeIndexId":index["id"]
+        }));
+        let grounded=replace_line_span(&ctx,&path,
+            &json!({"startLine":"2","endLine":"2"}),
+            "let untouched = 9;","run").await.unwrap();
+        assert_eq!(grounded["written"],true,"{grounded}");
+        assert_eq!(grounded["sourceHashRecoveredFromIndex"],true);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),
+            "let new_value = 3;\nlet untouched = 9;\n");
         let _ = std::fs::remove_dir_all(dir);
     }
 
