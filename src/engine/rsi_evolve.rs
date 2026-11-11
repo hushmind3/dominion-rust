@@ -1627,6 +1627,60 @@ fn proposed_algorithms(state: &AppState, session: &str) -> Vec<Value> {
 /// Stores a proposed search algorithm as a trial candidate. The replay match
 /// rate is recorded for context only. It never activates the candidate and
 /// never replaces the globally active strategy.
+/// Build a trialable search policy from independently evaluated prior
+/// generations, without requiring a small model to call algorithm_propose.
+/// This is a hypothesis generator: only future measured trials may adopt it.
+fn adaptive_search_expression(history: &[Value]) -> Option<String> {
+    if history.len()<4 || history.iter().filter_map(|row|row["domain"].as_str())
+        .collect::<BTreeSet<_>>().len()<2 {return None;}
+    let verified_gains=history.iter().filter_map(|row|{
+        let proof=&row["acceptedProof"];
+        let metrics=&row["evaluation"]["metrics"];
+        if row["accepted"]!=true || proof["status"]!="verified"
+            || proof["evaluation"]!=row["evaluation"]
+            || row["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+            || metrics["eligible"]!=true || metrics["regressions"].as_u64()!=Some(0) {
+            return None;
+        }
+        metrics["improvedHoldouts"].as_u64().filter(|gain|*gain>0).map(|gain|gain.min(16))
+    }).collect::<Vec<_>>();
+    if verified_gains.is_empty(){return None;}
+    let attempts=history.len() as f64;
+    let failures=history.iter().filter(|row|row["accepted"]!=true
+        && row["newFindings"].as_u64().unwrap_or(0)==0).count() as f64;
+    let barren=failures/attempts;
+    let gains=verified_gains.iter().sum::<u64>() as f64;
+    let payoff=gains/(verified_gains.len() as f64+1.0);
+    let mean_tokens=history.iter().map(|row|row["tokens"].as_u64().unwrap_or(0))
+        .sum::<u64>() as f64/attempts;
+    let explore=(1.0+barren).min(2.0);
+    let outcome=(1.0+payoff).min(4.0);
+    let efficiency=(0.75+payoff*0.5).min(3.0);
+    let barren_weight=1.0+barren*2.0;
+    let cost=(0.25+mean_tokens/20000.0).min(2.0);
+    Some(format!(
+        "objectiveMatch * 2 + exploration * {explore:.3} + holdoutYield * {outcome:.3} + gainPer10kTokens * {efficiency:.3} - barrenRate * {barren_weight:.3} - tokenCost * {cost:.3}"
+    ))
+}
+
+/// Registers a bounded hypothesis and queues it for the existing real
+/// generation/evaluation pipeline. No synthetic replay can activate it.
+fn queue_adaptive_search_trial(
+    state:&AppState,history:&[Value],active:&Value,
+    objective:&str,campaign_id:&str,attempt:u64,
+)->Option<Value>{
+    let expression=adaptive_search_expression(history)?;
+    if active["parameters"]["expression"].as_str()==Some(expression.as_str()){return None;}
+    let candidate=crate::engine::algorithms::register(state,&json!({
+        "kind":"selfimprove.search","name":"rsi-measured-payoff-adaptive",
+        "implementation":"expression","source":"rsi-generated",
+        "parameters":{"expression":expression},
+        "description":"실제 채택 증거·독립 holdout 이익·실패율·토큰 비용으로 다음 탐색식을 재계산한 후보. 추후 실제 비교 실험 전에는 능력 향상으로 판정하지 않습니다."
+    })).ok()?;
+    let report=queue_search_trial(state,&candidate,active,history,objective,campaign_id,attempt);
+    if report["status"]=="pending_trial" {Some(report)} else {None}
+}
+
 fn queue_search_trial(
     state: &AppState,
     candidate: &Value,
@@ -2873,6 +2927,10 @@ async fn run_loop(
             let proposals = proposed_algorithms(&context.state, session);
             let active = crate::engine::algorithms::active(&context.state, "selfimprove.search")
                 .unwrap_or_else(|| json!({"id":Value::Null,"revision":Value::Null,"implementation":"failure-clusters","parameters":{}}));
+            // The queued identity must match the objective used by the
+            // descendant selector. Autonomous boilerplate is not a constraint.
+            let trial_objective=selection_objective(input);
+            let had_pending_trial=record["nextTrialAlgorithmId"].is_string();
             let mut queued = Vec::new();
             for candidate in proposals
                 .iter()
@@ -2883,13 +2941,37 @@ async fn run_loop(
                     candidate,
                     &active,
                     &prior_history,
-                    input["rsiObjective"].as_str().unwrap_or(""),
+                    &trial_objective,
                     &context.job_id,
                     attempt,
                 );
                 if report["status"] == "pending_trial" {
                     if let Some(id) = report["candidateId"].as_str() {
                         queued.push(id.to_string());
+                    }
+                }
+            }
+            // A model that never proposes an algorithm must not prevent the
+            // harness itself from learning. Combine same-source prior research
+            // and this generation, but credit only matched frozen evaluations.
+            if queued.is_empty() && !had_pending_trial
+                && input["rsiAutonomous"]==true
+                && generation["domainSelection"]!="algorithm_trial" {
+                let mut measured_history=matching_prior_campaign(&context.state,input,record)
+                    .and_then(|prior|prior["history"].as_array().cloned()).unwrap_or_default();
+                measured_history.extend(prior_history.iter().cloned());
+                measured_history.push(generation.clone());
+                if let Some(report)=queue_adaptive_search_trial(
+                    &context.state,&measured_history,&active,
+                    &trial_objective,&context.job_id,attempt
+                ){
+                    if let Some(id)=report["candidateId"].as_str(){
+                        queued.push(id.to_string());
+                        generation["autoEvolvedSearch"]=json!({
+                            "candidateId":id,"hypothesis":report["candidateRevision"],
+                            "source":"matched_independently_measured_generation_outcomes",
+                            "status":"pending_future_trial_not_performance_proof"
+                        });
                     }
                 }
             }
@@ -4963,6 +5045,49 @@ mod tests {
             "revision": format!("revision-{name}"),
             "parameters": {"expression": expression}
         })
+    }
+
+    #[test]
+    fn autonomous_search_evolves_from_verified_holdout_payoffs_and_queues_trial() {
+        let proof=json!({"source":"server_invoked_local_paired_git_worktrees",
+            "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":2}});
+        let accepted=json!({"domain":"memory","accepted":true,"tokens":6000,
+            "evaluation":proof,"acceptedProof":{"status":"verified","evaluation":proof}});
+        let rows=vec![
+            json!({"domain":"memory","accepted":false,"newFindings":0,"tokens":5000}),
+            json!({"domain":"tools","accepted":false,"newFindings":0,"tokens":8000}),
+            accepted,
+            json!({"domain":"tools","accepted":false,"newFindings":1,"tokens":11000}),
+        ];
+        assert!(adaptive_search_expression(&rows[..3]).is_none());
+        let expr=adaptive_search_expression(&rows).expect("paired gain should produce a hypothesis");
+        let algo=json!({"implementation":"expression","parameters":{"expression":expr}});
+        assert!(valid_domain_scores(&algo,&rows,"").is_some(),
+            "evolved expression must execute in the actual search kernel");
+        let mut higher_cost=rows.clone();
+        higher_cost.push(json!({"domain":"memory","accepted":false,
+            "newFindings":0,"tokens":80000}));
+        assert_ne!(expr,adaptive_search_expression(&higher_cost).unwrap(),
+            "later measured costs should change the search algorithm");
+        let mut unproven=rows.clone();
+        unproven[2]["acceptedProof"]=Value::Null;
+        assert!(adaptive_search_expression(&unproven).is_none(),
+            "bare accepted flags cannot evolve the search policy");
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let input=json!({"rsiAutonomous":true,
+            "rsiObjective":"General improvement of memory and knowledge"});
+        let objective=selection_objective(&input);
+        assert_eq!(objective,"");
+        let queued=queue_adaptive_search_trial(&state,&rows,&active,
+            &objective,"measured-campaign",4).expect("must queue actual trial");
+        let id=queued["candidateId"].as_str().unwrap();
+        assert_eq!(pending_trial_candidate(&state,&objective,
+            &["measured-campaign".to_string()]).unwrap()["id"],id);
+        assert!(pending_trial_candidate(&state,input["rsiObjective"].as_str().unwrap(),
+            &["measured-campaign".to_string()]).is_none(),
+            "the generic prompt must not become a mismatched trial identity");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
