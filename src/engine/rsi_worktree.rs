@@ -916,6 +916,26 @@ mod tests {
         assert!(repair_feedback(&no_retry).is_none());
     }
     #[test]
+    fn compiler_repair_rehydrates_current_source_from_ansi_rustc_location() {
+        let root=std::env::temp_dir().join(format!("sub1-compiler-repair-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        let source="fn left() {\n    let x = 2;\n    println!(\"{}\", x);\n}\n";
+        std::fs::write(root.join("src/engine/example.rs"),source).unwrap();
+        let failure=json!({"rsi":{"checks":[{"passed":false,
+            "stderr":"error: expected expression\n\u{1b}[1m  --> \u{1b}[0msrc/engine/example.rs:3:5\n"}]}});
+        let repair=compiler_repair_context(&root,&failure).unwrap();
+        let digest=format!("{:x}",Sha256::digest(source.as_bytes()));
+        assert!(repair.contains("src/engine/example.rs"));
+        assert!(repair.contains("3 |     println!"));
+        assert!(repair.contains(&digest));
+        assert!(repair.contains("workspace_replace_range"));
+        let spoof=json!({"rsi":{"checks":[{"passed":false,
+            "stderr":"  --> ../secret.rs:2:1\n"}]}});
+        assert!(compiler_repair_context(&root,&spoof).is_none());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn requires_complete_sha(){
         assert!(valid_sha("1234567890abcdef1234567890abcdef12345678"));
         assert!(!valid_sha("bad"));
