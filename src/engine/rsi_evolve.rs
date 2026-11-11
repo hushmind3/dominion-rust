@@ -2768,6 +2768,82 @@ fn compress_successful_action_program(mut program:Value, rows:&[Value])->Value {
     program
 }
 
+/// Second-order transfer: an independently adopted descendant can teach
+/// DOMINION which *program mutation operator* works across tasks. The learner
+/// below changes the next generation's executable sequence; it never copies
+/// a prior patch or treats source writes as measured quality. The transferred
+/// method remains a trial until its own matched evaluation succeeds.
+fn transfer_verified_mutation_operator(mut program:Value,rows:&[Value])->Value {
+    let mut operators=BTreeMap::<String,(BTreeSet<String>,BTreeSet<String>)>::new();
+    for row in rows {
+        if !generation_is_verified(row) || observed_induced_program(row).is_none() {
+            continue;
+        }
+        let Some(job)=row["jobId"].as_str().filter(|job|!job.is_empty()) else {continue;};
+        let Some(domain)=row["domain"].as_str().filter(|domain|!domain.is_empty()) else {continue;};
+        let operator=row["executionMethod"]["actionProgram"]["mutationOperator"].as_str()
+            .unwrap_or("");
+        let family=match operator {
+            "success_derived_discovery_ablation"=>"omit_redundant_discovery",
+            "repair_failed_compilation_method"|"repair_zero_gain_candidate_method"
+                =>"reobserve_and_change_editor",
+            _=>continue,
+        };
+        let evidence=operators.entry(family.into()).or_default();
+        evidence.0.insert(job.to_string());
+        evidence.1.insert(domain.to_string());
+    }
+    let sequence=program["sequence"].as_array().cloned().unwrap_or_default();
+    let prior=program["revision"].as_str().unwrap_or("").to_string();
+    if sequence.is_empty() || prior.is_empty(){return program;}
+    let mut candidates=operators.into_iter().filter(|(_, (jobs,domains))|
+        jobs.len()>=2 && domains.len()>=2).collect::<Vec<_>>();
+    candidates.sort_by(|a,b|b.1.0.len().cmp(&a.1.0.len()).then(a.0.cmp(&b.0)));
+    for (operator,(jobs,domains)) in candidates {
+        let mut proposed=sequence.clone();
+        let edit=|steps:&[Value]|steps.iter().position(|step|
+            matches!(step.as_str(),Some("workspace_replace"|"workspace_replace_range")));
+        let Some(mut edit_at)=edit(&proposed) else{continue;};
+        match operator.as_str() {
+            "omit_redundant_discovery" => {
+                let Some(read_at)=proposed.iter().position(|step|step=="workspace_read_range") else{continue;};
+                let Some(search_at)=proposed.iter().position(|step|step=="code_search") else{continue;};
+                if search_at>=read_at || read_at>=edit_at {continue;}
+                proposed.remove(search_at);
+            }
+            "reobserve_and_change_editor" => {
+                if !proposed[..edit_at].iter().any(|step|step=="workspace_read_range") {
+                    if proposed.len()>=8 {continue;}
+                    proposed.insert(edit_at,json!("workspace_read_range"));
+                    edit_at+=1;
+                }
+                proposed[edit_at]=json!(if proposed[edit_at]=="workspace_replace" {
+                    "workspace_replace_range"
+                }else{"workspace_replace"});
+            }
+            _=>continue
+        }
+        if proposed==sequence {continue;}
+        let revision=crate::engine::memory::stable_id(&[
+            &json!([&proposed,&program["onFailure"],&program["recoveryPaths"]]).to_string()
+        ]);
+        if revision==prior {continue;}
+        program["sequence"]=json!(proposed);
+        program["revision"]=json!(revision);
+        program["mutatedFrom"]=json!(prior);
+        program["mutationOperator"]=json!("transfer_verified_meta_operator");
+        program["metaTransfer"]=json!({
+            "operator":operator,"evidenceJobs":jobs.into_iter().take(8).collect::<Vec<_>>(),
+            "evidenceDomains":domains.into_iter().collect::<Vec<_>>(),
+            "source":"executed_descendant_and_independent_paired_adoption",
+            "claim":"unverified_new_task_trial"
+        });
+        program["status"]=json!("trial_cross_domain_meta_operator");
+        break;
+    }
+    program
+}
+
 /// Induce a new *execution method*, not a new model weight or a replayed
 /// patch. Concrete edit receipts are training examples; independent paired
 /// evidence, when present, outweighs mere file writes. The result controls
@@ -2896,6 +2972,10 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     let executable=complete_read_only_action_program(base_action_program,preferred);
     let proposal=evolve_stalled_action_program(executable,&rows,preferred);
     let proposed=compress_successful_action_program(proposal,&rows);
+    // Transfer a proven mutation *operator*, not a model-written source patch.
+    // The next generation executes this new plan under the same independent
+    // evaluation and must earn its own adopted improvement.
+    let proposed=transfer_verified_mutation_operator(proposed,&rows);
     let (action_program,program_comparison)=select_evaluated_action_program(&rows,proposed);
     // General autonomous research (without an explicit source focus) uses
     // this learned call limit to exit unproductive discovery. A single
