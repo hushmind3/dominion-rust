@@ -1,6 +1,7 @@
 name: Sub1 three-generation actual quality improvement campaign
 
 # Execute up to three real descendant generations and measure compiled, frozen holdout improvement and actual parent adoption.
+# This run measures independently replayed plateau-source inheritance, not an authored fixture.
 # This explicit integrated proof exercises SHA-verified native function edits,
 # same-session syntax and sibling-scope recovery, and three-arm learned editing.
 # Report only real independently accepted descendant generations.
