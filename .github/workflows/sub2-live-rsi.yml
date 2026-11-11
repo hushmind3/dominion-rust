@@ -69,6 +69,9 @@ jobs:
 
       - name: Validate live probe script and build the real native engine
         run: |
+          # Every measurement must derive from this immutable GitHub Actions
+          # revision, not a moving branch or a stale generated worktree.
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
           node --check scripts/sub2-live-rsi.mjs
           cargo build --release --locked --bin dominion-rust
 
