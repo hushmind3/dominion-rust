@@ -48,7 +48,7 @@ function summarize(g) {
     Number(metrics.regressions||0)===0;
   return {attempt:g.attempt,jobId:g.jobId,
     tokenUsage:g.tokenUsage,actualModelCalls:Number(g.tokenUsage?.calls||0),
-    toolsUsed:ops,sourceWriteCalls:count('workspace_replace')+count('workspace_replace_range')+count('workspace_write'),
+    toolsUsed:ops,sourceWriteCalls:ops.filter(o=>['workspace_replace','workspace_replace_range','workspace_write'].includes(o.tool)).reduce((n,o)=>n+Number(o.actualWrites||0),0),
     modelMethodCalls:count('rsi_method_propose'),
     focusFiles:g.focusFiles,domain:g.domain,domainSelection:g.domainSelection,
     candidateId:g.candidateId||null,accepted:g.accepted===true,
