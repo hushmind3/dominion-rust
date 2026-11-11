@@ -231,14 +231,14 @@ pub async fn restore_failed_candidate(
     let parent=input["rsiRepairParentJobId"].as_str()
         .ok_or("실패 패치의 원래 실행 작업이 없습니다.")?;
     if candidate["id"]!=id || candidate["rsiJobId"]!=parent
-        || candidate["baseCommit"]!=worktree.base
+        || candidate["baseCommit"].as_str()!=Some(worktree.base.as_str())
         || candidate["status"]!="proposed" {
         return Err("후손 복구 대상의 작업·기준 커밋·후보 상태가 다릅니다.".into());
     }
     let run=context.state.store.get("rsi_run",&format!("rsi-run-{parent}"))
         .ok_or("컴파일 실패를 관찰한 원본 실행 기록이 없습니다.")?;
     if run["candidateId"]!=id || run["checksPassed"]!=false
-        || run["baseCommit"]!=worktree.base
+        || run["baseCommit"].as_str()!=Some(worktree.base.as_str())
         || run["checks"].as_array().is_none_or(|checks|!checks.iter().any(|check|
             check["passed"]==false && check["ran"]==true)) {
         return Err("실제 컴파일 실패가 아닌 패치는 다음 세대 복구 대상으로 사용하지 않습니다.".into());
@@ -357,8 +357,15 @@ pub async fn finish(
     let mut capture_error=String::new();
     let mut checks=Vec::<Value>::new();
     let mut unsafe_audit=Value::Null;
+    let unchanged_inherited=input["rsiRepairCandidateId"].as_str()
+        .and_then(|id|context.state.store.get("rsi_candidate",id))
+        .is_some_and(|inherited|inherited["patchSha256"].as_str()==Some(patch_sha.as_str()));
     if patch.trim().is_empty(){
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
+    } else if unchanged_inherited {
+        // A restored but unmodified broken patch is NOT a new model
+        // implementation, regardless of how many tool calls were made.
+        capture_error="복원한 컴파일 실패 패치를 이번 세대에서 실제로 수정하지 않았습니다.".into();
     } else if patch_size>=MAX_CAPTURE_BYTES {
         capture_error="코드 변경량이 79KB를 초과해 증거를 안전하게 수집하지 않았습니다.".into();
     } else {
