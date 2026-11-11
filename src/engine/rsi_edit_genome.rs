@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn verified_success_spawns_a_shorter_executable_child_instead_of_only_reusing_it() {
         let base=evolve(&[],reward);
-        let successful_tool=json!({"tool":"workspace_replace_range","status":"completed",
+        let successful_tool=json!({"runId":"test-run","tool":"workspace_replace_range","status":"completed",
             "result":{"written":true},"toolReceipt":{"verified":true}});
         let mut outcomes=Vec::new();
         for id in ["adopted-1","adopted-2"] {
@@ -391,8 +391,8 @@ mod tests {
             row["evidenceVerified"]=json!(true);
             row["evaluation"]=json!({"metrics":{"eligible":true}});
             row["toolTimeline"]=json!([
-                {"tool":"workspace_read_range","status":"completed"},
-                {"tool":"code_search","status":"completed"},
+                {"runId":"test-run","tool":"workspace_read_range","status":"completed"},
+                {"runId":"test-run","tool":"code_search","status":"completed"},
                 successful_tool
             ]);
             outcomes.push(row);
