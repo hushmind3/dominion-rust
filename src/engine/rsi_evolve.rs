@@ -1480,7 +1480,7 @@ fn repair_exploration_order(method:&Value)->u8 {
         Some("existing_file_to_versioned_edit")=>1,
         Some("indexed_source_rebase")=>2,
         Some("indexed_path_retarget")=>3,
-        Some("successful_read_ablation"|"transferred_read_ablation")=>4,
+        Some("successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning")=>4,
         Some("failed_model_tool_rebase")=>5,
         _=>6,
     }
@@ -1493,7 +1493,7 @@ fn repair_exploration_order(method:&Value)->u8 {
 /// automatically transferred to its child.
 fn pending_success_ablation(method:&Value, methods:&[Value])->bool {
     if !matches!(method["synthesis"]["kind"].as_str(),
-        Some("successful_read_ablation"|"transferred_read_ablation"))
+        Some("successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning"))
         || method["applications"].as_array().is_some_and(|a|!a.is_empty())
         || method["successfulApplications"].as_u64().unwrap_or(0)>0 {
         return false
@@ -1645,7 +1645,7 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
 /// its own future application passes the ordinary procedure evaluator.
 fn is_synthesized_source_repair(method:&Value)->bool {
     matches!(method["synthesis"]["kind"].as_str(),
-        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"|"successful_read_ablation"|"transferred_read_ablation"|"failed_model_tool_rebase"))
+        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"|"successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning"|"failed_model_tool_rebase"))
 }
 
 /// Synthesize a new executable procedure, not just an action ranking.
@@ -2124,6 +2124,106 @@ fn synthesize_successful_dag_ablation(
     None
 }
 
+/// Derive a second, genuinely different meta-operator from an accepted source
+/// improvement: remove an observed but dataflow-dead exploration node, then
+/// rewire its predecessor/successor dependencies. Unlike source-SHA ablation,
+/// this works with code search, web fetch and broad research observations.
+/// It does NOT infer that searching is universally useless: the smaller DAG
+/// remains a candidate and must be executed and compared independently.
+fn synthesize_observed_dag_pruning(
+    state:&AppState, method:&Value, receipt:&Value, operations:&[Value], generation:&Value
+)->Option<Value> {
+    if method["assistanceMode"]!="harness_assisted"
+        || method["verification"]["type"]!="procedure"
+        || receipt["result"]["verified"]!=true || receipt["result"]["followed"]!=true
+        || receipt["result"]["unknown"]==true
+        || !method_wrote_accepted_candidate(state,generation,receipt,operations) {
+        return None
+    }
+    let nodes=method["verification"]["nodes"].as_array()?;
+    if nodes.len()<2 || !nodes.iter().any(|n|
+        matches!(n["tool"].as_str(),Some("workspace_replace"|"workspace_write"))) {
+        return None
+    }
+    let edges=method["verification"]["edges"].as_array()?;
+    let operation_ids=receipt["operationIds"].as_array()?;
+    for node in nodes {
+        if !matches!(node["tool"].as_str(),
+            Some("code_search"|"web_search"|"http_fetch"|"workspace_read_range")) {
+            continue
+        }
+        let Some(id)=node["id"].as_str() else {continue};
+        let binding=format!("{}{}.",char::from(36),id);
+        if nodes.iter().filter(|n|n["id"]!=id)
+            .any(|n|n["arguments"].to_string().contains(&binding)) {continue}
+        if method["verification"]["bindings"].to_string().contains(&binding)
+            || method["verification"]["before"].to_string().contains(&binding)
+            || method["verification"]["after"].to_string().contains(&binding) {continue}
+        if method["verification"]["after"].as_array().into_iter().flatten().any(|c|
+            c["kind"]=="tool_called" && c["tool"]==node["tool"]) {continue}
+        // A pruned node must have actually run successfully within the
+        // source-changing method's own execution; a plan-only step is not
+        // evidence that an operator can be removed.
+        let observed=operations.iter().any(|op|
+            operation_ids.contains(&op["id"])
+            && op["origin"]=="procedure"
+            && op["procedureStrategyId"]==method["id"]
+            && op["procedureRevision"]==method["revision"]
+            && op["procedureNodeId"]==id
+            && op["tool"]==node["tool"]
+            && crate::engine::procedure::operation_succeeded(op));
+        if !observed {continue}
+        let predecessors=edges.iter()
+            .filter(|edge|edge["to"]==id)
+            .filter_map(|edge|edge["from"].as_str())
+            .collect::<Vec<_>>();
+        let successors=edges.iter()
+            .filter(|edge|edge["from"]==id)
+            .filter_map(|edge|edge["to"].as_str())
+            .collect::<Vec<_>>();
+        if predecessors.len()*successors.len()>16 {continue}
+        let mut program=method["verification"].clone();
+        program["nodes"].as_array_mut()?.retain(|n|n["id"]!=id);
+        let rewritten=program["edges"].as_array_mut()?;
+        rewritten.retain(|edge|edge["from"]!=id && edge["to"]!=id);
+        for from in &predecessors {
+            for to in &successors {
+                if from==to {continue}
+                if !rewritten.iter().any(|edge|
+                    edge["from"]==*from && edge["to"]==*to) {
+                    rewritten.push(json!({"from":from,"to":to}));
+                }
+            }
+        }
+        let normalized=crate::engine::procedure::normalize(&program);
+        if normalized["type"]!="procedure" {continue}
+        let domain=method["domain"].as_str()?;
+        let revision=format!("{:x}",Sha256::digest(
+            json!([domain,&normalized]).to_string().as_bytes()));
+        if revision==method["revision"] {continue}
+        return Some(json!({
+            "id":format!("rsi-method-{revision}"),"revision":revision,
+            "name":format!("{} · pruned-observation",
+                method["name"].as_str().unwrap_or("Learned method")
+                    .chars().take(60).collect::<String>()),
+            "domain":domain,"verification":normalized,"status":"candidate",
+            "assistanceMode":"harness_assisted","successfulApplications":0,
+            "synthesis":{
+                "kind":"successful_observation_pruning",
+                "parentMethodId":method["id"],"parentRevision":method["revision"],
+                "sourceExecutionId":receipt["executionId"],
+                "sourceGenerationJobId":generation["jobId"],
+                "prunedNodeId":id,"prunedTool":node["tool"],
+                "rewiredIncoming":predecessors.len(),"rewiredOutgoing":successors.len(),
+                "hypothesis":"observed_research_node_has_no_runtime_consumers",
+                "qualityGain":Value::Null,
+                "causalProof":"pending_independent_descendant_trial"
+            }
+        }))
+    }
+    None
+}
+
 /// Bootstrap the self-improvement method pool from an *actual failed model
 /// edit*, without requiring the model to have first written a procedure
 /// definition. A zero-diff generation can therefore teach the next
@@ -2243,8 +2343,12 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
         let credited=ok && method_wrote_accepted_candidate(
             state,generation,receipt,&operations);
         if ok {
-            if let Some(mut variant)=synthesize_successful_dag_ablation(
-                state,method,receipt,&operations,generation) {
+            for mut variant in [
+                synthesize_successful_dag_ablation(
+                    state,method,receipt,&operations,generation),
+                synthesize_observed_dag_pruning(
+                    state,method,receipt,&operations,generation)
+            ].into_iter().flatten() {
                 variant["sourceGenerationJobId"]=generation["jobId"].clone();
                 if !repairs.iter().any(|r|r["id"]==variant["id"]) {
                     repairs.push(variant);
