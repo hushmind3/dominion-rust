@@ -1574,12 +1574,44 @@ fn adaptive_search_expression(history:&[Value])->Option<String>{
 /// Without a model-authored candidate, build one from accumulated measured
 /// outcomes and put it through the exact same bounded, non-promoting trial
 /// path. Never learn from mutable summary fields alone.
+/// A barren campaign still needs a *different executable search decision*
+/// before it can learn how to improve. Only actual generation attempts with
+/// distinct job IDs count; unverified accepted candidates cannot masquerade
+/// as quality gains. This is exploratory recovery, never improvement proof.
+fn recovery_search_expression(history:&[Value])->Option<String>{
+    let mut jobs=BTreeSet::new();
+    let mut failed=Vec::new();
+    for row in history {
+        let Some(id)=row["jobId"].as_str().filter(|id|!id.is_empty()) else {continue};
+        if row["accepted"]!=false
+            || !row["candidateId"].is_null()
+            || row["newFindings"].as_u64()!=Some(0)
+            || !row["tokens"].as_u64().is_some_and(|tokens|tokens>0)
+            || !row["domain"].as_str().is_some_and(|d|DOMAINS.contains(&d))
+            || !jobs.insert(id)
+        {continue;}
+        failed.push(row);
+    }
+    if failed.len()<3 {return None;}
+    let attempts=failed.len() as f64;
+    let cost=failed.iter().map(|r|r["tokens"].as_u64().unwrap_or(0))
+        .sum::<u64>() as f64 / (attempts*20000.0);
+    let explore=(1.0+attempts/3.0).min(3.0);
+    let novelty=(0.8+attempts/6.0).min(2.0);
+    let barren=(1.0+attempts/2.0).min(4.0);
+    Some(format!("objectiveMatch * 1.5 + exploration * {explore:.3} + novelty * {novelty:.3} - barrenRate * {barren:.3} - tokenCost * {:.3}",(0.3+cost).min(1.8)))
+}
+
 fn queue_adaptive_search_trial(
     state:&AppState,history:&[Value],active:&Value,
     objective:&str,campaign_id:&str,attempt:u64,
 )->Option<Value>{
     let enriched=history_with_verified_payoffs(state,history);
-    let formula=adaptive_search_expression(&enriched)?;
+    let (formula,source)=if let Some(formula)=adaptive_search_expression(&enriched) {
+        (formula,"verified_holdout_payoffs")
+    } else {
+        (recovery_search_expression(&enriched)?,"observed_unproductive_generations")
+    };
     if active["parameters"]["expression"].as_str()==Some(formula.as_str()){
         return None;
     }
@@ -1589,10 +1621,13 @@ fn queue_adaptive_search_trial(
         "implementation":"expression",
         "parameters":{"expression":formula},
         "source":"rsi-generated",
-        "description":"기존 세대의 원본 paired holdout 보상, 실패율과 실제 비용에서 계수를 재계산한 탐색 가설. 성공 판정에는 독립적인 후속 세대 시험이 필요합니다."
+        "description":"검증된 paired holdout 보상 또는 실제 실패 세대의 비용·탐색 경험으로 생성한 실행 가능한 탐색 가설. 독립적인 세대 실험 이전에는 개선 성과로 간주하지 않습니다."
     })).ok()?;
-    let report=queue_search_trial(state,&candidate,active,history,objective,campaign_id,attempt);
-    if report["status"]=="pending_trial"{Some(report)}else{None}
+    let mut report=queue_search_trial(state,&candidate,active,history,objective,campaign_id,attempt);
+    if report["status"]=="pending_trial"{
+        report["hypothesisSource"]=json!(source);
+        Some(report)
+    }else{None}
 }
 
 /// Persist an evidence-based promotion. The replay corpus is the campaign's
@@ -2242,8 +2277,18 @@ fn fit_worker_prompt(
     Err("rsi_token_budget: 목표와 핵심 지시문을 유지할 입력 예산이 부족합니다.".into())
 }
 
-fn should_stop_no_progress(streak: u64, research: bool, changed: bool) -> bool {
-    streak>=1 && (!research || !changed)
+fn should_stop_no_progress(
+    streak: u64, research: bool, changed: bool,
+    pending_trial: bool, autonomous: bool,
+) -> bool {
+    // Explicit/manual campaigns keep their previous early-stop semantics.
+    if !autonomous {return streak>=1 && (!research || !changed);}
+    // A bounded autonomous campaign gets time to turn real, barren feedback
+    // into a different strategy and run the pending trial. Never loop forever.
+    if streak>=6 {return true;}
+    if pending_trial {return false;}
+    if research && changed {return false;}
+    streak>=3
 }
 
 fn new_research_findings(state:&AppState,input:&Value,job_id:&str,hashes:&[Value],history:&[Value])->usize{
@@ -2776,7 +2821,7 @@ async fn run_loop(
                         generation["autoEvolvedSearch"]=json!({
                             "candidateId":id,
                             "hypothesis":report["candidateRevision"],
-                            "source":"measured_generation_outcomes",
+                            "source":report["hypothesisSource"],
                             "status":"pending_future_real_trial_not_improvement_proof"
                         });
                     }
@@ -2888,7 +2933,9 @@ async fn run_loop(
         if let Some(error)=generation_model_error(&current) {
             return Err(error.to_string());
         }
-        if no_edit && should_stop_no_progress(streak, research, changed) {
+        if no_edit && should_stop_no_progress(streak, research, changed,
+            record["nextTrialAlgorithmId"].is_string(),
+            input["rsiAutonomous"]==true) {
             return Ok("no_progress".into());
         }
     }
@@ -3056,7 +3103,16 @@ fn select_generation_strategy(
     let history_enriched=history_with_verified_payoffs(state,history);
     let history=&history_enriched;
     let active = crate::engine::algorithms::active(state, "selfimprove.search");
-    if let Some(domain) = continuation {
+    // Research is inherited in the prompt even when a policy trial takes
+    // priority. Otherwise an endlessly productive reading loop starves the
+    // executable candidate forever.
+    let pending_trial=trial_id.as_deref()
+        .and_then(|id|state.store.get("algorithm",id))
+        .is_some_and(|algorithm|matches!(
+            algorithm["rsiTrial"]["status"].as_str(),
+            Some("pending_trial"|"pending_second_trial")
+        ));
+    if let Some(domain) = continuation.filter(|_|!pending_trial) {
         return (domain, "research_continuation", Value::Null);
     }
     if let Some(id) = trial_id {
@@ -3078,9 +3134,28 @@ fn select_generation_strategy(
             if comparable_trial_baseline(history, &generation, &algorithm).is_some() {
                 return (domain, "algorithm_trial", search_strategy(&algorithm, "trial"));
             }
-            // Bootstrap a comparable control in the very same domain the
-            // new algorithm intends to explore, without creating extra work.
-            // Comparing different domains cannot prove improved targeting.
+            // A barren control cannot supply paired quality evidence, even
+            // after repeated attempts. After two real no-patch controls in the
+            // candidate's chosen domain, run the candidate ONCE to explore a
+            // different path. Its trial remains inconclusive for promotion
+            // unless a separately measured active control exists.
+            let barren_controls=history.iter().filter(|row|{
+                row["generatorCommit"]==generator_commit
+                    && row["domain"]==domain
+                    && row["domainSelection"]=="algorithm_active"
+                    && row["candidateId"].is_null()
+                    && row["accepted"]==false
+                    && row["jobId"].as_str().is_some_and(|id|!id.is_empty())
+            }).count();
+            if barren_controls>=2
+                && algorithm["rsiTrial"]["trials"].as_array().is_none_or(Vec::is_empty) {
+                let mut strategy=search_strategy(&algorithm,"trial");
+                strategy["trialFallback"]=json!("exploratory_after_barren_controls");
+                strategy["evidenceLevel"]=json!("unpaired_exploration_never_promotion");
+                return (domain,"algorithm_trial",strategy);
+            }
+            // Bootstrap a comparable control in the same domain. Different
+            // domains cannot prove improved targeting.
             let active = active
                 .unwrap_or_else(|| json!({"implementation":"failure-clusters","parameters":{}}));
             let mut selected = search_strategy(&active, "active");
@@ -5357,4 +5432,66 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(root);
     }
+    #[test]
+    fn autonomous_barren_generations_execute_their_evolved_policy_without_false_promotion() {
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let active_id=active["id"].clone();
+        let history=(0..3).map(|n|json!({
+            "id":format!("generation-{n}"),
+            "jobId":format!("job-{n}"),"attempt":n+1,
+            "domain":"tools","accepted":false,"candidateId":Value::Null,
+            "newFindings":0,"tokens":5000+n*1000,
+            "domainSelection":"algorithm_active","generatorCommit":"commit-a"
+        })).collect::<Vec<_>>();
+        assert!(recovery_search_expression(&history[..2]).is_none());
+        let report=queue_adaptive_search_trial(&state,&history,&active,"","campaign",3)
+            .expect("three real, barren generations must propose an executable alternative");
+        assert_eq!(report["hypothesisSource"],"observed_unproductive_generations");
+        let id=report["candidateId"].as_str().unwrap();
+        let candidate=state.store.get("algorithm",id).unwrap();
+        assert!(scored_domains(&candidate,&history,"").is_some());
+        assert_eq!(candidate["rsiTrial"]["status"],"pending_trial");
+        assert_eq!(crate::engine::algorithms::active(&state,"selfimprove.search").unwrap()["id"],
+            active_id,"a recovery hypothesis is not improvement evidence");
+        // Even when research yielded an apparent continuation, the scheduled
+        // candidate must get control measurements, then an actual trial.
+        let (domain,mode,strategy)=select_generation_strategy(
+            &state,&history,"",Some("memory".into()),Some(id.into()),None,"commit-b");
+        assert_eq!(mode,"algorithm_active");
+        assert_eq!(strategy["controlForCandidateId"],id);
+        let mut later=history.clone();
+        later.push(json!({"jobId":"control-1","domain":domain,
+            "domainSelection":"algorithm_active","generatorCommit":"commit-b",
+            "candidateId":Value::Null,"accepted":false,"tokens":3000}));
+        later.push(json!({"jobId":"control-2","domain":domain,
+            "domainSelection":"algorithm_active","generatorCommit":"commit-b",
+            "candidateId":Value::Null,"accepted":false,"tokens":4000}));
+        let (trial_domain,trial_mode,trial_strategy)=select_generation_strategy(
+            &state,&later,"",Some("memory".into()),Some(id.into()),None,"commit-b");
+        assert_eq!(trial_domain,domain);
+        assert_eq!(trial_mode,"algorithm_trial");
+        assert_eq!(trial_strategy["id"],id);
+        assert_eq!(trial_strategy["trialFallback"],"exploratory_after_barren_controls");
+        let trial=trial_generation("trial-1",6,&domain,false,"commit-b",1000,100,id);
+        let outcome=record_trial_outcome(&state,id,&trial,&later);
+        assert_eq!(outcome["status"],"inconclusive",
+            "a real exploratory run with no paired outcome is not adoption");
+        assert_eq!(crate::engine::algorithms::active(&state,"selfimprove.search").unwrap()["id"],
+            active_id);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn autonomous_recovery_budget_is_bounded_but_does_not_stop_before_trial() {
+        assert!(should_stop_no_progress(1,false,false,false,false));
+        assert!(!should_stop_no_progress(1,false,false,false,true));
+        assert!(!should_stop_no_progress(2,false,false,false,true));
+        assert!(should_stop_no_progress(3,false,false,false,true));
+        assert!(!should_stop_no_progress(4,false,false,true,true));
+        assert!(!should_stop_no_progress(5,false,false,true,true));
+        assert!(should_stop_no_progress(6,false,false,true,true));
+        assert!(!should_stop_no_progress(2,true,true,false,true));
+    }
+
 }
