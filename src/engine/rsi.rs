@@ -314,6 +314,54 @@ pub(crate) fn verify_paired_receipt(state:&AppState, candidate:&Value)->Result<V
     Ok(measured)
 }
 
+/// Replay a genuine paired-run plateau before an isolated descendant may
+/// edit its source. This never authorizes adoption or production changes.
+pub(crate) fn verify_revisable_quality_receipt(state:&AppState,candidate:&Value)->Result<Value,String>{
+    let invalid=||"동결 paired-run 품질 영수증이 일치하지 않습니다.".to_string();
+    if candidate["status"]!="inconclusive"
+        || candidate["pairedComparisonComplete"]!=true
+        || candidate["evaluation"]["status"]!="inconclusive"
+        || candidate["evaluation"]["verdict"]!="inconclusive"
+        || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"{
+        return Err(invalid());
+    }
+    let id=candidate["id"].as_str().ok_or_else(invalid)?;
+    let evaluation_id=candidate["evaluation"]["id"].as_str().ok_or_else(invalid)?;
+    let proof=candidate["evaluation"]["evidenceSha256"].as_str().ok_or_else(invalid)?;
+    if proof.len()!=64 || !proof.bytes().all(|b|b.is_ascii_hexdigit())
+        || candidate["evaluation"]["reportSha256"]!=proof{return Err(invalid());}
+    let patch=candidate["patch"].as_str().ok_or_else(invalid)?;
+    if digest(patch)!=candidate["patchSha256"]{return Err(invalid());}
+    let rows=state.store.all("rsi_pair").into_iter()
+        .filter(|row|row["candidateId"]==id&&row["evaluationId"]==evaluation_id)
+        .collect::<Vec<_>>();
+    if rows.len()!=1{return Err(invalid());}
+    let pair=&rows[0];
+    if pair["runner"]!="local_gitrepo_not_os_sandbox"
+        || pair["verdict"]!="inconclusive"
+        || pair["evidenceSha256"]!=proof
+        || pair["report"]["reportSha256"]!=proof
+        || pair["report"]["baseCommit"]!=candidate["baseCommit"]
+        || pair["report"]["patchSha256"]!=candidate["patchSha256"]
+        || pair["report"]["oracleVersion"]!=candidate["oracleVersion"]
+        || pair["report"]["baselineBuildOk"]!=true
+        || pair["report"]["candidateBuildOk"]!=true {
+        return Err(invalid());
+    }
+    let plan=candidate["cases"].as_array().ok_or_else(invalid)?;
+    let cases=pair["report"]["cases"].as_array().ok_or_else(invalid)?;
+    let actual=evaluate_cases(plan,cases,candidate["target"].as_str().unwrap_or(""))
+        .map_err(|_|invalid())?;
+    if actual["verdict"]!="inconclusive"
+        || actual["improvedHoldouts"].as_u64()!=Some(0)
+        || actual["regressions"].as_u64()!=Some(0)
+        || actual!=pair["metrics"]
+        || actual!=candidate["evaluation"]["metrics"]{
+        return Err(invalid());
+    }
+    Ok(actual)
+}
+
 pub fn evaluate(state: &AppState, id: &str, body: &Value) -> Result<Value, String> {
     let mut record = state.store.get("rsi_candidate", id).ok_or("후보를 찾을 수 없습니다.")?;
     if record["status"] != "proposed" && record["status"] != "inconclusive" {
@@ -548,6 +596,41 @@ mod tests {
         assert!(verify_paired_receipt(&state,&candidate).is_err(),
             "Individual baseline rows must be rechecked before promotion");
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn independent_plateau_is_repairable_but_never_promotable() {
+        let (state,root)=state();
+        let proposed=propose(&state,&proposal("harness")).unwrap();
+        let id=proposed["id"].as_str().unwrap();
+        let mut raw=report(&proposed);
+        for case in raw["cases"].as_array_mut().unwrap(){
+            case["baselinePass"]=json!(true);
+        }
+        let mut plateau=evaluate(&state,id,&raw).unwrap();
+        assert_eq!(plateau["status"],"inconclusive");
+        plateau["pairedComparisonComplete"]=json!(true);
+        plateau["evaluation"]["source"]=json!("server_invoked_local_paired_git_worktrees");
+        plateau["evaluation"]["evidenceSha256"]=raw["reportSha256"].clone();
+        state.store.put("rsi_candidate",&plateau);
+        state.store.put("rsi_pair",&json!({
+            "id":"plateau-proof","candidateId":id,
+            "evaluationId":plateau["evaluation"]["id"],"report":raw,
+            "verdict":"inconclusive","metrics":plateau["evaluation"]["metrics"],
+            "evidenceSha256":plateau["evaluation"]["evidenceSha256"],
+            "runner":"local_gitrepo_not_os_sandbox"
+        }));
+        let measured=verify_revisable_quality_receipt(&state,&plateau).unwrap();
+        assert_eq!(measured["improvedHoldouts"],0);
+        assert!(verify_paired_receipt(&state,&plateau).is_err());
+        let mut forged=plateau.clone();
+        forged["evaluation"]["metrics"]["improvedHoldouts"]=json!(1);
+        assert!(verify_revisable_quality_receipt(&state,&forged).is_err());
+        let mut pair=state.store.get("rsi_pair","plateau-proof").unwrap();
+        pair["report"]["cases"][0]["baselinePass"]=json!(false);
+        state.store.put("rsi_pair",&pair);
+        assert!(verify_revisable_quality_receipt(&state,&plateau).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
