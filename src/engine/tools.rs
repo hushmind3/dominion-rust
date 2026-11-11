@@ -1794,13 +1794,13 @@ mod tests {
         let current=std::fs::read_to_string(&path).unwrap();
         let sha=format!("{:x}",Sha256::digest(current.as_bytes()));
         let reversed=json!({"path":"src/example.rs","startLine":"3","endLine":"2",
-            "newText":"let value = 77;\\nlast();","expectedSha256":sha});
+            "newText":"let value = 77;\nlast();","expectedSha256":sha});
         let fixed=execute(&ctx,"workspace_replace_range",&reversed,"range-run").await.unwrap();
         assert_eq!(fixed["written"],true,"{fixed}");
         assert_eq!(fixed["reorderedLineEndpoints"],true,"{fixed}");
         assert_eq!(fixed["replacedLines"],2);
         assert_eq!(std::fs::read_to_string(&path).unwrap(),
-            "first();\\nlet value = 77;\\nlast();\\n");
+            "first();\nlet value = 77;\nlast();\n");
         let mut oversized=reversed.clone();
         oversized["startLine"]=json!(999);
         oversized["endLine"]=json!(1);
