@@ -3883,6 +3883,42 @@ mod tests {
     }
 
     #[test]
+    fn action_selector_can_evolve_its_own_exploration_coefficient() {
+        let (state,root)=state();
+        let input=json!({"rsiObjective":"meta optimize recovery policy",
+            "rsiSourceDir":root.join("repo").to_string_lossy()});
+        // The same failure context is retained even when a later generation
+        // makes a new finding; discoveries must not masquerade as adoption.
+        let history=(1..=6).map(|n|{
+            let mutated=(n==2 || n==3);
+            json!({
+                "id":format!("g{n}"),"jobId":format!("j{n}"),
+                "campaignId":"c","attempt":n,
+                "createdAt":format!("2026-11-11T01:00:{n:02}Z"),
+                "accepted":false,"tokens":1000,
+                "newFindings":if mutated {1}else{0},
+                "actionObservation":{"status":"edit_failed",
+                    "sourceDiffBytes":0,"editToolCalls":1,"appliedEditCalls":0},
+                "actionDirective":{
+                    "mode":if mutated {"change_approach"}else{"repair_failed_edit"},
+                    "policy":{"status":if mutated {"exploratory_policy_mutation"}
+                        else {"evidence_based_retention"}}
+                }
+            })
+        }).collect::<Vec<_>>();
+        let next=evolved_execution_action(&state,&input,&history);
+        assert_eq!(next["policy"]["trainingTransitions"],5);
+        assert_eq!(next["policy"]["metaTuning"]["mutatedObservations"],2);
+        assert_eq!(next["policy"]["metaTuning"]["retainedObservations"],3);
+        assert!(next["policy"]["metaTuning"]["explorationCoefficient"]
+            .as_f64().unwrap()>0.55,
+            "successful research progress in a mutated method changes
+             the learner's own exploration parameter: {next}");
+        assert!(next["policy"]["metaTuning"]["causalAttribution"]=="unmeasured");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn learned_action_does_not_count_patches_as_adopted_capabilities() {
         let (state,root)=state();
         let input=json!({"rsiObjective":"evolve the harness",
