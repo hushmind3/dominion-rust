@@ -1000,10 +1000,21 @@ pub fn bootstrap_source_start(
     // not a hard-coded file or synthesized source change.
     let exact=objective.split(|c:char|!c.is_ascii_alphanumeric() && c!='_')
         .filter(|word|word.len()>=4);
+    // Test declarations are useful held-out evidence, not first-choice patch
+    // targets. Avoid selecting an identically named function after #[cfg(test)]
+    // when a production declaration with the same name exists.
+    let test_boundary=lines.iter().position(|line|
+        line.trim_start().starts_with("#[cfg(test)]"))
+        .map(|position|position as u64+1).unwrap_or(u64::MAX);
     for word in exact {
-        if let Some(symbol)=symbols.iter().find(|item|
-            item["name"].as_str().is_some_and(|name|name.eq_ignore_ascii_case(word))) {
-            if let Some(line)=symbol["line"].as_u64().filter(|line|*line>0) {
+        if let Some(symbol)=symbols.iter().filter(|item|
+            item["name"].as_str().is_some_and(|name|name.eq_ignore_ascii_case(word))
+                && item["line"].as_u64().is_some_and(|line|
+                    line>0 && line<test_boundary && line<=lines.len() as u64))
+            .min_by_key(|item|(
+                item["kind"]!="fn",
+                item["line"].as_u64().unwrap_or(u64::MAX)))) {
+            if let Some(line)=symbol["line"].as_u64() {
                 return Some(line.saturating_sub(4).max(1));
             }
         }
