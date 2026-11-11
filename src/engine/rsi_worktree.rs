@@ -484,6 +484,58 @@ pub fn repair_feedback(result:&Value)->Option<String>{
         failures.join("\n\n")
     ))
 }
+/// Convert a grounded but read-only RSI model turn into a *single* concrete
+/// follow-up edit attempt. Previously run_prompt only retried failed builds;
+/// a generation that returned with zero writes was guaranteed to stop with
+/// no_valid_candidate even after a verified source was already supplied.
+/// This function is intentionally a decision algorithm, not an automatic
+/// patch: the provider still authors the source change, and the detached
+/// worktree still owns compile, diff capture and independent evaluation.
+pub fn no_edit_feedback(
+    result:&Value, session:&Value, operations:&[Value]
+)->Option<String>{
+    if result["status"]!="needs_review"
+        || result["reason"]!="no_valid_candidate"
+        || result["rsi"]["sourceClean"]!=true
+        || result["rsi"]["diffBytes"].as_u64().unwrap_or(0)!=0
+        || !result["rsi"]["modelError"].as_str().unwrap_or("").is_empty()
+        || session["rsiRun"]!=true || session["rsiExplicitFocus"]!=true
+        || session["rsiFocusContextReady"]!=true {return None}
+    let focused=session["rsiFocusFiles"].as_array()?;
+    if focused.len()!=1 {return None}
+    let path=focused[0].as_str().filter(|p|crate::engine::rsi::safe_path(p))?;
+    let own=operations.iter().filter(|op|op["sessionId"]==session["id"])
+        .collect::<Vec<_>>();
+    // Failed source changes are for the next failure-specific repair method,
+    // not a second speculative "no edit" call in this same generation.
+    if own.iter().any(|op|matches!(op["tool"].as_str(),
+        Some("workspace_replace"|"workspace_write"))) {return None}
+    let grounded=own.iter().rev().find(|op|
+        op["status"]=="completed" && op["tool"]=="workspace_read_range"
+        && op["arguments"]["path"]==path && op["result"]["error"].is_null()
+        && op["result"]["sourceSha256"].as_str().is_some_and(|s|
+            s.len()==64 && s.bytes().all(|c|c.is_ascii_hexdigit())));
+    let indexed=session["rsiPolicyFocus"]==true
+        && session["rsiCodeIndexId"].as_str().is_some_and(|s|!s.is_empty());
+    if grounded.is_none() && !indexed {return None}
+    let source=grounded.and_then(|op|{
+        let body=op["result"]["content"].as_str()
+            .or_else(||op["result"]["text"].as_str())?;
+        let sha=op["result"]["sourceSha256"].as_str()?;
+        Some(format!("\n최근 검증된 원문:\nsourceSha256: {sha}\n~~~\n{}\n~~~\n",
+            body.chars().take(2600).collect::<String>()))
+    }).unwrap_or_default();
+    Some(format!(
+        "이전 실행은 이미 검증된 소스를 관찰했지만 실제 편집을 수행하지 않아 후보가 0건입니다. \
+         탐색을 반복하는 대신 이번 턴에는 파일 {path}에서 목표에 맞는 작고 구체적인 코드 수정을 완성하세요. \
+         이미 제공된 소스 원문과 SHA를 사용하고, 추가 확인이 꼭 필요한 경우 그 범위만 읽으세요. \
+         120줄 이내의 기존 파일 변경은 workspace_replace의 startLine/endLine/newText/expectedSha256 \
+         인자로 실행하세요. 예상 SHA를 모르면 현재 파일을 읽어 확인하세요. \
+         실행 가능한 코드 변화가 없다면 억지 패치를 만들지 말고 이유를 설명하세요. \
+         이 호출은 최대 한 번이며, 성공 보상은 소스 diff 및 독립 평가 이후에만 주어집니다.{source}"
+    ))
+}
+
 /// Apply a model-generated patch only after explicit owner review. A successful
 /// compile is NOT proof of improved behavior. Never commit, push or deploy.
 pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Result<Value,String>{
@@ -863,6 +915,47 @@ mod tests {
         assert_eq!(classify("diff --git a/src/engine/room_state.rs b/src/engine/room_state.rs\n"),"algorithm");
         assert_eq!(classify("diff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\n"),"harness");
     }
+    #[test]
+    fn no_edit_recovery_runs_only_for_grounded_source_and_once_per_job(){
+        let result=json!({"status":"needs_review","reason":"no_valid_candidate",
+            "rsi":{"sourceClean":true,"diffBytes":0,
+                "captureError":"모델이 실제 소스 파일을 변경하지 않았습니다.","modelError":""}});
+        let session=json!({"id":"model-session","rsiRun":true,
+            "rsiExplicitFocus":true,"rsiFocusContextReady":true,
+            "rsiPolicyFocus":true,"rsiCodeIndexId":"frozen-index",
+            "rsiFocusFiles":["src/engine/memory.rs"]});
+        let target="src/engine/memory.rs";
+        let plan=no_edit_feedback(&result,&session,&[]).unwrap();
+        assert!(plan.contains(target));
+        assert!(plan.contains("workspace_replace"));
+        let read=json!({"sessionId":"model-session","tool":"workspace_read_range",
+            "status":"completed","arguments":{"path":target},
+            "result":{"sourceSha256":"a".repeat(64),"content":"1 fn before() {}"}});
+        let mut no_index=session.clone();
+        no_index["rsiPolicyFocus"]=json!(false);
+        assert!(no_edit_feedback(&result,&no_index,&[read.clone()])
+            .unwrap().contains("sourceSha256"));
+        assert!(no_edit_feedback(&result,&no_index,&[]).is_none());
+        let wrong=json!({"sessionId":"foreign","tool":"workspace_read_range",
+            "status":"completed","arguments":{"path":target},
+            "result":{"sourceSha256":"a".repeat(64)}});
+        assert!(no_edit_feedback(&result,&no_index,&[wrong]).is_none());
+        let edited=json!({"sessionId":"model-session","tool":"workspace_replace",
+            "status":"failed","arguments":{"path":target},
+            "result":{"staleVersion":true}});
+        assert!(no_edit_feedback(&result,&session,&[edited]).is_none(),
+            "a failed edit belongs to the method repair algorithm");
+        let mut no_focus=session.clone();
+        no_focus["rsiFocusContextReady"]=json!(false);
+        assert!(no_edit_feedback(&result,&no_focus,&[]).is_none());
+        let mut no_model=result.clone();
+        no_model["rsi"]["modelError"]=json!("provider timeout");
+        assert!(no_edit_feedback(&no_model,&session,&[]).is_none());
+        let mut diff=result.clone();
+        diff["rsi"]["diffBytes"]=json!(1);
+        assert!(no_edit_feedback(&diff,&session,&[]).is_none());
+    }
+
     #[test]
     fn failing_verification_never_completes_and_only_valid_failures_retry(){
         assert_eq!(run_status(true,false,false,true,"",""),("needs_review","build_or_typecheck_failed"));
