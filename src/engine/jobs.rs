@@ -628,22 +628,32 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         const MAX_REPAIRS:usize=2;
         let mut attempts=Vec::<Value>::new();
         let mut no_edit_retried=false;
+        let mut failed_edit_retried=false;
         let mut finished=crate::engine::rsi_worktree::finish(
             context,job,worktree,message,&session_id
         ).await;
         for revision in 0..MAX_REPAIRS {
             let Some(prior)=finished.as_ref().ok() else {break;};
             let compiler_feedback=crate::engine::rsi_worktree::repair_feedback(prior);
-            let no_edit_feedback=if compiler_feedback.is_none() && !no_edit_retried {
-                let current=context.state.store.get("session",&session_id).unwrap_or(Value::Null);
-                let operations=context.state.store.all("execution_operation");
+            let session=context.state.store.get("session",&session_id)
+                .unwrap_or(Value::Null);
+            let operations=context.state.store.all("execution_operation");
+            let failed_edit=if compiler_feedback.is_none() && !failed_edit_retried {
+                crate::engine::rsi_worktree::failed_edit_feedback(
+                    prior,&session,&operations)
+            } else {None};
+            let no_edit_feedback=if compiler_feedback.is_none()
+                && failed_edit.is_none() && !no_edit_retried {
                 crate::engine::rsi_worktree::no_edit_feedback(
-                    prior,&current,&operations)
+                    prior,&session,&operations)
             } else {None};
             let mode=if compiler_feedback.is_some() {"verification_repair"}
+                else if failed_edit.is_some() {"observed_tool_repair"}
                 else {"source_edit_bootstrap"};
-            let Some(feedback)=compiler_feedback.or(no_edit_feedback) else {break;};
+            let Some(feedback)=compiler_feedback.or(failed_edit).or(no_edit_feedback)
+                else {break;};
             if mode=="source_edit_bootstrap" {no_edit_retried=true;}
+            if mode=="observed_tool_repair" {failed_edit_retried=true;}
             // A no-diff recovery is permitted once; compile repair may follow,
             // but neither path silently turns a read-only turn into success.
             if context.checkpoint(json!({
