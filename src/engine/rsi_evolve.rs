@@ -1478,10 +1478,14 @@ fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value
     })).collect::<Vec<_>>();
     let revision=format!("{:x}",Sha256::digest(
         json!(["empirical-method-selection-v1",domain,&ranked]).to_string().as_bytes()));
+    // Deploy only the leading learned procedure in each generation. Running
+    // all candidate methods on the same file could overwrite one another and
+    // prevents attribution. Other viable methods remain ranked for a future
+    // generation as new verified outcomes revise the policy.
     json!({"action":if methods.is_empty(){"research_only"}else{"execute_methods"},
         "policy":"empirical-method-selection-v1","policyRevision":revision,
-        "rankedEvidence":ranked,
-        "methodIds":methods.iter().map(|m|m["id"].clone()).collect::<Vec<_>>()})
+        "rankedEvidence":ranked,"selectionMode":"best_observed_method_one_at_a_time",
+        "methodIds":methods.iter().take(1).map(|m|m["id"].clone()).collect::<Vec<_>>()})
 }
 
 pub(crate) fn configure_method_session(state: &AppState, input: &Value, session: &mut Value) {
@@ -6672,25 +6676,34 @@ mod tests {
             "verification":legacy["verification"],
             "applications":[{"domain":"tools","verificationVerdict":"passed",
                 "postconditionsPassed":true,"independentGain":true}]});
+        let fallback=json!({"id":"fallback","revision":"steady","domain":"tools",
+            "status":"executable","successfulApplications":2,
+            "verification":legacy["verification"],
+            "applications":[{"domain":"tools","verificationVerdict":"passed",
+                "postconditionsPassed":true,"independentGain":false},
+                {"domain":"tools","verificationVerdict":"passed",
+                "postconditionsPassed":true,"independentGain":false}]});
         state.store.put("experience",&json!({"id":"policy-evidence",
             "partitionKey":partition,"status":"active",
-            "executableMethods":[legacy,improved]})).unwrap();
+            "executableMethods":[legacy,improved,fallback]})).unwrap();
         let input=json!({"rsiSourceDir":root,"rsiObjective":"search","rsiDomain":"tools"});
         let first=method_reuse_decision(&state,&input,"tools");
-        assert_eq!(first["methodIds"][0],"empirical");
+        assert_eq!(first["methodIds"],json!(["empirical"]));
         assert_eq!(first["policy"],"empirical-method-selection-v1");
         assert_eq!(first["rankedEvidence"][0]["evidence"]["independentGains"],1);
         // A further verified failure changes the next generation's decision.
         let mut record=state.store.get("experience","policy-evidence").unwrap();
-        record["executableMethods"][1]["applications"].as_array_mut().unwrap().push(json!({
-            "domain":"tools","verificationVerdict":"violated",
-            "postconditionsPassed":false,"independentGain":false
-        }));
+        for _ in 0..2 {
+            record["executableMethods"][1]["applications"].as_array_mut().unwrap().push(json!({
+                "domain":"tools","verificationVerdict":"violated",
+                "postconditionsPassed":false,"independentGain":false
+            }));
+        }
         state.store.put("experience",&record).unwrap();
         let second=method_reuse_decision(&state,&input,"tools");
         assert_ne!(first["policyRevision"],second["policyRevision"]);
-        assert!(second["rankedEvidence"][0]["evidence"]["score"].as_i64()
-            .unwrap() < first["rankedEvidence"][0]["evidence"]["score"].as_i64().unwrap());
+        assert_eq!(second["methodIds"],json!(["fallback"]),
+            "observed failures must actually change the procedure that will execute");
         let _=std::fs::remove_dir_all(root);
     }
 
