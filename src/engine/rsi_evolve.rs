@@ -7691,6 +7691,33 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_model_recovery_changes_the_next_generation_strategy() {
+        let episode=json!({"id":"generation-one","attempt":1,
+            "accepted":false,"candidateId":null,"newFindings":4,
+            "domain":"memory","actionDirective":{"mode":"discover"},
+            "actionObservation":{"status":"research_only","sourceDiffBytes":0,
+                "editToolCalls":0,"appliedEditCalls":0},
+            "selfRepair":{"attempts":1,
+                "modes":["source_edit_bootstrap"],
+                "outcome":"no_patch_after_recovery",
+                "qualityGain":null}});
+        assert_eq!(action_learning_context(&episode),"exhausted_recovery");
+        let adapted=next_execution_action(&[episode.clone()]);
+        assert_eq!(adapted["mode"],"change_approach",
+            "repeated search after a failed source-edit retry must not be the default");
+        assert!(action_choices("exhausted_recovery").contains(&"change_approach"));
+        let mut untried=episode.clone();
+        untried["selfRepair"]["outcome"]=json!("not_attempted");
+        assert_eq!(action_learning_context(&untried),"research_only");
+        assert_eq!(next_execution_action(&[untried])["mode"],"implement_research");
+        let mut successful=episode;
+        successful["selfRepair"]["outcome"]=json!("candidate_after_recovery");
+        successful["candidateId"]=json!("candidate-one");
+        assert_eq!(action_learning_context(&successful),"unadopted_candidate");
+        assert_eq!(next_execution_action(&[successful])["mode"],"revise_candidate");
+    }
+
+    #[test]
     fn failed_method_evolves_into_a_separate_inherited_candidate() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
