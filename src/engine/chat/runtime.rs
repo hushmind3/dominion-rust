@@ -112,6 +112,12 @@ fn rsi_checkpoint_with_recovery(
                 chosen=="workspace_read_range" && reason=="learned_multi_step_recovery"))
 }
 
+/// Compiler repair has an actual source target and exact failing lines.
+/// It must not spend its limited retry round doing repository discovery.
+fn rsi_compiler_repair_tool(name:&str)->bool {
+    matches!(name,"workspace_read_range"|"workspace_replace"|"workspace_replace_range")
+}
+
 /// RSI needs a real write, not a completed tool call whose result says error.
 /// The isolated candidate verifier remains the authority for quality.
 fn rsi_confirmed_source_write(operations:&[Value], execution_id:&str)->bool {
@@ -1280,7 +1286,8 @@ async fn run_turn_body(
                 // A range edit needs the *actual* source SHA returned by a
                 // read tool. When only a prompt excerpt exists, keep the read
                 // tool in the menu instead of trapping the model in edit-only.
-                let edit_only=edit_only && read_calls>0;
+                let edit_only=edit_only && read_calls>0
+                    && session["rsiCompilerRepair"]!=true;
                 // Repeat the menu restriction on every subsequent model round;
                 // a one-shot checkpoint silently reopened code_search.
                 round_tools.retain(|definition|
@@ -1336,8 +1343,8 @@ async fn run_turn_body(
                 // Preserve exactly the compiler-repair actions. The previous
                 // generation's search method is not a useful plan for fixing
                 // a known syntax/type error in a known file.
-                round_tools.retain(|definition|matches!(tool_name(definition),
-                    "workspace_read_range"|"workspace_replace"|"workspace_replace_range"));
+                round_tools.retain(|definition|
+                    rsi_compiler_repair_tool(tool_name(definition)));
                 round_tools.sort_by_key(|definition|match tool_name(definition){
                     "workspace_replace_range"=>0usize,"workspace_replace"=>1,_=>2
                 });
@@ -6526,6 +6533,15 @@ mod harness_tool_selection_tests {
             "workspace_replace_range"));
         assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range"));
         assert!(rsi_action_program_next(&plan,&[],"unrelated").is_some());
+    }
+
+    #[test]
+    fn compiler_repair_keeps_read_and_edit_but_never_resumes_discovery() {
+        assert!(rsi_compiler_repair_tool("workspace_read_range"));
+        assert!(rsi_compiler_repair_tool("workspace_replace"));
+        assert!(rsi_compiler_repair_tool("workspace_replace_range"));
+        assert!(!rsi_compiler_repair_tool("code_search"));
+        assert!(!rsi_compiler_repair_tool("web_search"));
     }
 
     #[test]
