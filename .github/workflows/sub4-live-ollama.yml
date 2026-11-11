@@ -1,15 +1,6 @@
 name: Sub4 actual local Ollama RSI attempt
+# Explicit opt-in only: code commits must not launch a 25-minute 4B model campaign.
 on:
-  push:
-    branches: [dominion-sub4]
-    paths:
-      - '.github/workflows/sub4-live-ollama.yml'
-      - 'src/engine/chat/provider.rs'
-      - 'src/engine/chat/runtime.rs'
-      - 'src/engine/rsi_evolve.rs'
-      - 'src/engine/effect.rs'
-      - 'src/engine/tools.rs'
-      - 'scripts/sub4-live-rsi.mjs'
   workflow_dispatch:
 permissions:
   contents: read
