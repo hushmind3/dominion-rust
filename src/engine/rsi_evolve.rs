@@ -2909,6 +2909,18 @@ async fn run_loop(
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
+        // Read the actual session written by the native execution runtime,
+        // not the coordinator's intention or an assistant message.
+        let action_session=session.and_then(|sid|context.state.store.get("session",sid))
+            .unwrap_or(Value::Null);
+        generation["actionExecution"]=json!({
+            "focusApplied":action_session["rsiPolicyFocus"]==true,
+            "editCheckpointReached":action_session["rsiPolicyCheckpointReached"]==true,
+            "checkpointExecutionId":action_session["rsiPolicyCheckpointExecutionId"],
+            "sourceGrounded":current["input"]["rsiFocusGrounded"]==true,
+            "sourceTarget":current["input"]["rsiFocusSelection"]["executionTarget"],
+            "policyRevision":action_session["rsiActionPolicyRevision"],
+        });
         let candidate_id = verified_candidate_id(&current["result"]);
         generation["actionObservation"]=observed_edit_outcome(
             &tools_used,&current["result"]["rsi"]["editActions"],
@@ -3119,6 +3131,8 @@ async fn run_loop(
             "mode":generation["actionDirective"]["mode"],
             "trainingEvidence":generation["actionDirective"]["policy"]["trainingGenerationIds"],
             "policyStatus":generation["actionDirective"]["policy"]["status"],
+            "focusApplied":generation["actionExecution"]["focusApplied"],
+            "editCheckpointReached":generation["actionExecution"]["editCheckpointReached"],
             "observedUtility":observed_action_value(&generation),
             "actualSourceDiffBytes":generation["actionObservation"]["sourceDiffBytes"],
             "actualCandidateId":generation["candidateId"],
@@ -3432,6 +3446,14 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
         if action_learning_context(prior)!=context {continue}
         let Some(action)=next["actionDirective"]["mode"].as_str() else {continue};
         if !alternatives.contains(&action) {continue}
+        // Once learned policies exist, an intended action does not earn
+        // learning credit unless it actually altered the native runtime's
+        // source target. Old generations without this evidence still supply
+        // baseline statistics, not claimed policy improvement.
+        if next["actionDirective"]["policy"]["kind"]=="selfimprove.action"
+            && next["actionExecution"]["focusApplied"]!=true {
+            continue;
+        }
         let id=next["id"].as_str().unwrap_or("").to_string();
         let outcome=observed_action_value(next);
         observations.entry(action.to_string()).or_default()
