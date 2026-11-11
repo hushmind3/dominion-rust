@@ -908,6 +908,85 @@ async fn rsi_rust_parse_preview(
     ))
 }
 
+/// Preserve existing sibling functions during narrowly scoped RSI source edits.
+///
+/// In live model campaigns, broad replacement ranges removed unrelated
+/// functions even when Rust syntax stayed valid. When the owner explicitly
+/// targets an existing top-level function, keep its sibling definitions
+/// unchanged. This is scoped to named-function RSI objectives only; the
+/// normal exploratory and multi-file improvement paths are unaffected.
+fn rsi_top_level_functions(source: &str) -> Vec<(String, &str)> {
+    let mut starts = Vec::<(String, usize)>::new();
+    let mut offset = 0usize;
+    for line in source.split_inclusive('\n') {
+        let declaration = line.trim_end_matches(['\r', '\n']);
+        if let Some((prefix, tail)) = declaration.split_once("fn ") {
+            if matches!(prefix, "" | "pub " | "pub(crate) " | "async " |
+                "pub async " | "pub(crate) async " | "unsafe " |
+                "pub unsafe " | "const " | "pub const ") {
+                let name = tail.chars()
+                    .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+                    .collect::<String>();
+                if !name.is_empty() && tail[name.len()..].trim_start().starts_with('(') {
+                    starts.push((name, offset));
+                }
+            }
+        }
+        offset += line.len();
+    }
+    starts.iter().enumerate().map(|(index, (name, start))| {
+        let end = starts.get(index + 1).map_or(source.len(), |(_, next)| *next);
+        (name.clone(), &source[*start..end])
+    }).collect()
+}
+
+async fn rsi_rust_scope_preview(
+    ctx: &ToolContext<'_>, path: &Path, updated: &str,
+) -> Result<(), String> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        return Ok(());
+    }
+    let Some(session) = ctx.store.get("session", ctx.session_id) else {
+        return Ok(());
+    };
+    if session["rsiRun"] != true || session["rsiExplicitFocus"] != true {
+        return Ok(());
+    }
+    let Some(objective) = session["rsiObjective"].as_str() else {
+        return Ok(());
+    };
+    let Ok(previous) = tokio::fs::read_to_string(path).await else {
+        return Ok(()); // New source files have no existing siblings.
+    };
+    let before = rsi_top_level_functions(&previous);
+    let mut targets = before.iter()
+        .filter_map(|(name, _)| objective.find(&format!("{name}("))
+            .map(|position| (position, name.as_str())))
+        .collect::<Vec<_>>();
+    targets.sort_unstable();
+    let Some((_, target)) = targets.first() else {
+        return Ok(()); // No concrete function was named.
+    };
+    let after = rsi_top_level_functions(updated);
+    if !after.iter().any(|(name, _)| name == target) {
+        return Err(format!(
+            "rsi_scope_rejected: required function {target}() disappeared; source NOT modified. Edit the exact target range, not its siblings."
+        ));
+    }
+    for (name, original_body) in before {
+        if name == *target {
+            continue;
+        }
+        if after.iter().find(|(after_name, _)| after_name == &name)
+            .is_none_or(|(_, new_body)| *new_body != original_body) {
+            return Err(format!(
+                "rsi_scope_rejected: objective targets {target}(), but edit changes or removes sibling {name}(); source NOT modified. Re-read and replace only the targeted function."
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Read-only Rust parser immediately after a model-authored source
 /// mutation. Same-turn feedback is not an independent quality verdict.
 async fn rsi_rust_parse_receipt(ctx:&ToolContext<'_>,path:&Path)->Option<Value> {
@@ -1016,6 +1095,7 @@ async fn checked_write(
         }
     };
     let _guard = lock.lock().await;
+    rsi_rust_scope_preview(ctx, path, content).await?;
     if let Err(error)=rsi_rust_parse_preview(ctx,path,content).await {
         if error.starts_with("rsi_rust_syntax_rejected:") {
             // A recoverable model proposal failure, not a changed file.
@@ -1728,7 +1808,8 @@ mod tests {
             workspace: dir.clone() };
         let state = crate::state::AppState::new(cfg.clone(),
             Store::open(&cfg.db_path()).unwrap(), Vault::open(&cfg.key_path()));
-        state.store.put("session", &json!({"id":"rsi-syntax", "rsiRun":true}));
+        state.store.put("session", &json!({"id":"rsi-syntax", "rsiRun":true,
+            "rsiExplicitFocus":true, "rsiObjective":"Improve split_markers() without changing marker_at()"}));
         let ctx = ToolContext { workspace:&dir, store:&state.store, state:&state,
             session_id:"rsi-syntax", agent_id:None, tools_enabled:true,
             tools_execution_enabled:true };
@@ -1741,6 +1822,11 @@ mod tests {
         assert_eq!(failure["sourceUnchanged"],true,"{failure}");
         assert_eq!(failure["written"],false,"{failure}");
         assert!(failure["error"].as_str().unwrap().contains("rsi_rust_syntax_rejected"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let sibling_drift = "fn marker_at() -> bool { false }\n\nfn split_markers() -> Vec<String> { vec![] }\n";
+        let scope_failure = replace_source_lines(&ctx, &path, 1, 3, sibling_drift, &sha, "run")
+            .await.unwrap_err();
+        assert!(scope_failure.contains("rsi_scope_rejected"), "{scope_failure}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         let valid = "fn marker_at() -> bool { true }\n\nfn split_markers() -> Vec<String> { vec![\"ok\".to_owned()] }\n";
         let result = replace_source_lines(&ctx, &path, 1, 3, valid, &sha, "run")
