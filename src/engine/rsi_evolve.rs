@@ -1449,6 +1449,114 @@ fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value
         "methodIds":methods.iter().map(|m|m["id"].clone()).collect::<Vec<_>>()})
 }
 
+/// A self-improving method selector needs real *control* executions. Otherwise
+/// a better model prompt or easier task is miscredited to the new harness.
+/// Freeze one learnt policy revision for a bounded four-generation cohort,
+/// interleave ordinary and learnt method selection, and rotate cohorts when
+/// the underlying method has evolved. The model and source base are matched.
+fn method_policy_trial_plan(state:&AppState,input:&Value)->Value {
+    let Some(policy)=current_induced_method_policy(state,input) else{return Value::Null};
+    let domain=input["rsiDomain"].as_str().unwrap_or("");
+    if !DOMAINS.contains(&domain) {return Value::Null;}
+    let source=input["rsiBaseCommit"].as_str().unwrap_or("");
+    let model=input["model"].as_str().unwrap_or("");
+    let provider=input["providerId"].as_str().unwrap_or("");
+    let focus=current_rsi_focus(input).unwrap_or("");
+    if source.is_empty() || model.is_empty() || focus.is_empty(){return Value::Null;}
+    let scope=research_scope(input);
+    let objective=input["rsiObjective"].as_str().unwrap_or("");
+    let key=crate::engine::memory::stable_id(&[
+        &scope.partition_key,domain,source,model,provider,focus,objective
+    ]);
+    let completed=state.store.all("rsi_generation");
+    let mut cohorts=state.store.all("rsi_method_trial_cohort").into_iter()
+        .filter(|row|row["key"].as_str()==Some(key.as_str()))
+        .collect::<Vec<_>>();
+    cohorts.sort_by_key(|row|row["ordinal"].as_u64().unwrap_or(0));
+    let completed_for=|cohort:&Value|completed.iter().filter(|row|
+        row["methodPolicyTrial"]["cohortId"]==cohort["id"]).collect::<Vec<_>>();
+    let cohort=if let Some(active)=cohorts.iter().find(|row|
+        completed_for(row).len()<4) {
+        (*active).clone()
+    }else{
+        let ordinal=cohorts.len() as u64;
+        let id=format!("rsi-method-cohort-{}",
+            crate::engine::memory::stable_id(&[&key,&ordinal.to_string()]));
+        let previous=cohorts.last().map(|row|completed_for(row)).unwrap_or_default();
+        let measured=|arm:&str|previous.iter().filter(|row|
+            row["methodPolicyTrial"]["arm"]==arm
+            && measured_system_improvement(row)).count();
+        // Only measured improvements inform exploitation. With no matched
+        // quality data the two arms keep equal opportunities.
+        let preference=if previous.len()>=4 {
+            let control=measured("control");
+            let learned=measured("learned");
+            if learned>control {"learned"} else if control>learned {"control"}
+            else {"balanced"}
+        }else{"balanced"};
+        let fresh=json!({"id":id,"key":key,"ordinal":ordinal,
+            "policyRevision":policy["revision"],"policy":policy,
+            "preference":preference,"status":"trial_not_causal_proof"});
+        state.store.put("rsi_method_trial_cohort",&fresh).unwrap_or(fresh)
+    };
+    let before=completed_for(&cohort);
+    let control=before.iter().filter(|row|row["methodPolicyTrial"]["arm"]=="control").count();
+    let learned=before.len().saturating_sub(control);
+    let arm=match cohort["preference"].as_str().unwrap_or("balanced") {
+        "learned" if before.len()%4!=3=>"learned",
+        "control" if before.len()%4!=3=>"control",
+        "learned"=>"control",
+        "control"=>"learned",
+        _ if control<=learned=>"control",
+        _=>"learned",
+    };
+    json!({"key":key,"cohortId":cohort["id"],"arm":arm,
+        "policyRevision":cohort["policyRevision"],
+        "policy":cohort["policy"],"preference":cohort["preference"],
+        "domain":domain,"focus":focus,"sourceCommit":source,
+        "model":model,"provider":provider,"priorExecutions":before.len(),
+        "comparison":"source_model_domain_focus_matched_observational_trial"})
+}
+
+/// A result is *not* proof of policy superiority unless both arms ran under
+/// the same source/model/domain/focus cohort and earned independently measured
+/// improvement. This report never fabricates a counterfactual for an edit.
+fn method_policy_trial_report(state:&AppState,generation:&Value)->Value {
+    let trial=&generation["methodPolicyTrial"];
+    let Some(id)=trial["cohortId"].as_str() else{return Value::Null};
+    let mut rows=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["methodPolicyTrial"]["cohortId"].as_str()==Some(id))
+        .collect::<Vec<_>>();
+    if !rows.iter().any(|row|row["jobId"]==generation["jobId"]){
+        rows.push(generation.clone());
+    }
+    let arm_stats=|arm:&str|{
+        let matched=rows.iter().filter(|row|row["methodPolicyTrial"]["arm"]==arm)
+            .collect::<Vec<_>>();
+        let measured=matched.iter().filter(|row|measured_system_improvement(row)).count();
+        let regressions=matched.iter().filter(|row|
+            row["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+                && matches!(row["evaluation"]["metrics"]["verdict"].as_str(),
+                    Some("regressed"|"build_failed"))).count();
+        let writes=matched.iter().filter(|row|row["toolsUsed"].as_array().is_some_and(|tools|
+            tools.iter().any(|item|item["actualWrites"].as_u64().unwrap_or(0)>0))).count();
+        json!({"generations":matched.len(),"measuredImprovements":measured,
+            "pairedRegressions":regressions,"sourceWriteGenerations":writes})
+    };
+    let control=arm_stats("control");
+    let learned=arm_stats("learned");
+    let comparable=control["generations"].as_u64().unwrap_or(0)>=2
+        && learned["generations"].as_u64().unwrap_or(0)>=2;
+    json!({"cohortId":id,"key":trial["key"],"sourceCommit":trial["sourceCommit"],
+        "model":trial["model"],"domain":trial["domain"],"focus":trial["focus"],
+        "policyRevision":trial["policyRevision"],
+        "control":control,"learned":learned,
+        "status":if comparable{"matched_observational_4_generation_result"}
+            else{"waiting_for_matched_control_and_learned_generations"},
+        "causalProof":false,
+        "qualityEvidence":"accepted_frozen_paired_worktree_results_only"})
+}
+
 pub(crate) fn configure_method_session(state: &AppState, input: &Value, session: &mut Value) {
     let domain = input["rsiDomain"].as_str().unwrap_or("");
     session["rsiResearchPartition"] = json!(research_scope(input).partition_key);
@@ -1457,8 +1565,15 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     session["rsiFocusFile"] = json!(current_rsi_focus(input));
     // This is selected by DOMINION's learned transition weights. Neither
     // model instructions nor a copied old procedure are executable authority.
-    session["rsiInducedMethodPolicy"]=current_induced_method_policy(state,input)
-        .unwrap_or(Value::Null);
+    let trial=&input["rsiMethodPolicyTrial"];
+    session["rsiMethodPolicyTrial"]=trial.clone();
+    session["rsiInducedMethodPolicy"]=if trial["arm"]=="control" {
+        Value::Null
+    } else if trial["arm"]=="learned" {
+        trial["policy"].clone()
+    } else {
+        current_induced_method_policy(state,input).unwrap_or(Value::Null)
+    };
     let mut decision = input["rsiDecisionInput"].clone();
     if !decision.is_object() {decision=json!({});}
     // The parent predicted reuse BEFORE the descendant indexed and selected
