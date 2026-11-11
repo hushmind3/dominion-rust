@@ -14,6 +14,8 @@ on:
 # This dispatch is intentionally renewed after fixing the mismatch between
 # Qwen's indexed-source edit checkpoint and its advertised tool menu.
 # The proof remains fully model-driven: no synthetic patch or acceptance.
+# Exercise three distinct source-derived improvement operators: trusted
+# owner provenance, invariant query tokens, and invariant query domain.
 # Run the native source-induction plus real-model fallback through the same
 # independent frozen holdout; the engine must author and adopt a new Git diff.
 # The explicitly triggered live campaign now targets the frozen
@@ -116,7 +118,8 @@ jobs:
             'Error: '+(receipt.error || 'none')];
           for (const generation of receipt.history || []) {
             lines.push('- Generation '+generation.attempt+
-              ': actual new diff='+generation.novelSourceDiffBytes+
+              ': operator='+(generation.nativeMutation?.operator || 'model')+
+              '; actual new diff='+generation.novelSourceDiffBytes+
               ' bytes; edits='+(generation.editActions || []).filter(x=>x.written).length+
               '; compile='+generation.staticChecksPassed+
               '; candidate='+(generation.candidateId || generation.unverifiedCandidateId || 'none')+
