@@ -224,8 +224,8 @@ pub fn synthesize(rows:&[Value])->Value {
     }).collect::<Vec<_>>();
     // Compose the observed repair prefix with an independently witnessed edit
     // when the failed generation recovered the source but did not write it.
-    let successful_edit=sequence.iter().filter_map(Value::as_str)
-        .find(|tool|edit(tool)).map(str::to_string);
+    let successful_edit=sequence.iter()
+        .find(|tool|edit(tool.as_str())).cloned();
     let mut recovery_paths=Vec::<Value>::new();
     for (failed,variants) in recovery_chains {
         let mut ranked=variants.into_iter().filter_map(|(steps,(observations,writes))|{
