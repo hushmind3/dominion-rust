@@ -849,7 +849,45 @@ async fn replace_source_lines(
     result["replaced"]=json!(true);
     result["replacedLines"]=json!(end-start+1);
     result["writtenSha256"]=json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
+    if let Some(parse)=rsi_rust_parse_receipt(ctx,path).await {
+        result["syntaxValid"]=parse["valid"].clone();
+        result["syntaxCheck"]=parse;
+    }
     Ok(result)
+}
+
+/// Read-only Rust parser immediately after a model-authored source
+/// mutation. Same-turn feedback is not an independent quality verdict.
+async fn rsi_rust_parse_receipt(ctx:&ToolContext<'_>,path:&Path)->Option<Value> {
+    if path.extension().and_then(|ext|ext.to_str())!=Some("rs")
+        || ctx.store.get("session",ctx.session_id)?["rsiRun"]!=true {
+        return None;
+    }
+    let mut command=tokio::process::Command::new("rustfmt");
+    command.args(["--edition","2021","--emit","stdout",
+        "--config","skip_children=true"])
+        .arg(path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let output=tokio::time::timeout(Duration::from_secs(12),command.output())
+        .await.ok()?.ok()?;
+    if output.status.success() {
+        return Some(json!({"valid":true,"tool":"rustfmt_syntax_read_only"}));
+    }
+    let diagnostic=String::from_utf8_lossy(&output.stderr).to_string();
+    if !diagnostic.contains("error") {return None;}
+    let line=diagnostic.lines().find_map(|row|{
+        let row=row.trim();
+        if !row.starts_with("-->"){return None;}
+        let (prefix,col)=row.rsplit_once(':')?;
+        col.trim().parse::<u64>().ok()?;
+        let (_,line)=prefix.rsplit_once(':')?;
+        line.trim().parse::<u64>().ok()
+    });
+    Some(json!({"valid":false,"tool":"rustfmt_syntax_read_only",
+        "line":line,
+        "diagnostic":diagnostic.chars().take(1800).collect::<String>()}))
 }
 
 async fn replace_text(
@@ -889,6 +927,10 @@ async fn replace_text(
     result["replaced"] = json!(true);
     result["replacedChars"] = json!(old_text.chars().count());
     result["writtenSha256"] = json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
+    if let Some(parse)=rsi_rust_parse_receipt(ctx,path).await {
+        result["syntaxValid"]=parse["valid"].clone();
+        result["syntaxCheck"]=parse;
+    }
     Ok(result)
 }
 
