@@ -3490,6 +3490,24 @@ async fn run_loop(
         generation["toolTimeline"]=json!(session.map(|id|
             crate::engine::rsi_rule_induction::tool_timeline(&context.state,id))
             .unwrap_or_default());
+        // The real-model campaign report must attribute only successful,
+        // verified source writes. A requested tool or an unsealed write is
+        // neither a completed edit nor an independently accepted improvement.
+        generation["editEvidence"]=json!({
+            "attempts":edit_operations.len(),
+            "verifiedWrites":edit_operations.iter().filter(|op|
+                op["written"]==true && op["verified"]==true).count(),
+            "recentFailures":edit_operations.iter().filter(|op|
+                op["status"]=="failed" || op["verified"]==false)
+                .take(4).map(|op|format!("{}: {}",
+                    op["tool"].as_str().unwrap_or("unknown"),
+                    op["error"].as_str().unwrap_or("unverified edit")))
+                .collect::<Vec<_>>()
+        });
+        generation["scopeExpanded"]=current["input"]["rsiSourceScopeExpanded"].clone();
+        generation["metaTransferTarget"]=current["input"]["rsiMetaTransferTarget"].clone();
+        generation["costOpportunities"]=current["input"]["rsiCostOpportunities"].clone();
+        generation["residualEvidence"]=current["input"]["rsiResidualEvidence"].clone();
         generation["actionProgram"]=current["input"]["rsiActionProgram"].clone();
         generation["actionProgramTrial"]=current["input"]["rsiActionProgramTrial"].clone();
         generation["actionProgramEffects"]=json!(action_program_effects);
