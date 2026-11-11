@@ -151,6 +151,21 @@ pub fn evolve(parent:&[Value],observation:&Value)->Vec<Value>{
         // whether this rewritten generator is preferable.
         new_op=Some(json!({"kind":"prune","metric":"completed:code_search"}));
     }
+    if new_op.is_none()
+        && observation["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)>0
+        && observation["verification"]["checks"].as_array().is_some_and(|checks|
+            checks.iter().any(|check|check["passed"]!=true
+                && check["label"].as_str().is_some_and(|name|name.starts_with("cargo check")))) {
+        // An actually executed source edit did not compile. Evolve the
+        // rule-generator to demand one additional independent source read
+        // before its next speculative edit. Paired trials decide whether
+        // the new grammar really improves software quality.
+        let previous_reads=timeline.into_iter().flatten().filter(|event|
+            event["tool"]=="workspace_read_range" && event["status"]=="completed").count() as u64;
+        new_op=Some(json!({"kind":"tighten",
+            "metric":"completed:workspace_read_range",
+            "value":previous_reads.saturating_add(1).clamp(1,24)}));
+    }
     if new_op.is_none() && observation["candidateId"].is_string()
         && observation["accepted"]!=true
         && observation["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
@@ -227,6 +242,24 @@ mod tests{
         assert_eq!(modified[0]["guard"]["metric"],"grounded");
         assert_eq!(modified[0]["allow"],json!(["workspace_replace_range"]));
     }
+    #[test]
+    fn compiler_failure_changes_the_rule_synthesis_algorithm_itself(){
+        let outcome=json!({"jobId":"compiler-failure","tokens":3500,
+            "editEvidence":{"verifiedWrites":1},
+            "verification":{"checks":[{"label":"cargo check --all-targets",
+                "passed":false,"detail":"error[E0308]: mismatched types"}]},
+            "toolTimeline":[{"tool":"workspace_read_range","status":"completed"},
+                {"tool":"workspace_replace_range","status":"completed"}]});
+        let method=evolve(&[],&outcome);
+        assert_eq!(method[0]["kind"],"tighten");
+        assert_eq!(method[0]["metric"],"completed:workspace_read_range");
+        assert_eq!(method[0]["value"],2);
+        let changed=apply(&method,&[rule()]);
+        assert!(changed[0]["guard"]["all"].as_array().unwrap().iter()
+            .any(|c|c["metric"]=="completed:workspace_read_range"
+                && c["value"]==2));
+    }
+
     #[test]
     fn unknown_grammar_cannot_gain_tools_or_grow_unbounded(){
         let bad=json!([{"kind":"shell_exec","metric":"completed:code_search"},
