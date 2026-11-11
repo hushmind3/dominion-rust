@@ -220,6 +220,17 @@ pub fn parse_rsi_unwrapped_edit_observed(
             }
         }
     }
+    if available.contains("workspace_replace_function") {
+        let sha=args["expectedSha256"].as_str().unwrap_or("");
+        if sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit())
+            && args["functionName"].as_str().is_some_and(|name|
+                !name.is_empty() && name.bytes().all(|b|
+                    b.is_ascii_alphanumeric() || b==b'_'))
+            && args["newText"].as_str().is_some_and(|text|
+                text.len()<=16_000 && text.trim_end().ends_with('}')) {
+            return Some(("workspace_replace_function".into(),args.to_string()));
+        }
+    }
     if available.contains("workspace_replace_range") {
         let sha=args["expectedSha256"].as_str().unwrap_or("");
         if sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit())
@@ -424,6 +435,23 @@ fn parse_dsml_tool_calls(
 #[cfg(test)]
 mod sub1_structured_patch_tests {
     use super::*;
+    #[test]
+    fn observed_single_rust_function_is_a_grounded_native_intent() {
+        let available=std::collections::HashSet::from([
+            "workspace_replace_function".to_string()]);
+        let text=r#"{"path":"src/engine/decompose.rs","functionName":"split_markers","newText":"fn split_markers() -> Vec<String> { vec![] }"}"#;
+        let observed="a".repeat(64);
+        let (tool,raw)=parse_rsi_unwrapped_edit_observed(
+            text,&available,|path| (path=="src/engine/decompose.rs")
+                .then(||observed.clone())).unwrap();
+        assert_eq!(tool,"workspace_replace_function");
+        let arguments:Value=serde_json::from_str(&raw).unwrap();
+        assert_eq!(arguments["expectedSha256"],observed);
+        assert!(parse_rsi_unwrapped_edit_observed(text,&available,|_|None).is_none());
+        assert!(parse_rsi_unwrapped_edit_observed(
+            &text.replace("split_markers","../../untrusted"),&available,
+            |_|Some(observed.clone())).is_none());
+    }
     #[test]
     fn prose_wrapped_single_source_bound_patch_is_a_real_tool_intent() {
         let mut available=std::collections::HashSet::new();
