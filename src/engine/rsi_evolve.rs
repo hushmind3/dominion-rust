@@ -1396,12 +1396,29 @@ fn method_has_independent_source_gain(state:&AppState,receipt:&Value,generation:
     receipt["operationIds"].as_array().into_iter().flatten().any(|id|{
         let Some(op)=id.as_str().and_then(|id|state.store.get("execution_operation",id))
             else {return false;};
-        op["status"]=="completed"
-            && op["toolReceipt"]["verified"]==true
-            && op["result"]["written"]==true
-            && matches!(op["tool"].as_str(),
+        if op["status"]!="completed" || op["origin"]!="procedure"
+            || op["procedureStrategyId"]!=receipt["methodId"]
+            || op["procedureRevision"]!=receipt["revision"]
+            || op["toolReceipt"]["verified"]!=true
+            || op["result"]["written"]!=true
+            || !matches!(op["tool"].as_str(),
                 Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))
-            && paths.is_some_and(|paths|paths.contains(&op["arguments"]["path"]))
+        {return false;}
+        let Some(path)=op["arguments"]["path"].as_str() else{return false;};
+        if !paths.is_some_and(|paths|paths.iter().any(|p|p.as_str()==Some(path))){
+            return false;
+        }
+        let Some(adopted)=generation["acceptedSourceHashes"][path].as_str()
+            .filter(|hash|hash.len()==64
+                && hash.bytes().all(|b|b.is_ascii_hexdigit()))
+            else{return false;};
+        let post=op["result"]["postSha256"].as_str().map(str::to_string)
+            .or_else(||if op["tool"]=="workspace_write"{
+                op["arguments"]["content"].as_str().map(|text|
+                    format!("{:x}",Sha256::digest(text.as_bytes())))
+            }else{None});
+        post.as_deref().is_some_and(|hash|
+            hash.len()==64 && hash.eq_ignore_ascii_case(adopted))
     })
 }
 
