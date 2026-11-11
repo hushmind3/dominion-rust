@@ -75,6 +75,81 @@ fn hoist_invariant_query_terms(source: &str) -> Option<String> {
     None
 }
 
+/// Improve the improver itself. A search-policy evaluation currently
+/// materializes the same domain's history as a Vec, then traverses it again
+/// for every feature, and re-parses eligible domains for the tie breaker.
+/// Synthesize one streaming accumulator, retaining the original scoring,
+/// objective scope, and ordering semantics. The frozen improver holdout is
+/// still responsible for proving any execution-time gain.
+fn stream_search_policy_statistics(source: &str) -> Option<String> {
+    let first = "fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap<String, f64> {";
+    let after = "\n}\n\nfn score_domain(";
+    let start = source.find(first)?;
+    if source.matches(first).count() != 1 { return None; }
+    let end = start + source[start..].find(after)? + 2;
+    let original = &source[start..end];
+    let old_rows = "    let rows = history\n        .iter()\n        .filter(|row| row[\"domain\"] == domain)\n        .collect::<Vec<_>>();";
+    if !original.contains(old_rows)
+        || !original.contains("rows.iter().filter(|row| row[\"accepted\"] == true)")
+        || !original.contains("rows\n        .last()")
+    {
+        return None;
+    }
+    let old_tie = "let mut best=(f64::NEG_INFINITY,eligible_domains(objective)[0]);";
+    if source.matches(old_tie).count() != 1 { return None; }
+    let optimized = r#"fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap<String, f64> {
+    // One witnessed generation produces all features for its domain in one
+    // traversal; no temporary Vec or repeated history scans.
+    let mut attempts = 0.0_f64;
+    let mut accepted = 0.0_f64;
+    let mut regressions = 0.0_f64;
+    let mut inconclusive = 0.0_f64;
+    let mut tokens = 0u64;
+    let mut useful = 0.0_f64;
+    let mut last_row: Option<&Value> = None;
+    for row in history.iter().filter(|row|row["domain"]==domain) {
+        attempts += 1.0;
+        accepted += f64::from(row["accepted"]==true);
+        regressions += f64::from(row["evaluation"]["verdict"]=="regressed");
+        inconclusive += f64::from(row["evaluation"]["verdict"]=="inconclusive");
+        tokens += row["tokens"].as_u64().unwrap_or(0);
+        useful += f64::from(row["accepted"]==true
+            || row["candidateId"].is_string()
+            || row["newFindings"].as_u64().unwrap_or(0)>0);
+        last_row=Some(row);
+    }
+    let barren_rate=if attempts==0.0 {0.0}else{1.0-useful/attempts};
+    let success_rate=if attempts==0.0 {0.0}else{accepted/attempts};
+    let token_cost=if attempts==0.0 {0.0}else{(tokens as f64/attempts)/10_000.0};
+    let objective_match=if objective_matches(domain,objective){1.0}else{0.0};
+    let unresolved=if last_row.is_some_and(|row|
+        row["candidateId"].is_null() && row["accepted"]!=true) {1.0}else{0.0};
+    let exploration=if attempts==0.0 {3.0}else{
+        (2.0*((history.len() as f64)+1.0).ln()/attempts).sqrt().min(3.0)
+    };
+    BTreeMap::from([
+        ("attempts".to_string(),attempts),
+        ("accepted".to_string(),accepted),
+        ("regressions".to_string(),regressions),
+        ("inconclusive".to_string(),inconclusive),
+        ("novelty".to_string(),if attempts==0.0 {1.0}else{0.0}),
+        ("successRate".to_string(),success_rate),
+        ("usefulGenerations".to_string(),useful),
+        ("barrenRate".to_string(),barren_rate),
+        ("tokenCost".to_string(),token_cost),
+        ("objectiveMatch".to_string(),objective_match),
+        ("unresolved".to_string(),unresolved),
+        ("exploration".to_string(),exploration),
+    ])
+}"#;
+    let mut transformed = String::with_capacity(source.len());
+    transformed.push_str(&source[..start]);
+    transformed.push_str(optimized);
+    transformed.push_str(&source[end..]);
+    Some(transformed.replacen(old_tie,
+        "let mut best=(f64::NEG_INFINITY,scores.first().map(|(domain,_)|*domain).unwrap_or(DOMAINS[0]));",1))
+}
+
 /// A third-generation structural optimization: facts originate as immutable
 /// owner statements, yet their text terms are reconstructed for every query.
 /// Cache the exact terms of the *stored, truncated* text at ingestion. Legacy
@@ -174,7 +249,9 @@ pub(crate) fn induce(
     let original = fs::read_to_string(source.join(relative)).map_err(|e| e.to_string())?;
     let existing = fs::read_to_string(isolated.join(relative)).map_err(|e| e.to_string())?;
     if original != existing { return Ok(None); }
-    let (operator,transformed)=if let Some(next)=materialize_verified_owner_provenance(&existing) {
+    let (operator,transformed)=if let Some(next)=stream_search_policy_statistics(&existing) {
+        ("streamed_improver_policy_statistics_v1",next)
+    }else if let Some(next)=materialize_verified_owner_provenance(&existing) {
         ("verified_owner_provenance_cache_v1",next)
     }else if let Some(next)=hoist_invariant_query_terms(&existing) {
         ("loop_invariant_term_hoist_v1",next)
@@ -240,6 +317,17 @@ mod tests {
         assert!(second.contains("let asked_domain = fact_domain(query);"));
         assert!(hoist_invariant_query_terms(&second).is_none());
         assert!(hoist_invariant_query_domain(&second).is_none());
+    }
+
+    #[test]
+    fn meta_improver_evolves_streamed_policy_statistics_without_changing_rules() {
+        let source = include_str!("rsi_evolve.rs");
+        let candidate = stream_search_policy_statistics(source).unwrap();
+        assert!(candidate.contains("let mut last_row: Option<&Value> = None"));
+        assert!(candidate.contains("f64::from(row[\"accepted\"]==true)"));
+        assert!(candidate.contains("scores.first().map(|(domain,_)|*domain)"));
+        assert!(candidate.contains("(\"exploration\".to_string(),exploration)"));
+        assert!(stream_search_policy_statistics(&candidate).is_none());
     }
 
     #[test]
