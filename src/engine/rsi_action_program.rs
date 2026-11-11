@@ -432,7 +432,10 @@ pub fn next_tool(program:&Value,ops:&[Value],execution_id:&str)->Option<(String,
 }
 
 pub fn tool_allowed(name:&str,chosen:&str)->bool {
-    name==chosen || name=="workspace_read_range"
+    // Once a versioned source read completed and the program chooses its
+    // mutation node, re-offering read allows a small model to loop forever.
+    // A failed edit learns an explicit recovery read as its NEXT phase.
+    name==chosen
 }
 
 /// Every chosen tool must be witnessed *after* the choice on the same execution.
@@ -448,11 +451,14 @@ pub fn observed_effects(state:&AppState,session_id:&str)->Vec<Value> {
         let Some(run_id)=execution["id"].as_str() else{continue;};
         for choice in execution["rsiActionProgramChoices"].as_array().into_iter().flatten() {
             let Some(tool)=choice["chosenTool"].as_str() else{continue;};
-            let after=choice["afterOpSeq"].as_u64().unwrap_or(u64::MAX);
+            // No prior operation means the very first opSeq=0 also belongs
+            // to this policy. A synthetic boundary of 0 silently erased it.
+            let after=choice["afterOpSeq"].as_u64();
             let matched=operations.iter().filter(|op|
                 op["runId"].as_str()==Some(run_id)
                 && op["tool"].as_str()==Some(tool)
-                && op["opSeq"].as_u64().is_some_and(|n|n>after)
+                && op["opSeq"].as_u64().is_some_and(|n|
+                    after.is_none_or(|previous|n>previous))
                 && witnessed(op)).collect::<Vec<_>>();
             effects.push(json!({"programRevision":choice["programRevision"],
                 "executionId":run_id,"chosenTool":tool,"afterOpSeq":after,
@@ -770,6 +776,14 @@ mod tests {
         assert_eq!(changed["mutationOperator"],"append_missing_edit_phase");
         assert_eq!(changed["sequence"],json!(["code_search","workspace_replace_range"]));
     }
+    #[test]
+    fn actual_edit_step_cannot_stall_in_unrelated_read_loops(){
+        assert!(tool_allowed("workspace_read_range","workspace_read_range"));
+        assert!(tool_allowed("workspace_replace","workspace_replace"));
+        assert!(!tool_allowed("workspace_read_range","workspace_replace"));
+        assert!(!tool_allowed("code_search","workspace_replace"));
+    }
+
     #[test]
     fn worker_advances_only_on_actual_tool_operations(){
         let program=json!({"sequence":["code_search","workspace_replace"]});

@@ -1372,7 +1372,21 @@ async fn run_turn_body(
                     round_tools.retain(|tool|crate::engine::rsi_action_program::tool_allowed(
                         tool_name(tool),&selected));
                     let after=operations.iter().filter_map(|op|op["opSeq"].as_u64())
-                        .max().unwrap_or(0);
+                        .max();
+                    let previous=state.store.get("execution",execution_id)
+                        .and_then(|e|e["rsiActionProgramDecision"]["chosenTool"]
+                            .as_str().map(str::to_string));
+                    if previous.as_deref()!=Some(selected.as_str())
+                        && matches!(selected.as_str(),
+                            "workspace_replace"|"workspace_replace_range"|"workspace_write") {
+                        let path=session["rsiActionProgram"]["sourceGrounding"]["path"]
+                            .as_str().or_else(||session["rsiFocusFiles"]
+                                .as_array().and_then(|files|files.first())
+                                .and_then(Value::as_str)).unwrap_or("");
+                        messages.push(json!({"role":"system","content":format!(
+                            "실행 프로그램의 실제 편집 단계입니다. 이번 라운드 사용 도구: {selected}. 대상 파일: {path}. 이전 workspace_read_range의 최신 sourceSha256과 관측된 원문을 사용하여 정확한 변경을 실행하세요. 도구를 호출하기 전에는 성공이라고 말하지 마세요."
+                        )}));
+                    }
                     let receipt=json!({"programRevision":session["rsiActionProgram"]["revision"],
                         "chosenTool":selected,"reason":reason,"round":round,
                         "afterOpSeq":after,"source":"native_composed_harness_program",
