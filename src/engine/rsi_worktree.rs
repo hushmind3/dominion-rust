@@ -523,7 +523,20 @@ pub fn repair_target(result:&Value)->Option<(String,u64)> {
         let diagnostic=check["stderr"].as_str()
             .or_else(||check["error"].as_str()).unwrap_or("");
         for text in diagnostic.lines() {
-            let Some(location)=text.trim().strip_prefix("-->") else {continue;};
+            // cargo often emits ANSI-colored diagnostics even when its
+            // stderr is captured: "\\x1b[94m--> \\x1b[0msrc/file.rs:75:13".
+            // Remove CSI escapes before parsing the real compiler location.
+            let mut plain=String::new();
+            let mut chars=text.chars().peekable();
+            while let Some(ch)=chars.next() {
+                if ch=='\\u{1b}' && chars.peek()==Some(&'[') {
+                    chars.next();
+                    for code in chars.by_ref() {
+                        if ('@'..='~').contains(&code) {break;}
+                    }
+                } else {plain.push(ch);}
+            }
+            let Some(location)=plain.trim().strip_prefix("-->") else {continue;};
             let mut fields=location.trim().rsplitn(3, ':');
             let _column=fields.next();
             let Some(line)=fields.next().and_then(|s|s.parse::<u64>().ok()) else {continue;};
