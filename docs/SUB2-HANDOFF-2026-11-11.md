@@ -353,3 +353,31 @@ HEAD CI/실모델 로그의 첫 컴파일·실행 결함 즉시 수정 → Qwen 
 ### 완료 조건과 이번 검증 구분
 
 Rust 소스·테스트 코드 GitHub 커밋은 확인했다. 당시 CI 및 새 실모델 캠페인은 대기 상태였으며, 이 작업 세션에서는 cargo/rustc로 빌드·테스트를 직접 실행하지 못했다. 앞선 실모델 캠페인의 소스 빌드 단계 성공은 확인했으나 최신 합성 연산자와 전체 3세대 재귀적 향상 실증은 아직이다. 연속된 실제 소스 diff → 독립 frozen holdout 승격 → 재빌드된 후손의 새로운 메타 연산자 생성 → 후속 승격을 확인해야 완주다.
+
+
+## 2026-11-11 18:57 KST — 실모델 편집 실패에서 실행 가능 후손 복구로 발전
+
+- 시작 GitHub HEAD: `5dbe5e4cffac2adc118e21416a318c46a7d985ec`. Sub2만 수정. 심판의 당시 점수 65/100·2위는 재평가 없이 변경하지 않음.
+- 새로운 소스 HEAD: `5d673f48a82d8d64354c0b3c8a22ee2e6531a83f`. 추가된 코드의 CI/실모델 작업은 제출됨. 이 채팅 실행 환경에서는 cargo/rustc를 확보하지 못했으므로 빌드 통과를 주장하지 않음.
+
+### 처음으로 확인한 실제 모델 실패의 정확한 원인
+
+- GitHub Actions run [42990613177](https://github.com/hushmind3/dominion-rust/actions/runs/42990613177), artifact 13842444050의 실제 영수증/엔진 로그 확인.
+- Qwen3 4B Instruct가 Ollama 원생 도구 호출을 실제 생성함(사전 테스트 도구 호출 1회). 본 세대 6회 모델 호출, 22,865토큰, 840,170ms, 후보 소스 diff 0바이트.
+- 편집 3회 시도: `workspace_replace` 2회 `endLine은 startLine 이상이어야 합니다.` 오류, `workspace_write` 1회 기존 소스 덮어쓰기 차단. 3회 모두 실패. 독립 paired 향상·채택·후손 완주 없음.
+- 원인은 단순 조사 부진보다 실제 편집 도구 인자 복구 실패와 긴 재추론에 있음. 근거 없는 소스 변경을 성공으로 기록하지 않음.
+
+### 실제 변경한 실행 엔진 / 자기개선 알고리즘
+
+1. `99d2b12` — `tools.rs`: 역순으로 전달된 2개의 **절대** 줄 번호가 120줄 안이고 유효하면 동일한 원본 줄 집합으로 정규화하고 기존 SHA CAS·원본 보존·검증을 그대로 적용. 0·과대 범위·낡은 해시는 거부하며 `reorderedLineEndpoints`를 실제 적용 영수증에만 기록. 테스트 코드 추가.
+2. `c3a7648` — `rsi_evolve.rs`: 이전 세대의 **실제 실패한** 역순 줄 인자와 목표 경로를 근거로 `workspace_read_range → 최신 SHA 바인딩 → workspace_replace` 실행 가능한 후보 DAG를 새로 합성. 고유 revision, 실패 operation ID, 세대 provenance를 기록. 메타 방법 자체는 `candidate`, `qualityGain:null`로 시작. 후손 실행·영구 경험·차단조건 테스트 추가.
+3. `69c3c7f`, `4667212` — `chat/runtime.rs`: 정확한 파일 범위 오류, 소스 버전 불일치, 기존 소스 전체 덮어쓰기 실패는 추가 LLM adaptation 호출 없이 직접 실행 도구 오류를 알려주고 필요할 때 **1회 범위 읽기**를 허용. 의미 없는 재추론 대신 다음 수정으로 연결. 편집 체크포인트 출력 상한 2,048토큰, 복구 읽기 시 1,024토큰. 적용 범위·실패 케이스 테스트.
+4. `d943e80`, `c8e5d45` — `rsi_evolve.rs`: 실제 편집 실패가 있고 유효한 새 프로그램을 학습했는데 모델 840초 제한 때문에 세대가 끝난 경우, 남은 예산/시도 횟수가 허용하면 **후손 복구를 최대 1회** 이어서 실행. 오류나 제안 자체를 채택으로 보상하지 않음. 이전 세대 기록을 이용하도록 소유권 컴파일 문제 사전 수정.
+5. `5d673f4` — `chat/runtime.rs`: 완료된 operation 수가 아니라 실제 `result.written==true`인 편집만 source-write 체크포인트 성과로 계산. 오류 envelope나 no-op가 수정을 가장하여 후속 복구를 차단하는 오류 제거.
+
+### 실증 수준 및 다음 필수 완주
+
+- 검증: GitHub 코드 변경 및 테스트 소스 커밋과 이전 실모델 실패 원인의 원시 Actions 아티팩트 교차 확인.
+- 미검증: 신규 HEAD cargo 빌드·단위 테스트 통과, 새로운 모델의 실제 patch 성공, frozen paired 효과·승격, 재빌드 후손 2·3세대 연속 개선. `capabilityDemonstrated=false` 유지.
+- 마지막 코드 HEAD CI와 Sub2 local-model RSI workflow 자동 제출됨. 진행 상태는 별도 GitHub Actions에서 확인. 이후 첫 실제 성공적 소스 diff와 8개 이상 비교 사례의 증거를 우선 확보해야 함.
+- 다음 1순위: 새 실모델 run의 `editActions`와 `methodExecutions` 및 `rsiMethodProposals` 영수증을 대조, 실제 source diff>0 → frozen paired 독립 채택 → 채택 후손 바이너리에서 방법 생성/개선이 다시 발생했는지 재검증. 무편집을 성과로 둔갑시키지 말 것.
