@@ -1991,15 +1991,17 @@ fn synthesize_successful_dag_ablation(
         if method["verification"]["after"].as_array().into_iter().flatten()
             .any(|v|v["tool"]=="workspace_read_range"
                 || v.to_string().contains(&format!("{}{}.",char::from(36),read_id))) {continue}
-        let read_ok=operations.iter().any(|op|
+        let read_hash=operations.iter().filter(|op|
             ids.contains(&op["id"]) && op["origin"]=="procedure"
                 && op["procedureStrategyId"]==method["id"]
                 && op["procedureRevision"]==method["revision"]
                 && op["procedureNodeId"]==read_id
                 && op["tool"]=="workspace_read_range"
-                && crate::engine::procedure::operation_succeeded(op)
-                && op["result"]["sourceSha256"].as_str()
-                    .is_some_and(|hash|hash.len()==64));
+                && crate::engine::procedure::operation_succeeded(op))
+            .filter_map(|op|op["result"]["sourceSha256"].as_str())
+            .find(|hash|hash.len()==64
+                && hash.bytes().all(|byte|byte.is_ascii_hexdigit()));
+        let Some(observed_sha)=read_hash else {continue};
         let edit_ok=operations.iter().any(|op|
             ids.contains(&op["id"]) && op["origin"]=="procedure"
                 && op["procedureStrategyId"]==method["id"]
@@ -2008,8 +2010,10 @@ fn synthesize_successful_dag_ablation(
                 && op["tool"]=="workspace_replace"
                 && crate::engine::procedure::operation_succeeded(op)
                 && op["result"]["written"]==true
-                && op["arguments"]["path"]==path);
-        if !read_ok || !edit_ok {continue}
+                && op["arguments"]["path"]==path
+                && op["arguments"]["expectedSha256"].as_str()
+                    .is_some_and(|hash|hash.eq_ignore_ascii_case(observed_sha)));
+        if !edit_ok {continue}
         let mut program=method["verification"].clone();
         program["nodes"].as_array_mut()?.retain(|n|n["id"]!=read_id);
         let edit=program["nodes"].as_array_mut()?.iter_mut()
@@ -7010,7 +7014,8 @@ mod tests {
             let edit=json!({"id":"op-edit","status":"completed","origin":"procedure",
                 "procedureStrategyId":"accepted-procedure",
                 "procedureRevision":"old-method-revision","procedureNodeId":"edit",
-                "tool":"workspace_replace","arguments":{"path":path},
+                "tool":"workspace_replace","arguments":{
+                    "path":path,"expectedSha256":sha},
                 "result":{"written":true,"replaced":true}});
             let receipt=json!({"executionId":"execution-1",
                 "operationIds":["op-read","op-edit"],
@@ -7038,7 +7043,8 @@ mod tests {
             let not_written=json!({"id":"op-edit","status":"completed","origin":"procedure",
                 "procedureStrategyId":"accepted-procedure",
                 "procedureRevision":"old-method-revision","procedureNodeId":"edit",
-                "tool":"workspace_replace","arguments":{"path":path},
+                "tool":"workspace_replace","arguments":{
+                    "path":path,"expectedSha256":"a".repeat(64)},
                 "result":{"written":false}});
             assert!(synthesize_successful_dag_ablation(
                 &state,&method,&receipt,&[read.clone(),not_written],&generation).is_none());
@@ -7098,7 +7104,8 @@ mod tests {
                 "status":"completed","origin":"procedure","tool":"workspace_replace",
                 "procedureStrategyId":"accepted-parent",
                 "procedureRevision":"p1","procedureNodeId":"edit",
-                "arguments":{"path":"src/engine/memory.rs"},
+                "arguments":{"path":"src/engine/memory.rs",
+                    "expectedSha256":"b".repeat(64)},
                 "result":{"written":true,"replaced":true}})
         ] {
             state.store.put("execution_operation",&op).unwrap();
@@ -7182,7 +7189,8 @@ mod tests {
             json!({"id":"tools-edit","status":"completed","origin":"procedure",
                 "tool":"workspace_replace","procedureNodeId":"edit",
                 "procedureStrategyId":"target-tools","procedureRevision":"t1",
-                "arguments":{"path":"src/engine/tools.rs"},
+                "arguments":{"path":"src/engine/tools.rs",
+                    "expectedSha256":"a".repeat(64)},
                 "result":{"written":true}})];
         let generation=json!({"jobId":"tools-generation","accepted":false});
         let transferred=synthesize_successful_dag_ablation(
