@@ -6639,7 +6639,8 @@ mod harness_tool_selection_tests {
         let rejected=json!({"runId":"run","tool":"workspace_replace","status":"failed",
             "opSeq":3,"result":{"error":"oldText mismatch"}});
         assert_eq!(rsi_action_program_next(&plan,&[rejected],"run")
-            .unwrap().1,"learned_error_recovery");
+            .unwrap().1,"observed_source_precondition_recovery",
+            "An actual stale oldText must refresh source before fallback");
         assert!(rsi_action_program_tool_allowed("workspace_read_range",
             "workspace_replace_range"));
         assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range"));
