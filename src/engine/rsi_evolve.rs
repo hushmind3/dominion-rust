@@ -7035,8 +7035,10 @@ mod tests {
                 if last["role"]=="tool" {
                     let result:Value=serde_json::from_str(last["content"].as_str().unwrap()).unwrap();
                     if let Some(content)=result["content"].as_str() {
-                        let (_,source)=content.trim_start().split_once(' ').unwrap();
-                        let knowledge:Value=serde_json::from_str(source.trim()).unwrap();
+                        // workspace_read_range returns raw source, never a
+                        // line-number-prefixed snippet. Parse what the real
+                        // tool now delivers to the learning loop.
+                        let knowledge:Value=serde_json::from_str(content.trim()).unwrap();
                         call=Some(("rsi_method_propose",json!({"name":"연구에서 합성한 자료 처리","domain":"context",
                             "description":knowledge["principle"],
                             "verification":{"type":"procedure","appliesTo":{"requestContains":["대화"]},
