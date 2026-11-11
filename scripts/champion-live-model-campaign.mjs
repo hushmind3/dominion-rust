@@ -97,6 +97,15 @@ if(mode==='probe'){
       improvedHoldouts:g.evaluation?.metrics?.improvedHoldouts,
       generatorCommit:g.generatorCommit,domain:g.domain,searchStrategy:g.searchStrategy,
       error:g.error,toolsUsed:g.toolsUsed,newFindings:g.newFindings,
+      observedSourceEdits:g.observedSourceEdits||0,
+      editOperations:(g.editOperations||[]).map(op=>({
+        tool:op.tool,path:op.path,status:op.status,written:op.written,
+        staleVersion:op.staleVersion,error:op.error
+      })),
+      toolRejections:g.toolRejections||[],
+      methodPolicyRevision:g.decisionInput?.reuseDecision?.policyRevision||null,
+      selectedMethodIds:g.decisionInput?.reuseDecision?.methodIds||[],
+      improvementActionObservation:g.improvementActionObservation,
       focusFiles:g.focusFiles,knowledgeId:g.knowledgeId,
       evaluation:g.evaluation?.metrics
     }));
@@ -104,17 +113,24 @@ if(mode==='probe'){
       'campaign_finished':'campaign_timeout';
     trace.status=last.status;trace.result=last.result||null;
     trace.stopReason=last.evolution?.stopReason||last.result?.evolution?.stopReason||null;
-    const editTools=new Set(['workspace_replace','workspace_write']);
+    const editTools=new Set(['workspace_replace','workspace_replace_range','workspace_write']);
     const countCalls=(generation,names)=>generation.toolsUsed
       .filter(tool=>names.has(tool.tool)).reduce((sum,tool)=>sum+(tool.calls||0),0);
     const sourceEditCalls=trace.generationEvidence.reduce((sum,g)=>
       sum+countCalls(g,editTools),0);
+    const verifiedSourceEdits=trace.generationEvidence.reduce((sum,g)=>
+      sum+(g.observedSourceEdits||0),0);
+    const editedGenerations=trace.generationEvidence.filter(g=>
+      (g.observedSourceEdits||0)>0).length;
     const candidateCount=trace.generationEvidence.filter(g=>g.candidateId).length;
     const accepted=trace.generationEvidence.filter(g=>g.accepted===true
       && typeof g.acceptedCommit==='string' && g.acceptedCommit.length>0);
     trace.summary={
       modelCalls:trace.generationEvidence.reduce((sum,g)=>sum+(g.tokenUsage?.calls||0),0),
-      sourceEditCalls,candidateCount,acceptedGenerations:accepted.length,
+      sourceEditCalls,verifiedSourceEdits,editedGenerations,
+      methodPolicyRevisions:[...new Set(trace.generationEvidence
+        .map(g=>g.methodPolicyRevision).filter(Boolean))],
+      candidateCount,acceptedGenerations:accepted.length,
       acceptedCommits:accepted.map(g=>g.acceptedCommit),
       readOnlyGenerations:trace.generationEvidence.filter(g=>!g.candidateId
         && countCalls(g,new Set(['code_search','workspace_read_range']))>0).length,
