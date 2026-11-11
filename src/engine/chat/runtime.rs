@@ -1745,9 +1745,25 @@ async fn run_turn_body(
             // requires an action; the model still authors oldText/newText.
             let learned=rsi_induced_next_tool(&session,
                 &state.store.all("execution_operation"),execution_id,&tool_definitions);
-            round_tools=rsi_final_edit_tools(&tool_definitions,learned.as_deref());
+            // Real failed range edits repeatedly appended at the end of a
+            // 96-line observation, producing uncompilable patches. A witnessed
+            // compiler failure changes the *executed edit operator*: use a
+            // small exact-text replacement against the observed file version,
+            // not another unrestricted range replacement at an arbitrary line.
+            let compiler_repair=session["rsiRepairDiagnostics"].as_array()
+                .is_some_and(|items|items.iter().any(|item|
+                    item["error"].as_str().is_some_and(|error|!error.trim().is_empty())));
+            let requested=if compiler_repair
+                && tool_definitions.iter().any(|tool|tool_name(tool)=="workspace_replace") {
+                Some("workspace_replace")
+            } else {learned.as_deref()};
+            round_tools=rsi_final_edit_tools(&tool_definitions,requested);
             if let Some(mut record)=state.store.get("execution",execution_id) {
-                record["rsiActionRetry"]["toolChoice"]=json!("native_required_workspace_replace_range_or_exact");
+                record["rsiActionRetry"]["toolChoice"]=json!(
+                    round_tools.first().map(tool_name).unwrap_or("unavailable"));
+                record["rsiActionRetry"]["selectionBasis"]=json!(
+                    if compiler_repair {"witnessed_compiler_failure_exact_edit"}
+                    else {"learned_method_or_baseline"});
                 state.store.put("execution",&record);
             }
         }
