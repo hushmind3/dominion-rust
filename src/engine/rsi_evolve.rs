@@ -3129,7 +3129,20 @@ fn select_generation_strategy(
                 strategy["trialFallback"]=json!("candidate_expression_invalid_for_runtime_features");
                 return (select_domain(&baseline,history,objective),"algorithm_active",strategy);
             }
-            let domain = select_domain(&algorithm, history, objective);
+            // Pin the candidate's target to the domain used by its previous
+            // active-policy control. Recomputing the adaptive score *after*
+            // control generation can switch domains and make the controlled
+            // experiment permanently incomparable.
+            let pinned=history.iter().rev().find(|row|{
+                row["generatorCommit"]==generator_commit
+                    && row["domainSelection"]=="algorithm_active"
+                    && row["searchStrategy"]["controlForCandidateId"].as_str()==Some(id.as_str())
+                    && row["searchStrategy"]["controlForCandidateRevision"]==algorithm["revision"]
+                    && row["domain"].as_str().is_some_and(|d|
+                        candidate_domains(objective).contains(&d))
+            }).and_then(|row|row["domain"].as_str());
+            let domain=pinned.map(str::to_string)
+                .unwrap_or_else(||select_domain(&algorithm, history, objective));
             let generation = json!({"domain":domain,"generatorCommit":generator_commit});
             if comparable_trial_baseline(history, &generation, &algorithm).is_some() {
                 return (domain, "algorithm_trial", search_strategy(&algorithm, "trial"));
@@ -3162,6 +3175,7 @@ fn select_generation_strategy(
             selected["trialFallback"] = json!("unused_comparable_baseline_missing");
             selected["controlForCandidateId"] = algorithm["id"].clone();
             selected["controlForCandidateRevision"] = algorithm["revision"].clone();
+            selected["controlDomainPinned"] = json!(domain);
             return (domain, "algorithm_active", selected);
         }
         let algorithm = active
@@ -5463,6 +5477,7 @@ mod tests {
         let mut later=history.clone();
         later.push(json!({"jobId":"control-1","domain":domain,
             "domainSelection":"algorithm_active","generatorCommit":"commit-b",
+            "searchStrategy":strategy,
             "candidateId":Value::Null,"accepted":false,"tokens":3000}));
         later.push(json!({"jobId":"control-2","domain":domain,
             "domainSelection":"algorithm_active","generatorCommit":"commit-b",
