@@ -73,7 +73,7 @@ if(mode==='probe'){
       mode:'continuous',confirmation:'START_RSI_EVOLUTION',
       selectionPolicy:'automatic',providerId:'champion-free-proxy',model:'openai-fast',
       request:'Fix a reproducible source decomposition bug in src/engine/decompose.rs. The Korean suffix -고 is split only if the preceding character occurs in a short hard-coded action-ending list. Consequently two real actions such as 파일을 만들고 결과를 기록해 and 파일을 지우고 다시 만들어 are not decomposed into separately executable steps. After reading the actual action_conjunction_at implementation, call workspace_replace with the exact observed oldText and newText to support commonly used action endings for 만들고, 지우고, 고치고 without breaking nouns such as 사고/최고. Preserve token coverage, original action text, existing markers and numbered list handling; verify what was really changed. Do not end at search or description alone, and if replace rejects an oldText, read the exact current block and retry. The native DOMINION evaluator will independently measure candidate vs baseline in frozen worktrees.',
-      focusFiles:['src/engine/decompose.rs'],preferredEditTool:'workspace_replace',maxAttempts:3,
+      focusFiles:['src/engine/decompose.rs'],preferredEditTool:'workspace_replace_range',maxAttempts:3,
       tokenBudget:90000,timeBudgetSeconds:2100
     };
     trace.submittedRequest={...request,request:request.request.slice(0,320)};
