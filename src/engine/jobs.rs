@@ -544,6 +544,19 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     let rsi_workspace = if input["rsiSourceDir"].is_string() {
         Some(crate::engine::rsi_worktree::prepare(context,&input).await?)
     } else { None };
+    // Recover the prior compiler-rejected model patch in the new detached
+    // worktree BEFORE the worker starts. The baseline HEAD is unchanged;
+    // normal candidate capture later includes the repaired original patch.
+    let restored=if let Some(worktree)=&rsi_workspace {
+        crate::engine::rsi_worktree::restore_failed_candidate(context,&input,worktree).await?
+    }else{None};
+    let repair_instruction=restored.as_ref().map(|restored|{
+        let paths=restored["paths"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str).take(3).collect::<Vec<_>>().join(", ");
+        let errors=restored["compilerErrors"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
+        format!("\\n\\n[실제 실패 패치 복구] 이전 모델의 실패한 소스 변경이 지금 별도 작업공간에 실제로 복원돼 있습니다. 새 파일이나 조사 계획을 만들지 말고, 복구된 파일 ({paths})을 workspace_read_range로 읽으세요. 아래 컴파일 오류를 해결하도록 파일을 직접 수정하세요. 기존 패치를 다시 적용할 필요가 없습니다. 고친 코드만 workspace_replace 또는 workspace_replace_range로 쓰세요. 컴파일과 독립 평가는 엔진이 진행합니다.\\n{errors}")
+    }).unwrap_or_default();
     // The dedicated source checkout is validated and detached before a model
     // call, never modified directly by the RSI execution.
     let session_id = job
@@ -559,6 +572,10 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     if rsi_workspace.is_some() {
         if let Some(mut session)=context.state.store.get("session",&session_id) {
             session["rsiRun"]=json!(true);
+            if restored.is_some() {
+                session["rsiCompilerRepair"]=json!(true);
+                session["rsiRestoredCandidateId"]=input["rsiRepairCandidateId"].clone();
+            }
             session["rsiObjective"]=input["rsiObjective"].clone();
             session["rsiExplicitFocus"]=json!(rsi_focused_edit_goal(&input));
             session["rsiFocusContextReady"]=json!(
@@ -584,7 +601,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     context.checkpoint(json!({"sessionId":session_id,"promptState":{"inFlight":true}}))?;
     let request = TurnRequest {
         session_id: Some(session_id.clone()),
-        input: if rsi_workspace.is_some() { format!("{prompt}{reused_research}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. 개선 근거가 있을 때 workspace_replace 또는 workspace_replace_range로 수정하세요. workspace_replace_range는 workspace_read_range가 제공한 파일 SHA와 줄 번호를 사용하고 새 코드만 전달합니다. 변경이 불가능하면 실제 도구 오류를 설명하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.") } else { prompt },
+        input: if rsi_workspace.is_some() { format!("{prompt}{reused_research}{repair_instruction}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. 개선 근거가 있을 때 workspace_replace 또는 workspace_replace_range로 수정하세요. workspace_replace_range는 workspace_read_range가 제공한 파일 SHA와 줄 번호를 사용하고 새 코드만 전달합니다. 변경이 불가능하면 실제 도구 오류를 설명하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.") } else { prompt },
         agent_id: input
             .get("agentId")
             .and_then(|value| value.as_str())
