@@ -4752,8 +4752,14 @@ fn source_integrity_repair(history:&[Value])->Option<Value> {
         .filter_map(Value::as_str).find(|p|crate::engine::rsi::safe_path(p))?;
     let domain=last["domain"].as_str().filter(|d|DOMAINS.contains(d))?;
     let commit=last["generatorCommit"].as_str().filter(|s|!s.is_empty())?;
+    // The previous worker's detached checkout is removed at the end of each
+    // generation. Retain the actual failed candidate identity so prepare()
+    // can restore its patch before the descendant attempts a correction.
+    let candidate_id=integrity["candidateId"].as_str().filter(|s|!s.is_empty())?;
+    let source_job_id=last["jobId"].as_str().filter(|s|!s.is_empty())?;
     Some(json!({"domain":domain,"generatorCommit":commit,
         "focusPath":path,"sourceGenerationId":last["id"],
+        "sourceGenerationJobId":source_job_id,"candidateId":candidate_id,
         "failures":errors.iter().take(3).cloned().collect::<Vec<_>>(),
         "reason":"actual_source_integrity_failure_not_paired_quality"}))
 }
@@ -4765,7 +4771,7 @@ fn source_integrity_repair_instruction(plan:&Value)->String {
             item["error"].as_str().unwrap_or("").chars().take(780).collect::<String>()))
         .collect::<Vec<_>>().join("\n");
     format!("\n\n### 이전 세대의 검증된 소스 수정 실패를 교정하세요\n\
-실제로 수정했지만 독립 컴파일 검사를 통과하지 못했습니다. 현재 소스를 다시 읽고 \
+실제로 수정했지만 독립 컴파일 검사를 통과하지 못했습니다. 이전 실패 패치는 새로운 분리 작업공간에 복구됩니다. 복구된 소스를 읽고 \
 최소 수정으로 오류를 해결하세요. 동일한 무효 코드를 반복하거나 \
 검사 자체를 삭제하지 마세요. 이전 오류는 현재 커밋의 새 검사 결과가 아니므로 \
 현재 소스 SHA·줄 번호를 다시 확인한 다음 편집하세요.\n{}\n",diagnostics)
