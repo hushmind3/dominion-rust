@@ -232,17 +232,27 @@ pub async fn restore_failed_candidate(
         .ok_or("실패 패치의 원래 실행 작업이 없습니다.")?;
     if candidate["id"]!=id || candidate["rsiJobId"]!=parent
         || candidate["baseCommit"].as_str()!=Some(worktree.base.as_str())
-        || candidate["status"]!="proposed" {
+        || !matches!(candidate["status"].as_str(),Some("proposed"|"inconclusive")) {
         return Err("후손 복구 대상의 작업·기준 커밋·후보 상태가 다릅니다.".into());
     }
     let run=context.state.store.get("rsi_run",&format!("rsi-run-{parent}"))
         .ok_or("컴파일 실패를 관찰한 원본 실행 기록이 없습니다.")?;
-    if run["candidateId"]!=id || run["checksPassed"]!=false
-        || run["baseCommit"].as_str()!=Some(worktree.base.as_str())
-        || run["checks"].as_array().is_none_or(|checks|!checks.iter().any(|check|
-            check["passed"]==false && check["ran"]==true)) {
-        return Err("실제 컴파일 실패가 아닌 패치는 다음 세대 복구 대상으로 사용하지 않습니다.".into());
+    if run["candidateId"]!=id
+        || run["baseCommit"].as_str()!=Some(worktree.base.as_str()) {
+        return Err("복구 후보의 원본 소스·실행 영수증이 일치하지 않습니다.".into());
     }
+    let compiler_failure=candidate["status"]=="proposed"
+        && run["checksPassed"]==false
+        && run["checks"].as_array().is_some_and(|checks|checks.iter().any(|check|
+            check["passed"]==false && check["ran"]==true));
+    let quality_plateau=candidate["status"]=="inconclusive"
+        && run["checksPassed"]==true
+        && crate::engine::rsi::verify_revisable_quality_receipt(
+            &context.state,&candidate).is_ok();
+    if !compiler_failure && !quality_plateau {
+        return Err("검증된 컴파일 실패 또는 독립 측정된 무향상 후보만 후손이 복구할 수 있습니다.".into());
+    }
+    let repair_kind=if compiler_failure {"compiler_failure"}else{"quality_plateau"};
     let patch=candidate["patch"].as_str().ok_or("실패 후보의 패치가 없습니다.")?;
     if patch.is_empty() || patch.len()>=MAX_CAPTURE_BYTES
         || candidate["patchSha256"].as_str()!=Some(digest(patch).as_str()) {
@@ -266,7 +276,8 @@ pub async fn restore_failed_candidate(
     }.await;
     let _=std::fs::remove_file(&path);
     result?;
-    context.checkpoint(json!({"rsiPhase":"restored_failed_source",
+    context.checkpoint(json!({"rsiPhase":"restored_revisable_source",
+        "rsiRepairKind":repair_kind,
         "rsiRepairCandidateId":id,"rsiRepairBaseCommit":worktree.base}))?;
     let failures=run["checks"].as_array().into_iter().flatten()
         .filter(|check|check["passed"]==false).take(2)
@@ -276,6 +287,12 @@ pub async fn restore_failed_candidate(
         .collect::<Vec<_>>();
     Ok(Some(json!({"candidateId":id,"parentJobId":parent,
         "baseCommit":worktree.base,"paths":candidate["paths"],
+        "repairKind":repair_kind,
+        "qualityMetrics":if quality_plateau {json!({
+            "pairedCases":candidate["evaluation"]["metrics"]["pairedCases"],
+            "improvedHoldouts":candidate["evaluation"]["metrics"]["improvedHoldouts"],
+            "regressions":candidate["evaluation"]["metrics"]["regressions"],
+            "verdict":candidate["evaluation"]["verdict"]})}else{Value::Null},
         "compilerErrors":failures,
         "patchSha256":candidate["patchSha256"]})))
 }
@@ -378,7 +395,7 @@ pub async fn finish(
     } else if unchanged_inherited {
         // A restored but unmodified broken patch is NOT a new model
         // implementation, regardless of how many tool calls were made.
-        capture_error="복원한 컴파일 실패 패치를 이번 세대에서 실제로 수정하지 않았습니다.".into();
+        capture_error="복원한 개선 후보를 이번 세대에서 실제로 수정하지 않았습니다.".into();
     } else if patch_size>=MAX_CAPTURE_BYTES {
         capture_error="코드 변경량이 79KB를 초과해 증거를 안전하게 수집하지 않았습니다.".into();
     } else {
