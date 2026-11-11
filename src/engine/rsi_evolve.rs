@@ -1027,6 +1027,18 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
 /// The domain score and the source target score are separate decisions.
 /// A failed research-only generation only down-ranks its previous files; it
 /// does not erase a verified source observation or count as an adopted patch.
+/// Keep indexed discovery and source excerpts on the SAME selected capability.
+/// A generic autonomous instruction is not a search target; explicit owner
+/// objectives remain authoritative for non-autonomous campaigns.
+fn source_focus_objective(input:&Value)->&str {
+    let owner=input["rsiObjective"].as_str().unwrap_or("");
+    if input["rsiAutonomous"]==true {
+        input["rsiTargetDomain"].as_str()
+            .filter(|domain|DOMAINS.contains(domain))
+            .unwrap_or(owner)
+    } else {owner}
+}
+
 fn choose_focus_files(
     state:&AppState, input:&Value, history:&[Value], policy:Option<&Value>,
 ) -> Vec<Value> {
@@ -1035,9 +1047,7 @@ fn choose_focus_files(
     // Autonomous RSI is not a learning-domain request just because its
     // generic instruction mentions knowledge or experience. Use the chosen
     // capability as the file query; explicit owner goals retain their text.
-    let objective=if input["rsiAutonomous"]==true {
-        domain
-    } else {input["rsiObjective"].as_str().unwrap_or("")};
+    let objective=source_focus_objective(input);
     let mut failures=BTreeMap::<String,u64>::new();
     let mut successes=BTreeMap::<String,u64>::new();
     let mut seen=BTreeSet::<String>::new();
@@ -1105,7 +1115,7 @@ fn choose_focus_files(
 fn focus_file_context(state: &AppState, record: &Value, input: &Value) -> String {
     let Some(lab) = record["labDir"].as_str() else { return String::new() };
     let Some(index_id) = input["rsiIndexId"].as_str() else { return String::new() };
-    let objective = input["rsiObjective"].as_str().unwrap_or("");
+    let objective = source_focus_objective(input);
     let domain = input["rsiTargetDomain"].as_str()
         .or_else(||input["rsiSelectedDomain"].as_str())
         .or_else(||input["rsiDomain"].as_str()).unwrap_or("");
@@ -3816,6 +3826,17 @@ mod tests {
             "rsiObjective":"quantumqzx uniquezzz","rsiTargetDomain":""}),&[],None);
         assert!(no_match.is_empty(),"an unknown goal must trigger discovery, not a forced source");
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn autonomous_source_excerpt_uses_selected_domain_not_generic_owner_prompt() {
+        let generic="improve knowledge and experience with tools";
+        let chosen=json!({"rsiAutonomous":true,"rsiObjective":generic,"rsiTargetDomain":"memory"});
+        assert_eq!(source_focus_objective(&chosen),"memory");
+        let explicit=json!({"rsiAutonomous":false,"rsiObjective":"UI room panel","rsiTargetDomain":"memory"});
+        assert_eq!(source_focus_objective(&explicit),"UI room panel");
+        let fallback=json!({"rsiAutonomous":true,"rsiObjective":"specific user request","rsiTargetDomain":"unlisted"});
+        assert_eq!(source_focus_objective(&fallback),"specific user request");
     }
 
     #[test]
