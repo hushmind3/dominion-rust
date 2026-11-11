@@ -7800,6 +7800,81 @@ mod tests {
     }
 
     #[test]
+    fn adopted_meta_operator_transfers_across_domains_without_earning_target_credit() {
+        let (state,root)=state();
+        let source=root.join("source");
+        let input=json!({"rsiSourceDir":source,"rsiObjective":"tools improve"});
+        state.store.put("job",&json!({"id":"tools-generation",
+            "kind":"rsi_generation","status":"running",
+            "input":input})).unwrap();
+        let donor=json!({"id":"accepted-pruner","revision":"memory-v2",
+            "domain":"memory","status":"executable",
+            "successfulApplications":2,
+            "applications":[{"accepted":true,"postconditionsPassed":true}],
+            "synthesis":{"kind":"successful_observation_pruning",
+                "transferDepth":0}});
+        state.store.put("experience",&json!({"id":"donor-exp",
+            "status":"active","partitionKey":research_scope(&input).partition_key,
+            "executableMethods":[donor]})).unwrap();
+        let path="src/engine/tools.rs";
+        let target=json!({"id":"tools-method","revision":"tools-v1",
+            "domain":"tools","name":"tool search then source edit",
+            "assistanceMode":"harness_assisted",
+            "verification":{"type":"procedure",
+                "appliesTo":{"requestContains":["tools"]},
+                "nodes":[
+                    {"id":"search","tool":"code_search",
+                        "arguments":{"query":"tools source"}},
+                    {"id":"edit","tool":"workspace_replace",
+                        "arguments":{"path":path,"startLine":1,"endLine":1,
+                            "newText":"fn source() {}","expectedSha256":"a".repeat(64)}}],
+                "edges":[{"from":"search","to":"edit"}],
+                "after":[{"kind":"file_contains","path":path,"text":"fn source()"}]}});
+        let receipts=json!({"methodId":"tools-method","revision":"tools-v1",
+            "executionId":"tools-execution","operationIds":["op-search","op-write"],
+            "result":{"verified":true,"followed":true,"status":"followed"}});
+        let op=|id:&str,node:&str,tool:&str,result:Value|json!({
+            "id":id,"origin":"procedure","status":"completed",
+            "procedureStrategyId":"tools-method","procedureRevision":"tools-v1",
+            "procedureNodeId":node,"tool":tool,
+            "arguments":{"path":path},"result":result});
+        let calls=vec![
+            op("op-search","search","code_search",json!({"matches":["tools"]})),
+            op("op-write","edit","workspace_replace",json!({"written":true}))
+        ];
+        let generation=json!({"jobId":"tools-generation","accepted":false});
+        let evolved=synthesize_observed_dag_pruning(
+            &state,&target,&receipts,&calls,&generation).unwrap();
+        assert_eq!(evolved["synthesis"]["kind"],"transferred_observation_pruning");
+        assert_eq!(evolved["synthesis"]["transferDonor"]["domain"],"memory");
+        assert_eq!(evolved["synthesis"]["transferDepth"],1);
+        assert_eq!(evolved["status"],"candidate");
+        assert_eq!(evolved["successfulApplications"],0);
+        assert_eq!(evolved["synthesis"]["qualityGain"],Value::Null);
+        assert_eq!(evolved["verification"]["nodes"].as_array().unwrap().len(),1);
+        state.store.put("experience",&json!({"id":"tools-exp",
+            "status":"active","partitionKey":research_scope(&input).partition_key,
+            "executableMethods":[target.clone(),evolved.clone()]})).unwrap();
+        let decision=method_reuse_decision(&state,&input,"tools");
+        assert_eq!(decision["repairMethodId"],evolved["id"]);
+        assert_eq!(decision["repairSelectionEvidence"]["selection"],
+            "success_ablation_trial");
+        // The new domain's success may later teach a third domain only if
+        // it independently gets an accepted candidate and a method receipt.
+        let mut donor=state.store.get("experience","donor-exp").unwrap();
+        donor["partitionKey"]=json!("rsi:other-repository");
+        state.store.put("experience",&donor).unwrap();
+        assert!(synthesize_observed_dag_pruning(
+            &state,&target,&receipts,&calls,&generation).is_none());
+        donor["partitionKey"]=json!(research_scope(&input).partition_key);
+        donor["executableMethods"][0]["successfulApplications"]=json!(0);
+        state.store.put("experience",&donor).unwrap();
+        assert!(synthesize_observed_dag_pruning(
+            &state,&target,&receipts,&calls,&generation).is_none());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn pruning_preserves_predecessor_successor_dependencies() {
         let (state,root)=state();
         let path="src/engine/memory.rs";
