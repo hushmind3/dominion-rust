@@ -2157,6 +2157,125 @@ fn new_research_findings(state:&AppState,input:&Value,job_id:&str,hashes:&[Value
     hashes.iter().filter(|hash|hash.as_str().is_some_and(|hash|!known.contains(hash))).count()
 }
 
+/// Induce a new *execution method*, not a new model weight or a replayed
+/// patch. Concrete edit receipts are training examples; independent paired
+/// evidence, when present, outweighs mere file writes. The result controls
+/// the next generation's native tool ordering and retry selection.
+fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Value {
+    #[derive(Default)]
+    struct Arm { attempts:u64, writes:u64, candidates:u64, accepted:u64, rejected:u64, tokens:u64 }
+    let partition=research_scope(input).partition_key;
+    let objective=crate::engine::memory::stable_id(&[
+        input["rsiObjective"].as_str().unwrap_or("")]);
+    let domain=input["rsiTargetDomain"].as_str().unwrap_or("");
+    let mut episodes=BTreeMap::<String,Value>::new();
+    for generation in state.store.all("rsi_generation").into_iter().chain(history.iter().cloned()) {
+        if generation["knowledgePartition"]!=partition {continue;}
+        let same_objective=generation["objectiveId"]==objective;
+        // A different owner objective can contribute only an independently
+        // revalidated, domain-matched adoption. Ordinary attempts never cross.
+        if !same_objective && (domain.is_empty() || generation["domain"]!=domain) {continue;}
+        let key=generation["id"].as_str().unwrap_or("");
+        if !key.is_empty() {episodes.insert(key.to_string(),generation);}
+    }
+    let rows=revalidated_history(state,&episodes.into_values().collect::<Vec<_>>());
+    let mut exact=Arm::default();
+    let mut range=Arm::default();
+    let mut sources=BTreeSet::<String>::new();
+    for row in &rows {
+        let same_objective=row["objectiveId"]==objective;
+        if !same_objective && !generation_is_verified(row) {continue;}
+        let receipts=row["writeReceipts"].as_array();
+        let mut working=BTreeSet::<String>::new();
+        for receipt in receipts.into_iter().flatten() {
+            let arm=match receipt["tool"].as_str() {
+                Some("workspace_replace")=>&mut exact,
+                Some("workspace_replace_range")=>&mut range,
+                _=>continue
+            };
+            arm.attempts+=1;
+            if receipt["written"]==true {
+                arm.writes+=1;
+                working.insert(receipt["tool"].as_str().unwrap().to_string());
+            } else {arm.rejected+=1;}
+        }
+        // Multi-tool edits do not establish which approach caused a candidate.
+        if working.len()!=1 {continue;}
+        let name=working.iter().next().unwrap();
+        let arm=if name=="workspace_replace" {&mut exact}else{&mut range};
+        if row["candidateCapture"]["checksPassed"]==true
+            || row["evaluation"]["candidateStatus"]=="verified" {
+            arm.candidates+=1;
+        }
+        if generation_is_verified(row) {
+            arm.accepted+=1;
+            if let Some(id)=row["objectiveId"].as_str() {sources.insert(id.to_string());}
+        }
+        arm.tokens=arm.tokens.saturating_add(row["tokens"].as_u64().unwrap_or(0));
+    }
+    // Comparable outcomes rank the method. File writes are only evidence
+    // that it can execute, not evidence of quality improvement.
+    let score=|arm:&Arm| (arm.accepted,arm.candidates,arm.writes,arm.rejected);
+    let exact_score=score(&exact);
+    let range_score=score(&range);
+    let (preferred,why)=if exact.accepted>range.accepted {
+        ("workspace_replace","measured_adoption")
+    } else if range.accepted>exact.accepted {
+        ("workspace_replace_range","measured_adoption")
+    } else if exact.candidates>range.candidates {
+        ("workspace_replace","candidate_verification")
+    } else if range.candidates>exact.candidates {
+        ("workspace_replace_range","candidate_verification")
+    } else if exact.writes>0 && range.writes==0 {
+        ("workspace_replace","confirmed_write_only")
+    } else if range.writes>0 && exact.writes==0 {
+        ("workspace_replace_range","confirmed_write_only")
+    } else if exact.rejected>range.rejected && exact.writes==0 {
+        ("workspace_replace_range","counterexample_exploration")
+    } else if range.rejected>exact.rejected && range.writes==0 {
+        ("workspace_replace","counterexample_exploration")
+    } else if exact_score>range_score {
+        ("workspace_replace","observed_edit_throughput")
+    } else {
+        ("workspace_replace_range","default_unmeasured")
+    };
+    let fallback=if preferred=="workspace_replace" {
+        "workspace_replace_range"
+    } else {"workspace_replace"};
+    let evidence=json!({
+        "workspace_replace":{"attempts":exact.attempts,"confirmedWrites":exact.writes,
+            "checkedCandidates":exact.candidates,"verifiedAdoptions":exact.accepted,
+            "rejectedCalls":exact.rejected,"tokens":exact.tokens},
+        "workspace_replace_range":{"attempts":range.attempts,"confirmedWrites":range.writes,
+            "checkedCandidates":range.candidates,"verifiedAdoptions":range.accepted,
+            "rejectedCalls":range.rejected,"tokens":range.tokens},
+        "verifiedTransferObjectives":sources.len(),
+        "sourceGenerationCount":rows.len()
+    });
+    let revision=crate::engine::memory::stable_id(&[
+        &partition,&objective,preferred,&evidence.to_string()]);
+    let learned=(exact.attempts+range.attempts)>0;
+    json!({
+        "id":format!("rsi-execution-method-{}",crate::engine::memory::stable_id(&[&partition,&objective])),
+        "revision":revision,"kind":"rsi.execution_method",
+        "ownerObjectiveId":objective,"knowledgePartition":partition,
+        "preferredTool":preferred,"fallbackTool":fallback,
+        "reason":why,
+        "status":if sources.len()>=2 && (exact.accepted+range.accepted)>=2 {
+            "measured_transfer_observed"
+        } else if exact.accepted+range.accepted>0 {"quality_evidence_observed"}
+          else if learned {"trial_unverified"}else{"unmeasured_default"},
+        "program":[
+            {"step":"observe","tool":"workspace_read_range"},
+            {"step":"mutate","tool":preferred,"onFailure":fallback},
+            {"step":"assess","executor":"detached_candidate_compilation_and_frozen_pairing"},
+            {"step":"learn","feedback":"independent_candidate_and_source_receipts"}
+        ],
+        "evidence":evidence,
+        "note":"Runtime tool ordering is a testable action. Recorded associations do not prove this method caused a quality gain."
+    })
+}
+
 fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
     let mut counts = BTreeMap::<String, u64>::new();
     for operation in state.store.all("execution_operation") {
@@ -2374,6 +2493,14 @@ async fn run_loop(
         child_input["rsiInheritedImplementations"]=json!(inherited_implementations);
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
+        // Learn from durable *actual operations* as well as this campaign's
+        // newest generation. This is an executable harness-method parameter,
+        // not a suggestion for the model to change its weights.
+        let learned_method=learn_execution_method(&context.state,&child_input,
+            record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+        child_input["rsiExecutionMethod"]=learned_method.clone();
+        context.state.store.put("rsi_execution_method",&learned_method);
+
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
         let action_history=improvement_history(
             &context.state,&child_input,&recorded_history,&context.job_id);
@@ -2630,6 +2757,7 @@ async fn run_loop(
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
             "writeReceipts":write_receipts,
+            "executionMethod":current["input"]["rsiExecutionMethod"],
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
@@ -2860,6 +2988,23 @@ async fn run_loop(
             .to_rfc3339_opts(chrono::SecondsFormat::Millis,true));
         context.state.store.put("rsi_generation", &generation)
             .ok_or("완성된 세대의 연구·실행 결과 저장 실패")?;
+        // The next generation learns from the tool *actually used*, candidate
+        // checks and paired verdict. This trial receipt is observational until
+        // an independently adopted descendant provides quality evidence.
+        context.state.store.put("rsi_execution_method_trial",&json!({
+            "id":format!("rsi-method-trial-{}-{attempt}",context.job_id),
+            "methodId":generation["executionMethod"]["id"],
+            "methodRevision":generation["executionMethod"]["revision"],
+            "preferredTool":generation["executionMethod"]["preferredTool"],
+            "jobId":child_id,"campaignId":context.job_id,
+            "generatorCommit":head,"observedWrites":generation["writeReceipts"],
+            "candidateId":generation["candidateId"],
+            "attemptedCandidateId":generation["attemptedCandidateId"],
+            "accepted":generation["accepted"],
+            "evaluation":generation["evaluation"],
+            "tokens":generation["tokens"],
+            "causalGain":"unmeasured"
+        }));
         record["history"]
             .as_array_mut()
             .ok_or("세대 목록 손상")?
