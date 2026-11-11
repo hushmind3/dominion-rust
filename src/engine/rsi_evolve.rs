@@ -2587,15 +2587,54 @@ fn post_adoption_objective(input: &Value, history: &[Value]) -> Option<Value> {
             Some(json!({"caseId":case["id"],"domain":case["domain"],
                 "gaps":gaps}))
         }).take(5).collect::<Vec<_>>();
-    let objective = if residuals.is_empty() {
-        "독립 평가로 채택된 소스 변경을 유지하면서 다른 실제 작업 영역의 정확도·비용·자기개선 실행 능력을 개선한다. 이미 포화된 동결 품질을 중복 최적화하지 않는다.".to_string()
-    } else {
-        format!("독립 평가가 기록한 잔여 작업 결함 {} 중 하나를 실제 코드에서 해결한다. 이전 세대의 채택된 개선을 보존한다.",
+    // Most fixed-quality oracles saturate at 1.0 after the first gain.
+    // Rank real unoptimized cost measurements instead of blindly asking
+    // the descendant to improve an already-satisfied accuracy fixture.
+    let mut costs=Vec::<Value>::new();
+    for case in accepted["evaluation"]["metrics"]["measurements"]
+        .as_array().into_iter().flatten() {
+        let frozen=input["rsiFrozenCases"].as_array().into_iter().flatten()
+            .find(|row|row["id"]==case["id"]);
+        for metric in case["metrics"].as_array().into_iter().flatten() {
+            let key=metric["key"].as_str().unwrap_or("");
+            if metric["direction"]!="lower" || metric["improved"]==true {continue;}
+            let Some(observed)=metric["candidate"].as_f64()
+                .filter(|v|v.is_finite() && *v>0.0) else {continue;};
+            let Some(spec)=frozen.and_then(|row|row["metrics"].as_array())
+                .and_then(|metrics|metrics.iter().find(|row|row["key"]==key))
+                else {continue;};
+            let relative=spec["minRelativeGain"].as_f64().unwrap_or(0.05);
+            let absolute=spec["minAbsoluteGain"].as_f64().unwrap_or(0.0);
+            let needed=(observed*relative).max(absolute);
+            if needed<=0.0 {continue;}
+            costs.push(json!({"caseId":case["id"],"domain":case["domain"],
+                "metric":key,"observed":observed,
+                "requiredReduction":needed,"qualityGuard":"no_regression"}));
+        }
+    }
+    // Token/context reduction has a more stable, directly attributable
+    // counter than noisy wall-clock timing. Within a metric, prioritize
+    // the largest measured costs; the fixed evaluator still decides adoption.
+    costs.sort_by(|a,b| {
+        let rank=|row:&Value|if row["metric"]=="contextChars" {0}else{1};
+        rank(a).cmp(&rank(b)).then_with(||
+            b["observed"].as_f64().unwrap_or(0.0)
+                .total_cmp(&a["observed"].as_f64().unwrap_or(0.0)))
+    });
+    costs.truncate(5);
+    let objective = if !residuals.is_empty() {
+        format!("동결 평가의 미해결 정확도 결함 {} 중 하나를 실제 구현으로 개선하고 이전 세대의 채택 성과를 유지한다.",
             json!(residuals))
+    } else if let Some(target)=costs.first() {
+        format!("동결 A/B에서 다음 비용 병목을 계측했다: {}. 해당 도메인의 실제 소스를 개선하여 비용을 최소 {}만큼 줄이고 다른 품질·기능 회귀 없이 독립 재검증한다. 실패할 경우 다른 독립 지표를 탐색한다.",
+            json!(target),target["requiredReduction"])
+    } else {
+        "기존 채택을 유지하면서 동결된 정확도·비용 지표에서 실제 신규 개선 기회를 발견하고 실행한다. 포화된 품질의 반복 수정은 피한다.".to_string()
     };
     Some(json!({
         "objective":objective,
         "residuals":residuals,
+        "costOpportunities":costs,
         "previousAcceptedCommit":accepted["acceptedCommit"],
         "prompt":format!(
             "DOMINION 연속 자기개선의 후손 세대입니다. 직전 채택 커밋은 {} 입니다. 이진 실행기와 작업 기준 코드는 이미 이 커밋에서 재빌드되었습니다. {} 현재 소스 인덱스로 다른 분야의 원인 파일을 찾고, 안전한 분리 작업공간에서 실제 동작/비용을 바꾸는 최소 구현을 작성하세요. 소스 조사로 끝내지 말고 검증 가능한 패치를 남기세요. 동일한 분해 버그의 재수정은 하지 마세요. 패치가 새로운 동결 평가 개선을 입증하기 전에는 성능 향상이라고 주장하지 마세요.",
@@ -2809,6 +2848,7 @@ async fn run_loop(
             child_input["rsiObjective"]=next["objective"].clone();
             child_input["prompt"]=next["prompt"].clone();
             child_input["rsiResidualEvidence"]=next["residuals"].clone();
+            child_input["rsiCostOpportunities"]=next["costOpportunities"].clone();
             child_input["rsiSourceScopeExpanded"]=json!(true);
         }
         if let Some(id)=inherited_neutral_candidate(&context.state,&prior_history,&head) {
@@ -3078,6 +3118,7 @@ async fn run_loop(
             "focusFiles":current["input"]["rsiFocusFiles"],
             "scopeExpanded":current["input"]["rsiSourceScopeExpanded"],
             "residualEvidence":current["input"]["rsiResidualEvidence"],
+            "costOpportunities":current["input"]["rsiCostOpportunities"],
             "focusSelection":current["input"]["rsiFocusSelection"],
             "targetReplan":current["rsiTargetReplan"],
             "knowledgePartition":research_scope(&current["input"]).partition_key,
@@ -3901,6 +3942,30 @@ mod tests {
         let forged=vec![json!({"accepted":true,"acceptedCommit":"b".repeat(40),
             "evaluation":{"metrics":{"eligible":false}}})];
         assert!(post_adoption_objective(&root,&forged).is_none());
+    }
+
+    #[test]
+    fn saturated_quality_switches_to_measured_context_cost_before_noisy_latency() {
+        let root=json!({"rsiExpandAfterGain":true,"rsiFrozenCases":[
+            {"id":"group-chat-input-cost","metrics":[{"key":"contextChars",
+                "minRelativeGain":0.05,"minAbsoluteGain":50.0}]},
+            {"id":"memory-quality","metrics":[{"key":"elapsedMs",
+                "minRelativeGain":0.20,"minAbsoluteGain":1.0}]}
+        ]});
+        let history=vec![json!({"accepted":true,"acceptedCommit":"a".repeat(40),
+            "evaluation":{"metrics":{"eligible":true,"measurements":[
+                {"id":"memory-quality","domain":"memory","metrics":[
+                    {"key":"quality","candidate":1.0,"improved":false},
+                    {"key":"elapsedMs","direction":"lower","candidate":230.0,"improved":false}]},
+                {"id":"group-chat-input-cost","domain":"context","metrics":[
+                    {"key":"quality","candidate":1.0,"improved":false},
+                    {"key":"contextChars","direction":"lower","candidate":77000.0,"improved":false}]}
+            ]}}})];
+        let next=post_adoption_objective(&root,&history).unwrap();
+        assert_eq!(next["costOpportunities"][0]["caseId"],"group-chat-input-cost");
+        assert_eq!(next["costOpportunities"][0]["requiredReduction"],3850.0);
+        assert!(next["objective"].as_str().unwrap().contains("contextChars"));
+        assert!(next["residuals"].as_array().unwrap().is_empty());
     }
 
     #[test]
