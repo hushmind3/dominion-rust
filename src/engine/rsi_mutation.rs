@@ -75,6 +75,46 @@ fn hoist_invariant_query_terms(source: &str) -> Option<String> {
     None
 }
 
+/// A third-generation structural optimization: facts originate as immutable
+/// owner statements, yet their text terms are reconstructed for every query.
+/// Cache the exact terms of the *stored, truncated* text at ingestion. Legacy
+/// rows keep the original runtime tokenization path, preserving behavior.
+fn cache_invariant_fact_terms(source: &str) -> Option<String> {
+    let scorer = "fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>) -> usize {";
+    let call = "query_relevance(query, text, &query_tokens)";
+    let text_calc = "    let text_tokens = memory::terms(text);\n    score + query_tokens.intersection(&text_tokens).count().min(12)";
+    let stored = "        \"text\": text.chars().take(MAX_ENTRY_CHARS).collect::<String>(),";
+    let insertion = "    facts.push(json!({\n";
+    let context_call = format!("(!text.is_empty()).then_some(({call}, index, fact))");
+    if [scorer, call, text_calc, stored, insertion, context_call.as_str()]
+        .iter().any(|marker| source.matches(marker).count() != 1)
+    {
+        return None;
+    }
+    let mut output = source.replacen(
+        insertion,
+        "    let stored_text = text.chars().take(MAX_ENTRY_CHARS).collect::<String>();\n    let fact_tokens = memory::terms(&stored_text).into_iter().collect::<Vec<_>>();\n    facts.push(json!({\n",
+        1,
+    );
+    output = output.replacen(stored, "        \"text\": stored_text,\n        \"factTokens\": fact_tokens,", 1);
+    output = output.replacen(
+        scorer,
+        "fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>, cached_terms: Option<&Vec<Value>>) -> usize {",
+        1,
+    );
+    output = output.replacen(
+        text_calc,
+        "    let matches = if let Some(terms) = cached_terms {\n        terms.iter().filter(|term| term.as_str().is_some_and(|term| query_tokens.contains(term))).count()\n    } else {\n        let text_tokens = memory::terms(text);\n        query_tokens.intersection(&text_tokens).count()\n    };\n    score + matches.min(12)",
+        1,
+    );
+    output = output.replacen(
+        &context_call,
+        &format!("(!text.is_empty()).then_some((query_relevance(query, text, &query_tokens, fact[\"factTokens\"].as_array()), index, fact))"),
+        1,
+    );
+    Some(output)
+}
+
 /// A second-generation optimization is discoverable only after the first
 /// source transform changed the scoring call. It learns that a query domain
 /// is invariant across all candidate facts, and that no stated domain lookup
@@ -126,6 +166,8 @@ pub(crate) fn induce(
         ("verified_owner_provenance_cache_v1",next)
     }else if let Some(next)=hoist_invariant_query_terms(&existing) {
         ("loop_invariant_term_hoist_v1",next)
+    }else if let Some(next)=cache_invariant_fact_terms(&existing) {
+        ("immutable_owner_fact_token_cache_v1",next)
     }else if let Some(next)=hoist_invariant_query_domain(&existing) {
         ("loop_invariant_domain_hoist_v2",next)
     }else{
@@ -186,6 +228,26 @@ mod tests {
         assert!(second.contains("let asked_domain = fact_domain(query);"));
         assert!(hoist_invariant_query_terms(&second).is_none());
         assert!(hoist_invariant_query_domain(&second).is_none());
+    }
+
+    #[test]
+    fn recursive_fact_cache_preserves_legacy_fallback_and_original_ranking() {
+        let source = include_str!("room_state.rs");
+        let hoisted = hoist_invariant_query_terms(source).unwrap();
+        let cached = cache_invariant_fact_terms(&hoisted).unwrap();
+        assert_ne!(hoisted, cached);
+        assert!(cached.contains("\"factTokens\": fact_tokens"));
+        assert!(cached.contains("memory::terms(&stored_text)"));
+        assert!(cached.contains("fact[\"factTokens\"].as_array()"));
+        assert!(cached.contains("let text_tokens = memory::terms(text);"));
+        assert!(cached.contains("score + matches.min(12)"));
+        assert_eq!(cached.matches("let query_tokens = memory::terms(query);").count(), 1);
+        assert!(cache_invariant_fact_terms(&cached).is_none());
+        // The existing next-generation domain optimization must still
+        // compose with the new immutable fact-token cache.
+        let descendant = hoist_invariant_query_domain(&cached).unwrap();
+        assert!(descendant.contains("let asked_domain = fact_domain(query);"));
+        assert!(hoist_invariant_query_domain(&descendant).is_none());
     }
 
     #[test]
