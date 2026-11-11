@@ -95,11 +95,15 @@ pub fn breed(history: &[Value], parents: &[Value], objective: &str) -> Option<Va
             match trial["verdict"].as_str().unwrap_or("") {
                 "supported" => {
                     let pair = (trial["jobId"].as_str(), trial["comparison"]["baselineJobId"].as_str());
+                    let valid_pair = match pair {
+                        (Some(job), Some(baseline)) if !job.is_empty() && !baseline.is_empty() => {
+                            used_pairs.insert((job.to_string(), baseline.to_string()))
+                        }
+                        _ => false,
+                    };
                     if trial["comparison"]["matchedHoldoutReceipts"] == true
                         && trial["comparison"]["holdoutLossesAgainstControl"].as_u64() == Some(0)
-                        && let (Some(job), Some(baseline)) = pair
-                        && !job.is_empty() && !baseline.is_empty()
-                        && used_pairs.insert((job.to_string(), baseline.to_string()))
+                        && valid_pair
                     {
                         supported += 1;
                     } else {
