@@ -6271,7 +6271,8 @@ mod harness_tool_selection_tests {
         assert!(!rsi_patch_ready_for_verification(&session,"workspace_read_range",&args,&operation));
     }
 
-
+    #[test]
+    fn rsi_checkpoint_allows_an_edit_or_a_no_change_finish() {
         assert!(!rsi_should_checkpoint(5, false));
         assert!(rsi_should_checkpoint(6, false));
         assert!(!rsi_should_checkpoint(6, true));
