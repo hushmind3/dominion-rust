@@ -88,6 +88,11 @@ fn rsi_generation_has_action_target(session:&Value)->bool {
         && session["rsiFocusFile"].as_str().is_some_and(crate::engine::rsi::safe_path)
 }
 
+/// A single, observed read-only completion gets a source-edit action round.
+fn rsi_final_edit_tools(available:&[Value])->Vec<Value> {
+    available.iter().filter(|tool|tool_name(tool)=="workspace_replace").cloned().collect()
+}
+
 fn rsi_read_only_completion(operations: &[Value], execution_id: &str) -> bool {
     let mut read = false;
     for op in operations {
@@ -982,6 +987,7 @@ async fn run_turn_body(
     let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
     let mut rsi_decision_checkpoint = false;
     let mut rsi_final_edit_retry = false;
+    let mut rsi_edit_action_pending = false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1124,6 +1130,17 @@ async fn run_turn_body(
                 }
             }
         }
+        if rsi_edit_action_pending && rsi_generation_has_action_target(&session) {
+            // The previous real source read is already in the model context.
+            // On ONE additional model call, offer the exact replacement schema
+            // instead of another broad research menu. Provider native mode
+            // requires an action; the model still authors oldText/newText.
+            round_tools=rsi_final_edit_tools(&tool_definitions);
+            if let Some(mut record)=state.store.get("execution",execution_id) {
+                record["rsiActionRetry"]["toolChoice"]=json!("native_required_workspace_replace");
+                state.store.put("execution",&record);
+            }
+        }
         let wire_messages = messages.clone();
         // Campaigns enforce the owner's cumulative budget below. The generic
         // standalone turn ceiling must not terminate a budgeted research run.
@@ -1161,6 +1178,9 @@ async fn run_turn_body(
             allow_provider_fallback,
         )
         .await;
+        // Never force all later rounds to edit: the bounded action choice is
+        // consumed whether the provider complied or returned a real failure.
+        rsi_edit_action_pending=false;
         {
             let mut counters = metrics.lock().unwrap();
             counters.model_elapsed_ms += model_started.elapsed().as_millis() as u64;
@@ -1318,6 +1338,7 @@ async fn run_turn_body(
                 && rsi_read_only_completion(&state.store.all("execution_operation"), execution_id)
             {
                 rsi_final_edit_retry = true;
+                rsi_edit_action_pending = true;
                 if !completion.content.trim().is_empty() {
                     messages.push(json!({"role":"assistant","content":
                         completion.content.chars().take(1200).collect::<String>()}));
@@ -6131,6 +6152,20 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn grounded_rsi_edit_retry_offers_exact_replacement_not_more_research() {
+        let menu=vec![
+            json!({"type":"function","function":{"name":"code_search"}}),
+            json!({"type":"function","function":{"name":"workspace_read_range"}}),
+            json!({"type":"function","function":{"name":"workspace_replace"}}),
+            json!({"type":"function","function":{"name":"rsi_method_propose"}}),
+        ];
+        let selected=rsi_final_edit_tools(&menu);
+        assert_eq!(selected.len(),1);
+        assert_eq!(tool_name(&selected[0]),"workspace_replace");
+        assert!(rsi_final_edit_tools(&[]).is_empty());
     }
 
     #[test]
