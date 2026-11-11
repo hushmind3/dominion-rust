@@ -154,6 +154,22 @@ fn rsi_canonical_tool_name(name:&str,round_tools:&[Value])->Option<String>{
     Some(base.to_string())
 }
 
+/// Only unwrap already valid JSON objects from common model wrappers.
+/// Never synthesize a field, a tool choice, or source-modifying content.
+fn rsi_canonical_arguments(raw:&str)->Option<String>{
+    let value=raw.trim();
+    let inner=if let Some(rest)=value.strip_prefix("```json
+").or_else(||value.strip_prefix("```
+")) {
+        rest.strip_suffix("```")?.trim()
+    } else {value};
+    let parsed=serde_json::from_str::<Value>(inner).ok()?;
+    let object=if let Some(encoded)=parsed.as_str(){
+        serde_json::from_str::<Value>(encoded).ok()?
+    } else {parsed};
+    object.is_object().then(||object.to_string())
+}
+
 /// "completed" is not synonymous with a source change: an unchanged
 /// replacement can legitimately return success. Only a verified readback of
 /// written bytes may advance the RSI source-edit checkpoint.
@@ -1925,6 +1941,14 @@ async fn run_turn_body(
         let mut seen_ids = std::collections::HashSet::new();
         for call in completion.tool_calls.iter_mut() {
             if session["rsiRun"]==true {
+                if let Some(arguments)=rsi_canonical_arguments(&call.arguments){
+                    if arguments!=call.arguments {
+                        state.store.audit("rsi.recovered_tool_json",json!({
+                            "executionId":execution_id,"tool":call.name,
+                            "result":"decoded_existing_object_only"}));
+                        call.arguments=arguments;
+                    }
+                }
                 if let Some(canonical)=rsi_canonical_tool_name(&call.name,&round_tools){
                     state.store.audit("rsi.recovered_malformed_tool_channel",json!({
                         "executionId":execution_id,
@@ -6642,6 +6666,20 @@ mod harness_tool_selection_tests {
         assert!(!rsi_first_round_tool("web_search",&program));
         let empty=json!({"sequence":[]});
         assert!(!rsi_first_round_tool("code_search",&empty));
+    }
+
+    #[test]
+    fn rsi_only_unwraps_valid_existing_tool_argument_objects(){
+        let original=r#"{"path":"src/a.rs","startLine":1}"#;
+        let twice=serde_json::to_string(original).unwrap();
+        let decoded=rsi_canonical_arguments(&twice).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&decoded).unwrap()["path"],"src/a.rs");
+        let fenced=format!("```json
+{}\n```",original).replace("\\n","\n");
+        assert_eq!(rsi_canonical_arguments(&fenced),
+            Some(serde_json::from_str::<Value>(original).unwrap().to_string()));
+        assert!(rsi_canonical_arguments("not a JSON object").is_none());
+        assert!(rsi_canonical_arguments("[]").is_none());
     }
 
     #[test]
