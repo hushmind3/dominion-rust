@@ -84,13 +84,19 @@ jobs:
               for (raw,) in connection.execute("SELECT data FROM records WHERE kind='execution_operation'"):
                   try: row=json.loads(raw)
                   except (TypeError,ValueError): continue
-                  if row.get("tool") in ("code_search","workspace_read_range","workspace_replace","workspace_write"):
+                  if row.get("tool") in ("code_search","workspace_read_range","workspace_replace","workspace_replace_range","workspace_write"):
+                      result=row.get("result") or {}
+                      receipt=row.get("toolReceipt") or {}
                       evidence["operationCalls"].append({"tool":row.get("tool"),"status":row.get("status"),
-                          "error":str(row.get("error") or "")[:250]})
-              for event,raw in connection.execute("SELECT event,detail FROM audit WHERE event IN ('rsi.action_checkpoint','rsi.edit_retry')"):
+                          "written":result.get("written") is True,
+                          "independentlyVerified":receipt.get("verified") is True,
+                          "error":str(row.get("error") or result.get("error") or "")[:250]})
+              for event,raw in connection.execute("SELECT event,detail FROM audit WHERE event IN ('rsi.action_checkpoint','rsi.edit_retry','rsi.action_program_selected','rsi.structured_patch_interpreted')"):
                   try: details=json.loads(raw)
                   except (TypeError,ValueError): details={}
                   evidence["checkpoints"].append({"event":event,"toolCalls":details.get("toolCalls"),
+                      "chosenTool":details.get("chosenTool") or details.get("tool"),
+                      "reason":details.get("reason"),
                       "editOnly":details.get("editOnly"),"readCalls":details.get("readCalls")})
           except Exception as error:
               evidence["error"]=str(error)
