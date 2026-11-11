@@ -5,6 +5,9 @@ on:
     branches: [dominion-sub2]
     paths:
       - '.github/workflows/sub2-live-rsi.yml'
+      - 'src/engine/gateway.rs'
+      - 'src/engine/chat/provider.rs'
+      - 'scripts/sub2-live-rsi.mjs'
   workflow_dispatch:
 
 permissions:
