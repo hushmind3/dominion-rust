@@ -89,6 +89,33 @@ fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
     )
 }
 
+/// Execute the verifier-selected compiler repair as an actual tool menu
+/// transition. Every retry re-observes the failed source in this run before
+/// an edit is offered. A failed edit invalidates that observation again.
+fn rsi_compiler_repair_route(
+    session:&Value, operations:&[Value], verified_write:bool
+)->Option<crate::engine::rsi_edit_program::Route>{
+    let target=session["rsiRepairPath"].as_str().filter(|p|!p.is_empty())?;
+    if verified_write {return None;}
+    let mut grounded=false;
+    for op in operations {
+        if op["tool"]=="workspace_read_range"
+            && op["status"]=="completed"
+            && op["arguments"]["path"].as_str()==Some(target) {
+            grounded=true;
+        }
+        if matches!(op["tool"].as_str(),
+            Some("workspace_replace_range"|"workspace_replace"|"workspace_write"))
+            && (op["status"]!="completed" || op["result"]["written"]!=true
+                || op["toolReceipt"]["verified"]!=true) {
+            grounded=false;
+        }
+    }
+    Some(crate::engine::rsi_edit_program::Route{
+        phase:if grounded {"edit"} else {"reground"}
+    })
+}
+
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
 /// needs read, search and replace together to produce a grounded patch.
 fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
@@ -1214,10 +1241,12 @@ async fn run_turn_body(
             let grounded = session["rsiFocusContextReady"] == true || read_calls > 0;
             let focused=session["rsiExplicitFocus"]==true || session["rsiAutoFocus"]==true
                 || session["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty());
-            let program_stage = crate::engine::rsi_edit_program::route(
+            let program_stage = rsi_compiler_repair_route(
+                &session, &all_operations, has_write,
+            ).or_else(||crate::engine::rsi_edit_program::route(
                 &session["rsiEditPolicy"], &all_operations, tool_calls,
                 focused, session["rsiFocusContextReady"] == true,
-            );
+            ));
             // Newly required source-hash observation takes priority over
             // any synthesized search/edit policy. Otherwise a learned rule
             // can indefinitely suppress the only recovery tool.
