@@ -3629,6 +3629,44 @@ mod tests {
     }
 
     #[test]
+    fn first_generation_of_next_campaign_continues_real_stored_research() {
+        let (state,root)=state();
+        let input=json!({"rsiObjective":"memory retrieval improvement",
+            "rsiKnowledgeSource":root,"rsiFocusFiles":["src/engine/memory.rs"]});
+        let partition=research_scope(&input).partition_key;
+        let objective=crate::engine::memory::stable_id(&[
+            input["rsiObjective"].as_str().unwrap()]);
+        state.store.put("experience",&json!({"id":"prior-evidence",
+            "status":"active","partitionKey":partition,"researchArtifacts":[
+                {"tool":"code_search","hash":"h1"}]})).unwrap();
+        state.store.put("rsi_generation",&json!({"id":"previous-discovery",
+            "campaignId":"previous","jobId":"old-worker",
+            "domain":"memory","accepted":false,"candidateId":null,
+            "newFindings":1,"knowledgeId":"prior-evidence",
+            "knowledgePartition":partition,"objectiveId":objective,
+            "createdAt":"2026-11-11T00:00:00Z"})).unwrap();
+        let inherited=improvement_history(&state,&input,&[],"new-campaign");
+        assert_eq!(inherited.len(),1);
+        assert_eq!(improvement_directive(&inherited)["mode"],"implement_research");
+        let commit="a".repeat(40);
+        state.store.put("job",&json!({"id":"new-campaign","kind":"rsi_evolve",
+            "status":"running","cancelRequested":false,"input":input})).unwrap();
+        let campaign=json!({"id":"new-campaign","headCommit":commit,
+            "history":[],"planAttempt":1,"planIndexId":"index-revision"});
+        let plan=native_generation_plan(&state,&campaign,
+            &state.store.get("job","new-campaign").unwrap(),&commit).unwrap();
+        assert_eq!(plan["historyCount"],0,
+            "Inherited research is not falsely counted as a new campaign generation");
+        assert_eq!(plan["improvementDirective"]["mode"],"implement_research");
+        assert_eq!(plan["improvementDirective"]["sourceGenerationId"],"previous-discovery");
+        let unrelated=json!({"rsiObjective":"unrelated browser task",
+            "rsiKnowledgeSource":root});
+        assert!(improvement_history(&state,&unrelated,&[],"new-campaign").is_empty(),
+            "Research from another objective must not control this campaign");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn research_generations_become_implementation_then_switch_hypothesis_on_failure() {
         let research=json!({"id":"gen-1","jobId":"j1","domain":"tools",
             "accepted":false,"candidateId":null,"newFindings":2,
