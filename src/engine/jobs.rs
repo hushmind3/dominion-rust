@@ -491,6 +491,22 @@ async fn run_job(state: AppState, job: Value) {
     }
 }
 
+/// A patch-oriented generation that made zero tool-backed edits is an
+/// unfinished attempt, not an opportunity to record imaginary progress.
+/// Retry once with the prior conversation and the same detached worktree.
+fn rsi_no_edit_retry_needed(input:&Value, outcome:&Result<Value,String>)->bool {
+    let Some(result)=outcome.as_ref().ok() else {return false};
+    matches!(input["rsiImprovementDirective"]["mode"].as_str(),
+        Some("implement_research"|"change_approach"|"repair_counterexample"|"revise_candidate"))
+        && result["rsi"]["diffBytes"]==0
+        && result["rsi"]["candidateId"].is_null()
+        && result["rsi"]["sourceClean"]==true
+        && result["rsi"]["captureError"]=="모델이 실제 소스 파일을 변경하지 않았습니다."
+        && result["rsi"]["modelError"].as_str().is_some_and(str::is_empty)
+        && input["toolsEnabled"]!=false
+        && input["toolsExecutionEnabled"]!=false
+}
+
 pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> {
     let input = job.get("input").cloned().unwrap_or_else(|| json!({}));
     let prompt = input
@@ -587,6 +603,27 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         let mut finished=crate::engine::rsi_worktree::finish(
             context,job,worktree,message,&session_id
         ).await;
+        // Separate a generation that never edited from one whose edit failed
+        // verification. No source mutations are fabricated by this fallback:
+        // the same model must make a real workspace tool call to produce a diff.
+        let mut no_edit_retry_attempts=0usize;
+        if rsi_no_edit_retry_needed(&input,&finished)
+            && context.checkpoint(json!({"rsiPhase":"retry_no_edit",
+                "rsiNoEditRetryAttempt":1})).is_ok()
+        {
+            let focus=input["rsiFocusFiles"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).take(4).collect::<Vec<_>>().join(", ");
+            let mut retry=request.clone();
+            retry.input=format!(
+                "이전 실제 실행은 소스 변경 0건으로 종료되었습니다. 지금 같은 격리 작업공간에서 사용자 원래 수정 목표를 반드시 이어가세요. 지정된 파일: {focus}.                  코드 근거가 부족하면 workspace_read_range로 해당 부분을 읽고, 검토한 원문의 정확한 oldText를 사용해 workspace_replace로 수정하세요.                  기존 응답이나 조사 요약만 반복하지 말고 실행 도구를 실제 호출하세요. 편집이 불가능하면 구체적인 코드·도구 오류를 설명하세요.                  사용자 목표: {}",
+                input["rsiObjective"].as_str().unwrap_or("")
+            );
+            let correction=run_quiet(&scoped_state,&retry).await;
+            finished=crate::engine::rsi_worktree::finish(
+                context,job,worktree,correction,&session_id
+            ).await;
+            no_edit_retry_attempts=1;
+        }
         for revision in 0..MAX_REPAIRS {
             let Some(feedback)=finished.as_ref().ok()
                 .and_then(crate::engine::rsi_worktree::repair_feedback) else {break;};
@@ -620,6 +657,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 json!({"jobId":context.job_id,"error":error}));
         }
         let mut output=finished?;
+        output["noEditRetryAttempts"]=json!(no_edit_retry_attempts);
         output["repairAttempts"]=json!(attempts.len());
         output["previousAttempts"]=json!(attempts);
         output
@@ -735,6 +773,32 @@ fn schedule_automations(state: &AppState) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn patch_generation_retries_once_only_after_real_no_edit_outcome() {
+        let base=json!({"rsiImprovementDirective":{"mode":"implement_research"}});
+        let missing=json!({"rsi":{"diffBytes":0,"candidateId":null,
+            "sourceClean":true,
+            "captureError":"모델이 실제 소스 파일을 변경하지 않았습니다.",
+            "modelError":""}});
+        assert!(rsi_no_edit_retry_needed(&base,&Ok(missing.clone())));
+        let discovery=json!({"rsiImprovementDirective":{"mode":"discover"}});
+        assert!(!rsi_no_edit_retry_needed(&discovery,&Ok(missing.clone())));
+        let mut errored=missing.clone();
+        errored["rsi"]["modelError"]=json!("provider_unavailable");
+        assert!(!rsi_no_edit_retry_needed(&base,&Ok(errored)));
+        let mut edited=missing.clone();
+        edited["rsi"]["diffBytes"]=json!(200);
+        assert!(!rsi_no_edit_retry_needed(&base,&Ok(edited)));
+        let mut unclean=missing.clone();
+        unclean["rsi"]["sourceClean"]=json!(false);
+        assert!(!rsi_no_edit_retry_needed(&base,&Ok(unclean)));
+        let disabled=json!({"rsiImprovementDirective":{"mode":"implement_research"},
+            "toolsExecutionEnabled":false});
+        assert!(!rsi_no_edit_retry_needed(&disabled,&Ok(missing)));
+        let fail:Result<Value,String>=Err("model failed".into());
+        assert!(!rsi_no_edit_retry_needed(&base,&fail));
+    }
+
     use super::*;
     use crate::config::Config;
     use crate::db::Store;
