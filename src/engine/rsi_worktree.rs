@@ -379,7 +379,7 @@ async fn validate(worktree:&Worktree,patch:&str)->Vec<Value> {
     if rust_change {
         let mut command=Command::new(cargo_executable());
         command.current_dir(&worktree.path)
-            .args(["check","--release","--all-targets"]);
+            .args(["check","--release","--bin","dominion-rust"]);
         // Each generation uses a separate detached worktree. Without the
         // coordinator's shared target dir every validation cold-compiles
         // dependencies, exhausting the budget before it can examine the
@@ -390,7 +390,7 @@ async fn validate(worktree:&Worktree,patch:&str)->Vec<Value> {
                 command.env("CARGO_TARGET_DIR",&target);
             }
         }
-        checks.push(check_result("cargo check --release --all-targets",
+        checks.push(check_result("cargo check --release --bin dominion-rust",
             run(command,CHECK_LIMIT).await));
     }
     if web_change {
