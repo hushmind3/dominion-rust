@@ -795,6 +795,14 @@ async fn replace_text(
         }));
     }
     let updated = text.replacen(old_text, new_text, 1);
+    if updated == text {
+        if ctx.store.get("session",ctx.session_id).is_some_and(|s|s["rsiRun"]==true) {
+            return Ok(json!({"path":path.to_string_lossy(),"written":false,
+                "unchanged":true,
+                "error":"The replacement did not change source bytes. Supply a different implementation."}));
+        }
+        return Ok(json!({"path":path.to_string_lossy(),"written":false,"unchanged":true}));
+    }
     let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
     result["replaced"] = json!(true);
     result["replacedChars"] = json!(old_text.chars().count());

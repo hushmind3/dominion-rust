@@ -127,7 +127,8 @@ fn rsi_verified_write_operation(operation: &Value) -> bool {
 fn rsi_patch_ready_for_verification(
     session: &Value, tool: &str, args: &Value, result: &Value, ok: bool,
 ) -> bool {
-    ok && session["rsiRun"] == true && session["rsiExplicitFocus"] == true
+    ok && session["rsiRun"] == true
+        && (session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true)
         && session["rsiCampaignId"].is_string()
         && session["rsiFocusFiles"].as_array().is_some_and(|files|
             files.len() == 1 && files[0].as_str() == args["path"].as_str())
@@ -6313,6 +6314,16 @@ mod harness_tool_selection_tests {
         let session=json!({"rsiRun":true,"rsiExplicitFocus":true,"rsiCampaignId":"c",
             "rsiFocusFiles":["src/engine/decompose.rs"]});
         assert!(rsi_patch_ready_for_verification(&session,"workspace_replace_range",
+            &json!({"path":"src/engine/decompose.rs"}),
+            &json!({"written":true,"postSha256":"a".repeat(64)}),true));
+        let mut auto=session.clone();
+        auto["rsiExplicitFocus"]=json!(false);
+        auto["rsiAutoFocus"]=json!(true);
+        assert!(rsi_patch_ready_for_verification(&auto,"workspace_replace_range",
+            &json!({"path":"src/engine/decompose.rs"}),
+            &json!({"written":true,"postSha256":"a".repeat(64)}),true));
+        auto["rsiFocusFiles"]=json!(["src/engine/decompose.rs","src/engine/other.rs"]);
+        assert!(!rsi_patch_ready_for_verification(&auto,"workspace_replace_range",
             &json!({"path":"src/engine/decompose.rs"}),
             &json!({"written":true,"postSha256":"a".repeat(64)}),true));
         assert!(!rsi_patch_ready_for_verification(&session,"workspace_replace_range",
