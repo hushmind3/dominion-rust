@@ -141,8 +141,10 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
         let revision=genome.revision();
         let entry=cohorts.entry(revision).or_insert((genome,0,0.0,0));
         entry.1+=1;
-        entry.2+=payoff(row).clamp(0.0,1.0);
-        if row["accepted"]==true && row["evidenceVerified"]==true {entry.3+=1;}
+        let causal_reward=payoff(row).clamp(0.0,1.0);
+        entry.2+=causal_reward;
+        if row["accepted"]==true && row["evidenceVerified"]==true
+            && causal_reward>=0.95 {entry.3+=1;}
     }
     let total=observed.len() as f64;
     let mut best=None::<(Genome,String,f64,u64)>;

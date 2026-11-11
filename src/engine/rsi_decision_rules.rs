@@ -46,6 +46,13 @@ fn metric_valid(metric: &str) -> bool {
 
 fn guard_valid(value: &Value, depth: usize) -> bool {
     if depth > 3 {return false;}
+    // A learned temporal predicate is an ordered sequence of real tool
+    // events, not an extra named state in a hardcoded stage catalog.
+    if let Some(events)=value.get("sequence").and_then(Value::as_array) {
+        return events.len()>=2 && events.len()<=4 && events.iter().all(|event|
+            event["tool"].as_str().is_some_and(|tool|SOURCE_TOOLS.contains(&tool))
+            && matches!(event["status"].as_str(),Some("completed"|"failed")));
+    }
     if let Some(all)=value.get("all").and_then(Value::as_array) {
         return !all.is_empty() && all.len()<=4
             && all.iter().all(|child|guard_valid(child,depth+1));
@@ -133,6 +140,16 @@ fn fact(metric:&str, ops:&[Value], calls:u64, prompt_grounded:bool) -> Option<u6
 
 fn matches_guard(guard:&Value, ops:&[Value], calls:u64, grounded:bool, depth:usize)->bool {
     if depth>3 {return false;}
+    if let Some(sequence)=guard.get("sequence").and_then(Value::as_array) {
+        let mut at=0usize;
+        for op in ops {
+            if at==sequence.len() {break;}
+            if op["tool"]==sequence[at]["tool"] && op["status"]==sequence[at]["status"] {
+                at+=1;
+            }
+        }
+        return at==sequence.len();
+    }
     if let Some(all)=guard.get("all").and_then(Value::as_array) {
         return all.iter().all(|g|matches_guard(g,ops,calls,grounded,depth+1));
     }
@@ -177,6 +194,20 @@ fn condition(metric:&str,cmp:&str,value:u64)->Value {
 }
 fn conjunction(conditions:Vec<Value>)->Value {json!({"all":conditions})}
 
+/// Mutate a learned Boolean program without growing its AST depth forever.
+/// Preserve its existing predicates, then specialize its call budget.
+fn specialize_call_guard(guard:&Value,limit:u64)->Value {
+    let mut clauses=guard["all"].as_array().cloned().unwrap_or_else(||vec![guard.clone()]);
+    let cap=limit.min(48);
+    if let Some(existing)=clauses.iter_mut().find(|p|p["metric"]=="tool_calls") {
+        *existing=condition("tool_calls","lt",cap);
+    } else {
+        if clauses.len()>=4 {clauses.remove(clauses.len()-1);}
+        clauses.push(condition("tool_calls","lt",cap));
+    }
+    conjunction(clauses)
+}
+
 fn timeline_counts(outcome:&Value, tool:&str, status:&str)->u64 {
     outcome["toolTimeline"].as_array().into_iter().flatten()
         .filter(|op|op["tool"]==tool && op["status"]==status)
@@ -210,13 +241,10 @@ pub fn evolve(parent:&[Value],outcome:&Value)->Vec<Value> {
             .last().and_then(|row|row["ruleId"].as_str()) {
             if let Some(index)=rules.iter().position(|rule|rule["id"]==id) {
                 let prior=rules.remove(index);
-                let changed=conjunction(vec![
-                    prior["guard"].clone(),
-                    condition("tool_calls","lt",
-                        outcome["ruleExecutions"].as_array().into_iter().flatten()
-                            .last().and_then(|row|row["toolCalls"].as_u64())
-                            .unwrap_or(3).saturating_add(2).min(48)),
-                ]);
+                let changed=specialize_call_guard(&prior["guard"],
+                    outcome["ruleExecutions"].as_array().into_iter().flatten()
+                        .last().and_then(|row|row["toolCalls"].as_u64())
+                        .unwrap_or(3).saturating_add(2));
                 let tools=prior["allow"].as_array().into_iter().flatten()
                     .filter_map(Value::as_str).collect::<Vec<_>>();
                 generated=Some(new_rule(changed,&tools,job,id));
@@ -224,7 +252,34 @@ pub fn evolve(parent:&[Value],outcome:&Value)->Vec<Value> {
         }
     }
     if generated.is_none() {
-        if failed_range+failed_exact>0 {
+        // Temporal recovery learned from a *completed* failed-edit -> re-read
+        // sequence. After the new hash was observed, use a different source
+        // operator rather than revisiting an already disproven edit action.
+        let timeline=outcome["toolTimeline"].as_array();
+        let mut recovered_tool=None::<&str>;
+        if let Some(operations)=timeline {
+            let mut failed=None::<&str>;
+            for op in operations {
+                let name=op["tool"].as_str().unwrap_or("");
+                if matches!(name,"workspace_replace_range"|"workspace_replace")
+                    && op["status"]=="failed" {failed=Some(name);}
+                if name=="workspace_read_range" && op["status"]=="completed"
+                    && failed.is_some() {recovered_tool=failed;}
+            }
+        }
+        if let Some(tool)=recovered_tool.filter(|_|outcome["candidateId"].is_null()) {
+            let alternative=if tool=="workspace_replace_range" {
+                "workspace_replace"
+            } else {"workspace_replace_range"};
+            generated=Some(new_rule(conjunction(vec![
+                json!({"sequence":[
+                    {"tool":tool,"status":"failed"},
+                    {"tool":"workspace_read_range","status":"completed"}
+                ]}),
+                condition("unrecovered_edit_failure","eq",0),
+                condition("successful_write","eq",0),
+            ]),&[alternative],job,""));
+        } else if failed_range+failed_exact>0 {
             // Derive the failing operator from observed receipts. The child
             // invents a guard requiring a fresh read after that specific
             // failure, rather than selecting a named stage from a catalog.
@@ -312,6 +367,38 @@ mod tests {
         assert_eq!(revised.len(),1);
         assert_ne!(revised[0]["id"],original[0]["id"]);
         assert_eq!(revised[0]["guard"]["all"][1]["metric"],"tool_calls");
+    }
+    #[test]
+    fn new_temporal_rule_requires_ordered_recovery_then_changes_edit_operator(){
+        let timeline=vec![
+            event("workspace_read_range","completed"),
+            event("workspace_replace_range","failed"),
+            event("workspace_read_range","completed"),
+        ];
+        let rules=evolve(&[],&worker("recovered-g1",&json!({}),timeline.clone()));
+        assert!(rules[0]["guard"]["all"][0]["sequence"].is_array());
+        let choice=choose(&json!({"rules":rules}),&timeline,3,true,false).unwrap();
+        assert!(choice.allows("workspace_replace"));
+        assert!(!choice.allows("workspace_replace_range"));
+        let unrecovered=vec![
+            event("workspace_read_range","completed"),
+            event("workspace_replace_range","failed")
+        ];
+        assert!(choose(&json!({"rules":rules}),&unrecovered,2,true,false).is_none());
+    }
+    #[test]
+    fn repeated_rule_stalls_do_not_make_unbounded_guard_trees(){
+        let mut rules=evolve(&[],&worker("g1",&json!({}),vec![
+            event("workspace_read_range","completed"),
+            event("workspace_replace_range","failed")]));
+        for number in 0..5u64 {
+            let old=rules[0]["id"].as_str().unwrap().to_owned();
+            let next=json!({"jobId":format!("g{}",number+2),"tokens":3000,
+                "ruleExecutions":[{"ruleId":old,"toolCalls":number+3}]});
+            rules=evolve(&rules,&next);
+            assert_eq!(rules.len(),1);
+            assert!(guard_valid(&rules[0]["guard"],0));
+        }
     }
     #[test]
     fn false_success_and_unknown_tool_cannot_become_rules(){

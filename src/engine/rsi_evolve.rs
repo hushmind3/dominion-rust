@@ -273,7 +273,18 @@ fn search_strategy(algorithm: &Value, mode: &str) -> Value {
 /// presents first. Selection is re-estimated from actual *prior* executions.
 /// Candidate creation is useful intermediate evidence, never equal to quality
 /// improvement or permission to adopt an unverified policy.
+/// A learned Boolean decision can earn a source-improvement reward only if
+/// that exact rule really ran in the descendant responsible for the patch.
+fn executed_policy_rule(generation:&Value)->bool {
+    let Some(rules)=generation["editPolicy"]["rules"].as_array() else {return true;};
+    if rules.is_empty(){return true;}
+    generation["ruleExecutions"].as_array().is_some_and(|events|
+        events.iter().any(|event|
+            event["policyRevision"]==generation["editPolicy"]["revision"]
+            && rules.iter().any(|rule|rule["id"]==event["ruleId"])))
+}
 fn edit_method_reward(generation:&Value)->f64 {
+    if !executed_policy_rule(generation) {return 0.0;}
     if generation["accepted"]==true
         && generation["evidenceVerified"]==true
         && generation["evaluation"]["metrics"]["eligible"]==true {
@@ -3957,6 +3968,14 @@ mod tests {
             "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
                 "verdict":"inconclusive","metrics":{"improvedHoldouts":0}}})),0.10);
         assert_eq!(edit_method_reward(&json!({"accepted":false,"candidateId":null})),0.0);
+        let invented=json!({"accepted":true,"evidenceVerified":true,
+            "evaluation":{"metrics":{"eligible":true}},
+            "editPolicy":{"revision":"rev-1","rules":[{"id":"rule-1"}]}});
+        assert_eq!(edit_method_reward(&invented),0.0,
+            "a policy that did not execute cannot claim the improvement");
+        let mut real=invented;
+        real["ruleExecutions"]=json!([{"ruleId":"rule-1","policyRevision":"rev-1"}]);
+        assert_eq!(edit_method_reward(&real),1.0);
     }
 
     #[test]
