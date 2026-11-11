@@ -94,3 +94,29 @@
 - **독립 2차 실제 모델 시도**: `65a7aa2`에서 `scripts/sub4-live-rsi.mjs`가 원격 공개 모델과 실제 local Ollama 모델을 모두 지원. `fe7257ce4393901539ee54f525fdaaaa0d5702fa`에서 workflow `.github/workflows/sub4-live-ollama.yml` 추가, Qwen `qwen3:4b-instruct` 로컬 API 실험 실행. https://github.com/hushmind3/dominion-rust/actions/runs/42952326808 **진행 중**(기록 시점). 실제 모델이 파일을 수정·채택했는지는 해당 실행 로그와 `sub4-real-local-model-proof` artifact 결과가 나온 뒤 판정할 것.
 - 현재 브랜치 전용 HEAD `fe7257ce4393901539ee54f525fdaaaa0d5702fa`, 다른 개발 브랜치 및 main 무수정. 후속 CI https://github.com/hushmind3/dominion-rust/actions/runs/42952326684 에서 Ollama gateway 패치와 스크립트 변경 포함 전체 검증 결과 확인 필요.
 - **지금 다음 세션의 최우선**: 1) Ollama 실모델 run `42952326808`과 최신 CI 확인 2) 양 모델의 실제 tool trace에서 `workspace_replace` 0회인 구간 찾아 해당 source-excerpt/읽기→편집 선택 수정 3) 실제 개선이 발생하면 동일 범위 baseline/candidate 독립 holdout 및 방법 타분야 전이의 다음 세대까지 반복. 테스트 수·모델 호출 수로 실제 품질 개선을 대체하지 않음.
+
+
+## 2026-11-11 심판 43점 피드백 이후 — 실제 편집 경로 연결
+
+심판 재채점: Sub4 43/100, 3위. 강점은 분야 간 방법 전이와 실패 기반 후손 교정. 가장 큰 결점은 실제 모델의 수정 0회/채택 0회. 최신 Qwen run `42956442299`의 작업 로그에서 `code_search` 3회, `workspace_read_range` 3회 이후 `스트림 오류: error decoding response body`로 종료한 것을 확인했다. 해당 run의 GitHub Actions 성공은 학습 성공이 아니다.
+
+### 이번에 변경한 코드 (담당 브랜치만 수정)
+- `7131d3c`: `src/engine/tools.rs`에 `workspace_replace_range` 독립 구현. 소형 모델이 이전 원문 `oldText`를 되풀이하지 않고 줄 번호·`newText`·`expectedSha256`만 제출한다. 쓰기 전에 원본 해시를 확인하며 실제 `checked_write` 잠금에서 다시 검사한다. 로컬 모델의 숫자 문자열 인자도 처리하고 실제 도구 테스트를 추가했다.
+- `10d46c4`, `e8952a9`: RSI 런타임 집중 편집 메뉴, 도구 실행/환경 버전 증가/읽기 전 단계, native model `tool_choice=required`를 범위 편집으로 연결했다. 연구 전용 대화는 자동 편집으로 바꾸지 않는다.
+- `aff0f2e9`: `rsi_evolve`의 실제 source write 허용, 실행 영수증, 다음 세대 도구 목록과 프롬프트에 범위 편집을 포함했다.
+- `17fcbdd`, `3d6cf38`: 실모델 측정 스크립트와 Ollama workflow의 tool trace에 범위 편집을 포함했다.
+- `1312cba`: 파일을 실제로 읽고 도구 호출 누적 4회가 되면 한 번의 집중 편집 결정을 조기에 요청. `rsiFocusFile`과 같은 실제 작업 대상 파일을 읽은 영수증이 있어야 발동하며, 모델이 수정 내용을 작성한다.
+- `b143ab4`, `76d3d27`, `3009754`: 완료된 도구 호출과 실제 파일 수정을 분리. `actualWrites`는 파일 쓰기 영수증의 `written:true`에서만 증가하고, 실제 수정이 확인되지 않으면 새 모델 실험의 `sourceWriteCalls`에 포함하지 않는다.
+
+### 확인된 결과와 아직 남은 증명
+- `7131d3c` CI: https://github.com/hushmind3/dominion-rust/actions/runs/42963462694 — success.
+- `10d46c4` CI: https://github.com/hushmind3/dominion-rust/actions/runs/42963657454 — success.
+- `e8952a9` CI: https://github.com/hushmind3/dominion-rust/actions/runs/42963687461 — success.
+- 전체 통합 HEAD `3009754` CI: https://github.com/hushmind3/dominion-rust/actions/runs/42964592996 — 문서 작성 시 queued. 따라서 통합 CI 성공으로 표시하지 않는다.
+- 실제 Qwen 통합 모델 증거: https://github.com/hushmind3/dominion-rust/actions/runs/42964592996 의 CI와는 별도의 `Sub4 actual local Ollama RSI attempt` 최신 실행 및 `sub4-real-local-model-proof` artifact를 확인해야 한다. 모델 수정·독립 holdout 채택·3세대 연속 개선은 아직 증명되지 않았다.
+
+### 다음 최우선 작업
+1. `3009754` 이후의 최신 CI 컴파일/테스트 결과를 확인한다. 실패 시 `dominion-sub4`만 수정한다.
+2. 실제 `qwen3:4b-instruct` 최신 run에서 `rsiActionRetry.reason=focused_source_observed`, `workspace_replace_range` operation, `actualWrites`, 실 git diff, `candidateId`, `acceptedCommit`를 함께 대조한다. 호출만 한 경우는 성과 0으로 기록한다.
+3. 파일 수정이 실제 발생하면 독립 frozen paired holdout, 수용, 재빌드 후 다음 세대의 다른 문제 개선을 수행한다. 후속 세대가 독립 품질 개선을 이루기 전에는 43점 기준을 유지한다.
+4. 타 Sub·Champion·main은 변경하지 않았다.
