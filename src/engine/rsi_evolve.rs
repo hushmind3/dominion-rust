@@ -2849,7 +2849,8 @@ async fn run_loop(
                 target_focus_objective(&current["input"])]),
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
-            "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
+            "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"]});
+        let generation_details = json!({
             "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
             "boundaryResult":current["rsiBoundaryResult"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
@@ -2865,6 +2866,8 @@ async fn run_loop(
             "captureError":current["result"]["rsi"]["captureError"],
             "repairFailure":current["result"]["repairError"],
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
+        generation.as_object_mut().expect("generation object")
+            .extend(generation_details.as_object().expect("generation details object").clone());
         // Keep the generation JSON macro below Rust's recursive expansion
         // ceiling and attach bounded evidence only after building the core
         // generation receipt.
