@@ -825,6 +825,7 @@ async fn replace_source_lines(
     }
     result["replaced"]=json!(true);
     result["replacedLines"]=json!(end-start+1);
+    result["writtenSha256"]=json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
     Ok(result)
 }
 
@@ -864,6 +865,7 @@ async fn replace_text(
     }
     result["replaced"] = json!(true);
     result["replacedChars"] = json!(old_text.chars().count());
+    result["writtenSha256"] = json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
     Ok(result)
 }
 
