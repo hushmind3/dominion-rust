@@ -3141,7 +3141,8 @@ async fn run_loop(
         if let Some(error)=generation_model_error(&current) {
             return Err(error.to_string());
         }
-        if no_edit && should_stop_no_progress(streak, research, changed) {
+        if no_edit && should_stop_no_progress(streak, research, changed)
+            && transfer_failure_repair(&decision_history).is_none() {
             return Ok("no_progress".into());
         }
     }
@@ -3301,6 +3302,14 @@ fn select_generation_strategy(
     generator_commit: &str,
 ) -> (String, &'static str, Value) {
     let active = crate::engine::algorithms::active(state, "selfimprove.search");
+    // An actual failed procedure that changed source but violated its
+    // postcondition is an unfinished task. Repair it once before starting a
+    // different speculative search-policy experiment.
+    if let Some(repair)=transfer_failure_repair(history) {
+        if let Some(domain)=repair["domain"].as_str() {
+            return (domain.to_string(),"method_transfer_repair",Value::Null);
+        }
+    }
     // Never starve an already queued improver experiment with more research.
     // Both parent and descendant run this identical decision function.
     if let Some(id) = trial_id {
@@ -5372,6 +5381,16 @@ mod tests {
             Some("tools".to_string()),None,None,"same-commit");
         assert_eq!(domain,"tools");
         assert_eq!(selection,"method_transfer_repair");
+        let (domain_with_trial,mode_with_trial,_)=select_generation_strategy(
+            &state,&history,"tools",Some("tools".to_string()),
+            Some("pending-later-search-trial".to_string()),None,"same-commit");
+        assert_eq!(domain_with_trial,"tools");
+        assert_eq!(mode_with_trial,"method_transfer_repair",
+            "a concrete failed task outranks an unexecuted new hypothesis");
+        assert!(should_stop_no_progress(2,false,false),
+            "ordinary no-progress stop still applies");
+        assert!(transfer_failure_repair(&history).is_some(),
+            "the exact failed tool receipt earns a single corrective generation");
 
         let mut already_repaired=failed.clone();
         already_repaired["domainSelection"]=json!("method_transfer_repair");
