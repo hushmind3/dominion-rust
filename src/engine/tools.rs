@@ -802,16 +802,33 @@ async fn replace_text(
 async fn replace_line_span(
     ctx:&ToolContext<'_>, path:&Path, args:&Value, new_text:&str, run_id:&str,
 )->Result<Value,String> {
-    let start=args["startLine"].as_u64().filter(|n|*n>0)
+    // Small local models sometimes serialize a precise numbered range as
+    // strings. Normalize only integer line coordinates; never guess a range.
+    let line=|key:&str| {
+        args[key].as_u64().or_else(||args[key].as_str()?.parse::<u64>().ok())
+    };
+    let start=line("startLine").filter(|n|*n>0)
         .ok_or("workspace_replace에는 oldText 또는 startLine이 필요합니다.")?;
-    let end=args["endLine"].as_u64().filter(|n|*n>=start)
+    let end=line("endLine").filter(|n|*n>=start)
         .ok_or("endLine은 startLine 이상이어야 합니다.")?;
     if end-start>=120 {
         return Err("한 번에 최대 120줄까지만 바꿀 수 있습니다.".into());
     }
-    let expected=args["expectedSha256"].as_str()
+    // Recover an omitted source hash only from a persisted repository index
+    // that was bound to this RSI session, never from the model's prose.
+    // The observed file bytes must still match that frozen index below.
+    let session=ctx.store.get("session",ctx.session_id).unwrap_or(Value::Null);
+    let indexed_sha=if args["expectedSha256"].is_null()
+        && session["rsiRun"]==true {
+        session["rsiCodeIndexId"].as_str().and_then(|id|
+            path.strip_prefix(ctx.workspace).ok()
+                .and_then(|relative|relative.to_str())
+                .and_then(|relative|crate::engine::code_index::indexed_source_hash(
+                    ctx.state,id,relative)))
+    } else {None};
+    let expected=args["expectedSha256"].as_str().or(indexed_sha.as_deref())
         .filter(|sha|sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
-        .ok_or("줄 범위 수정에는 workspace_read_range의 sourceSha256이 필요합니다.")?;
+        .ok_or("줄 범위 수정에는 workspace_read_range 또는 현재 색인의 sourceSha256이 필요합니다.")?;
     if new_text.len()>32*1024 {
         return Err("줄 범위 새 코드는 최대 32KiB입니다.".into());
     }
@@ -852,6 +869,7 @@ async fn replace_line_span(
         result["replacedLines"]=json!(end-start+1);
         result["editMode"]=json!("versioned_line_span");
         result["postSha256"]=json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
+        result["sourceHashRecoveredFromIndex"]=json!(indexed_sha.is_some());
     }
     Ok(result)
 }
