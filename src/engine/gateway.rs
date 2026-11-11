@@ -150,7 +150,13 @@ pub fn resolved_base_url(provider: &Value) -> String {
             return "https://opencode.ai/inference/go/openai/v1".to_string();
         }
     }
-    resolved
+    // Ollama exposes native model discovery at /api/tags, but all DOMINION
+    // chat/goal/RSI generation requests target its OpenAI-compatible /v1.
+    // A registered server root is not itself a /chat/completions endpoint.
+    if provider["kind"].as_str()==Some("ollama")
+        && !resolved.is_empty() && !resolved.ends_with("/v1") {
+        format!("{resolved}/v1")
+    } else {resolved}
 }
 
 /// Builds a route from a provider record. Disabled providers and providers
@@ -599,6 +605,27 @@ mod tests {
         assert!(reserve_generation(base, "Qwen3.6-27B-test", Some(2)).is_err());
         // Keyed routes are not subject to the anonymous limit.
         assert!(reserve_generation(base, "Qwen3.8-27B-test", None).is_ok());
+    }
+
+    #[test]
+    fn ollama_root_is_a_valid_native_chat_and_rsi_generation_endpoint() {
+        let state=state();
+        for (root,expected) in [
+            ("http://127.0.0.1:11434","http://127.0.0.1:11434/v1"),
+            ("http://127.0.0.1:11434/","http://127.0.0.1:11434/v1"),
+            ("http://127.0.0.1:11434/v1","http://127.0.0.1:11434/v1"),
+            ("https://models.example/ollama","https://models.example/ollama/v1")
+        ] {
+            let provider=json!({"id":"local-rsi","kind":"ollama","name":"local",
+                "baseUrl":root,"model":"qwen3:4b-instruct","enabled":true});
+            let route=route_from_provider(&state,&provider,None).unwrap();
+            assert_eq!(route.base_url,expected);
+            assert_eq!(route.endpoint("/chat/completions"),
+                format!("{expected}/chat/completions"));
+        }
+        let generic=json!({"id":"api","kind":"openai","name":"api",
+            "baseUrl":"https://api.example/v1","model":"x","enabled":true});
+        assert_eq!(resolved_base_url(&generic),"https://api.example/v1");
     }
 
     #[test]
