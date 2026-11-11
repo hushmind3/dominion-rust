@@ -1,0 +1,80 @@
+name: Sub3 real-model RSI cycle attempt
+
+on:
+  push:
+    branches: [dominion-sub3]
+    paths:
+      - '.github/workflows/sub3-live-model-cycle.yml'
+      - 'scripts/sub3-live-model-campaign.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 42
+    env:
+      DOMINION_PORT: '43173'
+      SUB3_LIVE_REPORT: benchmark/sub3-live-campaign-result.json
+      BASE_SHA: 1d94e1da1ed4f47243a793ab0625182f5a2c9656
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Probe a genuine model, not a fixture
+        id: probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/sub3-live-model-campaign.mjs probe | tee /tmp/sub3-model-probe.log
+          if grep -Fq 'SUB3_MODEL_REACHABLE=true' /tmp/sub3-model-probe.log; then
+            echo "reachable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "reachable=false" >> "$GITHUB_OUTPUT"
+            echo 'No reachable anonymous model. No autonomous improvement result is claimed.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.probe.outputs.reachable == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.probe.outputs.reachable == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.probe.outputs.reachable == 'true'
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web && npm run build --prefix web
+        if: steps.probe.outputs.reachable == 'true'
+      - run: cargo build --release --locked --bin dominion-rust
+        if: steps.probe.outputs.reachable == 'true'
+      - name: Let DOMINION execute a genuine model-written source improvement
+        if: steps.probe.outputs.reachable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/sub3-source" "$BASE_SHA"
+          export DOMINION_DATA="$RUNNER_TEMP/sub3-data"
+          export DOMINION_WORKSPACE="$RUNNER_TEMP/sub3-source"
+          export DOMINION_SOURCE_WORKSPACE="$RUNNER_TEMP/sub3-source"
+          mkdir -p "$DOMINION_DATA"
+          node scripts/sub3-live-model-campaign.mjs proxy > "$RUNNER_TEMP/sub3-proxy.log" 2>&1 &
+          proxy_pid=$!
+          ./target/release/dominion-rust > "$RUNNER_TEMP/sub3-engine.log" 2>&1 &
+          engine_pid=$!
+          trap 'kill "$proxy_pid" "$engine_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 100); do
+            if curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health" > /dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
+          node scripts/sub3-live-model-campaign.mjs run
+          cat "$SUB3_LIVE_REPORT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sub3-real-model-attempt
+          path: |
+            benchmark/sub3-live-campaign-result.json
+          if-no-files-found: ignore
