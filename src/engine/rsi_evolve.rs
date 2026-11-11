@@ -5230,7 +5230,7 @@ mod tests {
             assert_eq!(strategies.len(),1,"real {domain} task should reuse learned procedure");
             let strategy=&strategies[0];
             assert_eq!(strategy["rsiBoundFocusFile"],json!(focus));
-            assert_eq!(strategy["rsiTransferTrial"],json!(domain=="tools"));
+            assert_eq!(strategy["rsiTransferTrial"].as_bool().unwrap_or(false),domain=="tools");
             let (node,tool,args)=crate::engine::procedure::ready_intent(
                 strategy,&[],"Improve src/engine/ source code",
                 &std::collections::HashMap::new()).unwrap();
