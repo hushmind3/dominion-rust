@@ -1479,7 +1479,8 @@ fn repair_exploration_order(method:&Value)->u8 {
         Some("stale_source_rebase")=>0,
         Some("existing_file_to_versioned_edit")=>1,
         Some("indexed_source_rebase")=>2,
-        _=>3,
+        Some("indexed_path_retarget")=>3,
+        _=>4,
     }
 }
 
@@ -1574,7 +1575,7 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
 /// its own future application passes the ordinary procedure evaluator.
 fn is_synthesized_source_repair(method:&Value)->bool {
     matches!(method["synthesis"]["kind"].as_str(),
-        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"))
+        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"))
 }
 
 /// Synthesize a new executable procedure, not just an action ranking.
@@ -1751,6 +1752,98 @@ fn synthesize_existing_file_write_repair(method:&Value,op:&Value)->Option<Value>
             "newReadNodeId":read_id}}))
 }
 
+/// A previously valid source path can disappear when a module moves. A failed
+/// read is enough to search the current generation's *own* repository index
+/// for exactly one file with the same basename. Rewrite the procedure DAG,
+/// its postconditions and the dependent edit's SHA binding. Ambiguous paths
+/// produce no candidate: the engine never guesses which file to mutate.
+fn synthesize_indexed_path_repair(
+    state:&AppState,method:&Value,op:&Value,generation:&Value
+)->Option<Value> {
+    if method["assistanceMode"]!="harness_assisted"
+        || method["verification"]["type"]!="procedure"
+        || op["origin"]!="procedure" || op["tool"]!="workspace_read_range"
+        || op["status"]!="failed"
+        || op["procedureStrategyId"]!=method["id"]
+        || op["procedureRevision"]!=method["revision"] {return None}
+    let error=op["result"]["error"].as_str()
+        .or_else(||op["error"].as_str())?;
+    if !error.contains("No such file") && !error.contains("os error 2")
+        && !error.contains("파일이나 디렉터리가 없습니다") {return None}
+    let old=op["arguments"]["path"].as_str()?;
+    if !crate::engine::rsi::safe_path(old) {return None}
+    let read_id=op["procedureNodeId"].as_str()?;
+    let nodes=method["verification"]["nodes"].as_array()?;
+    if !nodes.iter().any(|node|node["id"]==read_id
+        && node["tool"]=="workspace_read_range"
+        && node["arguments"]["path"]==old) {return None}
+    // Preserve the precise source partition; never apply a similarly named
+    // file from another indexed repository or a stale global index.
+    let job=state.store.get("job",generation["jobId"].as_str()?)?;
+    let index_id=job["input"]["rsiIndexId"].as_str()?;
+    let index=state.store.get("code_index",index_id)?;
+    if index["sourceDir"]!=job["input"]["rsiSourceDir"] {return None}
+    let filename=std::path::Path::new(old).file_name()?.to_str()?;
+    let mut matching=state.store.all("code_index_file").into_iter()
+        .filter(|file|file["indexId"].as_str()==Some(index_id))
+        .filter_map(|file|file["path"].as_str().map(str::to_string))
+        .filter(|path|path!=old && crate::engine::rsi::safe_path(path)
+            && std::path::Path::new(path).file_name()
+                .and_then(|name|name.to_str())==Some(filename))
+        .collect::<Vec<_>>();
+    matching.sort();
+    matching.dedup();
+    if matching.len()!=1 {return None}
+    let target=&matching[0];
+    let mut program=method["verification"].clone();
+    let mut edited=Vec::new();
+    for node in program["nodes"].as_array_mut()? {
+        if node["arguments"]["path"]!=old {continue}
+        match node["tool"].as_str() {
+            Some("workspace_read_range")=>{
+                node["arguments"]["path"]=json!(target);
+            },
+            Some("workspace_replace")=>{
+                node["arguments"]["path"]=json!(target);
+                node["arguments"]["expectedSha256"]=json!(format!(
+                    "{}{}.sourceSha256",char::from(36),read_id));
+                if let Some(id)=node["id"].as_str(){edited.push(id.to_string());}
+            },
+            _=>return None
+        }
+    }
+    if !program["edges"].is_array(){program["edges"]=json!([])}
+    for id in edited {
+        if id==read_id {return None}
+        let edges=program["edges"].as_array_mut()?;
+        if !edges.iter().any(|edge|edge["from"]==read_id && edge["to"]==id) {
+            edges.push(json!({"from":read_id,"to":id}));
+        }
+    }
+    for after in program["after"].as_array_mut()? {
+        if after["path"]==old {after["path"]=json!(target);}
+    }
+    for before in program["before"].as_array_mut().into_iter().flatten() {
+        for key in ["when","require"] {
+            if before[key]["path"]==old {before[key]["path"]=json!(target);}
+        }
+    }
+    let program=crate::engine::procedure::normalize(&program);
+    if program["type"]!="procedure" {return None}
+    let domain=method["domain"].as_str()?;
+    let revision=format!("{:x}",Sha256::digest(
+        json!([domain,&program]).to_string().as_bytes()));
+    Some(json!({"id":format!("rsi-method-{revision}"),"revision":revision,
+        "name":format!("{} · indexed-retarget",method["name"].as_str()
+            .unwrap_or("Recovered procedure").chars().take(70).collect::<String>()),
+        "domain":domain,"verification":program,"status":"candidate",
+        "assistanceMode":"harness_assisted","successfulApplications":0,
+        "synthesis":{"kind":"indexed_path_retarget",
+            "parentMethodId":method["id"],"parentRevision":method["revision"],
+            "failedOperationId":op["id"],"sourceIndexId":index_id,
+            "oldPath":old,"targetPath":target,"changedReadNodeId":read_id}}))
+}
+
 fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str) -> Vec<Value> {
     let receipts = state.store.get("session", session_id)
         .and_then(|s|s["rsiMethodExecutions"].as_array().cloned()).unwrap_or_default();
@@ -1770,7 +1863,8 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             for mut repair in [
                 synthesize_stale_edit_repair(method,op),
                 synthesize_indexed_edit_repair(method,op),
-                synthesize_existing_file_write_repair(method,op)
+                synthesize_existing_file_write_repair(method,op),
+                synthesize_indexed_path_repair(state,method,op,generation)
             ].into_iter().flatten() {
                 repair["sourceGenerationJobId"]=generation["jobId"].clone();
                 if !repairs.iter().any(|r|r["id"]==repair["id"]) {repairs.push(repair);}
