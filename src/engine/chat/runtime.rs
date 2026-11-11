@@ -1466,8 +1466,9 @@ async fn run_turn_body(
                 &session["rsiActionProgram"],&operations,execution_id) {
                 if round_tools.iter().any(|tool|tool_name(tool)==selected) {
                     round_tools.retain(|tool|
-                        crate::engine::rsi_action_program::tool_allowed_with_evidence(
-                            tool_name(tool),&selected,&operations,execution_id));
+                        crate::engine::rsi_action_program::tool_allowed_with_policy(
+                            tool_name(tool),&selected,&operations,execution_id,
+                            &session["rsiActionProgram"]));
                     let after=operations.iter().filter_map(|op|op["opSeq"].as_u64())
                         .max();
                     let previous=state.store.get("execution",execution_id)

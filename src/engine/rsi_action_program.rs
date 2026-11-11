@@ -275,6 +275,7 @@ pub fn evolve_controller(rows:&[Value], mut program:Value)->Value {
         && row["jobId"].as_str().is_some_and(|id|!id.is_empty()));
     let Some(last)=source else {
         program["controller"]=json!({"checkpointAfter":6,
+            "groundingReadLimit":2,
             "mutation":"cold_start","qualityProven":false});
         return program;
     };
@@ -310,12 +311,34 @@ pub fn evolve_controller(rows:&[Value], mut program:Value)->Value {
         checkpoint=checkpoint.saturating_sub(1).max(2);
         "shorten_unproductive_discovery"
     } else {"retain_observed_discovery_budget"};
+    // Denied exact reads are executable evidence of a tool-menu failure.
+    // Adapt the next generation's bounded source-observation allowance; a
+    // read-only generation that exhausted its allowance goes the other way.
+    // The trial still requires independent source and holdout improvements.
+    let prior_reads=previous.and_then(|row|
+        row["actionProgramTrial"]["program"]["controller"]["groundingReadLimit"].as_u64())
+        .unwrap_or(2).clamp(1,3);
+    let denied_reads=last["toolRejections"].as_array().map(|calls|
+        calls.iter().filter(|call|call["tool"]=="workspace_read_range"
+            && call["error"].as_str().is_some_and(|err|
+                err.contains("제공되지") || err.contains("not advertised"))).count()
+            as u64).unwrap_or(0);
+    let witnessed_reads=last["actionTrace"].as_array().map(|trace|
+        trace.iter().filter(|step|step["tool"]=="workspace_read_range"
+            && step["executed"]==true).count() as u64).unwrap_or(0);
+    let (read_limit,read_mutation)=if denied_reads>0 {
+        ((prior_reads+1).min(3),"repair_denied_exact_source_read")
+    }else if witnessed_reads>=prior_reads && !changed && !candidate {
+        (prior_reads.saturating_sub(1).max(1),"shorten_read_only_loop")
+    }else{(prior_reads,"preserve_observed_read_budget")};
     let revision=memory::stable_id(&[
         &json!([&program["sequence"],&program["onFailure"],
-            &program["recoveryPaths"],checkpoint]).to_string()]);
+            &program["recoveryPaths"],checkpoint,read_limit]).to_string()]);
     let parent=program["revision"].clone();
     program["revision"]=json!(revision);
     program["controller"]=json!({"checkpointAfter":checkpoint,
+        "groundingReadLimit":read_limit,"groundingMutation":read_mutation,
+        "deniedExactReads":denied_reads,"witnessedExactReads":witnessed_reads,
         "mutation":reason,"sourceJobId":last["jobId"],
         "parentRevision":previous.map(|row|row["actionProgramTrial"]["revision"].clone())
             .unwrap_or(parent),
@@ -455,14 +478,27 @@ pub fn tool_allowed(name:&str,chosen:&str)->bool {
 pub fn tool_allowed_with_evidence(
     name:&str,chosen:&str,ops:&[Value],execution_id:&str,
 )->bool {
+    tool_allowed_with_read_limit(name,chosen,ops,execution_id,2)
+}
+fn tool_allowed_with_read_limit(
+    name:&str,chosen:&str,ops:&[Value],execution_id:&str,limit:u64,
+)->bool {
     if tool_allowed(name,chosen) {return true;}
     if name!="workspace_read_range" || !edit(chosen) {return false;}
-    let mut reads=0usize;
+    let mut reads=0u64;
     for op in ops.iter().filter(|op|op["runId"].as_str()==Some(execution_id)) {
         if op["tool"].as_str().is_some_and(edit) {return false;}
         if op["tool"]=="workspace_read_range" {reads+=1;}
     }
-    reads<2
+    reads<limit.clamp(1,3)
+}
+/// Native execution uses the feedback-mutated descendant controller.
+/// The read limit is trial evidence, not permission to promote its policy.
+pub fn tool_allowed_with_policy(
+    name:&str,chosen:&str,ops:&[Value],execution_id:&str,program:&Value,
+)->bool {
+    let limit=program["controller"]["groundingReadLimit"].as_u64().unwrap_or(2);
+    tool_allowed_with_read_limit(name,chosen,ops,execution_id,limit)
 }
 
 /// Every chosen tool must be witnessed *after* the choice on the same execution.
@@ -1081,6 +1117,32 @@ mod tests {
         // not blocked by the edit-stage supplementary-read budget.
         assert!(tool_allowed_with_evidence("workspace_read_range",
             "workspace_read_range",&[],"run"));
+    }
+    #[test]
+    fn rejected_source_reads_evolve_the_native_read_budget(){
+        let program=json!({"revision":"old","sequence":["workspace_replace"],
+            "onFailure":[],"recoveryPaths":[],
+            "controller":{"checkpointAfter":6,"groundingReadLimit":2}});
+        let denied=json!({"jobId":"job-1","actionTrace":[
+                {"runId":"run","tool":"workspace_read_range","executed":true}],
+            "toolRejections":[
+                {"tool":"workspace_read_range","error":"도구는 제공되지 않았습니다"}],
+            "observedSourceEdits":0});
+        let evolved=evolve_controller(&[denied],program);
+        assert_eq!(evolved["controller"]["groundingReadLimit"],3);
+        assert_eq!(evolved["controller"]["groundingMutation"],
+            "repair_denied_exact_source_read");
+        assert_eq!(evolved["controller"]["qualityProven"],false);
+        let reads=(0..2).map(|i|json!({"runId":"run","opSeq":i,
+            "tool":"workspace_read_range","status":"completed"}))
+            .collect::<Vec<_>>();
+        assert!(tool_allowed_with_policy("workspace_read_range",
+            "workspace_replace",&reads,"run",&evolved));
+        let mut exhausted=reads;
+        exhausted.push(json!({"runId":"run","opSeq":2,
+            "tool":"workspace_read_range","status":"completed"}));
+        assert!(!tool_allowed_with_policy("workspace_read_range",
+            "workspace_replace",&exhausted,"run",&evolved));
     }
     #[test]
     fn policy_cannot_gain_quality_from_tool_calls_or_mismatched_source(){
