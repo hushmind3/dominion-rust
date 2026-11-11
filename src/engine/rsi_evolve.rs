@@ -1298,7 +1298,17 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
         }
         Ok(unique.into_iter().collect::<Vec<_>>())
     }).transpose()?.unwrap_or_default();
-    let verification = crate::engine::procedure::normalize(&body["verification"]);
+    // RSI methods can name the current source file symbolically. The model
+    // proposes the *method*, while the harness binds its actual target for
+    // each generation; that is what makes a procedure transferable.
+    let mut proposed_verification=body["verification"].clone();
+    if uses_rsi_focus_binding(&proposed_verification) {
+        if !proposed_verification["bindings"].is_object() {
+            proposed_verification["bindings"]=json!({});
+        }
+        proposed_verification["bindings"]["rsiFocusPath"]=json!("__rsi_dynamic_focus__");
+    }
+    let verification = crate::engine::procedure::normalize(&proposed_verification);
     if verification["type"] != "procedure"
         || verification["nodes"].as_array().is_none_or(Vec::is_empty)
         || verification["after"].as_array().is_none_or(Vec::is_empty)
@@ -1334,7 +1344,46 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
     Ok(json!({"method":method,"next":"다음 예정된 개발에서 실제 도구로 실행하고 후속 조건과 개발 결과를 확인합니다. 등록은 성과가 아닙니다."}))
 }
 
+// A learned procedure may refer to the task's current indexed file, not a
+// hardcoded filename in the source generation. Only exact binding tokens are
+// replaced; arbitrary source text and model-generated strings stay literal.
+fn uses_rsi_focus_binding(value:&Value)->bool {
+    match value {
+        Value::String(text)=>text=="$rsiFocusPath",
+        Value::Array(items)=>items.iter().any(uses_rsi_focus_binding),
+        Value::Object(items)=>items.values().any(uses_rsi_focus_binding),
+        _=>false,
+    }
+}
+
+fn substitute_rsi_focus(value:&mut Value, focus:&str) {
+    match value {
+        Value::String(text) if text=="$rsiFocusPath"=>*value=json!(focus),
+        Value::Array(items)=>for item in items { substitute_rsi_focus(item,focus); },
+        Value::Object(items)=>for item in items.values_mut() { substitute_rsi_focus(item,focus); },
+        _=>{},
+    }
+}
+
+fn materialize_method_focus(mut method:Value,focus:Option<&str>)->Option<Value> {
+    if !uses_rsi_focus_binding(&method["verification"]) {return Some(method);}
+    let path=focus.filter(|p|crate::engine::rsi::safe_path(p))?;
+    substitute_rsi_focus(&mut method["verification"],path);
+    method["rsiBoundFocusFile"]=json!(path);
+    Some(method)
+}
+
+fn current_rsi_focus(input:&Value)->Option<&str> {
+    input["rsiFocusFiles"].as_array()?.iter()
+        .filter_map(Value::as_str).find(|path|crate::engine::rsi::safe_path(path))
+}
+
 fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective: &str) -> Vec<Value> {
+    applicable_methods_with_focus(state,partition,domain,objective,None)
+}
+
+fn applicable_methods_with_focus(state: &AppState, partition: &str, domain: &str,
+    objective: &str, focus:Option<&str>) -> Vec<Value> {
     let mut methods = Vec::new();
     let records = state.store.all("experience").into_iter()
         .filter(|record|record["partitionKey"] == partition && record["status"] == "active")
@@ -1358,9 +1407,9 @@ fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective
                 && method["successfulApplications"].as_u64().unwrap_or(0)>0;
             if !(original_domain || transferable)
                 || blocked.contains(method["id"].as_str().unwrap_or(""))
-                || !matches!(method["status"].as_str(), Some("candidate" | "executable"))
-                || !crate::engine::procedure::applies(method, objective, None, None) { continue; }
-            let mut method = method.clone();
+                || !matches!(method["status"].as_str(), Some("candidate" | "executable")) { continue; }
+            let Some(mut method)=materialize_method_focus(method.clone(),focus) else {continue;};
+            if !crate::engine::procedure::applies(&method, objective, None, None) {continue;}
             if transferable { method["rsiTransferTrial"]=json!(true); }
             method["rsiMethodExperienceId"] = record["id"].clone();
             methods.push(method);
@@ -1394,8 +1443,8 @@ fn method_application_context(input: &Value, domain: &str) -> String {
 }
 
 fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
-    let methods = applicable_methods(state, &research_scope(input).partition_key, domain,
-        &method_application_context(input, domain));
+    let methods = applicable_methods_with_focus(state, &research_scope(input).partition_key, domain,
+        &method_application_context(input, domain),current_rsi_focus(input));
     json!({"action":if methods.is_empty(){"research_only"}else{"execute_methods"},
         "methodIds":methods.iter().map(|m|m["id"].clone()).collect::<Vec<_>>()})
 }
@@ -1405,6 +1454,7 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     session["rsiResearchPartition"] = json!(research_scope(input).partition_key);
     session["rsiDomain"] = json!(domain);
     session["rsiMethodContext"] = json!(method_application_context(input,domain));
+    session["rsiFocusFile"] = json!(current_rsi_focus(input));
     let mut decision = input["rsiDecisionInput"].clone();
     if !decision.is_object() {decision=json!({});}
     // The parent predicted reuse BEFORE the descendant indexed and selected
@@ -1422,9 +1472,10 @@ pub(crate) fn method_strategies(state: &AppState, session: &Value) -> Vec<Value>
     }
     let ids = session["rsiDecisionInput"]["reuseDecision"]["methodIds"].as_array().cloned().unwrap_or_default();
     let prior = state.store.all("execution_operation");
-    applicable_methods(state, session["rsiResearchPartition"].as_str().unwrap_or(""),
+    applicable_methods_with_focus(state, session["rsiResearchPartition"].as_str().unwrap_or(""),
         session["rsiDomain"].as_str().unwrap_or(""),
-        session["rsiMethodContext"].as_str().or_else(||session["rsiObjective"].as_str()).unwrap_or(""))
+        session["rsiMethodContext"].as_str().or_else(||session["rsiObjective"].as_str()).unwrap_or(""),
+        session["rsiFocusFile"].as_str())
         .into_iter().filter(|m| ids.contains(&m["id"]) && !prior.iter().any(|op|
             op["sessionId"] == session["id"] && op["origin"] == "procedure"
                 && op["procedureStrategyId"] == m["id"]))
@@ -1448,6 +1499,7 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
             let result = crate::engine::procedure::evaluate(method, &operations, workspace);
             receipts.push(json!({"methodId":method["id"],"revision":method["revision"],
                 "experienceId":method["rsiMethodExperienceId"],"executionId":execution["id"],
+                "focusPath":method["rsiBoundFocusFile"],
                 "operationIds":used.iter().map(|op|op["id"].clone()).collect::<Vec<_>>(),
                 "result":result}));
         }
@@ -1495,7 +1547,7 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
         let application = json!({"jobId":generation["jobId"],"executionId":receipt["executionId"],
             "domain":generation["domain"],
             "crossDomain":generation["domain"]!=method["domain"],
-            "operationIds":receipt["operationIds"],
+            "operationIds":receipt["operationIds"],"focusPath":receipt["focusPath"],
             "postconditionsPassed":if !ok && !violated {Value::Null}else{json!(ok)},
             "verificationVerdict":if violated {"violated"}else if ok {"passed"}else{"inconclusive"},
             "accepted":generation["accepted"],"newFindings":generation["newFindings"],
