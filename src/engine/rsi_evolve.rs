@@ -1784,21 +1784,38 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
                 }
             }
             policy["programMutations"]=json!(inherited);
+            // Preserve independent program-quality observations earned while
+            // the frozen cohort was running. The promoted recipe must not
+            // erase the descendants that actually executed it.
+            let mut observed=policy["programMeasuredEvidence"].as_array()
+                .cloned().unwrap_or_default();
+            for row in live["programMeasuredEvidence"].as_array().into_iter().flatten() {
+                if !observed.iter().any(|past|past["jobId"]==row["jobId"]
+                    && past["programId"]==row["programId"]) {
+                    observed.push(row.clone());
+                }
+            }
+            if observed.len()>64{observed.drain(..observed.len()-64);}
+            policy["programMeasuredEvidence"]=json!(observed);
             let rejected_ids=policy["rejectedProgramIds"].as_array()
                 .cloned().unwrap_or_default();
             if let Some(programs)=policy["executionPrograms"].as_array_mut() {
                 programs.retain(|program| !rejected_ids.contains(&program["id"]));
             }
-            // Keep the tested revision only when its executable recipe is
-            // unchanged; a concurrent program veto creates a new revision.
-            if policy["executionPrograms"]!=cohort["policy"]["executionPrograms"] {
+            rescore_execution_programs(&mut policy);
+            // A later quality observation may change ranking after the
+            // A/B snapshot. Keep its full history and mark the new revision
+            // as a candidate rather than claiming it was the tested winner.
+            let changed=policy["executionPrograms"]!=cohort["policy"]["executionPrograms"];
+            if changed {
                 policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([
                     &policy["transitions"],&policy["executionPrograms"],
-                    &policy["rejectedProgramIds"],&policy["programMutations"],
-                    &policy["scoringKernel"]
+                    &policy["programMeasuredEvidence"],&policy["rejectedProgramIds"],
+                    &policy["programMutations"],&policy["scoringKernel"]
                 ]).to_string().as_bytes())));
             }
-            policy["status"]=json!("promoted_observational");
+            policy["status"]=json!(if changed {"candidate_from_promoted_recipe"}
+                else{"promoted_observational"});
             policy["lastMethodTrial"]=json!({"cohortId":cohort_id,
                 "verdict":verdict,"causalProof":false,
                 "retainedEvidence":policy["evidence"].as_array().map(Vec::len).unwrap_or(0)});
@@ -1831,6 +1848,7 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
             policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([
                 &policy["transitions"],&policy["executionPrograms"],
                 &policy["rejectedProgramIds"],&policy["programMutations"],
+                &policy["programMeasuredEvidence"],
                 &policy["evidence"],&policy["scoringKernel"],cohort_id
             ]).to_string().as_bytes())));
         }
