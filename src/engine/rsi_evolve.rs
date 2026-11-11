@@ -4371,6 +4371,7 @@ async fn run_loop(
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
+            "evolutionaryAction":current["input"]["rsiEvolutionaryAction"],
             "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
             "boundaryResult":current["rsiBoundaryResult"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
@@ -5268,7 +5269,17 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         job["input"]["rsiMethodPolicyTrial"]=
             method_policy_trial_plan(&state,&job["input"]);
     }
+    // This decision is calculated by the freshly built descendant, not by
+    // the older coordinating process. It changes the next real model task,
+    // while keeping source verification and holdout authority independent.
+    let current_focus=job["input"]["rsiFocusFiles"].as_array()
+        .and_then(|paths|paths.first()).and_then(Value::as_str)
+        .filter(|path|crate::engine::rsi::safe_path(path));
+    let evolutionary_action=crate::engine::rsi_population::action(
+        &history,&domain,current_focus);
+    job["input"]["rsiEvolutionaryAction"]=evolutionary_action.clone();
     let mut worker_base=job["input"]["prompt"].as_str().unwrap_or("").to_string();
+    worker_base.push_str(&crate::engine::rsi_population::instruction(&evolutionary_action));
     if let Some(plan)=repair.as_ref() {worker_base.push_str(&transfer_repair_instruction(plan));}
     if let Some(plan)=source_integrity_repair(&history)
         .filter(|p|p["domain"].as_str()==Some(domain.as_str())
