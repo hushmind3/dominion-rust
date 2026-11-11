@@ -1564,6 +1564,37 @@ fn measured_system_improvement(generation:&Value)->bool {
 /// Different outcomes modify the observed transition weights. The next native
 /// generation reads this revision from the durable ledger rather than replaying
 /// a fixed prompt or a model-specific recipe.
+/// An induced policy is not successful merely because it appeared in a
+/// prompt or in the provider's tool list. Preserve both the suggested action
+/// and whether the real executor subsequently called it in this generation.
+fn induced_method_application_receipts(state:&AppState,session_id:&str)->Vec<Value> {
+    let operations=state.store.all("execution_operation");
+    let mut receipts=state.store.all("execution").into_iter()
+        .filter(|execution|execution["sessionId"].as_str()==Some(session_id)
+            && execution["rsiInducedMethodDecision"]["revision"].is_string())
+        .map(|execution|{
+            let choice=&execution["rsiInducedMethodDecision"];
+            let execution_id=execution["id"].as_str().unwrap_or("");
+            let selected=choice["preferredTool"].as_str().unwrap_or("");
+            let performed=operations.iter().any(|op|
+                op["runId"].as_str()==Some(execution_id)
+                && op["tool"].as_str()==Some(selected)
+                && op["status"]=="completed");
+            let checked_write=operations.iter().any(|op|
+                op["runId"].as_str()==Some(execution_id)
+                && op["tool"].as_str()==Some(selected)
+                && op["status"]=="completed"
+                && op["result"]["written"]==true
+                && op["toolReceipt"]["verified"]==true);
+            json!({"executionId":execution_id,"policyId":choice["policyId"],
+                "revision":choice["revision"],"preferredTool":selected,
+                "performed":performed,"verifiedSourceWrite":checked_write,
+                "independentSystemGain":"not_estimated_by_tool_selection"})
+        }).collect::<Vec<_>>();
+    receipts.sort_by(|a,b|a["executionId"].as_str().cmp(&b["executionId"].as_str()));
+    receipts
+}
+
 fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,session_id:&str)->Option<Value> {
     let trace=witnessed_method_trace(state,session_id);
     if trace.len()<2 {return None;}
@@ -1591,7 +1622,8 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     let mut transitions=Vec::<Value>::new();
     let mut evidence=history;
     evidence.push(json!({"jobId":job_id,"domain":generation["domain"],
-        "sequence":trace,"operationalPass":procedural_pass,
+        "sequence":trace,"appliedPolicy":generation["inducedMethodApplications"],
+        "operationalPass":procedural_pass,
         "operationalFailure":procedural_failure,"pairedImprovement":capability_gain,
         "acceptedCommit":if capability_gain{generation["acceptedCommit"].clone()}else{Value::Null},
         "evaluationId":if capability_gain{generation["evaluation"]["id"].clone()}else{Value::Null}}));
@@ -3119,6 +3151,7 @@ async fn run_loop(
         }
         if let Some(session)=session {
             generation["methodExecutions"]=json!(record_method_feedback(&context.state,&generation,session));
+            generation["inducedMethodApplications"]=json!(induced_method_application_receipts(&context.state,session));
             if let Some(policy)=learn_method_transitions(&context.state,&current["input"],
                 &generation,session) {
                 generation["inducedMethodPolicy"]=json!({"id":policy["id"],
