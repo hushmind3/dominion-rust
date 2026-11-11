@@ -33,13 +33,18 @@ impl Genome {
     }
 
     fn revision(&self) -> String {
+        // Provenance (sourceJobId, parentRuleId) is NOT executable policy.
+        // Attribute rewards to identical behavior across generations rather
+        // than splitting one tested controller into many cosmetic revisions.
+        let rule_behavior=self.rules.iter().filter_map(|r|r["id"].as_str())
+            .collect::<Vec<_>>().join(">");
         crate::engine::memory::stable_id(&[
-            "rsi.composed-edit-method.v2",
+            "rsi.composed-edit-method.v3",
             &self.checkpoint_after.to_string(),
             self.preferred_tool,
             &self.repair_limit.to_string(),
             &self.program.join(">"),
-            &serde_json::to_string(&self.rules).unwrap_or_default(),
+            &rule_behavior,
         ])
     }
 }
@@ -407,6 +412,24 @@ mod tests {
         outcomes.push(failed);
         let resumed=evolve(&outcomes,reward);
         assert_ne!(resumed["revision"],trial["revision"]);
+    }
+
+    #[test]
+    fn rule_provenance_cannot_fragment_an_identical_executable_algorithm() {
+        let mut genome=Genome::baseline();
+        let base=serde_json::json!([{"guard":{"metric":"grounded","cmp":"eq","value":1},
+            "allow":["workspace_replace_range"],"sourceJobId":"first-worker"}]);
+        genome.rules=crate::engine::rsi_decision_rules::normalize(&base);
+        let first=genome.revision();
+        let other=serde_json::json!([{"guard":{"metric":"grounded","cmp":"eq","value":1},
+            "allow":["workspace_replace_range"],"sourceJobId":"other-worker"}]);
+        genome.rules=crate::engine::rsi_decision_rules::normalize(&other);
+        assert_eq!(genome.revision(),first);
+        genome.rules=crate::engine::rsi_decision_rules::normalize(&serde_json::json!([
+            {"guard":{"metric":"grounded","cmp":"eq","value":1},
+             "allow":["workspace_replace"],"sourceJobId":"other-worker"}
+        ]));
+        assert_ne!(genome.revision(),first);
     }
 
     #[test]
