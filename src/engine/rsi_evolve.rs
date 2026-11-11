@@ -5450,16 +5450,16 @@ mod tests {
             "methodActions":[{"inducedProgramDecision":{"chosenTool":"code_search"}}],
             "attemptedCandidateId":null,"writeReceipts":[],"accepted":false});
         let one=evolve_stalled_action_program(original.clone(),&[failed("j1")],
-            "workspace_replace_range" | "workspace_replace_function");
+            "workspace_replace_range");
         assert_eq!(one["revision"],revision,"A single failure must not overfit");
         let changed=evolve_stalled_action_program(original.clone(),
-            &[failed("j1"),failed("j2")],"workspace_replace_range" | "workspace_replace_function");
+            &[failed("j1"),failed("j2")],"workspace_replace_range");
         assert_ne!(changed["revision"],revision);
         assert_eq!(changed["mutationOperator"],"append_source_mutation");
         assert_eq!(changed["sequence"],json!(["code_search","workspace_read_range","workspace_replace_range"]));
         assert_eq!(changed["failureEpisodes"],2);
         let duplicate=evolve_stalled_action_program(original,
-            &[failed("j1"),failed("j1")],"workspace_replace_range" | "workspace_replace_function");
+            &[failed("j1"),failed("j1")],"workspace_replace_range");
         assert_eq!(duplicate["revision"],revision,
             "Replaying a generation is not a second independent trial");
     }
@@ -5486,7 +5486,7 @@ mod tests {
         assert_eq!(plan["sequence"],
             json!(["code_search","workspace_read_range","workspace_replace_range"]));
         assert_eq!(plan["onFailure"][0]["onFailure"],"workspace_replace");
-        assert_eq!(plan["onFailure"][0]["tryTool"],"workspace_replace_range" | "workspace_replace_function");
+        assert_eq!(plan["onFailure"][0]["tryTool"],"workspace_replace_range");
         assert_eq!(plan["status"],"trial_unverified",
             "Method synthesis does not claim a frozen quality gain");
         let altered=synthesize_action_program(&[exploratory]);
@@ -5535,7 +5535,7 @@ mod tests {
             "sequence":["workspace_read_range"],"onFailure":[],
             "recoveryPaths":[],"evidence":{"episodes":1}});
         let executable=complete_read_only_action_program(
-            read_only.clone(),"workspace_replace_range" | "workspace_replace_function");
+            read_only.clone(),"workspace_replace_range");
         assert_eq!(executable["sequence"],
             json!(["workspace_read_range","workspace_replace_range"]));
         assert_eq!(executable["mutatedFrom"],"read-only-one");
@@ -5545,7 +5545,7 @@ mod tests {
             "trial_from_successful_read_unverified_edit");
         assert_ne!(executable["revision"],read_only["revision"]);
         assert_eq!(complete_read_only_action_program(
-            executable.clone(),"workspace_replace_range" | "workspace_replace_function")["revision"],
+            executable.clone(),"workspace_replace_range")["revision"],
             executable["revision"],"No duplicate mutation after edit stage exists");
         assert_eq!(complete_read_only_action_program(
             json!({"revision":"none","sequence":["code_search"]}),
@@ -5861,11 +5861,11 @@ mod tests {
             "writeReceipts":[{"tool":"workspace_replace","written":false,
                 "status":"failed","error":"oldText mismatch"}]});
         let learned=learn_execution_method(&state,&input,&[failed.clone()]);
-        assert_eq!(learned["preferredTool"],"workspace_replace_range" | "workspace_replace_function");
+        assert_eq!(learned["preferredTool"],"workspace_replace_range");
         assert_eq!(learned["reason"],"counterexample_exploration");
         assert_eq!(learned["status"],"trial_unverified");
         assert_eq!(learned["evidence"]["workspace_replace"]["verifiedAdoptions"],0);
-        assert_eq!(learned["program"][2]["tool"],"workspace_replace_range" | "workspace_replace_function");
+        assert_eq!(learned["program"][2]["tool"],"workspace_replace_range");
         state.store.put("rsi_run",&json!({
             "id":"rsi-run-g2-worker","jobId":"g2-worker",
             "candidateId":"proposed-g2","checksPassed":true
@@ -5877,7 +5877,7 @@ mod tests {
             "writeReceipts":[{"tool":"workspace_replace_range","written":true,
                 "status":"completed"}]});
         let next=learn_execution_method(&state,&input,&[failed,succeeding.clone()]);
-        assert_eq!(next["preferredTool"],"workspace_replace_range" | "workspace_replace_function");
+        assert_eq!(next["preferredTool"],"workspace_replace_range");
         assert_eq!(next["evidence"]["workspace_replace_range"]["checkedCandidates"],1);
         assert_eq!(next["evidence"]["workspace_replace_range"]["verifiedAdoptions"],0);
         assert_ne!(learned["revision"],next["revision"]);
