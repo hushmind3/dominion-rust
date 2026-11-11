@@ -52,3 +52,37 @@
 - `should_stop_no_progress` 함수 시그니처 변경 시 기존 테스트 호출도 반드시 함께 업데이트할 것.
 - 새 정책이 실제 사용되기 전에 후보를 활성화하거나, 빈 제어를 paired 이득으로 간주하거나, 학습 자료 수만으로 개선 성공을 주장하지 말 것.
 - 생성기 커밋과 선택 도메인, 실제 사용한 정책 revision이 서로 어긋나면 실험 성과 귀속이 불가능해진다.
+
+## 다음 회차 Sub3 — 심판 재채점 36점/100점 반영 (2026-11-11)
+
+### 목표와 중요한 문제
+- 직전 심판: Sub3 3위, **36점**. 21개 캠페인·41세대에서 채택 1회, 최대 연속 채택 1세대. 첫 실제 모델 자율 개선·후손 세대 계승 미입증.
+- 기존 코드에서 기초 검사 수보다 중요한 것은 **실제 모델이 실패를 해결하는 소스 패치를 만들어 독립 holdout의 문제 해결 품질을 높이는 것**.
+- 조사 결과 `chat/runtime.rs`은 실제 실행에서 `task.decomposition` 커널을 선택하지만, 새 에이전트 기본값이 `single-step`이라 개선된 다중 단계 추출 알고리즘이 실제 대화에 적용되지 않는 경로가 있었다.
+
+### 이번 세션에서 실제 구현해 푸시한 내용
+- `be637525`: `src/engine/decompose.rs`에 한국어 동작 접속 `-고`, `다음`, `나서` 분석. 본문 단어를 유지하면서 순서 있는 하위 실행 단계로 분할하는 코드와 회귀 테스트.
+- `6e3289dc`: 운영 RSI 평가에 해당하는 동결 사례 13개를 별도 A/B 계획으로 보관.
+- `192f0f81`: 변경 전후의 실제 Git worktree를 별도로 빌드하고, baseline의 고정 oracle을 **양쪽에 동일하게** 주입해 실행하는 A/B GitHub Actions.
+- `25687e1d`/`836dede2`: 무료 모델 엔드포인트 접속 후 실제 DOMINION 서버에 모델을 연결하고 `rsi/start` → 도구 호출/코드 변경 → 독립 A/B까지 시도하는 실행기·별도 워크플로. 가짜 모델 fixture는 사용하지 않음.
+- `53dba6fa`/`0c932596`: **제품 실제 채팅 경로**에서도 여러 동작이 명시된 목표에는 품질이 더 나은 실행 커널을 선택하도록 `algorithms.rs`와 `chat/runtime.rs`를 연결. 잘못된 UCB 커널에 실행 성과를 귀속하지 않게 실제 선택 revision을 `algorithm_usage`에 기록하고 회귀 테스트를 추가.
+- `656457f5`: 실측된 정확도·소요시간·비교 방식·증거 출처를 `benchmark/SUB3-FIRST-GAIN-MEASURED-2026-11-11.json`에 영구 보존.
+
+### 실제 결과 — 코드 품질 개선의 독립 실측
+- GitHub Actions: https://github.com/hushmind3/dominion-rust/actions/runs/42944474795 **SUCCESS**.
+- 원본: `1d94e1da1ed4f47243a793ab0625182f5a2c9656`; 새 코드 커밋: `be6375259d1dfe6e9317d14707dbc7d360fb0922`.
+- **고정 13개 사례 모두 baseline/candidate 통과**. 5개 성능 시나리오에 대해 양쪽 6회 반복 측정.
+- 한국어 계획 분해 정확도: **0.75 → 1.00 (+25%p, 상대 33.3%)**. 실행시간 중앙값: **58.59ms → 60.20ms (약 2.74% 증가)**. 기존 평가의 시간 회귀 한도 25% 이내. 기억·탐색·그룹 문맥 정확도는 1.00 유지.
+- 이 변경은 GPT-6 개발자 모델이 직접 작성해 GitHub에 저장한 코드이므로 **모델 생성 코드의 독립 개선 실증**이다. **DOMINION 자체의 내부 RSI 모델이 작성·채택한 결과라고 주장하지 않는다.** 그 별도 실행 증거는 아래 워크플로에서 구한다.
+- 실측 워크플로는 source A/B 결과만 검사했고 `rsi::evaluate_cases`·`rsi::adopt`의 실제 운영 승격 경로를 호출하지 않았다. 성능 수치가 나왔다고 자동 RSI 채택 1회를 추가하지 말 것.
+
+### 실모델 내부 RSI 캠페인
+- workflow: https://github.com/hushmind3/dominion-rust/actions/runs/42945129829
+- 무료 모델 프로브는 성공했고, DOMINION release binary 빌드까지 완료. 진행 중인 `Let DOMINION execute a genuine model-written source improvement` 단계에서 실제 `rsi/start`를 수행한다.
+- JSON 출력 아티팩트: `sub3-real-model-attempt` 안의 `benchmark/sub3-live-campaign-result.json`. 반드시 **진짜 코드 diff·`candidateId`·독립 평가·`acceptedCommit`**를 확인해 실제로 된 것만 기록한다.
+
+### 남은 최우선 미완성
+1. 실모델 내부 캠페인의 종료 결과를 확인하고 무패치·모델 도구 호출 실패·평가 무개선 중 **실제 실패 지점**을 수정한다.
+2. 통과한 코드 A/B 실증을 운영 `rsi_candidate`와 동결 평가·채택·후손 재빌드까지 연결해 첫 **DOMINION 자율 완주** 증거를 만든다.
+3. 원래 41세대·채택 1회 기록에 새로 성공한 내부 캠페인만 추가해 정확한 성공률을 갱신한다.
+4. 후손 세대가 같은 능력을 재사용해 다른 문제에서 추가 성과를 내는지, 독립 holdout으로 검증한다.
