@@ -3775,10 +3775,17 @@ mod tests {
         assert_eq!(receipt["hypothesisValidity"],"prior_hypothesis_unverified");
         assert_eq!(receipt["entrypoint"],"rsi_evolve::reuse_research");
         // A real next-session mutation is linked to its source provenance.
-        let change=json!({"path":"src/reuse.rs","oldText":"REUSABLE_RESEARCH_SOURCE","newText":"IMPROVED_RESEARCH_SOURCE"});
+        // Persisted research from generation 1 becomes a line-scoped, model-sized
+        // source edit in generation 2. The old source is not retransmitted.
+        let change=json!({"path":"src/reuse.rs","startLine":1,"endLine":1,
+            "newText":"pub fn remember() { /* IMPROVED_RESEARCH_SOURCE */ }",
+            "expectedSha256":old_hash.clone()});
         let ctx=tools::ToolContext{state:&state,store:&state.store,workspace:&root,session_id:"research-2",agent_id:None,tools_enabled:true,tools_execution_enabled:true};
-        let written=tools::execute(&ctx,"workspace_replace",&change,"run-2").await.unwrap();
-        state.store.put("execution_operation",&json!({"id":"real-next-change","sessionId":"research-2","tool":"workspace_replace","arguments":change,"result":written,"status":"completed"}));
+        let written=tools::execute(&ctx,"workspace_replace_range",&change,"run-2").await.unwrap();
+        assert_eq!(written["replaced"],true,"{written}");
+        assert_eq!(std::fs::read_to_string(root.join("src/reuse.rs")).unwrap(),
+            "pub fn remember() { /* IMPROVED_RESEARCH_SOURCE */ }\n");
+        state.store.put("execution_operation",&json!({"id":"real-next-change","sessionId":"research-2","tool":"workspace_replace_range","arguments":change,"result":written,"status":"completed"}));
         state.store.put("rsi_candidate",&json!({"id":"c","status":"verified","hypothesis":"Apply the observed implementation","paths":["src/reuse.rs"],"evaluation":{"metrics":{"eligible":true}}}));
         let second=json!({"jobId":"generation-2","accepted":true,"candidateId":"c","acceptedCommit":"a".repeat(40),"domain":"memory"});
         let next_id=remember_research(&state,&input,&second,"research-2").unwrap();
