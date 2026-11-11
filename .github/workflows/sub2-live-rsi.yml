@@ -11,6 +11,9 @@ on:
     paths:
       - .github/workflows/sub2-live-rsi.yml
 
+# The explicitly triggered live campaign now targets the frozen
+# long_owner_recall path: one query-tokenization per selected owner context,
+# not inactive BM25 code. Intermediate edits do not count as RSI proof.
 # Only the latest source revision should consume the CPU-bound live Qwen
 # evaluation. Intermediate commits are diagnostic, not independent campaigns.
 concurrency:
