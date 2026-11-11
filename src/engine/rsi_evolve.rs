@@ -2814,13 +2814,11 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
                 working.insert(receipt["tool"].as_str().unwrap().to_string());
             } else {arm.rejected+=1;}
         }
-        // Multi-tool edits do not establish which approach caused a candidate.
-        if working.len()!=1 {continue;}
-        let name=working.iter().next().unwrap();
-        let arm=if name=="workspace_replace" {&mut exact}else{&mut range};
-        // Candidate quality evidence must exist in the *worker's original*
-        // rsi_run receipt. A copied generation field alone cannot train the
-        // next policy, even when a model or stale record calls it successful.
+        // Evaluate exploration for *all* generations, including read-only
+        // stalls and rejected source edits. Previously the single-writer
+        // guard below skipped these failures, leaving the learned exploration
+        // limit permanently unchanged precisely when it should improve.
+        // A candidate is real only when its original worker receipt agrees.
         let compiled_candidate=row["jobId"].as_str().and_then(|job_id|
             state.store.get("rsi_run",&format!("rsi-run-{job_id}")))
             .is_some_and(|receipt|
@@ -2828,11 +2826,6 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
                 && receipt["candidateId"].is_string()
                 && (receipt["candidateId"]==row["attemptedCandidateId"]
                     || receipt["candidateId"]==row["candidateId"]));
-        if compiled_candidate {
-            arm.candidates+=1;
-        }
-        // The controller can also improve its own research budget.
-        // Count actual observed read/search calls, not model narration.
         let reads=row["toolsUsed"].as_array().into_iter().flatten()
             .filter(|usage|matches!(usage["tool"].as_str(),
                 Some("workspace_read_range"|"code_search")))
@@ -2844,6 +2837,13 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
             && row["attemptedCandidateId"].is_null() {
             stalled_reads+=1;
         }
+        // Attribute candidate quality to one editing arm only when exactly
+        // one arm produced a confirmed mutation. Multi-tool attempts still
+        // teach exploration without falsely proving either edit operator.
+        if working.len()!=1 {continue;}
+        let name=working.iter().next().unwrap();
+        let arm=if name=="workspace_replace" {&mut exact}else{&mut range};
+        if compiled_candidate {arm.candidates+=1;}
         if generation_is_verified(row) {
             arm.accepted+=1;
             if let Some(id)=row["objectiveId"].as_str() {sources.insert(id.to_string());}
