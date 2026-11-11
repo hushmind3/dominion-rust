@@ -9,6 +9,10 @@ on:
       - 'src/engine/chat/provider.rs'
       - 'src/engine/gateway.rs'
       - 'src/engine/chat/runtime.rs'
+      - 'src/engine/rsi_evolve.rs'
+      - 'src/engine/rsi_action_program.rs'
+      - 'src/engine/rsi_repair_synthesis.rs'
+      - 'src/engine/rsi_success_ablation.rs'
   workflow_dispatch:
 
 permissions:

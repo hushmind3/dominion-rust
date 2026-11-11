@@ -7,6 +7,10 @@ on:
       - '.github/workflows/champion-live-model-cycle.yml'
       - 'scripts/champion-live-model-campaign.mjs'
       - 'src/engine/chat/runtime.rs'
+      - 'src/engine/rsi_evolve.rs'
+      - 'src/engine/rsi_action_program.rs'
+      - 'src/engine/rsi_repair_synthesis.rs'
+      - 'src/engine/rsi_success_ablation.rs'
       - 'src/engine/jobs.rs'
   workflow_dispatch:
 
