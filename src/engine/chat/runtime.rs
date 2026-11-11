@@ -79,6 +79,15 @@ fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
 
 /// Only a real source observation without any attempted change/proposal
 /// warrants asking the RSI model once more to turn research into action.
+/// Research-only RSI chats must be free to finish after reading. The
+/// corrective source edit continuation belongs only to a real native
+/// generation with a concrete indexed file, not to all rsiRun sessions.
+fn rsi_generation_has_action_target(session:&Value)->bool {
+    session["rsiRun"]==true && session["rsiCampaignId"].is_string()
+        && session["rsiGenerationJobId"].is_string()
+        && session["rsiFocusFile"].as_str().is_some_and(crate::engine::rsi::safe_path)
+}
+
 fn rsi_read_only_completion(operations: &[Value], execution_id: &str) -> bool {
     let mut read = false;
     for op in operations {
@@ -1303,7 +1312,7 @@ async fn run_turn_body(
             // Actual live models have ended after reading source without
             // calling any edit tool. Keep the existing source in context and
             // offer one further choice, not a synthetic/automatic mutation.
-            if session["rsiRun"] == true && request.tools_execution_enabled
+            if rsi_generation_has_action_target(&session) && request.tools_execution_enabled
                 && !force_final && !rsi_final_edit_retry && round + 1 < max_rounds
                 && round_tools.iter().any(|tool| tool_name(tool)=="workspace_replace")
                 && rsi_read_only_completion(&state.store.all("execution_operation"), execution_id)
@@ -6128,6 +6137,13 @@ mod harness_tool_selection_tests {
     fn rsi_read_only_completion_is_not_fake_edit_evidence() {
         let read=json!({"runId":"r1","status":"completed",
             "tool":"workspace_read_range","arguments":{"path":"src/engine/memory.rs"}});
+        assert!(!rsi_generation_has_action_target(&json!({
+            "rsiRun":true,"rsiObjective":"read-only research"})),
+            "a user's research-only RSI session must not pay for a hidden edit request");
+        assert!(rsi_generation_has_action_target(&json!({
+            "rsiRun":true,"rsiCampaignId":"campaign","rsiGenerationJobId":"worker",
+            "rsiFocusFile":"src/engine/memory.rs"})),
+            "real native source-improvement generations get the single continuation");
         assert!(rsi_read_only_completion(&[read.clone()],"r1"));
         assert!(!rsi_read_only_completion(&[read.clone()],"different"));
         assert!(!rsi_read_only_completion(&[],"r1"));
