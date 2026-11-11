@@ -1128,6 +1128,18 @@ fn grounded_next_experiment(state:&AppState,history:&[Value])->Option<String> {
         if !details.is_empty() {
             return Some(format!("\n### 다음 세대의 실험 과제 — 이전 빌드 실패\n이전 패치는 채택되지 않았습니다. 기준 커밋에서 아래 오류의 원인을 수정하는 최소 변경을 다시 구현하고, 기존 테스트를 통과시키세요. 무관한 파일을 넓게 수정하지 마세요.\n{}\n",details.join("\n")));
         }
+        // A real Git diff without a candidate is a capture/registration
+        // failure, not a reason to discover another source file. Reuse the
+        // rejected patch's actual diagnostic in the descendant generation.
+        if run["diffBytes"].as_u64().unwrap_or(0)>0 {
+            if let Some(error)=run["captureError"].as_str()
+                .filter(|value|!value.trim().is_empty()) {
+                return Some(format!(
+                    "\n### 다음 세대의 실험 과제 — 코드 변경은 있었으나 후보 등록 실패\n실제 Git 변경이 생겼지만 후보 수집에 실패했습니다: {}. 같은 수정을 재제출하지 말고 패치 경로·크기·제약·사례를 확인해 작은 유효 소스 수정으로 고친 뒤 독립 검증을 다시 진행하세요.\n",
+                    error.chars().take(600).collect::<String>()
+                ));
+            }
+        }
         // Rejected writes are a different failure from "the model only
         // researched". Pass the exact observed tool failure to the next
         // generation so it can repair the call instead of trying another
