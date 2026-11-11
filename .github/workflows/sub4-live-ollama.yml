@@ -1,20 +1,24 @@
 name: Sub4 actual local Ollama RSI attempt
-# Explicit opt-in only: do not auto-run a long 4B model on later commits.
+# One bounded, user-requested completion campaign. Restore manual-only after launch.
 on:
   workflow_dispatch:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - '.github/sub4-run-once-20261112'
 permissions:
   contents: read
 jobs:
   local-model-rsi:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 75
     env:
       SUB4_MODEL_KIND: ollama
       SUB4_BASE_MODEL: qwen3:4b-instruct
       SUB4_MODEL_NAME: sub4-qwen3-16k:latest
       SUB4_OLLAMA_URL: http://127.0.0.1:11434
-      SUB4_CAMPAIGN_SECONDS: '840'
-      SUB4_RUN_DEADLINE_MS: '920000'
+      SUB4_CAMPAIGN_SECONDS: '3600'
+      SUB4_RUN_DEADLINE_MS: '3800000'
       DOMINION_PORT: '43179'
       DOMINION_JOB_WORKERS: '1'
       OLLAMA_CONTEXT_LENGTH: '16384'
