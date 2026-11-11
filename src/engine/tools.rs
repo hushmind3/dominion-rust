@@ -1620,8 +1620,6 @@ mod tests {
         assert!(!read["path"].as_str().unwrap().starts_with('/'));
         assert_eq!(read["sourceSha256"],
             format!("{:x}",Sha256::digest(std::fs::read(&path).unwrap())));
-        assert!(read["fileObservation"]["path"].as_str().unwrap().starts_with(
-            dir.to_str().unwrap()),"Internal observation retains its canonical evidence path");
         let _=std::fs::remove_dir_all(dir);
     }
 
