@@ -155,16 +155,31 @@ fn rsi_compact_local_edit_context(
     let end=read["result"]["endLine"].as_u64().unwrap_or(start+100);
     let objective=session["rsiObjective"].as_str()
         .filter(|goal|!goal.trim().is_empty()).unwrap_or("DOMINION의 개선 능력 강화");
+    // Compact local model turns intentionally omit earlier chat history.
+    // Reintroduce independently witnessed rustc errors for a repair operation,
+    // rather than instructing the model to rewrite the original feature.
+    let compiler_errors=session["rsiRepairDiagnostics"].as_array().into_iter().flatten()
+        .take(3).filter_map(|item|{
+            let detail=item["error"].as_str()?;
+            if detail.trim().is_empty(){return None;}
+            Some(format!("{}: {}",
+                item["label"].as_str().unwrap_or("cargo check"),
+                detail.chars().take(1100).collect::<String>()))
+        }).collect::<Vec<_>>();
+    let repair_task=if compiler_errors.is_empty(){String::new()} else{
+        format!("\n[실제 컴파일 실패 패치의 필수 교정]\n이전 모델 편집이 빌드에 실패했습니다. 복원된 소스에서 아래 오류를 만드는 코드만 최소한으로 고치세요. 이전의 개선 의도는 유지하고 검사를 삭제하지 마세요. 수정 결과는 독립 빌드와 A/B로 평가합니다.\n{}\n",
+            compiler_errors.join("\n"))
+    };
     let edit_contract=if preferred_tool=="workspace_replace" {
         "workspace_replace(path,oldText,newText,expectedSha256)를 호출하세요. oldText는 실제 관측한 원문과 정확히 일치해야 합니다."
     } else {
         "workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 호출하세요. 정확한 줄 번호와 SHA-256이 필요합니다."
     };
     let instruction=format!(
-        "목표: {}\n개선 분야: {}\n편집 대상: {}\n실제 관측 범위: {}..{}\n실제 SHA-256: {}\n\n현재 파일 내용(원문 번호 포함):\n{}\n\n위에서 읽은 범위 안에서 실제로 개선할 코드를 모델이 결정해 작성하세요. {} 변경할 근거가 없다면 가짜 수정은 하지 마세요. 다른 파일을 수정하지 마세요.",
+        "목표: {}\n개선 분야: {}\n편집 대상: {}\n실제 관측 범위: {}..{}\n실제 SHA-256: {}\n{}\n현재 파일 내용(원문 번호 포함):\n{}\n\n위에서 읽은 범위 안에서 실제로 개선할 코드를 모델이 결정해 작성하세요. {} 변경할 근거가 없다면 가짜 수정은 하지 마세요. 다른 파일을 수정하지 마세요.",
         objective.chars().take(1200).collect::<String>(),
         session["rsiDomain"].as_str().unwrap_or(""),
-        path,start,end,hash,source.chars().take(9500).collect::<String>(),edit_contract);
+        path,start,end,hash,repair_task,source.chars().take(9500).collect::<String>(),edit_contract);
     Some(vec![
         json!({"role":"system","content":
             "DOMINION 독립 개선기. 파일 쓰기는 제공된 native tool 호출로만 수행한다. 소스 해시·줄 번호를 검증하고 독립 품질 평가는 다른 엔진이 수행한다. JSON 또는 실제 도구 호출 이외의 긴 분석은 출력하지 않는다."}),
