@@ -3950,8 +3950,6 @@ async fn run_loop(
             "editActions":current["result"]["rsi"]["editActions"],
             "recoveredFailedPatch":current["rsiRecoveredPatch"],
             "sourceDiffBytes":current["result"]["rsi"]["diffBytes"],
-            "novelSourceDiffBytes":current["result"]["rsi"]["novelDiffBytes"],
-            "inheritedPatchUnchanged":current["result"]["rsi"]["inheritedPatchUnchanged"],
             "sourceCaptureError":current["result"]["rsi"]["captureError"],
             "unverifiedCandidateId":current["result"]["rsi"]["candidateId"],
             "staticChecksPassed":current["result"]["rsi"]["checksPassed"],
@@ -3960,6 +3958,12 @@ async fn run_loop(
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
+        // Keep the large generation JSON below the serde_json macro's nesting
+        // limit; these are real worker receipts, added after construction.
+        generation["novelSourceDiffBytes"]=
+            current["result"]["rsi"]["novelDiffBytes"].clone();
+        generation["inheritedPatchUnchanged"]=
+            current["result"]["rsi"]["inheritedPatchUnchanged"].clone();
         // Read the actual session written by the native execution runtime,
         // not the coordinator's intention or an assistant message.
         let action_session=session.and_then(|sid|context.state.store.get("session",sid))
