@@ -2215,7 +2215,15 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     }
     // Comparable outcomes rank the method. File writes are only evidence
     // that it can execute, not evidence of quality improvement.
-    let score=|arm:&Arm| (arm.accepted,arm.candidates,arm.writes,arm.rejected);
+    // Score by measured yield per attempt; a greater number of rejected
+    // calls is never a positive tie-breaker.
+    let score=|arm:&Arm| -> i64 {
+        let gain=arm.accepted.saturating_mul(1000)
+            .saturating_add(arm.candidates.saturating_mul(200))
+            .saturating_add(arm.writes.saturating_mul(50));
+        (gain as i64 - arm.rejected.saturating_mul(60) as i64)
+            / arm.attempts.max(1) as i64
+    };
     let exact_score=score(&exact);
     let range_score=score(&range);
     let (preferred,why)=if exact.accepted>range.accepted {
@@ -2493,13 +2501,6 @@ async fn run_loop(
         child_input["rsiInheritedImplementations"]=json!(inherited_implementations);
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
-        // Learn from durable *actual operations* as well as this campaign's
-        // newest generation. This is an executable harness-method parameter,
-        // not a suggestion for the model to change its weights.
-        let learned_method=learn_execution_method(&context.state,&child_input,
-            record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]));
-        child_input["rsiExecutionMethod"]=learned_method.clone();
-        context.state.store.put("rsi_execution_method",&learned_method);
 
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
         let action_history=improvement_history(
@@ -2590,6 +2591,14 @@ async fn run_loop(
             (domain,selection.to_string(),strategy,None)
         };
         child_input["rsiTargetDomain"]=json!(target_domain);
+        // The actual new generator's domain is known now. Incorporate
+        // independently measured cross-objective examples only within this
+        // selected domain; unverified events stay objective-local.
+        let learned_method=learn_execution_method(&context.state,&child_input,
+            record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+        child_input["rsiExecutionMethod"]=learned_method.clone();
+        context.state.store.put("rsi_execution_method",&learned_method);
+
         child_input["rsiImprovementDirective"]=if native_planning {
             record["nextGenerationPlan"]["improvementDirective"].clone()
         } else {
