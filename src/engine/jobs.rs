@@ -622,6 +622,8 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 session["rsiCompilerRepair"]=json!(restored.as_ref()
                     .is_some_and(|row|row["repairKind"]=="compiler_failure"));
                 session["rsiRestoredCandidateId"]=input["rsiRepairCandidateId"].clone();
+                session["rsiQualityRepair"]=json!(restored.as_ref()
+                    .is_some_and(|row|row["repairKind"]=="quality_plateau"));
             }
             session["rsiObjective"]=input["rsiObjective"].clone();
             session["rsiExplicitFocus"]=json!(rsi_focused_edit_goal(&input));
