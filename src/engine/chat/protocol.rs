@@ -174,12 +174,31 @@ pub fn parse_rsi_unwrapped_edit(
     content:&str, available:&std::collections::HashSet<String>,
 )->Option<(String,String)> {
     let trimmed=content.trim();
-    let source=if let Some(inner)=trimmed.strip_prefix("```json")
-        .or_else(||trimmed.strip_prefix("```JSON")) {
-        inner.trim().strip_suffix("```")?.trim()
-    } else { trimmed };
-    if !source.starts_with('{') || !source.ends_with('}') {return None;}
-    let args:Value=serde_json::from_str(source).ok()?;
+    // One fenced patch remains an explicit tool intent even if the model
+    // surrounds it with explanation. Multiple blocks are ambiguous.
+    // A Rust code fence or narrative alone can never become a file write.
+    let fences=["```json","```JSON"].into_iter()
+        .flat_map(|tag|trimmed.match_indices(tag).map(move |(i,_)|(i,tag.len())))
+        .collect::<Vec<_>>();
+    let source=if fences.len()==1 {
+        let (start,len)=fences[0];
+        let inner=&trimmed[start+len..];
+        inner.split_once("```")?.0.trim()
+    } else if fences.is_empty() {trimmed}
+    else{return None};
+    if source.len()>32*1024 || !source.starts_with('{') || !source.ends_with('}') {
+        return None;
+    }
+    let mut args:Value=serde_json::from_str(source).ok()?;
+    // Some models copy sourceSha256 from a read response rather than using
+    // expectedSha256. This is still a precise checked-write precondition.
+    if args["expectedSha256"].is_null() {
+        if let Some(source_hash)=args["sourceSha256"].as_str().map(str::to_string) {
+            if source_hash.len()==64 && source_hash.bytes().all(|b|b.is_ascii_hexdigit()) {
+                args["expectedSha256"]=json!(source_hash);
+            }
+        }
+    }
     let path=args["path"].as_str().filter(|path|!path.is_empty())?;
     if path.starts_with('/') || path.contains("..") {return None;}
     if ["name","tool","tool_name","function","action"].iter()
