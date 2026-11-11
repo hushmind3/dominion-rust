@@ -69,6 +69,12 @@ fn rsi_should_checkpoint(tool_calls: u64, has_write: bool) -> bool {
 /// A real source observation gives the model a grounded edit opportunity.
 /// After three successful tool calls, source editing becomes the next phase;
 /// if only broad search happened, six calls trigger a read/edit checkpoint.
+fn rsi_should_retry_read_only(
+    focused_generation: bool, has_successful_read: bool, has_write: bool, retried: bool,
+) -> bool {
+    focused_generation && has_successful_read && !has_write && !retried
+}
+
 fn rsi_checkpoint_stage(tool_calls: u64, read_calls: u64, has_write: bool) -> Option<bool> {
     if has_write { return None; }
     if read_calls > 0 && tool_calls >= 3 { return Some(true); }
@@ -974,6 +980,8 @@ async fn run_turn_body(
     let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, rsi_turn_limit(&session));
     let mut rsi_decision_checkpoint = false;
     let mut rsi_edit_only_announced = false;
+    let mut rsi_edit_retry_used = false;
+    let mut rsi_force_edit_stage = false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1114,9 +1122,14 @@ async fn run_turn_body(
             // tools and native tool_choice=required.
             let focused_generation = session["rsiExplicitFocus"] == true
                 && session["rsiGenerationJobId"].is_string();
-            if let Some(edit_only) = rsi_checkpoint_stage(
-                tool_calls, if focused_generation { read_calls } else { 0 }, has_write
-            ) {
+            let checkpoint = if focused_generation && rsi_force_edit_stage && !has_write {
+                Some(true)
+            } else {
+                rsi_checkpoint_stage(
+                    tool_calls, if focused_generation { read_calls } else { 0 }, has_write
+                )
+            };
+            if let Some(edit_only) = checkpoint {
                 if edit_only {
                     // Restore edit schemas from the complete allowed menu:
                     // prior context-based trimming may have dropped them.
@@ -1299,7 +1312,8 @@ async fn run_turn_body(
         }
         if completion.tool_calls.is_empty()
             && request.tools_enabled
-            && (provider.tool_mode != "native" || has_dsml_call)
+            && (provider.tool_mode != "native" || has_dsml_call
+                || (session["rsiExplicitFocus"] == true && rsi_edit_only_announced))
             && !force_final
         {
             let known = round_tools
@@ -1331,6 +1345,42 @@ async fn run_turn_body(
         }
 
         if completion.tool_calls.is_empty() {
+            // A focused source-repair generation is not complete merely
+            // because a small model wrote prose after a successful read.
+            // Preserve the exact observation and allow ONE more model action
+            // with the edit-only menu; no fabricated edit or synthetic gain.
+            // Generic RSI research never enters this branch.
+            let focused_generation = session["rsiExplicitFocus"] == true
+                && session["rsiGenerationJobId"].is_string();
+            let relevant_operations = state.store.all("execution_operation").into_iter()
+                .filter(|operation| operation["runId"].as_str() == Some(execution_id)
+                    && operation["status"].as_str() == Some("completed"))
+                .collect::<Vec<_>>();
+            let has_successful_read = relevant_operations.iter().any(|operation| matches!(
+                operation["tool"].as_str(), Some("workspace_read" | "workspace_read_range")
+            ));
+            let has_write = relevant_operations.iter().any(|operation| matches!(
+                operation["tool"].as_str(), Some("workspace_write" | "workspace_replace")
+            ));
+            if !force_final && round + 1 < max_rounds && budget.can_execute_tool()
+                && rsi_should_retry_read_only(
+                    focused_generation, has_successful_read, has_write, rsi_edit_retry_used
+                )
+            {
+                rsi_edit_retry_used = true;
+                rsi_force_edit_stage = true;
+                state.store.audit("rsi.edit_retry", json!({
+                    "sessionId":session_id, "executionId":execution_id,
+                    "round":round, "sourceRead":true, "sourceWrite":false,
+                    "reason":"focused_source_read_without_edit"
+                }));
+                let _ = tx.send(json!({"type":"rsi_edit_retry","round":round}));
+                messages.push(json!({"role":"assistant","content":completion.content}));
+                messages.push(json!({"role":"system",
+                    "content":"앞에서 소스 원문을 읽었지만 아직 실제 파일 수정 도구를 실행하지 않았습니다. 기존 원문을 근거로 workspace_replace(oldText,newText)를 호출해 구체적인 변경을 시도하세요. 실행이 불가능하면 이유를 설명하고 종료하세요. 추측으로 코드를 쓰거나 수정 성공을 주장하지 마세요."
+                }));
+                continue;
+            }
             {
                 let mut operations = state
                     .store
@@ -6158,6 +6208,11 @@ mod harness_tool_selection_tests {
         assert_eq!(rsi_checkpoint_stage(6, 0, false), Some(false));
         assert_eq!(rsi_checkpoint_stage(7, 1, false), Some(true));
         assert_eq!(rsi_checkpoint_stage(8, 2, true), None);
+        assert!(rsi_should_retry_read_only(true, true, false, false));
+        assert!(!rsi_should_retry_read_only(false, true, false, false));
+        assert!(!rsi_should_retry_read_only(true, false, false, false));
+        assert!(!rsi_should_retry_read_only(true, true, true, false));
+        assert!(!rsi_should_retry_read_only(true, true, false, true));
         assert!(rsi_checkpoint_tool("workspace_replace", true));
         assert!(!rsi_checkpoint_tool("workspace_read_range", true));
         assert!(!rsi_checkpoint_tool("code_search", true));
