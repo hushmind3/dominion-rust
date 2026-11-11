@@ -3447,6 +3447,45 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_feedback_replaces_repeated_research_with_real_edit_instructions() {
+        let research=json!({"attempt":1,"domain":"memory","newFindings":2,
+            "accepted":false,"candidateId":null,
+            "actionDirective":{"mode":"discover"},
+            "toolsUsed":[{"tool":"code_search","calls":2}]});
+        let directive=next_execution_action(&[research.clone()]);
+        assert_eq!(directive["mode"],"implement_research");
+        let no_edit=json!({"attempt":2,"domain":"memory","newFindings":1,
+            "accepted":false,"candidateId":null,"actionDirective":directive,
+            "actionObservation":{"status":"no_edit","editToolCalls":0}});
+        assert_eq!(next_execution_action(&[research,no_edit])["mode"],"change_approach");
+        let edited=json!({"attempt":3,"domain":"memory","newFindings":0,
+            "accepted":false,"candidateId":null,
+            "actionObservation":actual_edit_observation(
+                &[json!({"tool":"workspace_replace","calls":1})],false)});
+        assert_eq!(next_execution_action(&[edited])["mode"],"complete_candidate");
+        let failed=json!({"attempt":4,"domain":"memory","candidateId":"candidate-1",
+            "evaluation":{"verdict":"regressed"},
+            "actionDirective":{"mode":"revise_candidate"}});
+        assert_eq!(next_execution_action(&[failed])["mode"],"repair_failed_case");
+        let changed=json!({"attempt":5,"domain":"memory","candidateId":"candidate-2",
+            "evaluation":{"verdict":"regressed"},
+            "actionDirective":{"mode":"repair_failed_case"}});
+        assert_eq!(next_execution_action(&[changed])["mode"],"change_approach");
+    }
+
+    #[test]
+    fn source_edit_receipts_cannot_be_faked_by_search_or_model_text() {
+        assert_eq!(actual_edit_observation(
+            &[json!({"tool":"code_search","calls":4})],false)["status"],"no_edit");
+        let edited=actual_edit_observation(
+            &[json!({"tool":"workspace_write","calls":2}),
+              json!({"tool":"workspace_replace","calls":1})],false);
+        assert_eq!(edited["status"],"edit_attempted");
+        assert_eq!(edited["editToolCalls"],3);
+        assert_eq!(edited["candidateCreated"],false);
+    }
     fn state() -> (AppState, PathBuf) {
         let root =
             std::env::temp_dir().join(format!("dominion-evolution-test-{}", uuid::Uuid::new_v4()));
