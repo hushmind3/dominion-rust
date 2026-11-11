@@ -86,4 +86,5 @@ jobs:
           name: sub1-genuine-model-source-proof
           path: |
             benchmark/sub1-one-shot-result.json
+            benchmark/sub1-proxy-tool-choice.jsonl
           if-no-files-found: warn
