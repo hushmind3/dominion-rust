@@ -935,7 +935,7 @@ mod tests {
         let repair=compiler_repair_context(&root,&failure).unwrap();
         let digest=format!("{:x}",Sha256::digest(source.as_bytes()));
         assert!(repair.contains("src/engine/example.rs"));
-        assert!(repair.contains("    println!(\\\"{}\\\", x);"));
+        assert!(repair.contains("    println!(\"{}\", x);"));
         assert!(!repair.contains("3 |     println!"),
             "Repair input must be raw source, never numbered source");
         assert!(repair.contains(&digest));
