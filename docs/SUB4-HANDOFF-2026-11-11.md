@@ -84,3 +84,13 @@
 - `da026d29da62a1ec3456000f8e0fdf0668b77c11`: `rsi_generation_has_action_target` 추가. 추가 편집 결정은 실제 `rsiCampaignId`, `rsiGenerationJobId`, 안전한 `rsiFocusFile`이 있는 native source-improvement worker로 한정; 일반 조사 전용 RSI 채팅은 3회 후 그대로 종료. 유닛 회귀 검증도 추가. **이 수정의 전체 CI 통과는 GitHub Actions 확인 전까지 미확인**.
 - 최신 수정의 CI URL: https://github.com/hushmind3/dominion-rust/actions/runs/42951710133 . 별도 real-model workflow `42951068895`는 이전 `da71da3` 기준 실험이므로 새 수정에 대한 실모델 증명으로 세지 않는다.
 - 실제 구현 후 바로 해야 할 일: 새 `da026d2` E2E 전체 통과 확인, 실패 시 동일 테스트부터 원인 분석. 현재 연구 전용 세션의 무작정 추가 호출을 다시 도입하지 않는다. 실모델 결과가 오면 `sourceWriteCalls`와 실제 후보 holdout 채택을 먼저 본다.
+
+
+### 5세대 실모델 결과, 로컬 fallback 및 회귀 재검증 (최종 인수인계)
+
+- **외부 실제 모델 결과**: GitHub Actions https://github.com/hushmind3/dominion-rust/actions/runs/42951068895 는 실모델 probe 성공, DOMINION 실제 모델 호출 **4회**, `workspace_read_range` **3회**, `workspace_replace` **0회**, 방법 제안 0, 채택 0. 상태 `needs_review`, 최종 오류 `최근 응답이 너무 느렸던 모델이라 잠시 건너뜁니다.`. CI 자체의 성공을 RSI 완주 성공이라고 표시하지 말 것. Artifacts `sub4-genuine-model-proof` 실측 JSON 보존.
+- **E2E 회귀 수정 검증**: `da026d2` GitHub Actions https://github.com/hushmind3/dominion-rust/actions/runs/42951710133 **성공**. Rust 총 **765건**(benchmark 16, unit 647, lib 3, E2E 99) 통과. 특히 `rsi_context_is_not_reinterpreted_as_tasks_or_forced_into_a_write` 통과; 일반 RSI 조사 대화의 숨겨진 추가 모델 호출 회귀 해결.
+- **모델 비종속성 결함 수정**: `821385edf91373ba1673081a3a41ee54e4b8441e`에서 `src/engine/gateway.rs`의 Ollama 기본 host `:11434`, `/api`, 기존 `/v1`를 모두 추론용 `/v1/chat/completions` 경로로 귀결. 소스 모델 검색 경로는 별도로 유지. 클라우드 경로 변경 없음. 챔피언 브랜치에서 확인한 모델 연결 결함에 대한 Sub4 직접 구현.
+- **독립 2차 실제 모델 시도**: `65a7aa2`에서 `scripts/sub4-live-rsi.mjs`가 원격 공개 모델과 실제 local Ollama 모델을 모두 지원. `fe7257ce4393901539ee54f525fdaaaa0d5702fa`에서 workflow `.github/workflows/sub4-live-ollama.yml` 추가, Qwen `qwen3:4b-instruct` 로컬 API 실험 실행. https://github.com/hushmind3/dominion-rust/actions/runs/42952326808 **진행 중**(기록 시점). 실제 모델이 파일을 수정·채택했는지는 해당 실행 로그와 `sub4-real-local-model-proof` artifact 결과가 나온 뒤 판정할 것.
+- 현재 브랜치 전용 HEAD `fe7257ce4393901539ee54f525fdaaaa0d5702fa`, 다른 개발 브랜치 및 main 무수정. 후속 CI https://github.com/hushmind3/dominion-rust/actions/runs/42952326684 에서 Ollama gateway 패치와 스크립트 변경 포함 전체 검증 결과 확인 필요.
+- **지금 다음 세션의 최우선**: 1) Ollama 실모델 run `42952326808`과 최신 CI 확인 2) 양 모델의 실제 tool trace에서 `workspace_replace` 0회인 구간 찾아 해당 source-excerpt/읽기→편집 선택 수정 3) 실제 개선이 발생하면 동일 범위 baseline/candidate 독립 holdout 및 방법 타분야 전이의 다음 세대까지 반복. 테스트 수·모델 호출 수로 실제 품질 개선을 대체하지 않음.
