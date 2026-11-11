@@ -6,6 +6,9 @@ on:
     paths:
       - '.github/workflows/champion-ollama-live.yml'
       - 'scripts/champion-ollama-live.mjs'
+      - 'src/engine/chat/provider.rs'
+      - 'src/engine/gateway.rs'
+      - 'src/engine/chat/runtime.rs'
   workflow_dispatch:
 
 permissions:

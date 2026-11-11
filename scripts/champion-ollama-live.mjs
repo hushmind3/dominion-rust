@@ -12,7 +12,7 @@ const model=process.env.DOMINION_LIVE_MODEL||"qwen3:4b-instruct";
 const report=resolve(process.env.DOMINION_LIVE_REPORT||"benchmark/champion-ollama-live.json");
 const evidence={schemaVersion:1,kind:"dominion.champion.actual_ollama.live",
   model,source:"real_native_engine_and_real_local_model",startedAt:new Date().toISOString(),
-  providerId:null,turns:[],transportConnected:false,toolExecutionObserved:false,
+  providerId:null,turns:[],transportConnected:false,toolDispatchObserved:false,toolExecutionObserved:false,
   finishedAt:null,error:null};
 function persist(){mkdirSync(dirname(report),{recursive:true});writeFileSync(report,JSON.stringify(evidence,null,2)+"\n");}
 async function json(path,method="GET",body){
@@ -62,9 +62,13 @@ async function main(){
  evidence.transportConnected=first.status===200&&first.done&&first.saved&&first.error.length===0;
  if(!evidence.transportConnected)throw Error("native local-model chat did not complete: "+JSON.stringify(first));
  const second=await liveTurn("현재 작업공간의 최상위 파일 목록을 workspace_list 도구로 실제 조회한 후 한 문장으로 요약해주세요.",true);
- evidence.toolExecutionObserved=second.saved&&second.tools.some(x=>/tool|operation/.test(x.type));
+ evidence.toolDispatchObserved=second.tools.some(x=>x.type==="tool_start")
+   && second.tools.some(x=>x.type==="tool_end");
+ evidence.toolExecutionObserved=evidence.toolDispatchObserved && second.saved
+   && second.done && second.error.length===0;
  evidence.finishedAt=new Date().toISOString();persist();
  console.log(JSON.stringify(evidence,null,2));
- if(second.error.length)console.log("Tool loop diagnostic (not basic inference failure): "+second.error.join("; "));
+ if(!evidence.toolExecutionObserved)
+   throw Error("Model dispatched tools but did not finish the post-tool reasoning turn: "+JSON.stringify(second));
 }
 try{await main()}catch(err){evidence.error=String(err);evidence.finishedAt=new Date().toISOString();persist();console.error(err);process.exitCode=1;}
