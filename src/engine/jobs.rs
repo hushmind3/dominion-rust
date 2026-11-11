@@ -614,22 +614,35 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         // All attempts share the same detached worktree and model selection.
         const MAX_REPAIRS:usize=2;
         let mut attempts=Vec::<Value>::new();
+        let mut no_edit_retried=false;
         let mut finished=crate::engine::rsi_worktree::finish(
             context,job,worktree,message,&session_id
         ).await;
         for revision in 0..MAX_REPAIRS {
-            let Some(feedback)=finished.as_ref().ok()
-                .and_then(crate::engine::rsi_worktree::repair_feedback) else {break;};
-            // Cancellation or process restart is never a reason to replay a write.
+            let Some(prior)=finished.as_ref().ok() else {break;};
+            let compiler_feedback=crate::engine::rsi_worktree::repair_feedback(prior);
+            let no_edit_feedback=if compiler_feedback.is_none() && !no_edit_retried {
+                let current=context.state.store.get("session",&session_id).unwrap_or(Value::Null);
+                let operations=context.state.store.all("execution_operation");
+                crate::engine::rsi_worktree::no_edit_feedback(
+                    prior,&current,&operations)
+            } else {None};
+            let mode=if compiler_feedback.is_some() {"verification_repair"}
+                else {"source_edit_bootstrap"};
+            let Some(feedback)=compiler_feedback.or(no_edit_feedback) else {break;};
+            if mode=="source_edit_bootstrap" {no_edit_retried=true;}
+            // A no-diff recovery is permitted once; compile repair may follow,
+            // but neither path silently turns a read-only turn into success.
             if context.checkpoint(json!({
-                "rsiPhase":"repairing","rsiRepairAttempt":revision+1
+                "rsiPhase":"repairing","rsiRepairAttempt":revision+1,
+                "rsiRepairMethod":mode
             })).is_err(){break;}
-            let prior=finished.as_ref().unwrap();
             let iteration=json!({
                 "id":format!("{}-{}",context.job_id,revision),
                 "jobId":context.job_id,
                 "attempt":revision+1,"result":prior["rsi"],
-                "status":prior["status"],"reason":prior["reason"]
+                "status":prior["status"],"reason":prior["reason"],
+                "repairMethod":mode
             });
             context.state.store.put("rsi_iteration",&iteration);
             attempts.push(iteration);
