@@ -39,6 +39,8 @@ jobs:
           fi
       - uses: dtolnay/rust-toolchain@stable
         if: steps.probe.outputs.reachable == 'true'
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
         if: steps.probe.outputs.reachable == 'true'
       - uses: actions/setup-node@v4
