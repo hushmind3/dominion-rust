@@ -109,7 +109,9 @@ fn rsi_checkpoint_with_recovery(
     rsi_checkpoint_tool(tool,edit_only)
         || (edit_only && tool=="workspace_read_range"
             && next.is_some_and(|(chosen,reason)|
-                chosen=="workspace_read_range" && reason=="learned_multi_step_recovery"))
+                chosen=="workspace_read_range"
+                    && matches!(reason.as_str(),
+                        "learned_multi_step_recovery"|"observed_source_precondition_recovery")))
 }
 
 /// Normalize *only* RSI-scoped source paths before approval/effect capture.
@@ -198,6 +200,22 @@ fn rsi_action_failed(operation:&Value)->bool {
                 || (edit && operation["result"]["written"]!=true)))
 }
 
+/// A stale edit precondition is a signal to refresh the observed source,
+/// not evidence that the same patch should be replayed unchanged. The
+/// recovery operator is selected from the actual tool error, not prose.
+fn rsi_needs_fresh_source(operation:&Value)->bool {
+    if !matches!(operation["tool"].as_str(),
+        Some("workspace_replace"|"workspace_replace_range")) || !rsi_action_failed(operation) {
+        return false;
+    }
+    let text=operation["result"]["error"].as_str()
+        .or_else(||operation["error"].as_str()).unwrap_or("");
+    operation["result"]["staleVersion"]==true
+        || ["소스가 읽은 뒤 변경","source version","oldText 출현",
+            "oldText mismatch","expectedSha256","stale source",
+            "re-read the source"].iter().any(|fragment|text.contains(fragment))
+}
+
 /// Interpret an induced multi-step failure recovery in the live worker.
 /// The first unmatched step is selected only if every preceding step ran
 /// successfully *after* the relevant failure in the current execution.
@@ -237,6 +255,10 @@ fn rsi_action_program_next(
         return Some((tool,"learned_multi_step_recovery".into()));
     }
     if let Some(failed)=actual.last().copied().filter(|op|rsi_action_failed(op)) {
+        if rsi_needs_fresh_source(failed) {
+            return Some(("workspace_read_range".into(),
+                "observed_source_precondition_recovery".into()));
+        }
         if let Some(rule)=program["onFailure"].as_array().into_iter().flatten()
             .find(|rule|rule["onFailure"]==failed["tool"]) {
             if let Some(tool)=rule["tryTool"].as_str() {
@@ -6622,6 +6644,28 @@ mod harness_tool_selection_tests {
             "workspace_replace_range"));
         assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range"));
         assert!(rsi_action_program_next(&plan,&[],"unrelated").is_some());
+    }
+
+    #[test]
+    fn stale_source_hash_induces_a_refresh_before_another_edit() {
+        let sequence=json!({"sequence":["workspace_read_range",
+            "workspace_replace_range"],"onFailure":[],"recoveryPaths":[]});
+        let failure=json!({"runId":"r","tool":"workspace_replace_range",
+            "status":"failed","opSeq":2,
+            "result":{"error":"workspace_replace_range: 소스가 읽은 뒤 변경되었습니다"}});
+        assert!(rsi_needs_fresh_source(&failure));
+        let next=rsi_action_program_next(&sequence,&[failure.clone()],"r").unwrap();
+        assert_eq!(next,("workspace_read_range".into(),
+            "observed_source_precondition_recovery".into()));
+        assert!(rsi_checkpoint_with_recovery("workspace_read_range",true,Some(&next)));
+        let repaired=json!({"runId":"r","tool":"workspace_read_range",
+            "status":"completed","opSeq":3,"result":{"sourceSha256":"new-hash"}});
+        assert_eq!(rsi_action_program_next(&sequence,&[failure,repaired],"r")
+            .unwrap().0,"workspace_replace_range");
+        let declined=json!({"runId":"r","tool":"workspace_replace_range",
+            "status":"failed","result":{"error":"Denied by the user"}});
+        assert!(!rsi_needs_fresh_source(&declined),
+            "A denied approval is not a source-hash counterexample");
     }
 
     #[test]
