@@ -133,9 +133,24 @@ jobs:
                           shapes.append({"tool":fn.get("name"),"argumentBytes":len(raw),
                               "argumentKeys":keys,"parseError":parse_error})
                       assistant.append({"content":(content or "")[-400:],"calls":shapes})
-              print("SUB3_RSI_ACTION_TRACE="+json.dumps({
-                  "operations":operations[-30:],"checkpoints":checkpoints[-15:],
-                  "toolErrors":tool_errors[-30:],"lastAssistant":assistant[-12:]},ensure_ascii=False))
+              edits={"workspace_write","workspace_replace","workspace_replace_range"}
+              summary={
+                  "executedEdits":sum(1 for op in operations if op["tool"] in edits and op["status"]=="completed"),
+                  "failedEdits":sum(1 for op in operations if op["tool"] in edits and op["status"]!="completed"),
+                  "softToolErrors":sum(1 for op in tool_errors if op["event"]=="tool.soft_error"),
+                  "verifiedEditReceipts":sum(1 for op in tool_errors if op["event"]=="rsi.patch_submitted_for_verification"),
+              }
+              trace={"operations":operations[-30:],"checkpoints":checkpoints[-15:],
+                     "toolErrors":tool_errors[-30:],"lastAssistant":assistant[-12:],"summary":summary}
+              os.makedirs("benchmark",exist_ok=True)
+              with open("benchmark/sub3-rsi-action-trace.json","w") as out:
+                  json.dump(trace,out,ensure_ascii=False,indent=2)
+              report=os.environ.get("SUB3_LIVE_REPORT")
+              if report and os.path.exists(report):
+                  with open(report) as source: campaign=json.load(source)
+                  campaign["executionTrace"]=summary
+                  with open(report,"w") as target: json.dump(campaign,target,ensure_ascii=False,indent=2)
+              print("SUB3_RSI_ACTION_TRACE="+json.dumps(trace,ensure_ascii=False))
           except Exception as error:
               print("SUB3_RSI_ACTION_TRACE_UNAVAILABLE="+str(error))
           PY
@@ -145,4 +160,5 @@ jobs:
           name: sub3-real-model-attempt
           path: |
             benchmark/sub3-live-campaign-result.json
+            benchmark/sub3-rsi-action-trace.json
           if-no-files-found: ignore
