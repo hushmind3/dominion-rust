@@ -46,6 +46,12 @@ fn task_input<'a>(session: &'a Value, input: &'a str) -> &'a str {
 /// campaign has its own (usually longer) time budget and separately bounds
 /// the subprocess; a fixed conversational 10-minute kill was discarding real
 /// Qwen edits before the detached diff could be collected.
+/// Bound a real repair more tightly than broad exploration without forcing
+/// it to finish before the source has been observed and corrected.
+fn rsi_generation_round_limit(default:usize,compiler_repair:bool)->usize {
+    if compiler_repair {default.min(6)} else {default.max(16)}
+}
+
 fn elapsed_limit_for_session(session:&Value)->std::time::Duration {
     if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {
         std::time::Duration::from_secs(840)
@@ -914,14 +920,12 @@ async fn run_turn_body(
         .unwrap_or(MAX_ROUNDS as u64)
         .clamp(2, 24) as usize;
     if session["rsiRun"] == true {
-        // Full source exploration can take many rounds. A compiler repair is
-        // already grounded in a real candidate and must not burn the entire
-        // multi-generation budget re-reading the same file.
-        max_rounds = if session["rsiCompilerRepair"]==true {
-            max_rounds.min(4)
-        } else {
-            max_rounds.max(16)
-        };
+        // Live proof: four grounded repair turns performed one source read but
+        // no corrected edit. Six rounds cover observation, corrective edit
+        // and one tool-error retry while the generation-local token quota
+        // still preserves the remaining descendants.
+        max_rounds = rsi_generation_round_limit(
+            max_rounds,session["rsiCompilerRepair"]==true);
     }
     let max_tools = budget_algorithm
         .as_ref()
@@ -6720,6 +6724,15 @@ mod harness_tool_selection_tests {
         assert_eq!((before,after),(1,2));
         assert!(rsi_compiler_repair_tool("workspace_replace_range"));
         assert!(!rsi_compiler_repair_tool("code_search"));
+    }
+
+    #[test]
+    fn sub1_compiler_repair_has_time_for_a_real_corrective_edit() {
+        assert_eq!(rsi_generation_round_limit(24,true),6);
+        assert_eq!(rsi_generation_round_limit(4,true),4);
+        assert_eq!(rsi_generation_round_limit(6,true),6);
+        assert_eq!(rsi_generation_round_limit(8,false),16);
+        assert_eq!(rsi_generation_round_limit(20,false),20);
     }
 
     #[test]
