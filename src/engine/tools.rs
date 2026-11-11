@@ -791,6 +791,42 @@ fn search_code_index(
     Ok(json!({"query":query,"indexId":index_id,"indexedFiles":meta["files"],"matchCount":matches.len(),"matches":matches}))
 }
 
+// A small local model may quote a correct but non-unique expression such as
+// ".map(str::to_string)" from a versioned read. Resolve that ambiguity ONLY
+// inside the source lines it actually observed in the SAME execution.
+// Never guess which identical occurrence elsewhere in the file to modify.
+fn rsi_observed_unique_offset(
+    ctx:&ToolContext<'_>,path:&Path,source:&str,old:&str,run_id:&str
+)->Option<usize>{
+    if ctx.store.get("session",ctx.session_id)?["rsiRun"]!=true {return None;}
+    let relative=path.strip_prefix(ctx.workspace).ok()?
+        .to_string_lossy().replace('\\',"/");
+    let hash=format!("{:x}",Sha256::digest(source.as_bytes()));
+    let observed=ctx.store.all("execution_operation").into_iter()
+        .filter(|op|op["runId"].as_str()==Some(run_id)
+            && op["sessionId"].as_str()==Some(ctx.session_id)
+            && op["tool"]=="workspace_read_range"
+            && op["status"]=="completed"
+            && op["arguments"]["path"].as_str()==Some(relative.as_str())
+            && op["result"]["sourceSha256"].as_str()==Some(hash.as_str()))
+        .max_by_key(|op|op["opSeq"].as_u64().unwrap_or(0))?;
+    let start=observed["result"]["startLine"].as_u64()? as usize;
+    let end=observed["result"]["endLine"].as_u64()? as usize;
+    if start==0 || end<start || end-start>=120{return None;}
+    let mut offset=0usize;
+    let mut begin=None;
+    let mut finish=None;
+    for (idx,line) in source.split_inclusive('\n').enumerate(){
+        if idx+1==start {begin=Some(offset);}
+        offset+=line.len();
+        if idx+1==end {finish=Some(offset);break;}
+    }
+    let begin=begin?;
+    let finish=finish?;
+    let span=&source[begin..finish];
+    (span.matches(old).count()==1).then(||begin+span.find(old).unwrap())
+}
+
 async fn replace_text(
     ctx: &ToolContext<'_>,
     path: &Path,
@@ -806,19 +842,33 @@ async fn replace_text(
         .await
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let occurrences = text.matches(old_text).count();
-    if occurrences != 1 {
+    // Normally require exactly one match in the whole file. When a source
+    // generation has seen the identical expression in several functions,
+    // allow the unique match within its hash-verified observed line window.
+    let scoped=occurrences>1;
+    let position=if occurrences==1 {
+        text.find(old_text)
+    }else if scoped {
+        rsi_observed_unique_offset(ctx,path,&text,old_text,run_id)
+    }else{None};
+    let Some(position)=position else{
         return Ok(json!({
             "error": "oldText가 파일 안에서 정확히 한 번만 나타나야 합니다.",
             "occurrences": occurrences,
+            "observedRangeMatch": false,
             "path": path.to_string_lossy(),
         }));
-    }
-    let updated = text.replacen(old_text, new_text, 1);
-    let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
+    };
+    let mut updated=text.clone();
+    updated.replace_range(position..position+old_text.len(),new_text);
+    let observed_hash=format!("{:x}",Sha256::digest(text.as_bytes()));
+    let guard=if scoped {Some(observed_hash.as_str())}else{expected_sha256};
+    let mut result = checked_write(ctx, path, &updated, run_id, true, guard).await?;
     if result["written"] == true {
         result["replaced"] = json!(true);
         result["replacedChars"] = json!(old_text.chars().count());
         result["postSha256"] = json!(format!("{:x}", Sha256::digest(updated.as_bytes())));
+        if scoped {result["resolvedWithinObservedRange"]=json!(true);}
     }
     Ok(result)
 }
