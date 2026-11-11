@@ -7849,6 +7849,20 @@ mod tests {
         ];
         assert!(adaptive_search_expression(&rows[..3]).is_none());
         let expr=adaptive_search_expression(&rows).expect("paired gain should produce a hypothesis");
+        let mut real_shape=rows.clone();
+        // In actual campaigns the generation contains a short comparison
+        // summary, whereas acceptedProof has the original frozen evaluation.
+        let hash="d".repeat(64);
+        real_shape[2]["acceptedProof"]["evaluation"]["evidenceSha256"]=json!(hash);
+        real_shape[2]["evaluation"]=json!({"candidateId":"matched",
+            "evidenceSha256":hash,
+            "metrics":rows[2]["evaluation"]["metrics"]});
+        assert!(adaptive_search_expression(&real_shape).is_some(),
+            "genuine frozen candidate receipts and generation summaries must join");
+        let mut forged=real_shape.clone();
+        forged[2]["acceptedProof"]["evaluation"]["evidenceSha256"]=json!("e".repeat(64));
+        assert!(adaptive_search_expression(&forged).is_none(),
+            "mismatched independent evidence must never earn search fitness");
         let algo=json!({"implementation":"expression","parameters":{"expression":expr}});
         assert!(valid_domain_scores(&algo,&rows,"").is_some(),
             "evolved expression must execute in the actual search kernel");
