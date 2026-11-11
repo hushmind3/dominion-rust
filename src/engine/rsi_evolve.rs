@@ -3050,6 +3050,7 @@ async fn run_loop(
             "diffBytes":current["result"]["rsi"]["diffBytes"],
             "captureError":current["result"]["rsi"]["captureError"],
             "repairFailure":current["result"]["repairError"],
+            "compilerRepairReceipts":current["result"]["compilerRepairReceipts"],
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         generation.as_object_mut().expect("generation object")
             .extend(generation_details.as_object().expect("generation details object").clone());
