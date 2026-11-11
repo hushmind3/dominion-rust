@@ -143,24 +143,45 @@ fn rsi_direct_source_repair(
 fn rsi_inherited_patch_for_evaluation(
     session:&Value, methods:&[Value], operations:&[Value]
 )->Option<Value> {
-    operations.iter().find(|op| {
-        op["origin"]=="procedure"
-            && methods.iter().any(|method|
-                method["rsiMethodExperienceId"].is_string()
-                    && method["assistanceMode"]=="harness_assisted"
-                    && method["id"]==op["procedureStrategyId"]
-                    && method["revision"]==op["procedureRevision"])
-            && rsi_patch_ready_for_verification(
-                session, op["tool"].as_str().unwrap_or(""),
-                &op["arguments"], op)
-    }).map(|op|json!({
-        "methodId":op["procedureStrategyId"],
-        "methodRevision":op["procedureRevision"],
-        "operationId":op["id"],
-        "path":op["arguments"]["path"],
-        "verifiedWrite":true,
-        "independentQualityGain":Value::Null
-    }))
+    if session["rsiRun"]!=true || !session["rsiCampaignId"].is_string() {
+        return None;
+    }
+    operations.iter().find_map(|op| {
+        if op["origin"]!="procedure"
+            || op["tool"]!="workspace_replace"
+            || op["status"]!="completed"
+            || op["result"]["written"]!=true
+            || op["toolReceipt"]["verified"]!=true {
+            return None;
+        }
+        let path=op["arguments"]["path"].as_str()
+            .filter(|path|crate::engine::rsi::safe_path(path))?;
+        // Owner-focused runs cannot be retargeted. Autonomous generations
+        // instead inherit the method's own executable source target.
+        if session["rsiExplicitFocus"]==true
+            && !session["rsiFocusFiles"].as_array().is_some_and(|files|
+                files.len()==1 && files[0].as_str()==Some(path)) {
+            return None;
+        }
+        let method=methods.iter().find(|method| {
+            method["rsiMethodExperienceId"].is_string()
+                && method["assistanceMode"]=="harness_assisted"
+                && method["id"]==op["procedureStrategyId"]
+                && method["revision"]==op["procedureRevision"]
+                && method["verification"]["nodes"].as_array().is_some_and(|nodes|
+                    nodes.iter().any(|node|
+                        node["tool"]=="workspace_replace"
+                            && node["arguments"]["path"]==path))
+        })?;
+        Some(json!({
+            "methodId":method["id"],
+            "methodRevision":method["revision"],
+            "operationId":op["id"],
+            "path":path,
+            "verifiedWrite":true,
+            "independentQualityGain":Value::Null
+        }))
+    })
 }
 
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
@@ -6426,7 +6447,9 @@ mod harness_tool_selection_tests {
             "rsiExplicitFocus":true,"rsiFocusFiles":["src/engine/memory.rs"]});
         let method=json!({"id":"learned-1","revision":"rev-1",
             "assistanceMode":"harness_assisted",
-            "rsiMethodExperienceId":"experience-1"});
+            "rsiMethodExperienceId":"experience-1",
+            "verification":{"nodes":[{"id":"edit","tool":"workspace_replace",
+                "arguments":{"path":"src/engine/memory.rs"}}]}});
         let successful=json!({"id":"op-1","origin":"procedure",
             "procedureStrategyId":"learned-1","procedureRevision":"rev-1",
             "tool":"workspace_replace","status":"completed",
@@ -6437,6 +6460,11 @@ mod harness_tool_selection_tests {
         assert_eq!(proof["verifiedWrite"],true);
         assert!(proof["independentQualityGain"].is_null());
         assert_eq!(proof["operationId"],"op-1");
+        // Autonomous generations need no model-selected file to hand an
+        // already selected and executed source procedure to the evaluator.
+        let autonomous=json!({"rsiRun":true,"rsiCampaignId":"camp"});
+        assert!(rsi_inherited_patch_for_evaluation(
+            &autonomous,&[method.clone()],&[successful.clone()]).is_some());
         let mut wrong=successful.clone();
         wrong["toolReceipt"]["verified"]=json!(false);
         assert!(rsi_inherited_patch_for_evaluation(
