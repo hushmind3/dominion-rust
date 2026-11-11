@@ -2200,12 +2200,11 @@ fn synthesize_action_program(rows:&[Value])->Value {
         let steps=generation["actionTrace"].as_array().into_iter()
             .flatten().filter_map(|step|{
                 let name=step["tool"].as_str()?;
-                if !matches!(name,
-                    "code_search"|"workspace_read_range"|"web_search"|"http_fetch"|
-                    "rsi_method_propose"|"algorithm_propose"|
-                    "workspace_replace"|"workspace_replace_range"|"workspace_write") {
-                    return None;
-                }
+                // The live RSI tool registry, not a copied subset,
+                // defines the executable search space. New harness tools
+                // become eligible for method synthesis without changing this
+                // learning algorithm.
+                if !tools::rsi_allowed(name) {return None;}
                 Some((name.to_string(),step["executed"]==true))
             }).collect::<Vec<_>>();
         if steps.is_empty(){continue;}
