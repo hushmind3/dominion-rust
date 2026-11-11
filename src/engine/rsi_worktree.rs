@@ -359,8 +359,18 @@ pub async fn finish(
     let mut capture_error=String::new();
     let mut checks=Vec::<Value>::new();
     let mut unsafe_audit=Value::Null;
+    // A descendant repair starts from the parent's failed patch. Its diff
+    // against HEAD is therefore nonempty even when the model did nothing.
+    // Re-proposing that inherited patch would falsely look like progress.
+    let inherited_unchanged=input["rsiSourceIntegrityRepair"]["candidateId"]
+        .as_str()
+        .and_then(|id|context.state.store.get("rsi_candidate",id))
+        .is_some_and(|previous|
+            previous["patchSha256"].as_str()==Some(patch_sha.as_str()));
     if patch.trim().is_empty(){
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
+    } else if inherited_unchanged {
+        capture_error="후손이 상속받은 실패 패치를 수정하지 않았습니다.".into();
     } else if patch_size>=MAX_CAPTURE_BYTES {
         capture_error="코드 변경량이 79KB를 초과해 증거를 안전하게 수집하지 않았습니다.".into();
     } else {
