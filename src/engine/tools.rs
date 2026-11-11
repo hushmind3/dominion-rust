@@ -838,6 +838,15 @@ async fn replace_range(
     }
     let updated = format!("{}{}{}", &source[..before], replacement, &source[after..]);
     if updated == source {
+        // A successful no-op is useful in ordinary editing, but for RSI it
+        // must be an explicit failed attempt, not evidence of an implementation.
+        let autonomous = ctx.store.get("session", ctx.session_id)
+            .is_some_and(|session| session["rsiRun"] == true);
+        if autonomous {
+            return Ok(json!({"path":path.to_string_lossy(), "written":false,
+                "unchanged":true,
+                "error":"The proposed replacement left source bytes unchanged. Write a different implementation, not the original source."}));
+        }
         return Ok(json!({"path":path.to_string_lossy(), "written":false, "unchanged":true}));
     }
     let mut result = checked_write(ctx, path, &updated, run_id, true, Some(expected_sha256)).await?;
@@ -1563,6 +1572,13 @@ mod tests {
         let digest=format!("{:x}",Sha256::digest(source.as_bytes()));
         let ctx=ToolContext {workspace:&dir,store:&state.store,state:&state,
             session_id:"s",agent_id:None,tools_enabled:true,tools_execution_enabled:true};
+        state.store.put("session",&json!({"id":"s","rsiRun":true})).unwrap();
+        let no_op=execute(&ctx,"workspace_replace_range",
+            &json!({"path":"src/example.rs","startLine":3,"endLine":3,
+                "newText":"let value = 0;","expectedSha256":digest}),"run").await.unwrap();
+        assert_eq!(no_op["unchanged"],true);
+        assert!(no_op["error"].is_string());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),source);
         let args=json!({"path":"src/example.rs","startLine":3,"endLine":3,
             "newText":"let value = 42;","expectedSha256":digest});
         let result=execute(&ctx,"workspace_replace_range",&args,"run").await.unwrap();
