@@ -167,9 +167,10 @@ pub fn parse_text_tool_calls_known(
 }
 
 /// A small model may supply exact patch arguments without a native tool
-/// envelope. Accept only a standalone JSON object or JSON code fence with
-/// explicit source preconditions. The regular tool executor still performs
-/// revision/path checks and independent file readback.
+/// envelope. Accept a standalone JSON object or JSON code fence with
+/// model-authored source path/range/newText. A missing SHA can only be bound
+/// from an actual workspace_read_range receipt in the RSI native runtime;
+/// the regular tool executor still enforces a current file-version hash.
 pub fn parse_rsi_unwrapped_edit(
     content:&str, available:&std::collections::HashSet<String>,
 )->Option<(String,String)> {
@@ -205,7 +206,7 @@ pub fn parse_rsi_unwrapped_edit(
         .any(|key|args.get(*key).is_some()) {return None;}
     if available.contains("workspace_replace_range") {
         let sha=args["expectedSha256"].as_str().unwrap_or("");
-        if sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit())
+        if (sha.is_empty() || (sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit())))
             && args["startLine"].as_u64().is_some_and(|line|line>0)
             && args["endLine"].as_u64().is_some_and(|line|
                 line>=args["startLine"].as_u64().unwrap_or(u64::MAX))
