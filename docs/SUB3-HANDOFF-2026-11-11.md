@@ -105,3 +105,50 @@
 1. `42947169857`의 `sub3-real-model-attempt` 아티팩트에서 `candidateId`, `toolsUsed`, `acceptedCommit`, `improvedHoldouts`를 확인할 것. 0회라면 **다음 모델 도구 선택이 실제 편집까지 갔는가**를 원인으로 삼아 코드 수정할 것.
 2. 준비된 코드는 13개 고정 A/B에서 0.75→1.00 개선됨; 이를 실모델 자율 채택이라고 잘못 발표하지 말 것.
 3. 내부 실모델 채택이 실제로 나오면 **수정 바이너리 재빌드→같은 목표 다음 세대**와 다른 문제에서의 성능 향상까지 검증할 것.
+
+
+## Sub3 후속 개선 — 실모델 실행 고리 연결 (2026-11-11, 4세대 연속)
+
+### 역할·시작 기준과 이전 심판
+- 역할 Sub3 / 수정 가능 브랜치 `dominion-sub3`; 시작 HEAD `4563fde7c1b85fb2ef99cfcbc5eea9e629639f06`.
+- 이전 심판은 Sub3 **36/100, 3위** (Champion39, Sub2 37, Sub4 35, Sub1 34). 새로운 심판 점수는 스스로 확정하지 않는다.
+- 21개 캠페인·41세대·기록상 채택 1회·최대 연속 1회는 과거 공유 기준. 이번 실모델 실패를 추가 채택으로 계산하지 않는다.
+
+### 다른 브랜치에서 확인한 참고점
+- Sub1 `2384a507`: 최신 실패 작업과 완료 시각을 다음 캠페인의 실행 가능한 교정 지시로 계승.
+- Sub2 `873a91e3`: 실제 정책 실험을 대조군과 묶고, 무생산 통제 반복 시 후보 탐색을 실행.
+- Sub4 `3c974e8d`: 검증된 소스 분야 절차를 다른 분야에서 실행하고 도구·사후 조건 피드백으로 결과 기록.
+- Champion `cd5f5f55`: 독립 동결 holdout 비교와 증명 없는 후보 승격 차단, 재빌드 계보 보존.
+- 위 브랜치들은 **읽기/비교만 진행**, 수정하지 않았다.
+
+### 관측으로 드러난 장애
+- 실제 자유 모델 `openai-fast` 캠페인 `42947169857`: **3세대/75,971토큰, 실제 편집 0, 후보 0, 채택 0, 마지막 no_progress**. 검색1+읽기8로 끝남.
+- 후속 캠페인 `42949697316`: **2세대/15,469토큰, 모델 호출3, 실제 읽기1, 편집0, 후보0, 채택0**. workflow 성공 ≠ RSI 성공.
+- 원인 분석에서 **캠페인 워커가 과거 BASE_SHA(1d94e1da)로 재빌드되는 실행 계보 문제** 발견: 현재 하네스 변경은 CI에서 테스트되어도 실제 모델 워커에서는 적용되지 않았다. 그러므로 위 모델 결과의 변화는 새 런타임 성능 향상 증거가 아니다.
+
+### 이번 세션에 실제 푸시한 변경
+1. `01facc1` `src/engine/chat/runtime.rs` / `src/engine/jobs.rs`:
+   - 명시적 소스 수정 목표의 확인된 원문/완료된 읽기 호출을 기반으로 **읽기→편집 실행 단계**로 전환.
+   - 체크포인트 이후 다음 라운드에 검색 도구가 다시 열리지 않도록 매 라운드 적용.
+   - 실제 코드 변경이 없는 조기 완료에는 1회 교정 실행 기회를 제공.
+2. `0759930`: 1번 소스 읽고 종료하려는 모델의 **조기 종료**도 단발 편집 재시도로 연결. 실모델 스크립트에 sourceEditCalls, candidateCount, acceptedGenerations, independentlyVerifiedImprovement 추가.
+3. `fd971a7` `.github/workflows/sub3-live-model-cycle.yml`:
+   - 워커를 **현재 Sub3 코드**에서 빌드하기 위해 최신 HEAD로 분리 작업공간 생성.
+   - 오직 `src/engine/decompose.rs`만 역사적 버그가 있는 `BASE_SHA` 버전으로 복원하고 **분리 Git 실험 커밋** 작성.
+   - 실제 모델이 생성한 코드 변경과 재현용 버그 복원 코드를 구별.
+4. `4205f37` → `f7797bf` `runtime.rs`:
+   - 명시적 RSI 편집 단계에서 네이티브 도구 응답 대신 모델이 텍스트 `<tool_call>`을 반환할 경우 기존 알려진 도구 파서로 실행 가능한 호출 복원.
+   - 일반 모델 대화/자율 연구 단계에는 이 복구 경로를 적용하지 않음. 단위 테스트 추가.
+
+### 직접 확인한 실행 및 검증 범위
+- `01facc1`: CI https://github.com/hushmind3/dominion-rust/actions/runs/42949449776 **성공** — Rust 16 benchmark + 623 unit + 3 extra + 99 e2e = **741/741**, 웹 타입 검사/빌드 성공.
+- `0759930`: CI https://github.com/hushmind3/dominion-rust/actions/runs/42949697346 **성공** — 동일 Rust **741/741**, 웹 타입 검사/빌드 성공.
+- `fd971a7`: CI https://github.com/hushmind3/dominion-rust/actions/runs/42950862155 **성공**. 새 실모델 캠페인 https://github.com/hushmind3/dominion-rust/actions/runs/42950861967 실행됨 — **이 문서 작성 당시 결과 미확인**, 성공으로 계산하지 말 것.
+- `f7797bf`: 독립 CI https://github.com/hushmind3/dominion-rust/actions/runs/42951474873 실행 중. 실모델 캠페인 `42950861967`에는 이 후속 텍스트 파서 수정은 포함되지 않음.
+- 실제 모델에 의한 소스 패치 생성→독립 paired holdout 개선→선택→재빌드→후손 적용 전체 완주는 **이 문서 작성 시 아직 입증되지 않음**.
+
+### 다음 세션의 최우선 실행
+1. **첫째:** `42950861967` 종료 후 아티팩트 `sub3-real-model-attempt`에서 `sourceEditCalls`, `candidateId`, `acceptedCommit`, `improvedHoldouts`와 `generatorCommit`을 확인. 부모-워커 계보가 실제 최신 Sub3 코드인지 GitHub Actions의 `SUB3_RUNTIME_HARNESS_COMMIT`/`SUB3_EXPERIMENT_SOURCE_COMMIT` 로그로 검증.
+2. 여전히 편집 0이라면 실제 assistant 반환 내용·미완료/실패한 `execution_operation`을 수집해 **도구 선택 미발생과 도구 호출 실패**를 구분. 네이티브 텍스트 도구 복구 `f7797bf`을 포함한 동일 실모델 실험을 재실행하고 그 결과에 따라 실제 실행기를 수정.
+3. 생성한 candidate가 있으면 이미 있는 frozen paired holdout 비교에서 성공/회귀/토큰을 확인하고, 승격 후 **후손 바이너리 재빌드와 이어지는 다음 개선**까지 실제 실행한다.
+4. 이후 Sub1의 최신 실패 피드백 계승과 Sub4의 실행형 방법 전이를 비교 실험으로 연결한다. 새로운 검증 규칙보다 실제 패치 생성·완주와 성능 개선이 우선.
