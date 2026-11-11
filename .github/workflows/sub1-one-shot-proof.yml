@@ -1,0 +1,89 @@
+name: Sub1 one-shot genuine-model source-edit proof
+
+# Only changes to this proof workflow trigger an actual model run.
+# Normal code pushes must never repeat model calls or incur model costs.
+on:
+  push:
+    branches: [dominion-sub1]
+    paths:
+      - '.github/workflows/sub1-one-shot-proof.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sub1-one-shot-real-model
+  cancel-in-progress: false
+
+jobs:
+  single-generation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 28
+    env:
+      DOMINION_PORT: '43173'
+      DOMINION_JOB_WORKERS: '1'
+      DOMINION_EXPERIMENT_SCHEDULER: '0'
+      SUB1_LIVE_MAX_ATTEMPTS: '1'
+      SUB1_LIVE_TOKEN_BUDGET: '19000'
+      SUB1_LIVE_TIME_BUDGET: '840'
+      SUB1_LIVE_DEADLINE_MS: '930000'
+      SUB1_LIVE_REPORT: benchmark/sub1-one-shot-result.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Check anonymous genuine model availability
+        id: probe
+        run: |
+          node scripts/sub1-live-model-campaign.mjs probe | tee /tmp/sub1-probe.log
+          if grep -Fq 'SUB1_MODEL_REACHABLE=true' /tmp/sub1-probe.log; then
+            echo 'reachable=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'reachable=false' >> "$GITHUB_OUTPUT"
+            echo 'Public model unavailable: no source-edit success is claimed.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.probe.outputs.reachable == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.probe.outputs.reachable == 'true'
+      - name: Compile actual engine
+        if: steps.probe.outputs.reachable == 'true'
+        run: |
+          npm ci --prefix web
+          npm run build --prefix web
+          cargo build --release --locked --bin dominion-rust
+      - name: One real model generation, native writes, detached diff, frozen A/B
+        if: steps.probe.outputs.reachable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/sub1-source" "$(git rev-parse HEAD)"
+          export DOMINION_DATA="$RUNNER_TEMP/sub1-data"
+          export DOMINION_WORKSPACE="$RUNNER_TEMP/sub1-source"
+          export DOMINION_SOURCE_WORKSPACE="$RUNNER_TEMP/sub1-source"
+          mkdir -p "$DOMINION_DATA"
+          node scripts/sub1-live-model-campaign.mjs proxy > "$RUNNER_TEMP/sub1-proxy.log" 2>&1 &
+          proxy_pid=$!
+          ./target/release/dominion-rust > "$RUNNER_TEMP/sub1-engine.log" 2>&1 &
+          engine_pid=$!
+          trap 'kill "$proxy_pid" "$engine_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 90); do
+            if curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health" >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
+          node scripts/sub1-live-model-campaign.mjs run
+          cat "$SUB1_LIVE_REPORT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sub1-genuine-model-source-proof
+          path: |
+            benchmark/sub1-one-shot-result.json
+          if-no-files-found: warn
