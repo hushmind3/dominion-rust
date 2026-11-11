@@ -774,7 +774,10 @@ async fn rsi_rust_syntax_failure(
 ) -> Option<Value> {
     if path.extension().and_then(|ext|ext.to_str())!=Some("rs")
         || !ctx.store.get("session",ctx.session_id)
-            .is_some_and(|session|session["rsiRun"]==true) {
+            .is_some_and(|session|session["rsiRun"]==true
+                && session["rsiCampaignId"].as_str().is_some_and(|campaign|
+                    ctx.store.get("job",campaign).is_some_and(|job|
+                        job["kind"]=="rsi_evolve" && job["status"]=="running"))) {
         return None;
     }
     use tokio::io::AsyncWriteExt;
