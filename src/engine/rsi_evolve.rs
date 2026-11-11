@@ -1803,7 +1803,7 @@ fn synthesize_indexed_path_repair(
     let mut matching=state.store.all("code_index_file").into_iter()
         .filter(|file|file["indexId"].as_str()==Some(index_id))
         .filter_map(|file|file["path"].as_str().map(str::to_string))
-        .filter(|path|path!=old && crate::engine::rsi::safe_path(path)
+        .filter(|path|path.as_str()!=old && crate::engine::rsi::safe_path(path)
             && std::path::Path::new(path).file_name()
                 .and_then(|name|name.to_str())==Some(filename))
         .collect::<Vec<_>>();
@@ -1815,7 +1815,10 @@ fn synthesize_indexed_path_repair(
     let mut edited=Vec::new();
     for node in program["nodes"].as_array_mut()? {
         if node["arguments"]["path"]!=old {continue}
-        match node["tool"].as_str() {
+        // Clone only the tool tag: mutation below must not alias a borrowed
+        // string field in the same serde_json::Value.
+        let tool=node["tool"].as_str().map(str::to_string);
+        match tool.as_deref() {
             Some("workspace_read_range")=>{
                 node["arguments"]["path"]=json!(target);
             },
