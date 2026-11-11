@@ -97,6 +97,9 @@ if(mode==='probe'){
       improvedHoldouts:g.evaluation?.metrics?.improvedHoldouts,
       generatorCommit:g.generatorCommit,domain:g.domain,searchStrategy:g.searchStrategy,
       error:g.error,toolsUsed:g.toolsUsed,newFindings:g.newFindings,
+      writeReceipts:g.writeReceipts||[],actionTrace:g.actionTrace||[],
+      methodActions:g.methodActions||[],executionMethod:g.executionMethod||null,
+      attemptedCandidateId:g.attemptedCandidateId||null,
       focusFiles:g.focusFiles,knowledgeId:g.knowledgeId,
       evaluation:g.evaluation?.metrics
     }));
@@ -104,17 +107,25 @@ if(mode==='probe'){
       'campaign_finished':'campaign_timeout';
     trace.status=last.status;trace.result=last.result||null;
     trace.stopReason=last.evolution?.stopReason||last.result?.evolution?.stopReason||null;
-    const editTools=new Set(['workspace_replace','workspace_write']);
+    const editTools=new Set(['workspace_replace','workspace_replace_range','workspace_write']);
     const countCalls=(generation,names)=>generation.toolsUsed
       .filter(tool=>names.has(tool.tool)).reduce((sum,tool)=>sum+(tool.calls||0),0);
     const sourceEditCalls=trace.generationEvidence.reduce((sum,g)=>
       sum+countCalls(g,editTools),0);
-    const candidateCount=trace.generationEvidence.filter(g=>g.candidateId).length;
+    const candidateCount=trace.generationEvidence.filter(g=>g.candidateId||g.attemptedCandidateId).length;
+    const sourceReceipts=trace.generationEvidence.flatMap(g=>g.writeReceipts||[])
+      .filter(receipt=>editTools.has(receipt.tool));
+    const learnedProgramExecutions=trace.generationEvidence.reduce((total,g)=>
+      total+(g.methodActions||[]).filter(row=>row.inducedProgramDecision).length,0);
     const accepted=trace.generationEvidence.filter(g=>g.accepted===true
       && typeof g.acceptedCommit==='string' && g.acceptedCommit.length>0);
     trace.summary={
       modelCalls:trace.generationEvidence.reduce((sum,g)=>sum+(g.tokenUsage?.calls||0),0),
-      sourceEditCalls,candidateCount,acceptedGenerations:accepted.length,
+      sourceEditCalls,candidateCount,
+      verifiedSourceWrites:sourceReceipts.filter(receipt=>receipt.written===true).length,
+      rejectedSourceWrites:sourceReceipts.filter(receipt=>receipt.written!==true).length,
+      learnedProgramExecutions,
+      acceptedGenerations:accepted.length,
       acceptedCommits:accepted.map(g=>g.acceptedCommit),
       readOnlyGenerations:trace.generationEvidence.filter(g=>!g.candidateId
         && countCalls(g,new Set(['code_search','workspace_read_range']))>0).length,
