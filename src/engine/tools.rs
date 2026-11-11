@@ -856,6 +856,57 @@ async fn replace_source_lines(
     Ok(result)
 }
 
+/// Reject malformed model-authored Rust *before* mutating the source file.
+///
+/// The old post-write rustfmt receipt diagnosed syntax errors only after a
+/// malformed tool call had already replaced real source. During RSI this
+/// poisoned later source reads, consumed entire generation quotas and left
+/// unrecoverable candidate diffs. Preflight runs while checked_write holds the
+/// file mutation lock; the original bytes survive every parse failure.
+/// Rustfmt is a syntax-only guard. Compiling and frozen paired evaluation
+/// remain independent requirements for adopting a candidate.
+async fn rsi_rust_parse_preview(
+    ctx: &ToolContext<'_>, path: &Path, content: &str,
+) -> Result<(), String> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("rs")
+        || ctx.store.get("session", ctx.session_id)
+            .is_none_or(|session| session["rsiRun"] != true)
+    {
+        return Ok(());
+    }
+    use tokio::io::AsyncWriteExt;
+    let mut command = tokio::process::Command::new("rustfmt");
+    command.args(["--edition", "2021", "--emit", "stdout",
+            "--config", "skip_children=true"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let check = async {
+        let mut child = command.spawn()
+            .map_err(|error| format!("rsi_rust_parser_unavailable: {error}"))?;
+        let mut stdin = child.stdin.take()
+            .ok_or("rsi_rust_parser_unavailable: parser stdin missing")?;
+        stdin.write_all(content.as_bytes()).await
+            .map_err(|error| format!("rsi_rust_parser_io: {error}"))?;
+        drop(stdin);
+        child.wait_with_output().await
+            .map_err(|error| format!("rsi_rust_parser_io: {error}"))
+    };
+    let output = tokio::time::timeout(Duration::from_secs(15), check).await
+        .map_err(|_| "rsi_rust_parser_timeout: source not modified".to_string())??;
+    if output.status.success() {
+        return Ok(());
+    }
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "rsi_rust_syntax_rejected: Rust syntax invalid; source NOT modified. \
+         Change the replacement boundaries or newText using the exact existing \
+         source, then call an edit tool again. rustfmt: {}",
+        diagnostic.chars().take(1600).collect::<String>()
+    ))
+}
+
 /// Read-only Rust parser immediately after a model-authored source
 /// mutation. Same-turn feedback is not an independent quality verdict.
 async fn rsi_rust_parse_receipt(ctx:&ToolContext<'_>,path:&Path)->Option<Value> {
@@ -963,6 +1014,7 @@ async fn checked_write(
         }
     };
     let _guard = lock.lock().await;
+    rsi_rust_parse_preview(ctx, path, content).await?;
     let Some(policy) = policy else {
         // Even without the opt-in guard, a caller that supplies a frozen
         // version gets a compare-before-write under the same per-file lock.
@@ -1643,6 +1695,39 @@ mod tests {
         assert!(stale.contains("소스가 읽은 뒤 변경"),"{stale}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(),
             "first();\nlet count = 1;\nlast();\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn isolated_rsi_syntax_failure_never_mutates_live_candidate() {
+        use crate::{config::Config, db::Store, vault::Vault};
+        let dir = std::env::temp_dir()
+            .join(format!("sub1-syntax-atomic-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src/engine")).unwrap();
+        let path = dir.join("src/engine/decompose.rs");
+        let original = "fn marker_at() -> bool { true }\n\nfn split_markers() -> Vec<String> { vec![] }\n";
+        std::fs::write(&path, original).unwrap();
+        let cfg = Config { port: 0, data_dir: dir.clone(), web_dir: dir.join("web"),
+            workspace: dir.clone() };
+        let state = crate::state::AppState::new(cfg.clone(),
+            Store::open(&cfg.db_path()).unwrap(), Vault::open(&cfg.key_path()));
+        state.store.put("session", &json!({"id":"rsi-syntax", "rsiRun":true}));
+        let ctx = ToolContext { workspace:&dir, store:&state.store, state:&state,
+            session_id:"rsi-syntax", agent_id:None, tools_enabled:true,
+            tools_execution_enabled:true };
+        let sha = format!("{:x}", Sha256::digest(original.as_bytes()));
+        let invalid = "fn marker_at() -> bool { true }\n\nfn split_markers() -> Vec<String> { vec![]\n]\n";
+        let failure = replace_source_lines(&ctx, &path, 1, 3, invalid, &sha, "run")
+            .await.unwrap_err();
+        assert!(failure.contains("rsi_rust_syntax_rejected"), "{failure}");
+        assert!(failure.contains("source NOT modified"), "{failure}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let valid = "fn marker_at() -> bool { true }\n\nfn split_markers() -> Vec<String> { vec![\"ok\".to_owned()] }\n";
+        let result = replace_source_lines(&ctx, &path, 1, 3, valid, &sha, "run")
+            .await.unwrap();
+        assert_eq!(result["written"], true, "{result}");
+        assert_eq!(result["syntaxValid"], true, "{result}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), valid);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
