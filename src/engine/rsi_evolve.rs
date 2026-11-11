@@ -356,7 +356,8 @@ fn learned_edit_method(state:&AppState,input:&Value,history:&[Value])->Value {
     let partition=research_scope(input).partition_key;
     let mut seen=BTreeSet::<String>::new();
     let mut rows=Vec::new();
-    for row in history.iter().chain(state.store.all("rsi_generation").iter()) {
+    let persisted=state.store.all("rsi_generation");
+    for row in history.iter().chain(persisted.iter()) {
         if row["objectiveId"]!=objective || row["knowledgePartition"]!=partition {
             continue;
         }
