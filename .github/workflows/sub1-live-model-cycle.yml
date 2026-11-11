@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/sub1-live-model-cycle.yml'
       - 'scripts/sub1-live-model-campaign.mjs'
+      - 'src/engine/rsi_evolve.rs'
   workflow_dispatch:
 
 permissions:
