@@ -1540,6 +1540,61 @@ fn proposed_algorithms(state: &AppState, session: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Propose a genuinely new executable search formula without an extra model
+/// call. The weights are recomputed from measured prior generations, not a
+/// fixed list of named policies. This is hypothesis generation, not proof:
+/// queue_search_trial still requires real future trial outcomes to activate it.
+fn adaptive_search_expression(history:&[Value])->Option<String>{
+    if history.len()<4 {return None;}
+    let distinct=history.iter().filter_map(|row|row["domain"].as_str())
+        .collect::<BTreeSet<_>>();
+    if distinct.len()<2 {return None;}
+    let measured=history.iter().filter(|row|row["evidenceVerified"]==true)
+        .collect::<Vec<_>>();
+    let gains=measured.iter().map(|row|
+        row["verifiedHoldoutGains"].as_u64().unwrap_or(0).min(64)).sum::<u64>();
+    if gains==0 {return None;}
+    let failures=history.iter().filter(|row|row["accepted"]!=true
+        && row["newFindings"].as_u64().unwrap_or(0)==0).count() as f64;
+    let attempts=history.len() as f64;
+    let fail_rate=failures/attempts;
+    let measured_rate=gains as f64/(measured.len() as f64+1.0);
+    let avg_tokens=history.iter().map(|row|row["tokens"].as_u64().unwrap_or(0))
+        .sum::<u64>() as f64/attempts;
+    let explore=(1.0+fail_rate).min(2.0);
+    let gain=(1.0+measured_rate).min(4.0);
+    let efficiency=(0.8+measured_rate*0.5).min(3.0);
+    let barren=1.0+fail_rate*2.0;
+    let cost=0.25+(avg_tokens/20000.0).min(1.0);
+    Some(format!(
+        "objectiveMatch * 2 + exploration * {explore:.3} + holdoutGains * {gain:.3} + gainPer10kTokens * {efficiency:.3} - barrenRate * {barren:.3} - tokenCost * {cost:.3}"
+    ))
+}
+
+/// Without a model-authored candidate, build one from accumulated measured
+/// outcomes and put it through the exact same bounded, non-promoting trial
+/// path. Never learn from mutable summary fields alone.
+fn queue_adaptive_search_trial(
+    state:&AppState,history:&[Value],active:&Value,
+    objective:&str,campaign_id:&str,attempt:u64,
+)->Option<Value>{
+    let enriched=history_with_verified_payoffs(state,history);
+    let formula=adaptive_search_expression(&enriched)?;
+    if active["parameters"]["expression"].as_str()==Some(formula.as_str()){
+        return None;
+    }
+    let candidate=crate::engine::algorithms::register(state,&json!({
+        "kind":"selfimprove.search",
+        "name":"rsi-outcome-adaptive-search",
+        "implementation":"expression",
+        "parameters":{"expression":formula},
+        "source":"rsi-generated",
+        "description":"기존 세대의 원본 paired holdout 보상, 실패율과 실제 비용에서 계수를 재계산한 탐색 가설. 성공 판정에는 독립적인 후속 세대 시험이 필요합니다."
+    })).ok()?;
+    let report=queue_search_trial(state,&candidate,active,history,objective,campaign_id,attempt);
+    if report["status"]=="pending_trial"{Some(report)}else{None}
+}
+
 /// Persist an evidence-based promotion. The replay corpus is the campaign's
 /// own recorded generations, so a promotion can never be justified by a
 /// candidate evaluating itself on the generation that produced it.
@@ -2677,6 +2732,7 @@ async fn run_loop(
             let active = crate::engine::algorithms::active(&context.state, "selfimprove.search")
                 .unwrap_or_else(|| json!({"id":Value::Null,"revision":Value::Null,"implementation":"failure-clusters","parameters":{}}));
             let mut queued = Vec::new();
+            let had_pending_trial=record["nextTrialAlgorithmId"].is_string();
             for candidate in proposals
                 .iter()
                 .filter(|candidate| candidate["kind"] == "selfimprove.search")
@@ -2698,6 +2754,30 @@ async fn run_loop(
             }
             if !queued.is_empty() {
                 generation["searchTrialsQueued"] = json!(queued);
+            }
+            // Autonomous RSI must be capable of evolving its own search
+            // policy even when a small model never calls algorithm_propose.
+            // No new generation or paid model invocation is created here.
+            if queued.is_empty() && !had_pending_trial
+                && input["rsiAutonomous"]==true
+                && generation["domainSelection"]!="algorithm_trial" {
+                let mut complete=prior_history.clone();
+                complete.push(generation.clone());
+                if let Some(report)=queue_adaptive_search_trial(
+                    &context.state,&complete,&active,
+                    input["rsiObjective"].as_str().unwrap_or(""),
+                    &context.job_id,attempt,
+                ){
+                    if let Some(id)=report["candidateId"].as_str() {
+                        queued.push(id.to_string());
+                        generation["autoEvolvedSearch"]=json!({
+                            "candidateId":id,
+                            "hypothesis":report["candidateRevision"],
+                            "source":"measured_generation_outcomes",
+                            "status":"pending_future_real_trial_not_improvement_proof"
+                        });
+                    }
+                }
             }
             record["nextTrialAlgorithmId"] = Value::Null;
             if generation["domainSelection"].as_str() == Some("algorithm_trial") {
@@ -4643,6 +4723,33 @@ mod tests {
         state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve","status":"cancelled"}));
         assert!(propose_method(&state,"s",&valid).is_err());
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn self_improver_evolves_an_executable_search_formula_from_measured_history() {
+        let rows=vec![
+            json!({"domain":"memory","accepted":false,"newFindings":0,"tokens":5000}),
+            json!({"domain":"tools","accepted":true,"evidenceVerified":true,
+                "verifiedHoldoutGains":2,"tokens":6000}),
+            json!({"domain":"memory","accepted":false,"newFindings":0,"tokens":9000}),
+            json!({"domain":"tools","accepted":false,"newFindings":1,"tokens":11000})
+        ];
+        assert!(adaptive_search_expression(&rows[..3]).is_none());
+        let expression=adaptive_search_expression(&rows).unwrap();
+        let candidate=json!({"implementation":"expression","parameters":{"expression":expression}});
+        assert!(scored_domains(&candidate,&rows,"").is_some(),
+            "self-generated policy must run in the ordinary search algorithm kernel");
+        let mut later=rows.clone();
+        later.push(json!({"domain":"memory","accepted":false,"newFindings":0,"tokens":40000}));
+        let revised=adaptive_search_expression(&later).unwrap();
+        assert_ne!(expression,revised,"the formula itself must evolve with observed outcomes");
+        let no_proof=rows.iter().map(|row|{
+            let mut row=row.clone();
+            row["evidenceVerified"]=json!(false);
+            row
+        }).collect::<Vec<_>>();
+        assert!(adaptive_search_expression(&no_proof).is_none(),
+            "claimed acceptance without independently verified payoff is insufficient");
     }
 
     #[test]
