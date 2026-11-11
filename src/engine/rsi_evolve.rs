@@ -11982,12 +11982,23 @@ mod tests {
 fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str) -> Vec<Value> {
     let receipts = state.store.get("session", session_id)
         .and_then(|s|s["rsiMethodExecutions"].as_array().cloned()).unwrap_or_default();
+    let operations=state.store.all("execution_operation");
+    let mut synthesized=Vec::<Value>::new();
     for receipt in &receipts {
         let Some(mut record) = receipt["experienceId"].as_str().and_then(|id|state.store.get("experience",id)) else {continue};
         let Some(method) = record["executableMethods"].as_array_mut().and_then(|methods|
             methods.iter_mut().find(|m|m["id"] == receipt["methodId"] && m["revision"] == receipt["revision"])) else {continue};
         // Recovered coordinator steps must not count a completed application twice.
         if method["applications"].as_array().is_some_and(|rows|rows.iter().any(|r|r["executionId"]==receipt["executionId"])) {continue;}
+        let used=receipt["operationIds"].as_array();
+        for operation in operations.iter().filter(|op|
+            used.is_some_and(|ids|ids.contains(&op["id"]))) {
+            if let Some(repair)=synthesize_stale_edit_repair(method,operation) {
+                if !synthesized.iter().any(|m|m["id"]==repair["id"]) {
+                    synthesized.push(repair);
+                }
+            }
+        }
         let result = &receipt["result"];
         let unknown = result["unknown"] == true || result["status"] == "unknown"
             || result["verified"] != true;
@@ -12010,6 +12021,24 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
         if !method["applications"].is_array() {method["applications"]=json!([]);}
         method["applications"].as_array_mut().unwrap().push(application);
         state.store.put("experience", &record);
+    }
+    if !synthesized.is_empty() {
+        // A candidate resulting from observed failed tool calls is stored
+        // alongside model proposals. It is not marked executable or adopted
+        // until a later generation actually runs its revised DAG.
+        if let Some(mut session)=state.store.get("session",session_id) {
+            if !session["rsiMethodProposals"].is_array() {
+                session["rsiMethodProposals"]=json!([]);
+            }
+            if let Some(proposals)=session["rsiMethodProposals"].as_array_mut() {
+                for method in synthesized {
+                    if !proposals.iter().any(|candidate|candidate["id"]==method["id"]) {
+                        proposals.push(method);
+                    }
+                }
+            }
+            state.store.put("session",&session);
+        }
     }
     receipts
 }
