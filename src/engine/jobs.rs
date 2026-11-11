@@ -846,7 +846,8 @@ mod tests {
         let mut broad=explicit.clone();
         broad["rsiAutonomous"]=json!(true);
         broad["rsiImprovementDirective"]["reason"]=json!("no_recorded_generation");
-        assert!(!rsi_focused_edit_goal(&broad));
+        assert!(rsi_focused_edit_goal(&broad),
+            "Autonomous descendants executing a source patch must reach their edit-only continuation");
         broad["rsiImprovementDirective"]["reason"]=json!("explicit_owner_patch_request_with_source");
         assert!(rsi_focused_edit_goal(&broad));
         let mut research=explicit;
