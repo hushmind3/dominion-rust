@@ -451,6 +451,66 @@ pub fn repair_feedback(result:&Value)->Option<String>{
         failures.join("\n\n")
     ))
 }
+/// Rehydrate the *exact* file that rustc says failed rather than asking
+/// a small model to repair from a truncated stderr string. The source digest
+/// and numbered lines match workspace_read_range's edit protocol. The
+/// compiler message itself never chooses an unrestricted filesystem path.
+pub fn compiler_repair_context(workspace:&Path,result:&Value)->Option<String>{
+    let checks=result["rsi"]["checks"].as_array()?;
+    let mut output=Vec::<String>::new();
+    let mut seen=std::collections::BTreeSet::<String>::new();
+    let root=std::fs::canonicalize(workspace).ok()?;
+    for check in checks.iter().filter(|row|row["passed"]==false) {
+        let diagnostic=check["stderr"].as_str()
+            .or_else(||check["error"].as_str()).unwrap_or("");
+        for raw_line in diagnostic.lines() {
+            // rustc emits ANSI colors in GitHub Actions. Strip escape codes
+            // before extracting its " --> path:line:column" source location.
+            let mut clean=String::new();
+            let mut escaping=false;
+            for character in raw_line.chars() {
+                if character=='\u{1b}' { escaping=true;continue; }
+                if escaping {
+                    if character.is_ascii_alphabetic(){escaping=false;}
+                    continue;
+                }
+                clean.push(character);
+            }
+            let Some((_,location))=clean.split_once("-->") else {continue;};
+            let Some(candidate)=location.split_whitespace().next() else {continue;};
+            let Some((path_and_line,column))=candidate.rsplit_once(':') else {continue;};
+            let Some((relative,line))=path_and_line.rsplit_once(':') else {continue;};
+            if column.parse::<usize>().is_err(){continue;}
+            let Ok(line)=line.parse::<usize>() else {continue;};
+            if line==0 || !crate::engine::rsi::safe_path(relative)
+                || !seen.insert(relative.to_string()) {continue;}
+            let Ok(absolute)=std::fs::canonicalize(root.join(relative)) else {continue;};
+            if !absolute.starts_with(&root) || !absolute.is_file(){continue;}
+            let Ok(source)=std::fs::read_to_string(&absolute) else {continue;};
+            if source.len()>1024*1024 {continue;}
+            let lines=source.lines().collect::<Vec<_>>();
+            if line>lines.len() || lines.is_empty(){continue;}
+            let start=line.saturating_sub(9).max(1);
+            let end=line.saturating_add(9).min(lines.len());
+            let excerpt=(start..=end).map(|i|
+                format!("{i:>5} | {}",lines[i-1])
+            ).collect::<Vec<_>>().join("\n");
+            let sha=format!("{:x}",Sha256::digest(source.as_bytes()));
+            output.push(format!(
+                "실제 컴파일 오류 파일: {relative}; 오류 줄: {line}; \
+                 현재 전체 파일 sourceSha256: {sha}; 검증된 원문 {start}~{end}줄:\n{excerpt}\n\
+                 이 파일의 오류를 원문 기준으로 고치세요. 수정 도구: \
+                 workspace_replace_range(path, startLine, endLine, newText, expectedSha256={sha}) \
+                 또는 workspace_replace(path, oldText, newText). \
+                 이전 변경을 유지하고 필요한 부분만 고치세요."
+            ));
+            if output.len()>=2{break;}
+        }
+        if output.len()>=2{break;}
+    }
+    if output.is_empty(){None}else{Some(output.join("\n\n"))}
+}
+
 /// Apply a model-generated patch only after explicit owner review. A successful
 /// compile is NOT proof of improved behavior. Never commit, push or deploy.
 pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Result<Value,String>{
