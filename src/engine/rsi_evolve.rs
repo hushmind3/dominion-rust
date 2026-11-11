@@ -2050,11 +2050,12 @@ fn fit_parent_generation_context(
         // The descendant generator also appends its strategy and measurements.
         // The full final prompt is measured independently in that process.
         if prompt_fits_allowance(&prompt,available,1280) {
+            let estimated=crate::engine::chat::estimate_text_tokens(&prompt);
             return Some((prompt,json!({"mode":mode,
                 "priorExperienceDeferred":!inherited.is_empty() && context.is_empty(),
                 "researchDigestDeferred":!digest.is_empty() && research.is_empty(),
                 "sourceExcerptDeferred":!source_excerpt.is_empty() && source.is_empty(),
-                "estimatedInputTokens":crate::engine::chat::estimate_text_tokens(&prompt)})));
+                "estimatedInputTokens":estimated})));
         }
     }
     None
@@ -2092,9 +2093,10 @@ fn fit_worker_generation_context(
             prompt.push_str("\n상세 세대 기록은 저장소에 보존되어 있습니다.");
         }
         if prompt_fits_allowance(&prompt,available,256) {
+            let estimated=crate::engine::chat::estimate_text_tokens(&prompt);
             return Ok((prompt,json!({"mode":mode,"rows":rows.len(),
                 "availableRows":history.len(),
-                "estimatedInputTokens":crate::engine::chat::estimate_text_tokens(&prompt),
+                "estimatedInputTokens":estimated,
                 "improvementDirectivePreserved":true})));
         }
     }
