@@ -561,7 +561,11 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             session["rsiActionProgramTrial"]=input["rsiActionProgramTrial"].clone();
             session["rsiJudgementPolicy"]=input["rsiJudgementPolicy"].clone();
             session["rsiJudgementTrial"]=input["rsiJudgementTrial"].clone();
-            session["rsiExplicitFocus"]=json!(input["rsiAutonomous"] != true
+            // Explicit source files stay explicit even when the campaign itself
+            // runs autonomously. Previously "rsiAutonomous" disabled the
+            // focused edit contract and native tool_choice=required, leaving
+            // the real free-model campaign stuck in read-only generations.
+            session["rsiExplicitFocus"]=json!(input["rsiAutoFocus"] != true
                 && input["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty()));
             session["rsiFocusContextReady"]=json!(
                 input["rsiFocusContextChars"].as_u64().unwrap_or(0) > 0
@@ -583,7 +587,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     let request = TurnRequest {
         session_id: Some(session_id.clone()),
         input: if rsi_workspace.is_some() {
-            let focused = (input["rsiAutonomous"] != true
+            let focused = (input["rsiAutoFocus"] != true
                 && input["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty()))
                 || input["rsiMetaFocusActive"]==true;
             let completion = if focused {
