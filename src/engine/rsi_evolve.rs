@@ -3989,6 +3989,7 @@ mod tests {
         let mut input=json!({
             "rsiAutoFocus":true,"rsiIndexId":index["id"],
             "rsiFocusContextChars":240,
+            "rsiFocusGrounded":true,
             "rsiFocusFiles":["src/engine/alpha.rs","src/engine/beta.rs"],
             "rsiFocusSelection":{"source":"indexed_evidence"},
             "rsiActionDirective":{"mode":"repair_failed_edit",
@@ -4000,8 +4001,17 @@ mod tests {
         assert_eq!(input["rsiFocusFiles"],json!(["src/engine/beta.rs"]));
         assert_eq!(input["rsiFocusSelection"]["usedFailedWriteProvenance"],true);
         assert_eq!(input["rsiFocusSelection"]["actionPolicyRevision"],"learned-v2");
+        let focus=crate::engine::code_index::bounded_focus_context(
+            &state,&source,index["id"].as_str().unwrap(),
+            "src/engine/beta.rs","beta","tools").unwrap();
+        assert!(focus_excerpt_has_source(&input,&focus),
+            "the selected file's source hash must exist in the supplied excerpt");
         assert!(policy_requests_source_edit(&input),
             "the next native worker must enter its actual edit checkpoint");
+        input["rsiFocusGrounded"]=json!(false);
+        assert!(!policy_requests_source_edit(&input),
+            "a nonempty prompt header is not verified source evidence");
+        input["rsiFocusGrounded"]=json!(true);
         input["rsiFocusContextChars"]=json!(0);
         assert!(!policy_requests_source_edit(&input),
             "without verified source evidence an autonomous edit is not forced");
