@@ -1,6 +1,6 @@
 name: Sub1 one-shot genuine-model source-edit proof
 
-# Only changes to this proof workflow trigger an actual model run.
+# One explicitly revised proof workflow triggers one genuine-model run after the range-editor tool-choice fix.
 # Normal code pushes must never repeat model calls or incur model costs.
 on:
   push:
