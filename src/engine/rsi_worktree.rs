@@ -283,7 +283,7 @@ async fn validate(worktree:&Worktree,patch:&str)->Vec<Value> {
 /// A failed model patch can be repaired immediately without paying for a
 /// second open-ended source search. Bind diagnostic feedback to the actual
 /// detached-worktree postimage and the patch hunk's observed line numbers.
-fn current_patch_readback(workspace:&Path,patch:&str)->Option<Value>{
+fn current_patch_readback(workspace:&Path,patch:&str,checks:&[Value])->Option<Value>{
     let mut file=None::<String>;
     let mut first_line=None::<usize>;
     for line in patch.lines(){
@@ -301,12 +301,23 @@ fn current_patch_readback(workspace:&Path,patch:&str)->Option<Value>{
         }
     }
     let path=file?;
+    // Prefer a real compiler-reported error line over the first patch hunk.
+    // The reported file must be the exact modified file; never move repair
+    // attention to an unrelated path based on arbitrary model text.
+    let compiler_line=checks.iter().filter_map(|check|check["stderr"].as_str())
+        .flat_map(str::lines)
+        .filter_map(|line|{
+            let location=line.trim().strip_prefix("--> ")?;
+            let (without_column,_)=location.rsplit_once(':')?;
+            let (reported_path,line_number)=without_column.rsplit_once(':')?;
+            (reported_path==path).then(||line_number.parse::<usize>().ok()).flatten()
+        }).next();
     let bytes=std::fs::read(workspace.join(&path)).ok()?;
     if bytes.len()>400_000{return None;}
     let text=std::str::from_utf8(&bytes).ok()?;
     let lines=text.lines().collect::<Vec<_>>();
     if lines.is_empty(){return None;}
-    let target=first_line.unwrap_or(1).max(1).min(lines.len());
+    let target=compiler_line.or(first_line).unwrap_or(1).max(1).min(lines.len());
     let start=target.saturating_sub(16).max(1);
     let end=(target+35).min(lines.len());
     let mut excerpt=String::new();
@@ -404,7 +415,7 @@ pub async fn finish(
         "pairedComparisonComplete":false,"autoMerged":false,"autoDeployed":false,
         "modelError":model_error,"captureError":capture_error,
         "sourceReadback":if all_checks_pass {Value::Null}
-            else {current_patch_readback(&worktree.path,&patch).unwrap_or(Value::Null)},
+            else {current_patch_readback(&worktree.path,&patch,&checks).unwrap_or(Value::Null)},
         "modelMessageId":model_result.ok().flatten().and_then(|m|m["id"].as_str().map(str::to_string)),
         "createdAt":chrono::Utc::now().to_rfc3339(),
     });
@@ -866,13 +877,16 @@ mod tests {
         std::fs::write(root.join("src/engine/example.rs"),
             "one\ntwo\nthree\nfour\nfive\n").unwrap();
         let patch="diff --git a/src/engine/example.rs b/src/engine/example.rs\n--- a/src/engine/example.rs\n+++ b/src/engine/example.rs\n@@ -3,1 +3,1 @@\n-three\n+changed\n";
-        let read=current_patch_readback(&root,patch).unwrap();
+        let read=current_patch_readback(&root,patch,&[]).unwrap();
         assert_eq!(read["path"],"src/engine/example.rs");
         assert!(read["numberedSource"].as_str().unwrap().contains("3: three"));
         assert_eq!(read["sourceSha256"],format!("{:x}",Sha256::digest(
             std::fs::read(root.join("src/engine/example.rs")).unwrap())));
+        let compiler=json!({"stderr":"error: test\n  --> src/engine/example.rs:5:3\n"});
+        let with_error=current_patch_readback(&root,patch,&[compiler]).unwrap();
+        assert!(with_error["numberedSource"].as_str().unwrap().contains("5: five"));
         assert!(current_patch_readback(&root,
-            "+++ b/../../secret\n@@ -1 +1 @@\n").is_none());
+            "+++ b/../../secret\n@@ -1 +1 @@\n",&[]).is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
     #[test]

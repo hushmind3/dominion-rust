@@ -158,9 +158,7 @@ fn rsi_canonical_tool_name(name:&str,round_tools:&[Value])->Option<String>{
 /// Never synthesize a field, a tool choice, or source-modifying content.
 fn rsi_canonical_arguments(raw:&str)->Option<String>{
     let value=raw.trim();
-    let inner=if let Some(rest)=value.strip_prefix("```json
-").or_else(||value.strip_prefix("```
-")) {
+    let inner=if let Some(rest)=value.strip_prefix("```json\n").or_else(||value.strip_prefix("```\n")) {
         rest.strip_suffix("```")?.trim()
     } else {value};
     let parsed=serde_json::from_str::<Value>(inner).ok()?;
@@ -6674,8 +6672,7 @@ mod harness_tool_selection_tests {
         let twice=serde_json::to_string(original).unwrap();
         let decoded=rsi_canonical_arguments(&twice).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&decoded).unwrap()["path"],"src/a.rs");
-        let fenced=format!("```json
-{}\n```",original).replace("\\n","\n");
+        let fenced=format!("```json\n{}\n```",original);
         assert_eq!(rsi_canonical_arguments(&fenced),
             Some(serde_json::from_str::<Value>(original).unwrap().to_string()));
         assert!(rsi_canonical_arguments("not a JSON object").is_none());
