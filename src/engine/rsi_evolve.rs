@@ -3827,6 +3827,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let (domain, domain_selection, strategy) =
         select_generation_strategy(&state, &history, &objective, continuation, trial_id,
             None, &commit);
+    // Rebuilt descendants independently recompute the learned policy. Make
+    // its executable edit decision available before they replan the target.
+    let action=evolved_execution_action(&state,&job["input"],&history);
+    job["rsiActionDirective"]=action.clone();
+    job["input"]["rsiActionDirective"]=action.clone();
     if let Err(error)=reconcile_descendant_target(&state,&mut job,&history,
         &domain,domain_selection,&strategy,&commit) {
         // Preserve the stop reason in the durable worker record. A mismatched
@@ -3844,9 +3849,6 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiDecisionInput"] = job["input"]["rsiDecisionInput"].clone();
     job["input"]["rsiDomainSelection"] = json!(domain_selection);
     job["input"]["rsiSearchStrategy"] = strategy;
-    let action=evolved_execution_action(&state,&job["input"],&history);
-    job["rsiActionDirective"]=action.clone();
-    job["input"]["rsiActionDirective"]=action.clone();
     let feedback = history
         .iter().rev()
         .take(8)
