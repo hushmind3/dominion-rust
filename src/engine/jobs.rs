@@ -560,6 +560,19 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             session["rsiFocusContextReady"]=json!(
                 input["rsiFocusContextChars"].as_u64().unwrap_or(0)>0
             );
+            // A user-selected focus can have a real indexed source excerpt
+            // without an evolved-policy focus. Preserve concrete proof of
+            // the bound target so a read-only model turn can receive one
+            // additional implementation attempt, not another research loop.
+            let grounded_indexed_target=input["rsiIndexId"].as_str().and_then(|id|
+                input["rsiFocusFiles"].as_array().filter(|paths|paths.len()==1)
+                    .and_then(|paths|paths[0].as_str())
+                    .filter(|path|crate::engine::rsi::safe_path(path))
+                    .and_then(|path|crate::engine::code_index::indexed_source_hash(
+                        &context.state,id,path)))
+                .is_some()
+                && input["rsiFocusContextChars"].as_u64().unwrap_or(0)>0;
+            session["rsiNoEditGroundedTarget"]=json!(grounded_indexed_target);
             // Keep the operator-selected target for the native tool menu.
             session["rsiFocusFiles"]=input["rsiFocusFiles"].clone();
             crate::engine::rsi_evolve::configure_method_session(&context.state, &input, &mut session);
