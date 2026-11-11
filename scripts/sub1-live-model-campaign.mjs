@@ -89,7 +89,7 @@ if(mode==='probe'){
       mode:'continuous',confirmation:'START_RSI_EVOLUTION',
       selectionPolicy:'automatic',providerId:'sub1-free-proxy',model:'openai-fast',
       thinking:false,reasoningEffort:'low',
-      request:'Fix a reproducible behavior bug in src/engine/decompose.rs. The existing split_markers() recognizes isolated marker words (e.g. 그리고, 뒤) but misses Korean action suffix -고 and connective 다음/나서. On baseline, Korean text 설계를 읽고 결과를 저장한 다음 검증해 produces one step where three real ordered actions are required. Modify the Rust function now: after reading the exact existing source block, call workspace_replace with path=src/engine/decompose.rs, oldText=the exact source text and newText=your implementation. Distinguish action verb suffix -고 from nouns such as 사고/최고; preserve original subtask text and list handling. Do not end after code_search or workspace_read_range. If the first edit is rejected, inspect the tool error and retry with the exact current oldText. DOMINION will run independent frozen baseline/candidate tests after editing.',
+      request:'Improve the real Rust task decomposition function split_markers() in src/engine/decompose.rs. Frozen evaluator tests Korean ordered actions: 설계를 읽고 결과를 저장한 다음 검증해 (3 actions), 코드를 수정하고 나서 테스트를 실행해 (2 actions), 자료를 검색하고 내용을 요약해 (2 actions); and negative noun cases 사고 예방책을 검토해 and 최고 품질을 유지해 (1 action each). The original source only recognizes standalone words like 그리고 / 뒤 and misses 다음 / 나서 and the Korean verb connective -고. This is a genuine source edit, not an explanation: read the exact Rust source range, then change a SMALL, meaningful portion of split_markers() with workspace_replace_range or workspace_replace. First obtain an independently compiling, quality-improving patch; subsequent generations should extend the incomplete behavior using the actual independent holdout feedback. Preserve original task texts, numbered lists, and noun negatives; never edit the frozen oracle. If compilation fails, use exact rustc diagnostics and reread the current mutated source before the next patch. An unchanged read, analysis or test alone is not success,
       focusFiles:['src/engine/decompose.rs'],
       maxAttempts:Number(process.env.SUB1_LIVE_MAX_ATTEMPTS||3),
       tokenBudget:Number(process.env.SUB1_LIVE_TOKEN_BUDGET||90000),
@@ -142,6 +142,22 @@ if(mode==='probe'){
     }
     trace.phase=['completed','failed','cancelled','needs_review'].includes(last.status)?
       'campaign_finished':'campaign_timeout';
+    trace.lineage={
+      acceptedStreak:last.evolution?.acceptedStreak??last.result?.evolution?.acceptedStreak??0,
+      maxAcceptedStreak:last.evolution?.maxAcceptedStreak??last.result?.evolution?.maxAcceptedStreak??0,
+      maxVerifiedStreak:last.evolution?.maxVerifiedStreak??last.result?.evolution?.maxVerifiedStreak??0,
+      capabilityDemonstrated:last.evolution?.capabilityDemonstrated===true
+        ||last.result?.evolution?.capabilityDemonstrated===true,
+      metaTransferProven:last.evolution?.metaTransferProven===true
+        ||last.result?.evolution?.metaTransferProven===true,
+      generatorTransitions:trace.generationEvidence.slice(1).map((g,i)=>({
+        generation:g.attempt,parentAcceptedCommit:trace.generationEvidence[i].acceptedCommit,
+        generatorCommit:g.generatorCommit,
+        inheritedParent:g.generatorCommit===trace.generationEvidence[i].acceptedCommit
+          && typeof g.generatorCommit==='string',
+        independentlyImproved:g.accepted===true && g.verdict==='improved'
+      }))
+    };
     trace.status=last.status;trace.result=last.result||null;
     trace.stopReason=last.evolution?.stopReason||last.result?.evolution?.stopReason||null;
     const editTools=new Set(['workspace_replace','workspace_replace_range','workspace_write']);
