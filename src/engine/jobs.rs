@@ -619,6 +619,23 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     if let Some(worktree)=&rsi_workspace {scoped_state.config.workspace=worktree.path.clone();}
     let mut message = run_quiet(&scoped_state, &request).await;
     let result = if let Some(worktree)=&rsi_workspace {
+        // Native source induction is a genuine second candidate generator,
+        // learned from the other RSI branch. It only runs when opted in and
+        // the model left the ENTIRE detached worktree unchanged. It writes
+        // actual Rust bytes, but is never misreported as a model tool write.
+        let native_mutation=if input["rsiNativeInduction"]==true {
+            match crate::engine::rsi_mutation::induce(
+                &context.state,&context.job_id,&input,
+                &worktree.source,&worktree.path
+            ) {
+                Ok(receipt)=>receipt,
+                Err(error)=>{
+                    context.state.store.audit("rsi.native_induction_error",
+                        json!({"jobId":context.job_id,"error":error}));
+                    None
+                }
+            }
+        } else {None};
         // The evolved verification controller sets a bounded number of
         // verifier-guided source repairs. This is an executed decision, not a
         // suggestion in the model prompt. Every attempt shares one isolated
@@ -728,6 +745,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         }
         let mut output=finished?;
         output["repairAttempts"]=json!(attempts.len());
+        output["nativeMutation"]=json!(native_mutation);
         output["compilerRepairReceipts"]=json!(compiler_repairs);
         output["repairError"]=repair_failure;
         output["previousAttempts"]=json!(attempts);
