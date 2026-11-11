@@ -2147,13 +2147,65 @@ fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
         {
             continue;
         }
+        // Historical tool-call counts remain a throughput metric, never
+        // evidence that a filesystem mutation actually happened.
         let tool = operation["tool"].as_str().unwrap_or("unknown").to_string();
         *counts.entry(tool).or_insert(0) += 1;
     }
-    counts
-        .into_iter()
-        .map(|(tool, calls)| json!({"tool": tool, "calls": calls}))
+    counts.into_iter()
+        .map(|(tool, calls)| json!({"tool":tool,"calls":calls}))
         .collect()
+}
+
+/// A successful *call* is not the same as a successful source *write*.
+/// Both failed operations and legacy Ok({"error": ...}) responses must
+/// survive candidate collection and reach the next generation.
+fn session_write_receipts(state:&AppState, session_id:&str) -> Vec<Value> {
+    let mut rows = Vec::new();
+    for operation in state.store.all("execution_operation") {
+        if operation["sessionId"].as_str() != Some(session_id)
+            || !matches!(operation["tool"].as_str(),Some("workspace_write"|"workspace_replace"))
+        {
+            continue;
+        }
+        let actual_write=operation["status"]=="completed"
+            && operation["result"]["written"]==true;
+        let error=operation["error"].as_str()
+            .or_else(||operation["result"]["error"].as_str())
+            .unwrap_or(if actual_write {""} else {"tool call has no confirmed file write"});
+        rows.push(json!({
+            "tool":operation["tool"],"path":operation["arguments"]["path"],
+            "status":operation["status"],"written":actual_write,
+            "error":error.chars().take(650).collect::<String>(),
+        }));
+    }
+    rows.into_iter().rev().take(12).collect()
+}
+
+/// Preserve failed or interrupted *real* candidates as corrective evidence.
+/// Only checksPassed candidates enter the frozen A/B evaluator; the worker
+/// must never silently turn a compile failure into a research-only attempt.
+fn candidate_capture_feedback(result:&Value) -> Option<String> {
+    let id=result["candidateId"].as_str()?;
+    if result["checksPassed"]==true {return None;}
+    let mut failures=Vec::new();
+    for check in result["checks"].as_array().into_iter().flatten()
+        .filter(|check|check["passed"]!=true).take(3) {
+        let label=check["label"].as_str().unwrap_or("source verification");
+        let details=check["stderr"].as_str()
+            .filter(|s|!s.trim().is_empty())
+            .or_else(||check["error"].as_str())
+            .unwrap_or("the check was not successful");
+        failures.push(format!("{label}: {}",
+            details.chars().take(900).collect::<String>()));
+    }
+    if failures.is_empty() {
+        failures.push("검사 완료 증거가 없어 비교 실험으로 넘기지 못함".into());
+    }
+    Some(format!(
+        "실제 소스 변경 후보 {id}가 수집됐지만 검증이 실패했습니다. 다음 세대에서 해당 소스를 교정하고 다시 편집해야 합니다. {}",
+        failures.join(" | ")
+    ))
 }
 
 /// Each campaign keeps its compiled generator. Two concurrent campaigns
@@ -2521,6 +2573,9 @@ async fn run_loop(
             })
             .cloned()
             .collect::<Vec<_>>();
+        let write_receipts = session
+            .map(|s| session_write_receipts(&context.state, s))
+            .unwrap_or_default();
         let usage = session
             .map(|s| context.state.store.session_usage(s))
             .unwrap_or(Value::Null);
@@ -2555,10 +2610,22 @@ async fn run_loop(
             "boundaryResult":current["rsiBoundaryResult"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
+            "writeReceipts":write_receipts,
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
+        let capture = &current["result"]["rsi"];
+        // Capture evidence even when compilation failed. candidateId remains
+        // reserved for candidates eligible for the frozen paired comparison.
+        if let Some(id)=capture["candidateId"].as_str() {
+            generation["attemptedCandidateId"]=json!(id);
+            generation["candidateCapture"]=json!({
+                "candidateId":id,"checksPassed":capture["checksPassed"],
+                "checks":capture["checks"],"captureError":capture["captureError"],
+                "modelError":capture["modelError"],"diffBytes":capture["diffBytes"]
+            });
+        }
         let candidate_id = verified_candidate_id(&current["result"]);
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
         if let Some(id) = candidate_id {
@@ -2642,7 +2709,9 @@ async fn run_loop(
         } else {
             let worker_error = output.as_ref().err().map(String::as_str);
             let child = &current["result"]["rsi"];
-            generation["error"] = json!(worker_error
+            let validation_feedback=candidate_capture_feedback(child);
+            generation["error"] = json!(validation_feedback.as_deref()
+                .or(worker_error)
                 .or_else(|| child["modelError"].as_str())
                 .or_else(|| child["captureError"].as_str())
                 .or_else(|| current["error"].as_str())
@@ -3114,7 +3183,8 @@ fn improvement_directive(history:&[Value]) -> Value {
     };
     let previous_mode=last["improvementDirective"]["mode"].as_str().unwrap_or("");
     let verdict=last["evaluation"]["verdict"].as_str().unwrap_or("");
-    let has_patch=last["candidateId"].is_string();
+    let has_patch=last["candidateId"].is_string()
+        || last["attemptedCandidateId"].is_string();
     let new_findings=last["newFindings"].as_u64().unwrap_or(0);
     let mode=if last["accepted"]==true {
         "extend_verified_capability"
@@ -3161,6 +3231,8 @@ fn improvement_directive(history:&[Value]) -> Value {
         "sourceJobId":last["jobId"],
         "domain":last["domain"],
         "candidateId":last["candidateId"],
+        "attemptedCandidateId":last["attemptedCandidateId"],
+        "candidateCapture":last["candidateCapture"],
         "evidenceHashes":last["knowledgeArtifactHashes"].as_array().map(|rows|
             rows.iter().take(8).cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "failureCaseIds":measured_failures,
@@ -3276,12 +3348,12 @@ fn improvement_work_contract(directive:&Value) -> &'static str {
 /// from the model claiming it followed a plan.
 fn improvement_action_observation(generation:&Value, diff_bytes:u64) -> Value {
     let mode=generation["improvementDirective"]["mode"].as_str().unwrap_or("discover");
-    let completed_writes=generation["toolsUsed"].as_array().into_iter().flatten()
-        .filter(|row|matches!(row["tool"].as_str(),
-            Some("workspace_write"|"workspace_replace"|"file_write")))
-        .map(|row|row["calls"].as_u64().unwrap_or(0))
-        .sum::<u64>();
-    let produced_candidate=generation["candidateId"].is_string();
+    let completed_writes=generation["writeReceipts"].as_array()
+        .into_iter().flatten().filter(|row|row["written"]==true).count() as u64;
+    let rejected_writes=generation["writeReceipts"].as_array()
+        .into_iter().flatten().filter(|row|row["written"]!=true).count() as u64;
+    let produced_candidate=generation["candidateId"].is_string()
+        || generation["attemptedCandidateId"].is_string();
     let attempted_change=completed_writes>0 || diff_bytes>0 || produced_candidate;
     let provider_interrupted=!attempted_change
         && generation["error"].as_str().is_some_and(|error|{
@@ -3312,6 +3384,7 @@ fn improvement_action_observation(generation:&Value, diff_bytes:u64) -> Value {
                  else {"not_followed"},
         "providerInterrupted":provider_interrupted,
         "completedWrites":completed_writes,
+        "rejectedWrites":rejected_writes,
         "diffBytes":diff_bytes,
         "candidateProduced":produced_candidate,
         "focusChanged":source_changed,
@@ -4261,7 +4334,7 @@ mod tests {
         let attempted=improvement_action_observation(&json!({
             "accepted":false,"candidateId":null,
             "improvementDirective":no_action["improvementDirective"],
-            "toolsUsed":[{"tool":"workspace_replace","calls":1}],
+            "writeReceipts":[{"tool":"workspace_replace","written":true}],
             "newFindings":0}),8);
         assert_eq!(attempted["followed"],true);
         assert_eq!(attempted["status"],"attempted");
@@ -4274,6 +4347,38 @@ mod tests {
             "accepted":true,"pairedRevalidated":false,"candidateId":"paired-1",
             "improvementDirective":{"mode":"implement_research"}}),0);
         assert_eq!(unproven["status"],"reported_adoption_unverified");
+    }
+
+    #[test]
+    fn rejected_write_is_not_a_completed_improvement_action() {
+        let candidate=json!({
+            "accepted":false,"candidateId":null,"newFindings":0,
+            "improvementDirective":{"mode":"implement_research"},
+            "toolsUsed":[{"tool":"workspace_replace","calls":1}],
+            "writeReceipts":[{"tool":"workspace_replace","status":"completed",
+                "written":false,"error":"oldText not found"}]
+        });
+        let observed=improvement_action_observation(&candidate,0);
+        assert_eq!(observed["completedWrites"],0);
+        assert_eq!(observed["rejectedWrites"],1);
+        assert_eq!(observed["status"],"not_followed");
+    }
+
+    #[test]
+    fn compilation_failure_remains_candidate_evidence_for_next_generation() {
+        let failed=json!({"candidateId":"rsi-real-patch","checksPassed":false,
+            "checks":[{"label":"cargo check","passed":false,
+                "stderr":"error[E0308]: mismatched types"}]});
+        let receipt=candidate_capture_feedback(&failed).unwrap();
+        assert!(receipt.contains("rsi-real-patch"));
+        assert!(receipt.contains("E0308"));
+        let previous=json!({"id":"g1","accepted":false,"candidateId":null,
+            "attemptedCandidateId":"rsi-real-patch","newFindings":0,
+            "improvementDirective":{"mode":"implement_research"},
+            "improvementActionObservation":{"status":"attempted"}});
+        assert_eq!(improvement_directive(&[previous])["mode"],"revise_candidate");
+        assert!(candidate_capture_feedback(&json!({"candidateId":"rsi-ok",
+            "checksPassed":true})).is_none());
     }
 
     #[test]
