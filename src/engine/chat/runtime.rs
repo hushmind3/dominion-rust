@@ -1141,6 +1141,18 @@ async fn run_turn_body(
                     round_tools = tool_definitions.iter()
                         .filter(|definition| rsi_checkpoint_tool(tool_name(definition), true))
                         .cloned().collect();
+                    // A focused repair of existing code needs a small patch,
+                    // never an entire-file rewrite. Offering workspace_write
+                    // next to replace made small models select destructive
+                    // full-file output and spend the generation without a
+                    // valid diff. Retain create-file support elsewhere.
+                    if focused_generation && session["rsiFocusFiles"].as_array()
+                        .is_some_and(|files|files.iter().any(|file|
+                            file.as_str().is_some_and(|path|
+                                state.config.workspace.join(path).is_file()))) {
+                        round_tools.retain(|definition|
+                            tool_name(definition)!="workspace_write");
+                    }
                 } else {
                     round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition), false));
                 }
