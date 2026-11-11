@@ -186,6 +186,39 @@ fn rsi_canonical_arguments(raw:&str)->Option<String>{
     object.is_object().then(||object.to_string())
 }
 
+/// Some weak tool-calling gateways place literal newlines in a JSON string
+/// containing model-authored source code. Escaping those existing bytes is a
+/// reversible wire-format repair, not a source edit or invented argument.
+/// Missing fields, truncated JSON, or ambiguous syntax remain invalid.
+fn rsi_recover_json_control_chars(raw: &str) -> Option<String> {
+    if raw.len() > 128 * 1024 { return None; }
+    let mut repaired = String::with_capacity(raw.len() + 24);
+    let (mut inside, mut escaped, mut changed) = (false, false, false);
+    for ch in raw.chars() {
+        if inside {
+            if escaped {
+                repaired.push(ch);
+                escaped = false;
+            } else {
+                match ch {
+                    '\\' => { repaired.push(ch); escaped = true; }
+                    '"' => { repaired.push(ch); inside = false; }
+                    '\n' => { repaired.push_str("\\n"); changed = true; }
+                    '\r' => { repaired.push_str("\\r"); changed = true; }
+                    '\t' => { repaired.push_str("\\t"); changed = true; }
+                    c if c.is_control() => return None,
+                    _ => repaired.push(ch),
+                }
+            }
+        } else {
+            repaired.push(ch);
+            if ch == '"' { inside = true; }
+        }
+    }
+    if !changed || inside || escaped { return None; }
+    rsi_canonical_arguments(&repaired)
+}
+
 /// Convert the exact numbered bytes returned by workspace_read_range into
 /// the source excerpt that the model can copy for an exact source replacement.
 /// The line prefix is the renderer's navigation aid, never part of Rust.
@@ -2257,7 +2290,8 @@ async fn run_turn_body(
         let mut seen_ids = std::collections::HashSet::new();
         for call in completion.tool_calls.iter_mut() {
             if session["rsiRun"]==true {
-                if let Some(arguments)=rsi_canonical_arguments(&call.arguments){
+                if let Some(arguments)=rsi_canonical_arguments(&call.arguments)
+                    .or_else(||rsi_recover_json_control_chars(&call.arguments)) {
                     if arguments!=call.arguments {
                         state.store.audit("rsi.recovered_tool_json",json!({
                             "executionId":execution_id,"tool":call.name,
@@ -7051,6 +7085,20 @@ mod harness_tool_selection_tests {
             Some(serde_json::from_str::<Value>(original).unwrap().to_string()));
         assert!(rsi_canonical_arguments("not a JSON object").is_none());
         assert!(rsi_canonical_arguments("[]").is_none());
+    }
+
+    #[test]
+    fn rsi_repairs_only_existing_multiline_json_string_bytes() {
+        let malformed = "{\\"path\\":\\"src/a.rs\\",\\"oldText\\":\\"fn old() {\\n}\\",\\"newText\\":\\"fn new() {\\n}\\"}";
+        let recovered = rsi_recover_json_control_chars(malformed).unwrap();
+        let parsed: Value = serde_json::from_str(&recovered).unwrap();
+        assert_eq!(parsed["oldText"], "fn old() {\n}");
+        assert_eq!(parsed["newText"], "fn new() {\n}");
+        assert_eq!(parsed["path"], "src/a.rs");
+        assert!(rsi_recover_json_control_chars(r#"{"path":"x","newText":"valid"}"#).is_none());
+        assert!(rsi_recover_json_control_chars("{\\"newText\\":\\"abc\n").is_none());
+        assert!(rsi_recover_json_control_chars("not json\nsource code").is_none());
+        assert!(rsi_recover_json_control_chars(&"x".repeat(128*1024+1)).is_none());
     }
 
     #[test]
