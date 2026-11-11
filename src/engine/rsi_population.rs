@@ -27,7 +27,7 @@ fn measured_gain(row: &Value) -> Option<u64> {
     let metrics = &evaluation["metrics"];
     if row["accepted"] != true
         || proof["status"] != "verified"
-        || proof["evaluation"] != *evaluation
+        || proof["evaluation"] != evaluation.clone()
         || evaluation["source"] != "server_invoked_local_paired_git_worktrees"
         || metrics["eligible"] != true
         || metrics["regressions"].as_u64() != Some(0)
@@ -72,6 +72,9 @@ pub fn breed(history: &[Value], parents: &[Value], objective: &str) -> Option<Va
             continue;
         }
         let trials = item["rsiTrial"]["trials"].as_array();
+        if trials.is_none_or(Vec::is_empty) {
+            continue;
+        }
         let (mut supported, mut rejected, mut inconclusive) = (0usize, 0usize, 0usize);
         for trial in trials.into_iter().flatten() {
             match trial["verdict"].as_str().unwrap_or("") {
