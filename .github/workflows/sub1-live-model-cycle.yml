@@ -1,13 +1,8 @@
 name: Sub1 real-model RSI cycle attempt
 
+# Run expensive live models only when explicitly requested.
+# Pushes run the normal CI; a source edit must not auto-spend 45 minutes.
 on:
-  push:
-    branches: [dominion-sub1]
-    paths:
-      - '.github/workflows/sub1-live-model-cycle.yml'
-      - 'scripts/sub1-live-model-campaign.mjs'
-      - 'src/engine/rsi_evolve.rs'
-      - 'src/engine/jobs.rs'
   workflow_dispatch:
 
 permissions:
