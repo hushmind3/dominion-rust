@@ -54,7 +54,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git worktree add --detach "$RUNNER_TEMP/sub3-source" "$BASE_SHA"
+          # The actual RSI generator is built from the campaign source commit.
+          # Running an old BASE_SHA here silently drops newer Sub3 harness fixes.
+          # Preserve the current engine, while restoring ONLY the historic
+          # decomposition bug in the detached experiment worktree.
+          git worktree add --detach "$RUNNER_TEMP/sub3-source" "$GITHUB_SHA"
+          git show "$BASE_SHA:src/engine/decompose.rs" > "$RUNNER_TEMP/sub3-source/src/engine/decompose.rs"
+          if git -C "$RUNNER_TEMP/sub3-source" diff --quiet -- src/engine/decompose.rs; then
+            echo 'Historic decomposition bug was not restored; refusing a vacuous RSI trial' >&2
+            exit 1
+          fi
+          git -C "$RUNNER_TEMP/sub3-source" add src/engine/decompose.rs
+          git -C "$RUNNER_TEMP/sub3-source" -c user.name="DOMINION RSI fixture" -c user.email="rsi@localhost" -c commit.gpgsign=false commit -m "Experiment fixture: restore historical decomposition failure"
+          echo "SUB3_RUNTIME_HARNESS_COMMIT=$GITHUB_SHA"
+          echo "SUB3_EXPERIMENT_SOURCE_COMMIT=$(git -C "$RUNNER_TEMP/sub3-source" rev-parse HEAD)"
           export DOMINION_DATA="$RUNNER_TEMP/sub3-data"
           export DOMINION_WORKSPACE="$RUNNER_TEMP/sub3-source"
           export DOMINION_SOURCE_WORKSPACE="$RUNNER_TEMP/sub3-source"
