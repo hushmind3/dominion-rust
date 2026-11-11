@@ -124,6 +124,7 @@ if(mode==='probe'){
       inheritedPatchChanged:g.inheritedPatchChanged,
       editPolicy:g.editPolicy,programStages:g.programStages,
       compilerRepairReceipts:g.compilerRepairReceipts,
+      nativeMutation:g.nativeMutation,candidateOrigin:g.candidateOrigin,
       scopeExpanded:g.scopeExpanded,residualEvidence:g.residualEvidence,
       costOpportunities:g.costOpportunities,metaTransferTarget:g.metaTransferTarget,
       ruleExecutions:g.ruleExecutions,toolTimeline:g.toolTimeline,
@@ -200,6 +201,10 @@ if(mode==='probe'){
       compilerAssistedGenerations:trace.generationEvidence.filter(g=>(g.compilerRepairReceipts||[]).length>0).length,
       postAdoptionScopeExpansions:trace.generationEvidence.filter(g=>g.scopeExpanded===true).length,
       metaImproverTrials:trace.generationEvidence.filter(g=>g.metaTransferTarget===true).length,
+      nativeMutationCandidates:trace.generationEvidence.filter(g=>
+        g.candidateId && g.candidateOrigin==='native_inductive_source_mutation').length,
+      independentlyAdoptedNativeMutations:accepted.filter(g=>
+        g.candidateOrigin==='native_inductive_source_mutation').length,
       readOnlyGenerations:trace.generationEvidence.filter(g=>!g.candidateId
         && (g.editEvidence?.verifiedWrites||0)===0
         && countCalls(g,new Set(['code_search','workspace_read_range']))>0).length,
