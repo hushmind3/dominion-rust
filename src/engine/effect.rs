@@ -63,7 +63,7 @@ fn normalize_path(value: &str) -> String {
 pub fn resource_key(tool: &str, arguments: &Value) -> Option<String> {
     let path = arguments["path"].as_str();
     match tool {
-        "workspace_read" | "workspace_write" | "workspace_list" => {
+        "workspace_read" | "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_list" => {
             path.map(|path| format!("workspace:{}", normalize_path(path)))
         }
         "file_read" | "file_write" | "file_list" => {
@@ -296,7 +296,7 @@ fn failure_layer(ok: bool, denied: bool, result: &Value, effectful: bool) -> Opt
 async fn read_back(workspace: &Path, tool: &str, arguments: &Value) -> Option<(String, u64)> {
     let path = arguments["path"].as_str()?;
     let path: PathBuf = match tool {
-        "workspace_write" | "workspace_read" => {
+        "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_read" | "workspace_read_range" => {
             crate::engine::tools::resolve_workspace(workspace, path).ok()?
         }
         "file_write" | "file_read" => PathBuf::from(path),
@@ -311,11 +311,20 @@ async fn read_back(workspace: &Path, tool: &str, arguments: &Value) -> Option<(S
     Some((format!("sha256:{}", hash(&bytes)), len))
 }
 
-fn expected_version(tool: &str, arguments: &Value) -> Option<String> {
+fn expected_version(tool: &str, arguments: &Value, result: &Value) -> Option<String> {
     if matches!(tool, "workspace_write" | "file_write") {
         return arguments["content"].as_str().map(|content| {
             format!("sha256:{}", hash_text(content))
         });
+    }
+    // Never trust a digest provided by the model. The tool returns
+    // postSha256 after actually updating the file, and seal independently
+    // reads those bytes back before crediting the source mutation.
+    if matches!(tool, "workspace_replace" | "workspace_replace_range")
+        && result["written"] == true {
+        return result["postSha256"].as_str().filter(|sha|
+            sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
+            .map(|sha|format!("sha256:{sha}"));
     }
     None
 }
@@ -353,8 +362,8 @@ pub async fn seal(
         "observed"
     };
 
-    if ok && matches!(tool, "workspace_write" | "file_write") {
-        if let Some(expected) = expected_version(tool, arguments) {
+    if ok && matches!(tool, "workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write") {
+        if let Some(expected) = expected_version(tool, arguments, result) {
             match read_back(workspace, tool, arguments).await {
                 Some((actual, len)) => {
                     cost_bytes = len;
@@ -525,6 +534,42 @@ mod tests {
             &[],
         );
         assert_ne!(first["effectId"], other_path["effectId"]);
+    }
+
+
+    #[tokio::test]
+    async fn edited_source_readback_verifies_both_native_replacement_tools() {
+        let dir=std::env::temp_dir().join(format!(
+            "dominion-effect-actual-edit-{}",uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(dir.join("src")).await.unwrap();
+        let path=dir.join("src/algorithms.rs");
+        tokio::fs::write(&path,"pub fn improved()->bool {true}\n").await.unwrap();
+        let digest=format!("{:x}",Sha256::digest(tokio::fs::read(&path).await.unwrap()));
+        for tool in ["workspace_replace","workspace_replace_range"] {
+            let args=json!({"path":"src/algorithms.rs",
+                "oldText":"false","newText":"true",
+                "startLine":1,"endLine":1,"expectedSha256":"a".repeat(64)});
+            let effect=prepare("rsi",tool,&args,&[]);
+            assert_eq!(effect["resourceKey"],"workspace:src/algorithms.rs");
+            let verified=seal(&dir,tool,&args,
+                &json!({"written":true,"postSha256":digest}),
+                true,false,false,&effect).await;
+            assert_eq!(verified["toolReceipt"]["verified"],true,"{verified}");
+            assert_eq!(verified["toolReceipt"]["verifier"]["kind"],"sha256_readback");
+            let forged=seal(&dir,tool,&args,
+                &json!({"written":true,"postSha256":"f".repeat(64)}),
+                true,false,false,&effect).await;
+            assert_eq!(forged["toolReceipt"]["verified"],false);
+            let no_op=seal(&dir,tool,&args,
+                &json!({"written":false,"unchanged":true}),
+                true,false,false,&effect).await;
+            assert_eq!(no_op["toolReceipt"]["verified"],false);
+        }
+        assert_eq!(resource_key("workspace_read_range",
+            &json!({"path":"src/algorithms.rs"})),
+            resource_key("workspace_replace_range",
+            &json!({"path":"src/algorithms.rs"})));
+        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
     #[test]
