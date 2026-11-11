@@ -525,6 +525,23 @@ async fn fallback_candidates(
         .collect()
 }
 
+/// Do not confuse a long-running model/tool generation with an unresponsive
+/// interactive room participant. This avoids poisoning subsequent RSI rounds.
+fn should_mark_slow_provider(elapsed: std::time::Duration, is_room: bool) -> bool {
+    is_room && elapsed >= std::time::Duration::from_secs(60)
+}
+
+/// Once a real RSI source read has been observed, runtime narrows the
+/// available native tool schema to edit tools. Preserve that decision over
+/// the OpenAI-compatible wire protocol rather than accepting a prose-only
+/// answer from small local models.
+fn rsi_edit_only_tool_menu(session: &Value, tools: &[Value]) -> bool {
+    session["rsiRun"] == true && !tools.is_empty() && tools.iter().all(|tool| {
+        matches!(tool["function"]["name"].as_str(),
+            Some("workspace_replace" | "workspace_write"))
+    })
+}
+
 /// Returns the completed response and the route which actually generated it.
 /// A private relay preserves streaming to the user while detecting whether any
 /// output was emitted before a provider failed.
@@ -606,9 +623,14 @@ pub(super) async fn stream_completion(
             }
             (result, exposed)
         };
-        // A two-minute answer is not a usable room participant. Remember it
-        // so the next round does not pay the same price again.
-        if candidate_started.elapsed() >= std::time::Duration::from_secs(60) {
+        // Interactive room rotations may skip a participant that took too
+        // long. Normal chat and especially RSI/code-edit runs must be able
+        // to use a slow-but-working local model on the next tool round.
+        // Otherwise one successful 60s prefill blacklists the model for 15m
+        // and aborts the very run that just used it successfully.
+        let is_room = state.store.get("session", session_id)
+            .is_some_and(|session| session["roomId"].is_string());
+        if should_mark_slow_provider(candidate_started.elapsed(), is_room) {
             crate::engine::gateway::mark_slow(&candidate.base_url, &candidate.model);
         }
         match result {
@@ -795,6 +817,10 @@ async fn stream_completion_once_body(
     });
     if !compatible && !tools.is_empty() {
         body["tools"] = json!(tools);
+        if state.store.get("session", session_id)
+            .is_some_and(|session| rsi_edit_only_tool_menu(&session, tools)) {
+            body["tool_choice"] = json!("required");
+        }
     }
     if let Some(limit) = provider.max_output_tokens {
         body["max_tokens"] = json!(limit);
@@ -2188,6 +2214,20 @@ mod tests {
         }
         assert_eq!(text, "파일을 생성했습니다.");
         assert!(!text.contains("tool_call"));
+    }
+
+    #[test]
+    fn slow_room_quarantine_never_aborts_long_running_rsi_or_normal_tools() {
+        let slow = std::time::Duration::from_secs(180);
+        assert!(!should_mark_slow_provider(slow, false));
+        assert!(should_mark_slow_provider(slow, true));
+        assert!(!should_mark_slow_provider(std::time::Duration::from_secs(59), true));
+        let edits = vec![json!({"type":"function","function":{"name":"workspace_replace"}})];
+        let search = vec![json!({"type":"function","function":{"name":"code_search"}})];
+        assert!(rsi_edit_only_tool_menu(&json!({"rsiRun":true}), &edits));
+        assert!(!rsi_edit_only_tool_menu(&json!({"rsiRun":false}), &edits));
+        assert!(!rsi_edit_only_tool_menu(&json!({"rsiRun":true}), &search));
+        assert!(!rsi_edit_only_tool_menu(&json!({"rsiRun":true}), &[]));
     }
 
     #[tokio::test]
