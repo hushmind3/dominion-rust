@@ -1179,6 +1179,16 @@ async fn run_turn_body(
                     messages.push(json!({"role":"system",
                         "content":"실제 소스 읽기 결과가 있습니다. 탐색 대신 workspace_replace(startLine,endLine,newText,expectedSha256)를 사용하세요. expectedSha256에는 workspace_read_range의 sourceSha256를 그대로 넣고 번호 없는 새 코드만 newText로 전달하세요. 최대 120줄입니다. 원문 해시가 없으면 해당 범위만 읽으세요. 수정 전 완료를 주장하지 마세요."
                     }));
+                    // An action-policy trial only earns execution credit when
+                    // the source-edit checkpoint really changed the runtime
+                    // tool menu. A suggested policy in a prompt is not proof.
+                    if session["rsiPolicyFocus"]==true {
+                        if let Some(mut live_session)=state.store.get("session",session_id) {
+                            live_session["rsiPolicyCheckpointReached"]=json!(true);
+                            live_session["rsiPolicyCheckpointExecutionId"]=json!(execution_id);
+                            state.store.put("session",&live_session);
+                        }
+                    }
                     rsi_edit_only_announced = true;
                 } else if !rsi_decision_checkpoint {
                     messages.push(json!({"role":"system",
@@ -1189,7 +1199,9 @@ async fn run_turn_body(
                     state.store.audit("rsi.action_checkpoint", json!({
                         "sessionId":session_id, "executionId":execution_id,
                         "toolCalls":tool_calls, "readCalls":read_calls,
-                        "editOnly":edit_only
+                        "editOnly":edit_only,
+                        "policyFocused":session["rsiPolicyFocus"]==true,
+                        "actionPolicyRevision":session["rsiActionPolicyRevision"]
                     }));
                 }
                 rsi_decision_checkpoint = true;
