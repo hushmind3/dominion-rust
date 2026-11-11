@@ -125,6 +125,7 @@ if(mode==='probe'){
       editPolicy:g.editPolicy,programStages:g.programStages,
       compilerRepairReceipts:g.compilerRepairReceipts,
       scopeExpanded:g.scopeExpanded,residualEvidence:g.residualEvidence,
+      costOpportunities:g.costOpportunities,
       ruleExecutions:g.ruleExecutions,toolTimeline:g.toolTimeline,
       acceptedSourceHashes:g.acceptedSourceHashes,
       competitionEvidence:g.editPolicy?.competitionEvidence,
