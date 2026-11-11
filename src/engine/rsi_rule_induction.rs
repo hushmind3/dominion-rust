@@ -301,6 +301,51 @@ mod tests {
             "toolTimeline":operations})
     }
     #[test]
+    fn learned_contrast_is_wired_into_the_champion_runtime_trial() {
+        let mut rows = [
+            child("accepted-1", true, 0, "workspace_replace_range"),
+            child("rejected-1", false, 3, "workspace_replace_range"),
+            child("accepted-2", true, 0, "workspace_replace_range"),
+            child("rejected-2", false, 4, "workspace_replace_range"),
+        ];
+        for row in &mut rows { row["domain"] = json!("tools"); }
+        let evolved = crate::engine::rsi_judgement::evolve(&rows, "o", "tools");
+        assert_eq!(evolved["operator"],
+            "contrastive_counterexample_guard_synthesis");
+        assert_eq!(evolved["status"], "requires_independent_real_execution");
+        assert_eq!(evolved["qualityProven"], false);
+        assert!(evolved["rules"].as_array().is_some_and(|rules| !rules.is_empty()));
+        let rule = crate::engine::rsi_judgement::choose(
+            &evolved,
+            &rows[0]["toolTimeline"].as_array().unwrap()[..1],
+            1, true, false
+        );
+        assert_eq!(rule.unwrap()["allow"], json!(["workspace_replace_range"]));
+        let failed = crate::engine::rsi_judgement::choose(
+            &evolved,
+            &rows[1]["toolTimeline"].as_array().unwrap()[..4],
+            4, true, false
+        );
+        assert!(failed.is_none());
+    }
+
+    #[test]
+    fn unverified_deployment_or_mismatched_evaluation_cannot_seed_induction() {
+        let mut rows = [
+            child("accepted-1", true, 0, "workspace_replace_range"),
+            child("rejected-1", false, 3, "workspace_replace_range"),
+            child("accepted-2", true, 0, "workspace_replace_range"),
+            child("rejected-2", false, 4, "workspace_replace_range"),
+        ];
+        rows[0]["acceptedProof"]["evaluation"]["source"] = json!("model_claim");
+        assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
+        rows[0]["acceptedProof"]["evaluation"]["source"] =
+            json!("server_invoked_local_paired_git_worktrees");
+        rows[3]["evaluation"]["source"] = json!("client_supplied");
+        assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
+    }
+
+    #[test]
     fn discovers_new_threshold_that_separates_two_adoptions_from_failures(){
         let rows=[
             child("good-1",true,0,"workspace_replace_range"),
