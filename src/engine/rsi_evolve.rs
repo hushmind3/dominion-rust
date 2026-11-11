@@ -3193,7 +3193,8 @@ fn select_generation_strategy(
                     && row["domain"]==domain
                     && row["domainSelection"]=="algorithm_active"
                     && row["candidateId"].is_null() && row["accepted"]==false
-                    && row["searchStrategy"]["pendingCandidateId"]==algorithm["id"])
+                    && (row["searchStrategy"]["controlForCandidateId"]==algorithm["id"]
+                        || row["searchStrategy"]["pendingCandidateId"]==algorithm["id"]))
                 .filter_map(|row|row["jobId"].as_str().filter(|id|!id.is_empty()))
                 .collect::<BTreeSet<_>>().len();
             if barren_controls>=2 && algorithm["rsiTrial"]["trials"].as_array()
@@ -5838,12 +5839,19 @@ mod tests {
             &crate::engine::algorithms::active(&state,"selfimprove.search").unwrap(),
             &[],"","campaign-explore",1);
         assert_eq!(queued["status"],"pending_trial");
+        let (_first_domain,first_mode,first_policy)=select_generation_strategy(
+            &state,&[],"기억",None,Some(id.clone()),None,"commit-1");
+        assert_eq!(first_mode,"algorithm_active");
+        assert_eq!(first_policy["controlForCandidateId"],id,
+            "the generated control must carry the same candidate identifier as the retry learner");
         let first=json!({"jobId":"control-one","domain":"memory",
             "generatorCommit":"commit-1","domainSelection":"algorithm_active",
-            "candidateId":null,"accepted":false,"evaluation":null});
+            "candidateId":null,"accepted":false,"evaluation":null,
+            "searchStrategy":{"controlForCandidateId":id.clone()}});
         let second=json!({"jobId":"control-two","domain":"memory",
             "generatorCommit":"commit-1","domainSelection":"algorithm_active",
-            "candidateId":null,"accepted":false,"evaluation":null});
+            "candidateId":null,"accepted":false,"evaluation":null,
+            "searchStrategy":{"controlForCandidateId":id.clone()}});
         // Force an explicit domain constraint; the policy has no evaluated
         // active control after two attempts and must get to execute itself.
         let objective="기억";

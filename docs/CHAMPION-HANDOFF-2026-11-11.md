@@ -42,3 +42,12 @@
 ## Avoid repeating
 - No broad cargo/git operations in this chat container: source edits used connected GitHub tools, validation used GitHub Actions. Do not pretend a runtime or actual paid model ran here.
 - A successful compile, accepted patch, or source archive alone is NOT recursive intelligence improvement. Require a real measured effect and persisted transferable method.
+
+
+## Continuation after the first handoff
+- `4f127403fbc64bed81af080768d1dbcc83d0f3d9`: integrated selected Sub3 autonomous search-hypothesis synthesis. It replays original `rsi_pair` receipts and recalculates held-out metrics before credit; after four diverse generations with measured gain it registers an executable formula and queues it in the existing trial path, never activating automatically.
+- `b2adb9fc2b80a7e8331ce1fa98daf59ea9b0091b`: corrected the Sub2 test policy to target the same domain actually used by active controls.
+- `2396384d7625adb9cb59ed84d70373de942a6167`: fixed an accidental duplicate Rust visibility modifier in the receipt helper.
+- This continuation fixes a runtime integration gap: Champion's emitted strategy uses `controlForCandidateId` while Sub2's prototype examined `pendingCandidateId`. The learner now accepts both and tests actual generated control metadata.
+- Latest CI needs inspection. Earlier integration `f730c419` completed **16 benchmark / 634 unit / 3 extra / 99 E2E** all green; do not convert pending tests into success claims.
+- Sub1's corrective failure-to-executable multi-campaign path remains the next significant missing integration, followed by a real 3+ generation model-backed cross-domain paired holdout campaign.
