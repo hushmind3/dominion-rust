@@ -353,6 +353,14 @@ pub async fn finish(
     let mut unsafe_audit=Value::Null;
     if patch.trim().is_empty(){
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
+    } else if input["rsiFailedPatchRecovery"]["candidateId"].is_string()
+        && context.state.store.get("rsi_candidate",
+            input["rsiFailedPatchRecovery"]["candidateId"].as_str().unwrap_or(""))
+            .is_some_and(|prior|prior["patchSha256"]==patch_sha) {
+        // Git diff is unchanged from the source patch restored before the
+        // child started. The inherited failure cannot be relabeled as a new
+        // implementation or another candidate, even if a model answered.
+        capture_error="후손이 계승된 실패 패치를 실제로 수정하지 않았습니다.".into();
     } else if patch_size>=MAX_CAPTURE_BYTES {
         capture_error="코드 변경량이 79KB를 초과해 증거를 안전하게 수집하지 않았습니다.".into();
     } else {
