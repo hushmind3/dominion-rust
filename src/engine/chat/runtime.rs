@@ -154,6 +154,17 @@ fn rsi_judgement_menu(current:&[Value],chosen:&[&str])->Vec<Value>{
 /// recognized channel token. No fuzzy tool lookup or invented authority.
 fn rsi_canonical_tool_name(name:&str,round_tools:&[Value])->Option<String>{
     if rsi_tool_advertised(name,round_tools){return None;}
+    // An observed open-compatible model emits e.g.
+    // "tool_calls.workspace_replace" and "tool:workspace_replace".
+    // Strip only these exact wire-protocol namespaces, never fuzzy-match an
+    // arbitrary tool or resurrect a tool removed from this round's menu.
+    if let Some(base)=name.strip_prefix("tool_calls.")
+        .or_else(||name.strip_prefix("tool:")) {
+        if crate::engine::tools::rsi_allowed(base)
+            && rsi_tool_advertised(base,round_tools) {
+            return Some(base.to_string());
+        }
+    }
     let (base,trailing)=name.split_once("<|channel|>")?;
     if !matches!(trailing,"commentary"|"analysis"|"json"|"final")
         || !crate::engine::tools::rsi_allowed(base)
