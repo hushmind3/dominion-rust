@@ -1188,6 +1188,18 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
             json!({"verdict":latest["verdict"],"control":latest["control"],
                 "learned":latest["learned"],"nextPolicyRevision":latest["nextPolicyRevision"]})));
     }
+    if let Some(policy)=current_induced_method_policy(state,input) {
+        let programs=policy["executionPrograms"].as_array().into_iter().flatten()
+            .filter(|p|p["status"]=="candidate_requires_descendant_execution")
+            .take(3).map(|p|json!({"id":p["id"],"domain":p["domain"],
+                "steps":p["steps"],"origin":p["origin"],"score":p["score"]}))
+            .collect::<Vec<_>>();
+        if !programs.is_empty() {
+            text.push_str("\n### DOMINION이 합성한 실행 프로그램 (후손 적용 후보)\n");
+            text.push_str(&format!("{}.\n현재 도구 순서를 실제 관측된 단계에 맞춰 변경합니다. 프로그램을 제안했다는 사실만으로 개선을 인정하지 않으며, 소스 편집·독립 평가 결과까지 확인합니다.\n",
+                json!(programs)));
+        }
+    }
     if let Some(block) = prior_experience.filter(|block| !block.trim().is_empty()) {
         text.push_str("\n### 기존 RSI 경험·지식\n");
         text.push_str(&block);
@@ -2045,10 +2057,11 @@ fn synthesize_method_execution_programs(evidence:&[Value])->Vec<Value> {
             if sources.len()<2 {continue;}
             let steps=json!(["code_search","workspace_read_range",terminal]);
             let seen_whole=evidence.iter().any(|sample|{
-                sample["domain"].as_str()==Some(domain)
+                sample["domain"].as_str()==Some(*domain)
                     && method_sample_outcome(sample)==Some(true)
                     && sample["sequence"].as_array().is_some_and(|seq|
-                        seq.windows(3).any(|part|part==steps.as_array().unwrap()))
+                        seq.windows(3).any(|part|
+                            part.iter().eq(steps.as_array().unwrap().iter())))
             });
             let id=format!("rsi-execution-program-{}",
                 crate::engine::memory::stable_id(&[domain,
@@ -2094,6 +2107,7 @@ fn induced_method_application_receipts(state:&AppState,session_id:&str)->Vec<Val
                     json!({"executionId":execution_id,
                         "policyId":choice["policyId"],"revision":choice["revision"],
                         "preferredTool":selected,"domain":choice["domain"],
+                        "executionProgramId":choice["executionProgramId"],
                         "afterOpSeq":after,"modelRound":choice["modelRound"],
                         "performed":performed,"verifiedSourceWrite":checked_write,
                         "effectOperationIds":relevant.iter().map(|op|op["id"].clone()).collect::<Vec<_>>(),
