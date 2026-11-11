@@ -529,7 +529,7 @@ pub fn repair_target(result:&Value)->Option<(String,u64)> {
             let mut plain=String::new();
             let mut chars=text.chars().peekable();
             while let Some(ch)=chars.next() {
-                if ch=='\\u{1b}' && chars.peek()==Some(&'[') {
+                if ch=='\u{1b}' && chars.peek()==Some(&'[') {
                     chars.next();
                     for code in chars.by_ref() {
                         if ('@'..='~').contains(&code) {break;}
