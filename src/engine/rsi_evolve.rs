@@ -3031,6 +3031,22 @@ async fn run_loop(
         record["capabilityDemonstrated"] = json!(max_streak >= 3
             && crate::engine::rsi::campaign_capability_proven(
                 &context.state,&evidence_record));
+        // Persist the real outcome of the newly executed recovery policy.
+        // A ranking score or a source write is not a validated improvement;
+        // this is the observed action utility that the next built generator
+        // may learn from. Keep the exact policy revision and actual outcome.
+        generation["actionPolicyOutcome"]=json!({
+            "revision":generation["actionDirective"]["policy"]["revision"],
+            "mode":generation["actionDirective"]["mode"],
+            "trainingEvidence":generation["actionDirective"]["policy"]["trainingGenerationIds"],
+            "policyStatus":generation["actionDirective"]["policy"]["status"],
+            "observedUtility":observed_action_value(&generation),
+            "actualSourceDiffBytes":generation["actionObservation"]["sourceDiffBytes"],
+            "actualCandidateId":generation["candidateId"],
+            "accepted":generation["accepted"],
+            "metric":"observed_action_utility_not_independent_quality_gain",
+            "qualityGain":Value::Null
+        });
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
@@ -3079,6 +3095,7 @@ async fn run_loop(
             "knowledgeId": generation_knowledge,
             "headCommit": record["headCommit"],
             "trialAlgorithmId": record["nextTrialAlgorithmId"],
+            "actionPolicy":decision_history.last().map(|g|g["actionPolicyOutcome"].clone()),
             "observed": {
                 "accepted": generation_accepted,
                 "tokens": generation_tokens,
