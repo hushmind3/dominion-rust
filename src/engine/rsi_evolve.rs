@@ -1134,14 +1134,38 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
                 let candidate=generation["candidateId"].as_str()
                     .or_else(||generation["attemptedCandidateId"].as_str())
                     .and_then(|id|state.store.get("rsi_candidate",id));
+                // Give the next generation real quality feedback without
+                // revealing frozen input/output oracle examples. A valid patch
+                // with zero measurable gain must not be repeated blindly.
+                let measurements=generation["evaluation"]["metrics"]["measurements"]
+                    .as_array().map(|rows|rows.iter()
+                        .filter(|row|row["holdout"]==true)
+                        .filter_map(|row|{
+                            let quality=row["metrics"].as_array()?.iter()
+                                .find(|metric|metric["key"]=="quality")?;
+                            Some(json!({"domain":row["domain"],
+                                "baseline":quality["baseline"],
+                                "candidate":quality["candidate"]}))
+                        }).take(8).collect::<Vec<_>>()).unwrap_or_default();
                 let evidence=json!({"accepted":generation["accepted"],"commit":generation["acceptedCommit"],
                     "candidateId":candidate.as_ref().map(|c|&c["id"]),
                     "hypothesis":candidate.as_ref().map(|c|&c["hypothesis"]),
                     "paths":candidate.as_ref().map(|c|&c["paths"]),
                     "validation":generation["candidateCapture"]["checksPassed"],
-                    "verdict":generation["evaluation"]["verdict"],"error":generation["error"]});
+                    "verdict":generation["evaluation"]["verdict"],
+                    "pairedCases":generation["evaluation"]["metrics"]["pairedCases"],
+                    "improvedHoldouts":generation["evaluation"]["metrics"]["improvedHoldouts"],
+                    "regressions":generation["evaluation"]["metrics"]["regressions"],
+                    "holdoutQuality":measurements,"error":generation["error"]});
                 text.push_str(&format!("- {}세대: {}\n",generation["attempt"],
-                    evidence.to_string().chars().take(1800).collect::<String>()));
+                    evidence.to_string().chars().take(2500).collect::<String>()));
+                if generation["accepted"]!=true
+                    && generation["candidateCapture"]["checksPassed"]==true
+                    && generation["evaluation"]["metrics"]["pairedCases"].as_u64().unwrap_or(0)
+                        >= crate::engine::rsi::MIN_PAIRED_CASES as u64
+                    && generation["evaluation"]["metrics"]["improvedHoldouts"].as_u64()==Some(0) {
+                    text.push_str("  실제 패치는 컴파일됐지만 독립 holdout 품질 향상은 0입니다. 이전 패치를 단순 반복하지 말고 목표 동작의 누락 조건과 원인을 다시 분석한 뒤 새로운 소스 수정을 실행하세요. 품질 측정 없이는 개선으로 보고하지 마세요.\n");
+                }
                 // The failed candidate's detached worktree is already removed.
                 // Rehydrate a bounded *real* patch excerpt, not a guessed edit.
                 if generation["accepted"]!=true {
