@@ -6224,6 +6224,138 @@ mod tests {
     }
 
     #[test]
+    fn stale_oldtext_edit_rebases_hash_and_preserves_exact_patch() {
+        let method=json!({"id":"old","revision":"old-sha","name":"text patch",
+            "domain":"memory","assistanceMode":"harness_assisted",
+            "verification":{"type":"procedure","appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"edit","tool":"workspace_replace","arguments":{
+                    "path":"src/engine/memory.rs","oldText":"let before = 1;",
+                    "newText":"let after = 2;","expectedSha256":"stale"}}],
+                "after":[{"kind":"tool_called","tool":"workspace_replace",
+                    "path":"src/engine/memory.rs"}]}});
+        let op=json!({"id":"failed-oldtext","origin":"procedure",
+            "status":"failed","tool":"workspace_replace",
+            "procedureStrategyId":"old","procedureRevision":"old-sha",
+            "procedureNodeId":"edit","arguments":{"path":"src/engine/memory.rs",
+                "oldText":"let before = 1;"},"result":{"staleVersion":true}});
+        let learned=synthesize_stale_edit_repair(&method,&op).unwrap();
+        let mut results=std::collections::HashMap::new();
+        let (read,tool,args)=crate::engine::procedure::ready_intent(
+            &learned,&[],"memory",&results).unwrap();
+        assert_eq!(tool,"workspace_read_range");
+        assert_eq!(args["startLine"],1);
+        results.insert(read.clone(),json!({"sourceSha256":"fresh-hash"}));
+        let done=json!({"origin":"procedure","status":"completed",
+            "procedureStrategyId":learned["id"],"procedureRevision":learned["revision"],
+            "procedureNodeId":read,"result":{"sourceSha256":"fresh-hash"}});
+        let (_,tool,args)=crate::engine::procedure::ready_intent(
+            &learned,&[done],"memory",&results).unwrap();
+        assert_eq!(tool,"workspace_replace");
+        assert_eq!(args["oldText"],"let before = 1;");
+        assert_eq!(args["newText"],"let after = 2;");
+        assert_eq!(args["expectedSha256"],"fresh-hash");
+        assert!(synthesize_stale_edit_repair(&learned,&op).is_none());
+    }
+
+    #[test]
+    fn existing_file_write_failure_compiles_a_versioned_executable_dag() {
+        let method=json!({"id":"write","revision":"write-v1","name":"patch source",
+            "domain":"memory","assistanceMode":"harness_assisted",
+            "verification":{"type":"procedure","appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"change","tool":"workspace_write","arguments":{
+                    "path":"src/engine/memory.rs","content":"fn improved() {}\n"}}],
+                "after":[{"kind":"tool_called","tool":"workspace_write",
+                    "path":"src/engine/memory.rs"},
+                    {"kind":"file_contains","path":"src/engine/memory.rs",
+                    "text":"fn improved()"}]}});
+        let failed=json!({"id":"failed-write","origin":"procedure",
+            "status":"failed","tool":"workspace_write",
+            "procedureStrategyId":"write","procedureRevision":"write-v1",
+            "procedureNodeId":"change",
+            "arguments":{"path":"src/engine/memory.rs","content":"fn improved() {}\n"},
+            "result":{"error":"RSI의 workspace_write는 새 파일 생성 전용입니다."}});
+        let learned=synthesize_existing_file_write_repair(&method,&failed).unwrap();
+        assert_eq!(learned["synthesis"]["kind"],"existing_file_to_versioned_edit");
+        assert_ne!(learned["revision"],method["revision"]);
+        assert_eq!(learned["verification"]["after"][0]["tool"],"workspace_replace");
+        assert_eq!(learned["verification"]["after"][1]["text"],"fn improved()");
+        assert!(is_synthesized_source_repair(&learned));
+        let mut results=std::collections::HashMap::new();
+        let (read,tool,args)=crate::engine::procedure::ready_intent(
+            &learned,&[],"memory",&results).unwrap();
+        assert_eq!(tool,"workspace_read_range");
+        assert_eq!(args["endLine"],120);
+        results.insert(read.clone(),json!({"sourceSha256":"observed-hash",
+            "totalLines":3}));
+        let read_op=json!({"origin":"procedure","status":"completed",
+            "procedureStrategyId":learned["id"],"procedureRevision":learned["revision"],
+            "procedureNodeId":read,"result":{"sourceSha256":"observed-hash",
+            "totalLines":3}});
+        let (node,tool,args)=crate::engine::procedure::ready_intent(
+            &learned,&[read_op],"memory",&results).unwrap();
+        assert_eq!(node,"change");
+        assert_eq!(tool,"workspace_replace");
+        assert_eq!(args["startLine"],1);
+        assert_eq!(args["endLine"],3);
+        assert_eq!(args["expectedSha256"],"observed-hash");
+        assert_eq!(args["newText"],"fn improved() {}\n");
+        let mut ungrounded=failed.clone();
+        ungrounded["result"]["error"]=json!("permission denied");
+        assert!(synthesize_existing_file_write_repair(&method,&ungrounded).is_none());
+        ungrounded=failed.clone();
+        ungrounded["arguments"]["path"]=json!("src/engine/other.rs");
+        assert!(synthesize_existing_file_write_repair(&method,&ungrounded).is_none());
+        assert!(synthesize_existing_file_write_repair(&learned,&failed).is_none());
+    }
+
+    #[test]
+    fn failed_existing_write_is_learned_for_next_generation_not_credited() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
+            "rsiObjective":"memory improvement"});
+        let partition=research_scope(&input).partition_key;
+        let original=json!({"id":"create-only","revision":"write-v1","name":"create source",
+            "domain":"memory","status":"executable","assistanceMode":"harness_assisted",
+            "verification":{"type":"procedure","appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"write","tool":"workspace_write","arguments":{
+                    "path":"src/engine/memory.rs","content":"fn improved() {}\n"}}],
+                "after":[{"kind":"tool_called","tool":"workspace_write",
+                    "path":"src/engine/memory.rs"}]}});
+        state.store.put("experience",&json!({"id":"old-method",
+            "status":"active","partitionKey":partition,
+            "executableMethods":[original]})).unwrap();
+        state.store.put("execution_operation",&json!({"id":"blocked-write",
+            "sessionId":"write-session","origin":"procedure","status":"failed",
+            "procedureStrategyId":"create-only","procedureRevision":"write-v1",
+            "procedureNodeId":"write","tool":"workspace_write",
+            "arguments":{"path":"src/engine/memory.rs","content":"fn improved() {}\n"},
+            "result":{"error":"RSI의 workspace_write는 새 파일 생성 전용입니다."}})).unwrap();
+        state.store.put("session",&json!({"id":"write-session",
+            "rsiMethodExecutions":[{"experienceId":"old-method",
+                "methodId":"create-only","revision":"write-v1",
+                "executionId":"run-one","operationIds":["blocked-write"],
+                "result":{"verified":true,"status":"violated",
+                "violations":["failed"]}}]})).unwrap();
+        let generation=json!({"jobId":"gen-one","domain":"memory",
+            "accepted":false,"newFindings":0,"tokens":50,"elapsedMs":1});
+        record_method_feedback(&state,&generation,"write-session");
+        assert_eq!(state.store.get("experience","old-method").unwrap()
+            ["executableMethods"][0]["status"],"suspended");
+        let proposal=state.store.get("session","write-session").unwrap()
+            ["rsiMethodProposals"][0].clone();
+        assert_eq!(proposal["status"],"candidate");
+        assert_eq!(proposal["successfulApplications"],0);
+        let saved=remember_research(&state,&input,&generation,"write-session").unwrap();
+        assert_eq!(state.store.get("experience",&saved).unwrap()
+            ["executableMethods"][0]["id"],proposal["id"]);
+        let decision=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(decision["action"],"execute_methods");
+        assert_eq!(decision["repairMethodId"],proposal["id"]);
+        assert_eq!(decision["repairTarget"],"src/engine/memory.rs");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn failed_method_evolves_into_a_separate_inherited_candidate() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
