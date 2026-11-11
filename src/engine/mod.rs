@@ -40,6 +40,7 @@ pub mod rsi_rule_induction;
 pub mod rsi_scan;
 pub mod rsi_worktree;
 pub mod rsi_compiler_repair;
+pub mod rsi_mutation;
 pub mod recovery;
 pub mod reasoning;
 pub mod remote_backup;
