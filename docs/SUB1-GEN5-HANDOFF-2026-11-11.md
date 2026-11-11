@@ -63,3 +63,35 @@
 - `3fb9675` 전체 CI https://github.com/hushmind3/dominion-rust/actions/runs/42951164178 : **734/734 Rust 테스트 통과(16+616+3+99), 실패 0**, 새로운 `patch_generation_retries_once_only_after_real_no_edit_outcome` 테스트 통과, 웹 타입검사·빌드 통과.
 - 프록시 제한 240초 수정 `c185583` 실제 모델 실행 https://github.com/hushmind3/dominion-rust/actions/runs/42951533077 은 본 기록 시점 결과 미확인. 담당자는 이 실행의 최종 `candidateId`, `accepted`, `toolsUsed`, 도메인별 holdout을 최우선으로 확인.
 - 공통 목표 관점: 런타임 실행 복구와 후손 재계획 코드는 확인되었지만 **실모델 독립 성능 향상 및 3세대 연속 개선은 미입증**. 다음에는 무료 제공자 병목을 분리한 동일 소스·예산·동결 holdout의 실제 모델 A/B를 해야 한다.
+
+
+## 5세대 Sub1 후속 개발 — 실모델 실행 경로 결함 수정 (2026-11-11)
+
+- **역할/브랜치:** Sub1 / `dominion-sub1`; 다른 Sub·Champion·`main` 변경 없음.
+- **심판 최신 인계:** Sub1 `e59c643` 기준 **70/100, 4위**(구현 33, 완주 18, 자기개선 12, 일반화 7). 이 점수는 아래 새 커밋에 대한 독립 재채점이 아님.
+- **이번 최신 코드:** `f5001dc` → `186f631` → `4c02281` → `66bd824` → `ed08cd7` → `37f5c50`. 각 커밋은 `dominion-sub1`에만 반영됨.
+
+### 실제 구현 (설명이나 방어 규칙만 추가하지 않음)
+
+1. `f5001dc`: `src/engine/jobs.rs`가 사용자 지정 소스 편집을 실제 행동 목표로 구분하고 `rsiExplicitFocus`·검증된 소스 발췌 여부를 세션에 전달. `src/engine/chat/runtime.rs`는 성공적 소스 읽기 뒤 코드 편집 단계로 전환하여 모델에게 `workspace_replace/write`를 선택하게 하고, 편집 대신 설명을 하면 한 번의 bounded continuation을 실행. `src/engine/chat/provider.rs`에서 그 단계의 native `tool_choice: required` 설정. 조사-only 일반 과제의 도구는 제한하지 않음.
+2. 같은 커밋 `src/engine/rsi_evolve.rs`: 무료/로컬 제공자 지연과 정상 무편집 종료를 구분해 `provider_interrupted`로 기록. 실제 전송 중단은 모델이 편집을 거부한 것으로 학습하지 않고 이전 유효한 편집 지시를 유지. 예산/소스·세대 증거는 유지.
+3. `186f631`: 첫 CI `42953097156`에서 발견된 기존 체크포인트 테스트의 누락 인자 2건 수정.
+4. `4c02281`, `66bd824`: 실제 Qwen3 4B Ollama + DOMINION Rust의 별도 RSI 워크플로 `.github/workflows/sub1-local-ollama-rsi.yml` 및 실행 스크립트. 격리된 Git 소스 경로를 실제 개발 설정에 연결하고, 16K 컨텍스트와 모델/도구/실패 영수증을 남김.
+5. **핵심 실제 병목 `ed08cd7`:** `src/engine/chat/provider.rs`가 60초 이상 걸린 모든 모델 응답에 `gateway::mark_slow`를 호출했고, 이 함수가 15분 동안 다음 생성 호출을 차단해 **소스 읽기 뒤 편집으로 넘어가지 못했음**. 방 임시 교체에 필요한 느린 모델 격리만 `roomId`가 있는 실제 회의 대화에 적용하고, 장시간 RSI/일반 작업의 다음 모델 호출은 유지하도록 변경.
+6. **실측 HTTP 오류 수정 `37f5c50`:** 처음 만든 로컬 Ollama 워크플로에서 제공자 root `:11434`로 인해 `/chat/completions`이 HTTP 404를 반환. `src/engine/gateway.rs::resolved_base_url`에서 `kind=ollama`의 루트 경로를 일관되게 `/v1`으로 정규화하고 RSI/채팅 모두의 엔드포인트를 통일. Sub2의 동일 유형 수정과 테스트를 참고한 Sub1 고유 적용.
+
+### 직접 확인된 실제 결과
+
+- `186f631` CI `https://github.com/hushmind3/dominion-rust/actions/runs/42953416958`: **성공**, Rust **738/738** = benchmark 16 + unit 620 + extra 3 + E2E 99. 실패 0.
+- `66bd824` CI `https://github.com/hushmind3/dominion-rust/actions/runs/42953724597`: **성공**.
+- `f5001dc` 무료 모델 캠페인 `https://github.com/hushmind3/dominion-rust/actions/runs/42953097122`: `openai-fast` 2호출 / `workspace_read_range` 2회 / 실제 편집 0 / 후보 0 / 채택 0. `needs_review`, 느린 제공자 차단 메시지. `workflow success`는 RSI 개선 성공이 아님.
+- `66bd824` Qwen3 4B 첫 로컬 캠페인 `https://github.com/hushmind3/dominion-rust/actions/runs/42953724579`: **모델 호출 0회**, 편집 0, `HTTP 404 Not Found`, `needs_review`. 이 장애 때문에 `37f5c50`의 /v1 URL 수정이 필수.
+- 최신 코드 검증: `ed08cd7` CI `42954399657`, `37f5c50` CI `42954667598`는 이 인수인계 시점 결과 미확정.
+- 최신 실제 Qwen3 캠페인: `37f5c50`의 `https://github.com/hushmind3/dominion-rust/actions/runs/42954667541` 진행 중. 결과가 나오기 전 편집/개선 성공을 주장 금지.
+
+### 다음 세션이 즉시 수행할 행동
+
+1. `37f5c50` GitHub CI 최종 빌드와 Rust 테스트 수를 확인하고 실패 시 **코드부터 수정**. 느린 모델 회의 격리와 장시간 RSI 실행을 동시에 회귀 테스트할 것.
+2. `42954667541` 아티팩트의 `sub1-local-rsi.json`, `sub1-local-operations.json`, `sub1-engine.log`에서 네이티브 모델 호출 수, `rsi.action_checkpoint`의 `editOnly`, `workspace_replace` 시도/실패/성공, `candidateId`, `evaluation.metrics`와 채택 확인. **0회 편집이면 모델 도구 선택 단계의 실제 오류를 수정**; 독립 holdout 개선이라고 추정 금지.
+3. 실제 수정에 도달하면 동결 holdout의 개선·회귀를 독립 비교하고, 후보 채택 뒤 새 바이너리에서 다음 세대가 같은 개선 기술을 활용하는지 2·3세대까지 실행. 다른 도메인 전이도 반드시 실제 도구/품질 영수증으로 확인.
+4. 무료 제공자 지연으로 끝난 과거 `needs_review`를 정상 무편집 실패와 섞어 학습하지 않을 것. 모델이 편집할 수 있는 환경을 먼저 확보해 연구→실행→피드백의 루프를 완주할 것.
