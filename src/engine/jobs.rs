@@ -638,9 +638,10 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     if let Some(worktree)=&rsi_workspace {scoped_state.config.workspace=worktree.path.clone();}
     let mut message = run_quiet(&scoped_state, &request).await;
     let result = if let Some(worktree)=&rsi_workspace {
-        // At most 2 model repair calls after a grounded verifier failure.
-        // All attempts share the same detached worktree and model selection.
-        const MAX_REPAIRS:usize=2;
+        // Spend one focused compiler repair here, then hand the failed
+        // *real source diff* to a rebuilt descendant. Spending the entire
+        // campaign on repeated reads starved generation two in real Actions.
+        const MAX_REPAIRS:usize=1;
         let mut attempts=Vec::<Value>::new();
         let mut finished=crate::engine::rsi_worktree::finish(
             context,job,worktree,message,&session_id
