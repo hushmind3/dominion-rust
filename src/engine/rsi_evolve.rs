@@ -1021,6 +1021,7 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
 pub(crate) fn policy_requests_source_edit(input:&Value)->bool {
     if input["rsiAutoFocus"]!=true
         || input["rsiFocusContextChars"].as_u64().unwrap_or(0)==0
+        || input["rsiFocusGrounded"]!=true
         || !input["rsiIndexId"].is_string() {
         return false;
     }
@@ -1031,6 +1032,15 @@ pub(crate) fn policy_requests_source_edit(input:&Value)->bool {
     matches!(input["rsiActionDirective"]["mode"].as_str(),
         Some("repair_failed_edit"|"repair_failed_case"|"revise_candidate"|
              "complete_candidate"|"implement_research"|"change_approach"))
+}
+
+/// The focused edit checkpoint requires indexed source bytes, not merely
+/// a nonempty prompt header that says a target file exists.
+fn focus_excerpt_has_source(input:&Value,excerpt:&str)->bool {
+    let Some(hash)=input["rsiFocusSelection"]["executionSourceHash"].as_str()
+        else {return false};
+    hash.len()==64 && excerpt.contains(&format!("sourceSha256: {hash}"))
+        && excerpt.contains("~~~")
 }
 
 /// Convert an evolved policy's target into an actual tool/runtime constraint.
@@ -2758,6 +2768,7 @@ async fn run_loop(
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
+        child_input["rsiFocusGrounded"]=json!(focus_excerpt_has_source(&child_input,&focus));
         // Freeze independent inputs so the *new* binary can re-select a target
         // and rebuild an honest source context instead of reusing old excerpts.
         child_input["rsiPromptBase"]=child_input["prompt"].clone();
@@ -3748,6 +3759,7 @@ fn reconcile_descendant_target(
     let source=job["input"]["rsiSourceDir"].as_str()
         .ok_or("rsi_target_replan: 소스 경로 없음")?.to_string();
     let focus=focus_file_context(state,&json!({"labDir":source}),&job["input"]);
+    job["input"]["rsiFocusGrounded"]=json!(focus_excerpt_has_source(&job["input"],&focus));
     let composed=format!("{base}\n\n{evidence}{research}{focus}");
     let bound=job["input"]["model"].as_str().is_some_and(|s|!s.is_empty())
         && job["input"]["providerId"].as_str().is_some_and(|s|!s.is_empty());
