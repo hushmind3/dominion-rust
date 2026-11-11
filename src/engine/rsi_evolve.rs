@@ -1457,8 +1457,18 @@ fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective
 fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
     let methods = applicable_methods(state, &research_scope(input).partition_key, domain,
         input["rsiObjective"].as_str().unwrap_or(""));
+    // An observed-failure repair is an executable next-generation experiment.
+    // Preserve the exact target and provenance rather than only a method ID.
+    let repair=methods.iter().find(|m|m["synthesis"]["kind"]=="stale_source_rebase");
+    let repair_path=repair.and_then(|m|m["verification"]["nodes"].as_array())
+        .and_then(|nodes|nodes.iter().find(|n|n["tool"]=="workspace_replace"))
+        .and_then(|node|node["arguments"]["path"].as_str())
+        .filter(|path|crate::engine::rsi::safe_path(path));
     json!({"action":if methods.is_empty(){"research_only"}else{"execute_methods"},
-        "methodIds":methods.iter().map(|m|m["id"].clone()).collect::<Vec<_>>()})
+        "methodIds":methods.iter().map(|m|m["id"].clone()).collect::<Vec<_>>(),
+        "repairMethodId":repair.map(|m|m["id"].clone()),
+        "repairRevision":repair.map(|m|m["revision"].clone()),
+        "repairTarget":repair_path})
 }
 
 pub(crate) fn configure_method_session(state: &AppState, input: &Value, session: &mut Value) {
