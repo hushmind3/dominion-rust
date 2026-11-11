@@ -5345,6 +5345,39 @@ mod tests {
         JobContext::new(state.clone(), "campaign".into())
     }
     #[test]
+    fn observed_failures_breed_a_search_algorithm_consumed_by_next_real_generation() {
+        let (state,root)=state();
+        let objective="memory retrieval quality";
+        let history=(0..2).map(|i|json!({
+            "jobId":format!("generation-{i}"),"campaignId":"campaign",
+            "domain":"memory","candidateId":null,"accepted":false,
+            "generatorCommit":"a".repeat(40),"tokens":15000,
+            "sourceIntegrity":{"sourceClean":true,"diffBytes":0,"checksPassed":false},
+            "newFindings":0
+        })).collect::<Vec<_>>();
+        let active=json!({"id":"active","implementation":"failure-clusters","parameters":{}});
+        let report=queue_population_search_trial(
+            &state,&history,&active,objective,"campaign",2).unwrap();
+        assert_eq!(report["status"],"pending_trial");
+        assert_eq!(report["evidence"]["independentHoldoutGains"],0);
+        let id=report["candidateId"].as_str().unwrap();
+        let child=state.store.get("algorithm",id).unwrap();
+        assert_eq!(child["source"],"rsi-generated");
+        assert_eq!(child["rsiTrial"]["status"],"pending_trial");
+        assert_eq!(child["parameters"]["parentId"],Value::Null);
+        let (domain,selection,policy)=select_generation_strategy(
+            &state,&history,objective,None,Some(id.to_string()),None,
+            &"a".repeat(40));
+        assert_eq!(domain,"memory");
+        assert_eq!(selection,"algorithm_active",
+            "first generation must produce a real control, never fake trial gains");
+        assert_eq!(policy["controlForCandidateId"],id);
+        assert_ne!(child["status"],"active");
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn appended_research_context_must_fit_the_remaining_generation_budget() {
         let record=json!({"limits":{"tokenBudget":1000},"tokens":200});
         let input=json!({"prompt":"short objective"});
