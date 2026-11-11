@@ -811,10 +811,16 @@ async fn replace_line_span(
     let line=|key:&str| {
         args[key].as_u64().or_else(||args[key].as_str()?.parse::<u64>().ok())
     };
-    let start=line("startLine").filter(|n|*n>0)
+    let original_start=line("startLine").filter(|n|*n>0)
         .ok_or("workspace_replace에는 oldText 또는 startLine이 필요합니다.")?;
-    let end=line("endLine").filter(|n|*n>=start)
-        .ok_or("endLine은 startLine 이상이어야 합니다.")?;
+    let original_end=line("endLine").filter(|n|*n>0)
+        .ok_or("endLine은 1 이상의 실제 소스 줄 번호여야 합니다.")?;
+    // A model may reverse the two *absolute* endpoints. Reordering them
+    // preserves the same unambiguous set of source lines, unlike guessing
+    // that a short endLine is a relative length. The file CAS and 120-line
+    // limit below remain mandatory for this normalization.
+    let (start,end)=(original_start.min(original_end),original_start.max(original_end));
+    let reordered=original_start>original_end;
     if end-start>=120 {
         return Err("한 번에 최대 120줄까지만 바꿀 수 있습니다.".into());
     }
@@ -874,6 +880,7 @@ async fn replace_line_span(
         result["editMode"]=json!("versioned_line_span");
         result["postSha256"]=json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
         result["sourceHashRecoveredFromIndex"]=json!(indexed_sha.is_some());
+        result["reorderedLineEndpoints"]=json!(reordered);
     }
     Ok(result)
 }
@@ -1618,6 +1625,24 @@ mod tests {
         assert_eq!(grounded["sourceHashRecoveredFromIndex"],true);
         assert_eq!(std::fs::read_to_string(&path).unwrap(),
             "let new_value = 3;\nlet untouched = 9;\n");
+        // An actual Qwen local-model campaign failed twice after swapping
+        // absolute start/end coordinates. Reordering a bounded, version-pinned
+        // span is safe; guessing a relative line count is not.
+        let again=format!("{:x}",Sha256::digest(std::fs::read(&path).unwrap()));
+        let corrected=replace_line_span(&ctx,&path,
+            &json!({"startLine":2,"endLine":1,"expectedSha256":again}),
+            "let new_value = 6;\nlet untouched = 9;","run").await.unwrap();
+        assert_eq!(corrected["written"],true,"{corrected}");
+        assert_eq!(corrected["reorderedLineEndpoints"],true);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),
+            "let new_value = 6;\nlet untouched = 9;\n");
+        let after=format!("{:x}",Sha256::digest(std::fs::read(&path).unwrap()));
+        let rejected=replace_line_span(&ctx,&path,
+            &json!({"startLine":1,"endLine":0,"expectedSha256":after}),
+            "bad","run").await;
+        assert!(rejected.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),
+            "let new_value = 6;\nlet untouched = 9;\n");
         let _ = std::fs::remove_dir_all(dir);
     }
 
