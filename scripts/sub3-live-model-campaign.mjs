@@ -72,16 +72,16 @@ if(mode==='probe'){
     const request={
       mode:'continuous',confirmation:'START_RSI_EVOLUTION',
       selectionPolicy:'automatic',providerId:'sub3-free-proxy',model:'openai-fast',
-      request:'Improve the real deterministic task decomposition algorithm in src/engine/decompose.rs. Korean instructions such as \"설정을 읽고 결과를 저장한 다음 검증해\" need three ordered executable steps; currently they become one. Generalize Korean action-suffix and temporal connective recognition, preserve the original content and numbered lists, edit code using workspace_replace, and let the system independently test the implementation.',
-      focusFiles:['src/engine/decompose.rs'],maxAttempts:2,
-      tokenBudget:24000,timeBudgetSeconds:960
+      request:'Fix a reproducible behavior bug in src/engine/decompose.rs. The existing split_markers() recognizes isolated marker words (e.g. 그리고, 뒤) but misses Korean action suffix -고 and connective 다음/나서. On baseline, Korean text 설계를 읽고 결과를 저장한 다음 검증해 produces one step where three real ordered actions are required. Modify the Rust function now: after reading the exact existing source block, call workspace_replace with path=src/engine/decompose.rs, oldText=the exact source text and newText=your implementation. Distinguish action verb suffix -고 from nouns such as 사고/최고; preserve original subtask text and list handling. Do not end after code_search or workspace_read_range. DOMINION will run independent frozen baseline/candidate tests after editing.',
+      focusFiles:['src/engine/decompose.rs'],maxAttempts:3,
+      tokenBudget:90000,timeBudgetSeconds:2700
     };
     trace.submittedRequest={...request,request:request.request.slice(0,320)};
     const queued=await call('/api/rsi/start',request);
     trace.jobId=queued.id;
     if(typeof trace.jobId!=='string'||!trace.jobId)throw Error(`RSI did not return a job id: ${content(queued)}`);
     trace.phase='running';save(trace);
-    const deadline=Date.now()+19*60*1000;
+    const deadline=Date.now()+42*60*1000;
     let last=null;
     while(Date.now()<deadline){
       await new Promise(resolve=>setTimeout(resolve,10000));
@@ -96,7 +96,9 @@ if(mode==='probe'){
       acceptedCommit:g.acceptedCommit,verdict:g.evaluation?.verdict,
       improvedHoldouts:g.evaluation?.metrics?.improvedHoldouts,
       generatorCommit:g.generatorCommit,domain:g.domain,searchStrategy:g.searchStrategy,
-      error:g.error
+      error:g.error,toolsUsed:g.toolsUsed,newFindings:g.newFindings,
+      focusFiles:g.focusFiles,knowledgeId:g.knowledgeId,
+      evaluation:g.evaluation?.metrics
     }));
     trace.phase=['completed','failed','cancelled','needs_review'].includes(last.status)?
       'campaign_finished':'campaign_timeout';
