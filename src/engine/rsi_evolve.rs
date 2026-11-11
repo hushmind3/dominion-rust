@@ -1285,6 +1285,35 @@ fn grounded_next_experiment(state:&AppState,history:&[Value])->Option<String> {
             ));
         }
     }
+    // Sub3's useful observation: a compiled neutral candidate is a failed
+    // behavioral hypothesis, not an empty outcome. Feed exact unchanged
+    // frozen measurements back into the successor's actual editing task.
+    // Saturated 1.0 -> 1.0 accuracy is a guard, not an unsolved failure.
+    if matches!(latest["evaluation"]["verdict"].as_str(),
+        Some("inconclusive"|"not_improved")) {
+        let neutral=latest["evaluation"]["metrics"]["measurements"].as_array()
+            .into_iter().flatten()
+            .filter(|row|row["holdout"]==true)
+            .flat_map(|row|row["metrics"].as_array().into_iter().flatten()
+                .filter_map(move |metric|{
+                    let before=metric["baseline"].as_f64()?;
+                    let after=metric["candidate"].as_f64()?;
+                    let metric_name=metric["key"].as_str()?;
+                    if metric["improved"]==true || metric["regressed"]==true
+                        || before!=after || (metric_name=="quality" && before>=1.0) {
+                        return None;
+                    }
+                    Some(format!("{}:{}={before}→{after}",
+                        row["id"].as_str().unwrap_or("?"),metric_name))
+                }))
+            .take(4).collect::<Vec<_>>();
+        if !neutral.is_empty(){
+            return Some(format!(
+                "\n### 다음 세대의 실험 과제 — 독립 평가가 밝혀낸 무성과\n실제 컴파일 이후에도 동결 측정의 항목이 개선되지 않았습니다: {}. 기존 패치를 그대로 반복하지 말고 결과를 바꿀 새 코드 변형을 선택해 검증하세요. 보존된 성능은 개선으로 계산하지 않습니다.\n",
+                neutral.join("; ")
+            ));
+        }
+    }
     if latest["evaluation"]["verdict"]=="regressed" {
         let cases=latest["evaluation"]["metrics"]["measurements"].as_array().into_iter().flatten()
             .filter(|row| row["baselinePass"]==true && row["candidatePass"]==false
