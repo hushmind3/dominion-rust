@@ -1588,24 +1588,7 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
             "kind":"harness.method-transitions","evidence":[],"transitions":[],"status":"candidate"}));
     let history=policy["evidence"].as_array().cloned().unwrap_or_default();
     if history.iter().any(|row|row["jobId"].as_str()==Some(job_id)){return Some(policy);}
-    let positive=procedural_pass || capability_gain;
-    let negative=procedural_failure && !positive;
-    let strength=if capability_gain {3} else {1};
-    let mut transitions=policy["transitions"].as_array().cloned().unwrap_or_default();
-    for pair in trace.windows(2) {
-        let from=&pair[0];let to=&pair[1];
-        let item=transitions.iter_mut().find(|row|row["from"]==*from && row["to"]==*to);
-        if let Some(item)=item {
-            if positive {item["positive"]=json!(item["positive"].as_u64().unwrap_or(0)+strength);}
-            if negative {item["negative"]=json!(item["negative"].as_u64().unwrap_or(0)+1);}
-        } else {
-            transitions.push(json!({"from":from,"to":to,
-                "positive":if positive {strength}else{0},
-                "negative":if negative {1}else{0}}));
-        }
-    }
-    transitions.sort_by(|a,b|a["from"].as_str().cmp(&b["from"].as_str())
-        .then(a["to"].as_str().cmp(&b["to"].as_str())));
+    let mut transitions=Vec::<Value>::new();
     let mut evidence=history;
     evidence.push(json!({"jobId":job_id,"domain":generation["domain"],
         "sequence":trace,"operationalPass":procedural_pass,
@@ -3810,6 +3793,57 @@ mod tests {
         let expanded=json!({"prompt":format!("small source{}", "research context ".repeat(3000))});
         assert!(!generation_fits_remaining_budget(&budget,&expanded),
             "check the complete composed worker prompt before creating the next job");
+    }
+
+    #[test]
+    fn dominion_induces_and_revises_abstract_execution_method_from_actual_receipts() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiObjective":"evolve execution method"});
+        let add_trace=|session:&str|{
+            for (n,tool) in ["code_search","workspace_read_range","workspace_replace_range"].iter().enumerate() {
+                let result=match *tool {
+                    "code_search"=>json!({"matchCount":2}),
+                    "workspace_read_range"=>json!({"sourceSha256":"a".repeat(64)}),
+                    _=>json!({"written":true,"postSha256":"b".repeat(64)}),
+                };
+                state.store.put("execution_operation",&json!({
+                    "id":format!("{session}-{n}"),"sessionId":session,"opSeq":n+1,
+                    "tool":tool,"status":"completed","result":result,
+                    "toolReceipt":{"verified":true}
+                })).unwrap();
+            }
+        };
+        add_trace("successful-method");
+        let success=json!({"jobId":"real-procedure-job","domain":"memory",
+            "methodExecutions":[{"operationIds":["successful-method-0","successful-method-1"],
+                "result":{"verified":true,"followed":true,"status":"followed"}}]});
+        let policy=learn_method_transitions(&state,&input,&success,"successful-method").unwrap();
+        assert_eq!(policy["status"],"candidate");
+        assert!(policy["transitions"].as_array().unwrap().iter().any(|row|
+            row["from"]=="workspace_read_range" && row["to"]=="workspace_replace_range"
+                && row["positive"]==1));
+        let first_revision=policy["revision"].clone();
+        let replay=learn_method_transitions(&state,&input,&success,"successful-method").unwrap();
+        assert_eq!(replay["revision"],first_revision,"same job cannot fabricate more learning");
+        let mut native_session=json!({"rsiRun":true});
+        configure_method_session(&state,&input,&mut native_session);
+        assert_eq!(native_session["rsiInducedMethodPolicy"]["id"],policy["id"]);
+        add_trace("failed-transfer");
+        let failure=json!({"jobId":"failed-transfer-job","domain":"tools",
+            "methodExecutions":[{"operationIds":["failed-transfer-1"],
+                "result":{"verified":true,"followed":false,"status":"violated"}}]});
+        let revised=learn_method_transitions(&state,&input,&failure,"failed-transfer").unwrap();
+        assert_ne!(revised["revision"],first_revision);
+        assert!(revised["transitions"].as_array().unwrap().iter().any(|row|
+            row["from"]=="workspace_read_range" && row["to"]=="workspace_replace_range"
+                && row["negative"]==1),"verified failure changes the learned method");
+        add_trace("read-only-claim");
+        let claim=json!({"jobId":"model-claimed-success","domain":"ui","accepted":true});
+        assert!(learn_method_transitions(&state,&input,&claim,"read-only-claim").is_none(),
+            "model assertion is not a training signal");
+        let stored=state.store.get("rsi_method_policy",policy["id"].as_str().unwrap()).unwrap();
+        assert_eq!(stored["evidence"].as_array().unwrap().len(),2);
+        drop(state);let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
