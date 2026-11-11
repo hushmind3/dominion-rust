@@ -3046,14 +3046,19 @@ async fn run_loop(
             .unwrap_or(proposed);
         let program_trial=crate::engine::rsi_action_program::trial_plan(
             &policy_training,composed,&head,&objective_id,model,provider,&target_domain);
+        // Revalidate source adoptions against the immutable paired evaluation
+        // receipt before allowing them to train a descendant's decision rules.
+        // Merely copying an accepted flag or an embedded proof isn't evidence.
+        let judgement_training=history_with_verified_payoffs(
+            &context.state,&policy_training);
         // Generate Boolean execution judgements from witnessed failures,
         // evaluate them separately, and run only the candidate cohort.
         let judgement=crate::engine::rsi_judgement::pinned(
-            &policy_training,&head,&objective_id,model,provider,&target_domain)
+            &judgement_training,&head,&objective_id,model,provider,&target_domain)
             .unwrap_or_else(||crate::engine::rsi_judgement::evolve(
-                &policy_training,&objective_id,&target_domain));
+                &judgement_training,&objective_id,&target_domain));
         let judgement_trial=crate::engine::rsi_judgement::trial(
-            &policy_training,judgement,&head,&objective_id,model,provider,&target_domain);
+            &judgement_training,judgement,&head,&objective_id,model,provider,&target_domain);
         child_input["rsiJudgementPolicy"]=if judgement_trial["arm"]=="candidate" {
             judgement_trial["policy"].clone()
         }else{Value::Null};
