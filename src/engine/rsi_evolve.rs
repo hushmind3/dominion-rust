@@ -3078,7 +3078,10 @@ async fn run_loop(
         // Real-model evidence: a read-only first generation may consume all
         // rounds without writing. Ground an executable mutation programme on
         // the CURRENT source index; learn later policies from its real effects.
-        if child_input["rsiAutonomous"]!=true && matches!(
+        // Autonomous generations need this bootstrap too. The source-index
+        // hash and allowed action mode, not a manual/autonomous label, decide
+        // whether a real mutation program can be formed.
+        if matches!(
             child_input["rsiImprovementDirective"]["mode"].as_str(),
             Some("implement_research"|"repair_edit_execution"
                 |"repair_candidate_capture"|"revise_candidate"
