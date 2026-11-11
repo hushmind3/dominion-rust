@@ -1719,15 +1719,29 @@ fn propose_autonomous_search_trial(
     // inconclusive candidate under its former name and revision.
     if !failed.is_empty() {
         let n=failed.len() as u64;
-        if auto_focus {
+        let source_scoring_unavailable=failed.iter().any(|row|
+            row["rsiTrial"]["lastReason"]=="target_formula_not_executed");
+        if auto_focus && source_scoring_unavailable {
+            // The registered source-ranking formula never ran. A domain-only
+            // retry can still execute and generate a patch instead of
+            // repeatedly demanding an unavailable indexed source receipt.
+            hypothesis["parameters"].as_object_mut().unwrap().remove("targetExpression");
+            let old=hypothesis["parameters"]["expression"].as_str().unwrap_or("");
+            hypothesis["parameters"]["expression"]=json!(format!(
+                "{old} + exploration * {} + successRate * {}",3*n,n));
+            hypothesis["hypothesisEvidence"]["recoveryMode"]=
+                json!("domain_only_after_unexecuted_target");
+        } else if auto_focus {
             let old=hypothesis["parameters"]["targetExpression"].as_str().unwrap_or("");
             hypothesis["parameters"]["targetExpression"]=json!(format!(
                 "{old} + novelty * {} + productiveEvidence * {} - repeatPenalty * {}",
                 3*n,n,2*n));
+            hypothesis["hypothesisEvidence"]["recoveryMode"]=json!("novel_source_exploration");
         } else {
             let old=hypothesis["parameters"]["expression"].as_str().unwrap_or("");
             hypothesis["parameters"]["expression"]=json!(format!(
                 "{old} + exploration * {} - barrenRate * {}",3*n,2*n));
+            hypothesis["hypothesisEvidence"]["recoveryMode"]=json!("domain_exploration");
         }
         hypothesis["hypothesisEvidence"]["previousFailedTrials"]=json!(n);
         hypothesis["hypothesisEvidence"]["previousTrialReasons"]=json!(failed.iter()
@@ -3603,6 +3617,38 @@ mod tests {
             "campaign_trial_budget_exhausted",
             "recovery must not create an unbounded proposal loop");
         assert!(pending_trial_candidate(&state,"",&["retry-trial".into()]).is_none());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unexecuted_source_formula_retries_with_executable_domain_only_policy() {
+        let (state,root)=state();
+        let history=(0..3).map(|i|json!({
+            "id":format!("stalled-{i}"),"accepted":false,
+            "tokens":3200,"newFindings":0,"candidateId":null,
+            "focusFiles":["src/engine/memory.rs"]
+        })).collect::<Vec<_>>();
+        let first=propose_autonomous_search_trial(
+            &state,&history[..2],"","source-unavailable",2,true);
+        assert_eq!(first["status"],"pending_trial","{first}");
+        let mut abandoned=state.store.get("algorithm",
+            first["candidateId"].as_str().unwrap()).unwrap();
+        abandoned["rsiTrial"]["status"]=json!("trial_inconclusive");
+        abandoned["rsiTrial"]["lastReason"]=json!("target_formula_not_executed");
+        state.store.put("algorithm",&abandoned);
+        let retry=propose_autonomous_search_trial(
+            &state,&history,"","source-unavailable",3,true);
+        assert_eq!(retry["status"],"pending_trial","{retry}");
+        let candidate=state.store.get("algorithm",
+            retry["candidateId"].as_str().unwrap()).unwrap();
+        assert!(candidate["parameters"]["targetExpression"].is_null(),
+            "do not require a source scorer which the worker could not run");
+        assert_eq!(candidate["hypothesisEvidence"]["recoveryMode"],
+            "domain_only_after_unexecuted_target");
+        assert_ne!(candidate["parameters"]["expression"],
+            abandoned["parameters"]["expression"]);
+        assert_eq!(pending_trial_candidate(&state,"",&["source-unavailable".into()])
+            .unwrap()["id"],candidate["id"]);
         let _=std::fs::remove_dir_all(root);
     }
 
