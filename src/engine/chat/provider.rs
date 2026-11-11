@@ -1825,6 +1825,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn isolated_rsi_range_editor_requires_a_real_native_tool_call() {
+        let session=json!({"rsiRun":true,"rsiExplicitFocus":true});
+        let edit=|name:&str|json!({"type":"function","function":{"name":name}});
+        assert!(rsi_edit_requires_tool(&session,&[
+            edit("workspace_replace_range"),edit("workspace_replace"),edit("workspace_write")
+        ]),"The range editor is an EDIT, not a research tool. Required tool choice must be sent.");
+        assert!(!rsi_edit_requires_tool(&session,&[
+            edit("workspace_read_range"),edit("workspace_replace_range")
+        ]),"Do not force a source write before the first native read");
+        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":false,"rsiExplicitFocus":true}),
+            &[edit("workspace_replace_range")]));
+    }
+
+    #[test]
     fn codex_input_preserves_attachment_text_and_images() {
         let image = "data:image/png;base64,aW1hZ2U=";
         let (instructions, input) = codex_input(&[
