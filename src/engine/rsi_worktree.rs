@@ -286,14 +286,34 @@ fn edit_outcomes(state:&crate::state::AppState, session_id:&str)->Value {
         "recentFailures":failures.into_iter().rev().take(3).collect::<Vec<_>>()})
 }
 
+/// Preserve the first actionable compiler diagnostic, not only the end of
+/// cargo's stderr (which often contains warnings and "could not compile").
+/// Losing the real file:line:error makes every model repair a blind rewrite.
+fn focused_verifier_stderr(stderr:&str)->String {
+    let lines=stderr.lines().collect::<Vec<_>>();
+    let error_at=lines.iter().position(|line|{
+        let trimmed=line.trim_start();
+        trimmed.starts_with("error[") || trimmed.starts_with("error:")
+            || trimmed.contains("error[E0")
+    });
+    if let Some(at)=error_at {
+        let first=lines[at.saturating_sub(1)..(at+24).min(lines.len())].join("\n");
+        return first.chars().take(3200).collect();
+    }
+    stderr.chars().rev().take(2600).collect::<String>()
+        .chars().rev().collect()
+}
 fn check_result(label:&str, result:Result<std::process::Output,String>)->Value {
     match result {
-        Ok(output)=>json!({
-            "label":label,"ran":true,"passed":output.status.success(),
-            "exitCode":output.status.code(),
-            "stdout":String::from_utf8_lossy(&output.stdout).chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>(),
-            "stderr":String::from_utf8_lossy(&output.stderr).chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>()
-        }),
+        Ok(output)=>{
+            let stderr=String::from_utf8_lossy(&output.stderr);
+            json!({
+                "label":label,"ran":true,"passed":output.status.success(),
+                "exitCode":output.status.code(),
+                "stdout":String::from_utf8_lossy(&output.stdout).chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>(),
+                "stderr":focused_verifier_stderr(&stderr)
+            })
+        }
         Err(error)=>json!({"label":label,"ran":false,"passed":false,"error":error}),
     }
 }
@@ -893,6 +913,16 @@ mod tests {
         assert_eq!(classify("diff --git a/src/engine/algorithm_eval.rs b/src/engine/algorithm_eval.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/engine/room_state.rs b/src/engine/room_state.rs\n"),"algorithm");
         assert_eq!(classify("diff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\n"),"harness");
+    }
+    #[test]
+    fn verifier_preserves_first_compiler_error_before_long_warning_tail(){
+        let source=format!("warning: setup\\nerror[E0308]: mismatched types\\n --> src/engine/decompose.rs:42:10\\n  |\\n42 | wrong\\n  | expected usize\\n{}",
+            "warning: unrelated diagnostics\\n".repeat(250));
+        let focused=focused_verifier_stderr(&source.replace("\\n","\n"));
+        assert!(focused.contains("error[E0308]"));
+        assert!(focused.contains("src/engine/decompose.rs:42:10"));
+        assert!(focused.starts_with("warning: setup"));
+        assert!(!focused.contains("unrelated diagnostics\\n".repeat(220).as_str()));
     }
     #[test]
     fn failing_verification_never_completes_and_only_valid_failures_retry(){
