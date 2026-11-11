@@ -1500,6 +1500,7 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
             receipts.push(json!({"methodId":method["id"],"revision":method["revision"],
                 "experienceId":method["rsiMethodExperienceId"],"executionId":execution["id"],
                 "focusPath":method["rsiBoundFocusFile"],
+                "crossDomain":method["rsiTransferTrial"] == true,
                 "operationIds":used.iter().map(|op|op["id"].clone()).collect::<Vec<_>>(),
                 "result":result}));
         }
@@ -2686,9 +2687,12 @@ async fn run_loop(
         // Compute the same domain decision that the worker will use. Keep it
         // distinct from rsiSelectedDomain, which represents an explicit choice.
         let target_trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
+        let follow_up=transfer_failure_repair(&recorded_history)
+            .and_then(|plan|plan["domain"].as_str().map(str::to_string))
+            .or_else(||research_continuation(&recorded_history));
         let (target_domain,target_selection,target_strategy)=select_generation_strategy(
             &context.state,&recorded_history,&target_objective,
-            research_continuation(&recorded_history),target_trial,None,&head);
+            follow_up,target_trial,None,&head);
         // A previous coordinator's nextDomain is advice, not a frozen veto on
         // an evolved descendant selector. The worker rechecks the proposal.
         child_input["rsiTargetDomain"]=json!(target_domain);
@@ -2700,12 +2704,16 @@ async fn run_loop(
         if child_input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
             let ranked=choose_focus_files(&context.state,&child_input,&recorded_history,
                 target_policy.as_ref());
-            let selected=ranked.iter().filter_map(|row|row["path"].as_str())
+            let mut selected=ranked.iter().filter_map(|row|row["path"].as_str())
                 .map(str::to_string).collect::<Vec<_>>();
+            let repair=transfer_repair_focus(&recorded_history,&target_domain,&head)
+                .filter(|path|crate::engine::code_index::indexed_source_hash(
+                    &context.state,current_index["id"].as_str().unwrap_or(""),path).is_some());
+            if let Some(path)=repair.as_ref() {selected=vec![path.clone()];}
             child_input["rsiFocusFiles"]=json!(selected);
             child_input["rsiAutoFocus"]=json!(true);
             child_input["rsiFocusSelection"]=json!({
-                "source":"indexed_evidence",
+                "source":if repair.is_some(){"failed_method_transfer_repair"}else{"indexed_evidence"},
                 "candidates":ranked,
                 "policyRevision":target_policy.as_ref().map(|policy|policy["revision"].clone()),
                 "domain":target_domain,
@@ -3213,6 +3221,55 @@ pub(crate) async fn adopt(
 // coordinator (which chooses source files) and by the native child worker
 // (which actually runs the algorithm). Otherwise a trial policy can appear
 // in focusSelection even though no trial was executed.
+
+/* A verified failed transfer is not just a rejected skill. The following
+ * generation should try a DIFFERENT implementation on the SAME actual source,
+ * using the observed failed tool and postcondition as its diagnosis.
+ * Only a real procedure-operation receipt can trigger this; neither an LLM
+ * assertion nor an unexecuted proposed method changes the execution plan.
+ * The retry is bounded to one generation and never bypasses paired adoption.
+ */
+fn transfer_failure_repair(history:&[Value])->Option<Value> {
+    let last=history.last()?;
+    let domain=last["domain"].as_str().filter(|domain| DOMAINS.contains(domain))?;
+    if last["accepted"]==true || last["domainSelection"]=="method_transfer_repair" {
+        return None;
+    }
+    let receipt=last["methodExecutions"].as_array()?.iter().find(|receipt|
+        receipt["crossDomain"]==true
+        && receipt["result"]["verified"]==true
+        && receipt["result"]["status"]=="violated"
+        && receipt["operationIds"].as_array().is_some_and(|ids|!ids.is_empty())
+        && receipt["focusPath"].as_str().is_some_and(crate::engine::rsi::safe_path)
+        && receipt["methodId"].as_str().is_some_and(|id|!id.is_empty())
+    )?;
+    Some(json!({
+        "domain":domain,"focusPath":receipt["focusPath"],
+        "methodId":receipt["methodId"],"revision":receipt["revision"],
+        "sourceGenerationId":last["id"],"generatorCommit":last["generatorCommit"],
+        "operationIds":receipt["operationIds"],"verification":receipt["result"]
+    }))
+}
+
+fn transfer_repair_focus(history:&[Value],domain:&str,commit:&str)->Option<String> {
+    let plan=transfer_failure_repair(history)?;
+    if plan["domain"].as_str()!=Some(domain) || plan["generatorCommit"].as_str()!=Some(commit) {
+        return None;
+    }
+    plan["focusPath"].as_str().map(str::to_string)
+}
+
+fn transfer_repair_instruction(plan:&Value)->String {
+    let reason=plan["verification"]["violations"].to_string()
+        .chars().take(480).collect::<String>();
+    format!("\n\n### 실제 실행에 실패한 학습 절차를 교정하세요\n실행 방법: {} (revision {}). 실행된 작업: {}. 현재 대상 파일: {}. 확인된 위반: {}.\n이전 절차는 이 분야에서 재사용이 차단되었습니다. 원본의 성공을 지우거나 같은 도구 인자를 재실행하지 마세요. 현재 파일을 조사한 후 다른 근거 있는 workspace_replace 수정 또는 새로운 rsi_method_propose 절차로 해결하세요. 실제 코드 변경과 후속 조건을 확인하고, 독립 holdout 평가 결과로 채택을 판단합니다. 절차 등록이나 설명만으로 완료하지 마세요.\n",
+        plan["methodId"].as_str().unwrap_or(""),
+        plan["revision"].as_str().unwrap_or(""),
+        plan["operationIds"],
+        plan["focusPath"].as_str().unwrap_or(""),
+        reason)
+}
+
 fn research_continuation(history: &[Value]) -> Option<String> {
     let last=history.last()?;
     let domain=last["domain"].as_str().filter(|domain| DOMAINS.contains(domain))?;
@@ -3290,6 +3347,10 @@ fn select_generation_strategy(
         );
     }
     if let Some(domain) = continuation {
+        if transfer_failure_repair(history).is_some_and(|plan|
+            plan["domain"].as_str()==Some(domain.as_str())) {
+            return (domain, "method_transfer_repair", Value::Null);
+        }
         return (domain, "research_continuation", Value::Null);
     }
     let algorithm =
@@ -3342,11 +3403,15 @@ fn reconcile_descendant_target(
             .and_then(|id|state.store.get("algorithm",id))
             .or_else(||crate::engine::algorithms::active(state,"selfimprove.search"));
         let ranked=choose_focus_files(state,&job["input"],history,policy.as_ref());
-        let selected=ranked.iter().filter_map(|item|item["path"].as_str())
+        let mut selected=ranked.iter().filter_map(|item|item["path"].as_str())
             .map(str::to_string).collect::<Vec<_>>();
+        let repair=transfer_repair_focus(history,domain,commit)
+            .filter(|path|crate::engine::code_index::indexed_source_hash(
+                state,index["id"].as_str().unwrap_or(""),path).is_some());
+        if let Some(path)=repair.as_ref() {selected=vec![path.clone()];}
         job["input"]["rsiFocusFiles"]=json!(selected);
         job["input"]["rsiFocusSelection"]=json!({
-            "source":"descendant_indexed_evidence",
+            "source":if repair.is_some(){"failed_method_transfer_repair"}else{"descendant_indexed_evidence"},
             "candidates":ranked,"domain":domain,
             "policyRevision":policy.as_ref().map(|item|item["revision"].clone()),
             "sourceIndexId":index["id"]
@@ -3431,7 +3496,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
-    let continuation = research_continuation(&history);
+    let continuation = transfer_failure_repair(&history)
+        .and_then(|plan|plan["domain"].as_str().map(str::to_string))
+        .or_else(||research_continuation(&history));
     let trial_id = job["input"]["rsiTrialAlgorithmId"]
         .as_str()
         .filter(|value| !value.is_empty())
@@ -3473,8 +3540,17 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
+    // The model receives the REAL failure and the current source revision,
+    // not the old method's canned arguments. A failed method is never silently
+    // treated as an already-solved target in the next worker.
+    let repair=transfer_failure_repair(&history).filter(|plan|
+        plan["domain"].as_str()==Some(domain.as_str())
+        && plan["generatorCommit"].as_str()==Some(commit.as_str()));
+    job["input"]["rsiTransferRepair"]=repair.clone().unwrap_or(Value::Null);
+    let mut worker_base=job["input"]["prompt"].as_str().unwrap_or("").to_string();
+    if let Some(plan)=repair.as_ref() {worker_base.push_str(&transfer_repair_instruction(plan));}
     let (full_prompt,worker_plan)=match fit_worker_context(
-        job["input"]["prompt"].as_str().unwrap_or(""),&domain,&capability,
+        &worker_base,&domain,&capability,
         &feedback,job["input"]["rsiRemainingCampaignTokens"].as_u64()
     ) {
         Ok(context)=>context,
@@ -5180,6 +5256,51 @@ mod tests {
         let _=std::fs::remove_dir_all(root);
     }
 
+
+    #[test]
+    fn real_failed_transfer_causes_one_targeted_corrective_generation() {
+        let (state,root)=state();
+        let failed=json!({
+            "id":"generation-tools-1","domain":"tools","generatorCommit":"same-commit",
+            "domainSelection":"algorithm_active","accepted":false,
+            "methodExecutions":[{
+                "methodId":"learned-from-memory","revision":"v1",
+                "crossDomain":true,"focusPath":"src/engine/tools.rs",
+                "operationIds":["real-dispatched-operation-42"],
+                "result":{"verified":true,"status":"violated",
+                    "violations":["file_contains: mismatch"]}
+            }]
+        });
+        let history=vec![failed.clone()];
+        let plan=transfer_failure_repair(&history).expect("verified tool failure must schedule repair");
+        assert_eq!(plan["methodId"],"learned-from-memory");
+        assert_eq!(transfer_repair_focus(&history,"tools","same-commit").as_deref(),
+            Some("src/engine/tools.rs"));
+        assert!(transfer_repair_focus(&history,"tools","changed-commit").is_none(),
+            "changed source cannot replay stale file-specific failure");
+        let directive=transfer_repair_instruction(&plan);
+        assert!(directive.contains("workspace_replace"));
+        assert!(directive.contains("src/engine/tools.rs"));
+        let (domain,selection,_)=select_generation_strategy(&state,&history,"tools",
+            Some("tools".to_string()),None,None,"same-commit");
+        assert_eq!(domain,"tools");
+        assert_eq!(selection,"method_transfer_repair");
+
+        let mut already_repaired=failed.clone();
+        already_repaired["domainSelection"]=json!("method_transfer_repair");
+        assert!(transfer_failure_repair(&[failed.clone(),already_repaired]).is_none(),
+            "a failed repair must change approach rather than loop forever");
+        let mut unexecuted=failed.clone();
+        unexecuted["methodExecutions"][0]["operationIds"]=json!([]);
+        assert!(transfer_failure_repair(&[unexecuted]).is_none(),
+            "proposed but unexecuted methods are not repair evidence");
+        let mut unknown=failed;
+        unknown["methodExecutions"][0]["result"]["verified"]=json!(false);
+        assert!(transfer_failure_repair(&[unknown]).is_none(),
+            "uncertain checks cannot masquerade as a verified failure");
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn learned_procedure_repairs_two_distinct_source_domains_with_real_tool_receipts() {
         let (state,root)=state();
@@ -5256,6 +5377,7 @@ mod tests {
             let stored=state.store.get("session",&session_id).unwrap();
             let receipt=&stored["rsiMethodExecutions"][0];
             assert_eq!(receipt["focusPath"],json!(focus));
+            assert_eq!(receipt["crossDomain"],json!(domain=="tools"));
             assert_eq!(receipt["result"]["verified"],true);
             assert_eq!(receipt["result"]["followed"],true);
             record_method_feedback(&state,&json!({"domain":domain,
