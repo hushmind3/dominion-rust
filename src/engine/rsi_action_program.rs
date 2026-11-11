@@ -417,6 +417,15 @@ pub fn next_tool(program:&Value,ops:&[Value],execution_id:&str)->Option<(String,
                 return Some((next.to_string(),"observed_failure_recovery"));
             }
         }
+        // An edit primitive that failed in the current run is not a
+        // successful step. When no learned recovery was available, observe
+        // the current file/hash ONCE before trying its edit step again.
+        // The next successful read advances the operation timeline and
+        // immediately returns control to the still-unfinished edit.
+        if last["tool"].as_str().is_some_and(edit) {
+            return Some(("workspace_read_range".to_string(),
+                "native_failed_edit_requires_fresh_source"));
+        }
     }
     let mut cursor=0usize;
     for operation in executed {
@@ -784,6 +793,21 @@ mod tests {
         assert!(!tool_allowed("code_search","workspace_replace"));
     }
 
+    #[test]
+    fn source_edit_failure_generates_one_fresh_observation_before_retry(){
+        let program=json!({"sequence":["workspace_read_range",
+            "workspace_replace_range"],"onFailure":[]});
+        let read=json!({"runId":"run","opSeq":0,"tool":"workspace_read_range",
+            "status":"completed","result":{"sourceSha256":"a".repeat(64)}});
+        let failed=json!({"runId":"run","opSeq":1,"tool":"workspace_replace_range",
+            "status":"failed","result":{"error":"staleVersion"}});
+        assert_eq!(next_tool(&program,&[read.clone(),failed.clone()],"run").unwrap().0,
+            "workspace_read_range");
+        let fresh=json!({"runId":"run","opSeq":2,"tool":"workspace_read_range",
+            "status":"completed","result":{"sourceSha256":"b".repeat(64)}});
+        assert_eq!(next_tool(&program,&[read,failed,fresh],"run").unwrap().0,
+            "workspace_replace_range");
+    }
     #[test]
     fn worker_advances_only_on_actual_tool_operations(){
         let program=json!({"sequence":["code_search","workspace_replace"]});
