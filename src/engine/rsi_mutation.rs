@@ -121,28 +121,40 @@ fn cache_invariant_fact_terms(source: &str) -> Option<String> {
 /// is required when the requested domain is absent.
 fn hoist_invariant_query_domain(source: &str) -> Option<String> {
     let marker = "    let query_tokens = memory::terms(query);\n    let mut ranked = facts\n";
-    let scorer = "fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>) -> usize {";
-    let call = "query_relevance(query, text, &query_tokens)";
     let old = "    if let (Some(asked), Some(stated)) = (fact_domain(query), fact_domain(text)) {\n        if asked == stated {\n            score += 32;\n        }\n    }";
-    if source.matches(marker).count()!=1 || source.matches(scorer).count()!=1
-        || source.matches(call).count()!=1 || source.matches(old).count()!=1 {
+    if source.matches(marker).count()!=1 || source.matches(old).count()!=1 {
         return None;
     }
+    // Compose independently discovered source optimizations. The same
+    // domain hoist works on both the plain token hoist and its descendant
+    // with immutable fact-token caching; it never discards a prior change.
+    let candidates = [
+        (
+            "fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>) -> usize {",
+            "query_relevance(query, text, &query_tokens)",
+            "fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>, asked_domain: Option<&str>) -> usize {",
+            "query_relevance(query, text, &query_tokens, asked_domain)",
+        ),
+        (
+            "fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>, cached_terms: Option<&Vec<Value>>) -> usize {",
+            "query_relevance(query, text, &query_tokens, fact[\"factTokens\"].as_array())",
+            "fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>, cached_terms: Option<&Vec<Value>>, asked_domain: Option<&str>) -> usize {",
+            "query_relevance(query, text, &query_tokens, fact[\"factTokens\"].as_array(), asked_domain)",
+        ),
+    ];
+    let (scorer, call, new_scorer, new_call) = candidates.into_iter()
+        .find(|(scorer, call, _, _)| source.matches(scorer).count()==1
+            && source.matches(call).count()==1)?;
     let mut output=source.replacen(
         marker,
         "    let query_tokens = memory::terms(query);\n    let asked_domain = fact_domain(query);\n    let mut ranked = facts\n",1
     );
-    output=output.replacen(
-        scorer,
-        "fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>, asked_domain: Option<&str>) -> usize {",1
-    );
+    output=output.replacen(scorer,new_scorer,1);
     output=output.replacen(
         old,
         "    if let Some(asked) = asked_domain {\n        if fact_domain(text) == Some(asked) {\n            score += 32;\n        }\n    }",1
     );
-    output=output.replacen(
-        call,"query_relevance(query, text, &query_tokens, asked_domain)",1
-    );
+    output=output.replacen(call,new_call,1);
     Some(output)
 }
 
