@@ -6183,6 +6183,36 @@ mod tests {
     }
 
     #[test]
+    fn inherited_repair_method_controls_the_descendant_target_and_edit_stage() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::write(root.join("src/engine/memory.rs"),"fn memory() {}\n").unwrap();
+        std::fs::write(root.join("src/engine/other.rs"),"fn unrelated() {}\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let mut input=json!({"rsiAutoFocus":true,"rsiIndexId":index["id"],
+            "rsiSelectedDomain":"memory","rsiFocusFiles":["src/engine/other.rs"],
+            "rsiActionDirective":{"mode":"extend_verified_capability"},
+            "rsiDecisionInput":{"methodRecoveryCandidateId":"derived-method",
+                "reuseDecision":{"action":"execute_methods",
+                    "methodIds":["derived-method"],
+                    "repairMethodId":"derived-method",
+                    "repairTarget":"src/engine/memory.rs"}}});
+        assert_eq!(pending_method_recovery_domain(&input),Some("memory".into()));
+        assert!(bind_action_to_source(&state,&mut input,&[]));
+        assert_eq!(input["rsiFocusFiles"],json!(["src/engine/memory.rs"]));
+        assert_eq!(input["rsiFocusSelection"]["executionSource"],"learned_executable_method");
+        assert!(!policy_requests_source_edit(&input));
+        input["rsiFocusContextChars"]=json!(120);
+        input["rsiFocusGrounded"]=json!(true);
+        assert!(policy_requests_source_edit(&input),
+            "the actual descendant runtime must enforce its learned method");
+        input["rsiDecisionInput"]["reuseDecision"]["methodIds"]=json!([]);
+        assert!(!policy_requests_source_edit(&input),
+            "a method absent from the parent's actual reuse decision cannot gain control");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn learned_method_proposals_require_running_rsi_and_executable_verification() {
         let (state,root)=state();
         let _context=parent(&state);
