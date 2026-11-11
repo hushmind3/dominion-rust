@@ -65,6 +65,8 @@ function summarize(g) {
       checksPassed:g.sourceIntegrity.checksPassed===true,
       evaluationStatus:g.sourceIntegrity.evaluationStatus||null,
       repairAttempts:g.sourceIntegrity.repairAttempts??null,
+      repairTrail:Array.isArray(g.sourceIntegrity.repairTrail)?
+        g.sourceIntegrity.repairTrail.slice(0,2):[],
       failedChecks:Array.isArray(g.sourceIntegrity.failedChecks)?
         g.sourceIntegrity.failedChecks.slice(0,3):[]
     }:null,
@@ -167,9 +169,10 @@ if(mode==='probe'){
     receipt.measuredImprovement=receipt.generations.some(g=>g.measuredGain);
     receipt.transferEvidence=receipt.generations.flatMap(g=>g.methodExecutions)
       .filter(r=>r.crossDomain===true);
-    receipt.repairModes=history.flatMap(g=>(g.sourceIntegrity?.previousAttempts||[])
+    receipt.repairModes=history.flatMap(g=>(g.sourceIntegrity?.repairTrail||[])
       .map(attempt=>({generation:g.attempt,mode:attempt.mode||null,
-        candidateId:attempt.result?.candidateId||null})));
+        candidateId:attempt.candidateId||null,reason:attempt.reason||null,
+        diffBytes:attempt.diffBytes??null})));
     receipt.status=last.status;
     receipt.reason=last.evolution?.stopReason||last.result?.evolution?.stopReason||null;
     if(!terminal.has(last.status))receipt.errors.push('campaign deadline without terminal result');
