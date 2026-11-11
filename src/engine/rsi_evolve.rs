@@ -2742,7 +2742,7 @@ async fn run_loop(
         // transitions to this descendant. Match the worker and exact policy.
         let mut program_stages = context.state.store.all("rsi_program_phase")
             .into_iter().filter(|row|
-                row["generationJobId"].as_str()==Some(child_id.as_str())
+                row["generationJobId"].as_str()==Some(child_id)
                 && row["policyRevision"]==current["input"]["rsiEditPolicy"]["revision"])
             .collect::<Vec<_>>();
         program_stages.sort_by(|left,right|
