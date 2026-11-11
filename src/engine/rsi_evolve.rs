@@ -2167,14 +2167,14 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     let partition=research_scope(input).partition_key;
     let objective=crate::engine::memory::stable_id(&[
         input["rsiObjective"].as_str().unwrap_or("")]);
-    let domain=input["rsiTargetDomain"].as_str().unwrap_or("");
     let mut episodes=BTreeMap::<String,Value>::new();
     for generation in state.store.all("rsi_generation").into_iter().chain(history.iter().cloned()) {
         if generation["knowledgePartition"]!=partition {continue;}
         let same_objective=generation["objectiveId"]==objective;
-        // A different owner objective can contribute only an independently
-        // revalidated, domain-matched adoption. Ordinary attempts never cross.
-        if !same_objective && (domain.is_empty() || generation["domain"]!=domain) {continue;}
+        // The tool method itself is source-edit-agnostic. Transfer across
+        // unrelated tasks/domains is allowed only for independently adopted
+        // source changes; failed or research-only attempts remain scoped.
+        if !same_objective && generation["accepted"]!=true {continue;}
         let key=generation["id"].as_str().unwrap_or("");
         if !key.is_empty() {episodes.insert(key.to_string(),generation);}
     }
@@ -2182,6 +2182,7 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     let mut exact=Arm::default();
     let mut range=Arm::default();
     let mut sources=BTreeSet::<String>::new();
+    let mut transfer_domains=BTreeSet::<String>::new();
     let mut productive_reads=Vec::<u64>::new();
     let mut stalled_reads=0u64;
     for row in &rows {
@@ -2234,6 +2235,7 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         if generation_is_verified(row) {
             arm.accepted+=1;
             if let Some(id)=row["objectiveId"].as_str() {sources.insert(id.to_string());}
+            if let Some(domain)=row["domain"].as_str() {transfer_domains.insert(domain.to_string());}
         }
         arm.tokens=arm.tokens.saturating_add(row["tokens"].as_u64().unwrap_or(0));
     }
@@ -2290,6 +2292,7 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
             "checkedCandidates":range.candidates,"verifiedAdoptions":range.accepted,
             "rejectedCalls":range.rejected,"tokens":range.tokens},
         "verifiedTransferObjectives":sources.len(),
+        "verifiedTransferDomains":transfer_domains.len(),
         "productiveReadSamples":productive_reads.len(),
         "stalledResearchEpisodes":stalled_reads,
         "sourceGenerationCount":rows.len()
@@ -2304,7 +2307,8 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         "preferredTool":preferred,"fallbackTool":fallback,
         "explorationCallLimit":exploration_limit,
         "reason":why,
-        "status":if sources.len()>=2 && (exact.accepted+range.accepted)>=2 {
+        "status":if sources.len()>=2 && transfer_domains.len()>=2
+            && (exact.accepted+range.accepted)>=2 {
             "measured_transfer_observed"
         } else if exact.accepted+range.accepted>0 {"quality_evidence_observed"}
           else if learned {"trial_unverified"}else{"unmeasured_default"},
