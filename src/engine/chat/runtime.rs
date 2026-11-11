@@ -179,6 +179,48 @@ fn rsi_focused_edit_due(
         && op["arguments"]["path"].as_str()==Some(path))
 }
 
+/// Act on DOMINION's own learnt, revisioned transition weights. The code
+/// selects the likely next *tool*, never invents source bytes or skips frozen
+/// evaluation. This is a real change in the subsequent model's tool menu,
+/// not merely an additional memory paragraph.
+fn rsi_induced_next_tool(
+    session:&Value, operations:&[Value], execution_id:&str, offered:&[Value],
+)->Option<String> {
+    if !rsi_generation_has_action_target(session)
+        || session["rsiInducedMethodPolicy"]["kind"]!="harness.method-transitions" {
+        return None;
+    }
+    let focus=session["rsiFocusFile"].as_str()?;
+    let last=operations.iter().filter(|op|
+        op["runId"].as_str()==Some(execution_id)
+        && op["status"]=="completed"
+        && matches!(op["tool"].as_str(),Some("code_search"|"workspace_read_range"|
+            "workspace_replace"|"workspace_replace_range"|"workspace_write"))
+        && (op["tool"]=="code_search"
+            || op["arguments"]["path"].as_str()==Some(focus)))
+        .max_by(|a,b|a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64())
+            .then(a["id"].as_str().cmp(&b["id"].as_str())))?;
+    let from=last["tool"].as_str()?;
+    let has_observed_focus=operations.iter().any(|op|
+        op["runId"].as_str()==Some(execution_id)
+        && op["tool"]=="workspace_read_range" && op["status"]=="completed"
+        && op["arguments"]["path"].as_str()==Some(focus)
+        && op["result"]["sourceSha256"].as_str().is_some_and(|sha|sha.len()==64));
+    let mut ranked=session["rsiInducedMethodPolicy"]["transitions"].as_array()?
+        .iter().filter_map(|row|{
+            if row["from"].as_str()!=Some(from){return None;}
+            let to=row["to"].as_str()?;
+            if matches!(to,"workspace_replace"|"workspace_replace_range"|"workspace_write")
+                && !has_observed_focus{return None;}
+            if !offered.iter().any(|tool|tool_name(tool)==to){return None;}
+            let yes=row["positive"].as_u64().unwrap_or(0) as i64;
+            let no=row["negative"].as_u64().unwrap_or(0) as i64;
+            (yes>no).then_some((yes-no,to.to_string()))
+        }).collect::<Vec<_>>();
+    ranked.sort_by(|a,b|b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    ranked.into_iter().next().map(|(_,tool)|tool)
+}
+
 fn rsi_final_edit_tools(available:&[Value])->Vec<Value> {
     // Prefer a short digest-bound edit to repeating oldText in a small model.
     available.iter().find(|tool|tool_name(tool)=="workspace_replace_range")
@@ -1251,6 +1293,19 @@ async fn run_turn_body(
             round_tools=rsi_final_edit_tools(&tool_definitions);
             if let Some(mut record)=state.store.get("execution",execution_id) {
                 record["rsiActionRetry"]["toolChoice"]=json!("native_required_workspace_replace_range_or_exact");
+                state.store.put("execution",&record);
+            }
+        }
+        if let Some(next)=rsi_induced_next_tool(&session,
+            &state.store.all("execution_operation"),execution_id,&round_tools) {
+            round_tools.sort_by_key(|definition|tool_name(definition)!=next);
+            if let Some(mut record)=state.store.get("execution",execution_id) {
+                record["rsiInducedMethodDecision"]=json!({
+                    "policyId":session["rsiInducedMethodPolicy"]["id"],
+                    "revision":session["rsiInducedMethodPolicy"]["revision"],
+                    "preferredTool":next,"mode":"empirical_tool_priority",
+                    "claim":"experiment_not_verified_capability_gain"
+                });
                 state.store.put("execution",&record);
             }
         }
@@ -6290,6 +6345,38 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn learned_method_transition_changes_next_tools_and_failure_revises_it() {
+        let policy=json!({"kind":"harness.method-transitions","revision":"r2",
+            "transitions":[
+                {"from":"workspace_read_range","to":"workspace_replace_range",
+                    "positive":4,"negative":1},
+                {"from":"workspace_read_range","to":"code_search",
+                    "positive":1,"negative":2}
+            ]});
+        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"worker","rsiFocusFile":"src/engine/memory.rs",
+            "rsiInducedMethodPolicy":policy});
+        let read=json!({"id":"read","runId":"run","opSeq":2,"status":"completed",
+            "tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/memory.rs"},
+            "result":{"sourceSha256":"a".repeat(64)}});
+        let menu=vec![
+            json!({"type":"function","function":{"name":"code_search"}}),
+            json!({"type":"function","function":{"name":"workspace_replace_range"}})];
+        assert_eq!(rsi_induced_next_tool(&session,&[read.clone()],"run",&menu),
+            Some("workspace_replace_range".to_string()));
+        let mut revised=session.clone();
+        revised["rsiInducedMethodPolicy"]["transitions"][0]["negative"]=json!(5);
+        assert_eq!(rsi_induced_next_tool(&revised,&[read.clone()],"run",&menu),None,
+            "failed execution must reduce—not reward—the previous tool method");
+        assert_eq!(rsi_induced_next_tool(&session,&[read.clone()],"other",&menu),None);
+        let mut wrong=read;
+        wrong["arguments"]["path"]=json!("src/engine/decompose.rs");
+        assert_eq!(rsi_induced_next_tool(&session,&[wrong],"run",&menu),None);
+        assert_eq!(rsi_induced_next_tool(&json!({"rsiRun":true}),&[],"run",&menu),None);
     }
 
     #[test]
