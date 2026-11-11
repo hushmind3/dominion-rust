@@ -170,11 +170,14 @@ fn rsi_verified_write_operation(operation: &Value) -> bool {
 fn rsi_patch_ready_for_verification(
     session: &Value, tool: &str, args: &Value, result: &Value, ok: bool,
 ) -> bool {
+    let compiler_repair_target = session["rsiRepairPath"].as_str()
+        .filter(|path|args["path"].as_str()==Some(*path));
     ok && session["rsiRun"] == true
-        && (session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true)
-        && session["rsiCampaignId"].is_string()
-        && session["rsiFocusFiles"].as_array().is_some_and(|files|
-            files.len() == 1 && files[0].as_str() == args["path"].as_str())
+        && (session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true
+            || compiler_repair_target.is_some())
+        && (session["rsiCampaignId"].is_string() || compiler_repair_target.is_some())
+        && (compiler_repair_target.is_some() || session["rsiFocusFiles"].as_array().is_some_and(|files|
+            files.len() == 1 && files[0].as_str() == args["path"].as_str()))
         && matches!(tool, "workspace_replace_range" | "workspace_replace")
         && result["written"] == true
         && result["postSha256"].as_str().is_some_and(|sha|
@@ -1252,7 +1255,9 @@ async fn run_turn_body(
             // can indefinitely suppress the only recovery tool.
             let must_ground=program_stage.is_some_and(|decision|
                 matches!(decision.phase,"focus_ground"|"reground"));
-            let rule_decision = if must_ground {None} else {
+            // Compiler repair is driven by actual verifier evidence, so a
+            // previously induced search-only rule cannot shadow its edit phase.
+            let rule_decision = if must_ground || session["rsiRepairPath"].is_string() {None} else {
                 crate::engine::rsi_decision_rules::choose(
                     &session["rsiEditPolicy"], &all_operations, tool_calls,
                     focused, session["rsiFocusContextReady"] == true,
