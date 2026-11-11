@@ -154,7 +154,7 @@ fn rsi_action_program_next(
         .filter(|op|op["runId"].as_str()==Some(execution_id))
         .collect::<Vec<_>>();
     actual.sort_by_key(|op|op["opSeq"].as_u64().unwrap_or(u64::MAX));
-    if let Some(failed)=actual.iter().rev().find(|op|
+    if let Some(failed)=actual.last().copied().filter(|op|
         op["status"]!="completed" || op["result"]["error"].is_string()) {
         if let Some(rule)=program["onFailure"].as_array().into_iter().flatten()
             .find(|rule|rule["onFailure"]==failed["tool"]) {
@@ -166,8 +166,12 @@ fn rsi_action_program_next(
     let mut position=0usize;
     for operation in actual {
         if operation["status"]!="completed" {continue;}
-        if sequence.get(position).is_some_and(|step|step==&operation["tool"]) {
-            position+=1;
+        // A model may skip an optional discovery operation and inspect a
+        // source directly. Advance to its observed position rather than
+        // trapping the next round at the beginning of the learned program.
+        if let Some(offset)=sequence.iter().skip(position)
+            .position(|step|step==&operation["tool"]) {
+            position+=offset+1;
         }
     }
     sequence.get(position).and_then(Value::as_str)
@@ -1247,9 +1251,11 @@ async fn run_turn_body(
             // An induced plan may combine the useful discovery path of one
             // generation and a tested mutation from another. Apply only when
             // its next tool is genuinely offered by this provider.
+            let mut action_program_applied=false;
             if let Some((chosen,reason))=rsi_action_program_next(
                 &session["rsiExecutionMethod"]["actionProgram"],&operations,execution_id) {
                 if round_tools.iter().any(|tool|tool_name(tool)==chosen) {
+                    action_program_applied=true;
                     round_tools.retain(|tool|
                         rsi_action_program_tool_allowed(tool_name(tool),&chosen));
                     let evidence=json!({
@@ -1272,7 +1278,7 @@ async fn run_turn_body(
             // receipts. Exact replacement remains available from context.
             let method_has_read=read_calls>0
                 || session["rsiExecutionMethod"]["preferredTool"]=="workspace_replace";
-            if grounded && method_has_read && !has_write {
+            if grounded && method_has_read && !has_write && !action_program_applied {
                 if let Some((chosen,corrected))=rsi_method_edit_choice(
                     &session["rsiExecutionMethod"],&operations,execution_id) {
                     if round_tools.iter().any(|row|tool_name(row)==chosen) {
@@ -6410,8 +6416,11 @@ mod harness_tool_selection_tests {
             .unwrap().0,"workspace_read_range");
         let read=json!({"runId":"run","tool":"workspace_read_range","status":"completed",
             "opSeq":2,"result":{"content":"fn x(){}"}});
-        assert_eq!(rsi_action_program_next(&plan,&[searched,read],"run")
+        assert_eq!(rsi_action_program_next(&plan,&[searched,read.clone()],"run")
             .unwrap().0,"workspace_replace_range");
+        assert_eq!(rsi_action_program_next(&plan,&[read],"run")
+            .unwrap().0,"workspace_replace_range",
+            "Skip optional discovery already bypassed by genuine source evidence");
         let rejected=json!({"runId":"run","tool":"workspace_replace","status":"failed",
             "opSeq":3,"result":{"error":"oldText mismatch"}});
         assert_eq!(rsi_action_program_next(&plan,&[rejected],"run")
