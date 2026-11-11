@@ -4358,6 +4358,12 @@ async fn run_loop(
         });
         elapsed(record, started);
         save(context, record)?;
+        // A fully evidenced three-generation meta-transfer is the campaign
+        // objective. Do not spend another local-model generation after the
+        // proof is persisted; preserve its final verified receipt.
+        if record["capabilityDemonstrated"] == true {
+            return Ok("capability_proven".into());
+        }
         if let Some(reason)=stopped {return Ok(reason.into());}
         if let Some(error)=generation_model_error(&current) {
             let remaining=record["limits"]["timeBudgetSeconds"].as_u64()
