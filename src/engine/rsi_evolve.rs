@@ -1580,6 +1580,70 @@ fn method_policy_trial_report(state:&AppState,generation:&Value)->Value {
         "qualityEvidence":"accepted_frozen_paired_worktree_results_only"})
 }
 
+/// A failed frozen method-policy trial can change the actual sequence of
+/// source-work steps, not only the scoring weights.
+fn mutate_programs_after_trial(
+    policy:&mut Value,frozen:&Value,rows:&[Value],cohort_id:&str
+)->Vec<Value> {
+    let mut failed=BTreeSet::<String>::new();
+    for row in rows {
+        if row["methodPolicyTrial"]["arm"]!="learned"
+            || row["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+            || !matches!(row["evaluation"]["metrics"]["verdict"].as_str(),
+                Some("regressed"|"build_failed")) {continue;}
+        for receipt in row["inducedMethodApplications"].as_array().into_iter().flatten() {
+            if receipt["performed"]!=true || receipt["verifiedSourceWrite"]!=true {continue;}
+            let Some(id)=receipt["executionProgramId"].as_str() else{continue};
+            if frozen["executionPrograms"].as_array().is_some_and(|programs|
+                programs.iter().any(|p|p["id"].as_str()==Some(id))) {
+                failed.insert(id.to_string());
+            }
+        }
+    }
+    let mut rejected=policy["rejectedProgramIds"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).map(str::to_string).collect::<BTreeSet<_>>();
+    let mut programs=policy["executionPrograms"].as_array().cloned().unwrap_or_default();
+    let ancestors=frozen["executionPrograms"].as_array().cloned().unwrap_or_default();
+    let mut records=policy["programMutations"].as_array().cloned().unwrap_or_default();
+    let mut changes=Vec::new();
+    for parent in failed {
+        if !rejected.insert(parent.clone()){continue;}
+        let Some(original)=ancestors.iter().find(|p|
+            p["id"].as_str()==Some(parent.as_str())) else{continue};
+        let mut alternatives=programs.iter().filter(|p|
+            p["id"]!=original["id"]
+            && p["status"]=="candidate_requires_descendant_execution"
+            && p["domain"]==original["domain"]
+            && p["steps"].as_array().is_some_and(|steps|
+                steps.len()==3 && original["steps"].as_array().is_some_and(|old|
+                    old.len()==3 && old[0]==steps[0] && old[1]==steps[1]
+                        && old[2]!=steps[2])))
+            .cloned().collect::<Vec<_>>();
+        alternatives.sort_by(|a,b|b["score"].as_i64().cmp(&a["score"].as_i64())
+            .then(a["id"].as_str().cmp(&b["id"].as_str())));
+        let Some(alternative)=alternatives.first() else{continue};
+        let mutation=json!({"fromProgramId":parent,
+            "toProgramId":alternative["id"],"cohortId":cohort_id,
+            "reason":"verified_regression_counterexample",
+            "status":"new_program_requires_descendant_trial"});
+        records.push(mutation.clone());
+        changes.push(mutation);
+    }
+    programs.retain(|p|p["id"].as_str().is_none_or(|id|!rejected.contains(id)));
+    for change in &changes {
+        if let Some(program)=programs.iter_mut().find(|p|
+            p["id"]==change["toProgramId"]) {
+            program["origin"]=json!("trial_counterexample_mutation");
+            program["parentProgramId"]=change["fromProgramId"].clone();
+            program["mutationCohortId"]=json!(cohort_id);
+        }
+    }
+    policy["rejectedProgramIds"]=json!(rejected);
+    policy["programMutations"]=json!(records);
+    policy["executionPrograms"]=json!(programs);
+    changes
+}
+
 /// Close a frozen 2+2 method-policy experiment and feed its measured result
 /// back into DOMINION's *next method-scoring algorithm*. No claim of causal
 /// superiority is made: the attempts are sequential, not paired replays.
@@ -1692,6 +1756,9 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
             policy["lastMethodTrial"]=json!({"cohortId":cohort_id,
                 "verdict":verdict,"causalProof":false});
         } else {
+            let mutations=mutate_programs_after_trial(
+                &mut policy,&cohort["policy"],&rows,cohort_id);
+            decision["programMutations"]=json!(mutations);
             // Negative method-policy comparisons alter DOMINION's evaluator,
             // not just a text instruction. Increase penalties and re-explore
             // alternative transitions; the result starts as a NEW candidate.
@@ -1716,6 +1783,7 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
                 "verdict":verdict,"causalProof":false});
             policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([
                 &policy["transitions"],&policy["executionPrograms"],
+                &policy["rejectedProgramIds"],&policy["programMutations"],
                 &policy["evidence"],&policy["scoringKernel"],cohort_id
             ]).to_string().as_bytes())));
         }
@@ -2222,7 +2290,17 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         .filter_map(|row|row["domain"].as_str()).collect::<BTreeSet<_>>();
     let cross_domain=quality_domains.len()>=2;
     policy["transitions"]=json!(transitions);
-    policy["executionPrograms"]=json!(synthesize_method_execution_programs(&evidence));
+    let mut programs=synthesize_method_execution_programs(&evidence);
+    let rejected=policy["rejectedProgramIds"].as_array().cloned().unwrap_or_default();
+    programs.retain(|p|!rejected.contains(&p["id"]));
+    for mutation in policy["programMutations"].as_array().into_iter().flatten() {
+        if let Some(program)=programs.iter_mut().find(|p|p["id"]==mutation["toProgramId"]) {
+            program["origin"]=json!("trial_counterexample_mutation");
+            program["parentProgramId"]=mutation["fromProgramId"].clone();
+            program["mutationCohortId"]=mutation["cohortId"].clone();
+        }
+    }
+    policy["executionPrograms"]=json!(programs);
     policy["evidence"]=json!(evidence);
     // A negative matched trial changes the evaluator itself. Do not erase
     // that newborn candidate at the very next feedback write merely because
@@ -2238,7 +2316,9 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     }
     policy["status"]=json!(if cross_domain{"cross_domain_observed"}else{"candidate"});
     policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([&policy["transitions"],
-        &policy["executionPrograms"],&policy["evidence"],&policy["scoringKernel"]]).to_string().as_bytes())));
+        &policy["executionPrograms"],&policy["rejectedProgramIds"],
+        &policy["programMutations"],&policy["evidence"],
+        &policy["scoringKernel"]]).to_string().as_bytes())));
     policy["causalImprovement"]="unmeasured_until_matched_policy_trials".into();
     policy["updatedAt"]=json!(chrono::Utc::now().to_rfc3339());
     let saved=state.store.put("rsi_method_policy",&policy)?;
@@ -4698,6 +4778,34 @@ mod tests {
         assert_eq!(decision["independentlyEvaluated"],false);
         assert_eq!(state.store.get("rsi_method_policy",&id).unwrap(),policy);
         drop(state);let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejected_execution_program_changes_its_structure_for_next_descendant() {
+        let range=json!({"id":"range","domain":"tools","score":5,
+            "steps":["code_search","workspace_read_range","workspace_replace_range"],
+            "status":"candidate_requires_descendant_execution"});
+        let exact=json!({"id":"exact","domain":"tools","score":3,
+            "steps":["code_search","workspace_read_range","workspace_replace"],
+            "status":"candidate_requires_descendant_execution"});
+        let frozen=json!({"executionPrograms":[range,exact]});
+        let mut policy=frozen.clone();
+        let rows=vec![json!({"methodPolicyTrial":{"arm":"learned"},
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"verdict":"regressed"}},
+            "inducedMethodApplications":[{
+                "executionProgramId":"range","performed":true,
+                "verifiedSourceWrite":true}]})];
+        let changes=mutate_programs_after_trial(&mut policy,&frozen,&rows,"cohort-a");
+        assert_eq!(changes.len(),1);
+        assert_eq!(changes[0]["toProgramId"],"exact");
+        assert_eq!(policy["rejectedProgramIds"],json!(["range"]));
+        assert_eq!(policy["executionPrograms"][0]["steps"],json!([
+            "code_search","workspace_read_range","workspace_replace"]));
+        assert_eq!(policy["executionPrograms"][0]["parentProgramId"],"range");
+        assert_eq!(policy["executionPrograms"][0]["origin"],"trial_counterexample_mutation");
+        assert!(mutate_programs_after_trial(&mut policy,&frozen,&rows,"cohort-a")
+            .is_empty(),"recovered work must not replay an already-accounted mutation");
     }
 
     #[test]
