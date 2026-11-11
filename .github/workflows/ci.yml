@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+# Only the latest commit on a branch needs a full release-mode validation.
+# Superseded commits are cancelled instead of occupying the runner queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
