@@ -603,6 +603,123 @@ fn run_status(
     ("completed","candidate_compiles_not_performance_verified")
 }
 
+/// Return a bounded, evidence-grounded continuation when a genuine model
+/// generation reached no source candidate. This repairs an observed failed
+/// edit or converts a verified read-only turn into ONE executable edit try.
+/// The model still authors the change. This is not an automatic patch or an
+/// independent A/B quality verdict.
+pub fn grounded_edit_feedback(
+    state: &crate::state::AppState,
+    result: &Value,
+    session: &Value,
+    operations: &[Value],
+) -> Option<(String, &'static str)> {
+    if result["status"] != "needs_review"
+        || result["reason"] != "no_valid_candidate"
+        || result["rsi"]["sourceClean"] != true
+        || result["rsi"]["diffBytes"].as_u64() != Some(0)
+        || !result["rsi"]["modelError"].as_str().unwrap_or("").is_empty()
+        || session["rsiRun"] != true
+        || !session["rsiCampaignId"].is_string()
+    {
+        return None;
+    }
+    let session_id = session["id"].as_str()?;
+    let focus = session["rsiFocusFile"].as_str().filter(|path| rsi::safe_path(path))?;
+    let own: Vec<&Value> = operations
+        .iter()
+        .filter(|op| op["sessionId"].as_str() == Some(session_id))
+        .collect();
+    // A successful mutation with a zero final diff may have been reverted.
+    // Its outcome is not a safe "read-only" continuation.
+    if own.iter().any(|op| {
+        op["result"]["written"] == true
+            && matches!(
+                op["tool"].as_str(),
+                Some("workspace_replace" | "workspace_replace_range" | "workspace_write")
+            )
+    }) {
+        return None;
+    }
+    let is_edit = |op: &Value| {
+        matches!(
+            op["tool"].as_str(),
+            Some("workspace_replace" | "workspace_replace_range" | "workspace_write")
+        )
+    };
+    let failed = own.iter().rev().copied().find(|op| {
+        is_edit(op)
+            && op["arguments"]["path"].as_str() == Some(focus)
+            && matches!(op["status"].as_str(), Some("completed" | "failed"))
+            && (op["status"] == "failed"
+                || op["result"]["staleVersion"] == true
+                || op["result"]["preflightBlocked"] == true
+                || op["result"]["unchanged"] == true
+                || op["result"]["error"].is_string())
+    });
+    if let Some(op) = failed {
+        let error = op["result"]["error"]
+            .as_str()
+            .unwrap_or("The previous edit did not write source.");
+        let guidance = if op["tool"] == "workspace_write" {
+            "workspace_write는 새 파일 전용입니다. 기존 파일의 관찰된 줄만 workspace_replace_range로 변경하세요."
+        } else {
+            "현재 파일을 workspace_read_range로 다시 읽고 그 sourceSha256와 정확한 줄 범위로 workspace_replace_range를 실행하세요."
+        };
+        return Some((
+            format!(
+                "실제 편집 연산이 실패한 채 후보 0건으로 끝났습니다. 대상: {focus}. \
+                 실패 영수증: {}. {guidance} 근거 없는 코드는 작성하지 마세요. \
+                 동일 격리 작업공간에서 이 시도는 1번만 재실행됩니다.",
+                error.chars().take(480).collect::<String>()
+            ),
+            "observed_tool_repair",
+        ));
+    }
+    if own.iter().any(|op| is_edit(op)) {
+        // No trustworthy error receipt: do not guess why a write failed.
+        return None;
+    }
+    let read = own.iter().rev().copied().find(|op| {
+        op["tool"] == "workspace_read_range"
+            && op["status"] == "completed"
+            && op["arguments"]["path"].as_str() == Some(focus)
+            && op["result"]["error"].is_null()
+            && op["result"]["sourceSha256"]
+                .as_str()
+                .is_some_and(|sha| sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+    });
+    let indexed = session["rsiIndexId"]
+        .as_str()
+        .and_then(|index| crate::engine::code_index::indexed_source_hash(state, index, focus))
+        .is_some();
+    if read.is_none() && !indexed {
+        return None;
+    }
+    let observed = read
+        .and_then(|op| op["result"]["sourceSha256"].as_str().map(|sha| (op, sha)))
+        .map(|(op, sha)| {
+            let excerpt = op["result"]["content"]
+                .as_str()
+                .or_else(|| op["result"]["text"].as_str())
+                .unwrap_or("");
+            format!(
+                "\n실제 읽기 영수증 SHA-256: {sha}\n원문 발췌:\n{}\n",
+                excerpt.chars().take(1800).collect::<String>()
+            )
+        })
+        .unwrap_or_else(|| "색인에 소스 해시가 존재합니다. 수정 전에 해당 파일을 정확히 읽으세요.".into());
+    Some((
+        format!(
+            "검증된 소스를 조회했지만 실제 수정은 0건입니다. 이번에는 조사 반복보다 \
+             {focus}의 목표 관련 120줄 이내 수정 여부를 먼저 결정하세요. \
+             바꿀 근거가 있으면 workspace_replace_range(startLine,endLine,newText,expectedSha256)를 실제 호출하고 \
+             파일을 변경하지 못하면 명확한 이유를 답하세요. 이 재시도 자체는 성능 향상이 아닙니다.{observed}"
+        ),
+        "source_edit_bootstrap",
+    ))
+}
+
 /// Resolve a compiler diagnostic to the source range the next worker
 /// actually needs to READ. Source repair previously observed the beginning of
 /// the indexed function even when rustc reported a distant broken test line.
@@ -1003,6 +1120,44 @@ mod tests {
             "unexpected node path: {node:?}"
         );
     }
+    #[test]
+    fn no_candidate_feedback_requires_real_same_session_source_evidence() {
+        use crate::{config::Config, db::Store, state::AppState, vault::Vault};
+        let root=std::env::temp_dir().join(format!("rsi-grounded-edit-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),Vault::open(&cfg.key_path()));
+        let session=json!({"id":"s1","rsiRun":true,"rsiCampaignId":"c1",
+            "rsiFocusFile":"src/engine/memory.rs"});
+        let result=json!({"status":"needs_review","reason":"no_valid_candidate",
+            "rsi":{"sourceClean":true,"diffBytes":0,"modelError":""}});
+        let read=json!({"sessionId":"s1","status":"completed","tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/memory.rs"},
+            "result":{"sourceSha256":"a".repeat(64),"content":"fn retrieve() {}"}});
+        let (prompt,mode)=grounded_edit_feedback(&state,&result,&session,&[read.clone()]).unwrap();
+        assert_eq!(mode,"source_edit_bootstrap");
+        assert!(prompt.contains("workspace_replace_range"));
+        assert!(prompt.contains("fn retrieve()"));
+        let mut foreign=read.clone();
+        foreign["sessionId"]=json!("other-session");
+        assert!(grounded_edit_feedback(&state,&result,&session,&[foreign]).is_none());
+        let mut failed=json!({"sessionId":"s1","status":"failed","tool":"workspace_replace_range",
+            "arguments":{"path":"src/engine/memory.rs"},
+            "result":{"error":"stale source hash","staleVersion":true}});
+        let (_,mode)=grounded_edit_feedback(&state,&result,&session,&[read.clone(),failed.clone()]).unwrap();
+        assert_eq!(mode,"observed_tool_repair");
+        failed["arguments"]["path"]=json!("src/engine/tools.rs");
+        assert!(grounded_edit_feedback(&state,&result,&session,&[failed]).is_none());
+        let mut reverted=read.clone();
+        reverted["tool"]=json!("workspace_replace_range");
+        reverted["result"]["written"]=json!(true);
+        assert!(grounded_edit_feedback(&state,&result,&session,&[read,reverted]).is_none());
+        let mut disconnected=result.clone();
+        disconnected["rsi"]["modelError"]=json!("connection reset");
+        assert!(grounded_edit_feedback(&state,&disconnected,&session,&[]).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn later_generations_see_prior_compile_failures_without_fabricated_gains(){
         use crate::{config::Config,db::Store,state::AppState,vault::Vault};
