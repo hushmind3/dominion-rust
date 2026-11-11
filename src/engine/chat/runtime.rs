@@ -55,6 +55,13 @@ fn rsi_should_checkpoint(tool_calls: u64, has_write: bool) -> bool {
     !has_write && tool_calls >= 6
 }
 
+/// A restricted RSI round must stay restricted on following rounds. Otherwise
+/// the search tools silently reappear after the first corrective instruction,
+/// and the same source is read repeatedly rather than turned into a change.
+fn rsi_checkpoint_applies(tool_calls:u64,has_write:bool,previously_entered:bool)->bool {
+    !has_write && (previously_entered || rsi_should_checkpoint(tool_calls,has_write))
+}
+
 /// Stop broad discovery but allow exact missing ranges to be read. Bounded
 /// excerpts are intentionally incomplete, so banning all reads would prevent edits.
 fn rsi_checkpoint_tool(name: &str) -> bool {
@@ -1087,7 +1094,7 @@ async fn run_turn_body(
                 .unwrap_or(60_000);
             round_tools = trim_tool_definitions(round_tools, budget);
         }
-        if session["rsiRun"]==true && !force_final && !rsi_decision_checkpoint {
+        if session["rsiRun"]==true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
             let has_write = state.store.all("execution_operation").iter().any(|operation| {
                 operation["runId"].as_str() == Some(execution_id)
@@ -1097,13 +1104,15 @@ async fn run_turn_body(
                         Some("workspace_write" | "workspace_replace")
                     )
             });
-            if rsi_should_checkpoint(tool_calls, has_write) {
+            if rsi_checkpoint_applies(tool_calls,has_write,rsi_decision_checkpoint) {
                 round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition)));
-                messages.push(json!({
-                    "role":"system",
-                    "content":"추가 탐색을 중단하세요. 지금까지의 근거로 코드 변경이나 재사용 가능한 실행 방법을 제안할 수 있습니다. 근거가 없으면 변경 없이 최종 보고하세요. code_search는 중단하고, 빠진 정확한 구간을 확인할 때만 workspace_read_range를 사용하세요."
-                }));
-                rsi_decision_checkpoint = true;
+                if !rsi_decision_checkpoint {
+                    messages.push(json!({
+                        "role":"system",
+                        "content":"추가 탐색을 중단하세요. 지금까지의 근거로 코드 변경이나 재사용 가능한 실행 방법을 제안할 수 있습니다. 근거가 없으면 변경 없이 최종 보고하세요. code_search는 중단하고, 빠진 정확한 구간을 확인할 때만 workspace_read_range를 사용하세요."
+                    }));
+                    rsi_decision_checkpoint = true;
+                }
             }
         }
         let wire_messages = messages.clone();
@@ -6135,6 +6144,12 @@ mod harness_tool_selection_tests {
         assert!(!rsi_should_checkpoint(5, false));
         assert!(rsi_should_checkpoint(6, false));
         assert!(!rsi_should_checkpoint(6, true));
+        assert!(rsi_checkpoint_applies(6,false,false));
+        assert!(rsi_checkpoint_applies(7,false,true),
+            "real RSI must not reopen broad discovery after its first checkpoint");
+        assert!(!rsi_checkpoint_applies(7,true,true),
+            "verified edit ends the research checkpoint");
+        assert!(!rsi_checkpoint_applies(3,false,false));
         for name in ["workspace_replace", "workspace_write", "workspace_read_range", "rsi_method_propose", "algorithm_propose"] {
             assert!(rsi_checkpoint_tool(name), "{name} must stay available at the checkpoint");
         }
