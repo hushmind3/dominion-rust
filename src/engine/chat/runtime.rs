@@ -252,6 +252,60 @@ fn rsi_focused_edit_due(
     })
 }
 
+/// A condition/action program is created from actual source-work episodes by
+/// DOMINION's decision GRAMMAR. Its suffix predicate is executable, and its
+/// outcome can modify the grammar used to create the next descendant's rules.
+fn rsi_conditional_rule_next_tool(
+    session:&Value,operations:&[Value],execution_id:&str,offered:&[Value],
+)->Option<(String,String)>{
+    if !rsi_generation_has_action_target(session)
+        || session["rsiInducedMethodPolicy"]["kind"]!="harness.method-transitions" {
+        return None;
+    }
+    let domain=session["rsiDomain"].as_str()?;
+    let focus=session["rsiFocusFile"].as_str()?;
+    let rules=session["rsiInducedMethodPolicy"]["decisionNodes"].as_array()?;
+    let mut events=operations.iter().filter(|op|
+        op["runId"].as_str()==Some(execution_id)
+            && op["opSeq"].as_u64().is_some()
+            && matches!(op["status"].as_str(),Some("completed"|"failed"))
+            && (op["tool"]=="code_search" ||
+                op["arguments"]["path"].as_str()==Some(focus)))
+        .collect::<Vec<_>>();
+    events.sort_by(|a,b|a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64()));
+    let after_failed=events.iter().rev().find(|op|
+        op["status"]=="failed"
+            && matches!(op["tool"].as_str(),
+                Some("workspace_replace"|"workspace_replace_range"|"workspace_write")))
+        .and_then(|op|op["opSeq"].as_u64()).unwrap_or(0);
+    let fresh_read=events.iter().any(|op|
+        op["tool"]=="workspace_read_range" && op["status"]=="completed"
+            && op["opSeq"].as_u64().is_some_and(|n|n>after_failed)
+            && op["result"]["sourceSha256"].as_str().is_some_and(|hash|
+                hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit())));
+    let mut choices=Vec::<(i64,usize,String,String)>::new();
+    for rule in rules {
+        if rule["domain"].as_str()!=Some(domain)
+            || rule["status"]!="candidate_requires_descendant_execution" {continue;}
+        let Some(next)=rule["nextTool"].as_str() else{continue};
+        if !offered.iter().any(|tool|tool_name(tool)==next){continue;}
+        if matches!(next,"workspace_replace"|"workspace_replace_range"|"workspace_write")
+            && !fresh_read {continue;}
+        let Some(suffix)=rule["guard"]["suffix"].as_array() else{continue};
+        if suffix.is_empty() || suffix.len()>3 || suffix.len()>events.len(){continue;}
+        if !suffix.iter().zip(events[events.len()-suffix.len()..].iter())
+            .all(|(condition,op)| condition["tool"]==op["tool"]
+                && condition["status"]==op["status"]) {continue;}
+        let score=rule["score"].as_i64().unwrap_or(0);
+        if score<=0 {continue;}
+        let Some(id)=rule["id"].as_str() else{continue};
+        choices.push((score,suffix.len(),next.into(),id.into()));
+    }
+    choices.sort_by(|a,b|b.0.cmp(&a.0).then(b.1.cmp(&a.1))
+        .then(a.3.cmp(&b.3)));
+    choices.into_iter().next().map(|(_,_,tool,id)|(tool,id))
+}
+
 /// Run a source-work program COMPOSED from independently observed method
 /// edges. These are not model claims or canned edits: only witnessed native
 /// operations advance a program's cursor, and the source hash must be read
@@ -347,6 +401,10 @@ fn rsi_induced_next_tool(
     if !rsi_generation_has_action_target(session)
         || session["rsiInducedMethodPolicy"]["kind"]!="harness.method-transitions" {
         return None;
+    }
+    if let Some((tool,_))=rsi_conditional_rule_next_tool(
+        session,operations,execution_id,offered) {
+        return Some(tool);
     }
     if let Some((tool,_))=rsi_composed_program_next_tool(
         session,operations,execution_id,offered) {
@@ -1584,16 +1642,21 @@ async fn run_turn_body(
         }
         if let Some(next)=rsi_induced_next_tool(&session,
             &state.store.all("execution_operation"),execution_id,&round_tools) {
-            let composed=rsi_composed_program_next_tool(&session,
-                &state.store.all("execution_operation"),execution_id,&round_tools)
+            let ops=state.store.all("execution_operation");
+            let conditional=rsi_conditional_rule_next_tool(
+                &session,&ops,execution_id,&round_tools)
                 .and_then(|(preferred,id)|(preferred==next).then_some(id));
+            let composed=if conditional.is_none(){
+                rsi_composed_program_next_tool(&session,&ops,execution_id,&round_tools)
+                    .and_then(|(preferred,id)|(preferred==next).then_some(id))
+            } else {None};
             round_tools.sort_by_key(|definition|tool_name(definition)!=next);
             if let Some(mut record)=state.store.get("execution",execution_id) {
                 let decision=json!({
                     "policyId":session["rsiInducedMethodPolicy"]["id"],
                     "revision":session["rsiInducedMethodPolicy"]["revision"],
                     "preferredTool":next,"executionProgramId":composed,
-                    "mode":"empirical_tool_priority",
+                    "decisionRuleId":conditional,"mode":"empirical_tool_priority",
                     "afterOpSeq":op_seq,"modelRound":round,
                     "domain":session["rsiDomain"],
                     "focusPath":session["rsiFocusFile"],
@@ -6670,6 +6733,39 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn induced_temporal_rule_changes_descendant_action_after_failed_edit() {
+        let policy=json!({"kind":"harness.method-transitions",
+            "decisionNodes":[{"id":"recovered-guard","domain":"tools","score":9,
+                "status":"candidate_requires_descendant_execution",
+                "guard":{"suffix":[
+                    {"tool":"workspace_replace_range","status":"failed"},
+                    {"tool":"workspace_read_range","status":"completed"}]},
+                "nextTool":"workspace_replace"}],
+            "transitions":[]});
+        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"child","rsiDomain":"tools",
+            "rsiFocusFile":"src/engine/tools.rs",
+            "rsiInducedMethodPolicy":policy});
+        let failed=json!({"runId":"r","opSeq":1,"tool":"workspace_replace_range",
+            "status":"failed","arguments":{"path":"src/engine/tools.rs"}});
+        let read=json!({"runId":"r","opSeq":2,"tool":"workspace_read_range",
+            "status":"completed","arguments":{"path":"src/engine/tools.rs"},
+            "result":{"sourceSha256":"a".repeat(64)}});
+        let offered=vec![json!({"type":"function",
+            "function":{"name":"workspace_replace"}})];
+        assert_eq!(rsi_conditional_rule_next_tool(&session,&[failed.clone(),read.clone()],
+            "r",&offered),Some(("workspace_replace".into(),"recovered-guard".into())));
+        assert_eq!(rsi_induced_next_tool(&session,&[failed.clone(),read.clone()],
+            "r",&offered),Some("workspace_replace".into()));
+        let mut old=read.clone();
+        old["result"]["sourceSha256"]=json!("invalid");
+        assert!(rsi_conditional_rule_next_tool(&session,&[failed.clone(),old],
+            "r",&offered).is_none());
+        assert!(rsi_conditional_rule_next_tool(&session,&[failed,read],
+            "another-run",&offered).is_none());
     }
 
     #[test]
