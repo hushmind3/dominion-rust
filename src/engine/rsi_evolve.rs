@@ -5200,6 +5200,58 @@ mod tests {
     }
 
     #[test]
+    fn verified_successes_induce_a_shorter_unverified_descendant_program() {
+        let parent=json!({"revision":"research-then-edit",
+            "sequence":["code_search","workspace_read_range","workspace_replace_range"],
+            "onFailure":[],"recoveryPaths":[]});
+        let observed=|job:&str,passed:bool|{
+            let execution=format!("exec-{job}");
+            json!({
+                "jobId":job,"domain":"memory","sourceContextChars":1100,
+                "parentContextFit":{"sourceExcerptDeferred":false},
+                "executionMethod":{"actionProgram":parent},
+                "methodActions":[{"executionId":execution,
+                    "inducedProgramDecision":{"programRevision":"research-then-edit",
+                        "chosenTool":"workspace_replace_range","actionCount":1}}],
+                "actionTrace":[
+                    {"runId":execution,"opSeq":1,"tool":"workspace_read_range",
+                        "executed":true,"sourceChanged":false,"status":"completed"},
+                    {"runId":execution,"opSeq":2,"tool":"workspace_replace_range",
+                        "executed":true,"sourceChanged":true,"status":"completed"}],
+                "accepted":passed,"pairedRevalidated":passed,
+                "evaluation":{"candidateStatus":"verified",
+                    "measurementScope":"frozen_native_cases_only",
+                    "metrics":{"eligible":true,"holdoutCases":2,"regressions":0}}
+            })
+        };
+        let single=compress_successful_action_program(parent.clone(),
+            &[observed("one",true)]);
+        assert_eq!(single["revision"],parent["revision"]);
+        let compressed=compress_successful_action_program(parent.clone(),
+            &[observed("one",true),observed("two",true)]);
+        assert_eq!(compressed["mutatedFrom"],parent["revision"]);
+        assert_eq!(compressed["mutationOperator"],"success_derived_discovery_ablation");
+        assert_eq!(compressed["sequence"],
+            json!(["workspace_read_range","workspace_replace_range"]));
+        assert_eq!(compressed["status"],"trial_success_compression_unverified");
+        let no_gain=compress_successful_action_program(parent.clone(),
+            &[observed("one",true),observed("two",false)]);
+        assert_eq!(no_gain["revision"],parent["revision"]);
+        let mut missing_source=observed("two",true);
+        missing_source["sourceContextChars"]=json!(0);
+        let no_context=compress_successful_action_program(parent.clone(),
+            &[observed("one",true),missing_source]);
+        assert_eq!(no_context["revision"],parent["revision"]);
+        let mut search_used=observed("two",true);
+        search_used["actionTrace"].as_array_mut().unwrap().insert(0,json!({
+            "runId":"exec-two","opSeq":0,"tool":"code_search",
+            "executed":true,"sourceChanged":false,"status":"completed"}));
+        let search_required=compress_successful_action_program(parent.clone(),
+            &[observed("one",true),search_used]);
+        assert_eq!(search_required["revision"],parent["revision"]);
+    }
+
+    #[test]
     fn invalid_compiled_candidates_improve_the_method_not_only_the_prompt() {
         let original=json!({"revision":"compiler-policy",
             "sequence":["code_search","workspace_replace"],
