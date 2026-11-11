@@ -4264,6 +4264,7 @@ async fn run_loop(
                 std::fs::canonicalize(&context.state.config.data_dir).map_err(|e| e.to_string())?,
             )
             .env("DOMINION_WORKSPACE", &lab)
+            .env("DOMINION_RSI_BUILD_TARGET_DIR", &target)
             .env_remove("DOMINION_DESKTOP_PARENT");
         let worker_started = Instant::now();
         let remaining = record["limits"]["timeBudgetSeconds"]
@@ -4363,8 +4364,12 @@ async fn run_loop(
             .filter(|check|check["passed"]!=true)
             .take(4).map(|check|json!({
                 "label":check["label"],
+                // Tooling errors appear at the END of the compiler log.
+                // Keeping the first 950 chars previously saved only crate
+                // 'Checking ...' lines, hiding the failing source location.
                 "error":check["stderr"].as_str().or_else(||check["error"].as_str())
-                    .unwrap_or("").chars().take(950).collect::<String>()
+                    .unwrap_or("").chars().rev().take(1600)
+                    .collect::<String>().chars().rev().collect::<String>()
             })).collect::<Vec<_>>();
         generation["sourceIntegrity"]=json!({
             "diffBytes":source_result["diffBytes"],
