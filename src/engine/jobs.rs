@@ -532,6 +532,16 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         if let Some(mut session)=context.state.store.get("session",&session_id) {
             session["rsiRun"]=json!(true);
             session["rsiObjective"]=input["rsiObjective"].clone();
+            // A concrete, owner-chosen source goal can advance from a real
+            // read to an edit-only stage. Autonomous exploration and generic
+            // research must retain the option to finish without extra writes.
+            session["rsiExplicitFocus"]=json!(
+                input["rsiAutonomous"] != true
+                && input["rsiAutoFocus"] != true
+                && input["rsiFocusFiles"].as_array().is_some_and(|files|
+                    files.iter().any(|file| file.as_str()
+                        .is_some_and(crate::engine::rsi::safe_path)))
+            );
             crate::engine::rsi_evolve::configure_method_session(&context.state, &input, &mut session);
             session["rsiCodeIndexId"]=input["rsiIndexId"].clone();
             session["rsiSourceDir"]=input["rsiSourceDir"].clone();

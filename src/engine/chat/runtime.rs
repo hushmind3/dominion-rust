@@ -1109,7 +1109,14 @@ async fn run_turn_body(
                 operation["tool"].as_str(),
                 Some("workspace_read" | "workspace_read_range")
             )).count() as u64;
-            if let Some(edit_only) = rsi_checkpoint_stage(tool_calls, read_calls, has_write) {
+            // A generic RSI research session may inspect source merely as
+            // evidence; only an actual, focused generation gets edit-only
+            // tools and native tool_choice=required.
+            let focused_generation = session["rsiExplicitFocus"] == true
+                && session["rsiGenerationJobId"].is_string();
+            if let Some(edit_only) = rsi_checkpoint_stage(
+                tool_calls, if focused_generation { read_calls } else { 0 }, has_write
+            ) {
                 if edit_only {
                     // Restore edit schemas from the complete allowed menu:
                     // prior context-based trimming may have dropped them.
