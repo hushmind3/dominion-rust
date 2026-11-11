@@ -151,3 +151,32 @@
 - **다음 최우선:** 실제 Qwen 실행에서 `workspace_replace_range` 실행 → `written:true` → `toolReceipt.verified:true` → `diffBytes>0` → `candidateId` → `checksPassed` → frozen paired holdout `eligible` 및 `acceptedCommit` 순서대로 증거를 확인한다.
 - 첫 독립 개선 채택이 생기면 `rsiInheritedImplementations`와 실제 다음 세대 바이너리에서 **다른 분야 적용/실패 교정/재채택**을 확인하고 세대 계보를 고정한다. 모델 없는 합성 테스트 성공을 교차 분야 실모델 개선으로 보고하지 않는다.
 - Champion, Sub1~3, main은 수정하지 않았다. Sub4 외부 수정 없음.
+
+
+## 심판 50점(2위) 피드백 이후 — DOMINION 스스로 방법을 합성·수정하는 학습 커널
+
+### 기준 변경
+
+모델은 코딩·추론 도구이며 지능 향상의 소유자는 DOMINION이다. 소스 편집·holdout은 수단/관측기이다. 재귀적 자기개선의 대상은 `어떤 도구를 어떤 순서로 선택하고 어떻게 실패에서 갱신하는가`라는 DOMINION의 개선 *방법* 자체다. 최종 심판은 Sub4 **50/100, 2위**(핵심 엔진 20, RSI 10, 경험·계승 14, 제품 6). Champion 51점으로 자리 교환 없음.
+
+### 이번 새로 구현한 알고리즘
+
+1. `879028c` — `src/engine/rsi_evolve.rs`의 `witnessed_method_trace`와 `learn_method_transitions`. 소스 코드 위치·oldText·모델 이름을 외우지 않고 실제 `execution_operation`의 도구 흐름을 추상화한다. `workspace_replace*`는 실제 쓰기와 독립 readback 영수증이 있어야 학습된다. 절차 실행 후속조건 `verified+followed`가 확인되면 **운영 단계의 학습 근거 1점**, 자체 알고리즘의 실제 채택과 동결 독립 paired holdout 개선이 검증되면 **능력 개선 근거 3점**으로 누적한다. 후속조건 위반은 부정 가중치로 축적해 같은 도구 전이가 자동 추천되지 않도록 개정한다. 이는 모델의 제안/텍스트를 학습 성과로 부풀리지 않는다.
+2. `f813062` 및 `5618fea` — 같은 jobId 중복 학습 금지, 오래된 근거를 제거하면 현재 32개 유효 영수증으로 전이 가중치를 재산출, `rsi_method_policy` 영구 보관, 새 내용이 나올 때 revision을 갱신. 합성 절차는 특정 코드 경로를 베껴 반복 실행하지 않고 도구 전이 규칙으로 저장되므로 서로 다른 분야에서 재사용할 수 있다. 가짜 상태/모델 자체 선언으로는 양성 근거가 생성되지 않도록 검증을 추가했다.
+3. `f2e0ea2` — `src/engine/chat/runtime.rs`의 `rsi_induced_next_tool`: 실제 RSI 자손 워커가 이전 소스 관찰에 도달한 순간 전이 가중치로 다음 도구를 선택해 **모델에 제공되는 실제 도구 목록의 우선순위를 변경**한다. 같은 실행·같은 대상 파일의 관찰만 유효하며 읽기 전의 임의 쓰기 추론은 허용하지 않는다. `execution.rsiInducedMethodDecision`에 모델 호출 이전 적용된 정책 ID/revision/추천 도구를 남긴다.
+4. `1f52ea0` — 모델이 실제 근거를 읽고 마지막 편집 결정을 할 때, 해당 도구 선택 정책의 학습 결과에 따라 `workspace_replace` 또는 `workspace_replace_range` 중 **사용할 편집 원시 동작 자체를 전환**한다. 학습 근거가 없으면 기존 SHA 기반 범위 편집을 기본으로 유지.
+5. `c6c4983` — 실제 다음 세대에서 권장한 도구가 수행됐는지와 읽기 검증을 통과한 실제 소스 변경이 있었는지를 `inducedMethodApplications`에 별도로 기록. 모델이 해당 도구를 이용했다고 주장하거나 우선순위만 바뀐 경우를 실제 개선으로 세지 않는다.
+6. `ed55220`, `9de90fe` — 앞선 CI에서 확인된 블록 닫힘 누락과 기존 소형 모델 SHA 보존 테스트의 정규화 비교 오류를 수정했다.
+
+### 증명 수준
+
+- **구현:** 소스 기반 동작 알고리즘·지속 기록·다른 분야 정책 선택·증거 기반 개정 경로 연결. 일반 RSI 대화에서는 적용되지 않고 실제 자손 개선 세대만 사용한다.
+- **검증 중:** 최신 커밋 CI와 해당 브랜치의 Qwen 모델 캠페인. 테스트를 로컬에서 직접 실행한 적은 없으며 CI 결과를 확인해야 한다.
+- **성공으로 집계하지 않음:** 모델이 새 정책을 썼다고 발언한 사실, 저장된 policy revision 개수, 도구 선택만 바뀐 경우, 자동 holdout 채택 기록이 없는 실행. 실제 모델의 연속된 2~3세대 독립 품질 개선은 아직 증명되지 않았다.
+- `cross_domain_observed`는 **서로 다른 2개 분야에서 독립 개선과 유효한 절차 사용이 각각 관측되었다**는 의미이지, 정책 자체의 인과 효과가 측정됐다는 뜻은 아니다. 정책의 인과 효과는 동일 모델/동결 평가에서 정책 A·B를 비교해야 판단한다.
+
+### 후속 개발에서 실제로 이어갈 중요 작업
+
+새 정책으로 시작된 실제 Qwen 세대의 `execution.rsiInducedMethodDecision` → `generation.inducedMethodApplications` → `rsi_run.diffBytes` → `candidateId` → frozen paired holdout → `acceptedCommit`을 하나의 계보로 비교한다. 다른 분야에서 성과와 실패가 나온 뒤 변경된 policy revision으로 다시 같은 종류의 자기개선을 수행하고 능력 변화를 실측한다. 변경 전후 모델 코딩 결과만 비교하지 말고 DOMINION의 **방법 선택/실패 수정 능력**을 평가해야 한다.
+
+다른 개발 브랜치와 main은 수정하지 않았다.
