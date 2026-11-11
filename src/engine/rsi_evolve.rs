@@ -2573,6 +2573,7 @@ async fn run_loop(
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
+        child_input["rsiActionDirective"]=next_execution_action(&recorded_history);
         let target_objective=selection_objective(&child_input);
         // Compute the same domain decision that the worker will use. Keep it
         // distinct from rsiSelectedDomain, which represents an explicit choice.
@@ -2740,10 +2741,13 @@ async fn run_loop(
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
+            "actionDirective":current["rsiActionDirective"],
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         let candidate_id = verified_candidate_id(&current["result"]);
+        generation["actionObservation"]=actual_edit_observation(
+            &tools_used, candidate_id.is_some());
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
         if let Some(id) = candidate_id {
             record["phase"] = json!("measuring");
@@ -3085,6 +3089,48 @@ pub(crate) async fn adopt(
     git(context, lab, &["rev-parse", "HEAD"]).await
 }
 
+/// Distinguish completed source-edit tool calls from model text and proposed
+/// candidates. A tool attempt alone does not prove an independently measured gain.
+fn actual_edit_observation(tools:&[Value], candidate_created:bool)->Value {
+    let calls=tools.iter()
+        .filter(|row|matches!(row["tool"].as_str(),Some("workspace_replace"|"workspace_write")))
+        .map(|row|row["calls"].as_u64().unwrap_or(0)).sum::<u64>();
+    json!({"status":if calls>0 {"edit_attempted"} else {"no_edit"},
+        "editToolCalls":calls,"candidateCreated":candidate_created})
+}
+
+/// Convert the latest observed outcome into a specific next executable action.
+fn next_execution_action(history:&[Value])->Value {
+    let Some(last)=history.last() else {return json!({"mode":"discover","previousAttempt":null});};
+    let previous=last["actionDirective"]["mode"].as_str().unwrap_or("");
+    let verdict=last["evaluation"]["verdict"].as_str().unwrap_or("");
+    let edited=last["actionObservation"]["editToolCalls"].as_u64().unwrap_or(0)>0;
+    let mode=if last["accepted"]==true {"extend_verified_capability"}
+        else if matches!(verdict,"regressed"|"build_failed") {
+            if previous=="repair_failed_case" {"change_approach"} else {"repair_failed_case"}
+        } else if last["candidateId"].is_string() {
+            if previous=="revise_candidate" {"change_approach"} else {"revise_candidate"}
+        } else if edited {"complete_candidate"}
+        else if last["newFindings"].as_u64().unwrap_or(0)>0
+            && previous!="implement_research" {"implement_research"}
+        else {"change_approach"};
+    json!({"mode":mode,"previousAttempt":last["attempt"],
+        "previousDomain":last["domain"],"previousCandidateId":last["candidateId"],
+        "previousError":last["error"].as_str().unwrap_or("").chars().take(240).collect::<String>(),
+        "previousTools":last["toolsUsed"]})
+}
+fn execution_action_contract(action:&Value)->&'static str {
+    match action["mode"].as_str().unwrap_or("discover") {
+        "implement_research" => "이전 세대의 저장된 소스 근거를 재사용하고 이번에는 실제 workspace_replace 또는 workspace_write 도구를 호출해 코드를 수정하세요. 같은 조사만 반복하지 마세요.",
+        "repair_failed_case" => "지난 후보의 실패한 holdout 경로를 수정하는 다른 코드 패치를 도구로 실행하세요. 실패한 패치의 재제출은 해결이 아닙니다.",
+        "revise_candidate" => "지난 후보가 독립 평가를 통과하지 못한 원인을 좁히고 수정안을 실제 파일 편집 도구로 적용하세요.",
+        "complete_candidate" => "지난 세대에는 파일 수정 도구를 호출했으나 유효한 후보가 없습니다. 변경의 저장·컴파일·검증 단계 오류를 고쳐 후보를 완성하세요.",
+        "change_approach" => "이전 세대는 수정 없이 종료됐습니다. 실패 원인에 따라 대상 범위나 수정 전략을 바꾸고 실제 파일 편집을 시도하세요.",
+        "extend_verified_capability" => "검증된 개선은 보존하면서 다른 문제의 새 개선을 실제 코드 수정과 독립 평가로 증명하세요.",
+        _ => "구체적인 문제 한 가지를 찾아 실제 소스 변경 도구와 검증을 실행하세요. 설명이나 조사만으로 완료하지 마세요."
+    }
+}
+
 // A generation's research continuation must be decided identically by the
 // coordinator (which chooses source files) and by the native child worker
 // (which actually runs the algorithm). Otherwise a trial policy can appear
@@ -3354,6 +3400,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiDecisionInput"] = job["input"]["rsiDecisionInput"].clone();
     job["input"]["rsiDomainSelection"] = json!(domain_selection);
     job["input"]["rsiSearchStrategy"] = strategy;
+    let action=next_execution_action(&history);
+    job["rsiActionDirective"]=action.clone();
+    job["input"]["rsiActionDirective"]=action.clone();
     let feedback = history
         .iter().rev()
         .take(8)
@@ -3373,8 +3422,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
-    job["input"]["prompt"]=json!(format!("{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
-        job["input"]["prompt"].as_str().unwrap_or(""),feedback));
+    let action_prompt=if job["input"]["providerId"].as_str().is_some_and(|id|!id.is_empty())
+        && job["input"]["model"].as_str().is_some_and(|id|!id.is_empty()) {
+        format!("\n### 이번 세대의 실행 행동\n{}\n관측된 이전 세대 실패: {}\n",
+            execution_action_contract(&action),action)
+    } else {String::new()};
+    job["input"]["prompt"]=json!(format!("{}{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
+        job["input"]["prompt"].as_str().unwrap_or(""),action_prompt,feedback));
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;
     let context = JobContext::new(state.clone(), job_id.into());
     let result = jobs::run_prompt(&context, &job).await;
