@@ -11,12 +11,14 @@ struct Genome {
     repair_limit: u64,
     program: Vec<String>,
     rules: Vec<Value>,
+    rewrite_program: Vec<Value>,
 }
 
 impl Genome {
     fn baseline() -> Self {
         Self { checkpoint_after: 3, preferred_tool: "workspace_replace_range", repair_limit: 2,
-            program: crate::engine::rsi_edit_program::baseline(), rules:Vec::new() }
+            program: crate::engine::rsi_edit_program::baseline(),
+            rules:Vec::new(),rewrite_program:Vec::new() }
     }
 
     fn from_policy(policy: &Value) -> Self {
@@ -29,6 +31,7 @@ impl Genome {
         result.repair_limit = policy["repairLimit"].as_u64().unwrap_or(2).min(3);
         result.program = crate::engine::rsi_edit_program::normalize(&policy["program"]);
         result.rules = crate::engine::rsi_decision_rules::normalize(&policy["rules"]);
+        result.rewrite_program=crate::engine::rsi_rule_rewrite::normalize(&policy["rewriteProgram"]);
         result
     }
 
@@ -39,12 +42,13 @@ impl Genome {
         let rule_behavior=self.rules.iter().filter_map(|r|r["id"].as_str())
             .collect::<Vec<_>>().join(">");
         crate::engine::memory::stable_id(&[
-            "rsi.composed-edit-method.v3",
+            "rsi.composed-edit-method.v4",
             &self.checkpoint_after.to_string(),
             self.preferred_tool,
             &self.repair_limit.to_string(),
             &self.program.join(">"),
             &rule_behavior,
+            &serde_json::to_string(&self.rewrite_program).unwrap_or_default(),
         ])
     }
 }
@@ -107,7 +111,14 @@ fn mutate(mut program: Genome, last: &Value) -> (Genome, &'static str) {
         mutation = "explore_alternative_edit_composition";
     }
     program.program = crate::engine::rsi_edit_program::mutate(&program.program, last);
-    program.rules = crate::engine::rsi_decision_rules::evolve(&program.rules, last);
+    // The executable meta-program is inherited, mutated by measured
+    // experience, then APPLIED to this generation's synthesized judgments.
+    // Independent source comparison still determines whether it is superior.
+    program.rewrite_program=crate::engine::rsi_rule_rewrite::evolve(
+        &program.rewrite_program,last);
+    let generated_rules=crate::engine::rsi_decision_rules::evolve(&program.rules,last);
+    program.rules=crate::engine::rsi_rule_rewrite::apply(
+        &program.rewrite_program,&generated_rules);
     (program, mutation)
 }
 
@@ -119,6 +130,8 @@ fn serialize(genome: Genome, method: &str, parent: &str, mutation: &str,
         "preferredTool":genome.preferred_tool, "repairLimit":genome.repair_limit,
         "program":genome.program, "programKind":"receipt_driven_source_edit_procedure",
         "rules":genome.rules,"ruleKind":"synthesized_boolean_execution_guards",
+        "rewriteProgram":genome.rewrite_program,
+        "rewriteProgramKind":"executable_meta_algorithm_for_rule_generation",
         "revision":revision, "parentRevision":parent,
         "mutation":mutation, "derivedFromJobId":cause,
         "observations":observations, "score":sample_score,
@@ -235,6 +248,7 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
                         &generated.program, &best_genome.program)
                 } else { generated.program.clone() },
                 rules: generated.rules.clone(),
+                rewrite_program: generated.rewrite_program.clone(),
             };
             if !used.contains(candidate.revision().as_str()) {
                 generated=candidate;
@@ -433,6 +447,26 @@ mod tests {
              "allow":["workspace_replace"],"sourceJobId":"other-worker"}
         ]));
         assert_ne!(genome.revision(),first);
+    }
+
+    #[test]
+    fn descendant_rewrites_the_algorithm_that_generates_its_guards(){
+        let baseline=evolve(&[],reward);
+        assert!(baseline["rewriteProgram"].as_array().unwrap().is_empty());
+        let mut first=row("worker-failure",baseline.clone());
+        first["toolTimeline"]=json!([
+            {"tool":"workspace_read_range","status":"completed"},
+            {"tool":"workspace_replace_range","status":"failed"}]);
+        let child=evolve(&[first],reward);
+        assert_eq!(child["rewriteProgram"][0]["kind"],"switch_edit");
+        assert_ne!(child["revision"],baseline["revision"]);
+        let original=crate::engine::rsi_decision_rules::normalize(&json!([
+            {"guard":{"metric":"grounded","cmp":"eq","value":1},
+            "allow":["workspace_replace_range"]}]));
+        let rewrite=crate::engine::rsi_rule_rewrite::apply(
+            &child["rewriteProgram"].as_array().unwrap().clone(),&original);
+        assert_eq!(rewrite[0]["allow"],json!(["workspace_replace"]));
+        assert_eq!(child["improvementProven"],false);
     }
 
     #[test]
