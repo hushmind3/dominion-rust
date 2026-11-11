@@ -1368,7 +1368,14 @@ async fn run_turn_body(
                         let choices=execution["rsiActionProgramChoices"]
                             .as_array_mut();
                         if let Some(rows)=choices {
-                            if rows.len()<64 {rows.push(receipt.clone());}
+                            // Repeated model rounds at the same operation
+                            // boundary are one choice, not separate trials.
+                            if rows.len()<64 && !rows.iter().any(|prior|
+                                prior["programRevision"]==receipt["programRevision"]
+                                && prior["chosenTool"]==receipt["chosenTool"]
+                                && prior["afterOpSeq"]==receipt["afterOpSeq"]) {
+                                rows.push(receipt.clone());
+                            }
                         } else {execution["rsiActionProgramChoices"]=json!([receipt.clone()]);}
                         execution["rsiActionProgramDecision"]=receipt.clone();
                         state.store.put("execution",&execution);

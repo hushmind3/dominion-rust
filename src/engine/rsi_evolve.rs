@@ -2984,17 +2984,22 @@ async fn run_loop(
             follow_up,target_trial,None,&head);
         // Native program synthesis, controller mutation, and paired policy
         // assessment all use the same witnessed generation lineage.
+        let objective_id=crate::engine::memory::stable_id(&[
+            child_input["rsiObjective"].as_str().unwrap_or("")]);
+        let model=child_input["model"].as_str().unwrap_or("");
+        let provider=child_input["providerId"].as_str().unwrap_or("");
         let base_program=crate::engine::rsi_action_program::synthesize(&policy_training);
-        let evolved=crate::engine::rsi_action_program::evolve_stalled(
+        let controlled=crate::engine::rsi_action_program::evolve_controller(
             &policy_training,base_program);
-        let composed=crate::engine::rsi_action_program::evolve_controller(
-            &policy_training,evolved);
+        // Evaluate repeated failures against the revision that the worker
+        // ACTUALLY received, including its changed native checkpoint.
+        let proposed=crate::engine::rsi_action_program::evolve_stalled(
+            &policy_training,controlled);
+        let composed=crate::engine::rsi_action_program::pinned_program(
+            &policy_training,&head,&objective_id,model,provider,&target_domain)
+            .unwrap_or(proposed);
         let program_trial=crate::engine::rsi_action_program::trial_plan(
-            &policy_training,composed,&head,
-            &crate::engine::memory::stable_id(&[
-                child_input["rsiObjective"].as_str().unwrap_or("")]),
-            child_input["model"].as_str().unwrap_or(""),
-            child_input["providerId"].as_str().unwrap_or(""),&target_domain);
+            &policy_training,composed,&head,&objective_id,model,provider,&target_domain);
         child_input["rsiActionProgram"]=if program_trial["arm"]=="candidate" {
             program_trial["program"].clone()
         } else {Value::Null};

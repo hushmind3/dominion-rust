@@ -184,7 +184,8 @@ pub fn evolve_stalled(rows:&[Value],mut plan:Value)->Value {
         else if let Some(last)=seq.last_mut(){*last=json!(replacement);}
         "switch_failed_edit_primitive"
     };
-    let revision=memory::stable_id(&[&json!([&seq,&plan["onFailure"]]).to_string()]);
+    let revision=memory::stable_id(&[&json!([&seq,&plan["onFailure"],
+        plan["controller"]["checkpointAfter"]]).to_string()]);
     if revision!=parent {
         plan["sequence"]=json!(seq);
         plan["revision"]=json!(revision);
@@ -261,6 +262,24 @@ pub fn observed_effects(state:&AppState,session_id:&str)->Vec<Value> {
     effects
 }
 
+/// Reuse the SAME executable candidate while a matched comparison is still
+/// running. Re-synthesizing every generation silently invalidates the cohort
+/// before its baseline arm can be measured.
+pub fn pinned_program(rows:&[Value],source:&str,objective:&str,model:&str,
+    provider:&str,domain:&str)->Option<Value>{
+    let incumbent=rows.iter().rev().find(|row|{
+        let frozen=&row["actionProgramTrial"]["frozen"];
+        frozen["sourceCommit"]==source && frozen["objectiveId"]==objective
+            && frozen["model"]==model && frozen["provider"]==provider
+            && frozen["domain"]==domain
+            && row["actionProgramTrial"]["program"]["sequence"].as_array()
+                .is_some_and(|steps|!steps.is_empty())
+    })?;
+    let proposal=incumbent["actionProgramTrial"]["program"].clone();
+    let report=trial_plan(rows,proposal.clone(),source,objective,model,provider,domain);
+    (report["status"]=="collecting_frozen_cohorts").then_some(proposal)
+}
+
 /// Frozen cohort: same program revision, source commit, objective, model and
 /// provider. An actual holdout gain, not a write, decides a candidate promotion.
 pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
@@ -304,7 +323,8 @@ pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
             "baseline_preferred_by_holdout"
         } else {"paired_no_quality_gain"};
     let arm=if status=="candidate_supported_by_holdout" {"candidate"}
-        else if status=="baseline_preferred_by_holdout" {"baseline"}
+        else if status=="baseline_preferred_by_holdout"
+            || status=="paired_no_quality_gain" {"baseline"}
         else if trial<=control {"candidate"} else {"baseline"};
     json!({"arm":arm,"status":status,"revision":revision,"program":program,
         "frozen":{"sourceCommit":source,"objectiveId":objective,
