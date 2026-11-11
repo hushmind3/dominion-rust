@@ -178,33 +178,6 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
     }
     let (best_genome,best_revision,best_score,proven)=best.expect("observed cohort");
 
-    // Cross-descendant counterexamples can teach a new *condition* rather
-    // than merely adjusting the last worker's threshold. This method is a
-    // new experimental controller, NOT an automatically promoted winner.
-    // Its action must still fire and produce a source improvement under the
-    // frozen paired evaluator before it earns any future positive payoff.
-    let new_guards=crate::engine::rsi_rule_induction::induce(&observed);
-    if !new_guards.is_empty() {
-        let mut challenger=best_genome.clone();
-        let mut composed=new_guards;
-        composed.extend(challenger.rules);
-        challenger.rules=crate::engine::rsi_decision_rules::normalize(&json!(composed));
-        let revision=challenger.revision();
-        if revision!=best_revision && !cohorts.contains_key(&revision) {
-            let mut trial=serialize(challenger,
-                "cross-descendant-counterexample-trial",
-                &best_revision,"induce_new_judgment_from_success_failure_contrast",
-                observed.len(),best_score,
-                observed.last().and_then(|r|r["jobId"].as_str()));
-            trial["contrastEvidence"]=json!({
-                "source":"independent_adopted_and_paired_rejected_descendants",
-                "status":"proposal_needs_actual_descendant_trial",
-                "comparedGenerations":observed.len(),
-            });
-            return trial;
-        }
-    }
-
     // Independently measured rival policies on the *same source/model/goal*
     // can override UCB exploration, but only after two distinct matched
     // contexts favor the challenger without a contradictory measured pair.
@@ -252,6 +225,36 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
             }
         }
     }
+    // Measured, causally compared controllers win priority over another
+    // speculative induced guard. Otherwise a constantly changing grammar
+    // can starve an independently proven policy and prevent compounding.
+    // Cross-descendant counterexamples can teach a new *condition* rather
+    // than merely adjusting the last worker's threshold. This method is a
+    // new experimental controller, NOT an automatically promoted winner.
+    // Its action must still fire and produce a source improvement under the
+    // frozen paired evaluator before it earns any future positive payoff.
+    let new_guards=crate::engine::rsi_rule_induction::induce(&observed);
+    if !new_guards.is_empty() {
+        let mut challenger=best_genome.clone();
+        let mut composed=new_guards;
+        composed.extend(challenger.rules);
+        challenger.rules=crate::engine::rsi_decision_rules::normalize(&json!(composed));
+        let revision=challenger.revision();
+        if revision!=best_revision && !cohorts.contains_key(&revision) {
+            let mut trial=serialize(challenger,
+                "cross-descendant-counterexample-trial",
+                &best_revision,"induce_new_judgment_from_success_failure_contrast",
+                observed.len(),best_score,
+                observed.last().and_then(|r|r["jobId"].as_str()));
+            trial["contrastEvidence"]=json!({
+                "source":"independent_adopted_and_paired_rejected_descendants",
+                "status":"proposal_needs_actual_descendant_trial",
+                "comparedGenerations":observed.len(),
+            });
+            return trial;
+        }
+    }
+
     if proven>=2 && best_score>=0.9 {
         let last=observed.last().copied().expect("nonempty observations");
         // Exploitation is the default, yet a verified successful procedure
@@ -555,6 +558,27 @@ mod tests {
             make("b-control",control,"sha-b",false),
             make("b-winner",winner.clone(),"sha-b",true)
         ];
+        // Both versions also have enough source-receipted examples for
+        // counterexample induction. Independent paired wins still take
+        // precedence over generating yet another speculative guard.
+        for (index,item) in rows.iter_mut().enumerate() {
+            let mut operations=vec![json!({"runId":format!("run-{index}"),
+                "tool":"workspace_read_range","status":"completed",
+                "path":"src/engine/test.rs"})];
+            if index%2==0 {
+                for _ in 0..3 {
+                    operations.push(json!({"runId":format!("run-{index}"),
+                        "tool":"code_search","status":"completed"}));
+                }
+            }
+            operations.push(json!({"runId":format!("run-{index}"),
+                "tool":"workspace_replace_range","status":"completed",
+                "path":"src/engine/test.rs",
+                "result":{"written":true,"postSha256":"a".repeat(64)},
+                "toolReceipt":{"verified":true}}));
+            item["toolTimeline"]=json!(operations);
+            item["acceptedSourceHashes"]=json!({"src/engine/test.rs":"a".repeat(64)});
+        }
         let mut failed=row("winner-regression",winner.clone());
         failed["editEvidence"]["attempts"]=json!(2);
         rows.push(failed);
