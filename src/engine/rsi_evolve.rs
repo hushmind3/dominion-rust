@@ -1480,7 +1480,7 @@ fn repair_exploration_order(method:&Value)->u8 {
         Some("existing_file_to_versioned_edit")=>1,
         Some("indexed_source_rebase")=>2,
         Some("indexed_path_retarget")=>3,
-        Some("successful_read_ablation")=>4,
+        Some("successful_read_ablation"|"transferred_read_ablation")=>4,
         _=>5,
     }
 }
@@ -1491,15 +1491,20 @@ fn repair_exploration_order(method:&Value)->u8 {
 /// unadopted candidate relinquishes priority. Previous acceptance is not
 /// automatically transferred to its child.
 fn pending_success_ablation(method:&Value, methods:&[Value])->bool {
-    if method["synthesis"]["kind"]!="successful_read_ablation"
+    if !matches!(method["synthesis"]["kind"].as_str(),
+        Some("successful_read_ablation"|"transferred_read_ablation"))
         || method["applications"].as_array().is_some_and(|a|!a.is_empty())
         || method["successfulApplications"].as_u64().unwrap_or(0)>0 {
         return false
     }
-    methods.iter().any(|parent|
-        parent["id"]==method["synthesis"]["parentMethodId"]
-        && parent["revision"]==method["synthesis"]["parentRevision"]
-        && parent["successfulApplications"].as_u64().unwrap_or(0)>0)
+    (method["synthesis"]["kind"]=="transferred_read_ablation"
+        && method["synthesis"]["transferDonor"]["methodId"].is_string()
+        && method["synthesis"]["transferDonor"]["adoptedApplications"]
+            .as_u64().unwrap_or(0)>0)
+        || methods.iter().any(|parent|
+            parent["id"]==method["synthesis"]["parentMethodId"]
+            && parent["revision"]==method["synthesis"]["parentRevision"]
+            && parent["successfulApplications"].as_u64().unwrap_or(0)>0)
 }
 
 fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
@@ -1611,7 +1616,7 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
 /// its own future application passes the ordinary procedure evaluator.
 fn is_synthesized_source_repair(method:&Value)->bool {
     matches!(method["synthesis"]["kind"].as_str(),
-        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"|"successful_read_ablation"))
+        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"|"successful_read_ablation"|"transferred_read_ablation"))
 }
 
 /// Synthesize a new executable procedure, not just an action ranking.
@@ -1890,6 +1895,34 @@ fn synthesize_indexed_path_repair(
             "oldPath":old,"targetPath":target,"changedReadNodeId":read_id}}))
 }
 
+/// Cross-domain transfer is learned from an *adopted descendant*, not from
+/// the mere creation of an optimization proposal. The donor and target must
+/// belong to the same repository partition. This permits using a verified
+/// algorithmic transformation (read-node elimination) on a new capability
+/// without importing the donor's source text or claiming a target gain.
+fn proven_read_ablation_donor(
+    state:&AppState, generation_job:&Value, target_domain:&str
+)->Option<Value> {
+    let partition=research_scope(&generation_job["input"]).partition_key;
+    let mut donors=state.store.all("experience").into_iter()
+        .filter(|record|record["partitionKey"]==partition && record["status"]=="active")
+        .flat_map(|record|record["executableMethods"].as_array().cloned().unwrap_or_default())
+        .filter(|method|method["synthesis"]["kind"]=="successful_read_ablation"
+            && method["domain"].as_str().is_some_and(|d|d!=target_domain)
+            && method["successfulApplications"].as_u64().unwrap_or(0)>0
+            && method["status"]=="executable"
+            && method["applications"].as_array().is_some_and(|apps|apps.iter().any(|row|
+                row["accepted"]==true && row["postconditionsPassed"]==true)))
+        .collect::<Vec<_>>();
+    donors.sort_by(|a,b|b["successfulApplications"].as_u64().unwrap_or(0)
+        .cmp(&a["successfulApplications"].as_u64().unwrap_or(0))
+        .then(a["id"].as_str().cmp(&b["id"].as_str())));
+    donors.into_iter().next().map(|method|json!({
+        "methodId":method["id"],"revision":method["revision"],
+        "domain":method["domain"],"adoptedApplications":method["successfulApplications"]
+    }))
+}
+
 /// A *successful* generation can improve its own method-generation program:
 /// propose a smaller DAG by removing a redundant source read. The original
 /// accepted program remains active. The new one is a candidate until its own
@@ -1905,11 +1938,13 @@ fn synthesize_successful_dag_ablation(
 )->Option<Value> {
     if method["assistanceMode"]!="harness_assisted"
         || method["verification"]["type"]!="procedure"
-        || generation["accepted"]!=true
         || receipt["result"]["verified"]!=true
         || receipt["result"]["followed"]!=true
         || receipt["result"]["status"]=="violated" {return None}
     let job=state.store.get("job",generation["jobId"].as_str()?)?;
+    let transfer=if generation["accepted"]==true {None}
+        else {proven_read_ablation_donor(state,&job,method["domain"].as_str()?)};
+    if generation["accepted"]!=true && transfer.is_none(){return None}
     let index_id=job["input"]["rsiIndexId"].as_str()?;
     let index=state.store.get("code_index",index_id)?;
     if index["sourceDir"]!=job["input"]["rsiSourceDir"]{return None}
@@ -1995,7 +2030,9 @@ fn synthesize_successful_dag_ablation(
             "domain":domain,"verification":program,"status":"candidate",
             "assistanceMode":"harness_assisted","successfulApplications":0,
             "synthesis":{
-                "kind":"successful_read_ablation",
+                "kind":if transfer.is_some(){"transferred_read_ablation"}
+                    else {"successful_read_ablation"},
+                "transferDonor":transfer,
                 "parentMethodId":method["id"],"parentRevision":method["revision"],
                 "sourceExecutionId":receipt["executionId"],
                 "sourceGenerationJobId":generation["jobId"],
@@ -2044,7 +2081,7 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             || result["violations"].as_array().is_some_and(|rows| !rows.is_empty()));
         let ok = !unknown && !violated && result["followed"] == true;
         let progress = generation["accepted"] == true || generation["newFindings"].as_u64().unwrap_or(0)>0;
-        if ok && generation["accepted"]==true {
+        if ok {
             if let Some(mut variant)=synthesize_successful_dag_ablation(
                 state,method,receipt,&operations,generation) {
                 variant["sourceGenerationJobId"]=generation["jobId"].clone();
