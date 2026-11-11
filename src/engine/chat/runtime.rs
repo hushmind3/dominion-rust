@@ -486,6 +486,19 @@ fn rsi_action_program_tool_allowed(
         && matches!(selected,"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"))
 }
 
+/// A newly available source editor should get a measured first trial instead
+/// of being permanently excluded by a policy learned before that tool existed.
+/// Never widen read/search stages; the trial is only offered after a verified
+/// source observation and only alongside an actual editing decision.
+fn rsi_untried_function_tool_allowed(
+    name:&str,chosen:&str,already_allowed:bool,
+    untried_function:bool,
+)->bool {
+    already_allowed || (untried_function
+        && name=="workspace_replace_function"
+        && matches!(chosen,"workspace_replace"|"workspace_replace_range"))
+}
+
 /// Native RSI program decisions are executable restrictions, not simply
 /// tool hints to the model. A model may emit a stale/hallucinated tool call
 /// even when that function was not advertised on this exact round.
@@ -1576,6 +1589,13 @@ async fn run_turn_body(
                 }
                 rsi_decision_checkpoint=true;
             }
+            // Historical methods were measured before function-scoped edits
+            // existed. Permit one version-grounded trial rather than hiding the
+            // new operator behind an unrelated old edit preference.
+            let untried_function=session["rsiExplicitFocus"]==true && read_calls>0
+                && !has_write
+                && session["rsiExecutionMethod"]["evidence"]["workspace_replace_function"]["attempts"]
+                    .as_u64().unwrap_or(0)==0;
             // An induced plan may combine the useful discovery path of one
             // generation and a tested mutation from another. Apply only when
             // its next tool is genuinely offered by this provider.
@@ -1584,7 +1604,11 @@ async fn run_turn_body(
                 if round_tools.iter().any(|tool|tool_name(tool)==chosen) {
                     action_program_applied=true;
                     round_tools.retain(|tool|
-                        rsi_action_program_tool_allowed(tool_name(tool),&chosen,read_calls>0));
+                        rsi_untried_function_tool_allowed(
+                            tool_name(tool),&chosen,
+                            rsi_action_program_tool_allowed(
+                                tool_name(tool),&chosen,read_calls>0),
+                            untried_function));
                     let evidence=json!({
                         "programRevision":session["rsiExecutionMethod"]["actionProgram"]["revision"],
                         "chosenTool":chosen,"reason":reason,
@@ -1617,10 +1641,11 @@ async fn run_turn_body(
                         tool_name(definition)=="workspace_read_range"
                     } else {
                         matches!(tool_name(definition),
-                            "workspace_replace"|"workspace_replace_range")
+                            "workspace_replace"|"workspace_replace_range"|"workspace_replace_function")
                     });
                 round_tools.sort_by_key(|definition|match tool_name(definition){
-                    "workspace_replace_range"=>0usize,"workspace_replace"=>1,_=>2
+                    "workspace_replace_function"=>0usize,
+                    "workspace_replace_range"=>1usize,"workspace_replace"=>2usize,_=>3
                 });
             }
             // Method learning changes the next tool decision at runtime,
@@ -1641,7 +1666,10 @@ async fn run_turn_body(
                         // An observed failed call switches to its fallback.
                         let learned=session["rsiExecutionMethod"]["status"]!="unmeasured_default";
                         round_tools.retain(|definition|
-                            rsi_method_tool_allowed(tool_name(definition),&chosen,learned));
+                            rsi_untried_function_tool_allowed(
+                                tool_name(definition),&chosen,
+                                rsi_method_tool_allowed(tool_name(definition),&chosen,learned),
+                                untried_function));
                         round_tools.sort_by_key(|definition|
                             if tool_name(definition)==chosen {0usize}
                             else if matches!(tool_name(definition),
@@ -6777,6 +6805,21 @@ mod harness_tool_selection_tests {
         let nested="  fn split_markers() {}\n  fn marker_at() {}\n";
         assert_eq!(rsi_target_function_window(
             "Improve split_markers()",nested,1),None);
+    }
+
+    #[test]
+    fn sub1_new_function_editor_still_gets_grounded_trial_after_older_method_learning() {
+        assert!(rsi_untried_function_tool_allowed(
+            "workspace_replace_function","workspace_replace_range",false,true));
+        assert!(!rsi_untried_function_tool_allowed(
+            "workspace_replace_function","code_search",false,true));
+        assert!(!rsi_untried_function_tool_allowed(
+            "workspace_replace_function","workspace_replace_range",false,false));
+        assert!(!rsi_untried_function_tool_allowed(
+            "workspace_write","workspace_replace_range",false,true));
+        assert!(rsi_untried_function_tool_allowed(
+            "workspace_read_range","workspace_replace_range",true,true));
+        assert!(rsi_compiler_repair_tool("workspace_replace_function"));
     }
 
     #[test]
