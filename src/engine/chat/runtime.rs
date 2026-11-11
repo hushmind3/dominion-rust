@@ -100,7 +100,8 @@ fn rsi_confirmed_source_write(operations:&[Value], execution_id:&str)->bool {
         && row["status"]=="completed"
         && matches!(row["tool"].as_str(),
             Some("workspace_write"|"workspace_replace"|"workspace_replace_range"))
-        && row["result"]["written"]==true)
+        && row["result"]["written"]==true
+        && row["toolReceipt"]["verified"]==true)
 }
 
 
@@ -6253,8 +6254,13 @@ mod harness_tool_selection_tests {
         let read=json!({"runId":"r","status":"completed",
             "tool":"workspace_read_range","result":{"written":true}});
         assert!(!rsi_confirmed_source_write(&[read],"r"));
+        let unverified=json!({"runId":"r","status":"completed",
+            "tool":"workspace_replace_range","result":{"written":true},
+            "toolReceipt":{"verified":false}});
+        assert!(!rsi_confirmed_source_write(&[unverified],"r"));
         let valid=json!({"runId":"r","status":"completed",
-            "tool":"workspace_replace_range","result":{"written":true}});
+            "tool":"workspace_replace_range","result":{"written":true},
+            "toolReceipt":{"verified":true}});
         assert!(!rsi_confirmed_source_write(&[valid.clone()],"other-run"));
         assert!(rsi_confirmed_source_write(&[valid],"r"));
     }
