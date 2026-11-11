@@ -8,6 +8,9 @@ on:
     paths:
       - .github/workflows/sub4-live-ollama.yml
   workflow_dispatch:
+concurrency:
+  group: sub4-real-model-proof-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -21,6 +24,7 @@ jobs:
       SUB4_OLLAMA_URL: http://127.0.0.1:11434
       SUB4_CAMPAIGN_SECONDS: '3600'
       SUB4_RUN_DEADLINE_MS: '3800000'
+      SUB4_EXPECT_COMPLETION: '1'
       DOMINION_PORT: '43179'
       DOMINION_JOB_WORKERS: '1'
       OLLAMA_CONTEXT_LENGTH: '16384'
