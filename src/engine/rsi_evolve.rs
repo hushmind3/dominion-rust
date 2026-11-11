@@ -2303,6 +2303,40 @@ fn synthesize_action_program(rows:&[Value])->Value {
         "origin":"cross_episode_composition_with_verified_edit_recovery"})
 }
 
+/// A read-only success is a usable *prefix*, not a complete autonomous
+/// implementation algorithm. One generation of grounded discovery suffices
+/// to create the next trial edit edge; waiting for two more read-only attempts
+/// wastes the campaign budget before an executable improvement exists.
+/// This invents a *trial procedure*, never a forged source edit or gain.
+fn complete_read_only_action_program(mut plan:Value, preferred:&str)->Value {
+    let sequence=plan["sequence"].as_array().cloned().unwrap_or_default();
+    let grounded=sequence.iter().any(|tool|
+        tool=="workspace_read_range");
+    let mut editable=sequence.iter().any(|tool|
+        matches!(tool.as_str(),
+            Some("workspace_write"|"workspace_replace"|"workspace_replace_range")));
+    if !grounded || editable || !matches!(preferred,"workspace_replace"|"workspace_replace_range") {
+        return plan;
+    }
+    let mut next=sequence.clone();
+    if next.len()>=8{return plan;}
+    next.push(json!(preferred));
+    editable=true;
+    if !editable{return plan;}
+    let original=plan["revision"].as_str().unwrap_or("").to_string();
+    let revised=crate::engine::memory::stable_id(&[
+        &json!([&next,&plan["onFailure"],&plan["recoveryPaths"]]).to_string()]);
+    if revised==original{return plan;}
+    plan["revision"]=json!(revised);
+    plan["sequence"]=json!(next);
+    plan["mutatedFrom"]=json!(original);
+    plan["mutationOperator"]=json!("complete_grounded_read_only_experience");
+    plan["status"]=json!("trial_from_successful_read_unverified_edit");
+    plan["evidence"]["originalReadOnlySequence"]=json!(sequence);
+    plan["evidence"]["expectedNextEffect"]=json!("receipt_verified_source_edit");
+    plan
+}
+
 /// Evolve the method that evolves the harness: after multiple independent
 /// attempts of the *same policy* produce neither a candidate nor a verified
 /// source edit, modify the executable program rather than retrying the same
@@ -2788,7 +2822,10 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     let fallback=if preferred=="workspace_replace" {
         "workspace_replace_range"
     } else {"workspace_replace"};
-    let proposal=evolve_stalled_action_program(base_action_program,&rows,preferred);
+    // A single real read-only episode can produce an executable edit trial.
+    // Repeated policy failures then evolve that trial's recovery structure.
+    let executable=complete_read_only_action_program(base_action_program,preferred);
+    let proposal=evolve_stalled_action_program(executable,&rows,preferred);
     let proposed=compress_successful_action_program(proposal,&rows);
     let (action_program,program_comparison)=select_evaluated_action_program(&rows,proposed);
     // General autonomous research (without an explicit source focus) uses
@@ -5197,6 +5234,30 @@ mod tests {
         let replay=evolve_stalled_action_program(parent,
             &[row("a",&first),row("a",&first)],"workspace_replace");
         assert_ne!(replay["revision"],second["revision"]);
+    }
+
+    #[test]
+    fn one_grounded_read_only_generation_produces_a_real_next_edit_trial() {
+        let read_only=json!({"revision":"read-only-one",
+            "sequence":["workspace_read_range"],"onFailure":[],
+            "recoveryPaths":[],"evidence":{"episodes":1}});
+        let executable=complete_read_only_action_program(
+            read_only.clone(),"workspace_replace_range");
+        assert_eq!(executable["sequence"],
+            json!(["workspace_read_range","workspace_replace_range"]));
+        assert_eq!(executable["mutatedFrom"],"read-only-one");
+        assert_eq!(executable["mutationOperator"],
+            "complete_grounded_read_only_experience");
+        assert_eq!(executable["status"],
+            "trial_from_successful_read_unverified_edit");
+        assert_ne!(executable["revision"],read_only["revision"]);
+        assert_eq!(complete_read_only_action_program(
+            executable.clone(),"workspace_replace_range")["revision"],
+            executable["revision"],"No duplicate mutation after edit stage exists");
+        assert_eq!(complete_read_only_action_program(
+            json!({"revision":"none","sequence":["code_search"]}),
+            "workspace_replace")["revision"],"none",
+            "No source observation means no invented model-written patch");
     }
 
     #[test]
