@@ -374,9 +374,9 @@ fn parse_file(rel: &str, content: &str) -> Value {
         }
         // Include identifiers and string-literal vocabulary, not comments.
         let code = source_without_comments(line, &mut in_block_comment);
-        for word in code.split(|ch: char| !ch.is_alphanumeric()) {
+        for word in lexical_terms(&code) {
             if (3..=80).contains(&word.chars().count()) {
-                body_terms.insert(word.to_lowercase());
+                body_terms.insert(word);
             }
         }
         let code = code_only(&code);
@@ -689,13 +689,44 @@ pub fn indexed_source_hash(state:&AppState,index_id:&str,path:&str)->Option<Stri
         .as_str().map(str::to_string)
 }
 
+/// Split identifiers the way source actually names them: snake_case, camelCase
+/// and punctuation boundaries. Substring matching on whole identifiers missed
+/// "retrieveMemory" when the goal said "memory retrieve".
+fn lexical_terms(text: &str) -> BTreeSet<String> {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut terms = BTreeSet::new();
+    let mut current = String::new();
+    for (index, ch) in chars.iter().copied().enumerate() {
+        if !ch.is_alphanumeric() {
+            if !current.is_empty() {
+                terms.insert(current.to_lowercase());
+                current.clear();
+            }
+            continue;
+        }
+        let previous = index.checked_sub(1).and_then(|i| chars.get(i)).copied();
+        let next = chars.get(index + 1).copied();
+        let camel = ch.is_uppercase()
+            && (previous.is_some_and(|p| p.is_lowercase() || p.is_ascii_digit())
+                || (previous.is_some_and(|p| p.is_uppercase()) && next.is_some_and(char::is_lowercase)));
+        if camel && !current.is_empty() {
+            terms.insert(current.to_lowercase());
+            current.clear();
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        terms.insert(current.to_lowercase());
+    }
+    terms
+}
+
 /// Shared goal vocabulary for file navigation and source-span selection.
 /// No source file names are embedded in the vocabulary.
 fn focus_terms(objective:&str,domain:&str)->Vec<String> {
-    let mut query = objective.to_lowercase()
-        .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+    let mut query = lexical_terms(objective).into_iter()
         .filter(|word| word.chars().count() >= 2)
-        .map(str::to_string).collect::<Vec<_>>();
+        .collect::<Vec<_>>();
     // Language bridge is vocabulary, not a file selection table. Paths,
     // symbols and documentation decide which concrete implementation is read.
     let lower = objective.to_lowercase();
@@ -1016,6 +1047,14 @@ mod tests {
     use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
 
+
+    #[test]
+    fn lexical_terms_split_camel_case_identifiers() {
+        let terms = lexical_terms("retrieveMemoryRanking bm25_score");
+        for expected in ["retrieve", "memory", "ranking", "bm25", "score"] {
+            assert!(terms.contains(expected), "missing {expected}: {terms:?}");
+        }
+    }
 
     #[test]
     fn invalid_target_expression_falls_back_for_all_files_not_a_mixed_ranking() {
