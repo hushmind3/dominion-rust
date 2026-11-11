@@ -2622,7 +2622,22 @@ fn post_adoption_objective(input: &Value, history: &[Value]) -> Option<Value> {
                 .total_cmp(&a["observed"].as_f64().unwrap_or(0.0)))
     });
     costs.truncate(5);
-    let objective = if !residuals.is_empty() {
+    // An actually recursive demonstration needs an improved improver,
+    // followed by a new independently measured capability. A first gain in
+    // ordinary application logic does not satisfy this causal transfer.
+    // Use paired meta evidence only to select the next target, NEVER to
+    // count an unverified adoption or loosen the frozen evaluation.
+    let meta_seen=history.iter().rev().take_while(|row|row["accepted"]==true)
+        .any(|row|row["evaluation"]["metrics"]["eligible"]==true
+            && row["evaluation"]["metrics"]["metaHoldoutGains"]
+                .as_u64().unwrap_or(0)>0);
+    let meta_cost=if meta_seen {None} else {
+        costs.iter().find(|row|row["domain"]=="improver")
+    };
+    let objective = if let Some(target)=meta_cost {
+        format!("먼저 개선기 자체의 탐색·선택 알고리즘을 더 효율적으로 발전시킨다. 독립 동결 기준의 메타 병목은 {} 이며 비용 감소 목표는 최소 {}이다. src/engine/rsi_evolve.rs 등 실제 개선기 소스의 반복 계산과 증거 처리 방식을 측정 가능한 새 실행 방식으로 수정한다. 독립 메타 holdout 승격 전에는 성과라고 보고하지 않는다. 이후에야 다른 능력으로 전이한다.",
+            json!(target),target["requiredReduction"])
+    } else if !residuals.is_empty() {
         format!("동결 평가의 미해결 정확도 결함 {} 중 하나를 실제 구현으로 개선하고 이전 세대의 채택 성과를 유지한다.",
             json!(residuals))
     } else if let Some(target)=costs.first() {
@@ -2633,6 +2648,7 @@ fn post_adoption_objective(input: &Value, history: &[Value]) -> Option<Value> {
     };
     Some(json!({
         "objective":objective,
+        "metaTransferTarget":meta_cost.is_some(),
         "residuals":residuals,
         "costOpportunities":costs,
         "previousAcceptedCommit":accepted["acceptedCommit"],
@@ -2849,6 +2865,7 @@ async fn run_loop(
             child_input["prompt"]=next["prompt"].clone();
             child_input["rsiResidualEvidence"]=next["residuals"].clone();
             child_input["rsiCostOpportunities"]=next["costOpportunities"].clone();
+            child_input["rsiMetaTransferTarget"]=next["metaTransferTarget"].clone();
             child_input["rsiSourceScopeExpanded"]=json!(true);
         }
         if let Some(id)=inherited_neutral_candidate(&context.state,&prior_history,&head) {
@@ -3119,6 +3136,7 @@ async fn run_loop(
             "scopeExpanded":current["input"]["rsiSourceScopeExpanded"],
             "residualEvidence":current["input"]["rsiResidualEvidence"],
             "costOpportunities":current["input"]["rsiCostOpportunities"],
+            "metaTransferTarget":current["input"]["rsiMetaTransferTarget"],
             "focusSelection":current["input"]["rsiFocusSelection"],
             "targetReplan":current["rsiTargetReplan"],
             "knowledgePartition":research_scope(&current["input"]).partition_key,
@@ -3953,7 +3971,7 @@ mod tests {
                 "minRelativeGain":0.20,"minAbsoluteGain":1.0}]}
         ]});
         let history=vec![json!({"accepted":true,"acceptedCommit":"a".repeat(40),
-            "evaluation":{"metrics":{"eligible":true,"measurements":[
+            "evaluation":{"metrics":{"eligible":true,"metaHoldoutGains":1,"measurements":[
                 {"id":"memory-quality","domain":"memory","metrics":[
                     {"key":"quality","candidate":1.0,"improved":false},
                     {"key":"elapsedMs","direction":"lower","candidate":230.0,"improved":false}]},
@@ -3966,6 +3984,35 @@ mod tests {
         assert_eq!(next["costOpportunities"][0]["requiredReduction"],3850.0);
         assert!(next["objective"].as_str().unwrap().contains("contextChars"));
         assert!(next["residuals"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_nonmeta_first_adoption_learns_to_improve_the_improver_before_transfer() {
+        let input=json!({"rsiExpandAfterGain":true,"rsiFrozenCases":[
+            {"id":"search-quality","metrics":[{"key":"elapsedMs",
+                "minRelativeGain":0.20,"minAbsoluteGain":1.0}]},
+            {"id":"group-chat-input-cost","metrics":[{"key":"contextChars",
+                "minRelativeGain":0.05,"minAbsoluteGain":50.0}]}
+        ]});
+        let history=vec![json!({"accepted":true,"acceptedCommit":"a".repeat(40),
+            "evaluation":{"metrics":{"eligible":true,"metaHoldoutGains":0,
+                "measurements":[
+                    {"id":"search-quality","domain":"improver","metrics":[
+                        {"key":"elapsedMs","direction":"lower",
+                         "candidate":200.0,"improved":false}]},
+                    {"id":"group-chat-input-cost","domain":"context","metrics":[
+                        {"key":"contextChars","direction":"lower",
+                         "candidate":77000.0,"improved":false}]}
+                ]}}})];
+        let target=post_adoption_objective(&input,&history).unwrap();
+        assert_eq!(target["metaTransferTarget"],true);
+        assert!(target["objective"].as_str().unwrap().contains("search-quality"));
+        assert!(target["objective"].as_str().unwrap().contains("개선기"));
+        let mut after=history.clone();
+        after[0]["evaluation"]["metrics"]["metaHoldoutGains"]=json!(1);
+        let transfer=post_adoption_objective(&input,&after).unwrap();
+        assert_eq!(transfer["metaTransferTarget"],false);
+        assert!(transfer["objective"].as_str().unwrap().contains("group-chat-input-cost"));
     }
 
     #[test]
