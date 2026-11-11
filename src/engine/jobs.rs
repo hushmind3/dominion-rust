@@ -534,10 +534,39 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             &context.state,&rsi_workspace.as_ref().unwrap().path)?;
         input["rsiIndexId"]=index["id"].clone();
         input["rsiFocusFiles"]=recovered["paths"].clone();
-        // Excerpts composed before restoration describe the old source and
-        // must never be used as a versioned edit receipt.
-        input["rsiFocusContextChars"]=json!(0);
-        input["rsiFocusGrounded"]=json!(false);
+        // Excerpts composed before restoration describe the old source.
+        // Ground this child on the *repaired worktree's current bytes* and
+        // compiler error line rather than making a small model guess the
+        // changed file version from its parent's stale prompt.
+        use sha2::Digest as _;
+        let mut current_excerpts=String::new();
+        let checks=input["rsiFailedPatchRecovery"]["checks"].as_array()
+            .cloned().unwrap_or_default();
+        for path in recovered["paths"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str).take(2) {
+            if !crate::engine::rsi::safe_path(path){continue;}
+            let bytes=std::fs::read(rsi_workspace.as_ref().unwrap().path.join(path))
+                .map_err(|error|error.to_string())?;
+            let content=String::from_utf8_lossy(&bytes);
+            let line_number=checks.iter().filter_map(|check|
+                check["diagnostic"].as_str()).find_map(|diagnostic|{
+                    let pos=diagnostic.find(path)?;
+                    let trailing=diagnostic[pos+path.len()..].trim_start_matches(':');
+                    trailing.split(':').next()?.parse::<usize>().ok()
+                }).unwrap_or(1);
+            let start=line_number.saturating_sub(30).max(1);
+            let excerpt=content.lines().enumerate()
+                .skip(start.saturating_sub(1)).take(80)
+                .map(|(i,line)|format!("{}: {}",i+1,line))
+                .collect::<Vec<_>>().join("\n");
+            let sha=format!("{:x}",sha2::Sha256::digest(&bytes));
+            current_excerpts.push_str(&format!(
+                "\n[복원된 파일의 실제 현재 원문] {path} / sourceSha256={sha} / 시작 줄 {start}\n{}\n",
+                excerpt.chars().take(4200).collect::<String>()
+            ));
+        }
+        input["rsiFocusContextChars"]=json!(current_excerpts.chars().count());
+        input["rsiFocusGrounded"]=json!(!current_excerpts.is_empty());
         let check_notes=input["rsiFailedPatchRecovery"]["checks"].as_array()
             .into_iter().flatten().map(|check|format!(
                 "{}: {}",check["label"].as_str().unwrap_or("compiler"),
@@ -547,6 +576,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             "\n\n### 차세대 실제 소스 복구\n이전 세대가 실제 작성한 미채택 패치를 이 세대의 별도 작업공간에 복원했습니다. 기존 발췌의 SHA는 오래된 값입니다. 현재 파일을 새로 읽고 컴파일 오류를 고치는 코드 수정을 실행하세요. 복원 자체는 개선 성공이 아닙니다.\n복구 대상: {}\n실제 이전 검증 실패:\n{}\n",
             recovered["paths"],check_notes
         ));
+        prompt.push_str(&current_excerpts);
     }
     // The dedicated source checkout is validated and detached before a model
     // call, never modified directly by the RSI execution.
