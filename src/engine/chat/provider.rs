@@ -682,6 +682,19 @@ fn should_quarantine_slow_room_route(session:&Value,elapsed:std::time::Duration)
         && elapsed >= std::time::Duration::from_secs(60)
 }
 
+/// A source-repair model that has actually read its current source may be
+/// asked for one concrete edit operation instead of another prose answer.
+fn rsi_edit_requires_tool(session:&Value,tools:&[Value],observed_read:bool)->bool {
+    session["rsiRun"]==true
+        && session["rsiCampaignId"].is_string()
+        && session["rsiGenerationJobId"].is_string()
+        && session["rsiFocusFile"].as_str().is_some_and(crate::engine::rsi::safe_path)
+        && observed_read
+        && !tools.is_empty()
+        && tools.iter().all(|tool|
+            tool["function"]["name"].as_str()==Some("workspace_replace"))
+}
+
 async fn stream_completion_once(
     state: &AppState,
     client: &reqwest::Client,
@@ -807,6 +820,17 @@ async fn stream_completion_once_body(
     });
     if !compatible && !tools.is_empty() {
         body["tools"] = json!(tools);
+        let observed_read=if tools.len()==1
+            && tools[0]["function"]["name"]=="workspace_replace" {
+            state.store.all("execution_operation").iter().any(|op|
+                op["sessionId"]==session_id && op["status"]=="completed"
+                    && matches!(op["tool"].as_str(),
+                        Some("workspace_read_range" | "workspace_read")))
+        } else {false};
+        if state.store.get("session",session_id).is_some_and(|session|
+            rsi_edit_requires_tool(&session,tools,observed_read)) {
+            body["tool_choice"]=json!("required");
+        }
     }
     if let Some(limit) = provider.max_output_tokens {
         body["max_tokens"] = json!(limit);
@@ -1967,6 +1991,24 @@ mod tests {
         assert!(!should_quarantine_slow_room_route(
             &json!({"roomId":"r","rsiRun":true,"rsiCampaignId":"c"}),slow));
         assert!(!should_quarantine_slow_room_route(&json!({"kind":"task"}),slow));
+    }
+
+    #[test]
+    fn only_real_read_then_source_patch_retry_requires_native_edit_action() {
+        let generation=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"child","rsiFocusFile":"src/engine/decompose.rs"});
+        let edits=vec![json!({"type":"function","function":{"name":"workspace_replace"}})];
+        assert!(rsi_edit_requires_tool(&generation,&edits,true));
+        assert!(!rsi_edit_requires_tool(&generation,&edits,false),
+            "never force a patch before source evidence");
+        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&edits,true),
+            "research-only RSI is not a compulsory code edit");
+        let mut with_read=edits.clone();
+        with_read.push(json!({"type":"function","function":{"name":"workspace_read_range"}}));
+        assert!(!rsi_edit_requires_tool(&generation,&with_read,true),
+            "read+write model choices remain voluntary until the final grounded retry");
+        assert!(!rsi_edit_requires_tool(&json!({}),&edits,true));
+        assert!(!rsi_edit_requires_tool(&generation,&[],true));
     }
 
     #[test]
