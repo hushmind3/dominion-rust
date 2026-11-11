@@ -2734,6 +2734,15 @@ async fn run_loop(
             })
             .cloned()
             .collect::<Vec<_>>();
+        let mut program_stages = session.map(|id|context.state.store.all("rsi_program_phase")
+            .into_iter().filter(|row|row["sessionId"].as_str()==Some(id))
+            .collect::<Vec<_>>()).unwrap_or_default();
+        program_stages.sort_by(|left,right|
+            left["recordedAt"].as_str().unwrap_or("").cmp(
+                right["recordedAt"].as_str().unwrap_or("")));
+        if program_stages.len()>48 {
+            program_stages.drain(..program_stages.len()-48);
+        }
         let usage = session
             .map(|s| context.state.store.session_usage(s))
             .unwrap_or(Value::Null);
@@ -2769,6 +2778,7 @@ async fn run_loop(
             "researchFingerprint":research_fingerprint,
             "editEvidence":current["result"]["rsi"]["editEvidence"],
             "editPolicy":current["input"]["rsiEditPolicy"],
+            "programStages":program_stages,
             "editMethodReward":Value::Null,
             "diffBytes":current["result"]["rsi"]["diffBytes"],
             "captureError":current["result"]["rsi"]["captureError"],

@@ -1212,6 +1212,17 @@ async fn run_turn_body(
                         messages.push(json!({"role":"system","content":
                             "독립 평가에서 개선이 없었던 이전 방법과 다른 가설을 확인하는 단계입니다. code_search로 대안 실행 경로를 찾아 현재 소스 근거와 비교하세요. 확인 이후 편집 단계로 전환됩니다."}));
                     }
+                    let stage_receipt = json!({
+                        "id":crate::engine::memory::stable_id(&[
+                            execution_id, decision.phase, &tool_calls.to_string()
+                        ]),
+                        "sessionId":session_id,"runId":execution_id,
+                        "policyRevision":session["rsiEditPolicy"]["revision"],
+                        "phase":decision.phase,"toolCalls":tool_calls,
+                        "observedOperations":all_operations.len(),
+                        "recordedAt":chrono::Utc::now().to_rfc3339(),
+                    });
+                    state.store.put("rsi_program_phase",&stage_receipt);
                     rsi_last_program_phase=decision.phase.to_string();
                 }
             }

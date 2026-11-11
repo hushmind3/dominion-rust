@@ -101,7 +101,7 @@ if(mode==='probe'){
       generatorCommit:g.generatorCommit,domain:g.domain,searchStrategy:g.searchStrategy,
       error:g.error,toolsUsed:g.toolsUsed,newFindings:g.newFindings,
       editEvidence:g.editEvidence,diffBytes:g.diffBytes,captureError:g.captureError,
-      editPolicy:g.editPolicy,editMethodReward:g.editMethodReward,
+      editPolicy:g.editPolicy,programStages:g.programStages,editMethodReward:g.editMethodReward,
       focusFiles:g.focusFiles,knowledgeId:g.knowledgeId,
       evaluation:g.evaluation?.metrics
     }));

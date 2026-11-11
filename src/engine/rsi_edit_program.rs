@@ -49,6 +49,11 @@ pub fn mutate(parent: &[String], outcome: &Value) -> Vec<String> {
     let verified = outcome["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0);
     let attempted = outcome["editEvidence"]["attempts"].as_u64().unwrap_or(0);
     let candidate = outcome["candidateId"].is_string();
+    // Only a persisted stage receipt can identify where the previous
+    // *program* stalled. Do not infer phase execution from a policy proposal.
+    let last_executed = outcome["programStages"].as_array()
+        .and_then(|stages|stages.last())
+        .and_then(|stage|stage["phase"].as_str()).unwrap_or("");
     let neutral = candidate && outcome["accepted"] != true
         && outcome["evaluation"]["verdict"] != "improved";
     let add = |steps: &mut Vec<String>, name: &str| {
@@ -62,6 +67,10 @@ pub fn mutate(parent: &[String], outcome: &Value) -> Vec<String> {
         add(&mut next,"reground");
     } else if neutral {
         add(&mut next,"contrast");
+    } else if last_executed=="contrast" && verified==0 && !candidate {
+        next.retain(|s|s!="contrast");
+    } else if last_executed=="discover" && verified==0 && !candidate {
+        next.retain(|s|s!="discover");
     } else if error.contains("compile") || error.contains("syntax")
         || error.contains("build_or_typecheck") || (verified>0 && !candidate) {
         add(&mut next,"reground");
@@ -212,12 +221,26 @@ mod tests {
         assert_eq!(recovery.phase,"reground");
         assert!(recovery.allows("workspace_read_range"));
         compared.push(op("workspace_read_range","completed",json!({"sourceSha256":"new"})));
-        assert_eq!(route(&policy,&compared,5,true,false).unwrap().phase,"contrast");
+        assert_eq!(route(&policy,&compared,5,true,false).unwrap().phase,"edit");
         compared.push(op("code_search","completed",json!({})));
         assert_eq!(route(&policy,&compared,6,true,false).unwrap().phase,"edit");
         compared.push(op("workspace_replace_range","completed",json!({"written":true})));
         assert!(route(&policy,&compared,7,true,false).is_none());
     }
+    #[test]
+    fn observed_program_stage_stalls_change_descendant_procedure() {
+        let parent=["discover","ground","contrast","edit","verify"]
+            .iter().map(|s|s.to_string()).collect::<Vec<_>>();
+        let observed=json!({"jobId":"worker","tokens":12400,
+            "programStages":[{"phase":"discover"},{"phase":"ground"},{"phase":"contrast"}],
+            "editEvidence":{"verifiedWrites":0},"candidateId":null});
+        let child=mutate(&parent,&observed);
+        assert!(!child.contains(&"contrast".to_string()));
+        assert!(child.contains(&"edit".to_string()));
+        // A fabricated unexecuted phase is not read directly by the
+        // parent campaign: rsi_edit_genome filters zero-token workers.
+    }
+
     #[test]
     fn normal_chat_and_legacy_controller_are_unchanged() {
         assert!(route(&json!({}),&[],0,true,false).is_none());
