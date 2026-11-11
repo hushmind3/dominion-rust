@@ -1628,7 +1628,7 @@ pub(crate) fn remember_research(state:&AppState,input:&Value,generation:&Value,s
     let accepted=generation["accepted"]==true && candidate.as_ref().is_some_and(|c|c["status"]=="verified" && c["evaluation"]["metrics"]["eligible"]==true);
     let lesson=candidate.as_ref().and_then(|c|c["hypothesis"].as_str()).unwrap_or("검증 전 연구 자료. 출처와 현재 코드 버전을 확인하고 다음 구현에 활용하세요.");
     let mut applications=state.store.get("session",session).and_then(|s|s["rsiKnowledgeReuse"].as_array().cloned()).unwrap_or_default();
-    let writes=state.store.all("execution_operation").into_iter().filter(|op|op["sessionId"]==session && op["status"]=="completed" && matches!(op["tool"].as_str(),Some("workspace_write"|"workspace_replace"|"workspace_replace_range"))).collect::<Vec<_>>();
+    let writes=state.store.all("execution_operation").into_iter().filter(|op|op["sessionId"]==session && op["status"]=="completed" && op["result"]["written"]==true && matches!(op["tool"].as_str(),Some("workspace_write"|"workspace_replace"|"workspace_replace_range"))).collect::<Vec<_>>();
     for receipt in &mut applications {
         let actions=writes.iter().filter(|op|op["arguments"]["path"]==receipt["path"]).map(|op|op["id"].clone()).collect::<Vec<_>>();
         receipt["status"]=json!(if actions.is_empty(){"provided"}else if accepted{"related_verified_change"}else{"related_change_unverified"});
@@ -2512,7 +2512,9 @@ fn new_research_findings(state:&AppState,input:&Value,job_id:&str,hashes:&[Value
 }
 
 fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
-    let mut counts = BTreeMap::<String, u64>::new();
+    // A completed tool call is not automatically a completed source mutation.
+    // The latter must carry the actual checked_write receipt.
+    let mut counts = BTreeMap::<String, (u64,u64)>::new();
     for operation in state.store.all("execution_operation") {
         if operation["sessionId"].as_str() != Some(session_id)
             || operation["status"].as_str() != Some("completed")
@@ -2520,12 +2522,15 @@ fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
             continue;
         }
         let tool = operation["tool"].as_str().unwrap_or("unknown").to_string();
-        *counts.entry(tool).or_insert(0) += 1;
+        let entry=counts.entry(tool.clone()).or_insert((0,0));
+        entry.0 += 1;
+        if matches!(tool.as_str(),"workspace_replace"|"workspace_replace_range"|"workspace_write")
+            && operation["result"]["written"] == true {
+            entry.1 += 1;
+        }
     }
-    counts
-        .into_iter()
-        .map(|(tool, calls)| json!({"tool": tool, "calls": calls}))
-        .collect()
+    counts.into_iter().map(|(tool,(calls,actual_writes))|
+        json!({"tool":tool,"calls":calls,"actualWrites":actual_writes})).collect()
 }
 
 async fn run_loop(
