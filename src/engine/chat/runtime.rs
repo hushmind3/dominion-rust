@@ -1293,7 +1293,8 @@ async fn run_turn_body(
                 // not just the action described in its prompt. A failed edit
                 // primitive may therefore be replaced by a different one in
                 // the next rebuilt DOMINION generation.
-                if edit_only && session["rsiMetaFocusActive"]==true {
+                if edit_only && session["rsiMetaFocusActive"]==true
+                    && session["rsiActionProgram"]["sequence"].as_array().is_none_or(Vec::is_empty) {
                     if let Some(preferred)=session["rsiMetaPreferredTool"].as_str()
                         .filter(|name|matches!(*name,"workspace_replace"|"workspace_replace_range"))
                     {
@@ -1314,7 +1315,10 @@ async fn run_turn_body(
                 }
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system",
-                        "content":meta_edit_instruction(&session)
+                        "content":if session["rsiActionProgram"]["sequence"].as_array()
+                            .is_some_and(|rows|!rows.is_empty()) {
+                            "이 세대에는 실행 기록에서 합성된 소스 편집 프로그램이 적용됩니다. 제공된 도구 중 정확한 원문·해시로 편집을 시도하고, 실제 영수증으로 성공 여부를 판단하세요."
+                        } else {meta_edit_instruction(&session)}
                     }));
                     rsi_edit_only_announced = true;
                 } else if !rsi_decision_checkpoint {
@@ -1330,6 +1334,37 @@ async fn run_turn_body(
                     }));
                 }
                 rsi_decision_checkpoint = true;
+            }
+        }
+        // The descendant's composed program controls the *actual* provider
+        // tool menu. Store post-selection effect boundaries for later learning.
+        if session["rsiRun"]==true && !force_final
+            && session["rsiActionProgram"]["sequence"].as_array().is_some_and(|v|!v.is_empty()) {
+            let operations=state.store.all("execution_operation").into_iter()
+                .filter(|row|row["runId"].as_str()==Some(execution_id))
+                .collect::<Vec<_>>();
+            if let Some((selected,reason))=crate::engine::rsi_action_program::next_tool(
+                &session["rsiActionProgram"],&operations,execution_id) {
+                if round_tools.iter().any(|tool|tool_name(tool)==selected) {
+                    round_tools.retain(|tool|crate::engine::rsi_action_program::tool_allowed(
+                        tool_name(tool),&selected));
+                    let after=operations.iter().filter_map(|op|op["opSeq"].as_u64())
+                        .max().unwrap_or(0);
+                    let receipt=json!({"programRevision":session["rsiActionProgram"]["revision"],
+                        "chosenTool":selected,"reason":reason,"round":round,
+                        "afterOpSeq":after,"source":"native_composed_harness_program",
+                        "qualityGain":"unmeasured"});
+                    if let Some(mut execution)=state.store.get("execution",execution_id) {
+                        let choices=execution["rsiActionProgramChoices"]
+                            .as_array_mut();
+                        if let Some(rows)=choices {
+                            if rows.len()<64 {rows.push(receipt.clone());}
+                        } else {execution["rsiActionProgramChoices"]=json!([receipt.clone()]);}
+                        execution["rsiActionProgramDecision"]=receipt.clone();
+                        state.store.put("execution",&execution);
+                    }
+                    state.store.audit("rsi.action_program_selected",receipt);
+                }
             }
         }
         let wire_messages = messages.clone();

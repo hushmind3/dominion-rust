@@ -541,6 +541,8 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 input["rsiImprovementDirective"]["policy"]["preferredEditTool"].clone();
             session["rsiMetaPolicyRevision"]=
                 input["rsiImprovementDirective"]["policy"]["revision"].clone();
+            session["rsiActionProgram"]=input["rsiActionProgram"].clone();
+            session["rsiActionProgramTrial"]=input["rsiActionProgramTrial"].clone();
             session["rsiExplicitFocus"]=json!(input["rsiAutonomous"] != true
                 && input["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty()));
             session["rsiFocusContextReady"]=json!(

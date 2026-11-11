@@ -2945,6 +2945,20 @@ async fn run_loop(
         } else {
             learned_improvement_directive_with_training(&action_history,&policy_training)
         };
+        // Distinct witnessed episodes synthesize a new native tool program.
+        // Run matched, frozen baseline/trial cohorts before claiming quality.
+        let composed=crate::engine::rsi_action_program::evolve_stalled(
+            &policy_training,crate::engine::rsi_action_program::synthesize(&policy_training));
+        let program_trial=crate::engine::rsi_action_program::trial_plan(
+            &policy_training,composed,&head,
+            &crate::engine::memory::stable_id(&[
+                child_input["rsiObjective"].as_str().unwrap_or("")]),
+            child_input["model"].as_str().unwrap_or(""),
+            child_input["providerId"].as_str().unwrap_or(""));
+        child_input["rsiActionProgram"]=if program_trial["arm"]=="candidate" {
+            program_trial["program"].clone()
+        } else {Value::Null};
+        child_input["rsiActionProgramTrial"]=program_trial;
         let target_objective=selection_objective(&child_input);
         // Compute the same domain decision that the worker will use. Keep it
         // distinct from rsiSelectedDomain, which represents an explicit choice.
@@ -3126,6 +3140,12 @@ async fn run_loop(
             .as_u64()
             .unwrap_or(0)
             .saturating_add(tokens));
+        let action_trace=session.map(|id|
+            crate::engine::rsi_action_program::action_trace(&context.state,id))
+            .unwrap_or_default();
+        let action_program_effects=session.map(|id|
+            crate::engine::rsi_action_program::observed_effects(&context.state,id))
+            .unwrap_or_default();
         let mut generation = json!({"id":format!("{}-{attempt}",context.job_id),"campaignId":context.job_id,
             "attempt":attempt,"generatorCommit":head,"jobId":child_id,"tokens":tokens,
             "focusFiles":current["input"]["rsiFocusFiles"],
@@ -3141,6 +3161,10 @@ async fn run_loop(
             "contextPlan":current["input"]["rsiContextPlan"],
             "workerContextPlan":current["rsiWorkerContextPlan"],
             "improvementDirective":current["input"]["rsiImprovementDirective"],
+            "actionTrace":action_trace,
+            "actionProgram":current["input"]["rsiActionProgram"],
+            "actionProgramTrial":current["input"]["rsiActionProgramTrial"],
+            "actionProgramEffects":action_program_effects,
             "diffBytes":current["result"]["rsi"]["diffBytes"],
             "captureError":current["result"]["rsi"]["captureError"],
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
