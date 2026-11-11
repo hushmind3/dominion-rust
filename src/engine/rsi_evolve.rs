@@ -1309,7 +1309,10 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
         // verdict, and an explicit requirement to change the experiment.
         let selected=input["rsiTargetDomain"].as_str().unwrap_or("");
         if let Some(failure)=history.iter().rev().find(|row|
-            row["domain"]==selected && row["accepted"]!=true) {
+            row["domain"]==selected && row["accepted"]!=true)
+            .or_else(||history.iter().rev().find(|row|
+                row["accepted"]!=true && row["candidateId"].is_string()
+                    && row["evaluation"]["metrics"]["metricGains"]==0)) {
             let error=failure["error"].as_str().unwrap_or("")
                 .chars().take(300).collect::<String>();
             let verdict=failure["evaluation"]["verdict"].as_str().unwrap_or("unmeasured");
@@ -2392,6 +2395,17 @@ fn generation_fits_remaining_budget(record:&Value,input:&Value)->bool {
 /// Never splice a fixed number of characters out of serialized JSON:
 /// an incomplete receipt wastes model tokens and can corrupt later feedback.
 /// Shrink OPTIONAL telemetry as a whole and keep the objective and directive.
+/// Independent paired cases that still miss their quality objective are
+/// the actionable counterexamples for the next source-edit generation.
+/// A neutral 1.0 -> 1.0 case is a satisfied guard, not a repair target.
+fn unresolved_quality_case(case:&Value)->bool {
+    case["metrics"].as_array().is_some_and(|metrics|metrics.iter().any(|metric|
+        metric["key"]=="quality" && metric["improved"]==false
+            && metric["regressed"]==false
+            && metric["baseline"].as_f64().is_some_and(|value|value<1.0)
+            && metric["candidate"].as_f64()==metric["baseline"].as_f64()))
+}
+
 fn fit_worker_prompt(
     base: &str, domain: &str, capability: &str, history: &[Value],
     remaining_tokens: Option<u64>,
@@ -2407,9 +2421,18 @@ fn fit_worker_prompt(
         // Zero-gain is evidence too. Previously a successful compilation
         // followed by 13 unchanged paired cases was handed to the successor
         // as an EMPTY measurement set, causing blind repeat attempts.
-        let stalled=measured.into_iter().flatten().filter(|case|case["metrics"].as_array()
-            .is_some_and(|metrics|!metrics.is_empty())).take(3).cloned();
-        let cases=altered.chain(stalled).take(3).collect::<Vec<_>>();
+        let mut cases=altered.collect::<Vec<_>>();
+        // Prioritize a genuinely unsolved quality task before saturated
+        // guards (e.g. 0.75 -> 0.75 before 1.0 -> 1.0).
+        for case in measured.into_iter().flatten()
+            .filter(|case|unresolved_quality_case(case))
+            .chain(measured.into_iter().flatten().filter(|case|
+                case["metrics"].as_array().is_some_and(|metrics|!metrics.is_empty()))) {
+            if cases.len()>=3 {break;}
+            if !cases.iter().any(|previous|previous["id"]==case["id"]) {
+                cases.push(case.clone());
+            }
+        }
         json!({
             "domain":row["domain"],"accepted":row["accepted"],
             "tokens":row["tokens"],"elapsedMs":row["elapsedMs"],
@@ -2431,10 +2454,11 @@ fn fit_worker_prompt(
         // Compact mode must still disclose at least one unchanged measured
         // case; otherwise low token budgets silently erase failure feedback.
         "pairedCase":row["evaluation"]["metrics"]["measurements"].as_array()
-            .and_then(|cases|cases.iter().find(|case|
-                case["metrics"].as_array().is_some_and(|metrics|!metrics.is_empty())))
+            .and_then(|cases|cases.iter().find(|case|unresolved_quality_case(case))
+                .or_else(||cases.iter().find(|case|
+                    case["metrics"].as_array().is_some_and(|metrics|!metrics.is_empty()))))
             .map(|case|json!({"id":case["id"],"domain":case["domain"],
-                "firstMetric":case["metrics"].as_array().and_then(|m|m.first())})),
+                "metrics":case["metrics"]})),
         "error":row["error"].as_str().map(|error|
             error.chars().take(120).collect::<String>()),
         "compilerDiagnostic":row["verification"]["checks"].as_array()
