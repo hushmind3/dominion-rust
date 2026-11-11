@@ -2772,6 +2772,7 @@ async fn run_loop(
             "editMethodReward":Value::Null,
             "diffBytes":current["result"]["rsi"]["diffBytes"],
             "captureError":current["result"]["rsi"]["captureError"],
+            "repairFailure":current["result"]["repairError"],
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         let proposed_candidate = verified_candidate_id(&current["result"]);
         let previous_failed = proposed_candidate.and_then(|id|
@@ -2864,6 +2865,7 @@ async fn run_loop(
                     "동일 기준 커밋에서 이미 개선 효과가 없던 패치를 다시 제안했습니다: {previous}. 새로운 가설과 다른 코드 변경이 필요합니다."));
             } else {
                 generation["error"] = json!(worker_error
+                    .or_else(|| current["result"]["repairError"].as_str())
                     .or_else(|| child["modelError"].as_str())
                     .or_else(|| child["captureError"].as_str())
                     .or_else(|| current["error"].as_str())
