@@ -2967,6 +2967,30 @@ async fn run_loop(
             child_input["rsiSelectedDomain"] = Value::Null;
             child_input["rsiDecisionInput"] = Value::Null;
         }
+        // After an independently accepted generation, the next task is
+        // selected from the *measured paired residuals*, not from a stale
+        // parent_next_decision computed for the former source revision.
+        // Reassert after the legacy nextDecision assignment above.
+        if let Some(next)=&expanded {
+            let measured_domain=if next["metaTransferTarget"]==true {
+                Some("improver")
+            }else {
+                next["costOpportunities"].as_array().and_then(|rows|rows.first())
+                    .and_then(|row|row["domain"].as_str())
+                    .or_else(||next["residuals"].as_array()
+                        .and_then(|rows|rows.first())
+                        .and_then(|row|row["domain"].as_str()))
+            };
+            if let Some(domain)=measured_domain.filter(|d|DOMAINS.contains(d)) {
+                child_input["rsiSelectedDomain"]=json!(domain);
+                child_input["rsiDecisionInput"]=json!({
+                    "basis":"independently_measured_post_adoption_target",
+                    "previousAcceptedCommit":next["previousAcceptedCommit"],
+                    "targetDomain":domain,
+                    "metaTransferTarget":next["metaTransferTarget"]
+                });
+            }
+        }
         child_input["rsiIndexId"]=crate::engine::code_index::refresh(&context.state,&lab)?["id"].clone();
         let inherited_candidates=context.state.store.all("experience").into_iter()
             .filter(|item|item["status"]=="active" && item["partitionKey"]==research_scope(&child_input).partition_key
@@ -2988,11 +3012,16 @@ async fn run_loop(
         let history=record["history"].as_array().cloned().unwrap_or_default();
         let target_objective=selection_objective(&child_input);
         let continuation=history.last()
+            .filter(|_|expanded.is_none())
             .filter(|row|row["candidateId"].is_null()
                 && row["newFindings"].as_u64().unwrap_or(0)>0)
             .and_then(|row|row["domain"].as_str())
             .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
+        // A pending exploration formula must not hijack the first
+        // measured post-adoption meta/transfer target. Keep the trial in
+        // durable state; only defer applying it to this descendant.
         let trial=child_input["rsiTrialAlgorithmId"].as_str()
+            .filter(|_|expanded.is_none())
             .filter(|_|child_input["rsiAllowedTrialCampaigns"].is_array())
             .map(str::to_string);
         let suggested=child_input["rsiSelectedDomain"].as_str().map(str::to_string);
