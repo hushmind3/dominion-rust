@@ -7,6 +7,12 @@ on:
       - dominion-sub4
     paths:
       - .github/workflows/sub4-live-ollama.yml
+      - src/engine/rsi_population.rs
+      - src/engine/rsi_evolve.rs
+      - src/engine/jobs.rs
+      - src/engine/chat/runtime.rs
+      - src/engine/rsi_worktree.rs
+      - scripts/sub4-live-rsi.mjs
   workflow_dispatch:
 concurrency:
   group: sub4-real-model-proof-${{ github.ref }}
