@@ -22,6 +22,17 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Native RSI workers are bounded to 900 seconds. CPU-only models can need
+/// more than the ordinary five-minute request timeout to prefill source and
+/// emit a structured tool call; regular chat and short room turns are unchanged.
+fn rsi_turn_limit(session: &Value) -> Duration {
+    if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {
+        Duration::from_secs(840)
+    } else {
+        MAX_ELAPSED
+    }
+}
+
 /// Task contracts bound intent to 4096 characters. Keep the full model prompt
 /// intact but derive a bounded, content-unique value for the contract.
 fn bounded_contract_intent(input: &str) -> String {
@@ -287,7 +298,7 @@ async fn run_turn_with_policy(
         }
     }
     let result = tokio::select! {
-        result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
+        result = tokio::time::timeout(rsi_turn_limit(&session), run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
             result.unwrap_or_else(|_| Err("실행 시간 제한(10분)을 초과했습니다.".into())),
         // A closed SSE client must not destroy work already in flight. The turn
         // keeps running in its spawned task; only an explicit cancel or the
@@ -895,7 +906,7 @@ async fn run_turn_body(
         "maxRounds": max_rounds,
         "maxToolCalls": max_tools,
         "maxTokens": if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {Value::Null}else{json!(MAX_TOKENS)},
-        "maxElapsedMs": MAX_ELAPSED.as_millis() as u64,
+        "maxElapsedMs": rsi_turn_limit(&session).as_millis() as u64,
     });
     record_selection_snapshot(
         state,
@@ -917,6 +928,8 @@ async fn run_turn_body(
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| *value >= 10)
             .unwrap_or(60)
+    } else if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {
+        rsi_turn_limit(&session).as_secs()
     } else {
         300
     };
@@ -946,7 +959,7 @@ async fn run_turn_body(
     let mut adaptation_attempts = 0usize;
     let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
-    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
+    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, rsi_turn_limit(&session));
     let mut rsi_decision_checkpoint = false;
 
     let mut program_finished = program_policy.is_none();
@@ -986,8 +999,8 @@ async fn run_turn_body(
         {
             return Err("실행이 중단되었습니다.".into());
         }
-        if started_at.elapsed() > MAX_ELAPSED {
-            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
+        if started_at.elapsed() > rsi_turn_limit(&session) {
+            return Err("실행 시간 제한을 초과했습니다.".into());
         }
         if metrics.lock().unwrap().tool_calls as usize >= max_tools {
             mark_budget_exhausted(state, execution_id);
@@ -5444,6 +5457,15 @@ fn record_tool_stat(state: &AppState, session_id: &str, agent_id: Option<&str>, 
 
 #[cfg(test)]
 mod outcome_tests {
+    #[test]
+    fn native_rsi_turn_has_longer_but_bounded_model_window() {
+        use super::super::rsi_turn_limit;
+        use serde_json::json;
+        assert_eq!(rsi_turn_limit(&json!({"rsiRun":true,"rsiCampaignId":"campaign"})).as_secs(),840);
+        assert_eq!(rsi_turn_limit(&json!({"rsiRun":true})),MAX_ELAPSED);
+        assert_eq!(rsi_turn_limit(&json!({"roomId":"room"})),MAX_ELAPSED);
+        assert_eq!(rsi_turn_limit(&json!({})),MAX_ELAPSED);
+    }
     use super::*;
     use crate::config::Config;
     use crate::db::Store;
