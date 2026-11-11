@@ -60,7 +60,7 @@ fn read_snapshot(ops:&[Value], stop:usize, run:&str)->Option<Snapshot> {
 }
 
 fn accepted_edit(row:&Value, ops:&[Value])->Option<(String,Snapshot)> {
-    if row["accepted"]!=true
+    if row["accepted"]!=true || row["evidenceVerified"]!=true
         || row["acceptedProof"]["status"]!="verified"
         || row["acceptedProof"]["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
         || row["acceptedProof"]["evaluation"]["metrics"]["eligible"]!=true
@@ -93,7 +93,10 @@ fn accepted_edit(row:&Value, ops:&[Value])->Option<(String,Snapshot)> {
 fn negative_snapshot(row:&Value,ops:&[Value])->Option<Snapshot> {
     if row["accepted"]==true || row["candidateId"].as_str().is_none()
         || row["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
-        || !row["evaluation"]["metrics"].is_object(){return None;}
+        || !row["evaluation"]["metrics"].is_object()
+        || row["evaluation"]["metrics"]["eligible"]==true
+        || !matches!(row["evaluation"]["metrics"]["verdict"].as_str(),
+            Some("inconclusive" | "regressed")) {return None;}
     // Observe a candidate's decision state immediately BEFORE its first
     // source edit, not the subsequent tool calls produced by a failed patch.
     for (index,op) in ops.iter().enumerate(){
@@ -294,13 +297,13 @@ mod tests {
             "toolReceipt":{"verified":true}}));
         json!({"jobId":id,"objectiveId":"o","knowledgePartition":"p",
             "generatorProviderId":"api","generatorModel":"m",
-            "accepted":accepted,"acceptedProof":{"status":if accepted {"verified"}else{"rejected"},
+            "accepted":accepted,"evidenceVerified":accepted,"acceptedProof":{"status":if accepted {"verified"}else{"rejected"},
                 "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
                     "metrics":{"eligible":accepted}}},
             "acceptedSourceHashes":{"src/engine/example.rs":"a".repeat(64)},
             "candidateId":id,
             "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
-                "metrics":{"eligible":accepted}},
+                "metrics":{"eligible":accepted,"verdict":if accepted {"improved"}else{"inconclusive"}}},
             "toolTimeline":operations})
     }
     #[test]
@@ -375,6 +378,23 @@ mod tests {
             4, true, false
         );
         assert!(failed.is_none());
+    }
+
+    #[test]
+    fn unverified_claims_and_unadopted_good_candidates_do_not_train_guards() {
+        let mut rows = [
+            child("g1",true,0,"workspace_replace_range"),
+            child("g2",true,0,"workspace_replace_range"),
+            child("bad1",false,3,"workspace_replace_range"),
+            child("bad2",false,4,"workspace_replace_range"),
+        ];
+        assert_eq!(induce(&rows.iter().collect::<Vec<_>>()).len(),1);
+        rows[0]["evidenceVerified"]=json!(false);
+        assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
+        rows[0]["evidenceVerified"]=json!(true);
+        rows[2]["evaluation"]["metrics"]["eligible"]=json!(true);
+        rows[2]["evaluation"]["metrics"]["verdict"]=json!("improved");
+        assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
     }
 
     #[test]
