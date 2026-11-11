@@ -17,7 +17,10 @@ type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGen
  application?:{commit?:string;requiresRebuild?:boolean;restartRequested?:boolean};
  tokensEstimated?:boolean;
  error?:string;stopReason?:string;selectionPolicy?:string;comparison?:Comparison;
- history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:RsiTrialProof;targetReplan?:RsiReplanProof;focusSelection?:RsiTargetSelection;tokenUsage?:{promptTokens?:number;completionTokens?:number;calls?:number;estimatedCalls?:number}}[]}
+ history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:RsiTrialProof;targetReplan?:RsiReplanProof;focusSelection?:RsiTargetSelection;autonomousSearchProposal?:{
+ status?:string;candidateId?:string;origin?:string;
+ hypothesisEvidence?:{class?:string;wastedGenerations?:number;repeatedFiles?:number;previousRejectedPolicies?:number}
+};tokenUsage?:{promptTokens?:number;completionTokens?:number;calls?:number;estimatedCalls?:number}}[]}
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
 const workloads={
@@ -207,6 +210,11 @@ export function SelfImprovementPage(){
     {campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-3">
      <p>{item.attempt}번째 · {item.accepted?'검증 버전 선택':(item.newFindings||0)>0?'연구 보존':item.error?'개선 효과 확인 못함':'새로운 진전 없음'}{item.domainSelection==='algorithm_trial'?' · 전략 시험':item.domainSelection==='research_continuation'?' · 연구 계속':''}{item.trialOutcome?.verdict?' · 시험 '+item.trialOutcome.verdict:''}</p>
      {item.tokenUsage&&<p className="mt-1 text-[11px] text-[#7C7469]">입력 {(item.tokenUsage.promptTokens||0).toLocaleString()} · 출력 {(item.tokenUsage.completionTokens||0).toLocaleString()} 토큰{item.tokenUsage.estimatedCalls?' · 추정 '+item.tokenUsage.estimatedCalls+'회':''}</p>}
+     {item.autonomousSearchProposal?.status==='pending_trial'&&<p className="mt-1 text-[11px] text-[#655D51]">
+      자율 탐색식 생성 · {item.autonomousSearchProposal.hypothesisEvidence?.class==='avoid_regressions'?'회귀 원인 회피':'무성과 탐색 탈출'}
+      {' · '}실패 근거 {item.autonomousSearchProposal.hypothesisEvidence?.wastedGenerations||0}세대
+      {' · '}검증 대기 (채택 아님)
+     </p>}
      <RsiTargetEvidence selection={item.focusSelection}/>
      <RsiTrialEvidence trial={item.trialOutcome} replan={item.targetReplan}/>
     </div>)}
