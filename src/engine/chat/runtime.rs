@@ -97,6 +97,51 @@ fn rsi_textual_edit_fallback(rsi_run: bool, explicit_focus: bool, edit_stage: bo
     rsi_run && explicit_focus && edit_stage
 }
 
+/// OpenAI-compatible models sometimes return a tool which was advertised in
+/// an earlier round rather than this round. The RSI decision checkpoint must
+/// be enforced by the executor, not solely by a provider's tool_choice hint.
+fn rsi_tool_advertised(name: &str, round_tools: &[Value]) -> bool {
+    round_tools.iter().any(|definition| tool_name(definition) == name)
+}
+
+/// A small model may omit the hash or encode line numbers as strings. Recover
+/// only information already observed by a successful range read in THIS run,
+/// for the same file and covering the requested edit. Never infer newText,
+/// overwrite a supplied digest, or bypass the final file hash check.
+fn rsi_ground_range_edit_args(mut args: Value, completed: &[Value]) -> Value {
+    for field in ["startLine", "endLine"] {
+        if let Some(raw) = args[field].as_str().map(str::to_string) {
+            if !raw.is_empty() && raw.len() <= 12 && raw.bytes().all(|b| b.is_ascii_digit()) {
+                if let Ok(number) = raw.parse::<u64>() {
+                    args[field] = json!(number);
+                }
+            }
+        }
+    }
+    if args["expectedSha256"].as_str().is_some_and(|s| !s.is_empty()) {
+        return args;
+    }
+    let Some(path) = args["path"].as_str() else {return args;};
+    let Some(start) = args["startLine"].as_u64() else {return args;};
+    let Some(end) = args["endLine"].as_u64() else {return args;};
+    if start == 0 || end < start || args["newText"].as_str().is_none() {
+        return args;
+    }
+    let matching = completed.iter()
+        .filter(|op| op["status"] == "completed"
+            && op["tool"] == "workspace_read_range"
+            && op["arguments"]["path"].as_str() == Some(path)
+            && op["result"]["startLine"].as_u64().is_some_and(|from| from <= start)
+            && op["result"]["endLine"].as_u64().is_some_and(|to| end <= to)
+            && op["result"]["sourceSha256"].as_str().is_some_and(|sha|
+                sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit())))
+        .max_by_key(|op| op["opSeq"].as_u64().unwrap_or(0));
+    if let Some(read) = matching {
+        args["expectedSha256"] = read["result"]["sourceSha256"].clone();
+    }
+    args
+}
+
 pub async fn run_turn(
     state: &AppState,
     request: &TurnRequest,
@@ -1728,7 +1773,22 @@ async fn run_turn_body(
             {
                 return Err("실행이 중단되었습니다.".into());
             }
-            let arguments = match serde_json::from_str::<Value>(&call.arguments) {
+            if session["rsiRun"] == true && !rsi_tool_advertised(&call.name, &round_tools) {
+                let error = format!(
+                    "이번 RSI 단계에서 '{}' 도구는 제공되지 않았습니다. 현재 허용된 편집 도구 중 하나를 사용하세요.",
+                    call.name
+                );
+                record_soft_tool_error(
+                    state, tx, session_id, request, execution_id, &call.name, &call.id,
+                    &error, metrics,
+                );
+                messages.push(json!({
+                    "role":"tool","tool_call_id":call.id,
+                    "content":json!({"error":error,"unadvertisedRsiTool":true}).to_string()
+                }));
+                continue;
+            }
+            let mut arguments = match serde_json::from_str::<Value>(&call.arguments) {
                 Ok(value) if value.is_object() => value,
                 _ => {
                     mark_tool_argument_signal(state, request, execution_id, false);
@@ -1756,6 +1816,9 @@ async fn run_turn_body(
                         && operation["status"].as_str() == Some("completed")
                 })
                 .collect::<Vec<_>>();
+            if session["rsiRun"] == true && call.name == "workspace_replace_range" {
+                arguments = rsi_ground_range_edit_args(arguments, &completed_operations);
+            }
             let procedure_violation = strategy_candidates.iter().find_map(|strategy| {
                 if !crate::engine::procedure::applies(
                     strategy,
@@ -6201,6 +6264,42 @@ mod harness_tool_selection_tests {
         assert_eq!(calls.len(), 1, "native textual tools must be converted to executable calls");
         assert_eq!(calls[0].0, "workspace_replace");
         assert!(cleaned.is_empty());
+    }
+
+    #[test]
+    fn rsi_rejects_unadvertised_native_tools_after_the_edit_checkpoint() {
+        let menu = vec![json!({"function":{"name":"workspace_replace_range"}})];
+        assert!(rsi_tool_advertised("workspace_replace_range", &menu));
+        assert!(!rsi_tool_advertised("workspace_read_range", &menu));
+        assert!(!rsi_tool_advertised("workspace_read_range<|channel|>commentary", &menu));
+    }
+
+    #[test]
+    fn rsi_range_edit_can_reuse_only_a_matching_successful_source_observation() {
+        let hash = "a".repeat(64);
+        let reads = vec![json!({"status":"completed","opSeq":3,
+            "tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/decompose.rs"},
+            "result":{"startLine":10,"endLine":30,"sourceSha256":hash}})];
+        let edit = json!({"path":"src/engine/decompose.rs",
+            "startLine":"12","endLine":"15","newText":"fixed\\n"});
+        let corrected = rsi_ground_range_edit_args(edit.clone(), &reads);
+        assert_eq!(corrected["expectedSha256"], hash);
+        assert_eq!(corrected["startLine"], 12);
+        assert_eq!(corrected["endLine"], 15);
+        let wrong_path = json!({"path":"src/engine/other.rs",
+            "startLine":12,"endLine":15,"newText":"fixed"});
+        assert!(rsi_ground_range_edit_args(wrong_path, &reads)["expectedSha256"].is_null());
+        let outside = json!({"path":"src/engine/decompose.rs",
+            "startLine":12,"endLine":34,"newText":"fixed"});
+        assert!(rsi_ground_range_edit_args(outside, &reads)["expectedSha256"].is_null());
+        let existing = json!({"path":"src/engine/decompose.rs","startLine":12,"endLine":15,
+            "newText":"fixed","expectedSha256":"f".repeat(64)});
+        assert_eq!(rsi_ground_range_edit_args(existing, &reads)["expectedSha256"], "f".repeat(64));
+        let failed = vec![json!({"status":"failed","opSeq":4,"tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/decompose.rs"},
+            "result":{"startLine":10,"endLine":30,"sourceSha256":hash}})];
+        assert!(rsi_ground_range_edit_args(edit, &failed)["expectedSha256"].is_null());
     }
 
     #[test]
