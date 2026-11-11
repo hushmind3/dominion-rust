@@ -1263,7 +1263,17 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
         }
         Ok(unique.into_iter().collect::<Vec<_>>())
     }).transpose()?.unwrap_or_default();
-    let verification = crate::engine::procedure::normalize(&body["verification"]);
+    // RSI methods can name the current source file symbolically. The model
+    // proposes the *method*, while the harness binds its actual target for
+    // each generation; that is what makes a procedure transferable.
+    let mut proposed_verification=body["verification"].clone();
+    if uses_rsi_focus_binding(&proposed_verification) {
+        if !proposed_verification["bindings"].is_object() {
+            proposed_verification["bindings"]=json!({});
+        }
+        proposed_verification["bindings"]["rsiFocusPath"]=json!("__rsi_dynamic_focus__");
+    }
+    let verification = crate::engine::procedure::normalize(&proposed_verification);
     if verification["type"] != "procedure"
         || verification["nodes"].as_array().is_none_or(Vec::is_empty)
         || verification["after"].as_array().is_none_or(Vec::is_empty)
@@ -1299,7 +1309,46 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
     Ok(json!({"method":method,"next":"다음 예정된 개발에서 실제 도구로 실행하고 후속 조건과 개발 결과를 확인합니다. 등록은 성과가 아닙니다."}))
 }
 
+// A learned procedure may refer to the task's current indexed file, not a
+// hardcoded filename in the source generation. Only exact binding tokens are
+// replaced; arbitrary source text and model-generated strings stay literal.
+fn uses_rsi_focus_binding(value:&Value)->bool {
+    match value {
+        Value::String(text)=>text=="$rsiFocusPath",
+        Value::Array(items)=>items.iter().any(uses_rsi_focus_binding),
+        Value::Object(items)=>items.values().any(uses_rsi_focus_binding),
+        _=>false,
+    }
+}
+
+fn substitute_rsi_focus(value:&mut Value, focus:&str) {
+    match value {
+        Value::String(text) if text=="$rsiFocusPath"=>*value=json!(focus),
+        Value::Array(items)=>for item in items { substitute_rsi_focus(item,focus); },
+        Value::Object(items)=>for item in items.values_mut() { substitute_rsi_focus(item,focus); },
+        _=>{},
+    }
+}
+
+fn materialize_method_focus(mut method:Value,focus:Option<&str>)->Option<Value> {
+    if !uses_rsi_focus_binding(&method["verification"]) {return Some(method);}
+    let path=focus.filter(|p|crate::engine::rsi::safe_path(p))?;
+    substitute_rsi_focus(&mut method["verification"],path);
+    method["rsiBoundFocusFile"]=json!(path);
+    Some(method)
+}
+
+fn current_rsi_focus(input:&Value)->Option<&str> {
+    input["rsiFocusFiles"].as_array()?.iter()
+        .filter_map(Value::as_str).find(|path|crate::engine::rsi::safe_path(path))
+}
+
 fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective: &str) -> Vec<Value> {
+    applicable_methods_with_focus(state,partition,domain,objective,None)
+}
+
+fn applicable_methods_with_focus(state: &AppState, partition: &str, domain: &str,
+    objective: &str, focus:Option<&str>) -> Vec<Value> {
     let mut methods = Vec::new();
     let records = state.store.all("experience").into_iter()
         .filter(|record|record["partitionKey"] == partition && record["status"] == "active")
@@ -1323,9 +1372,9 @@ fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective
                 && method["successfulApplications"].as_u64().unwrap_or(0)>0;
             if !(original_domain || transferable)
                 || blocked.contains(method["id"].as_str().unwrap_or(""))
-                || !matches!(method["status"].as_str(), Some("candidate" | "executable"))
-                || !crate::engine::procedure::applies(method, objective, None, None) { continue; }
-            let mut method = method.clone();
+                || !matches!(method["status"].as_str(), Some("candidate" | "executable")) { continue; }
+            let Some(mut method)=materialize_method_focus(method.clone(),focus) else {continue;};
+            if !crate::engine::procedure::applies(&method, objective, None, None) {continue;}
             if transferable { method["rsiTransferTrial"]=json!(true); }
             method["rsiMethodExperienceId"] = record["id"].clone();
             methods.push(method);
@@ -1340,6 +1389,9 @@ fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective
     methods
 }
 
+/// The actual source files selected for a generation are part of its task.
+/// A domain-generic RSI objective alone cannot match a learned procedure that
+/// names a concrete file: that made valid learned methods silently disappear.
 fn method_application_context(input: &Value, domain: &str) -> String {
     let mut context=input["rsiObjective"].as_str().unwrap_or("").to_string();
     context.push('\n');
@@ -1356,8 +1408,8 @@ fn method_application_context(input: &Value, domain: &str) -> String {
 }
 
 fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
-    let methods = applicable_methods(state, &research_scope(input).partition_key, domain,
-        &method_application_context(input, domain));
+    let methods = applicable_methods_with_focus(state, &research_scope(input).partition_key, domain,
+        &method_application_context(input, domain),current_rsi_focus(input));
     json!({"action":if methods.is_empty(){"research_only"}else{"execute_methods"},
         "methodIds":methods.iter().map(|m|m["id"].clone()).collect::<Vec<_>>()})
 }
@@ -1367,6 +1419,7 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     session["rsiResearchPartition"] = json!(research_scope(input).partition_key);
     session["rsiDomain"] = json!(domain);
     session["rsiMethodContext"] = json!(method_application_context(input,domain));
+    session["rsiFocusFile"] = json!(current_rsi_focus(input));
     let mut decision = input["rsiDecisionInput"].clone();
     if !decision.is_object() {decision=json!({});}
     // The parent predicted reuse BEFORE the descendant indexed and selected
@@ -1384,9 +1437,10 @@ pub(crate) fn method_strategies(state: &AppState, session: &Value) -> Vec<Value>
     }
     let ids = session["rsiDecisionInput"]["reuseDecision"]["methodIds"].as_array().cloned().unwrap_or_default();
     let prior = state.store.all("execution_operation");
-    applicable_methods(state, session["rsiResearchPartition"].as_str().unwrap_or(""),
+    applicable_methods_with_focus(state, session["rsiResearchPartition"].as_str().unwrap_or(""),
         session["rsiDomain"].as_str().unwrap_or(""),
-        session["rsiMethodContext"].as_str().or_else(||session["rsiObjective"].as_str()).unwrap_or(""))
+        session["rsiMethodContext"].as_str().or_else(||session["rsiObjective"].as_str()).unwrap_or(""),
+        session["rsiFocusFile"].as_str())
         .into_iter().filter(|m| ids.contains(&m["id"]) && !prior.iter().any(|op|
             op["sessionId"] == session["id"] && op["origin"] == "procedure"
                 && op["procedureStrategyId"] == m["id"]))
@@ -5931,6 +5985,100 @@ mod tests {
         assert_eq!(session["rsiDecisionInput"]["reuseDecision"]["action"],"research_only");
         assert!(applicable_methods(&state,&partition,"memory",
             session["rsiMethodContext"].as_str().unwrap()).is_empty());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn learned_procedure_repairs_two_distinct_source_domains_with_real_tool_receipts() {
+        let (state,root)=state();
+        let workspace=root.join("work");
+        std::fs::create_dir_all(workspace.join("src/engine")).unwrap();
+        // Different real source files, not two evaluations of the same path.
+        std::fs::write(workspace.join("src/engine/memory.rs"),
+            "pub fn remember() -> bool { false }\n").unwrap();
+        std::fs::write(workspace.join("src/engine/tools.rs"),
+            "pub fn invoke_tool() -> bool { false }\n").unwrap();
+        let partition=research_scope(&json!({"rsiSourceDir":workspace})).partition_key;
+        let verification=crate::engine::procedure::normalize(&json!({
+            "type":"procedure","appliesTo":{"requestContains":["src/engine/"]},
+            "bindings":{"rsiFocusPath":"__rsi_dynamic_focus__"},
+            "nodes":[{"id":"repair_source","tool":"workspace_replace",
+                "arguments":{"path":"$rsiFocusPath",
+                    "oldText":"false","newText":"true"}}],
+            "edges":[],"after":[{"kind":"file_contains",
+                "path":"$rsiFocusPath","text":"-> bool { true }"}]
+        }));
+        assert_eq!(verification["type"],"procedure");
+        let method=json!({"id":"cross-domain-source-inspect","revision":"v1",
+            "domain":"memory","transferDomains":["tools"],"status":"candidate",
+            "successfulApplications":0,"verification":verification,
+            "assistanceMode":"harness_assisted"});
+        state.store.put("experience",&json!({"id":"source-experience",
+            "status":"active","partitionKey":partition,
+            "executableMethods":[method]})).unwrap();
+        state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve",
+            "status":"running","cancelRequested":false})).unwrap();
+        for (domain,focus) in [("memory","src/engine/memory.rs"),
+            ("tools","src/engine/tools.rs")] {
+            let child_id=format!("generation-{domain}");
+            let session_id=format!("session-{domain}");
+            let execution_id=format!("execution-{domain}");
+            state.store.put("job",&json!({"id":child_id,"kind":"rsi_generation",
+                "status":"running","cancelRequested":false,
+                "input":{"rsiCampaignId":"campaign"}})).unwrap();
+            let input=json!({"rsiSourceDir":workspace,"rsiDomain":domain,
+                "rsiFocusFiles":[focus],"rsiAutoFocus":true,
+                "rsiObjective":"Improve src/engine/ source code"});
+            let mut session=json!({"id":session_id,"rsiRun":true,
+                "rsiCampaignId":"campaign","rsiGenerationJobId":child_id,
+                "rsiObjective":"Improve src/engine/ source code"});
+            configure_method_session(&state,&input,&mut session);
+            state.store.put("session",&session).unwrap();
+            let strategies=method_strategies(&state,&session);
+            assert_eq!(strategies.len(),1,"real {domain} task should reuse learned procedure");
+            let strategy=&strategies[0];
+            assert_eq!(strategy["rsiBoundFocusFile"],json!(focus));
+            assert_eq!(strategy["rsiTransferTrial"].as_bool().unwrap_or(false),domain=="tools");
+            let (node,tool,args)=crate::engine::procedure::ready_intent(
+                strategy,&[],"Improve src/engine/ source code",
+                &std::collections::HashMap::new()).unwrap();
+            assert_eq!(args["path"],focus,"execution must target CURRENT task, not source task");
+            let ctx=tools::ToolContext {workspace:&workspace,store:&state.store,state:&state,
+                session_id:&session_id,agent_id:None,tools_enabled:true,
+                tools_execution_enabled:true};
+            let result=tools::execute(&ctx,&tool,&args,&execution_id).await.unwrap();
+            assert!(result["error"].is_null(),
+                "{domain} tool must complete a real source edit");
+            assert!(std::fs::read_to_string(workspace.join(focus)).unwrap().contains("-> bool { true }"),
+                "{domain} workspace file must actually be repaired");
+            state.store.put("execution",&json!({"id":execution_id,"sessionId":session_id,
+                "strategyCandidates":strategies})).unwrap();
+            state.store.put("execution_operation",&json!({
+                "id":format!("operation-{domain}"),"runId":execution_id,
+                "sessionId":session_id,"origin":"procedure",
+                "procedureStrategyId":strategy["id"],"procedureRevision":strategy["revision"],
+                "procedureNodeId":node,"tool":tool,"arguments":args,"result":result,
+                "status":"completed","opSeq":1
+            })).unwrap();
+            collect_method_executions(&state,&session_id,&workspace);
+            let stored=state.store.get("session",&session_id).unwrap();
+            let receipt=&stored["rsiMethodExecutions"][0];
+            assert_eq!(receipt["focusPath"],json!(focus));
+            assert_eq!(receipt["result"]["verified"],true);
+            assert_eq!(receipt["result"]["followed"],true);
+            record_method_feedback(&state,&json!({"domain":domain,
+                "accepted":true,"jobId":child_id,"newFindings":0,
+                "tokens":100,"elapsedMs":10}),&session_id);
+        }
+        let record=state.store.get("experience","source-experience").unwrap();
+        let method=&record["executableMethods"][0];
+        assert_eq!(method["status"],"executable");
+        assert_eq!(method["successfulApplications"],2);
+        assert_eq!(method["transferVerifiedDomains"],json!(["tools"]));
+        let applied=method["applications"].as_array().unwrap();
+        assert_eq!(applied.len(),2);
+        assert_eq!(applied[0]["focusPath"],"src/engine/memory.rs");
+        assert_eq!(applied[1]["focusPath"],"src/engine/tools.rs");
         let _=std::fs::remove_dir_all(root);
     }
 
