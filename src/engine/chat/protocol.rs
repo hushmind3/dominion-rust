@@ -404,6 +404,30 @@ fn parse_dsml_tool_calls(
     (calls, cleaned.trim().to_string())
 }
 
+#[cfg(test)]
+mod sub1_structured_patch_tests {
+    use super::*;
+    #[test]
+    fn prose_wrapped_single_source_bound_patch_is_a_real_tool_intent() {
+        let mut available=std::collections::HashSet::new();
+        available.insert("workspace_replace_range".to_string());
+        let sha="a".repeat(64);
+        let content=format!(
+            "파일의 2번째 줄을 다음 코드로 교정합니다.\n\n```json\n{{\"path\":\"src/engine/target.rs\",\"startLine\":2,\"endLine\":2,\"newText\":\"let x = 2;\",\"sourceSha256\":\"{sha}\"}}\n```\n"
+        );
+        let (tool,args)=parse_rsi_unwrapped_edit(&content,&available).unwrap();
+        assert_eq!(tool,"workspace_replace_range");
+        let value:Value=serde_json::from_str(&args).unwrap();
+        assert_eq!(value["expectedSha256"],sha);
+        assert_eq!(value["path"],"src/engine/target.rs");
+        assert!(parse_rsi_unwrapped_edit(&format!("{content}\n{content}"),&available).is_none());
+        assert!(parse_rsi_unwrapped_edit(
+            &content.replace("src/engine/target.rs","../escape.rs"),&available).is_none());
+        assert!(parse_rsi_unwrapped_edit(
+            "```rust\nfn example() {}\n```",&available).is_none());
+    }
+}
+
 #[derive(Default)]
 pub(super) struct SseBuffer(Vec<u8>);
 
