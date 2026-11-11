@@ -1,13 +1,7 @@
 name: Sub4 actual local Ollama RSI attempt
-# One bounded real-model source-repair run for this explicit branch experiment.
-# The push trigger is limited to a source-index change; normal code pushes
-# still cannot start an expensive model campaign.
+# Explicit opt-in only: code commits must not launch recurring 4B campaigns.
 on:
   workflow_dispatch:
-  push:
-    branches: [dominion-sub4]
-    paths:
-      - 'src/engine/code_index.rs'
 permissions:
   contents: read
 jobs:
