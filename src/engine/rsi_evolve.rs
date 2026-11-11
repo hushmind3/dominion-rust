@@ -327,7 +327,7 @@ pub fn evaluate_search_algorithm(
 }
 
 pub fn auto_write_allowed(state: &AppState, session_id: &str, tool: &str, args: &Value) -> bool {
-    if !matches!(tool, "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_replace_function")
+    if !matches!(tool, "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_replace_function" | "workspace_replace_function")
         || !args["path"]
             .as_str()
             .is_some_and(crate::engine::rsi::safe_path)
@@ -1523,7 +1523,7 @@ pub(crate) fn remember_research(state:&AppState,input:&Value,generation:&Value,s
     let writes=state.store.all("execution_operation").into_iter().filter(|op|op["sessionId"]==session && op["status"]=="completed"
         && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true
         && matches!(op["tool"].as_str(),
-            Some("workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"))).collect::<Vec<_>>();
+            Some("workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"|"workspace_replace_function"))).collect::<Vec<_>>();
     for receipt in &mut applications {
         let actions=writes.iter().filter(|op|op["arguments"]["path"]==receipt["path"]).map(|op|op["id"].clone()).collect::<Vec<_>>();
         receipt["status"]=json!(if actions.is_empty(){"provided"}else if accepted{"related_verified_change"}else{"related_change_unverified"});
@@ -2271,7 +2271,7 @@ fn session_action_trace(state:&AppState,session_id:&str)->Vec<Value>{
     if ops.len()>48 { ops=ops.split_off(ops.len()-48); }
     ops.into_iter().map(|op|{
         let source_edit=matches!(op["tool"].as_str(),
-            Some("workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"));
+            Some("workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"|"workspace_replace_function"));
         let verified=op["status"]=="completed"
             && op["result"]["written"]==true
             && op["toolReceipt"]["verified"]==true;
@@ -2329,7 +2329,7 @@ fn synthesize_action_program(rows:&[Value])->Value {
                 if !next.1 || next.0==step.0 {break;}
                 if path.last()!=Some(&next.0) {path.push(next.0.clone());}
                 if next.2 && matches!(next.0.as_str(),
-                    "workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function") {
+                    "workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"|"workspace_replace_function") {
                     let candidate=generation["candidateCapture"]["checksPassed"]==true;
                     let paired=generation_is_verified(generation);
                     let weight=if paired {8} else if candidate {3} else {1};
@@ -2347,7 +2347,7 @@ fn synthesize_action_program(rows:&[Value])->Value {
         for (tool,ok,_) in steps {
             if !ok {continue;}
             let changes=matches!(tool.as_str(),
-                "workspace_replace"|"workspace_replace_range"|"workspace_write"|"workspace_replace_function");
+                "workspace_replace"|"workspace_replace_range"|"workspace_replace_function"|"workspace_write"|"workspace_replace_function");
             if changes {saw_mutation=true;}
             let segment=if saw_mutation {&mut mutation}else{&mut discovery};
             if segment.last()!=Some(&tool) && segment.len()<5 {segment.push(tool);}
@@ -2414,7 +2414,7 @@ fn complete_read_only_action_program(mut plan:Value, preferred:&str)->Value {
         tool=="workspace_read_range");
     let editable=sequence.iter().any(|tool|
         matches!(tool.as_str(),
-            Some("workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function")));
+            Some("workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"|"workspace_replace_function")));
     if !grounded || editable || !matches!(preferred,"workspace_replace"|"workspace_replace_range" | "workspace_replace_function") {
         return plan;
     }
@@ -2524,7 +2524,7 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
     // an implementation program. Dropping discovery while keeping *no edit*
     // repeats the very failure we were supposed to learn from.
     let has_edit=|sequence:&[Value]|sequence.iter().any(|step|matches!(
-        step.as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write"|"workspace_replace_function")));
+        step.as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_replace_function"|"workspace_write"|"workspace_replace_function")));
     let transform=if failed_compiles>=2 || regressed_quality>=2 {
         // Rejected quality is a counterexample against this specific
         // execution algorithm. Compile failures demand refreshed grounded
@@ -2533,7 +2533,7 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
         let mut proposed=sequence.clone();
         if failed_compiles>=2 {
             if let Some(index)=proposed.iter().position(|step|
-                matches!(step.as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write"|"workspace_replace_function"))) {
+                matches!(step.as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_replace_function"|"workspace_write"|"workspace_replace_function"))) {
                 if index==0 || proposed[index-1]!="workspace_read_range" {
                     proposed.insert(index,json!("workspace_read_range"));
                 }
@@ -2565,7 +2565,7 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
         let mut proposed=sequence.clone();
         if !proposed.iter().any(|step|step=="workspace_read_range") {
             let edit_position=proposed.iter().position(|step|
-                matches!(step.as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write"|"workspace_replace_function")))
+                matches!(step.as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_replace_function"|"workspace_write"|"workspace_replace_function")))
                 .unwrap_or(proposed.len());
             proposed.insert(edit_position,json!("workspace_read_range"));
         }
@@ -2814,7 +2814,7 @@ fn compress_successful_action_program(mut program:Value, rows:&[Value])->Value {
         let Some(edit_position)=trace.iter().position(|step|
             step["executed"]==true && step["sourceChanged"]==true
             && matches!(step["tool"].as_str(),
-                Some("workspace_replace"|"workspace_replace_range"|"workspace_write"|"workspace_replace_function")))
+                Some("workspace_replace"|"workspace_replace_range"|"workspace_replace_function"|"workspace_write"|"workspace_replace_function")))
         else{continue;};
         let before=&trace[..edit_position];
         let grounded=before.iter().any(|step|
@@ -3137,7 +3137,7 @@ fn session_write_receipts(state:&AppState, session_id:&str) -> Vec<Value> {
     let mut rows = Vec::new();
     for operation in state.store.all("execution_operation") {
         if operation["sessionId"].as_str() != Some(session_id)
-            || !matches!(operation["tool"].as_str(),Some("workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"))
+            || !matches!(operation["tool"].as_str(),Some("workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"|"workspace_replace_function"))
         {
             continue;
         }
