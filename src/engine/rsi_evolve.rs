@@ -7348,13 +7348,14 @@ mod tests {
             let candidate=format!("candidate-{domain}");
             state.store.put("rsi_candidate",&json!({"id":candidate,
                 "paths":[focus]})).unwrap();
-            record_method_feedback(&state,&json!({"domain":domain,
+            let mut feedback=json!({"domain":domain,
                 "accepted":true,"jobId":child_id,"newFindings":0,
-                "acceptedSourceHashes":{focus:post},
                 "acceptedProof":{"status":"verified","candidateId":candidate,
                     "evaluation":{"metrics":{"eligible":true},
                         "source":"server_invoked_local_paired_git_worktrees"}},
-                "tokens":100,"elapsedMs":10}),&session_id);
+                "tokens":100,"elapsedMs":10});
+            feedback["acceptedSourceHashes"][focus]=json!(post);
+            record_method_feedback(&state,&feedback,&session_id);
         }
         let record=state.store.get("experience","source-experience").unwrap();
         let method=&record["executableMethods"][0];
