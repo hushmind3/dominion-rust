@@ -268,6 +268,107 @@ fn search_strategy(algorithm: &Value, mode: &str) -> Value {
     })
 }
 
+/// An improvement method, not a model: each executable strategy changes how
+/// DOMINION allocates the source-observation budget and which editing tool it
+/// presents first. Selection is re-estimated from actual *prior* executions.
+/// Candidate creation is useful intermediate evidence, never equal to quality
+/// improvement or permission to adopt an unverified policy.
+const RSI_EDIT_METHODS: &[(&str,u64,&str)] = &[
+    ("balanced",3,"workspace_replace_range"),
+    ("focused-range",2,"workspace_replace_range"),
+    ("exact-context",4,"workspace_replace"),
+];
+
+fn edit_method_reward(generation:&Value)->f64 {
+    if generation["accepted"]==true
+        && generation["evaluation"]["metrics"]["eligible"]==true {
+        return 1.0;
+    }
+    if generation["evaluation"]["metrics"]["improvedHoldouts"]
+        .as_u64().is_some_and(|gains|gains>0)
+        && generation["evaluation"]["metrics"]["regressions"].as_u64()==Some(0) {
+        return 0.65;
+    }
+    if generation["candidateId"].is_string() && generation["evaluation"].is_object() {
+        // Neutral paired holdouts demonstrate a valid trial, not useful gain.
+        return 0.12;
+    }
+    if generation["candidateId"].is_string() {return 0.08;}
+    if generation["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)>0 {return 0.03;}
+    0.0
+}
+
+/// A bounded UCB optimizer over executable improvement methods. Each input
+/// observation must have an actual worker job, measured tokens, a recorded
+/// policy and a generation outcome. No model prose or replayed hypothesis
+/// supplies a reward. Untried methods get exploration priority so failure
+/// can alter the *next algorithm*, not just the next explanation.
+fn synthesize_edit_method(history:&[Value])->Value {
+    let observed=history.iter().filter(|g|
+        g["jobId"].as_str().is_some_and(|id|!id.is_empty())
+        && g["tokens"].as_u64().is_some_and(|tokens|tokens>0)
+        && g["editPolicy"]["method"].as_str().is_some_and(|name|
+            RSI_EDIT_METHODS.iter().any(|(candidate,_,_)|name==*candidate))
+    ).collect::<Vec<_>>();
+    if observed.is_empty() {
+        return json!({"method":"balanced","checkpointAfter":3,
+            "preferredTool":"workspace_replace_range",
+            "revision":crate::engine::memory::stable_id(&["rsi.edit-method","balanced"]),
+            "observations":0,"basis":"initial_exploration_not_improvement_proof"});
+    }
+    let total=observed.len() as f64;
+    let mut selection=("balanced",3u64,"workspace_replace_range",f64::NEG_INFINITY,0u64,0.0f64);
+    for (method,checkpoint,tool) in RSI_EDIT_METHODS {
+        let rows=observed.iter().filter(|g|g["editPolicy"]["method"]==*method)
+            .collect::<Vec<_>>();
+        let count=rows.len() as f64;
+        // The production budget is shared by every trial. Penalize costly
+        // attempts with no independent quality effect, but retain exploration.
+        let reward=rows.iter().map(|g| {
+            let cost=(g["tokens"].as_u64().unwrap_or(0) as f64 / 100_000.0).min(1.0);
+            (edit_method_reward(g)-cost*0.08).clamp(0.0,1.0)
+        }).sum::<f64>();
+        let estimate=(reward+0.15)/(count+1.0);
+        let exploration=(2.0*(total+1.0).ln()/(count+1.0)).sqrt();
+        let score=estimate+exploration;
+        if score>selection.3 {
+            selection=(method,*checkpoint,tool,score,count as u64,reward);
+        }
+    }
+    json!({
+        "method":selection.0,"checkpointAfter":selection.1,
+        "preferredTool":selection.2,
+        "revision":crate::engine::memory::stable_id(&[
+            "rsi.edit-method","ucb-v1",selection.0,
+            &format!("{}",observed.len()),&format!("{:.4}",selection.5)]),
+        "observations":observed.len(),
+        "selectedSamples":selection.4,
+        "score":selection.3,
+        "basis":"observed_worker_outcomes_ucb_not_causal_improvement_proof"
+    })
+}
+
+/// Learn across completed generations and follow-up campaigns for the same
+/// source partition and exact objective. A different repository, task or
+/// merely proposed action cannot influence this job's improvement policy.
+fn learned_edit_method(state:&AppState,input:&Value,history:&[Value])->Value {
+    let objective=crate::engine::memory::stable_id(&[target_focus_objective(input)]);
+    let partition=research_scope(input).partition_key;
+    let mut seen=BTreeSet::<String>::new();
+    let mut rows=Vec::new();
+    for row in history.iter().chain(state.store.all("rsi_generation").iter()) {
+        if row["objectiveId"]!=objective || row["knowledgePartition"]!=partition {
+            continue;
+        }
+        let Some(job)=row["jobId"].as_str().filter(|id|!id.is_empty()) else {continue};
+        if seen.insert(job.to_string()) {rows.push(row.clone());}
+    }
+    let mut policy=synthesize_edit_method(&rows);
+    policy["objectiveId"]=json!(objective);
+    policy["knowledgePartition"]=json!(partition);
+    policy
+}
+
 /// Only raw, candidate-scoped, locally revalidated paired receipts may be
 /// used as positive exploration rewards. A forged summary, replay match or
 /// failed generation never gets a measured reward.
@@ -2561,6 +2662,13 @@ async fn run_loop(
             child_input["rsiAutoFocus"]=json!(false);
             child_input["rsiFocusSelection"]=json!({"source":"user_selected"});
         }
+        // This is the system's learned *execution method*, independently of
+        // which model is used to write the candidate patch.
+        child_input["rsiEditPolicy"]=learned_edit_method(&context.state,&child_input,&history);
+        context.state.store.audit("rsi.edit_method_selected",json!({
+            "campaignId":context.job_id,"attempt":attempt,
+            "generatorCommit":head,"policy":child_input["rsiEditPolicy"]
+        }));
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
@@ -2702,6 +2810,8 @@ async fn run_loop(
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
             "editEvidence":current["result"]["rsi"]["editEvidence"],
+            "editPolicy":current["input"]["rsiEditPolicy"],
+            "editMethodReward":Value::Null,
             "diffBytes":current["result"]["rsi"]["diffBytes"],
             "captureError":current["result"]["rsi"]["captureError"],
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
@@ -2813,6 +2923,7 @@ async fn run_loop(
         let hashes=artifacts.iter().map(|a|a["hash"].clone()).collect::<Vec<_>>();
         let new_findings=new_research_findings(&context.state,&current["input"],child_id,
             &hashes,record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+        generation["editMethodReward"]=json!(edit_method_reward(&generation));
         generation["knowledgeArtifactHashes"]=json!(hashes);
         generation["newFindings"]=json!(new_findings);
         generation["stopReason"]=json!(stopped);
@@ -3766,6 +3877,32 @@ mod tests {
         assert!(text.contains("workspace_replace_range: unchanged"),"{text}");
         assert!(!text.contains("개선 확인"),"{text}");
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn edit_method_selection_learns_from_real_executions_not_model_prose() {
+        let baseline=synthesize_edit_method(&[]);
+        assert_eq!(baseline["method"],"balanced");
+        let actual=json!({"jobId":"j1","tokens":50000,
+            "editPolicy":{"method":"balanced"},"candidateId":null,
+            "editEvidence":{"verifiedWrites":0},"accepted":false});
+        let next=synthesize_edit_method(&[actual.clone()]);
+        assert_ne!(next["method"],"balanced",
+            "an unproductive measured attempt must explore a different executable method");
+        let fake=json!({"jobId":"j2","tokens":0,
+            "editPolicy":{"method":"focused-range"},"accepted":true,
+            "evaluation":{"metrics":{"eligible":true}}});
+        assert_eq!(synthesize_edit_method(&[actual,fake])["method"],next["method"],
+            "unexecuted success claims cannot update the policy");
+    }
+
+    #[test]
+    fn edit_method_reward_requires_measured_quality_for_full_credit() {
+        assert_eq!(edit_method_reward(&json!({"accepted":true,
+            "evaluation":{"metrics":{"eligible":true}}})),1.0);
+        assert!(edit_method_reward(&json!({"candidateId":"c",
+            "evaluation":{"verdict":"inconclusive","metrics":{"improvedHoldouts":0}}}))<0.2);
+        assert_eq!(edit_method_reward(&json!({"accepted":false,"candidateId":null})),0.0);
     }
 
     #[test]
