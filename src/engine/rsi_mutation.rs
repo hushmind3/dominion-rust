@@ -459,8 +459,13 @@ mod tests {
     #[test]
     fn meta_improver_evolves_verified_streamed_statistics_without_dropping_metrics() {
         let source = include_str!("rsi_evolve.rs");
-        let candidate = stream_verified_policy_statistics(source)
-            .expect("Sub3 improver must have a self-optimization opportunity");
+        // The first adopted child already carries the streamed optimizer.
+        // Descendant CI must verify the preserved behavior instead of
+        // requiring the old, unoptimized source to still exist.
+        let first_generation=stream_verified_policy_statistics(source);
+        let candidate=first_generation.as_deref().unwrap_or(source);
+        assert!(first_generation.is_some()
+            || source.contains("let mut last_row: Option<&Value> = None"));
         assert!(candidate.contains("let mut last_row: Option<&Value> = None"));
         assert!(candidate.contains("row[\"evidenceVerified\"]==true"));
         assert!(candidate.contains("let holdout_gains = holdout_gains_total as f64;"));
