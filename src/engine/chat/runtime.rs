@@ -112,6 +112,30 @@ fn rsi_patch_ready_for_verification(
         && operation["toolReceipt"]["verified"]==true
 }
 
+/// Classify literal native source-tool failures that do not need another LLM
+/// planning call. A focused worker will get a bounded read opportunity on
+/// the next round. The original error and unsuccessful source write remain
+/// in the execution trace; this is not a success claim.
+fn rsi_direct_source_repair(
+    session:&Value, tool:&str, args:&Value, result:&Value,
+)->Option<&'static str> {
+    if session["rsiRun"]!=true || session["rsiExplicitFocus"]!=true
+        || !session["rsiFocusFiles"].as_array().is_some_and(|files|
+            files.len()==1 && files[0]==args["path"]) {return None}
+    let error=result["error"].as_str()?;
+    if tool=="workspace_write" && error.contains("새 파일 생성 전용") {
+        return Some("existing_file_write");
+    }
+    if tool!="workspace_replace" {return None}
+    if error.contains("endLine") || error.contains("startLine")
+        || error.contains("120줄") {return Some("invalid_source_span")}
+    if result["staleVersion"]==true || result["preflightBlocked"]==true
+        || error.contains("sourceSha256") {
+        return Some("source_revision_mismatch");
+    }
+    None
+}
+
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
 /// needs read, search and replace together to produce a grounded patch.
 fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
@@ -1001,6 +1025,7 @@ async fn run_turn_body(
     let mut rsi_edit_only_announced = false;
     let mut rsi_edit_retry_used = false;
     let mut rsi_force_edit_stage = false;
+    let mut rsi_repair_read_allowed = false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1158,7 +1183,9 @@ async fn run_turn_body(
                     // Restore edit schemas from the complete allowed menu:
                     // prior context-based trimming may have dropped them.
                     round_tools = tool_definitions.iter()
-                        .filter(|definition| rsi_checkpoint_tool(tool_name(definition), true))
+                        .filter(|definition| rsi_checkpoint_tool(tool_name(definition), true)
+                            || (rsi_repair_read_allowed
+                                && tool_name(definition)=="workspace_read_range"))
                         .cloned().collect();
                     // A focused repair of existing code needs a small patch,
                     // never an entire-file rewrite. Offering workspace_write
@@ -1214,6 +1241,14 @@ async fn run_turn_body(
             let input=super::room_context::input_estimate(&wire_messages,&round_tools) as u64;
             let limit=rsi_output_allowance(total_tokens,input)?;
             provider.max_output_tokens=Some(provider.max_output_tokens.unwrap_or(8192).min(limit));
+        }
+        // A focused source checkpoint should not spend the entire CPU model
+        // window emitting prose. A targeted native edit fits this allowance.
+        if session["rsiRun"]==true && session["rsiExplicitFocus"]==true
+            && rsi_decision_checkpoint {
+            let cap=if rsi_repair_read_allowed {1024} else {2048};
+            provider.max_output_tokens=Some(
+                provider.max_output_tokens.unwrap_or(8192).min(cap));
         }
         if is_room {
             if let Some(mut execution) = state.store.get("execution", execution_id) {
@@ -2021,6 +2056,9 @@ async fn run_turn_body(
             ordering_used = true;
             if !ok {
                 ordering_ok = false;
+            } else if call.name=="workspace_read_range" {
+                // One successful targeted observation closes this repair read.
+                rsi_repair_read_allowed=false;
             }
             if ok && state.store.get("execution_operation",
                     &format!("{execution_id}:{round}:{call_index}:{}",call.id))
@@ -2068,7 +2106,22 @@ async fn run_turn_body(
                     &arguments,
                     &error_text,
                 );
-                if adaptation_attempts < 3 && !request.provider_id.as_deref().unwrap_or("").is_empty() {
+                let direct_repair=rsi_direct_source_repair(
+                    &session,&call.name,&arguments,&result);
+                if let Some(reason)=direct_repair {
+                    rsi_repair_read_allowed=true;
+                    state.store.audit("rsi.source_repair_direct", json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "tool":call.name,"callId":call.id,
+                        "reason":reason,"extraModelCalls":0,
+                        "editStillUnverified":true
+                    }));
+                    messages.push(json!({"role":"system",
+                        "content":format!(
+                            "실제 도구 오류({reason}): 같은 인자 재시도 금지. 필요하면 workspace_read_range로 정확한 목표 줄 범위와 sourceSha256를 1회 관측하세요. 그 뒤 workspace_replace로 절대 줄 번호(startLine은 endLine 이하), 최신 expectedSha256, 최소 newText를 전달하세요. 현재 코드와 한 번만 일치하는 oldText가 있다면 정확한 oldText 방식도 가능합니다."
+                        )
+                    }));
+                } else if adaptation_attempts < 3 && !request.provider_id.as_deref().unwrap_or("").is_empty() {
                     adaptation_attempts += 1;
                     match attempt_model_adaptation(
                         state, tx, &session, request, session_id, execution_id, round,
