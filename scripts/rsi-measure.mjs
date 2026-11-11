@@ -44,7 +44,7 @@ const cases=[];
 for(const spec of plan.cases){
  const metrics=spec.metrics||[];
  const repetitions=metrics.length?6:1;
- const arms={baseline:{pass:true,values:[]},candidate:{pass:true,values:[]}};
+ const arms={baseline:{pass:true,values:[],behavior:[]},candidate:{pass:true,values:[],behavior:[]}};
  for(let sample=0;sample<repetitions;sample++){
   // Balance ordering so thermal/cache drift cannot always favor candidate.
   for(const label of sample%2?['candidate','baseline']:['baseline','candidate']){
@@ -61,6 +61,13 @@ for(const spec of plan.cases){
     let values;try{values=JSON.parse(entries[0].split('DOMINION_RSI_METRIC ')[1])}catch{arm.pass=false;continue}
     if(metrics.some(metric=>!Number.isFinite(values[metric.key])||values[metric.key]<0)){arm.pass=false;continue}
     arm.values.push(values);
+   const observed=result.stdout.split('\n').filter(line=>line.includes('DOMINION_RSI_BEHAVIOR '));
+   if(observed.length===1){
+    try{
+     const behavior=JSON.parse(observed[0].split('DOMINION_RSI_BEHAVIOR ')[1]);
+     if(Array.isArray(behavior))arm.behavior.push(behavior);
+    }catch{}
+   }
    }
    verifyOracle();
   }
@@ -70,7 +77,14 @@ for(const spec of plan.cases){
   measured[metric.key]={baseline:median(arms.baseline.values.map(v=>v[metric.key])),
    candidate:median(arms.candidate.values.map(v=>v[metric.key])),samples:repetitions};
  }
- cases.push({id:spec.id,baselinePass:arms.baseline.pass,candidatePass:arms.candidate.pass,metrics:measured});
+ const failedBehaviors=label=>(arms[label].behavior[0]||[])
+  .filter(item=>Number.isInteger(item.expectedSegments)&&Number.isInteger(item.observedSegments)
+   &&item.expectedSegments!==item.observedSegments&&typeof item.input==='string')
+  .slice(0,6).map(item=>({input:item.input.slice(0,240),
+   expectedSegments:item.expectedSegments,observedSegments:item.observedSegments,
+   steps:Array.isArray(item.steps)?item.steps.slice(0,8).map(s=>String(s).slice(0,160)):[]}));
+ cases.push({id:spec.id,baselinePass:arms.baseline.pass,candidatePass:arms.candidate.pass,metrics:measured,
+  behavioralCounterexamples:{baseline:failedBehaviors('baseline'),candidate:failedBehaviors('candidate')}});
 }
 verifyOracle();
 const evidence=`baseCommit=${process.env.RSI_BASE_SHA}\noracleSha256=${plan.oracleSha256||''}\n${logs.join('\n')}\n${JSON.stringify(cases)}\n`;
