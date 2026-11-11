@@ -1548,6 +1548,10 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
     state.store.put("session", &session);
 }
 
+pub(crate) fn rsi_training_partition(input:&Value)->String {
+    research_scope(input).partition_key
+}
+
 fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str) -> Vec<Value> {
     let receipts = state.store.get("session", session_id)
         .and_then(|s|s["rsiMethodExecutions"].as_array().cloned()).unwrap_or_default();
@@ -1576,6 +1580,18 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             || result["violations"].as_array().is_some_and(|rows| !rows.is_empty()));
         let ok = !unknown && !violated && result["followed"] == true;
         let independent_gain=ok && method_has_independent_source_gain(state,receipt,generation);
+        // A genuinely successful method is itself a source of algorithm
+        // mutations: minimize its DAG, then evaluate the descendant method
+        // independently rather than treating proposal as a performance gain.
+        if ok {
+            if let Some(mut variant)=crate::engine::rsi_success_ablation::propose(
+                state,method,receipt,&operations,generation) {
+                variant["sourceGenerationJobId"]=generation["jobId"].clone();
+                if !proposed_repairs.iter().any(|old|old["id"]==variant["id"]) {
+                    proposed_repairs.push(variant);
+                }
+            }
+        }
         let progress = generation["accepted"] == true || generation["newFindings"].as_u64().unwrap_or(0)>0;
         let target_domain=generation["domain"].as_str().unwrap_or("");
         let cross_domain=!target_domain.is_empty() && method["domain"].as_str()!=Some(target_domain);
@@ -1593,7 +1609,7 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
         } else {
             method["status"] = json!(if violated {"suspended"} else if ok && progress {"executable"} else {"held"});
         }
-        if ok && generation["accepted"] == true {
+        if independent_gain {
             method["successfulApplications"] = json!(method["successfulApplications"].as_u64().unwrap_or(0)+1);
         }
         let application = json!({"jobId":generation["jobId"],"executionId":receipt["executionId"],
@@ -1612,7 +1628,7 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
         method["applications"].as_array_mut().unwrap().push(application);
         // Record a transfer only after the procedure actually followed its
         // verified tool plan AND the descendant change was independently adopted.
-        if ok && generation["accepted"]==true
+        if independent_gain
             && generation["domain"].as_str().is_some_and(|d|d!=method["domain"].as_str().unwrap_or("")) {
             let target=generation["domain"].clone();
             if !method["transferVerifiedDomains"].is_array() {
