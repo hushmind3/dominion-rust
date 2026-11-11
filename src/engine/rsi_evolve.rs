@@ -2155,6 +2155,131 @@ fn synthesize_method_scoring_kernel(evidence:&[Value])->Option<Value> {
 /// Compose a new, executable source-work sequence from verified edges of
 /// DIFFERENT past generations. This is not a static list of model prompts:
 /// its steps become executable tool priorities in the native descendant.
+/// Extract temporal source-work events from the SAME real native execution.
+/// A generation's prose, inferred stages and test-only fake timestamps never
+/// become training examples for DOMINION's executable decision grammar.
+fn witnessed_decision_events(state:&AppState,session_id:&str,generation:&Value)->Vec<Value> {
+    let message_id=generation["hypothesisMessageId"].as_str();
+    let attributable=message_id
+        .and_then(|id|state.store.message(id))
+        .and_then(|msg|msg["metadata"]["executionId"].as_str().map(str::to_string));
+    if message_id.is_some() && attributable.is_none(){return Vec::new();}
+    let mut ops=state.store.all("execution_operation").into_iter()
+        .filter(|op|op["sessionId"].as_str()==Some(session_id)
+            && attributable.as_ref().is_none_or(|run|op["runId"].as_str()==Some(run))
+            && matches!(op["status"].as_str(),Some("completed"|"failed"))
+            && matches!(op["tool"].as_str(),Some("code_search"|"workspace_read_range"|
+                "workspace_replace"|"workspace_replace_range"|"workspace_write"))
+            && op["runId"].is_string() && op["opSeq"].is_number())
+        .collect::<Vec<_>>();
+    ops.sort_by(|a,b|a["runId"].as_str().cmp(&b["runId"].as_str())
+        .then(a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64())));
+    ops.into_iter().take(48).map(|op|json!({
+        "runId":op["runId"],"tool":op["tool"],"status":op["status"],
+        "versionedRead":op["tool"]=="workspace_read_range"
+            && op["result"]["sourceSha256"].as_str().is_some_and(|h|
+                h.len()==64 && h.bytes().all(|c|c.is_ascii_hexdigit())),
+        "verifiedWrite":op["result"]["written"]==true
+            && op["toolReceipt"]["verified"]==true
+    })).collect()
+}
+
+/// A data-derived conditional program is a temporal predicate + a tool action.
+/// The search grammar itself (history size and witness support) is mutable by
+/// later quality evidence. Unlike selecting a fixed 3-tool sequence this
+/// discovers different conditions after success and recovery observations.
+fn synthesize_method_decision_nodes(evidence:&[Value],grammar:&Value)->Vec<Value>{
+    type Witness=(BTreeSet<String>,BTreeSet<String>,bool);
+    let mut patterns=BTreeMap::<(String,String,String),Witness>::new();
+    let span=grammar["historyWindow"].as_u64().unwrap_or(2).clamp(1,3) as usize;
+    let min_support=grammar["minIndependentRuns"].as_u64().unwrap_or(2).clamp(1,4) as usize;
+    let tools=["code_search","workspace_read_range","workspace_replace",
+        "workspace_replace_range","workspace_write"];
+    for sample in evidence {
+        let Some(job)=sample["jobId"].as_str().filter(|v|!v.is_empty()) else{continue};
+        let Some(domain)=sample["domain"].as_str().filter(|v|DOMAINS.contains(v)) else{continue};
+        let Some(gain)=method_sample_outcome(sample) else{continue};
+        let Some(events)=sample["events"].as_array() else{continue};
+        for right in 1..events.len() {
+            let next=&events[right];
+            let Some(target)=next["tool"].as_str().filter(|name|tools.contains(name)) else{continue};
+            if next["status"]!="completed" {continue;}
+            if matches!(target,"workspace_replace"|"workspace_replace_range"|"workspace_write")
+                && next["verifiedWrite"]!=true {continue;}
+            for size in 1..=span.min(right) {
+                let previous=&events[right-size..right];
+                if previous.iter().any(|e|e["runId"]!=next["runId"]
+                    || !tools.contains(&e["tool"].as_str().unwrap_or("")))
+                    {continue;}
+                let guard=json!(previous.iter().map(|e|json!({
+                    "tool":e["tool"],"status":e["status"]
+                })).collect::<Vec<_>>());
+                let key=(domain.to_string(),guard.to_string(),target.to_string());
+                let witness=patterns.entry(key).or_default();
+                if gain {witness.0.insert(job.into());}
+                else{witness.1.insert(job.into());}
+                if sample["pairedImprovement"]==true && gain {witness.2=true;}
+            }
+        }
+    }
+    let veto=grammar["rejectedNodeIds"].as_array().cloned().unwrap_or_default();
+    let mut result=Vec::<Value>::new();
+    for ((domain,guard,target),(good,bad,quality)) in patterns {
+        if good.len()<min_support && !quality {continue;}
+        if good.len()<=bad.len() {continue;}
+        let id=format!("rsi-conditional-method-{}",crate::engine::memory::stable_id(&[
+            &domain,&guard,&target
+        ]));
+        if veto.iter().any(|row|row.as_str()==Some(id.as_str())){continue;}
+        let score=(good.len() as i64*3-bad.len() as i64*2).clamp(-50,50);
+        if score<=0 {continue;}
+        let parsed=serde_json::from_str::<Value>(&guard).unwrap_or(Value::Null);
+        result.push(json!({"id":id,"domain":domain,"guard":{"suffix":parsed},
+            "nextTool":target,"score":score,"positiveGenerations":good.len(),
+            "negativeGenerations":bad.len(),"sourceJobs":good.into_iter()
+                .take(8).collect::<Vec<_>>(),
+            "generator":{"historyWindow":span,"minIndependentRuns":min_support,
+                "grammar":"induced_temporal_event_predicate"},
+            "status":"candidate_requires_descendant_execution","causalProof":false}));
+    }
+    result.sort_by(|a,b|b["score"].as_i64().cmp(&a["score"].as_i64())
+        .then(b["guard"]["suffix"].as_array().map(Vec::len)
+            .cmp(&a["guard"]["suffix"].as_array().map(Vec::len)))
+        .then(a["id"].as_str().cmp(&b["id"].as_str())));
+    result.truncate(12);
+    result
+}
+
+/// Evidence does not merely reorder fixed rules: regression changes the
+/// grammar DOMINION uses to INVENT the next decision program. Later gains
+/// can compress that grammar again, while failed rules are retired.
+fn evolve_decision_grammar(policy:&mut Value){
+    let mut grammar=policy["decisionGrammar"].clone();
+    if !grammar.is_object(){grammar=json!({"historyWindow":2,"minIndependentRuns":2});}
+    let observations=policy["decisionRuleEvidence"].as_array().cloned().unwrap_or_default();
+    let gains=observations.iter().filter(|row|row["outcome"]=="accepted_gain").count();
+    let losses=observations.iter().filter(|row|row["outcome"]=="paired_regression").count();
+    let window=if losses>=2 && losses>gains {3}
+        else if gains>=2 && gains>losses {1}else{2};
+    grammar["historyWindow"]=json!(window);
+    grammar["minIndependentRuns"]=json!(if losses>=2 && gains==0 {3}else{2});
+    let mut rejected=BTreeSet::new();
+    for row in &observations {
+        let Some(id)=row["decisionNodeId"].as_str() else{continue};
+        let total_losses=observations.iter().filter(|other|
+            other["decisionNodeId"]==id && other["outcome"]=="paired_regression").count();
+        let total_gains=observations.iter().filter(|other|
+            other["decisionNodeId"]==id && other["outcome"]=="accepted_gain").count();
+        if total_losses>=2 && total_gains==0 {rejected.insert(id.to_string());}
+    }
+    grammar["rejectedNodeIds"]=json!(rejected);
+    grammar["revision"]=json!(format!("{:x}",Sha256::digest(json!([
+        &grammar["historyWindow"],&grammar["minIndependentRuns"],
+        &grammar["rejectedNodeIds"]
+    ]).to_string().as_bytes())));
+    policy["decisionGrammar"]=grammar;
+}
+
 fn synthesize_method_execution_programs(evidence:&[Value])->Vec<Value> {
     type Edges=BTreeMap<(String,String,String),(BTreeSet<String>,BTreeSet<String>)>;
     let mut edges=Edges::new();
@@ -2323,7 +2448,8 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     let mut transitions=Vec::<Value>::new();
     let mut evidence=history;
     evidence.push(json!({"jobId":job_id,"domain":generation["domain"],
-        "sequence":trace,"appliedPolicy":generation["inducedMethodApplications"],
+        "sequence":trace,"events":witnessed_decision_events(state,session_id,generation),
+        "appliedPolicy":generation["inducedMethodApplications"],
         "operationalPass":procedural_pass,
         "operationalFailure":procedural_failure,"pairedImprovement":capability_gain,
         "pairedRegression":paired_regression,"toolFailure":failed_edit.is_some(),
@@ -2386,6 +2512,10 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     policy["executionPrograms"]=json!(programs);
     rescore_execution_programs(&mut policy);
     policy["evidence"]=json!(evidence);
+    evolve_decision_grammar(&mut policy);
+    policy["decisionNodes"]=json!(synthesize_method_decision_nodes(
+        policy["evidence"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+        &policy["decisionGrammar"]));
     // A negative matched trial changes the evaluator itself. Do not erase
     // that newborn candidate at the very next feedback write merely because
     // the shorter, non-causal predictive sample disagrees or is insufficient.
@@ -2402,7 +2532,9 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([&policy["transitions"],
         &policy["executionPrograms"],&policy["rejectedProgramIds"],
         &policy["programMutations"],&policy["programMeasuredEvidence"],
-        &policy["evidence"],&policy["scoringKernel"]]).to_string().as_bytes())));
+        &policy["decisionGrammar"],&policy["decisionNodes"],
+        &policy["decisionRuleEvidence"],&policy["evidence"],
+        &policy["scoringKernel"]]).to_string().as_bytes())));
     policy["causalImprovement"]="unmeasured_until_matched_policy_trials".into();
     policy["updatedAt"]=json!(chrono::Utc::now().to_rfc3339());
     let saved=state.store.put("rsi_method_policy",&policy)?;
@@ -4988,6 +5120,45 @@ mod tests {
         assert_eq!(policy["executionPrograms"][0]["origin"],"trial_counterexample_mutation");
         assert!(mutate_programs_after_trial(&mut policy,&frozen,&rows,"cohort-a")
             .is_empty(),"recovered work must not replay an already-accounted mutation");
+    }
+
+    #[test]
+    fn synthesizes_temporal_decision_nodes_from_independent_realistic_executions(){
+        let samples=(0..2).map(|n|json!({"jobId":format!("job-{n}"),
+            "domain":"tools","operationalPass":true,
+            "events":[
+                {"runId":format!("run-{n}"),"tool":"code_search",
+                    "status":"completed"},
+                {"runId":format!("run-{n}"),"tool":"workspace_read_range",
+                    "status":"completed","versionedRead":true},
+                {"runId":format!("run-{n}"),"tool":"workspace_replace_range",
+                    "status":"completed","verifiedWrite":true}
+            ]})).collect::<Vec<_>>();
+        let nodes=synthesize_method_decision_nodes(&samples,
+            &json!({"historyWindow":2,"minIndependentRuns":2}));
+        assert!(nodes.iter().any(|node|node["nextTool"]=="workspace_replace_range"
+            && node["guard"]["suffix"].as_array().is_some_and(|seq|seq.len()==2)));
+        assert!(nodes.iter().all(|node|node["causalProof"]==false));
+        let mut only_once=samples.clone();only_once.pop();
+        assert!(synthesize_method_decision_nodes(&only_once,
+            &json!({"historyWindow":2,"minIndependentRuns":2})).is_empty());
+    }
+    #[test]
+    fn evaluated_failures_change_decision_grammar_and_future_rule_structure(){
+        let mut policy=json!({"decisionGrammar":{"historyWindow":2,
+            "minIndependentRuns":2},"decisionRuleEvidence":[
+                {"decisionNodeId":"failed-node","outcome":"paired_regression"},
+                {"decisionNodeId":"failed-node","outcome":"paired_regression"}]});
+        evolve_decision_grammar(&mut policy);
+        assert_eq!(policy["decisionGrammar"]["historyWindow"],3);
+        assert_eq!(policy["decisionGrammar"]["minIndependentRuns"],3);
+        assert_eq!(policy["decisionGrammar"]["rejectedNodeIds"],json!(["failed-node"]));
+        policy["decisionRuleEvidence"]=json!([
+            {"decisionNodeId":"new-node","outcome":"accepted_gain"},
+            {"decisionNodeId":"new-node","outcome":"accepted_gain"},
+            {"decisionNodeId":"new-node","outcome":"accepted_gain"}]);
+        evolve_decision_grammar(&mut policy);
+        assert_eq!(policy["decisionGrammar"]["historyWindow"],1);
     }
 
     #[test]
