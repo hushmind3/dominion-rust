@@ -770,6 +770,39 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 context,&prepared_job,worktree,message,&session_id
             ).await;
         }
+        // The agent has had the bounded model and repair opportunities.
+        // If the focused source remains unchanged, a native inductive
+        // transform may propose a real alternative source revision. This is
+        // a separate candidate generator, not credit for the model's failed
+        // edit, and it must pass the identical compile/frozen paired gate.
+        // Keep the externally selected focus and all failed calls intact.
+        let model_failed_to_edit=finished.as_ref().ok().is_some_and(|result|
+            result["status"]=="needs_review"
+                && result["reason"]=="no_valid_candidate"
+                && result["rsi"]["diffBytes"].as_u64().unwrap_or(0)==0
+                && result["rsi"]["sourceClean"]==true);
+        if model_failed_to_edit && input["rsiFailedPatchRecovery"]["candidateId"].is_null() {
+            match crate::engine::rsi_mutation::induce(
+                &context.state,&context.job_id,&input,&worktree.source,&worktree.path
+            ) {
+                Ok(Some(_receipt))=>{
+                    context.checkpoint(json!({
+                        "rsiPhase":"inductive_source_mutation",
+                        "rsiMutationEvidenceId":context.job_id,
+                    }))?;
+                    // Only actual worktree bytes enter finish/propose/compile.
+                    finished=crate::engine::rsi_worktree::finish(
+                        context,&prepared_job,worktree,Ok(None),&session_id
+                    ).await;
+                }
+                Err(reason)=>{
+                    context.state.store.audit("rsi.mutation_unavailable",json!({
+                        "jobId":context.job_id,"error":reason,"qualityGain":Value::Null
+                    }));
+                }
+                Ok(None)=>{}
+            }
+        }
         let candidate_id=finished.as_ref().ok().map(|result|result["rsi"]["candidateId"].clone()).unwrap_or(Value::Null);
         let hypothesis=finished.as_ref().ok().map(|result|result["rsi"]["modelMessageId"].clone()).unwrap_or(Value::Null);
         let generation=json!({"jobId":context.job_id,"candidateId":candidate_id,"accepted":false,"domain":job["rsiDomain"],"hypothesisMessageId":hypothesis});
