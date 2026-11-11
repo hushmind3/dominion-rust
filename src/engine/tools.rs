@@ -161,8 +161,25 @@ pub async fn execute(
             for (offset, line) in lines[begin.saturating_sub(1)..end].iter().enumerate() {
                 numbered.push_str(&format!("{:>5} {}\n", begin + offset, line));
             }
+            // The absolute detached worktree path is an internal engine
+            // detail. If exposed in the read result, a small model reuses it
+            // as the write argument and loses the RSI scoped-write approval.
+            let display_path=if isolated_rsi {
+                let root=std::fs::canonicalize(ctx.workspace)
+                    .map_err(|error|error.to_string())?;
+                let file=std::fs::canonicalize(&path)
+                    .map_err(|error|error.to_string())?;
+                let relative=file.strip_prefix(&root).map_err(|_|
+                    "RSI read escaped its isolated workspace".to_string())?;
+                let relative=relative.to_str()
+                    .ok_or("RSI source path is not valid UTF-8")?;
+                if !crate::engine::rsi::safe_path(relative) {
+                    return Err("RSI source must be an allowed relative source file".into());
+                }
+                json!(relative)
+            } else {result["path"].clone()};
             let mut output = json!({
-                "path": result["path"],
+                "path": display_path,
                 "startLine": begin.max(1),
                 "endLine": end,
                 "totalLines": lines.len(),
