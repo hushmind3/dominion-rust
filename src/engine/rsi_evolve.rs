@@ -1571,25 +1571,31 @@ fn induced_method_application_receipts(state:&AppState,session_id:&str)->Vec<Val
     let operations=state.store.all("execution_operation");
     let mut receipts=state.store.all("execution").into_iter()
         .filter(|execution|execution["sessionId"].as_str()==Some(session_id)
-            && execution["rsiInducedMethodDecision"]["revision"].is_string())
-        .map(|execution|{
-            let choice=&execution["rsiInducedMethodDecision"];
-            let execution_id=execution["id"].as_str().unwrap_or("");
-            let selected=choice["preferredTool"].as_str().unwrap_or("");
-            let performed=operations.iter().any(|op|
-                op["runId"].as_str()==Some(execution_id)
-                && op["tool"].as_str()==Some(selected)
-                && op["status"]=="completed");
-            let checked_write=operations.iter().any(|op|
-                op["runId"].as_str()==Some(execution_id)
-                && op["tool"].as_str()==Some(selected)
-                && op["status"]=="completed"
-                && op["result"]["written"]==true
-                && op["toolReceipt"]["verified"]==true);
-            json!({"executionId":execution_id,"policyId":choice["policyId"],
-                "revision":choice["revision"],"preferredTool":selected,
-                "performed":performed,"verifiedSourceWrite":checked_write,
-                "independentSystemGain":"not_estimated_by_tool_selection"})
+            && execution["rsiInducedMethodChoices"].as_array().is_some_and(|v|!v.is_empty()))
+        .flat_map(|execution|{
+            let execution_id=execution["id"].as_str().unwrap_or("").to_string();
+            execution["rsiInducedMethodChoices"].as_array().cloned().unwrap_or_default()
+                .into_iter().map(|choice|{
+                    let selected=choice["preferredTool"].as_str().unwrap_or("");
+                    let after=choice["afterOpSeq"].as_u64().unwrap_or(u64::MAX);
+                    let relevant=operations.iter().filter(|op|
+                        op["runId"].as_str()==Some(execution_id.as_str())
+                        && op["tool"].as_str()==Some(selected)
+                        && op["opSeq"].as_u64().is_some_and(|seq|seq>after)
+                        && op["status"]=="completed").collect::<Vec<_>>();
+                    let performed=!relevant.is_empty();
+                    let checked_write=relevant.iter().any(|op|
+                        op["result"]["written"]==true
+                        && op["toolReceipt"]["verified"]==true
+                        && op["arguments"]["path"]==choice["focusPath"]);
+                    json!({"executionId":execution_id,
+                        "policyId":choice["policyId"],"revision":choice["revision"],
+                        "preferredTool":selected,"domain":choice["domain"],
+                        "afterOpSeq":after,"modelRound":choice["modelRound"],
+                        "performed":performed,"verifiedSourceWrite":checked_write,
+                        "effectOperationIds":relevant.iter().map(|op|op["id"].clone()).collect::<Vec<_>>(),
+                        "independentSystemGain":"not_estimated_by_tool_selection"})
+                }).collect::<Vec<_>>()
         }).collect::<Vec<_>>();
     receipts.sort_by(|a,b|a["executionId"].as_str().cmp(&b["executionId"].as_str()));
     receipts
