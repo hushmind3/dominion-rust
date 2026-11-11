@@ -2751,6 +2751,10 @@ async fn run_loop(
             child_input["rsiAutoFocus"]=json!(false);
             child_input["rsiFocusSelection"]=json!({"source":"user_selected"});
         }
+        // The learned policy must change the worker's next execution target,
+        // not only its instruction text. Keep the originally ranked options
+        // as evidence while narrowing an implementation stage to one source.
+        bind_action_to_source(&context.state,&mut child_input,&recorded_history);
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
@@ -3736,6 +3740,10 @@ fn reconcile_descendant_target(
             "policyRevision":policy.as_ref().map(|p|p["revision"].clone()),
             "sourceIndexId":index["id"]
         });
+        // Rebinding is mandatory after a descendant selector changes its
+        // focus. Otherwise coordinator and rebuilt worker choose different
+        // targets and source-edit checkpoint remains disconnected.
+        bind_action_to_source(state,&mut job["input"],history);
     }
     let source=job["input"]["rsiSourceDir"].as_str()
         .ok_or("rsi_target_replan: 소스 경로 없음")?.to_string();
