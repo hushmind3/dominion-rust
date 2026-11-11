@@ -1175,7 +1175,8 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
                 let candidate=generation["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id));
                 let evidence=json!({"accepted":generation["accepted"],"commit":generation["acceptedCommit"],
                     "hypothesis":candidate.as_ref().map(|c|&c["hypothesis"]),"paths":candidate.as_ref().map(|c|&c["paths"]),
-                    "verdict":generation["evaluation"]["verdict"],"error":generation["error"]});
+                    "verdict":generation["evaluation"]["verdict"],"error":generation["error"],
+                    "editEvidence":generation["editEvidence"]});
                 text.push_str(&format!("- {}세대: {}\n",generation["attempt"],
                     evidence.to_string().chars().take(1800).collect::<String>()));
             }
@@ -1213,6 +1214,16 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
             if !hypothesis.is_empty(){
                 text.push_str(&format!("- 검증에 실패한 이전 가설: {}\n",
                     hypothesis.chars().take(280).collect::<String>()));
+            }
+            let attempted=failure["editEvidence"]["attempts"].as_u64().unwrap_or(0);
+            let verified=failure["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0);
+            if attempted>0 && failure["candidateId"].is_null(){
+                text.push_str(&format!("- 실제 실행 도구 편집 시도 {attempted}회, 읽어 확인된 변경 {verified}회, 후보 0개. 이번 세대는 도구 호출 자체가 아니라 실제 파일 diff와 독립 검증에 도달해야 합니다.\n"));
+                for reason in failure["editEvidence"]["recentFailures"].as_array()
+                    .into_iter().flatten().filter_map(Value::as_str).take(2) {
+                    text.push_str(&format!("- 지난 편집 실패: {}\n",
+                        reason.chars().take(260).collect::<String>()));
+                }
             }
             text.push_str("- 이전 가설·변경을 그대로 반복하지 말고 실패 원인을 먼저 특정하세요. 수정 범위·가설·기대하는 작업 성능 지표를 바꾼 실험을 수행하세요. 조사 결과가 없다면 새 발견을 만들어내지 마세요.\n");
         }
@@ -2662,6 +2673,8 @@ async fn run_loop(
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
+            "editEvidence":current["result"]["rsi"]["editEvidence"],
+            "captureError":current["result"]["rsi"]["captureError"],
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         let proposed_candidate = verified_candidate_id(&current["result"]);
         let previous_failed = proposed_candidate.and_then(|id|
@@ -2917,6 +2930,9 @@ async fn run_loop(
             "duplicate_unproductive_patch"
         } else if generation_accepted {
             "accepted_implementation"
+        } else if candidate_id.is_none()
+            && generation["editEvidence"]["attempts"].as_u64().unwrap_or(0)>0 {
+            "edit_attempt_without_candidate"
         } else if new_findings > 0 {
             "research_findings"
         } else if no_edit {
@@ -2938,6 +2954,8 @@ async fn run_loop(
                 "tokens": generation_tokens,
                 "elapsedMs": generation_elapsed,
                 "verdict": generation_verdict,
+                "editEvidence":record["history"].as_array()
+                    .and_then(|rows|rows.last()).map(|row|row["editEvidence"].clone()),
             },
             "reuseDecision": reuse,
         });
