@@ -285,12 +285,15 @@ fn edit_method_reward(generation:&Value)->f64 {
         && generation["evaluation"]["metrics"]["eligible"]==true {
         return 1.0;
     }
-    if generation["candidateId"].is_string() && generation["evaluation"].is_object() {
-        // Neutral paired holdouts demonstrate a valid trial, not useful gain.
-        return 0.12;
+    if generation["candidateId"].is_string()
+        && generation["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+        && generation["evaluation"]["metrics"].is_object() {
+        // A neutral independent paired result only proves that the system
+        // completed an experiment. It does not establish better quality.
+        return 0.10;
     }
-    if generation["candidateId"].is_string() {return 0.08;}
-    if generation["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)>0 {return 0.03;}
+    // Editing a file, generating a candidate or claiming success without an
+    // independent evaluator is not a self-improvement payoff.
     0.0
 }
 
@@ -3927,8 +3930,11 @@ mod tests {
         assert_eq!(edit_method_reward(&json!({"accepted":true,"evidenceVerified":false,
             "evaluation":{"metrics":{"eligible":true}}})),0.0,
             "unverified summaries cannot earn a successful improvement reward");
-        assert!(edit_method_reward(&json!({"candidateId":"c",
-            "evaluation":{"verdict":"inconclusive","metrics":{"improvedHoldouts":0}}}))<0.2);
+        assert_eq!(edit_method_reward(&json!({"candidateId":"c",
+            "evaluation":{"verdict":"inconclusive","metrics":{"improvedHoldouts":0}}})),0.0);
+        assert_eq!(edit_method_reward(&json!({"candidateId":"c",
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "verdict":"inconclusive","metrics":{"improvedHoldouts":0}}})),0.10);
         assert_eq!(edit_method_reward(&json!({"accepted":false,"candidateId":null})),0.0);
     }
 
