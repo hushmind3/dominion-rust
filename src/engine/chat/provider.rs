@@ -2231,6 +2231,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn focused_native_source_edit_reaches_real_wire_as_required_tool_call() {
+        use axum::{routing::post, Json, Router};
+        use std::sync::{Arc, Mutex};
+        let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let captured = bodies.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route("/chat/completions",
+            post(move |Json(body): Json<Value>| {
+                let captured = captured.clone();
+                async move {
+                    captured.lock().unwrap().push(body);
+                    let body = format!("data: {}\n\ndata: [DONE]\n\n",
+                        json!({"choices":[{"delta":{"content":"no change"},"finish_reason":"stop"}]}));
+                    ([(axum::http::header::CONTENT_TYPE, "text/event-stream")], body)
+                }
+            })
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let root = std::env::temp_dir()
+            .join(format!("dominion-sub2-rsi-native-wire-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config = crate::config::Config {
+            port: 0, data_dir: root.clone(), web_dir: root.join("web"), workspace: root.clone(),
+        };
+        let state = AppState::new(config,
+            crate::db::Store::open(&root.join("db.sqlite")).unwrap(),
+            crate::vault::Vault::open(&root.join("keys.json")));
+        state.store.put("session", &json!({"id":"source-edit","rsiRun":true,
+            "rsiExplicitFocus":true,"rsiGenerationJobId":"generation"}));
+        state.store.put("session", &json!({"id":"normal","rsiRun":false}));
+        let provider = ProviderRef {
+            id:"mock".into(), name:"mock".into(),base_url:format!("http://{addr}"),
+            api_key:"none".into(), model:"model".into(),tool_mode:"native".into(),
+            reasoning_protocol:"none".into(),local:false,context_tokens:Some(16384),
+            max_output_tokens:Some(2048),requests_per_minute:None,
+            kind:"openai".into(),account_id:None
+        };
+        let tools = vec![json!({"type":"function","function":{
+            "name":"workspace_replace","description":"Update an observed source file",
+            "parameters":{"type":"object","properties":{
+                "path":{"type":"string"},"oldText":{"type":"string"},
+                "newText":{"type":"string"}},"required":["path","oldText","newText"]}
+        }})];
+        for id in ["source-edit","normal"] {
+            let request = TurnRequest::from_value(&json!({
+                "input":"Implement source repair","sessionId":id,"autoLearning":false
+            })).unwrap();
+            let (tx,_rx) = tokio::sync::mpsc::unbounded_channel();
+            let completion = stream_completion_once(
+                &state, &reqwest::Client::new(), &provider,
+                &[json!({"role":"user","content":"Implement source repair"})],
+                &tools, &request, id, &tx, false,
+            ).await.unwrap();
+            assert_eq!(completion.content,"no change");
+        }
+        let calls = bodies.lock().unwrap();
+        assert_eq!(calls.len(),2);
+        assert_eq!(calls[0]["tools"][0]["function"]["name"],"workspace_replace");
+        assert_eq!(calls[0]["tool_choice"],"required",
+            "focused source-improvement worker must reach provider with required native action");
+        assert!(calls[1].get("tool_choice").is_none(),
+            "normal chat must retain model discretion");
+        server.abort();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn anthropic_native_stream_translates_messages_tools_and_usage() {
         use axum::{routing::post, Router, Json};
         use std::sync::{Arc, Mutex};
