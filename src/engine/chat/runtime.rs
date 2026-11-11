@@ -7089,14 +7089,17 @@ mod harness_tool_selection_tests {
 
     #[test]
     fn rsi_repairs_only_existing_multiline_json_string_bytes() {
-        let malformed = "{\\"path\\":\\"src/a.rs\\",\\"oldText\\":\\"fn old() {\\n}\\",\\"newText\\":\\"fn new() {\\n}\\"}";
+        let malformed = r#"{"path":"src/a.rs","oldText":"fn old() {
+}","newText":"fn new() {
+}"}"#;
         let recovered = rsi_recover_json_control_chars(malformed).unwrap();
         let parsed: Value = serde_json::from_str(&recovered).unwrap();
         assert_eq!(parsed["oldText"], "fn old() {\n}");
         assert_eq!(parsed["newText"], "fn new() {\n}");
         assert_eq!(parsed["path"], "src/a.rs");
         assert!(rsi_recover_json_control_chars(r#"{"path":"x","newText":"valid"}"#).is_none());
-        assert!(rsi_recover_json_control_chars("{\\"newText\\":\\"abc\n").is_none());
+        assert!(rsi_recover_json_control_chars(r#"{"newText":"abc
+"#).is_none());
         assert!(rsi_recover_json_control_chars("not json\nsource code").is_none());
         assert!(rsi_recover_json_control_chars(&"x".repeat(128*1024+1)).is_none());
     }
