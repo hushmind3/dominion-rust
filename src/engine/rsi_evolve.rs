@@ -6472,7 +6472,9 @@ mod tests {
             assert_eq!(method["applications"].as_array().unwrap().len(),1);
             assert_eq!(method["applications"][0]["verificationVerdict"],verdict);
             assert_eq!(method["applications"][0]["postconditionsPassed"],postcondition);
-            assert_eq!(method["successfulApplications"],usize::from(verdict=="passed"));
+            // Passing a local postcondition is not an independently accepted
+            // source improvement. This test has no candidate or accepted proof.
+            assert_eq!(method["successfulApplications"],0);
         }
         let _=std::fs::remove_dir_all(root);
     }
@@ -7231,12 +7233,19 @@ mod tests {
         let (state,root)=state();
         state.store.put("rsi_candidate",&json!({"id":"gain-candidate",
             "paths":["src/engine/memory.rs"]})).unwrap();
+        let post=format!("{:x}",Sha256::digest(b"verified adopted postimage"));
         state.store.put("execution_operation",&json!({"id":"edit-1",
             "tool":"workspace_replace_range","status":"completed",
+            "origin":"procedure","procedureStrategyId":"method",
+            "procedureRevision":"r1",
             "arguments":{"path":"src/engine/memory.rs"},
-            "result":{"written":true},"toolReceipt":{"verified":true}})).unwrap();
-        let receipt=json!({"operationIds":["edit-1"]});
-        let generation=json!({"accepted":true,"acceptedProof":{
+            "result":{"written":true,"postSha256":post},
+            "toolReceipt":{"verified":true}})).unwrap();
+        let receipt=json!({"methodId":"method","revision":"r1",
+            "operationIds":["edit-1"]});
+        let generation=json!({"accepted":true,
+            "acceptedSourceHashes":{"src/engine/memory.rs":post},
+            "acceptedProof":{
             "candidateId":"gain-candidate","status":"verified",
             "evaluation":{"metrics":{"eligible":true},
                 "source":"server_invoked_local_paired_git_worktrees"}}});
@@ -7314,11 +7323,16 @@ mod tests {
                 "{domain} workspace file must actually be repaired");
             state.store.put("execution",&json!({"id":execution_id,"sessionId":session_id,
                 "strategyCandidates":strategies})).unwrap();
+            let post=format!("{:x}",Sha256::digest(
+                std::fs::read(workspace.join(focus)).unwrap()));
+            assert_eq!(result["postSha256"],post);
+            assert_eq!(result["written"],true);
             state.store.put("execution_operation",&json!({
                 "id":format!("operation-{domain}"),"runId":execution_id,
                 "sessionId":session_id,"origin":"procedure",
                 "procedureStrategyId":strategy["id"],"procedureRevision":strategy["revision"],
                 "procedureNodeId":node,"tool":tool,"arguments":args,"result":result,
+                "toolReceipt":{"verified":true,"readbackSha256":post},
                 "status":"completed","opSeq":1
             })).unwrap();
             collect_method_executions(&state,&session_id,&workspace);
@@ -7327,8 +7341,19 @@ mod tests {
             assert_eq!(receipt["focusPath"],json!(focus));
             assert_eq!(receipt["result"]["verified"],true);
             assert_eq!(receipt["result"]["followed"],true);
+            // Synthetic frozen-evaluation receipt for the INTEGRATION test.
+            // The underlying source edit and postimage are real workspace
+            // operations; the holdout proof here is a deliberately constructed
+            // unit-test input, NOT a live model or independent campaign result.
+            let candidate=format!("candidate-{domain}");
+            state.store.put("rsi_candidate",&json!({"id":candidate,
+                "paths":[focus]})).unwrap();
             record_method_feedback(&state,&json!({"domain":domain,
                 "accepted":true,"jobId":child_id,"newFindings":0,
+                "acceptedSourceHashes":{focus:post},
+                "acceptedProof":{"status":"verified","candidateId":candidate,
+                    "evaluation":{"metrics":{"eligible":true},
+                        "source":"server_invoked_local_paired_git_worktrees"}},
                 "tokens":100,"elapsedMs":10}),&session_id);
         }
         let record=state.store.get("experience","source-experience").unwrap();

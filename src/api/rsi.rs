@@ -485,7 +485,8 @@ mod tests {
         assert_eq!(jobs[0]["input"]["model"], "sample-model");
         assert_eq!(jobs[0]["input"]["rsiSourceDir"], checkout.canonicalize().unwrap().to_str().unwrap());
         assert!(jobs[0]["input"]["rsiBaseCommit"].as_str().is_some_and(|v|v.len()==40));
-        assert_eq!(jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap().len(),13);
+        // Includes the independent Korean conjunction generalization holdout.
+        assert_eq!(jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap().len(),14);
         assert!(jobs[0]["input"]["prompt"].as_str().unwrap().contains("workspace_write"));
         assert_eq!(jobs[0]["input"]["rsiAutonomous"], false);
         let auto_response = start(State(state.clone()), Json(json!({
