@@ -4726,6 +4726,64 @@ mod tests {
     }
 
     #[test]
+    fn observed_quality_gain_autonomously_queues_a_real_policy_trial() {
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let baseline=active["id"].clone();
+        let base="a".repeat(40);
+        let accepted_commit="b".repeat(40);
+        let plan=(0..8).map(|n|json!({"id":format!("case-{n}"),
+            "domain":"tools","holdout":n<3,"metrics":[]}))
+            .collect::<Vec<_>>();
+        let measurements=(0..8).map(|n|json!({"id":format!("case-{n}"),
+            "baselinePass":n!=0,"candidatePass":true}))
+            .collect::<Vec<_>>();
+        let metrics=crate::engine::rsi::evaluate_cases(&plan,&measurements,"harness").unwrap();
+        state.store.put("rsi_candidate",&json!({
+            "id":"measured","target":"harness","status":"verified","cases":plan,
+            "baseCommit":base,"patchSha256":"p".repeat(64),
+            "oracleVersion":"frozen-v1","experimentAdoption":{"commit":accepted_commit},
+            "evaluation":{"metrics":metrics,"verdict":metrics["verdict"],
+                "source":"server_invoked_local_paired_git_worktrees","evidenceSha256":"e".repeat(64)}
+        })).unwrap();
+        state.store.put("rsi_pair",&json!({
+            "id":"rsi-pair-measured","candidateId":"measured",
+            "runner":"local_gitrepo_not_os_sandbox","evidenceSha256":"e".repeat(64),
+            "report":{"baseCommit":base,"patchSha256":"p".repeat(64),
+                "oracleVersion":"frozen-v1","reportSha256":"e".repeat(64),
+                "baselineBuildOk":true,"candidateBuildOk":true,"cases":measurements},
+            "metrics":metrics,"verdict":metrics["verdict"]
+        })).unwrap();
+        let history=vec![
+            json!({"id":"1","domain":"memory","accepted":false,"newFindings":0,"tokens":5000}),
+            json!({"id":"2","domain":"tools","accepted":true,"tokens":7000,
+                "candidateId":"measured","generatorCommit":base,
+                "acceptedCommit":accepted_commit}),
+            json!({"id":"3","domain":"memory","accepted":false,"newFindings":0,"tokens":14000}),
+            json!({"id":"4","domain":"tools","accepted":false,"newFindings":1,"tokens":18000})
+        ];
+        let queued=queue_adaptive_search_trial(&state,&history,&active,
+            "","campaign",4).expect("verified outcomes must generate a trialable policy");
+        assert_eq!(queued["status"],"pending_trial");
+        let id=queued["candidateId"].as_str().unwrap();
+        let new_policy=state.store.get("algorithm",id).unwrap();
+        assert_eq!(new_policy["source"],"rsi-generated");
+        assert_eq!(new_policy["rsiTrial"]["campaignId"],"campaign");
+        assert_eq!(new_policy["rsiTrial"]["status"],"pending_trial");
+        assert!(new_policy["parameters"]["expression"].as_str().unwrap().contains("holdoutGains"));
+        assert_eq!(crate::engine::algorithms::active(&state,"selfimprove.search").unwrap()["id"],
+            baseline,"automatic proposal must not activate without later real trials");
+        let old=state.store.get("rsi_pair","rsi-pair-measured").unwrap();
+        let mut tampered=old.clone();
+        tampered["report"]["cases"][0]["candidatePass"]=json!(false);
+        state.store.put("rsi_pair",&tampered).unwrap();
+        let no_proof=queue_adaptive_search_trial(&state,&history,&active,
+            "","fresh-campaign",4);
+        assert!(no_proof.is_none(),"forged raw report must not generate an improved policy");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn self_improver_evolves_an_executable_search_formula_from_measured_history() {
         let rows=vec![
             json!({"domain":"memory","accepted":false,"newFindings":0,"tokens":5000}),
