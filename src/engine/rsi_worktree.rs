@@ -596,7 +596,9 @@ pub fn repair_feedback(result:&Value)->Option<String>{
     let failures=checks.iter().filter(|check|check["passed"]!=true)
         .map(|check|{
             let label=check["label"].as_str().unwrap_or("verification");
-            let detail=check["stderr"].as_str().or_else(||check["error"].as_str())
+            let detail=check["detail"].as_str()
+                .or_else(||check["stderr"].as_str())
+                .or_else(||check["error"].as_str())
                 .unwrap_or("The verifier reported failure without further detail.");
             format!("{label}: {}",detail.chars().take(1100).collect::<String>())
         }).collect::<Vec<_>>();
