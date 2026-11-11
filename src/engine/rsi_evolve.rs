@@ -5257,6 +5257,93 @@ mod tests {
     }
 
 
+    #[tokio::test]
+    async fn failed_cross_domain_tool_postcondition_drives_next_real_repair_plan() {
+        let (state,root)=state();
+        let workspace=root.join("work");
+        std::fs::create_dir_all(workspace.join("src/engine")).unwrap();
+        std::fs::write(workspace.join("src/engine/tools.rs"),
+            "pub fn tool_result() -> bool { false }\\n").unwrap();
+        let partition=research_scope(&json!({"rsiSourceDir":workspace})).partition_key;
+        let verification=crate::engine::procedure::normalize(&json!({
+            "type":"procedure","appliesTo":{"requestContains":["src/engine/"]},
+            "bindings":{"rsiFocusPath":"__rsi_dynamic_focus__"},
+            "nodes":[{"id":"apply","tool":"workspace_replace",
+                "arguments":{"path":"$rsiFocusPath",
+                    "oldText":"false","newText":"true"}}],
+            "after":[{"kind":"file_contains","path":"$rsiFocusPath",
+                "text":"verified_explicit_result"}]
+        }));
+        state.store.put("experience",&json!({"id":"method-source",
+            "status":"active","partitionKey":partition,
+            "executableMethods":[{"id":"learned-memory-fix","revision":"rev1",
+                "domain":"memory","transferDomains":["tools"],
+                "status":"executable","successfulApplications":1,
+                "assistanceMode":"harness_assisted",
+                "verification":verification}]})).unwrap();
+        state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve",
+            "status":"running","cancelRequested":false})).unwrap();
+        state.store.put("job",&json!({"id":"generation-tools-1",
+            "kind":"rsi_generation","status":"running","cancelRequested":false,
+            "input":{"rsiCampaignId":"campaign"}})).unwrap();
+        let input=json!({"rsiSourceDir":workspace,"rsiDomain":"tools",
+            "rsiFocusFiles":["src/engine/tools.rs"],
+            "rsiObjective":"Improve src/engine/ source code"});
+        let mut session=json!({"id":"real-tool-failed-transfer","rsiRun":true,
+            "rsiCampaignId":"campaign","rsiGenerationJobId":"generation-tools-1",
+            "rsiObjective":"Improve src/engine/ source code"});
+        configure_method_session(&state,&input,&mut session);
+        state.store.put("session",&session).unwrap();
+        let methods=method_strategies(&state,&session);
+        assert_eq!(methods.len(),1);
+        let method=&methods[0];
+        assert_eq!(method["rsiTransferTrial"],true);
+        let (node,tool,args)=crate::engine::procedure::ready_intent(
+            method,&[],"Improve src/engine/ source code",
+            &std::collections::HashMap::new()).unwrap();
+        let execution_id="failed-transfer-execution";
+        let ctx=tools::ToolContext {workspace:&workspace,store:&state.store,state:&state,
+            session_id:"real-tool-failed-transfer",agent_id:None,
+            tools_enabled:true,tools_execution_enabled:true};
+        let result=tools::execute(&ctx,&tool,&args,execution_id).await.unwrap();
+        assert!(result["error"].is_null(),"actual workspace tool must execute");
+        assert!(std::fs::read_to_string(workspace.join("src/engine/tools.rs"))
+            .unwrap().contains("bool { true }"),"actual file must change");
+        state.store.put("execution",&json!({"id":execution_id,
+            "sessionId":"real-tool-failed-transfer",
+            "strategyCandidates":methods})).unwrap();
+        state.store.put("execution_operation",&json!({
+            "id":"dispatched-transfer-edit","runId":execution_id,
+            "sessionId":"real-tool-failed-transfer","origin":"procedure",
+            "procedureStrategyId":method["id"],"procedureRevision":method["revision"],
+            "procedureNodeId":node,"tool":tool,"arguments":args,"result":result,
+            "status":"completed","opSeq":1
+        })).unwrap();
+        collect_method_executions(&state,"real-tool-failed-transfer",&workspace);
+        let stored=state.store.get("session","real-tool-failed-transfer").unwrap();
+        let receipt=&stored["rsiMethodExecutions"][0];
+        assert_eq!(receipt["crossDomain"],true);
+        assert_eq!(receipt["operationIds"],json!(["dispatched-transfer-edit"]));
+        assert_eq!(receipt["result"]["verified"],true);
+        assert_eq!(receipt["result"]["status"],"violated",
+            "the independently checked postcondition must fail despite a real edit");
+        let mut generation=json!({"id":"generation-tools-1",
+            "jobId":"generation-tools-1","domain":"tools",
+            "generatorCommit":"unaltered-commit","domainSelection":"algorithm_active",
+            "accepted":false,"newFindings":0,"tokens":50,"elapsedMs":1});
+        generation["methodExecutions"]=json!(record_method_feedback(
+            &state,&generation,"real-tool-failed-transfer"));
+        let source=state.store.get("experience","method-source").unwrap();
+        assert_eq!(source["executableMethods"][0]["status"],"executable",
+            "source-domain working procedure survives a failed transfer");
+        assert_eq!(source["executableMethods"][0]["transferBlockedDomains"],json!(["tools"]));
+        let plan=transfer_failure_repair(&[generation]).expect(
+            "real dispatched tool and failed postcondition must cause targeted repair");
+        assert_eq!(plan["focusPath"],"src/engine/tools.rs");
+        assert!(transfer_repair_instruction(&plan).contains("workspace_replace"));
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn real_failed_transfer_causes_one_targeted_corrective_generation() {
         let (state,root)=state();
