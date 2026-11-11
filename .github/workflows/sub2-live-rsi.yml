@@ -95,6 +95,35 @@ jobs:
       - name: Execute actual model improvement and frozen native A/B
         run: node scripts/sub2-live-rsi.mjs
 
+      - name: Show actual source-edit and frozen evaluation receipts
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, existsSync, appendFileSync } from 'node:fs';
+          const path = process.env.DOMINION_LIVE_REPORT;
+          if (!path || !existsSync(path)) {
+            console.log('No actual model receipt: native engine did not reach the RSI campaign.');
+            process.exit(0);
+          }
+          const receipt = JSON.parse(readFileSync(path, 'utf8'));
+          const lines = ['### Actual Sub2 live RSI evidence',
+            'Status: '+receipt.status+'; accepted generations: '+receipt.acceptedGenerations,
+            'Error: '+(receipt.error || 'none')];
+          for (const generation of receipt.history || []) {
+            lines.push('- Generation '+generation.attempt+
+              ': actual new diff='+generation.novelSourceDiffBytes+
+              ' bytes; edits='+(generation.editActions || []).filter(x=>x.written).length+
+              '; compile='+generation.staticChecksPassed+
+              '; candidate='+(generation.candidateId || generation.unverifiedCandidateId || 'none')+
+              '; frozen A/B='+(generation.verdict || 'not measured')+
+              '; holdout gains='+(generation.improvedHoldouts ?? 'not measured')+
+              '; accepted='+generation.accepted);
+          }
+          console.log(lines.join('\n'));
+          if (process.env.GITHUB_STEP_SUMMARY)
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n')+'\n');
+          NODE
+
       - name: Publish outcome and raw local-engine diagnostics, even on failure
         if: always()
         uses: actions/upload-artifact@v4
