@@ -1204,10 +1204,17 @@ async fn run_turn_body(
                 &session["rsiEditPolicy"], &all_operations, tool_calls,
                 focused, session["rsiFocusContextReady"] == true,
             );
-            let rule_decision = crate::engine::rsi_decision_rules::choose(
-                &session["rsiEditPolicy"], &all_operations, tool_calls,
-                focused, session["rsiFocusContextReady"] == true,
-            );
+            // Newly required source-hash observation takes priority over
+            // any synthesized search/edit policy. Otherwise a learned rule
+            // can indefinitely suppress the only recovery tool.
+            let must_ground=program_stage.is_some_and(|decision|
+                matches!(decision.phase,"focus_ground"|"reground"));
+            let rule_decision = if must_ground {None} else {
+                crate::engine::rsi_decision_rules::choose(
+                    &session["rsiEditPolicy"], &all_operations, tool_calls,
+                    focused, session["rsiFocusContextReady"] == true,
+                )
+            };
             if let Some(rule)=rule_decision.as_ref() {
                 if rsi_last_rule_id != rule.id {
                     let receipt=json!({
@@ -1542,7 +1549,8 @@ async fn run_turn_body(
             // A focused RSI job is not finished by another explanation of
             // its code. Give the model one bounded corrective opportunity to
             // issue a real source edit; never fabricate a patch or verdict.
-            if (session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true)
+            if (session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true
+                    || session["rsiFocusFiles"].as_array().is_some_and(|files|!files.is_empty()))
                 && !rsi_edit_retry && round + 1 < max_rounds {
                 let completed = state.store.all("execution_operation").into_iter()
                     .filter(|operation| operation["runId"].as_str() == Some(execution_id)
