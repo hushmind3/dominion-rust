@@ -2030,7 +2030,11 @@ async fn run_turn_body(
             if !ok {
                 ordering_ok = false;
             }
-            if rsi_patch_ready_for_verification(&session, &call.name, &arguments, &result, ok) {
+            if rsi_patch_ready_for_verification(&session, &call.name, &arguments, &result, ok)
+                && state.store.get("execution_operation",
+                    &format!("{execution_id}:{round}:{call_index}:{}", call.id))
+                    .is_some_and(|operation| operation["toolReceipt"]["verified"] == true)
+            {
                 rsi_patch_written = true;
                 state.store.audit("rsi.patch_submitted_for_verification", json!({
                     "sessionId": session_id, "executionId": execution_id,
