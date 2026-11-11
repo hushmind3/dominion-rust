@@ -56,6 +56,15 @@ function summarize(g) {
     acceptedCommit:g.acceptedCommit||null,holdoutEligible:metrics.eligible===true,
     improvedHoldouts:metrics.improvedHoldouts??null,regressions:metrics.regressions??null,
     measuredGain:paired,methodExecutions:g.methodExecutions||[],
+    sourceIntegrity:g.sourceIntegrity?{
+      diffBytes:g.sourceIntegrity.diffBytes??0,
+      candidateId:g.sourceIntegrity.candidateId??null,
+      checksPassed:g.sourceIntegrity.checksPassed===true,
+      evaluationStatus:g.sourceIntegrity.evaluationStatus||null,
+      repairAttempts:g.sourceIntegrity.repairAttempts??null,
+      failedChecks:Array.isArray(g.sourceIntegrity.failedChecks)?
+        g.sourceIntegrity.failedChecks.slice(0,3):[]
+    }:null,
     error:g.error||null,stopReason:g.stopReason||null};
 }
 if(mode==='probe'){
@@ -146,7 +155,8 @@ if(mode==='probe'){
       proposedMethods:receipt.modelMethodCalls,accepted:receipt.acceptedGenerations,
       improved:receipt.measuredImprovement,reason:receipt.reason,
       generations:receipt.generations.map(g=>({attempt:g.attempt,writes:g.sourceWriteCalls,
-        tools:g.toolsUsed,accepted:g.accepted,error:g.error}))},null,2));
+        tools:g.toolsUsed,accepted:g.accepted,sourceIntegrity:g.sourceIntegrity,
+        error:g.error}))},null,2));
   }catch(error){
     receipt.status='experiment_error';receipt.errors.push(String(error));persist();
     console.error(error);process.exitCode=1;
