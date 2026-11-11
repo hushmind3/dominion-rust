@@ -514,7 +514,8 @@ pub fn no_edit_feedback(
         && op["arguments"]["path"]==path && op["result"]["error"].is_null()
         && op["result"]["sourceSha256"].as_str().is_some_and(|s|
             s.len()==64 && s.bytes().all(|c|c.is_ascii_hexdigit())));
-    let indexed=session["rsiPolicyFocus"]==true
+    let indexed=(session["rsiPolicyFocus"]==true
+            || session["rsiNoEditGroundedTarget"]==true)
         && session["rsiFocusContextReady"]==true
         && session["rsiCodeIndexId"].as_str().is_some_and(|s|!s.is_empty());
     if grounded.is_none() && !indexed {return None}
@@ -936,6 +937,10 @@ mod tests {
         assert!(no_edit_feedback(&result,&no_index,&[read.clone()])
             .unwrap().contains("sourceSha256"));
         assert!(no_edit_feedback(&result,&no_index,&[]).is_none());
+        let mut owner_focus=no_index.clone();
+        owner_focus["rsiNoEditGroundedTarget"]=json!(true);
+        assert!(no_edit_feedback(&result,&owner_focus,&[]).is_some(),
+            "an owner-selected target with indexed source already in context can retry once");
         let wrong=json!({"sessionId":"foreign","tool":"workspace_read_range",
             "status":"completed","arguments":{"path":target},
             "result":{"sourceSha256":"a".repeat(64)}});
