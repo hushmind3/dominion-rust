@@ -3774,9 +3774,20 @@ async fn run_loop(
                                 .or_else(||check["error"].as_str())
                                 .unwrap_or("").chars().take(1400).collect::<String>()
                         })).collect::<Vec<_>>();
+                    let focus_path=candidate["paths"].as_array()
+                        .into_iter().flatten().filter_map(Value::as_str)
+                        .filter(|path|crate::engine::rsi::safe_path(path))
+                        .find(|path|failed_checks.iter().any(|check|
+                            check["diagnostic"].as_str()
+                                .is_some_and(|message|message.contains(*path))))
+                        .or_else(||candidate["paths"].as_array()
+                            .into_iter().flatten().filter_map(Value::as_str)
+                            .find(|path|crate::engine::rsi::safe_path(path)))
+                        .map(str::to_string);
                     child_input["rsiFailedPatchRecovery"]=json!({
                         "candidateId":id,"baseCommit":head,
                         "failedGenerationJobId":failed_job,
+                        "focusPath":focus_path,
                         "checks":failed_checks
                     });
                 }
@@ -4800,9 +4811,12 @@ fn pending_failed_patch_domain(
         || recovery["checks"].as_array().is_none_or(Vec::is_empty) {
         return None;
     }
-    let path=candidate["paths"].as_array()?
-        .iter().filter_map(Value::as_str)
-        .find(|path|crate::engine::rsi::safe_path(path))?;
+    let paths=candidate["paths"].as_array()?;
+    let focus=recovery["focusPath"].as_str().filter(|path|
+        crate::engine::rsi::safe_path(path)
+        && paths.iter().any(|value|value.as_str()==Some(*path)));
+    let path=focus.or_else(||paths.iter().filter_map(Value::as_str)
+        .find(|path|crate::engine::rsi::safe_path(path)))?;
     Some(focus_domain_hint(path).to_string())
 }
 
