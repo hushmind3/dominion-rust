@@ -2194,6 +2194,8 @@ async fn run_loop(
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
+        let action_history=improvement_history(
+            &context.state,&child_input,&recorded_history,&context.job_id);
         let target_objective=selection_objective(&child_input);
         let target_trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
         let parent_domain=child_input["rsiSelectedDomain"].as_str().map(str::to_string);
@@ -2252,7 +2254,7 @@ async fn run_loop(
                 return Err("차세대 계획과 동결된 세대 계보·인덱스·revision이 다릅니다.".into());
             }
             let directive=&plan["improvementDirective"];
-            let last_id=recorded_history.last().map(|row|row["id"].clone())
+            let last_id=action_history.last().map(|row|row["id"].clone())
                 .unwrap_or(Value::Null);
             if !directive.is_object()
                 || directive["sourceGenerationId"]!=last_id
@@ -2276,14 +2278,14 @@ async fn run_loop(
         } else {
             let (domain,selection,strategy)=select_generation_strategy(
                 &context.state,&recorded_history,&target_objective,
-                research_continuation(&recorded_history),target_trial,parent_domain,&head);
+                research_continuation(&action_history),target_trial,parent_domain,&head);
             (domain,selection.to_string(),strategy,None)
         };
         child_input["rsiTargetDomain"]=json!(target_domain);
         child_input["rsiImprovementDirective"]=if native_planning {
             record["nextGenerationPlan"]["improvementDirective"].clone()
         } else {
-            improvement_directive(&recorded_history)
+            improvement_directive(&action_history)
         };
         child_input["rsiTargetPlan"]=generation_target_plan(
             &target_domain,&target_selection,&target_strategy,&head);
@@ -2297,7 +2299,7 @@ async fn run_loop(
             .or_else(||crate::engine::algorithms::active(&context.state,"selfimprove.search"));
         if child_input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
             let ranked=worker_ranked.unwrap_or_else(||choose_focus_files(
-                &context.state,&child_input,&recorded_history,target_policy.as_ref()));
+                &context.state,&child_input,&action_history,target_policy.as_ref()));
             let selected=ranked.iter().filter_map(|row|row["path"].as_str())
                 .map(str::to_string).collect::<Vec<_>>();
             child_input["rsiFocusFiles"]=json!(selected);
@@ -3043,6 +3045,31 @@ fn improvement_directive(history:&[Value]) -> Value {
     })
 }
 
+/// Campaign boundaries must not erase unfinished, genuinely new research.
+/// Reuse the most recent evidence-bearing generation from this exact source
+/// partition and objective only when the new campaign has no own generations.
+/// Source bytes are rechecked by the indexed focus resolver; a past source
+/// path is never blindly accepted after a checkout changes.
+fn improvement_history(state:&AppState,input:&Value,history:&[Value],campaign_id:&str)->Vec<Value>{
+    if !history.is_empty() {return history.to_vec();}
+    let partition=research_scope(input).partition_key;
+    let objective=crate::engine::memory::stable_id(&[
+        input["rsiObjective"].as_str().unwrap_or("")]);
+    let mut previous=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["campaignId"]!=campaign_id
+            && row["knowledgePartition"]==partition
+            && row["objectiveId"]==objective
+            && row["accepted"]!=true
+            && row["candidateId"].is_null()
+            && row["newFindings"].as_u64().unwrap_or(0)>0
+            && row["knowledgeId"].as_str().is_some_and(|id|
+                state.store.get("experience",id).is_some_and(|record|
+                    record["status"]=="active" && record["partitionKey"]==partition)))
+        .collect::<Vec<_>>();
+    previous.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
+    previous.into_iter().take(1).collect()
+}
+
 /// The directive is a real control input. It changes the worker's required
 /// sequence of work and (through choose_focus_files) its source candidates.
 fn improvement_work_contract(directive:&Value) -> &'static str {
@@ -3233,8 +3260,9 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         .map(str::to_string);
     let trial_id=campaign["planTrialAlgorithmId"].as_str()
         .filter(|id|!id.is_empty()).map(str::to_string);
+    let action_history=improvement_history(state,source_input,&history,campaign_id);
     let (domain,selection,strategy)=select_generation_strategy(
-        state,&history,&objective,research_continuation(&history),trial_id,
+        state,&history,&objective,research_continuation(&action_history),trial_id,
         selected_domain,binary_commit);
     let mut focus_input=source_input.clone();
     focus_input["rsiTargetDomain"]=json!(domain);
@@ -3243,7 +3271,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         let policy=strategy["id"].as_str()
             .and_then(|id|state.store.get("algorithm",id))
             .or_else(||crate::engine::algorithms::active(state,"selfimprove.search"));
-        choose_focus_files(state,&focus_input,&history,policy.as_ref())
+        choose_focus_files(state,&focus_input,&action_history,policy.as_ref())
     } else {
         Vec::new()
     };
@@ -3257,7 +3285,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "indexId":campaign["planIndexId"],
         "domain":domain,"selection":selection,"strategy":strategy,
         "targetPlan":target_plan,
-        "improvementDirective":improvement_directive(&history),
+        "improvementDirective":improvement_directive(&action_history),
         "rankedFiles":ranked
     }))
 }
@@ -3311,7 +3339,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
-    let continuation = research_continuation(&history);
+    let action_history=improvement_history(&state,&job["input"],&history,campaign);
+    let continuation = research_continuation(&action_history);
     let trial_id = job["input"]["rsiTrialAlgorithmId"]
         .as_str()
         .filter(|value| !value.is_empty())
@@ -3326,7 +3355,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             selected_domain, commit);
     // The improved generator must execute the same action it planned before
     // the model call. Reject an outdated or injected retry directive.
-    let expected_directive=improvement_directive(&history);
+    let expected_directive=improvement_directive(&action_history);
     if job["input"]["rsiImprovementDirective"].is_object()
         && job["input"]["rsiImprovementDirective"]!=expected_directive {
         return Err("rsi_improvement_directive_mismatch: 개선 행동과 세대 이력이 일치하지 않습니다.".into());
