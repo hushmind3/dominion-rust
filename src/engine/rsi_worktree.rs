@@ -499,8 +499,7 @@ pub fn no_edit_feedback(
         || result["rsi"]["sourceClean"]!=true
         || result["rsi"]["diffBytes"].as_u64().unwrap_or(0)!=0
         || !result["rsi"]["modelError"].as_str().unwrap_or("").is_empty()
-        || session["rsiRun"]!=true || session["rsiExplicitFocus"]!=true
-        || session["rsiFocusContextReady"]!=true {return None}
+        || session["rsiRun"]!=true || session["rsiExplicitFocus"]!=true {return None}
     let focused=session["rsiFocusFiles"].as_array()?;
     if focused.len()!=1 {return None}
     let path=focused[0].as_str().filter(|p|crate::engine::rsi::safe_path(p))?;
@@ -516,6 +515,7 @@ pub fn no_edit_feedback(
         && op["result"]["sourceSha256"].as_str().is_some_and(|s|
             s.len()==64 && s.bytes().all(|c|c.is_ascii_hexdigit())));
     let indexed=session["rsiPolicyFocus"]==true
+        && session["rsiFocusContextReady"]==true
         && session["rsiCodeIndexId"].as_str().is_some_and(|s|!s.is_empty());
     if grounded.is_none() && !indexed {return None}
     let source=grounded.and_then(|op|{
@@ -948,6 +948,8 @@ mod tests {
         let mut no_focus=session.clone();
         no_focus["rsiFocusContextReady"]=json!(false);
         assert!(no_edit_feedback(&result,&no_focus,&[]).is_none());
+        assert!(no_edit_feedback(&result,&no_focus,&[read.clone()]).is_some(),
+            "a successful on-demand source read is stronger evidence than an absent prompt excerpt");
         let mut no_model=result.clone();
         no_model["rsi"]["modelError"]=json!("provider timeout");
         assert!(no_edit_feedback(&no_model,&session,&[]).is_none());
