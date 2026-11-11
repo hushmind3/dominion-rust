@@ -3213,6 +3213,180 @@ fn observed_edit_outcome(
     result
 }
 
+/// Classify the system failure that existed *before* an action was chosen.
+/// This is a feature of the DOMINION execution trace, not an assessment of
+/// the language model's raw coding quality.
+fn action_learning_context(row:&Value)->&'static str {
+    let verdict=row["evaluation"]["verdict"].as_str().unwrap_or("");
+    let observed=&row["actionObservation"];
+    if row["accepted"]==true {return "adopted";}
+    if matches!(verdict,"regressed"|"build_failed") {return "failed_verifier";}
+    if row["candidateId"].is_string() {return "unadopted_candidate";}
+    if observed["status"]=="edit_failed" || observed["status"]=="write_without_diff" {
+        return "failed_edit";
+    }
+    if observed["sourceDiffBytes"].as_u64().unwrap_or(0)>0
+        || observed["editToolCalls"].as_u64().unwrap_or(0)>0 {
+        return "uncaptured_edit";
+    }
+    if row["newFindings"].as_u64().unwrap_or(0)>0 {return "research_only";}
+    "barren"
+}
+
+/// Context-sensitive *executable* recovery strategies. The learner below
+/// changes their ranking using observed consequences, rather than mapping
+/// every error to a fixed next action forever.
+fn action_choices(context:&str)->&'static [&'static str] {
+    match context {
+        "adopted"=>&["extend_verified_capability"],
+        "failed_verifier"=>&["repair_failed_case","revise_candidate","change_approach"],
+        "unadopted_candidate"=>&["revise_candidate","change_approach","complete_candidate"],
+        "failed_edit"=>&["repair_failed_edit","change_approach","implement_research"],
+        "uncaptured_edit"=>&["complete_candidate","repair_failed_edit","change_approach"],
+        "research_only"=>&["implement_research","change_approach","complete_candidate"],
+        _=>&["change_approach","implement_research","repair_failed_edit"],
+    }
+}
+
+/// A credit signal for the *DOMINION method* used in this generation.
+/// Merely issuing a write call earns nothing. Adoption receives the strongest
+/// reward, a verified candidate or Git patch receives only partial credit,
+/// regressions lose credit, and excessive model cost is penalized.
+fn observed_action_value(row:&Value)->f64 {
+    let mut value=if row["accepted"]==true {5.0}
+        else if row["candidateId"].is_string() {1.5}
+        else if row["actionObservation"]["sourceDiffBytes"].as_u64().unwrap_or(0)>0 {0.7}
+        else if row["newFindings"].as_u64().unwrap_or(0)>0 {0.15}
+        else {-1.0};
+    if matches!(row["evaluation"]["verdict"].as_str(),
+        Some("regressed"|"build_failed")) {
+        value-=2.5;
+    }
+    if matches!(row["stopReason"].as_str(),Some("time_budget"|"token_budget")) {
+        value-=0.5;
+    }
+    // A cost term prevents the learner from celebrating a 100k-token
+    // research loop that did not produce an actual implementation.
+    value-(row["tokens"].as_u64().unwrap_or(0) as f64/60_000.0).min(1.0)
+}
+
+/// Rebuilds a scoped training timeline across past campaigns and the current
+/// live campaign. Only matching repository/owner partitions and the exact
+/// objective participate. Do not accidentally learn from other owners, goals
+/// or an earlier generation twice.
+fn action_learning_history(
+    state:&AppState,input:&Value,current:&[Value],
+)->Vec<Value> {
+    let partition=research_scope(input).partition_key;
+    let objective_id=crate::engine::memory::stable_id(&[
+        input["rsiObjective"].as_str().unwrap_or("")
+    ]);
+    let mut episodes=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["knowledgePartition"]==partition
+            && row["objectiveId"]==objective_id)
+        .collect::<Vec<_>>();
+    episodes.extend(current.iter().cloned());
+    episodes.sort_by(|a,b|{
+        a["createdAt"].as_str().cmp(&b["createdAt"].as_str())
+            .then_with(||a["attempt"].as_u64().cmp(&b["attempt"].as_u64()))
+            .then_with(||a["id"].as_str().cmp(&b["id"].as_str()))
+    });
+    let mut seen=BTreeSet::<String>::new();
+    episodes.retain(|row|{
+        let key=row["jobId"].as_str().or_else(||row["id"].as_str())
+            .unwrap_or("");
+        !key.is_empty() && seen.insert(key.to_string())
+    });
+    // Preserve full campaigns when possible. 80 recent generations put an
+    // upper bound on recomputation and on the inherited policy's footprint.
+    episodes.into_iter().rev().take(80).collect::<Vec<_>>()
+        .into_iter().rev().collect()
+}
+
+/// Learns a contextual action-selection policy from verified outcomes.
+/// Every training example links a previous context, the action subsequently
+/// executed, and that action's observed result. The solver creates a new
+/// score function (posterior utility + bounded exploration) from actual
+/// evidence; it can replace a repeatedly unsuccessful default with a new
+/// recovery route. No replay result alone is counted as quality improvement.
+/// The next generation is its real trial, with the policy revision recorded.
+fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Value {
+    let mut decision=next_execution_action(history);
+    let Some(last)=history.last() else {return decision};
+    let context=action_learning_context(last);
+    let alternatives=action_choices(context);
+    if alternatives.len()<=1 {return decision}
+    let baseline=decision["mode"].as_str().unwrap_or("change_approach").to_string();
+    let episodes=action_learning_history(state,input,history);
+    let mut observations=BTreeMap::<String,Vec<(f64,String)>>::new();
+    let mut count=0usize;
+    for pair in episodes.windows(2) {
+        let prior=&pair[0];
+        let next=&pair[1];
+        // A transition across unrelated campaigns or missing attempts is
+        // not the consequence of the preceding source-recovery decision.
+        if prior["campaignId"]!=next["campaignId"]
+            || prior["attempt"].as_u64().and_then(|n|n.checked_add(1))
+                !=next["attempt"].as_u64() {
+            continue;
+        }
+        if action_learning_context(prior)!=context {continue}
+        let Some(action)=next["actionDirective"]["mode"].as_str() else {continue};
+        if !alternatives.contains(&action) {continue}
+        let id=next["id"].as_str().unwrap_or("").to_string();
+        observations.entry(action.to_string()).or_default()
+            .push((observed_action_value(next),id));
+        count+=1;
+    }
+    if count<2 {
+        decision["policy"]=json!({"kind":"selfimprove.action","status":"insufficient_evidence",
+            "context":context,"trainingTransitions":count,"activeAction":baseline});
+        return decision;
+    }
+    let mut ranking=Vec::<(String,f64,usize)>::new();
+    let mut evidence=Vec::<String>::new();
+    let total=count as f64;
+    for &action in alternatives {
+        let samples=observations.get(action).cloned().unwrap_or_default();
+        let n=samples.len();
+        let sum=samples.iter().map(|(value,_)|*value).sum::<f64>();
+        let prior=if action==baseline {0.25}else{-0.20};
+        let posterior=(sum+prior)/(n as f64+1.0);
+        let exploration=0.55*((1.0+total).ln()/(n as f64+1.0)).sqrt();
+        ranking.push((action.to_string(),posterior+exploration,n));
+        evidence.extend(samples.into_iter().map(|(_,id)|id));
+    }
+    ranking.sort_by(|a,b|b.1.total_cmp(&a.1).then_with(||a.0.cmp(&b.0)));
+    // A passing/accepted action is never displaced by a score that lacks
+    // comparison. Adapt only when the last relevant outcomes show stalled
+    // progress; an untried path stays an experiment, not a promotion.
+    let recent=history.iter().rev().take(2).any(|g|g["accepted"]==true);
+    let chosen=if recent {baseline.clone()} else {ranking[0].0.clone()};
+    evidence.sort();
+    evidence.dedup();
+    let revision=crate::engine::memory::stable_id(&[
+        &research_scope(input).partition_key,
+        input["rsiObjective"].as_str().unwrap_or(""),
+        context,&json!({"rank":ranking,"evidence":evidence}).to_string()
+    ]);
+    decision["mode"]=json!(chosen);
+    decision["policy"]=json!({
+        "kind":"selfimprove.action","implementation":"contextual_observed_utility",
+        "revision":revision,"context":context,"trainingTransitions":count,
+        "trainingGenerationIds":evidence,
+        "scoreComponents":["observed_action_value","token_cost","posterior_utility","exploration"],
+        "rankedAlternatives":ranking.iter().map(|(name,score,n)|json!({
+            "action":name,"score":score,"observations":n
+        })).collect::<Vec<_>>(),
+        "previousDefault":baseline,
+        "selected":chosen,
+        "status":if chosen==baseline {"evidence_based_retention"}else{"exploratory_policy_mutation"},
+        "measuredGain":Value::Null,
+        "note":"Policy selection based on past observed actions; only later real work can validate improvement"
+    });
+    decision
+}
+
 /// Convert the latest observed outcome into a specific next executable action.
 fn next_execution_action(history:&[Value])->Value {
     let Some(last)=history.last() else {return json!({"mode":"discover","previousAttempt":null});};
