@@ -209,6 +209,66 @@ fn rsi_inherited_patch_for_evaluation(
     })
 }
 
+/// A small native-capable model may answer an explicit edit checkpoint
+/// with the exact source replacement arguments as JSON instead of a provider
+/// function call. Convert ONLY a complete, standalone source edit into a
+/// real tool dispatch. The same workspace read/CAS/approval and Git worktree
+/// verifier still decide whether any bytes changed.
+fn rsi_model_json_edit(
+    answer:&str,tools_available:&[Value],session:&Value,
+)->Option<ToolCall> {
+    if session["rsiRun"]!=true
+        || session["rsiCampaignId"].as_str().is_none()
+        || session["rsiFocusContextReady"]!=true {
+        return None;
+    }
+    let focus=session["rsiFocusFiles"].as_array()?;
+    if focus.len()!=1 {return None;}
+    let full=answer.trim();
+    if full.len()>32_768 {return None;}
+    let text=if full.starts_with("```json") && full.ends_with("```") {
+        full.strip_prefix("```json")?.strip_suffix("```")?.trim()
+    }else if full.starts_with("```") && full.ends_with("```"){
+        full.strip_prefix("```")?.strip_suffix("```")?.trim()
+    }else{full};
+    let mut args=serde_json::from_str::<Value>(text).ok()?;
+    if args.get("name").is_some() || args.get("tool").is_some()
+        || args.get("function").is_some() || args.get("action").is_some() {
+        return None;
+    }
+    let path=args["path"].as_str()?;
+    if !crate::engine::rsi::safe_path(path)
+        || focus[0].as_str()!=Some(path)
+        || !tools_available.iter().any(|tool|tool_name(tool)=="workspace_replace") {
+        return None;
+    }
+    let replacement=args["newText"].as_str()?;
+    if replacement.trim().is_empty() || replacement.len()>16_384 {return None;}
+    let old=args["oldText"].as_str().filter(|v|!v.is_empty());
+    let line=|key:&str|args[key].as_u64()
+        .or_else(||args[key].as_str()?.parse::<u64>().ok());
+    if let Some(old)=old {
+        if old==replacement || old.len()>16_384 {return None;}
+    } else {
+        let (start,end)=(line("startLine")?,line("endLine")?);
+        if start==0 || end==0 || start.max(end)-start.min(end)>=120 {return None;}
+        if args["expectedSha256"].is_null()
+            && args["sourceSha256"].as_str().is_some_and(|sha|
+                sha.len()==64 && sha.bytes().all(|v|v.is_ascii_hexdigit())) {
+            args["expectedSha256"]=args["sourceSha256"].clone();
+        }
+        if !args["expectedSha256"].as_str().is_some_and(|sha|
+            sha.len()==64 && sha.bytes().all(|v|v.is_ascii_hexdigit())) {
+            return None;
+        }
+    }
+    Some(ToolCall{
+        id:uuid::Uuid::new_v4().to_string(),
+        name:"workspace_replace".into(),
+        arguments:args.to_string(),
+    })
+}
+
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
 /// needs read, search and replace together to produce a grounded patch.
 fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
@@ -1300,7 +1360,7 @@ async fn run_turn_body(
                 }
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system",
-                        "content":"실제 소스 읽기 결과가 있습니다. 탐색 대신 workspace_replace(startLine,endLine,newText,expectedSha256)를 사용하세요. expectedSha256에는 workspace_read_range의 sourceSha256를 그대로 넣고 번호 없는 새 코드만 newText로 전달하세요. 최대 120줄입니다. 원문 해시가 없으면 해당 범위만 읽으세요. 수정 전 완료를 주장하지 마세요."
+                        "content":"실제 소스 읽기 결과가 있습니다. 지금 workspace_replace(path,startLine,endLine,newText,expectedSha256)를 실제 실행하세요. expectedSha256에는 workspace_read_range의 sourceSha256를 넣으세요. 최대 120줄입니다. 네이티브 도구 호출이 불가능하면 동일한 인자의 JSON 객체 하나만 출력하세요. 완전한 path·원문 SHA·줄 번호·새 코드를 포함하지 않은 설명은 편집으로 실행되지 않습니다."
                     }));
                     // An action-policy trial only earns execution credit when
                     // the source-edit checkpoint really changed the runtime
@@ -1520,6 +1580,22 @@ async fn run_turn_body(
                 return Err(
                     "모델이 지원되지 않는 도구 호출 형식을 출력했습니다.".into(),
                 );
+            }
+        }
+
+        if completion.tool_calls.is_empty() && !force_final
+            && request.tools_enabled && request.tools_execution_enabled
+            && rsi_edit_only_announced {
+            if let Some(call)=rsi_model_json_edit(
+                &completion.content,&round_tools,&session) {
+                state.store.audit("rsi.model_json_native_edit",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "tool":call.name,"modelAnsweredJson":true,
+                    "source":"model_authored_exact_edit_before_native_verification",
+                    "qualityGain":Value::Null
+                }));
+                completion.content.clear();
+                completion.tool_calls.push(call);
             }
         }
 
