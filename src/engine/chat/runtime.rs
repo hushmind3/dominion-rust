@@ -227,7 +227,36 @@ fn rsi_induced_next_tool(
             (transferable && yes>no).then_some((yes-no,to.to_string()))
         }).collect::<Vec<_>>();
     ranked.sort_by(|a,b|b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    ranked.into_iter().next().map(|(_,tool)|tool)
+    if let Some((_,tool))=ranked.into_iter().next(){return Some(tool);}
+    // No transition has positive support in this domain. A real frozen
+    // regression may still teach DOMINION to avoid a repeatedly failing edit
+    // primitive, even before the first success has been observed.
+    if from!="workspace_read_range" || !has_observed_focus {return None;}
+    let choices=["workspace_replace_range","workspace_replace"];
+    if !choices.iter().all(|name|offered.iter().any(|tool|tool_name(tool)==*name)){
+        return None;
+    }
+    let loss=|to:&str|{
+        let domain=session["rsiDomain"].as_str().unwrap_or("");
+        let Some(row)=session["rsiInducedMethodPolicy"]["transitions"]
+            .as_array().and_then(|rows|rows.iter().find(|row|
+                row["from"].as_str()==Some(from) && row["to"].as_str()==Some(to)))
+            else{return 0i64};
+        let evidence=if row["byDomain"][domain].is_object() {
+            &row["byDomain"][domain]
+        }else{row};
+        (evidence["negative"].as_u64().unwrap_or(0) as i64
+            - evidence["positive"].as_u64().unwrap_or(0) as i64).max(0)
+    };
+    let range_loss=loss("workspace_replace_range");
+    let exact_loss=loss("workspace_replace");
+    if range_loss>0 && exact_loss<range_loss {
+        Some("workspace_replace".into())
+    }else if exact_loss>0 && range_loss<exact_loss {
+        Some("workspace_replace_range".into())
+    }else{
+        None
+    }
 }
 
 fn rsi_final_edit_tools(available:&[Value],learned_preference:Option<&str>)->Vec<Value> {
@@ -6372,6 +6401,29 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn rejected_range_edit_triggers_a_new_edit_method_before_any_success() {
+        let session=json!({"rsiRun":true,"rsiCampaignId":"c",
+            "rsiGenerationJobId":"g","rsiDomain":"tools",
+            "rsiFocusFile":"src/engine/tools.rs",
+            "rsiInducedMethodPolicy":{"kind":"harness.method-transitions",
+                "transitions":[{"from":"workspace_read_range","to":"workspace_replace_range",
+                    "positive":0,"negative":2,
+                    "byDomain":{"tools":{"positive":0,"negative":2}}}]}});
+        let read=json!({"id":"read","runId":"r","opSeq":1,"status":"completed",
+            "tool":"workspace_read_range","arguments":{"path":"src/engine/tools.rs"},
+            "result":{"sourceSha256":"a".repeat(64)}});
+        let offered=vec![
+            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
+            json!({"type":"function","function":{"name":"workspace_replace"}})
+        ];
+        assert_eq!(rsi_induced_next_tool(&session,&[read.clone()],"r",&offered),
+            Some("workspace_replace".into()),
+            "a measured range-edit failure should produce a different next trial");
+        assert_eq!(rsi_induced_next_tool(&session,&[read],"r",&offered[..1]),None,
+            "the algorithm cannot choose an edit mechanism unavailable to the model");
     }
 
     #[test]
