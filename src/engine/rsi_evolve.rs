@@ -7430,6 +7430,13 @@ mod tests {
         let third=method_reuse_decision(&state,&input,"memory");
         assert_eq!(third["repairMethodId"],"child",
             "once the improved descendant is itself adopted, prefer it");
+        history["executableMethods"][0]["successfulApplications"]=json!(100);
+        state.store.put("experience",&history).unwrap();
+        let promoted=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(promoted["repairMethodId"],"child",
+            "cumulative historical uses must not permanently block adopted descendants");
+        assert_eq!(promoted["repairSelectionEvidence"]["selection"],
+            "adopted_structural_descendant");
         let _=std::fs::remove_dir_all(root);
     }
 
