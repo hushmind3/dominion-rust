@@ -72,11 +72,19 @@ fn rsi_checkpoint_stage(
     tool_calls: u64, read_calls: u64, has_write: bool,
     explicit_focus: bool, source_in_prompt: bool,
 ) -> Option<bool> {
-    if has_write { return None; }
-    if explicit_focus && (source_in_prompt || read_calls > 0) && tool_calls >= 3 {
+    rsi_checkpoint_stage_with_limit(tool_calls,read_calls,has_write,
+        explicit_focus,source_in_prompt,6)
+}
+fn rsi_checkpoint_stage_with_limit(
+    tool_calls:u64,read_calls:u64,has_write:bool,
+    explicit_focus:bool,source_in_prompt:bool,checkpoint_after:u64,
+)->Option<bool>{
+    if has_write{return None;}
+    let limit=checkpoint_after.clamp(2,8);
+    if explicit_focus && (source_in_prompt || read_calls>0) && tool_calls>=limit.min(3){
         return Some(true);
     }
-    rsi_should_checkpoint(tool_calls, has_write).then_some(false)
+    (tool_calls>=limit).then_some(false)
 }
 
 /// Stop broad discovery but allow exact missing ranges to be read. Bounded
@@ -1277,10 +1285,12 @@ async fn run_turn_body(
             let read_calls = completed.iter().filter(|operation| matches!(
                 operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read"))).count() as u64;
             let grounded = session["rsiFocusContextReady"] == true || read_calls > 0;
-            let stage = rsi_checkpoint_stage(
+            let stage = rsi_checkpoint_stage_with_limit(
                 tool_calls, read_calls, has_write,
                 session["rsiExplicitFocus"] == true || session["rsiMetaFocusActive"] == true,
                 session["rsiFocusContextReady"] == true,
+                session["rsiActionProgram"]["controller"]["checkpointAfter"]
+                    .as_u64().unwrap_or(6),
             ).or_else(|| {
                 (rsi_edit_stage_requested && grounded && !has_write).then_some(true)
             });

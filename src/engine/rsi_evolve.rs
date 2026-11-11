@@ -2972,20 +2972,6 @@ async fn run_loop(
         } else {
             learned_improvement_directive_with_training(&action_history,&policy_training)
         };
-        // Distinct witnessed episodes synthesize a new native tool program.
-        // Run matched, frozen baseline/trial cohorts before claiming quality.
-        let composed=crate::engine::rsi_action_program::evolve_stalled(
-            &policy_training,crate::engine::rsi_action_program::synthesize(&policy_training));
-        let program_trial=crate::engine::rsi_action_program::trial_plan(
-            &policy_training,composed,&head,
-            &crate::engine::memory::stable_id(&[
-                child_input["rsiObjective"].as_str().unwrap_or("")]),
-            child_input["model"].as_str().unwrap_or(""),
-            child_input["providerId"].as_str().unwrap_or(""));
-        child_input["rsiActionProgram"]=if program_trial["arm"]=="candidate" {
-            program_trial["program"].clone()
-        } else {Value::Null};
-        child_input["rsiActionProgramTrial"]=program_trial;
         let target_objective=selection_objective(&child_input);
         // Compute the same domain decision that the worker will use. Keep it
         // distinct from rsiSelectedDomain, which represents an explicit choice.
@@ -2996,6 +2982,23 @@ async fn run_loop(
         let (target_domain,target_selection,target_strategy)=select_generation_strategy(
             &context.state,&recorded_history,&target_objective,
             follow_up,target_trial,None,&head);
+        // Native program synthesis, controller mutation, and paired policy
+        // assessment all use the same witnessed generation lineage.
+        let base_program=crate::engine::rsi_action_program::synthesize(&policy_training);
+        let evolved=crate::engine::rsi_action_program::evolve_stalled(
+            &policy_training,base_program);
+        let composed=crate::engine::rsi_action_program::evolve_controller(
+            &policy_training,evolved);
+        let program_trial=crate::engine::rsi_action_program::trial_plan(
+            &policy_training,composed,&head,
+            &crate::engine::memory::stable_id(&[
+                child_input["rsiObjective"].as_str().unwrap_or("")]),
+            child_input["model"].as_str().unwrap_or(""),
+            child_input["providerId"].as_str().unwrap_or(""),&target_domain);
+        child_input["rsiActionProgram"]=if program_trial["arm"]=="candidate" {
+            program_trial["program"].clone()
+        } else {Value::Null};
+        child_input["rsiActionProgramTrial"]=program_trial;
         // A previous coordinator's nextDomain is advice, not a frozen veto on
         // an evolved descendant selector. The worker rechecks the proposal.
         child_input["rsiTargetDomain"]=json!(target_domain);

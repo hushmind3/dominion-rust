@@ -90,6 +90,64 @@ pub fn synthesize(rows:&[Value])->Value {
         "evidence":{"episodes":episodes},"qualityProven":false})
 }
 
+
+/// Descendant controller mutation: experienced tool outcomes change when the
+/// native harness stops broad discovery. This is an executable policy revision,
+/// not a model instruction or evidence of a quality gain.
+pub fn evolve_controller(rows:&[Value], mut program:Value)->Value {
+    if program["sequence"].as_array().is_none_or(Vec::is_empty) {return program;}
+    let source=rows.iter().rev().find(|row|
+        row["actionTrace"].as_array().is_some_and(|trace|!trace.is_empty())
+        && row["jobId"].as_str().is_some_and(|id|!id.is_empty()));
+    let Some(last)=source else {
+        program["controller"]=json!({"checkpointAfter":6,
+            "mutation":"cold_start","qualityProven":false});
+        return program;
+    };
+    let previous=rows.iter().rev().find(|row|
+        row["actionProgramTrial"]["arm"]=="candidate"
+        && row["actionProgramTrial"]["program"]["controller"]["checkpointAfter"].is_u64());
+    let earlier=previous.and_then(|row|
+        row["actionProgramTrial"]["program"]["controller"]["checkpointAfter"].as_u64())
+        .unwrap_or(6);
+    let mut checkpoint=earlier.clamp(2,8);
+    let failed_edits=last["editOperations"].as_array().is_some_and(|ops|ops.iter().any(|op|
+        op["written"]!=true && (op["status"]=="failed" || op["error"].is_string())));
+    let changed=last["observedSourceEdits"].as_u64().unwrap_or(0)>0;
+    let candidate=last["candidateId"].is_string();
+    let stopped=last["stopReason"].as_str().unwrap_or("");
+    let reason=if last["accepted"]==true {
+        "preserve_verified_repair_window"
+    } else if stopped.contains("token") || last["error"].as_str()
+        .is_some_and(|text|text.contains("token_budget")) {
+        checkpoint=checkpoint.saturating_sub(2).max(2);
+        "reduce_discovery_after_budget_exhaustion"
+    } else if failed_edits {
+        checkpoint=checkpoint.saturating_sub(1).max(2);
+        "reach_hash_grounded_edit_earlier_after_failed_tool"
+    } else if changed && !candidate {
+        checkpoint=checkpoint.saturating_sub(1).max(2);
+        "reserve_more_cycles_for_candidate_capture"
+    } else if candidate && last["evaluation"]["metrics"]["improvedHoldouts"]
+        .as_u64().unwrap_or(0)==0 {
+        checkpoint=(checkpoint+1).min(8);
+        "expand_evidence_after_neutral_candidate"
+    } else if !changed && last["newFindings"].as_u64().unwrap_or(0)==0 {
+        checkpoint=checkpoint.saturating_sub(1).max(2);
+        "shorten_unproductive_discovery"
+    } else {"retain_observed_discovery_budget"};
+    let revision=memory::stable_id(&[
+        &json!([&program["sequence"],&program["onFailure"],checkpoint]).to_string()]);
+    let parent=program["revision"].clone();
+    program["revision"]=json!(revision);
+    program["controller"]=json!({"checkpointAfter":checkpoint,
+        "mutation":reason,"sourceJobId":last["jobId"],
+        "parentRevision":previous.map(|row|row["actionProgramTrial"]["revision"].clone())
+            .unwrap_or(parent),
+        "qualityProven":false});
+    program
+}
+
 /// A policy that reached the native tool menu twice without producing a real edit
 /// evolves its procedure. Merely sending an instruction is not an attempted trial.
 pub fn evolve_stalled(rows:&[Value],mut plan:Value)->Value {
@@ -206,7 +264,7 @@ pub fn observed_effects(state:&AppState,session_id:&str)->Vec<Value> {
 /// Frozen cohort: same program revision, source commit, objective, model and
 /// provider. An actual holdout gain, not a write, decides a candidate promotion.
 pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
-    model:&str,provider:&str)->Value {
+    model:&str,provider:&str,domain:&str)->Value {
     if program["sequence"].as_array().is_none_or(Vec::is_empty) {
         return json!({"arm":"baseline","status":"no_executable_program","program":program});
     }
@@ -221,7 +279,9 @@ pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
             || row["generatorCommit"]!=source
             || row["objectiveId"]!=objective
             || row["generatorModel"]!=model
-            || row["generatorProviderId"]!=provider {continue;}
+            || row["generatorProviderId"]!=provider
+            || row["domain"]!=domain
+            || row["actionProgramTrial"]["frozen"]["domain"]!=domain {continue;}
         let gain=row["accepted"]==true
             && row["evaluation"]["metrics"]["eligible"]==true
             && row["evaluation"]["metrics"]["regressions"].as_u64()==Some(0)
@@ -248,11 +308,12 @@ pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
         else if trial<=control {"candidate"} else {"baseline"};
     json!({"arm":arm,"status":status,"revision":revision,"program":program,
         "frozen":{"sourceCommit":source,"objectiveId":objective,
-            "model":model,"provider":provider},
+            "model":model,"provider":provider,"domain":domain},
         "comparison":{"candidateGenerations":trial,"baselineGenerations":control,
             "candidateHoldoutGains":trial_gains,"baselineHoldoutGains":control_gains,
             "candidateRegressions":trial_regressions,
-            "qualityProven":status=="candidate_supported_by_holdout"}})
+            "qualityProven":status=="candidate_supported_by_holdout",
+            "causalQualityGain":"not_estimated_by_sequential_cohorts"}})
 }
 
 #[cfg(test)]
@@ -294,6 +355,17 @@ mod tests {
         assert_eq!(next_tool(&program,&[real],"run").unwrap().0,"workspace_replace");
     }
     #[test]
+    fn controller_mutates_discovery_limit_from_real_failed_tools(){
+        let baseline=json!({"sequence":["code_search","workspace_replace"],
+            "onFailure":[],"revision":"base"});
+        let failure=json!({"jobId":"worker","actionTrace":[{"tool":"code_search"}],
+            "editOperations":[{"status":"failed","written":false}],
+            "observedSourceEdits":0,"accepted":false});
+        let evolved=evolve_controller(&[failure],baseline);
+        assert_eq!(evolved["controller"]["checkpointAfter"],5);
+        assert_eq!(evolved["controller"]["qualityProven"],false);
+    }
+    #[test]
     fn policy_cannot_gain_quality_from_tool_calls_or_mismatched_source(){
         let program=json!({"sequence":["workspace_replace"],"revision":"r1"});
         let old=json!({"generatorCommit":"other","objectiveId":"obj",
@@ -301,7 +373,7 @@ mod tests {
             "actionProgramTrial":{"revision":"r1","arm":"candidate"},
             "accepted":true,"evaluation":{"metrics":{"eligible":true,
                 "regressions":0,"improvedHoldouts":2}}});
-        let plan=trial_plan(&[old],program,"head","obj","model","provider");
+        let plan=trial_plan(&[old],program,"head","obj","model","provider","memory");
         assert_eq!(plan["comparison"]["candidateGenerations"],0);
         assert_eq!(plan["comparison"]["qualityProven"],false);
     }
