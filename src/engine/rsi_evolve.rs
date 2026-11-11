@@ -1014,6 +1014,70 @@ fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
 /// The domain score and the source target score are separate decisions.
 /// A failed research-only generation only down-ranks its previous files; it
 /// does not erase a verified source observation or count as an adopted patch.
+/// A learned action is a *harness control decision*, not just a line in a
+/// model prompt. Autonomous discovery remains open-ended, but once the engine
+/// has chosen to implement or repair, a verified single-file target should
+/// advance to the source-edit checkpoint in the native execution runtime.
+pub(crate) fn policy_requests_source_edit(input:&Value)->bool {
+    if input["rsiAutoFocus"]!=true
+        || input["rsiFocusContextChars"].as_u64().unwrap_or(0)==0
+        || !input["rsiIndexId"].is_string() {
+        return false;
+    }
+    if !input["rsiFocusFiles"].as_array().is_some_and(|files|
+        files.len()==1 && files[0].as_str().is_some_and(crate::engine::rsi::safe_path)) {
+        return false;
+    }
+    matches!(input["rsiActionDirective"]["mode"].as_str(),
+        Some("repair_failed_edit"|"repair_failed_case"|"revise_candidate"|
+             "complete_candidate"|"implement_research"|"change_approach"))
+}
+
+/// Convert an evolved policy's target into an actual tool/runtime constraint.
+/// Source-ranking remains visible for audit, but an implementation attempt
+/// gets one concrete target. Retry the source of an actual failed write when
+/// it is still indexed at the current revision; never extrapolate file names
+/// from a model message or carry a stale target from another worktree.
+fn bind_action_to_source(
+    state:&AppState,input:&mut Value,history:&[Value]
+) -> bool {
+    if input["rsiAutoFocus"]!=true || !matches!(
+        input["rsiActionDirective"]["mode"].as_str(),
+        Some("repair_failed_edit"|"repair_failed_case"|"revise_candidate"|
+             "complete_candidate"|"implement_research"|"change_approach")) {
+        return false;
+    }
+    let Some(index_id)=input["rsiIndexId"].as_str() else {return false};
+    let first=input["rsiFocusFiles"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str)
+        .find(|path|crate::engine::rsi::safe_path(path)
+            && crate::engine::code_index::indexed_source_hash(state,index_id,path).is_some())
+        .map(str::to_string);
+    let failed_path=if input["rsiActionDirective"]["mode"]=="repair_failed_edit" {
+        history.last().and_then(|row|row["editActions"].as_array())
+            .and_then(|rows|rows.iter().rev().find(|item|
+                item["written"]!=true && item["path"].as_str()
+                    .is_some_and(|path|crate::engine::rsi::safe_path(path)
+                        && crate::engine::code_index::indexed_source_hash(
+                            state,index_id,path).is_some())))
+            .and_then(|item|item["path"].as_str()).map(str::to_string)
+    } else {None};
+    let Some(target)=failed_path.clone().or(first) else {return false};
+    let Some(hash)=crate::engine::code_index::indexed_source_hash(state,index_id,&target)
+        else {return false};
+    input["rsiFocusFiles"]=json!([target]);
+    if !input["rsiFocusSelection"].is_object() {
+        input["rsiFocusSelection"]=json!({});
+    }
+    input["rsiFocusSelection"]["executionSource"]=json!("learned_action_policy");
+    input["rsiFocusSelection"]["executionTarget"]=json!(target);
+    input["rsiFocusSelection"]["executionSourceHash"]=json!(hash);
+    input["rsiFocusSelection"]["actionPolicyRevision"]=
+        input["rsiActionDirective"]["policy"]["revision"].clone();
+    input["rsiFocusSelection"]["usedFailedWriteProvenance"]=json!(failed_path.is_some());
+    true
+}
+
 fn choose_focus_files(
     state:&AppState, input:&Value, history:&[Value], policy:Option<&Value>,
 ) -> Vec<Value> {
