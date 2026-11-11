@@ -1507,14 +1507,40 @@ fn pending_success_ablation(method:&Value, methods:&[Value])->bool {
             && parent["successfulApplications"].as_u64().unwrap_or(0)>0)
 }
 
+/// An actually adopted structural descendant should supersede its parent
+/// even if the parent amassed more historic successes. Cumulative counts
+/// otherwise make the algorithm resistant to its own verified upgrades.
+fn adopted_structural_descendant(method:&Value, methods:&[Value])->bool {
+    if !is_synthesized_source_repair(method)
+        || method["successfulApplications"].as_u64().unwrap_or(0)==0
+        || method["status"]!="executable"
+        || !method["applications"].as_array().is_some_and(|apps|apps.iter().any(|row|
+            row["accepted"]==true && row["postconditionsPassed"]==true)) {
+        return false
+    }
+    let parent=methods.iter().any(|prior|
+        prior["id"]==method["synthesis"]["parentMethodId"]
+        && prior["revision"]==method["synthesis"]["parentRevision"]);
+    let transferred=method["synthesis"]["kind"]=="transferred_read_ablation"
+        && method["synthesis"]["transferDonor"]["adoptedApplications"]
+            .as_u64().unwrap_or(0)>0;
+    parent || transferred
+}
+
 fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
     let mut candidates = applicable_methods(state, &research_scope(input).partition_key, domain,
         input["rsiObjective"].as_str().unwrap_or(""));
     let exploratory=candidates.iter().filter(|m|pending_success_ablation(m,&candidates))
         .filter_map(|m|m["id"].as_str().map(str::to_string))
         .collect::<BTreeSet<_>>();
-    candidates.sort_by(|a,b|exploratory.contains(b["id"].as_str().unwrap_or(""))
-        .cmp(&exploratory.contains(a["id"].as_str().unwrap_or(""))));
+    let adopted=candidates.iter().filter(|m|adopted_structural_descendant(m,&candidates))
+        .filter_map(|m|m["id"].as_str().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    candidates.sort_by(|a,b|
+        exploratory.contains(b["id"].as_str().unwrap_or(""))
+            .cmp(&exploratory.contains(a["id"].as_str().unwrap_or("")))
+        .then(adopted.contains(b["id"].as_str().unwrap_or(""))
+            .cmp(&adopted.contains(a["id"].as_str().unwrap_or("")))));
     // Mutually exclusive *writing methods* must never edit the same file
     // in one generation. This applies to inherited parent methods too, not
     // only newly synthesized candidates; otherwise a compact child may edit
@@ -1553,6 +1579,8 @@ fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value
             "verifiedAdoptions":m["successfulApplications"].as_u64().unwrap_or(0),
             "selection":if exploratory.contains(m["id"].as_str().unwrap_or("")) {
                 "success_ablation_trial"
+            } else if adopted.contains(m["id"].as_str().unwrap_or("")) {
+                "adopted_structural_descendant"
             } else {"adopted_then_untried_sequential"},
             "causalGain":"not_measured_sequential_trials"
         }))})
