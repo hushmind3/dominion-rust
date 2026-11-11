@@ -3929,6 +3929,43 @@ mod tests {
     }
 
     #[test]
+    fn actual_failed_source_edit_revises_method_without_any_candidate() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiObjective":"repair tool procedure"});
+        for (n,tool,status,origin,result) in [
+            (1,"code_search","completed","model",json!({"matchCount":1})),
+            (2,"workspace_read_range","completed","model",
+                json!({"sourceSha256":"a".repeat(64)})),
+            (3,"workspace_replace_range","failed","model",
+                json!({"error":"invalid source range"}))
+        ] {
+            state.store.put("execution_operation",&json!({
+                "id":format!("failure-{n}"),"sessionId":"source-repair",
+                "runId":"execution-1","opSeq":n,
+                "tool":tool,"status":status,"origin":origin,
+                "effectState":if status=="failed"{"failed"}else{"observed"},
+                "arguments":{"path":"src/engine/tools.rs"},
+                "result":result
+            })).unwrap();
+        }
+        let generation=json!({"jobId":"unproductive-generation-1",
+            "domain":"tools","accepted":false});
+        let policy=learn_method_transitions(&state,&input,&generation,"source-repair")
+            .expect("a real failed edit after source observation must alter method choice");
+        assert_eq!(policy["transitions"].as_array().unwrap().iter().find(|row|
+            row["from"]=="workspace_read_range"&&row["to"]=="workspace_replace_range")
+                .unwrap()["negative"],1);
+        let repaired=policy["evidence"][0].clone();
+        assert_eq!(repaired["failureReason"],"tool_execution:workspace_replace_range");
+        let mut stale=state.store.get("execution_operation","failure-3").unwrap();
+        stale["result"]["staleVersion"]=json!(true);
+        state.store.put("execution_operation",&stale).unwrap();
+        assert_eq!(failed_edit_after_observation(&state,"source-repair",&generation),None,
+            "stale source observations call for a fresh read, not changing editor");
+        drop(state);let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn independently_regressed_candidate_teaches_negative_method_without_model_approval() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root,"rsiObjective":"improve executor"});
