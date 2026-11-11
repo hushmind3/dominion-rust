@@ -2552,6 +2552,7 @@ async fn run_turn_body(
                     &error_text,
                 );
                 if adaptation_attempts < 3 && result["preflightSyntaxRejected"]!=true
+                    && result["preflightScopeRejected"]!=true
                     && !request.provider_id.as_deref().unwrap_or("").is_empty() {
                     adaptation_attempts += 1;
                     match attempt_model_adaptation(
@@ -2606,17 +2607,22 @@ async fn run_turn_body(
             messages.push(json!({
                 "role":"tool","tool_call_id":call.id,"content":tool_content,
             }));
-            if session["rsiRun"]==true && result["syntaxValid"]==false {
+            if session["rsiRun"]==true && (result["syntaxValid"]==false
+                || result["preflightScopeRejected"]==true) {
                 rsi_syntax_repair_pending=true;
-                let diagnostic=result["syntaxCheck"]["diagnostic"].as_str()
-                    .unwrap_or("Rust syntax parse failed.")
+                let diagnostic=result["error"].as_str()
+                    .filter(|_|result["preflightScopeRejected"]==true)
+                    .or_else(||result["syntaxCheck"]["diagnostic"].as_str())
+                    .unwrap_or("Rust source edit rejected.")
                     .chars().take(1400).collect::<String>();
                 state.store.audit("rsi.syntax_repair_triggered",json!({
                     "executionId":execution_id,"round":round,
                     "path":arguments["path"],"diagnostic":diagnostic,
                     "source":"actual_model_write_rustfmt"
                 }));
-                let instruction=if result["preflightSyntaxRejected"]==true {
+                let instruction=if result["preflightScopeRejected"]==true {
+                    format!("RSI EDIT RANGE VIOLATED OWNER'S TARGET FUNCTION: {diagnostic}. No disk mutation occurred; the observed source SHA remains valid. Replace ONLY the originally requested function and preserve all other existing functions. Retry a real edit tool NOW without more research.")
+                }else if result["preflightSyntaxRejected"]==true {
                     format!("RUST SYNTAX PREFLIGHT REJECTED YOUR PROPOSED EDIT: {diagnostic}. No disk mutation occurred; the last observed source SHA is still valid. Correct newText or the edit range and call workspace_replace_range or workspace_replace NOW. Re-reading unchanged bytes would waste tokens; do not finish with an explanation.")
                 }else{
                     format!("YOUR ACTUAL SOURCE EDIT FAILED RUST SYNTAX PARSING: {diagnostic}. The file changed, so its earlier source hash is stale. FIRST call workspace_read_range on the SAME changed file, THEN use workspace_replace_range or workspace_replace to correct the Rust syntax.")
