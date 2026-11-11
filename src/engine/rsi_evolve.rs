@@ -3040,6 +3040,18 @@ async fn run_loop(
             .unwrap_or(proposed);
         let program_trial=crate::engine::rsi_action_program::trial_plan(
             &policy_training,composed,&head,&objective_id,model,provider,&target_domain);
+        // Generate Boolean execution judgements from witnessed failures,
+        // evaluate them separately, and run only the candidate cohort.
+        let judgement=crate::engine::rsi_judgement::pinned(
+            &policy_training,&head,&objective_id,model,provider,&target_domain)
+            .unwrap_or_else(||crate::engine::rsi_judgement::evolve(
+                &policy_training,&objective_id,&target_domain));
+        let judgement_trial=crate::engine::rsi_judgement::trial(
+            &policy_training,judgement,&head,&objective_id,model,provider,&target_domain);
+        child_input["rsiJudgementPolicy"]=if judgement_trial["arm"]=="candidate" {
+            judgement_trial["policy"].clone()
+        }else{Value::Null};
+        child_input["rsiJudgementTrial"]=judgement_trial;
         child_input["rsiActionProgram"]=if program_trial["arm"]=="candidate" {
             program_trial["program"].clone()
         } else {Value::Null};
@@ -3294,6 +3306,11 @@ async fn run_loop(
         generation["actionProgram"]=current["input"]["rsiActionProgram"].clone();
         generation["actionProgramTrial"]=current["input"]["rsiActionProgramTrial"].clone();
         generation["actionProgramEffects"]=json!(action_program_effects);
+        generation["rsiJudgementTrial"]=current["input"]["rsiJudgementTrial"].clone();
+        generation["rsiJudgementPolicy"]=current["input"]["rsiJudgementPolicy"].clone();
+        generation["rsiJudgementEffects"]=json!(session.map(|id|
+            crate::engine::rsi_judgement::effects(&context.state,id))
+            .unwrap_or_default());
         let candidate_id = verified_candidate_id(&current["result"]);
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
         if let Some(id) = candidate_id {
