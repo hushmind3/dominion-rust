@@ -2,10 +2,6 @@ name: Sub4 actual local Ollama RSI attempt
 # Explicit opt-in only: do not auto-run a long 4B model on later commits.
 on:
   workflow_dispatch:
-  push:
-    branches: [dominion-sub4]
-    paths:
-      - '.github/workflows/sub4-live-ollama.yml'
 permissions:
   contents: read
 jobs:
