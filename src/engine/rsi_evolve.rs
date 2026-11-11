@@ -3950,6 +3950,8 @@ async fn run_loop(
             "editActions":current["result"]["rsi"]["editActions"],
             "recoveredFailedPatch":current["rsiRecoveredPatch"],
             "sourceDiffBytes":current["result"]["rsi"]["diffBytes"],
+            "novelSourceDiffBytes":current["result"]["rsi"]["novelDiffBytes"],
+            "inheritedPatchUnchanged":current["result"]["rsi"]["inheritedPatchUnchanged"],
             "sourceCaptureError":current["result"]["rsi"]["captureError"],
             "unverifiedCandidateId":current["result"]["rsi"]["candidateId"],
             "staticChecksPassed":current["result"]["rsi"]["checksPassed"],
@@ -3971,18 +3973,19 @@ async fn run_loop(
             "policyRevision":action_session["rsiActionPolicyRevision"],
         });
         let candidate_id = verified_candidate_id(&current["result"]);
+        let novel_source_bytes=current["result"]["rsi"]["novelDiffBytes"]
+            .as_u64().or_else(||current["result"]["rsi"]["diffBytes"].as_u64())
+            .unwrap_or(0);
         generation["actionObservation"]=observed_edit_outcome(
             &tools_used,&current["result"]["rsi"]["editActions"],
-            candidate_id.is_some(),
-            current["result"]["rsi"]["diffBytes"].as_u64().unwrap_or(0));
+            candidate_id.is_some(),novel_source_bytes);
         let repair_modes=current["result"]["previousAttempts"].as_array()
             .into_iter().flatten()
             .filter_map(|item|item["repairMethod"].as_str())
             .take(2).collect::<Vec<_>>();
         let repair_attempts=current["result"]["repairAttempts"].as_u64()
             .unwrap_or(0);
-        let changed_source=current["result"]["rsi"]["diffBytes"].as_u64()
-            .unwrap_or(0)>0;
+        let changed_source=novel_source_bytes>0;
         generation["selfRepair"]=json!({
             "attempts":repair_attempts,
             "modes":repair_modes,
@@ -4223,8 +4226,7 @@ async fn run_loop(
             .push(generation);
         // New findings, not a write count or query spelling, justify continuing
         // a research-only generation within the configured campaign budgets.
-        let no_edit = candidate_id.is_none()
-            && current["result"]["rsi"]["diffBytes"].as_u64().unwrap_or(0) == 0;
+        let no_edit = candidate_id.is_none() && novel_source_bytes==0;
         let research = !artifacts.is_empty();
         let changed = new_findings>0;
         let streak = if no_edit {
