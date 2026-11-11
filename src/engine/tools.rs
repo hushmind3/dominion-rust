@@ -827,6 +827,43 @@ fn rsi_observed_unique_offset(
     (span.matches(old).count()==1).then(||begin+span.find(old).unwrap())
 }
 
+// Parse the actual model edit before ending an RSI generation. rustfmt
+// with --emit stdout checks Rust syntax without rewriting source. Broken
+// drafts remain in the detached worktree for model-authored correction.
+async fn rsi_rust_parse_receipt(ctx:&ToolContext<'_>,path:&Path)->Option<Value>{
+    if path.extension().and_then(|e|e.to_str())!=Some("rs")
+        || ctx.store.get("session",ctx.session_id)?["rsiRun"]!=true {
+        return None;
+    }
+    let mut check=tokio::process::Command::new("rustfmt");
+    check.args(["--edition","2021","--emit","stdout",
+        "--config","skip_children=true"])
+        .arg(path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let output=tokio::time::timeout(Duration::from_secs(12),check.output())
+        .await.ok()?.ok()?;
+    let diagnostic=String::from_utf8_lossy(&output.stderr).to_string();
+    if output.status.success(){
+        return Some(json!({"valid":true,"tool":"rustfmt_parse_only"}));
+    }
+    if !diagnostic.contains("error") {
+        return None;
+    }
+    let line=diagnostic.lines().find_map(|row|{
+        let row=row.trim();
+        if !row.contains("-->") {return None;}
+        let (prefix,column)=row.rsplit_once(':')?;
+        column.trim().parse::<u64>().ok()?;
+        let (_,line)=prefix.rsplit_once(':')?;
+        line.trim().parse::<u64>().ok()
+    });
+    Some(json!({"valid":false,"tool":"rustfmt_parse_only",
+        "diagnostic":diagnostic.chars().take(1800).collect::<String>(),
+        "line":line}))
+}
+
 async fn replace_text(
     ctx: &ToolContext<'_>,
     path: &Path,
@@ -869,6 +906,10 @@ async fn replace_text(
         result["replacedChars"] = json!(old_text.chars().count());
         result["postSha256"] = json!(format!("{:x}", Sha256::digest(updated.as_bytes())));
         if scoped {result["resolvedWithinObservedRange"]=json!(true);}
+        if let Some(parse)=rsi_rust_parse_receipt(ctx,path).await{
+            result["syntaxValid"]=parse["valid"].clone();
+            result["syntaxCheck"]=parse;
+        }
     }
     Ok(result)
 }
@@ -938,6 +979,10 @@ async fn replace_observed_range(
         result["replaced"] = json!(true);
         result["replacedLines"] = json!(end-start+1);
         result["postSha256"] = json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
+        if let Some(parse)=rsi_rust_parse_receipt(ctx,path).await{
+            result["syntaxValid"]=parse["valid"].clone();
+            result["syntaxCheck"]=parse;
+        }
     }
     Ok(result)
 }
