@@ -1621,6 +1621,62 @@ async fn run_turn_body(
                 }
             }
         }
+        // A focused source mutation must not finish in a read-only loop after
+        // the model received an exact, versioned source range. Learned programs
+        // and judgement rules may still request discovery, but once the read
+        // proves the current file version, give the model ONE executable range
+        // editor instead of another read. This is an executable choice, never
+        // a fabricated source patch or an independent quality verdict.
+        if session["rsiRun"]==true && !force_final
+            && (session["rsiExplicitFocus"]==true || session["rsiMetaFocusActive"]==true) {
+            let operations=state.store.all("execution_operation").into_iter()
+                .filter(|op|op["runId"].as_str()==Some(execution_id))
+                .collect::<Vec<_>>();
+            let edited=operations.iter().any(|op|matches!(
+                op["tool"].as_str(),Some("workspace_replace"|
+                    "workspace_replace_range"|"workspace_write")));
+            let last_read=operations.iter()
+                .filter(|op|op["status"]=="completed"
+                    && op["tool"]=="workspace_read_range"
+                    && op["result"]["sourceSha256"].as_str().is_some_and(|hash|
+                        hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit()))
+                    && op["arguments"]["path"].as_str().is_some_and(|path|
+                        session["rsiFocusFiles"].as_array().is_some_and(|files|
+                            files.iter().any(|file|file.as_str()==Some(path)))))
+                .max_by_key(|op|op["opSeq"].as_u64().unwrap_or(0));
+            if !edited {
+                if let Some(read)=last_read {
+                    let selected=if tool_definitions.iter()
+                        .any(|tool|tool_name(tool)=="workspace_replace_range") {
+                        Some("workspace_replace_range")
+                    } else if tool_definitions.iter()
+                        .any(|tool|tool_name(tool)=="workspace_replace") {
+                        Some("workspace_replace")
+                    } else {None};
+                    if let Some(edit)=selected {
+                        // The original advertised tool definition is still
+                        // subject to all workspace scope and approval checks.
+                        round_tools=tool_definitions.iter()
+                            .filter(|tool|tool_name(tool)==edit)
+                            .cloned().collect();
+                        rsi_edit_only_announced=true;
+                        let path=read["arguments"]["path"].as_str().unwrap_or("");
+                        let sha=read["result"]["sourceSha256"].as_str().unwrap_or("");
+                        let start=read["result"]["startLine"].as_u64().unwrap_or(0);
+                        let end=read["result"]["endLine"].as_u64().unwrap_or(0);
+                        messages.push(json!({"role":"system","content":format!(
+                            "실제 파일 읽기와 해시 확인 완료. 이제 재조회하지 말고 단 하나의 {edit} 도구를 호출해 새 코드로 수정하세요. 파일: {path}. 검증된 sourceSha256: {sha}. 관측된 범위: {start}~{end}. workspace_replace_range 사용 시 path, startLine, endLine, newText와 expectedSha256={sha}를 JSON 인자에 정확히 넣으세요. 변경할 newText는 실제 소스와 목표에 맞게 직접 작성해야 합니다. 도구 결과로만 성공 여부를 판단합니다."
+                        )}));
+                        state.store.audit("rsi.verified_read_to_real_edit",json!({
+                            "executionId":execution_id,"round":round,
+                            "path":path,"sourceSha256":sha,
+                            "selectedTool":edit,
+                            "source":"witnessed_read_not_claimed_write"
+                        }));
+                    }
+                }
+            }
+        }
         let wire_messages = messages.clone();
         // Campaigns enforce the owner's cumulative budget below. The generic
         // standalone turn ceiling must not terminate a budgeted research run.
