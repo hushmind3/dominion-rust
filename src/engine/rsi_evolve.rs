@@ -2395,14 +2395,16 @@ fn synthesize_evolved_execution_programs(evidence:&[Value],genome:&Value)->Vec<V
             for (steps,sources,score) in frontier {
                 let from=steps.last().map(String::as_str).unwrap_or("");
                 for ((edge_domain,edge_from,edge_to),(good,bad)) in &graph {
-                    if edge_domain!=*domain || edge_from!=from
+                    if edge_domain.as_str()!=*domain || edge_from.as_str()!=from
                         || good.is_empty() || good.len()<=bad.len() {continue;}
                     if !allow_detours && from=="workspace_read_range"
-                        && edge_to=="code_search" {continue;}
+                        && edge_to.as_str()=="code_search" {continue;}
                     // One search/read detour is enough. Repeating a cycle
                     // cannot manufacture additional independent witnesses.
-                    if steps.windows(2).any(|pair|
-                        pair[0]==*edge_from && pair[1]==*edge_to) {continue;}
+                    if steps.windows(2).filter(|pair|
+                        pair[0].as_str()==edge_from.as_str()
+                            && pair[1].as_str()==edge_to.as_str()).count()
+                            >=if max_steps==5 {2}else{1} {continue;}
                     let mut next=steps.clone();
                     next.push(edge_to.clone());
                     let mut witnessed=sources.clone();
@@ -5529,6 +5531,83 @@ mod tests {
                 && p["causalProof"]==false));
         assert!(!programs.iter().any(|p|p["domain"]=="tools"),
             "a single successful tool use cannot support program shortening");
+    }
+
+
+    #[test]
+    fn second_order_generator_invents_then_retires_four_stage_program() {
+        // Each edge comes from a different, separately witnessed generation.
+        // No original episode ever contained the resulting four-stage method.
+        let evidence=vec![
+            json!({"jobId":"read-then-search","domain":"tools",
+                "sequence":["workspace_read_range","code_search"],"operationalPass":true}),
+            json!({"jobId":"search-then-read","domain":"tools",
+                "sequence":["code_search","workspace_read_range"],"operationalPass":true}),
+            json!({"jobId":"read-then-edit","domain":"tools",
+                "sequence":["workspace_read_range","workspace_replace"],"pairedImprovement":true})
+        ];
+        let mut policy=json!({"evidence":evidence,"executionPrograms":[],
+            "programMeasuredEvidence":[]});
+        refresh_adaptive_execution_programs(&mut policy);
+        let steps=json!(["workspace_read_range","code_search",
+            "workspace_read_range","workspace_replace"]);
+        assert!(policy["executionPrograms"].as_array().unwrap().iter().any(|p|
+            p["steps"]==steps && p["composition"]=="stitched_across_generations"
+                && p["status"]=="candidate_requires_descendant_execution"));
+        assert_eq!(policy["programSynthesisGrammar"]["genes"]["maxSteps"],4);
+        let former=policy["programSynthesisGrammar"]["revision"].clone();
+        // Two genuine evaluated gains from short alternatives mutate the
+        // GENERATOR: its search space now removes post-read search detours.
+        policy["programMeasuredEvidence"]=json!([
+            {"jobId":"evaluated-short-a","programId":"short-a",
+                "programSteps":["workspace_read_range","workspace_replace"],
+                "outcome":"accepted_gain"},
+            {"jobId":"evaluated-short-b","programId":"short-b",
+                "programSteps":["workspace_read_range","workspace_replace"],
+                "outcome":"accepted_gain"}
+        ]);
+        refresh_adaptive_execution_programs(&mut policy);
+        assert_eq!(policy["programSynthesisGrammar"]["genes"]["maxSteps"],3);
+        assert_eq!(policy["programSynthesisGrammar"]["genes"]["allowSearchAfterRead"],false);
+        assert_ne!(policy["programSynthesisGrammar"]["revision"],former);
+        assert!(policy["executionPrograms"].as_array().unwrap().iter()
+            .all(|p|p["origin"]!="adaptive_program_synthesis_grammar"));
+    }
+
+    #[test]
+    fn repeated_quality_regressions_expand_the_next_generator_not_the_reward_claim() {
+        let evidence=vec![
+            json!({"jobId":"a","domain":"memory",
+                "sequence":["code_search","workspace_read_range"],"operationalPass":true}),
+            json!({"jobId":"b","domain":"memory",
+                "sequence":["workspace_read_range","code_search"],"operationalPass":true}),
+            json!({"jobId":"c","domain":"memory",
+                "sequence":["workspace_read_range","workspace_replace_range"],
+                "operationalPass":true})
+        ];
+        let mut policy=json!({"evidence":evidence,"executionPrograms":[],
+            "programMeasuredEvidence":[
+                {"jobId":"regressed-a","programId":"old-a",
+                    "programSteps":["code_search","workspace_read_range",
+                        "workspace_replace_range"],"outcome":"paired_regression"},
+                {"jobId":"regressed-b","programId":"old-b",
+                    "programSteps":["code_search","workspace_read_range",
+                        "workspace_replace_range"],"outcome":"paired_regression"}
+            ]});
+        refresh_adaptive_execution_programs(&mut policy);
+        assert_eq!(policy["programSynthesisGrammar"]["genes"]["maxSteps"],5);
+        assert!(policy["executionPrograms"].as_array().unwrap().iter().any(|p|
+            p["steps"]==json!(["code_search","workspace_read_range",
+                "code_search","workspace_read_range","workspace_replace_range"])
+                && p["causalProof"]==false
+                && p["generatorRevision"]==policy["programSynthesisGrammar"]["revision"]));
+        // An unknown model assertion, with no paired verdict, is not a
+        // negative training example for the program-generating algorithm.
+        policy["programMeasuredEvidence"]=json!([
+            {"jobId":"unknown","programId":"old-c","outcome":"model_suggested"}
+        ]);
+        refresh_adaptive_execution_programs(&mut policy);
+        assert_eq!(policy["programSynthesisGrammar"]["genes"]["maxSteps"],4);
     }
 
     #[test]
