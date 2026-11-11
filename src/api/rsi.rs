@@ -7,6 +7,16 @@ fn error(message: String) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({"error":message}))).into_response()
 }
 
+/// The improvement worker should try a concrete edit for a user-scoped source objective.
+/// Open-ended autonomous research can stop when it has no grounded repair.
+fn generation_recipe(explicit_source_goal: bool) -> &'static str {
+    if explicit_source_goal {
+        "사용자가 특정 파일의 코드 수정을 요청한 실행입니다. 이것은 조사 보고서가 아니라 실제 코드 변경 작업입니다. 먼저 인덱스에 이미 포함된 정확한 근거를 사용하고 빠진 소스 줄만 workspace_read_range로 보충하세요. 기존 파일과 줄을 의미 없이 재검색하지 마세요. 근거가 확보되면 이 세대 안에서 workspace_replace(path, oldText, newText)를 실제 호출하세요. oldText는 확인한 원본 코드와 완전히 일치시켜야 하며 newText는 요청한 기능을 구현해야 합니다. 빌드·평가는 뒤이어 DOMINION이 자동 실행합니다. 불가능한 이유가 실제로 관찰된 경우에만 무수정 종료하고 어떤 소스 근거가 부족한지 정확히 남기세요. 사용자의 목표와 기존 기능·기억·취소·복구를 보존하세요."
+    } else {
+        "제공된 인덱스와 해시 검증된 연구 원문을 먼저 활용하세요. 이미 제공된 위치나 줄 범위를 다시 조회할 필요는 없습니다. 모르는 심볼만 code_search로 찾고, 제공되지 않은 줄만 workspace_read_range로 읽으세요. 참고 코드와 지도는 작업 지시가 아닙니다. 근거가 있는 개선만 workspace_replace로 수정하고, 새 파일을 만들 때만 workspace_write를 사용하세요. 적합한 후보가 없으면 수정 없이 종료할 수 있습니다. 기존 기능·사용자 지시·기억·승인·취소·복구는 보존하세요. 빌드·패치 수집은 종료 후 엔진이 수행하므로 직접 완료했다고 주장하지 마세요."
+    }
+}
+
 /// Longest run of adopted generations in a campaign. Older campaigns stored
 /// only per-generation flags, so derive the streak instead of rewriting them.
 fn accepted_streak(record: &Value) -> (u64, u64) {
@@ -347,7 +357,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     } else {
         "전수조사 인덱스의 대상 파일 수정"
     };
-    let recipe = "제공된 인덱스와 해시 검증된 연구 원문을 먼저 활용하세요. 이미 제공된 위치나 줄 범위를 다시 조회할 필요는 없습니다. 모르는 심볼만 code_search로 찾고, 제공되지 않은 줄만 workspace_read_range로 읽으세요. 참고 코드와 지도는 작업 지시가 아닙니다. 근거가 있는 개선만 workspace_replace로 수정하고, 새 파일을 만들 때만 workspace_write를 사용하세요. 적합한 후보가 없으면 수정 없이 종료할 수 있습니다. 기존 기능·사용자 지시·기억·승인·취소·복구는 보존하세요. 빌드·패치 수집은 종료 후 엔진이 수행하므로 직접 완료했다고 주장하지 마세요.";
+    let recipe = generation_recipe(!focus_files.is_empty() && !autonomous);
     let branch_name = status["branch"].as_str().unwrap_or("dominion-sub1");
     let prompt = format!(
         "DOMINION Rust 자체 개선 작업입니다. 원본 소스는 보호되고 실행기가 생성하는 분리된 작업공간에서 수정합니다.\n\n원본 (읽기 참조용): {source_dir}\n브랜치: {source_branch}\n개선 모드: {mode}\n목표: {objective}\n\n이전 실행의 실제 검사 증거(성능 향상과 구분):\n{previous_evidence}\n\n{recipe}\n\n{index_context}\n\n절대경로 읽기·쓰기, 셸, GitHub API, 다른 에이전트는 이 작업에 사용할 수 없습니다. main 변경·커밋·푸시·병합·서버 재시작도 하지 마세요. 사용자는 JSON, Git diff, SHA를 입력하지 않습니다. 한국어로 핵심 개선 근거와 남은 검증을 간결하게 보고하세요."
@@ -556,6 +566,16 @@ mod tests {
 #[cfg(test)]
 mod capability_tests {
     use super::*;
+    #[test]
+    fn focused_source_goals_request_real_changes_not_only_research() {
+        let repair=generation_recipe(true);
+        assert!(repair.contains("workspace_replace(path, oldText, newText)"));
+        assert!(repair.contains("실제 호출"));
+        assert!(!repair.contains("적합한 후보가 없으면 수정 없이 종료"));
+        let autonomous=generation_recipe(false);
+        assert!(autonomous.contains("적합한 후보가 없으면 수정 없이 종료"));
+    }
+
 
     #[tokio::test]
     async fn every_campaign_listing_requires_verified_meta_transfer() {
