@@ -692,7 +692,7 @@ fn rsi_edit_requires_tool(session:&Value,tools:&[Value],observed_read:bool)->boo
         && observed_read
         && !tools.is_empty()
         && tools.iter().all(|tool|
-            tool["function"]["name"].as_str()==Some("workspace_replace"))
+            matches!(tool["function"]["name"].as_str(),Some("workspace_replace" | "workspace_replace_range")))
 }
 
 async fn stream_completion_once(
@@ -821,7 +821,7 @@ async fn stream_completion_once_body(
     if !compatible && !tools.is_empty() {
         body["tools"] = json!(tools);
         let observed_read=if tools.len()==1
-            && tools[0]["function"]["name"]=="workspace_replace" {
+            && matches!(tools[0]["function"]["name"].as_str(),Some("workspace_replace" | "workspace_replace_range")) {
             state.store.all("execution_operation").iter().any(|op|
                 op["sessionId"]==session_id && op["status"]=="completed"
                     && matches!(op["tool"].as_str(),
@@ -1834,6 +1834,17 @@ async fn stream_anthropic_once(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn native_range_edit_requires_a_real_generation_and_observed_source() {
+        let tool=json!({"type":"function","function":{"name":"workspace_replace_range"}});
+        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"job","rsiFocusFile":"src/engine/memory.rs"});
+        assert!(rsi_edit_requires_tool(&session,&[tool.clone()],true));
+        assert!(!rsi_edit_requires_tool(&session,&[tool.clone()],false));
+        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&[tool],true));
+    }
+
     use super::*;
 
     #[test]
