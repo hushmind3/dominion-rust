@@ -86,7 +86,8 @@ jobs:
           curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
           node scripts/sub3-live-model-campaign.mjs run
           cat "$SUB3_LIVE_REPORT"
-          # Count failed and attempted edits, not just successfully completed calls.
+          # Count executed range edits AND rejected native proposals. A proposed
+          # tool call in an assistant message is not evidence of a file write.
           # The detached runner contains only this public test task's model text.
           python3 - <<'PY'
           import json,os,sqlite3
@@ -97,7 +98,7 @@ jobs:
               for (raw,) in conn.execute("SELECT data FROM records WHERE kind='execution_operation'"):
                   try: row=json.loads(raw)
                   except (ValueError,TypeError): continue
-                  if row.get("tool") in ("code_search","workspace_read_range","workspace_replace","workspace_write"):
+                  if row.get("tool") in ("code_search","workspace_read_range","workspace_replace","workspace_replace_range","workspace_write"):
                       details=row.get("result") or {}
                       operations.append({"tool":row.get("tool"),"status":row.get("status"),
                           "error":str(row.get("error") or (details.get("error") if isinstance(details,dict) else "") or "")[:250]})
@@ -108,16 +109,33 @@ jobs:
                   checkpoints.append({"event":event,"toolCalls":row.get("toolCalls"),
                       "editOnly":row.get("editOnly"),"readCalls":row.get("readCalls"),
                       "sourceRead":row.get("sourceRead"),"sourceInPrompt":row.get("sourceInPrompt")})
+              tool_errors=[]
+              for event,detail in conn.execute("SELECT event,detail FROM audit WHERE event IN ('tool.soft_error','rsi.patch_submitted_for_verification') ORDER BY rowid"):
+                  try: row=json.loads(detail)
+                  except (ValueError,TypeError): row={}
+                  tool_errors.append({"event":event,"tool":row.get("tool"),"error":str(row.get("error") or "")[:250]})
               assistant=[]
               for role,content,tool_calls in conn.execute("SELECT role,content,tool_calls FROM messages ORDER BY rowid"):
                   if role=="assistant":
                       try: calls=json.loads(tool_calls) if tool_calls else []
                       except ValueError: calls=[]
-                      assistant.append({"content":(content or "")[-650:],
-                          "tools":[c.get("function",{}).get("name") for c in calls if isinstance(c,dict)]})
+                      shapes=[]
+                      for call in calls:
+                          if not isinstance(call,dict): continue
+                          fn=call.get("function") or {}
+                          raw=fn.get("arguments") or ""
+                          try:
+                              args=json.loads(raw)
+                              keys=list(args) if isinstance(args,dict) else []
+                              parse_error=""
+                          except (ValueError,TypeError) as exc:
+                              keys=[];parse_error=str(exc)[:100]
+                          shapes.append({"tool":fn.get("name"),"argumentBytes":len(raw),
+                              "argumentKeys":keys,"parseError":parse_error})
+                      assistant.append({"content":(content or "")[-400:],"calls":shapes})
               print("SUB3_RSI_ACTION_TRACE="+json.dumps({
-                  "operations":operations[-20:],"checkpoints":checkpoints[-15:],
-                  "lastAssistant":assistant[-8:]},ensure_ascii=False))
+                  "operations":operations[-30:],"checkpoints":checkpoints[-15:],
+                  "toolErrors":tool_errors[-30:],"lastAssistant":assistant[-12:]},ensure_ascii=False))
           except Exception as error:
               print("SUB3_RSI_ACTION_TRACE_UNAVAILABLE="+str(error))
           PY
