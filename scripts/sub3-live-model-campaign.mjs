@@ -93,8 +93,10 @@ if(mode==='probe'){
       // reasoning effort leaves room for an executable workspace_replace call.
       reasoningEffort:'low',
       request:'Fix the real Korean multi-action decomposition bug in src/engine/decompose.rs. Read the entire split_markers() function using workspace_read_range and note startLine/endLine/sourceSha256. In ONE workspace_replace_range call, replace this COMPLETE Rust function, not only a fragment of the const marker array. Implement BOTH missing behaviors: (1) standalone connector 다음 (and 나서) marks a sequence; (2) action verb ending -고 followed by whitespace divides actions while preserving -고 on the preceding action (읽고/하고/쓰고, NOT nouns 사고/최고). A successful result gives three ordered steps for 설정을 읽고 결과를 저장한 다음 검증해. Preserve existing markers, numbered input, and exact original phrase text. Write a syntactically complete function with all let/const delimiters and braces; the native tool now parses Rust BEFORE accepting the edit and returns a syntax error without writing bad bytes. If the syntax preflight fails, re-read exact source and retry with a corrected COMPLETE function. Do not modify tests, validators or fixtures. Do NOT stop after reading, planning, or adding only 다음. The independent frozen evaluator measures actual behavior after the source write.',
-      focusFiles:['src/engine/decompose.rs'],maxAttempts:3,
-      tokenBudget:120000,timeBudgetSeconds:2700
+      // Reserve capacity for a genuine second-generation correction of a
+      // compiler-passing but zero-gain source candidate. No paid model.
+      focusFiles:['src/engine/decompose.rs'],maxAttempts:4,
+      tokenBudget:240000,timeBudgetSeconds:2400
     };
     trace.submittedRequest={...request,request:request.request.slice(0,320)};
     const queued=await call('/api/rsi/start',request);
@@ -118,6 +120,8 @@ if(mode==='probe'){
       generatorCommit:g.generatorCommit,domain:g.domain,searchStrategy:g.searchStrategy,
       error:g.error,toolsUsed:g.toolsUsed,newFindings:g.newFindings,
       editEvidence:g.editEvidence,diffBytes:g.diffBytes,captureError:g.captureError,
+      inheritedCandidateId:g.inheritedCandidateId,
+      inheritedPatchChanged:g.inheritedPatchChanged,
       editPolicy:g.editPolicy,programStages:g.programStages,
       ruleExecutions:g.ruleExecutions,toolTimeline:g.toolTimeline,
       acceptedSourceHashes:g.acceptedSourceHashes,
@@ -171,6 +175,12 @@ if(mode==='probe'){
       })),
       sourceEditCalls,rangeEditCalls,legacyEditCalls,verifiedWrites,unsuccessfulEdits,
       candidateCaptureFailures,candidateCount,
+      inheritedCandidateGenerations:trace.generationEvidence.filter(g=>
+        typeof g.inheritedCandidateId==='string').length,
+      inheritedSourceCorrections:trace.generationEvidence.filter(g=>
+        typeof g.inheritedCandidateId==='string'
+        && g.inheritedPatchChanged===true
+        && (g.editEvidence?.verifiedWrites||0)>0).length,
       rawRegisteredCandidates:trace.generationEvidence.filter(g=>
         typeof g.verification?.rawCandidateId==='string').length,
       compileRejectedGenerations:trace.generationEvidence.filter(g=>
