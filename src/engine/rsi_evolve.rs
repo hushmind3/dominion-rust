@@ -4135,6 +4135,32 @@ mod tests {
     }
 
     #[test]
+    fn learned_policy_does_not_credit_a_strategy_that_never_reached_the_runtime() {
+        let (state,root)=state();
+        let input=json!({"rsiObjective":"control the actual recovery harness",
+            "rsiSourceDir":root.join("source").to_string_lossy()});
+        let mut history=(1..=3).map(|n|json!({
+            "id":format!("generation-{n}"),
+            "jobId":format!("job-{n}"),
+            "campaignId":"campaign","attempt":n,
+            "createdAt":format!("2026-11-11T03:00:{n:02}Z"),
+            "accepted":false,"tokens":2000,
+            "actionObservation":{"status":"edit_failed","editToolCalls":1,
+                "appliedEditCalls":0},
+            "actionDirective":{"mode":"repair_failed_edit",
+                "policy":{"kind":"selfimprove.action","status":"exploratory_policy_mutation"}},
+            "actionExecution":{"focusApplied":false}
+        })).collect::<Vec<_>>();
+        let skipped=evolved_execution_action(&state,&input,&history);
+        assert_eq!(skipped["policy"]["trainingTransitions"],0);
+        assert_eq!(skipped["policy"]["status"],"insufficient_evidence");
+        for row in &mut history {row["actionExecution"]["focusApplied"]=json!(true);}
+        let applied=evolved_execution_action(&state,&input,&history);
+        assert_eq!(applied["policy"]["trainingTransitions"],2);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn learned_action_does_not_count_patches_as_adopted_capabilities() {
         let (state,root)=state();
         let input=json!({"rsiObjective":"evolve the harness",
