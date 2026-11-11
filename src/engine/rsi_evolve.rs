@@ -2182,6 +2182,8 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     let mut exact=Arm::default();
     let mut range=Arm::default();
     let mut sources=BTreeSet::<String>::new();
+    let mut productive_reads=Vec::<u64>::new();
+    let mut stalled_reads=0u64;
     for row in &rows {
         let same_objective=row["objectiveId"]==objective;
         if !same_objective && !generation_is_verified(row) {continue;}
@@ -2215,6 +2217,19 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
                     || receipt["candidateId"]==row["candidateId"]));
         if compiled_candidate {
             arm.candidates+=1;
+        }
+        // The controller can also improve its own research budget.
+        // Count actual observed read/search calls, not model narration.
+        let reads=row["toolsUsed"].as_array().into_iter().flatten()
+            .filter(|usage|matches!(usage["tool"].as_str(),
+                Some("workspace_read_range"|"code_search")))
+            .map(|usage|usage["calls"].as_u64().unwrap_or(0))
+            .sum::<u64>();
+        if reads>0 && compiled_candidate {
+            productive_reads.push(reads);
+        } else if reads>=3 && row["newFindings"].as_u64().unwrap_or(0)==0
+            && row["attemptedCandidateId"].is_null() {
+            stalled_reads+=1;
         }
         if generation_is_verified(row) {
             arm.accepted+=1;
@@ -2259,6 +2274,14 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     let fallback=if preferred=="workspace_replace" {
         "workspace_replace_range"
     } else {"workspace_replace"};
+    // General autonomous research (without an explicit source focus) uses
+    // this learned call limit to exit unproductive discovery. A single
+    // episode is not an improvement claim; later generations measure it.
+    let exploration_limit=if let Some(best)=productive_reads.iter().min() {
+        best.saturating_add(2).clamp(2,8)
+    } else if stalled_reads>=2 {
+        6u64.saturating_sub(stalled_reads.min(4)).max(2)
+    } else {6};
     let evidence=json!({
         "workspace_replace":{"attempts":exact.attempts,"confirmedWrites":exact.writes,
             "checkedCandidates":exact.candidates,"verifiedAdoptions":exact.accepted,
@@ -2267,22 +2290,26 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
             "checkedCandidates":range.candidates,"verifiedAdoptions":range.accepted,
             "rejectedCalls":range.rejected,"tokens":range.tokens},
         "verifiedTransferObjectives":sources.len(),
+        "productiveReadSamples":productive_reads.len(),
+        "stalledResearchEpisodes":stalled_reads,
         "sourceGenerationCount":rows.len()
     });
     let revision=crate::engine::memory::stable_id(&[
-        &partition,&objective,preferred,&evidence.to_string()]);
+        &partition,&objective,preferred,&exploration_limit.to_string(),&evidence.to_string()]);
     let learned=(exact.attempts+range.attempts)>0;
     json!({
         "id":format!("rsi-execution-method-{}",crate::engine::memory::stable_id(&[&partition,&objective])),
         "revision":revision,"kind":"rsi.execution_method",
         "ownerObjectiveId":objective,"knowledgePartition":partition,
         "preferredTool":preferred,"fallbackTool":fallback,
+        "explorationCallLimit":exploration_limit,
         "reason":why,
         "status":if sources.len()>=2 && (exact.accepted+range.accepted)>=2 {
             "measured_transfer_observed"
         } else if exact.accepted+range.accepted>0 {"quality_evidence_observed"}
           else if learned {"trial_unverified"}else{"unmeasured_default"},
         "program":[
+            {"step":"discover","maxToolCalls":exploration_limit},
             {"step":"observe","tool":"workspace_read_range"},
             {"step":"mutate","tool":preferred,"onFailure":fallback},
             {"step":"assess","executor":"detached_candidate_compilation_and_frozen_pairing"},
