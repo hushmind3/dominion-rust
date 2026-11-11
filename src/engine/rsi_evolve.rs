@@ -2194,8 +2194,33 @@ fn fit_worker_generation_context(
     base:&str,domain:&str,capability:&str,history:&[Value],
     directive:&Value,available:Option<u64>,
 )->Result<(String,Value),String> {
+    // The durable directive contains full compiler stdout and quality
+    // receipts. Repeating those large objects with every model turn consumed
+    // descendant quotas before a single source read. Preserve the original
+    // receipt in the job, but supply a compact executable repair contract.
+    let failures=directive["candidateCapture"]["checks"].as_array()
+        .into_iter().flatten().filter(|check|check["passed"]==false)
+        .take(2).map(|check|json!({
+            "label":check["label"],
+            "diagnostic":check["stderr"].as_str().or_else(||check["error"].as_str())
+                .unwrap_or("").chars().take(700).collect::<String>()
+        })).collect::<Vec<_>>();
+    let compact_directive=json!({
+        "mode":directive["mode"],
+        "sourceGenerationId":directive["sourceGenerationId"],
+        "sourceJobId":directive["sourceJobId"],
+        "domain":directive["domain"],
+        "candidateId":directive["candidateId"],
+        "attemptedCandidateId":directive["attemptedCandidateId"],
+        "previousVerdict":directive["previousVerdict"],
+        "previousError":directive["previousError"],
+        "previousFocusFiles":directive["previousFocusFiles"],
+        "failureCaseIds":directive["failureCaseIds"],
+        "checksPassed":directive["candidateCapture"]["checksPassed"],
+        "failedChecks":failures
+    });
     let mandatory=format!(
-        "\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n\n### 이번 세대의 개선 실행 방식\n{}\n근거가 되는 실제 세대 기록: {directive}\n이번 작업에서 코드 변경과 검증 여부를 분명히 기록하세요.",
+        "\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n\n### 이번 세대의 개선 실행 방식\n{}\n근거가 되는 실제 세대 기록: {compact_directive}\n이번 작업에서 코드 변경과 검증 여부를 분명히 기록하세요.",
         improvement_work_contract(directive));
     let full=history.iter().rev().take(8).map(|row|{
         let measured=row["evaluation"]["metrics"]["measurements"].as_array()
@@ -3478,14 +3503,23 @@ async fn run_loop(
             Some("revise_candidate"|"repair_counterexample")) {
             if let Some(last)=action_history.last() {
                 if last["accepted"]!=true
-                    && last["generatorCommit"].as_str()==Some(head.as_str())
-                    && last["candidateCapture"]["checksPassed"]==false {
-                    if let Some(id)=last["attemptedCandidateId"].as_str() {
+                    && last["generatorCommit"].as_str()==Some(head.as_str()) {
+                    if let Some(id)=last["attemptedCandidateId"].as_str()
+                        .or_else(||last["candidateId"].as_str()) {
                         let transferable=context.state.store.get("rsi_candidate",id)
-                            .is_some_and(|candidate|
-                                candidate["baseCommit"].as_str()==Some(head.as_str())
-                                && candidate["rsiJobId"]==last["jobId"]
-                                && candidate["status"]=="proposed");
+                            .is_some_and(|candidate|{
+                                if candidate["baseCommit"].as_str()!=Some(head.as_str())
+                                    || candidate["rsiJobId"]!=last["jobId"] {
+                                    return false;
+                                }
+                                let compiler_failure=last["candidateCapture"]["checksPassed"]==false
+                                    && candidate["status"]=="proposed";
+                                let plateau=last["candidateCapture"]["checksPassed"]==true
+                                    && last["evaluation"]["verdict"]=="inconclusive"
+                                    && crate::engine::rsi::verify_revisable_quality_receipt(
+                                        &context.state,&candidate).is_ok();
+                                compiler_failure || plateau
+                            });
                         if transferable {
                             child_input["rsiRepairCandidateId"]=json!(id);
                             child_input["rsiRepairParentJobId"]=last["jobId"].clone();
@@ -3530,7 +3564,7 @@ async fn run_loop(
                 child_input["rsiFocusFiles"]=candidate["paths"].clone();
                 child_input["rsiAutoFocus"]=json!(true);
                 child_input["rsiFocusSelection"]=json!({
-                    "source":"failed_candidate_compiler_repair",
+                    "source":"measured_candidate_descendant_revision",
                     "candidateId":id,
                     "paths":candidate["paths"],
                     "generatorCommit":head
