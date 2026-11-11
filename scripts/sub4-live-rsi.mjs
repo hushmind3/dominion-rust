@@ -118,13 +118,13 @@ if(mode==='probe'){
     });
     receipt.providerId=provider.id||'sub4-live-model';
     await post(host+'/api/dev/config',{sourceDir:process.env.DOMINION_SOURCE_WORKSPACE});
-    const goal='Improve DOMINION planning quality by fixing src/engine/decompose.rs split_markers. The current parser misses the three ordered actions in "설정을 읽고 결과를 저장한 다음 검증해". Read the real function with workspace_read_range, then make the smallest COMPLETE Rust source edit with workspace_replace_range and the observed SHA. A split after the Korean verb ending 읽고 and before 다음 is needed; preserve ordinary words like 최고 or 사고. Submit compilable source code, not prose. The native engine will build, compare frozen holdouts, adopt useful changes and rebuild each descendant. If the first patch fails, repair its actual compiler diagnostic without abandoning the original change.';
+    const goal='Autonomously improve DOMINION source code and its own improvement strategy through consecutive native generations. Begin with a measurable planning defect in src/engine/decompose.rs: "설정을 읽고 결과를 저장한 다음 검증해" must produce three ordered actions while words like 사고 and 최고 remain intact. After the first independently accepted gain, inherit the rebuilt engine and search other existing algorithm, memory, context, tool or improvement domains for the next measurable quality gain. Observe real source via workspace_read_range, author the smallest compilable Rust patch via workspace_replace_range and the witnessed SHA, preserve unrelated behavior, and let the native paired evaluator adopt only measured gains. If a patch fails compiler validation, inherit that exact changed source and repair the diagnosed line rather than restarting the research.';
     const started=await post(host+'/api/rsi/start',{
       confirmation:'START_RSI_EVOLUTION',mode:'continuous',
       providerId:receipt.providerId,model:selectedModel,
-      selectionPolicy:'automatic',request:goal,
-      focusFiles:['src/engine/decompose.rs'],
-      maxAttempts:4,tokenBudget:220000,
+      selectionPolicy:'automatic',autonomous:true,request:goal,
+      focusFiles:['src/engine/decompose.rs'],expandFocusAfterAdoption:true,
+      maxAttempts:6,tokenBudget:260000,
       timeBudgetSeconds:Number(process.env.SUB4_CAMPAIGN_SECONDS||1250)
     });
     if(typeof started.id!=='string'||!started.id)throw Error('campaign start returned no id');
