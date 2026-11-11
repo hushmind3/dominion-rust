@@ -140,6 +140,31 @@ fn rsi_relative_edit_path(workspace:&std::path::Path,raw:&str)->Option<String>{
     Some(relative)
 }
 
+/// Bind a model-proposed line edit to the latest *actual* native source
+/// observation. The model still authors path/range/newText. A 4B model need
+/// not transcribe 64 hex characters from a prior tool response: DOMINION can
+/// copy that hash without guessing. checked_write re-verifies the whole file
+/// under its mutation lock; stale observations therefore still fail closed.
+fn rsi_observed_source_hash(
+    operations:&[Value],session_id:&str,path:&str,
+)->Option<(String,String)> {
+    operations.iter()
+        .filter(|row|row["sessionId"].as_str()==Some(session_id)
+            && row["status"]=="completed"
+            && row["tool"]=="workspace_read_range"
+            && row["result"]["path"].as_str()==Some(path))
+        .filter_map(|row|{
+            let sha=row["result"]["sourceSha256"].as_str()?;
+            if sha.len()!=64 || !sha.bytes().all(|byte|byte.is_ascii_hexdigit()) {
+                return None;
+            }
+            Some((row["finishedAt"].as_str().unwrap_or("").to_string(),
+                row["id"].as_str()?.to_string(),sha.to_string()))
+        })
+        .max_by(|a,b|a.0.cmp(&b.0).then(a.1.cmp(&b.1)))
+        .map(|(_,id,hash)|(id,hash))
+}
+
 /// Compiler repair has an actual source target and exact failing lines.
 /// It must not spend its limited retry round doing repository discovery.
 fn rsi_compiler_repair_tool(name:&str)->bool {
@@ -4688,6 +4713,22 @@ async fn dispatch_tool_call(
                     }));
                     arguments["path"]=json!(relative);
                 }
+            }
+        }
+    }
+    if session["rsiRun"]==true && call.name=="workspace_replace_range"
+        && arguments["expectedSha256"].as_str().is_none_or(str::is_empty) {
+        if let Some(path)=arguments["path"].as_str() {
+            let operations=state.store.all("execution_operation");
+            if let Some((source_op,hash))=
+                rsi_observed_source_hash(&operations,session_id,path) {
+                arguments["expectedSha256"]=json!(hash);
+                state.store.audit("rsi.line_edit_observation_bound",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "readOperationId":source_op,"path":path,
+                    "sourceSha256":hash,
+                    "source":"native_workspace_read_range_receipt"
+                }));
             }
         }
     }
