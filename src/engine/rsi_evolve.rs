@@ -1606,10 +1606,26 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         row["result"]["verified"]==true && row["result"]["status"]=="violated"
             && row["operationIds"].as_array().is_some_and(|ids|!ids.is_empty())));
     let capability_gain=measured_system_improvement(generation);
+    // A real source candidate that failed frozen paired evaluation is also
+    // feedback about DOMINION's method. Previously no learnt policy could
+    // arise from this outcome, so a failed candidate repeated the same tool
+    // strategy indefinitely. Inconclusive measurements are never a loss.
+    let evaluated=&generation["evaluation"];
+    let paired_verdict=evaluated["metrics"]["verdict"].as_str()
+        .or_else(||evaluated["verdict"].as_str()).unwrap_or("");
+    let observed_edit=trace.iter().any(|tool|
+        matches!(tool.as_str(),"workspace_write"|"workspace_replace"|"workspace_replace_range"));
+    let paired_regression=generation["candidateId"].as_str().is_some_and(|id|!id.is_empty())
+        && observed_edit
+        && evaluated["source"]=="server_invoked_local_paired_git_worktrees"
+        && matches!(paired_verdict,"regressed"|"build_failed");
     // An ordinary successful model/tool call cannot teach this engine a
-    // successful method; postconditions or independent paired measurements
-    // must have witnessed an outcome.
-    if !procedural_pass && !procedural_failure && !capability_gain {return None;}
+    // successful method; postconditions or independently measured results
+    // must have witnessed an outcome. Paired regression overrides a local
+    // procedure pass, because passing steps is not improving DOMINION.
+    if !procedural_pass && !procedural_failure && !capability_gain && !paired_regression {
+        return None;
+    }
     let job_id=generation["jobId"].as_str().filter(|id|!id.is_empty())?;
     let scope=research_scope(input);
     let key=format!("rsi-method-policy-{}",
@@ -1625,6 +1641,8 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         "sequence":trace,"appliedPolicy":generation["inducedMethodApplications"],
         "operationalPass":procedural_pass,
         "operationalFailure":procedural_failure,"pairedImprovement":capability_gain,
+        "pairedRegression":paired_regression,
+        "failureReason":if paired_regression{json!(paired_verdict)}else{Value::Null},
         "acceptedCommit":if capability_gain{generation["acceptedCommit"].clone()}else{Value::Null},
         "evaluationId":if capability_gain{generation["evaluation"]["id"].clone()}else{Value::Null}}));
     // Keep only recent evidence. Recompute the weights from retained evidence,
@@ -1633,18 +1651,30 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     transitions.clear();
     for sample in &evidence {
         let Some(sequence)=sample["sequence"].as_array() else {continue};
-        let weight=if sample["pairedImprovement"]==true {3}else{1};
-        let good=sample["operationalPass"]==true || sample["pairedImprovement"]==true;
-        let bad=sample["operationalFailure"]==true && !good;
+        let measured_gain=sample["pairedImprovement"]==true;
+        let paired_loss=sample["pairedRegression"]==true;
+        let good=!paired_loss && (sample["operationalPass"]==true || measured_gain);
+        let bad=paired_loss || (sample["operationalFailure"]==true && !good);
+        let reward=if measured_gain {3u64}else{1};
+        let penalty=if paired_loss {2u64}else{1};
+        let domain=sample["domain"].as_str().filter(|d|DOMAINS.contains(d));
         for pair in sequence.windows(2) {
             let (Some(from),Some(to))=(pair[0].as_str(),pair[1].as_str()) else{continue};
-            if let Some(item)=transitions.iter_mut().find(|row|
-                row["from"]==from && row["to"]==to) {
-                if good {item["positive"]=json!(item["positive"].as_u64().unwrap_or(0)+weight);}
-                if bad {item["negative"]=json!(item["negative"].as_u64().unwrap_or(0)+1);}
-            } else {
-                transitions.push(json!({"from":from,"to":to,"positive":if good{weight}else{0},
-                    "negative":if bad{1}else{0}}));
+            let existing=transitions.iter().position(|row|
+                row["from"]==from && row["to"]==to);
+            if existing.is_none(){
+                transitions.push(json!({"from":from,"to":to,"positive":0,"negative":0,
+                    "byDomain":{}}));
+            }
+            let row=&mut transitions[existing.unwrap_or(transitions.len()-1)];
+            if good {row["positive"]=json!(row["positive"].as_u64().unwrap_or(0)+reward);}
+            if bad {row["negative"]=json!(row["negative"].as_u64().unwrap_or(0)+penalty);}
+            if let Some(domain)=domain {
+                let positive=row["byDomain"][domain]["positive"].as_u64().unwrap_or(0)
+                    + if good {reward}else{0};
+                let negative=row["byDomain"][domain]["negative"].as_u64().unwrap_or(0)
+                    + if bad {penalty}else{0};
+                row["byDomain"][domain]=json!({"positive":positive,"negative":negative});
             }
         }
     }
