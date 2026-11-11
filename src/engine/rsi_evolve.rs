@@ -366,7 +366,7 @@ pub fn evaluate_search_algorithm(
 }
 
 pub fn auto_write_allowed(state: &AppState, session_id: &str, tool: &str, args: &Value) -> bool {
-    if !matches!(tool, "workspace_write" | "workspace_replace")
+    if !matches!(tool, "workspace_write" | "workspace_replace" | "workspace_replace_range")
         || !args["path"]
             .as_str()
             .is_some_and(crate::engine::rsi::safe_path)
@@ -3958,6 +3958,12 @@ mod tests {
             "workspace_write",
             &args
         ));
+        assert!(auto_write_allowed(
+            &state,
+            "session",
+            "workspace_replace_range",
+            &args
+        ), "RSI line edit must not pause at the owner approval gate");
         assert!(!auto_write_allowed(&state, "session", "shell_exec", &args));
         assert!(!auto_write_allowed(
             &state,
