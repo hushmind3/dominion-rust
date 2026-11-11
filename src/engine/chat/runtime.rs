@@ -1247,13 +1247,17 @@ async fn run_turn_body(
                 // Reapply the restriction on EVERY following model round.
                 // The old one-shot guard reopened code_search and all read
                 // tools after the first checkpoint, allowing read-only loops.
-                round_tools.retain(|definition| {
-                    if let Some(decision)=program_stage {
-                        decision.allows(tool_name(definition))
-                    } else {
-                        rsi_checkpoint_tool(tool_name(definition), edit_only)
-                    }
-                });
+                if let Some(decision)=program_stage {
+                    // Restore the selected phase's tiny tool menu from the
+                    // original catalog. A context-size trim of the general
+                    // menu must never delete the only hash re-read tool.
+                    round_tools=tool_definitions.iter()
+                        .filter(|definition|decision.allows(tool_name(definition)))
+                        .cloned().collect();
+                } else {
+                    round_tools.retain(|definition|
+                        rsi_checkpoint_tool(tool_name(definition), edit_only));
+                }
                 // The learned algorithm changes the executable edit menu's
                 // order after a real source observation, independently of
                 // the model's preference or prose. Both grounded edit tools
