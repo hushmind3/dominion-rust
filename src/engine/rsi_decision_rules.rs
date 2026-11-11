@@ -141,14 +141,25 @@ fn fact(metric:&str, ops:&[Value], calls:u64, prompt_grounded:bool) -> Option<u6
 fn matches_guard(guard:&Value, ops:&[Value], calls:u64, grounded:bool, depth:usize)->bool {
     if depth>3 {return false;}
     if let Some(sequence)=guard.get("sequence").and_then(Value::as_array) {
-        let mut at=0usize;
-        for op in ops {
-            if at==sequence.len() {break;}
-            if op["tool"]==sequence[at]["tool"] && op["status"]==sequence[at]["status"] {
-                at+=1;
+        // Keep temporal evidence within one actual model execution. A read
+        // by worker A and search by worker B are not a learned transition.
+        // Try every possible start, since an earlier unmatched execution
+        // must not hide a later genuine sequence in the current worker.
+        for (start,op) in ops.iter().enumerate() {
+            if op["tool"]!=sequence[0]["tool"]
+                || op["status"]!=sequence[0]["status"] {continue;}
+            let run=op["runId"].as_str();
+            let mut at=1usize;
+            for next in ops.iter().skip(start+1) {
+                if run.is_some() && next["runId"].as_str()!=run {continue;}
+                if next["tool"]==sequence[at]["tool"]
+                    && next["status"]==sequence[at]["status"] {
+                    at+=1;
+                    if at==sequence.len() {return true;}
+                }
             }
         }
-        return at==sequence.len();
+        return false;
     }
     if let Some(all)=guard.get("all").and_then(Value::as_array) {
         return all.iter().all(|g|matches_guard(g,ops,calls,grounded,depth+1));
@@ -453,6 +464,27 @@ mod tests {
             event("workspace_replace_range","failed")
         ];
         assert!(choose(&json!({"rules":rules}),&unrecovered,2,true,false).is_none());
+    }
+    #[test]
+    fn temporal_rule_does_not_join_observations_across_execution_runs(){
+        let policy=json!({"rules":[{
+            "guard":{"sequence":[
+                {"tool":"workspace_read_range","status":"completed"},
+                {"tool":"code_search","status":"completed"}
+            ]},"allow":["workspace_replace_range"]
+        }]});
+        let mixed=vec![
+            json!({"runId":"old","tool":"workspace_read_range","status":"completed"}),
+            json!({"runId":"new","tool":"code_search","status":"completed"})
+        ];
+        assert!(choose(&policy,&mixed,2,true,false).is_none());
+        let valid=vec![
+            json!({"runId":"old","tool":"workspace_read_range","status":"completed"}),
+            json!({"runId":"new","tool":"workspace_read_range","status":"completed"}),
+            json!({"runId":"new","tool":"code_search","status":"completed"})
+        ];
+        assert!(choose(&policy,&valid,3,true,false).is_some(),
+            "a previous unmatched execution must not mask a later real match");
     }
     #[test]
     fn repeated_rule_stalls_do_not_make_unbounded_guard_trees(){
