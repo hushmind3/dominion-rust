@@ -420,7 +420,16 @@ pub fn remaining_output_tokens(
     if available < 256 {
         return Err("rsi_token_budget: 자동 개선의 토큰 예산이 부족해 다음 모델 호출을 중단했습니다.".into());
     }
-    Ok(Some(available.min(8192)))
+    let generation_limit=state.store.get("session",session_id)
+        .and_then(|session|session["rsiGenerationTokenLimit"].as_u64());
+    let generation_available=if let Some(limit)=generation_limit {
+        let left=limit.saturating_sub(spent.saturating_add(prompt_estimate));
+        if left<256 {
+            return Err("rsi_generation_quota_reached: 후손 세대 실행을 위해 남은 토큰을 보존합니다.".into());
+        }
+        left
+    } else {u64::MAX};
+    Ok(Some(available.min(generation_available).min(8192)))
 }
 
 pub(crate) async fn command(
