@@ -1259,6 +1259,45 @@ fn focus_file_context(state: &AppState, record: &Value, input: &Value) -> String
     }
     text
 }
+/// A quality score is not an actionable repair target. Read bounded examples
+/// from the exact independently evaluated patch, but only when the raw paired
+/// receipt still matches that candidate's source and evidence hashes. These
+/// observations guide the next proposal; they are never adoption evidence.
+fn paired_behavioral_feedback(state:&AppState,candidate_id:&str)->Vec<String> {
+    let Some(candidate)=state.store.get("rsi_candidate",candidate_id) else {
+        return Vec::new();
+    };
+    if candidate["pairedComparisonComplete"]!=true {return Vec::new();}
+    let Some(pair)=state.store.get("rsi_pair",&format!("rsi-pair-{candidate_id}")) else {
+        return Vec::new();
+    };
+    if pair["candidateId"]!=candidate_id
+        || pair["evidenceSha256"]!=candidate["evaluation"]["evidenceSha256"]
+        || pair["report"]["patchSha256"]!=candidate["patchSha256"]
+        || !pair["report"]["cases"].is_array() {
+        return Vec::new();
+    }
+    let mut failures=Vec::new();
+    for case in pair["report"]["cases"].as_array().into_iter().flatten() {
+        let name=case["id"].as_str().unwrap_or("behavior");
+        for observed in case["behavioralCounterexamples"]["candidate"]
+            .as_array().into_iter().flatten() {
+            let Some(input)=observed["input"].as_str() else {continue;};
+            let Some(expected)=observed["expectedSegments"].as_u64() else {continue;};
+            let Some(actual)=observed["observedSegments"].as_u64() else {continue;};
+            if expected==actual {continue;}
+            let steps=observed["steps"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).take(5).collect::<Vec<_>>().join(" / ");
+            failures.push(format!(
+                "{name}: 입력={:?}; 기대 단계={expected}; 후보 단계={actual}; 현재 분리={:?}",
+                input.chars().take(180).collect::<String>(),
+                steps.chars().take(230).collect::<String>()));
+            if failures.len()>=3 {return failures;}
+        }
+    }
+    failures
+}
+
 fn generation_context(state: &AppState, input: &Value, record: &Value) -> String {
     let objective = input["rsiObjective"].as_str().unwrap_or("");
     let scope = research_scope(input);
@@ -1379,6 +1418,16 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
                 text.push_str("- 동결된 실제 작업 품질이 개선되지 않은 항목: ");
                 text.push_str(&unchanged.join("; "));
                 text.push_str(". 같은 소스를 재수정하되 이전 패치를 되풀이하지 않고 해당 작업 결과를 바꾸는 구현을 작성하세요.\n");
+            }
+            if let Some(id)=failure["candidateId"].as_str() {
+                let counterexamples=paired_behavioral_feedback(state,id);
+                if !counterexamples.is_empty() {
+                    text.push_str("- 실제 동결 평가에서 실패한 행동 (다음 소스 수정의 구체적 목표):\n");
+                    for example in counterexamples {
+                        text.push_str(&format!("  - {example}\n"));
+                    }
+                    text.push_str("- 점수만 다시 높인다고 주장하지 말고, 위 입력을 해결하는 행동 변경을 현재 계승 코드에서 구현하세요. 이 사례들은 이제 후손 학습용이며 새 입력 일반화 증거는 아닙니다.\n");
+                }
             }
             let attempted=failure["editEvidence"]["attempts"].as_u64().unwrap_or(0);
             let verified=failure["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0);
@@ -3777,6 +3826,37 @@ mod tests {
         state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve","status":"running","input":{"rsiNativeApproved":true}})).unwrap();
         JobContext::new(state.clone(), "campaign".into())
     }
+    #[test]
+    fn paired_behavioral_counterexamples_guide_descendants_without_forged_receipts(){
+        let (state,root)=state();
+        let a="a".repeat(64);
+        let b="b".repeat(64);
+        let candidate=json!({"id":"candidate-1","patchSha256":a,
+            "pairedComparisonComplete":true,
+            "evaluation":{"evidenceSha256":b}});
+        state.store.put("rsi_candidate",&candidate).unwrap();
+        let pair=json!({"id":"rsi-pair-candidate-1","candidateId":"candidate-1",
+            "evidenceSha256":b,"report":{"patchSha256":a,
+                "cases":[{"id":"planning-quality",
+                    "behavioralCounterexamples":{"candidate":[
+                        {"input":"설정을 읽고 결과를 저장한 다음 검증해",
+                         "expectedSegments":3,"observedSegments":2,
+                         "steps":["설정을 읽고 결과를 저장한","검증해"]}
+                    ]}}]}});
+        state.store.put("rsi_pair",&pair).unwrap();
+        let cases=paired_behavioral_feedback(&state,"candidate-1");
+        assert_eq!(cases.len(),1);
+        assert!(cases[0].contains("기대 단계=3"));
+        assert!(cases[0].contains("후보 단계=2"));
+        assert!(cases[0].contains("설정을 읽고"));
+        let mut stale=pair;
+        stale["evidenceSha256"]=json!("0".repeat(64));
+        state.store.put("rsi_pair",&stale).unwrap();
+        assert!(paired_behavioral_feedback(&state,"candidate-1").is_empty(),
+            "a different or stale paired report must never teach a descendant");
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn runtime_budget_stops_are_not_no_progress_or_another_generation(){
         let worker=json!({"status":"completed","result":{"status":"needs_review","reason":"model_error",
