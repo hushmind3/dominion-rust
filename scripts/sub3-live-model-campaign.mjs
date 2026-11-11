@@ -42,8 +42,25 @@ if(mode==='probe'){
     }
     try{
       const chunks=[];for await(const piece of req)chunks.push(piece);
-      const upstreamResponse=await fetch(upstream,{method:'POST',headers:{'content-type':'application/json'},
-        body:Buffer.concat(chunks),signal:AbortSignal.timeout(120000)});
+      // Completion requests are side-effect-free until the Rust tool engine
+      // executes returned calls. A transient free-model gateway timeout can
+      // therefore be retried ONCE without replaying any source edits.
+      const body=Buffer.concat(chunks);
+      let upstreamResponse;
+      for(let attempt=0;attempt<2;attempt++){
+        try{
+          upstreamResponse=await fetch(upstream,{
+            method:'POST',headers:{'content-type':'application/json'},
+            body,signal:AbortSignal.timeout(120000)
+          });
+          if(upstreamResponse.status!==502 && upstreamResponse.status!==504)break;
+          if(attempt===1)break;
+          upstreamResponse.body?.cancel().catch(()=>{});
+        }catch(error){
+          if(attempt===1)throw error;
+          console.log('SUB3_PROXY_RETRY=transient_upstream_failure');
+        }
+      }
       const raw=await upstreamResponse.text();
       res.writeHead(upstreamResponse.status,{'content-type':'application/json'});
       res.end(raw);
@@ -77,7 +94,7 @@ if(mode==='probe'){
       reasoningEffort:'low',
       request:'Fix a reproducible behavior bug in src/engine/decompose.rs. The existing split_markers() recognizes isolated marker words (e.g. 그리고, 뒤) but misses Korean action suffix -고 and connective 다음/나서. On baseline, Korean text 설계를 읽고 결과를 저장한 다음 검증해 produces one step where three real ordered actions are required. Modify the Rust function now: after reading the exact existing source block, call workspace_replace_range with path=src/engine/decompose.rs, startLine/endLine and expectedSha256 from the source read, and newText containing only modified source lines. If you already have an exact oldText block, workspace_replace also works. Distinguish action verb suffix -고 from nouns such as 사고/최고; preserve original subtask text and list handling. Do not end after code_search or workspace_read_range. DOMINION will run independent frozen baseline/candidate tests after editing.',
       focusFiles:['src/engine/decompose.rs'],maxAttempts:3,
-      tokenBudget:90000,timeBudgetSeconds:2700
+      tokenBudget:120000,timeBudgetSeconds:2700
     };
     trace.submittedRequest={...request,request:request.request.slice(0,320)};
     const queued=await call('/api/rsi/start',request);
@@ -105,6 +122,8 @@ if(mode==='probe'){
       ruleExecutions:g.ruleExecutions,toolTimeline:g.toolTimeline,
       acceptedSourceHashes:g.acceptedSourceHashes,
       competitionEvidence:g.editPolicy?.competitionEvidence,
+      verification:g.verification,
+      rewriteProgram:g.editPolicy?.rewriteProgram,
       editMethodReward:g.editMethodReward,
       focusFiles:g.focusFiles,knowledgeId:g.knowledgeId,
       evaluation:g.evaluation?.metrics
@@ -148,7 +167,16 @@ if(mode==='probe'){
         independentlyAdopted:!!g.accepted
       })),
       sourceEditCalls,rangeEditCalls,legacyEditCalls,verifiedWrites,unsuccessfulEdits,
-      candidateCaptureFailures,candidateCount,acceptedGenerations:accepted.length,
+      candidateCaptureFailures,candidateCount,
+      rawRegisteredCandidates:trace.generationEvidence.filter(g=>
+        typeof g.verification?.rawCandidateId==='string').length,
+      compileRejectedGenerations:trace.generationEvidence.filter(g=>
+        g.diffBytes>0 && g.verification?.checksPassed===false).length,
+      firstCompilerDiagnostics:trace.generationEvidence.flatMap(g=>
+        (g.verification?.checks||[]).filter(c=>c.passed===false)
+          .map(c=>({attempt:g.attempt,label:c.label,
+            detail:(c.detail||'').slice(0,900)}))).slice(0,8),
+      acceptedGenerations:accepted.length,
       acceptedCommits:accepted.map(g=>g.acceptedCommit),
       readOnlyGenerations:trace.generationEvidence.filter(g=>!g.candidateId
         && (g.editEvidence?.verifiedWrites||0)===0
