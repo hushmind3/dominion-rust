@@ -1154,6 +1154,10 @@ mod tests {
             "workspace_replace",&exhausted,"run",&evolved,None));
         assert!(tool_allowed_with_policy("workspace_read_range",
             "workspace_replace",&exhausted,"run",&evolved,Some(1)));
+        assert!(tool_allowed_with_policy("workspace_read_range",
+            "workspace_replace",&exhausted,"run",&evolved,Some(0)));
+        exhausted.push(json!({"runId":"run","opSeq":3,
+            "tool":"workspace_read_range","status":"completed"}));
         assert!(!tool_allowed_with_policy("workspace_read_range",
             "workspace_replace",&exhausted,"run",&evolved,Some(0)));
     }
