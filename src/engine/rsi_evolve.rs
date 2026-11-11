@@ -1231,6 +1231,11 @@ fn grounded_next_experiment(state:&AppState,history:&[Value])->Option<String> {
         .take(2).collect::<Vec<_>>();
     let run=latest["jobId"].as_str().and_then(|id|state.store.get("rsi_run",&format!("rsi-run-{id}")));
     if let Some(run)=run.as_ref() {
+        if run["inheritedPatchUnchanged"]==true {
+            return Some(format!(
+                "\n### 다음 세대의 실험 과제 — 계승한 실패 패치에 실제 수정 없음\n이전 세대의 Git diff는 부모의 실패 패치가 복원된 결과입니다. 새로운 코드 수정이나 품질 향상이 발생한 것이 아닙니다. {files:?}의 실제 컴파일 오류 줄을 다시 읽고, 복원된 패치와 다른 Rust 소스 수정을 수행하세요. 동일한 패치의 재등록은 금지합니다.\n"
+            ));
+        }
         let failed=run["checks"].as_array().into_iter().flatten()
             .filter(|check|check["passed"]==false)
             .take(2).map(|check|{
