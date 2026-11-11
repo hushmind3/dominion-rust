@@ -55,9 +55,27 @@ fn rsi_should_checkpoint(tool_calls: u64, has_write: bool) -> bool {
     !has_write && tool_calls >= 6
 }
 
+/// A concrete source-edit goal cannot spend every model round re-reading its
+/// evidence. An edit-only stage is reached only after real source material was
+/// delivered in the prompt or returned by a successful read tool. Unfocused
+/// autonomous research retains its more permissive decision checkpoint.
+fn rsi_checkpoint_stage(
+    tool_calls: u64, read_calls: u64, has_write: bool,
+    explicit_focus: bool, source_in_prompt: bool,
+) -> Option<bool> {
+    if has_write { return None; }
+    if explicit_focus && (source_in_prompt || read_calls > 0) && tool_calls >= 3 {
+        return Some(true);
+    }
+    rsi_should_checkpoint(tool_calls, has_write).then_some(false)
+}
+
 /// Stop broad discovery but allow exact missing ranges to be read. Bounded
 /// excerpts are intentionally incomplete, so banning all reads would prevent edits.
-fn rsi_checkpoint_tool(name: &str) -> bool {
+fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
+    if edit_only {
+        return matches!(name, "workspace_write" | "workspace_replace");
+    }
     matches!(
         name,
         "workspace_read_range" | "workspace_write" | "workspace_replace" | "rsi_method_propose" | "algorithm_propose"
@@ -948,6 +966,9 @@ async fn run_turn_body(
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
     let mut rsi_decision_checkpoint = false;
+    let mut rsi_edit_only_announced = false;
+    let mut rsi_edit_retry = false;
+    let mut rsi_edit_stage_requested = false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1069,22 +1090,46 @@ async fn run_turn_body(
                 .unwrap_or(60_000);
             round_tools = trim_tool_definitions(round_tools, budget);
         }
-        if session["rsiRun"]==true && !force_final && !rsi_decision_checkpoint {
+        if session["rsiRun"]==true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
-            let has_write = state.store.all("execution_operation").iter().any(|operation| {
-                operation["runId"].as_str() == Some(execution_id)
-                    && operation["status"].as_str() == Some("completed")
-                    && matches!(
-                        operation["tool"].as_str(),
-                        Some("workspace_write" | "workspace_replace")
-                    )
+            let completed = state.store.all("execution_operation").into_iter()
+                .filter(|operation| operation["runId"].as_str() == Some(execution_id)
+                    && operation["status"].as_str() == Some("completed"))
+                .collect::<Vec<_>>();
+            let has_write = completed.iter().any(|operation| matches!(
+                operation["tool"].as_str(), Some("workspace_write" | "workspace_replace")));
+            let read_calls = completed.iter().filter(|operation| matches!(
+                operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read"))).count() as u64;
+            let grounded = session["rsiFocusContextReady"] == true || read_calls > 0;
+            let stage = rsi_checkpoint_stage(
+                tool_calls, read_calls, has_write,
+                session["rsiExplicitFocus"] == true,
+                session["rsiFocusContextReady"] == true,
+            ).or_else(|| {
+                (rsi_edit_stage_requested && grounded && !has_write).then_some(true)
             });
-            if rsi_should_checkpoint(tool_calls, has_write) {
-                round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition)));
-                messages.push(json!({
-                    "role":"system",
-                    "content":"추가 탐색을 중단하세요. 지금까지의 근거로 코드 변경이나 재사용 가능한 실행 방법을 제안할 수 있습니다. 근거가 없으면 변경 없이 최종 보고하세요. code_search는 중단하고, 빠진 정확한 구간을 확인할 때만 workspace_read_range를 사용하세요."
-                }));
+            if let Some(edit_only) = stage {
+                // Reapply the restriction on EVERY following model round.
+                // The old one-shot guard reopened code_search and all read
+                // tools after the first checkpoint, allowing read-only loops.
+                round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition), edit_only));
+                if edit_only && !rsi_edit_only_announced {
+                    messages.push(json!({"role":"system",
+                        "content":"소스 근거 확인 단계는 종료되었습니다. 이미 받은 소스 발췌 또는 정확히 읽은 원문으로 workspace_replace(oldText,newText)를 호출해 사용자 목표의 코드 수정을 시도하세요. 조회 도구는 더 제공되지 않습니다. 구현할 수 없는 경우에는 실제 이유를 최종 응답에 남기세요. 코드 변경 전에는 테스트·완료를 주장하지 마세요."
+                    }));
+                    rsi_edit_only_announced = true;
+                } else if !rsi_decision_checkpoint {
+                    messages.push(json!({"role":"system",
+                        "content":"탐색 예산을 소진했습니다. code_search는 종료하고, 정확히 부족한 범위만 workspace_read_range로 보충하세요. 확보된 근거로 코드 편집이나 실행 가능한 방법을 시도한 뒤 실제 결과를 보고하세요. 근거가 없다면 그 이유를 보고하세요."
+                    }));
+                }
+                if !rsi_decision_checkpoint {
+                    state.store.audit("rsi.action_checkpoint", json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "toolCalls":tool_calls,"readCalls":read_calls,
+                        "editOnly":edit_only
+                    }));
+                }
                 rsi_decision_checkpoint = true;
             }
         }
@@ -1273,6 +1318,37 @@ async fn run_turn_body(
         }
 
         if completion.tool_calls.is_empty() {
+            // A focused RSI job is not finished by another explanation of
+            // its code. Give the model one bounded corrective opportunity to
+            // issue a real source edit; never fabricate a patch or verdict.
+            if session["rsiExplicitFocus"] == true
+                && !rsi_edit_retry && round + 1 < max_rounds {
+                let completed = state.store.all("execution_operation").into_iter()
+                    .filter(|operation| operation["runId"].as_str() == Some(execution_id)
+                        && operation["status"].as_str() == Some("completed"))
+                    .collect::<Vec<_>>();
+                let has_write = completed.iter().any(|operation| matches!(
+                    operation["tool"].as_str(), Some("workspace_write" | "workspace_replace")));
+                let has_read = completed.iter().any(|operation| matches!(
+                    operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read")));
+                // The model may try to finish after its FIRST read, before the
+                // ordinary three-tool threshold. In that case, run one real
+                // edit-focused continuation rather than counting more research
+                // as successful implementation.
+                if !has_write && (has_read || session["rsiFocusContextReady"] == true) {
+                    rsi_edit_retry = true;
+                    rsi_edit_stage_requested = true;
+                    state.store.audit("rsi.edit_retry", json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "round":round,"sourceRead":has_read,
+                        "sourceInPrompt":session["rsiFocusContextReady"] == true
+                    }));
+                    messages.push(json!({"role":"user",
+                        "content":"명시된 코드 수정은 아직 수행되지 않았습니다. 기존에 받은 소스에서 정확한 oldText와 동작하는 newText를 구성해 workspace_replace를 호출하세요. 새 파일이 실제로 필요한 경우에만 workspace_write를 사용하세요. 수정 불가능하다면 구체적인 이유를 말하세요. 추가 조사로 이 목표를 대신하지 마세요."
+                    }));
+                    continue;
+                }
+            }
             {
                 let mut operations = state
                     .store
@@ -6080,15 +6156,30 @@ mod harness_tool_selection_tests {
         assert!(!rsi_should_checkpoint(5, false));
         assert!(rsi_should_checkpoint(6, false));
         assert!(!rsi_should_checkpoint(6, true));
+        // Explicit source goals must transition to writing after genuine
+        // source evidence, without mistaking mere search for grounding.
+        assert_eq!(rsi_checkpoint_stage(2, 1, false, true, true), None);
+        assert_eq!(rsi_checkpoint_stage(3, 1, false, true, true), Some(true));
+        assert_eq!(rsi_checkpoint_stage(3, 0, false, true, false), None);
+        assert_eq!(rsi_checkpoint_stage(6, 0, false, true, false), Some(false));
+        assert_eq!(rsi_checkpoint_stage(7, 1, false, true, false), Some(true));
+        assert_eq!(rsi_checkpoint_stage(8, 2, true, true, true), None);
+        assert_eq!(rsi_checkpoint_stage(6, 2, false, false, true), Some(false));
+        // If a targeted model stops after one successful source read, the
+        // runtime requests a single edit-only continuation instead of
+        // silently ending the generation as research-only.
         for name in ["workspace_replace", "workspace_write", "workspace_read_range", "rsi_method_propose", "algorithm_propose"] {
-            assert!(rsi_checkpoint_tool(name), "{name} must stay available at the checkpoint");
+            assert!(rsi_checkpoint_tool(name, false), "{name} must stay available at the general checkpoint");
         }
-        for name in ["code_search", "shell_exec", "file_write", "web_search"] {
-            assert!(!rsi_checkpoint_tool(name), "{name} must not stay available");
+        for name in ["workspace_replace", "workspace_write"] {
+            assert!(rsi_checkpoint_tool(name, true), "{name} must remain in the edit stage");
+        }
+        for name in ["code_search", "shell_exec", "file_write", "web_search", "workspace_read_range", "algorithm_propose"] {
+            assert!(!rsi_checkpoint_tool(name, true), "{name} must not reopen in the edit stage");
         }
         assert!(tool_discovery_applies(false, false));
         assert!(!tool_discovery_applies(true, false));
-        assert!(!tool_discovery_applies(false, true), "RSI must keep its full allowed toolset");
+        assert!(!tool_discovery_applies(false, true), "RSI must keep its full allowed toolset before the checkpoint");
     }
 
     #[test]
