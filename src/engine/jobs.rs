@@ -703,7 +703,29 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     // captures the real diff and verifier evidence before removing that copy.
     let mut scoped_state = context.state.clone();
     if let Some(worktree)=&rsi_workspace {scoped_state.config.workspace=worktree.path.clone();}
-    let mut message = run_quiet(&scoped_state, &request).await;
+    // Let the native RSI generator inspect its own indexed source before
+    // calling the costly LLM. A recognized, unique code shape can produce a
+    // candidate directly; the very same independent compiler and held-out
+    // judge must still decide whether to adopt that candidate. Unknown code
+    // shapes continue through the ordinary model-driven generation.
+    let native_candidate=if let Some(worktree)=&rsi_workspace {
+        match crate::engine::rsi_mutation::induce(
+            &context.state,&context.job_id,&input,&worktree.source,&worktree.path
+        ){
+            Ok(receipt)=>receipt,
+            Err(error)=>{
+                context.state.store.audit("rsi.native_candidate_error",json!({
+                    "jobId":context.job_id,"error":error
+                }));
+                None
+            }
+        }
+    } else {None};
+    let mut message=if native_candidate.is_some(){
+        Ok(None)
+    }else{
+        run_quiet(&scoped_state,&request).await
+    };
     let result = if let Some(worktree)=&rsi_workspace {
         // At most 2 model repair calls after a grounded verifier failure.
         // All attempts share the same detached worktree and model selection.
