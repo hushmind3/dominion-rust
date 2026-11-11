@@ -46,21 +46,25 @@ pub fn synthesize(rows:&[Value])->Value {
             .filter_map(|op|{
                 let name=op["tool"].as_str()?;
                 tools::rsi_allowed(name).then_some((name.to_string(),op["executed"]==true,
-                    op["sourceChanged"]==true,op["failure"]==true))
+                    op["sourceChanged"]==true,op["failure"]==true,
+                    op["runId"].as_str().unwrap_or("").to_string()))
             }).collect::<Vec<_>>();
         if trace.is_empty(){continue;}
         episodes+=1;
         for pair in trace.windows(2) {
-            if pair[0].3 && pair[1].1 && pair[0].0!=pair[1].0 {
+            if pair[0].3 && pair[1].1 && pair[0].0!=pair[1].0
+                && !pair[0].4.is_empty() && pair[0].4==pair[1].4 {
                 *recoveries.entry(pair[0].0.clone()).or_default()
                     .entry(pair[1].0.clone()).or_insert(0)+=1;
             }
         }
         for (position,event) in trace.iter().enumerate() {
             if !event.3 {continue;}
+            if event.4.is_empty(){continue;}
             let mut path=Vec::<String>::new();
             let mut changed=false;
             for successor in trace.iter().skip(position+1).take(5) {
+                if successor.4!=event.4 {break;}
                 // Failed retries cannot be taught as successful recovery.
                 if successor.3 {break;}
                 if !successor.1 {continue;}
@@ -80,7 +84,7 @@ pub fn synthesize(rows:&[Value])->Value {
         let mut prefix=Vec::new();
         let mut suffix=Vec::new();
         let mut saw_edit=false;
-        for (name,ok,changed,_) in trace {
+        for (name,ok,changed,_,_) in trace {
             if !ok {continue;}
             if edit(&name) {saw_edit=true;}
             let selected=if saw_edit {&mut suffix}else{&mut prefix};
@@ -645,8 +649,8 @@ mod tests {
     #[test]
     fn independently_witnessed_recovery_steps_become_a_multi_step_native_program(){
         let row=json!({"jobId":"fault","actionTrace":[
-            {"tool":"workspace_replace","executed":false,"failure":true},
-            {"tool":"workspace_read_range","executed":true,"failure":false}
+            {"tool":"workspace_replace","executed":false,"failure":true,"runId":"run-a"},
+            {"tool":"workspace_read_range","executed":true,"failure":false,"runId":"run-a"}
         ],"newFindings":1});
         let donor=json!({"jobId":"editor","actionTrace":[
             {"tool":"workspace_replace_range","executed":true,

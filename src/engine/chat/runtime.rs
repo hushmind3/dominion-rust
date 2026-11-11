@@ -102,6 +102,16 @@ fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
     )
 }
 
+/// A composed program must have its first tool offered in the focused round.
+/// Otherwise the program can never progress beyond a dropped discovery step.
+fn rsi_first_round_tool(name:&str,program:&Value)->bool {
+    matches!(name,"workspace_read_range"|"workspace_replace"|
+        "workspace_replace_range"|"workspace_write")
+        || (program["sequence"].as_array().and_then(|seq|seq.first())
+            .and_then(Value::as_str)==Some(name)
+            && tools::rsi_allowed(name))
+}
+
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
 /// needs read, search and replace together to produce a grounded patch.
 fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
@@ -1277,8 +1287,8 @@ async fn run_turn_body(
             // not another open-ended research cycle.
             if (session["rsiExplicitFocus"] == true || session["rsiMetaFocusActive"] == true)
                 && session["rsiFocusContextReady"] == true && tool_calls == 0 {
-                round_tools.retain(|definition| matches!(tool_name(definition),
-                    "workspace_read_range" | "workspace_replace" | "workspace_replace_range" | "workspace_write"));
+                round_tools.retain(|definition|
+                    rsi_first_round_tool(tool_name(definition),&session["rsiActionProgram"]));
             }
             let completed = state.store.all("execution_operation").into_iter()
                 .filter(|operation| operation["runId"].as_str() == Some(execution_id)
@@ -6488,6 +6498,17 @@ mod harness_tool_selection_tests {
         assert!(!rsi_patch_ready_for_verification(&session,"workspace_replace_range",
             &json!({"path":"src/engine/other.rs"}),
             &json!({"written":true,"postSha256":"a".repeat(64)}),true));
+    }
+
+    #[test]
+    fn composed_discovery_remains_callable_on_the_first_focused_round(){
+        let program=json!({"sequence":["code_search","workspace_read_range",
+            "workspace_replace_range"]});
+        assert!(rsi_first_round_tool("code_search",&program));
+        assert!(rsi_first_round_tool("workspace_read_range",&program));
+        assert!(!rsi_first_round_tool("web_search",&program));
+        let empty=json!({"sequence":[]});
+        assert!(!rsi_first_round_tool("code_search",&empty));
     }
 
     #[test]
