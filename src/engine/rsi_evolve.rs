@@ -1603,6 +1603,22 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
             && assigned["domain"]==trial["domain"]
             && assigned["focus"]==trial["focus"]
     });
+    // Outcome credit requires a WITNESSED policy choice and its verified
+    // source effect. Otherwise a strong model with an ignored tool suggestion
+    // can incorrectly "prove" DOMINION's evaluator has improved.
+    let policy_acted=|row:&Value|{
+        let revision=row["methodPolicyTrial"]["policyRevision"].as_str();
+        row["inducedMethodApplications"].as_array().is_some_and(|receipts|
+            receipts.iter().any(|receipt|
+                receipt["revision"].as_str()==revision
+                    && receipt["performed"]==true
+                    && receipt["verifiedSourceWrite"]==true))
+    };
+    let paired_regression=|row:&Value|{
+        row["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+            && matches!(row["evaluation"]["metrics"]["verdict"].as_str(),
+                Some("regressed"|"build_failed"))
+    };
     let stats=|arm:&str|{
         let samples=rows.iter().filter(|row|row["methodPolicyTrial"]["arm"]==arm)
             .collect::<Vec<_>>();
@@ -1610,22 +1626,26 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
             row["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
                 && row["evaluation"]["metrics"].is_object()).count();
         let gains=samples.iter().filter(|row|measured_system_improvement(row)).count();
-        let regressions=samples.iter().filter(|row|
-            row["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
-                && matches!(row["evaluation"]["metrics"]["verdict"].as_str(),
-                    Some("regressed"|"build_failed"))).count();
-        (samples.len(),paired,gains,regressions)
+        let regressions=samples.iter().filter(|row|paired_regression(row)).count();
+        let acted=samples.iter().filter(|row|policy_acted(row)).count();
+        let attributed_gains=samples.iter().filter(|row|
+            policy_acted(row) && measured_system_improvement(row)).count();
+        let attributed_losses=samples.iter().filter(|row|
+            policy_acted(row) && paired_regression(row)).count();
+        (samples.len(),paired,gains,regressions,acted,attributed_gains,attributed_losses)
     };
     let control=stats("control");
     let learned=stats("learned");
     let comparable=lineage_valid && control.0==2 && learned.0==2
-        && control.1>0 && learned.1>0;
+        && control.1>0 && learned.1>0
+        && control.4==0;
     let control_score=3i64*control.2 as i64-2i64*control.3 as i64;
-    let learned_score=3i64*learned.2 as i64-2i64*learned.3 as i64;
+    let learned_score=3i64*learned.5 as i64-2i64*learned.6 as i64;
     let verdict=if !comparable {"insufficient_matched_quality"}
-        else if learned.2>0 && learned.3==0 && learned_score>=control_score+2 {
+        else if learned.4==0 {"learned_policy_not_executed"}
+        else if learned.5>0 && learned.6==0 && learned_score>=control_score+2 {
             "promote_observational"
-        } else if (control.2>0 || learned.3>0)
+        } else if (control.2>0 || learned.6>0)
             && control_score>=learned_score+2 {
             "reject_and_mutate"
         } else {"inconclusive"};
@@ -1637,7 +1657,9 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
         "control":{"generations":control.0,"pairedEvaluations":control.1,
             "acceptedGains":control.2,"pairedRegressions":control.3,"score":control_score},
         "learned":{"generations":learned.0,"pairedEvaluations":learned.1,
-            "acceptedGains":learned.2,"pairedRegressions":learned.3,"score":learned_score},
+            "acceptedGains":learned.2,"pairedRegressions":learned.3,
+            "witnessedPolicyEffects":learned.4,"policyLinkedGains":learned.5,
+            "policyLinkedRegressions":learned.6,"score":learned_score},
         "nextPolicyRevision":Value::Null,
         "createdAt":chrono::Utc::now().to_rfc3339()});
     let mut policy_change=Value::Null;
@@ -1662,7 +1684,7 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
                 previous[key].as_f64().filter(|value|value.is_finite())
                     .unwrap_or(default)
             };
-            let extra=learned.3.saturating_sub(control.3).max(1) as f64;
+            let extra=learned.6.saturating_sub(control.3).max(1) as f64;
             let rule=json!({
                 "rewardWeight":weight("rewardWeight",1.0).clamp(0.5,5.0),
                 "failureWeight":(weight("failureWeight",1.0)+extra).clamp(0.5,6.0),
@@ -4424,6 +4446,9 @@ mod tests {
             if n==3 {
                 generation["acceptedProof"]=json!({"status":"verified",
                     "evaluation":evaluation});
+                generation["inducedMethodApplications"]=json!([{
+                    "revision":"first-revision","performed":true,
+                    "verifiedSourceWrite":true,"preferredTool":"workspace_replace_range"}]);
                 // New evidence may have changed the live revision during the
                 // trial. Only the original frozen scorer can be promoted.
                 policy["revision"]=json!("unmeasured-new-revision");
@@ -4437,6 +4462,7 @@ mod tests {
         assert_eq!(decision["verdict"],"promote_observational");
         assert_eq!(decision["control"]["pairedEvaluations"],2);
         assert_eq!(decision["learned"]["acceptedGains"],1);
+        assert_eq!(decision["learned"]["policyLinkedGains"],1);
         assert_eq!(decision["causalProof"],false);
         assert_eq!(state.store.get("rsi_method_policy",&id).unwrap()["revision"],
             "first-revision");
@@ -4474,6 +4500,12 @@ mod tests {
                 "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
                     "metrics":{"eligible":false,
                         "verdict":if regression {"regressed"}else{"unchanged"}}}});
+            let mut generation=generation;
+            if regression {
+                generation["inducedMethodApplications"]=json!([{
+                    "revision":"failed-revision","performed":true,
+                    "verifiedSourceWrite":true,"preferredTool":"workspace_replace_range"}]);
+            }
             if n==3 {last=generation;} else {
                 state.store.put("rsi_generation",&generation).unwrap();
             }
