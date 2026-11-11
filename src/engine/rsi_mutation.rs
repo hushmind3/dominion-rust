@@ -146,8 +146,63 @@ fn stream_search_policy_statistics(source: &str) -> Option<String> {
     transformed.push_str(&source[..start]);
     transformed.push_str(optimized);
     transformed.push_str(&source[end..]);
-    Some(transformed.replacen(old_tie,
-        "let mut best=(f64::NEG_INFINITY,scores.first().map(|(domain,_)|*domain).unwrap_or(DOMAINS[0]));",1))
+    let transformed=transformed.replacen(old_tie,
+        "let mut best=(f64::NEG_INFINITY,scores.first().map(|(domain,_)|*domain).unwrap_or(DOMAINS[0]));",1);
+    // Fast-path the observed default policy, not an unverified new formula:
+    // preserve exact failure-cluster scores, domain tie order and objective
+    // constraints while computing all six domains in ONE streaming pass.
+    // Expression and counterexample-first policies retain their full feature
+    // interpreter. This separation is inspired by measured-harness agent
+    // optimization (Agent Lightning) and verified experiment-tree selection.
+    let entry="pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &str) -> String {";
+    if transformed.matches(entry).count()!=1 {return None;}
+    let fast=r#"fn fast_failure_cluster_domain(history:&[Value],objective:&str)->String {
+    let eligible=eligible_domains(objective);
+    let mut attempts=[0.0_f64;6];
+    let mut accepted=[0.0_f64;6];
+    let mut useful=[0.0_f64;6];
+    let mut tokens=[0u64;6];
+    // All candidate domains learn from the SAME witnessed generation trace.
+    // No per-domain Vec, map allocation or repeated scan of history.
+    for row in history {
+        let Some(domain)=row["domain"].as_str() else {continue};
+        if !eligible.contains(&domain) {continue;}
+        let Some(index)=DOMAINS.iter().position(|value|*value==domain) else {continue};
+        attempts[index]+=1.0;
+        if row["accepted"]==true {accepted[index]+=1.0;}
+        if row["accepted"]==true || row["candidateId"].is_string()
+            || row["newFindings"].as_u64().unwrap_or(0)>0 {
+            useful[index]+=1.0;
+        }
+        tokens[index]+=row["tokens"].as_u64().unwrap_or(0);
+    }
+    let mut best=(f64::NEG_INFINITY,eligible.first().copied().unwrap_or(DOMAINS[0]));
+    let log_n=((history.len() as f64)+1.0).ln();
+    for domain in eligible {
+        let Some(index)=DOMAINS.iter().position(|value|*value==domain) else {continue};
+        let tries=attempts[index];
+        let posterior=(accepted[index]+0.5)/(tries+2.0);
+        let utility=useful[index]/(tries+1.0);
+        let cost=if tries==0.0 {0.0}else{(tokens[index] as f64/tries)/10_000.0};
+        let barren=if tries==0.0 {0.0}else{1.0-useful[index]/tries};
+        let penalty=barren*cost/(1.0+cost);
+        let exploration=if tries==0.0 {3.0}
+            else {(2.0*log_n/tries).sqrt().min(3.0)};
+        let match_bonus=if objective_matches(domain,objective){2.0}else{0.0};
+        let score=3.0*posterior/(1.0+cost)+0.25*utility
+            +exploration-penalty+match_bonus;
+        if score>best.0 {best=(score,domain);}
+    }
+    best.1.to_string()
+}
+
+pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &str) -> String {
+    let implementation=algorithm["implementation"].as_str()
+        .or_else(||algorithm["variant"].as_str()).unwrap_or("failure-clusters");
+    if implementation!="expression" && implementation!="counterexample-first" {
+        return fast_failure_cluster_domain(history,objective);
+    }"#;
+    Some(transformed.replacen(entry,fast,1))
 }
 
 /// A third-generation structural optimization: facts originate as immutable
@@ -364,6 +419,10 @@ mod tests {
         let candidate = stream_search_policy_statistics(source)
             .unwrap_or_else(||source.to_string());
         assert!(candidate.contains("let mut last_row: Option<&Value> = None"));
+        assert!(candidate.contains("fn fast_failure_cluster_domain("));
+        assert!(candidate.contains("return fast_failure_cluster_domain(history,objective);"));
+        assert!(candidate.contains("implementation!=\"expression\""));
+        assert!(candidate.contains("let mut attempts=[0.0_f64;6]"));
         assert!(candidate.contains("(row[\"accepted\"]==true) as u8 as f64"));
         assert!(candidate.contains("scores.first().map(|(domain,_)|*domain)"));
         assert!(candidate.contains("(\"exploration\".to_string(),exploration)"));
