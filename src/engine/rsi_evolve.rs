@@ -3913,7 +3913,24 @@ mod tests {
         assert_ne!(decision["mode"],"repair_failed_edit",
             "repeating a failed source-edit repair should evolve the strategy: {decision}");
         assert_eq!(decision["policy"]["status"],"exploratory_policy_mutation");
+        assert_eq!(decision["policy"]["implementation"],
+            "synthesized_symbolic_action_program");
+        assert!(decision["policy"]["scoreExpression"].as_str()
+            .is_some_and(|expression|expression.contains("failureRate")));
+        assert_eq!(decision["policy"]["programStructure"]["hasAdoptionReward"],false);
         assert!(decision["policy"]["measuredGain"].is_null());
+        // An accepted improvement in the same research scope actually
+        // changes the generated executable formula, not merely the label.
+        let mut inherited=history.clone();
+        inherited.insert(0,json!({"id":"previous-adopted",
+            "jobId":"previous-adopted-job","campaignId":"older",
+            "attempt":1,"createdAt":"2026-11-10T00:00:00Z",
+            "accepted":true,"tokens":5000}));
+        let revised=evolved_execution_action(&state,&input,&inherited);
+        assert_eq!(revised["policy"]["programStructure"]["hasAdoptionReward"],true);
+        assert!(revised["policy"]["scoreExpression"].as_str()
+            .is_some_and(|expression|expression.contains("verifiedAdoption")));
+        assert_ne!(decision["policy"]["revision"],revised["policy"]["revision"]);
         let _=std::fs::remove_dir_all(root);
     }
 
