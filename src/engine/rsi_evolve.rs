@@ -1101,6 +1101,49 @@ fn focus_file_context(state: &AppState, record: &Value, input: &Value) -> String
     }
     text
 }
+/// Extract failed behavior from the *actual* frozen baseline/candidate
+/// evaluation, not the model's own summary. Exact candidate + evaluation
+/// identifiers and hashes must match before descendants may learn from it.
+fn paired_behavioral_feedback(state:&AppState,candidate_id:&str)->Vec<String> {
+    let Some(candidate)=state.store.get("rsi_candidate",candidate_id) else {
+        return Vec::new();
+    };
+    if candidate["pairedComparisonComplete"]!=true {return Vec::new();}
+    let id=&candidate["evaluation"]["id"];
+    let matches=state.store.all("rsi_pair").into_iter().filter(|row|
+        row["candidateId"]==candidate_id && row["evaluationId"]==*id
+    ).collect::<Vec<_>>();
+    if matches.len()!=1 {return Vec::new();}
+    let pair=&matches[0];
+    if pair["evidenceSha256"]!=candidate["evaluation"]["evidenceSha256"]
+        || pair["report"]["reportSha256"]!=candidate["evaluation"]["evidenceSha256"]
+        || pair["report"]["patchSha256"]!=candidate["patchSha256"]
+        || pair["report"]["baseCommit"]!=candidate["baseCommit"]
+        || pair["report"]["oracleVersion"]!=candidate["oracleVersion"]
+        || !pair["report"]["cases"].is_array() {
+        return Vec::new();
+    }
+    let mut failures=Vec::new();
+    for case in pair["report"]["cases"].as_array().into_iter().flatten() {
+        let name=case["id"].as_str().unwrap_or("behavior");
+        for observed in case["behavioralCounterexamples"]["candidate"]
+            .as_array().into_iter().flatten() {
+            let Some(input)=observed["input"].as_str() else {continue;};
+            let Some(expected)=observed["expectedSegments"].as_u64() else {continue;};
+            let Some(actual)=observed["observedSegments"].as_u64() else {continue;};
+            if expected==actual {continue;}
+            let steps=observed["steps"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).take(5).collect::<Vec<_>>().join(" / ");
+            failures.push(format!(
+                "{name}: input={:?}, expected={expected} steps, got={actual}, actual split={:?}",
+                input.chars().take(180).collect::<String>(),
+                steps.chars().take(230).collect::<String>()));
+            if failures.len()>=3 {return failures;}
+        }
+    }
+    failures
+}
+
 fn generation_context(state: &AppState, input: &Value, record: &Value) -> String {
     let objective = input["rsiObjective"].as_str().unwrap_or("");
     let scope = research_scope(input);
@@ -1159,6 +1202,20 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
                     "holdoutQuality":measurements,"error":generation["error"]});
                 text.push_str(&format!("- {}세대: {}\n",generation["attempt"],
                     evidence.to_string().chars().take(2500).collect::<String>()));
+                if generation["accepted"]!=true {
+                    if let Some(id)=candidate.as_ref().and_then(|candidate|candidate["id"].as_str()) {
+                        let failures=paired_behavioral_feedback(state,id);
+                        if !failures.is_empty() {
+                            text.push_str("  ACTUAL FROZEN EVALUATOR FAILURES (repair these behaviors in the current source):\n");
+                            for failure in failures {
+                                text.push_str("    - ");
+                                text.push_str(&failure);
+                                text.push('\n');
+                            }
+                            text.push_str("  These are past training failures, NOT proof of new holdout generalization. Write a new source revision and let the evaluator independently compare it.\n");
+                        }
+                    }
+                }
                 if generation["accepted"]!=true
                     && generation["candidateCapture"]["checksPassed"]==true
                     && generation["evaluation"]["metrics"]["pairedCases"].as_u64().unwrap_or(0)
@@ -5990,6 +6047,39 @@ mod tests {
         assert!(text.contains("fn a() {}"));
         assert!(text.contains("대상 파일 전체"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sub1_inherited_paired_failures_require_matching_frozen_evidence() {
+        let (state,root)=state();
+        let patch_sha="a".repeat(64);
+        let proof="b".repeat(64);
+        state.store.put("rsi_candidate",&json!({
+            "id":"candidate-one","patchSha256":patch_sha,"baseCommit":"base",
+            "oracleVersion":"rsi-worktree-v2","pairedComparisonComplete":true,
+            "evaluation":{"id":"eval-one","evidenceSha256":proof}
+        }));
+        let pair=json!({
+            "id":"rsi-pair-candidate-one-eval-one","candidateId":"candidate-one",
+            "evaluationId":"eval-one","evidenceSha256":proof,
+            "report":{"reportSha256":proof,"patchSha256":patch_sha,
+                "baseCommit":"base","oracleVersion":"rsi-worktree-v2",
+                "cases":[{"id":"planning-quality",
+                    "behavioralCounterexamples":{"candidate":[{
+                        "input":"설계를 읽고 결과를 저장한 다음 검증해",
+                        "expectedSegments":3,"observedSegments":2,
+                        "steps":["설계를 읽고 결과를 저장한","검증해"]
+                    }]}}]}
+        });
+        state.store.put("rsi_pair",&pair);
+        let examples=paired_behavioral_feedback(&state,"candidate-one");
+        assert_eq!(examples.len(),1);
+        assert!(examples[0].contains("expected=3"));
+        let mut altered=pair;
+        altered["evidenceSha256"]=json!("0".repeat(64));
+        state.store.put("rsi_pair",&altered);
+        assert!(paired_behavioral_feedback(&state,"candidate-one").is_empty());
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
