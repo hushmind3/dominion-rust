@@ -670,6 +670,15 @@ fn compat_messages(messages: &[Value]) -> Vec<Value> {
     }).collect()
 }
 
+/// A grounded, explicit RSI patch task must request a native edit operation,
+/// not spend the final model call on an unsupported prose completion.
+fn rsi_edit_requires_tool(session:&Value,tools:&[Value])->bool {
+    session["rsiRun"]==true && session["rsiExplicitFocus"]==true
+        && !tools.is_empty() && tools.iter().all(|tool|matches!(
+            tool["function"]["name"].as_str(),
+            Some("workspace_replace"|"workspace_write")))
+}
+
 async fn stream_completion_once(
     state: &AppState,
     client: &reqwest::Client,
@@ -795,6 +804,10 @@ async fn stream_completion_once_body(
     });
     if !compatible && !tools.is_empty() {
         body["tools"] = json!(tools);
+        if state.store.get("session",session_id)
+            .is_some_and(|session|rsi_edit_requires_tool(&session,tools)) {
+            body["tool_choice"]=json!("required");
+        }
     }
     if let Some(limit) = provider.max_output_tokens {
         body["max_tokens"] = json!(limit);
@@ -1940,6 +1953,18 @@ mod tests {
         assert!(messages[0].get("reasoning_content").is_none());
         normalize_assistant_reasoning(&mut messages, false);
         assert!(messages[1].get("reasoning_content").is_none(), "{messages:?}");
+    }
+
+    #[test]
+    fn a_grounded_edit_choice_is_not_applied_to_research_or_general_chat() {
+        let session=json!({"rsiRun":true,"rsiExplicitFocus":true});
+        let tools=vec![json!({"type":"function","function":{"name":"workspace_replace"}})];
+        assert!(rsi_edit_requires_tool(&session,&tools));
+        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&tools));
+        assert!(!rsi_edit_requires_tool(&session,&[]));
+        let mixed=vec![tools[0].clone(),json!({"type":"function",
+            "function":{"name":"workspace_read_range"}})];
+        assert!(!rsi_edit_requires_tool(&session,&mixed));
     }
 
     #[test]

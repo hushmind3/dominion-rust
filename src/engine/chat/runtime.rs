@@ -57,7 +57,21 @@ fn rsi_should_checkpoint(tool_calls: u64, has_write: bool) -> bool {
 
 /// Stop broad discovery but allow exact missing ranges to be read. Bounded
 /// excerpts are intentionally incomplete, so banning all reads would prevent edits.
-fn rsi_checkpoint_tool(name: &str) -> bool {
+fn rsi_checkpoint_stage(
+    tool_calls: u64, read_calls: u64, has_write: bool,
+    explicit_focus: bool, source_in_prompt: bool,
+) -> Option<bool> {
+    if has_write {return None;}
+    // The first successful real source read is an action boundary for a
+    // concrete repair. Do not spend the rest of a paid model turn searching.
+    if explicit_focus && (read_calls>0 || source_in_prompt) && tool_calls>=1 {
+        return Some(true);
+    }
+    rsi_should_checkpoint(tool_calls,has_write).then_some(false)
+}
+
+fn rsi_checkpoint_tool(name: &str, edit_only:bool) -> bool {
+    if edit_only {return matches!(name,"workspace_write"|"workspace_replace");}
     matches!(
         name,
         "workspace_read_range" | "workspace_write" | "workspace_replace" | "rsi_method_propose" | "algorithm_propose"
@@ -948,6 +962,8 @@ async fn run_turn_body(
     let mut acceptance_passed = false;
     let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
     let mut rsi_decision_checkpoint = false;
+    let mut rsi_edit_only_announced=false;
+    let mut rsi_edit_retry=false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1069,23 +1085,41 @@ async fn run_turn_body(
                 .unwrap_or(60_000);
             round_tools = trim_tool_definitions(round_tools, budget);
         }
-        if session["rsiRun"]==true && !force_final && !rsi_decision_checkpoint {
-            let tool_calls = metrics.lock().unwrap().tool_calls as u64;
-            let has_write = state.store.all("execution_operation").iter().any(|operation| {
-                operation["runId"].as_str() == Some(execution_id)
-                    && operation["status"].as_str() == Some("completed")
-                    && matches!(
-                        operation["tool"].as_str(),
-                        Some("workspace_write" | "workspace_replace")
-                    )
-            });
-            if rsi_should_checkpoint(tool_calls, has_write) {
-                round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition)));
-                messages.push(json!({
-                    "role":"system",
-                    "content":"추가 탐색을 중단하세요. 지금까지의 근거로 코드 변경이나 재사용 가능한 실행 방법을 제안할 수 있습니다. 근거가 없으면 변경 없이 최종 보고하세요. code_search는 중단하고, 빠진 정확한 구간을 확인할 때만 workspace_read_range를 사용하세요."
-                }));
-                rsi_decision_checkpoint = true;
+        if session["rsiRun"]==true && !force_final {
+            let tool_calls=metrics.lock().unwrap().tool_calls as u64;
+            let completed=state.store.all("execution_operation").into_iter()
+                .filter(|operation|operation["runId"].as_str()==Some(execution_id)
+                    && operation["status"].as_str()==Some("completed"))
+                .collect::<Vec<_>>();
+            let has_write=completed.iter().any(|operation|matches!(
+                operation["tool"].as_str(),Some("workspace_write"|"workspace_replace")));
+            let read_calls=completed.iter().filter(|operation|matches!(
+                operation["tool"].as_str(),Some("workspace_read_range"|"workspace_read"))).count() as u64;
+            let grounded=read_calls>0 || session["rsiFocusContextReady"]==true;
+            let stage=rsi_checkpoint_stage(tool_calls,read_calls,has_write,
+                session["rsiExplicitFocus"]==true,session["rsiFocusContextReady"]==true)
+                .or_else(||(rsi_edit_retry && grounded && !has_write).then_some(true));
+            if let Some(edit_only)=stage {
+                // Repeat the menu restriction on every subsequent model round;
+                // a one-shot checkpoint silently reopened code_search.
+                round_tools.retain(|definition|
+                    rsi_checkpoint_tool(tool_name(definition),edit_only));
+                if edit_only && !rsi_edit_only_announced {
+                    messages.push(json!({"role":"system","content":
+                        "이미 확보된 검증 소스 원문으로 workspace_replace(oldText,newText)를 실제 호출해 구체적인 수정을 시도하세요. 이 단계에서는 추가 검색 대신 실행 가능한 편집만 제시합니다. 변경 불가능하면 실제 원인을 응답하세요."}));
+                    rsi_edit_only_announced=true;
+                } else if !rsi_decision_checkpoint {
+                    messages.push(json!({"role":"system","content":
+                        "탐색을 중단하고 확보한 근거로 변경 또는 실행 가능한 절차를 시도하세요. 부족한 원문 구간만 workspace_read_range로 조회할 수 있습니다."}));
+                }
+                if !rsi_decision_checkpoint {
+                    state.store.audit("rsi.action_checkpoint",json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "toolCalls":tool_calls,"readCalls":read_calls,
+                        "editOnly":edit_only
+                    }));
+                }
+                rsi_decision_checkpoint=true;
             }
         }
         let wire_messages = messages.clone();
@@ -1241,7 +1275,8 @@ async fn run_turn_body(
         }
         if completion.tool_calls.is_empty()
             && request.tools_enabled
-            && (provider.tool_mode != "native" || has_dsml_call)
+            && (provider.tool_mode != "native" || has_dsml_call
+                || (session["rsiExplicitFocus"]==true && rsi_edit_only_announced))
             && !force_final
         {
             let known = round_tools
@@ -1273,6 +1308,30 @@ async fn run_turn_body(
         }
 
         if completion.tool_calls.is_empty() {
+            // A final prose explanation after a successful source read is not
+            // a completed explicit code repair. Give the same model one
+            // bounded continuation using the real source already in context.
+            if session["rsiExplicitFocus"]==true && !rsi_edit_retry
+                && round+1<max_rounds {
+                let completed=state.store.all("execution_operation").into_iter()
+                    .filter(|operation|operation["runId"].as_str()==Some(execution_id)
+                        && operation["status"].as_str()==Some("completed"))
+                    .collect::<Vec<_>>();
+                let has_write=completed.iter().any(|operation|matches!(
+                    operation["tool"].as_str(),Some("workspace_write"|"workspace_replace")));
+                let has_read=completed.iter().any(|operation|matches!(
+                    operation["tool"].as_str(),Some("workspace_read_range"|"workspace_read")));
+                if !has_write && (has_read || session["rsiFocusContextReady"]==true) {
+                    rsi_edit_retry=true;
+                    state.store.audit("rsi.edit_retry",json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "round":round,"sourceRead":has_read
+                    }));
+                    messages.push(json!({"role":"user","content":
+                        "앞선 답변은 코드 변경이 아닙니다. 이미 받은 정확한 원문으로 workspace_replace를 호출하세요. 새 파일이 꼭 필요한 경우에만 workspace_write를 사용하세요. 불가능하면 코드 수준의 구체적 원인을 설명하세요."}));
+                    continue;
+                }
+            }
             {
                 let mut operations = state
                     .store
@@ -6099,6 +6158,19 @@ mod harness_tool_selection_tests {
         assert_eq!(rsi_output_allowance(240_000,9_000).unwrap(),1000);
         assert!(rsi_output_allowance(249_000,1000).is_err());
         assert_eq!(rsi_output_allowance(0,1000).unwrap(),8192);
+    }
+
+    #[test]
+    fn grounded_explicit_repairs_enter_edit_stage_after_first_read() {
+        assert_eq!(rsi_checkpoint_stage(1,1,false,true,false),Some(true));
+        assert_eq!(rsi_checkpoint_stage(1,0,false,true,true),Some(true));
+        assert_eq!(rsi_checkpoint_stage(1,0,false,true,false),None);
+        assert_eq!(rsi_checkpoint_stage(1,1,false,false,false),None);
+        assert_eq!(rsi_checkpoint_stage(6,0,false,false,false),Some(false));
+        assert_eq!(rsi_checkpoint_stage(3,3,true,true,true),None);
+        assert!(rsi_checkpoint_tool("workspace_replace",true));
+        assert!(!rsi_checkpoint_tool("workspace_read_range",true));
+        assert!(rsi_checkpoint_tool("workspace_read_range",false));
     }
 
     #[test]

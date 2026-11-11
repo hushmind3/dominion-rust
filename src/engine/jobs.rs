@@ -491,6 +491,18 @@ async fn run_job(state: AppState, job: Value) {
     }
 }
 
+/// A source-specific owner repair needs an executable action stage, even if
+/// the campaign automatically selected a search domain. Broad autonomous
+/// exploration and general research must retain normal tool discovery.
+fn rsi_focused_edit_goal(input:&Value)->bool {
+    let has_file=input["rsiFocusFiles"].as_array().is_some_and(|paths|!paths.is_empty());
+    let patch_mode=matches!(input["rsiImprovementDirective"]["mode"].as_str(),
+        Some("implement_research"|"change_approach"|"revise_candidate"|"repair_counterexample"));
+    has_file && patch_mode
+        && (input["rsiAutonomous"]!=true
+            || input["rsiImprovementDirective"]["reason"]=="explicit_owner_patch_request_with_source")
+}
+
 /// A patch-oriented generation that made zero tool-backed edits is an
 /// unfinished attempt, not an opportunity to record imaginary progress.
 /// Retry once with the prior conversation and the same detached worktree.
@@ -548,6 +560,10 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         if let Some(mut session)=context.state.store.get("session",&session_id) {
             session["rsiRun"]=json!(true);
             session["rsiObjective"]=input["rsiObjective"].clone();
+            session["rsiExplicitFocus"]=json!(rsi_focused_edit_goal(&input));
+            session["rsiFocusContextReady"]=json!(
+                input["rsiFocusContextChars"].as_u64().unwrap_or(0)>0
+                && input["rsiParentContextFit"]["sourceExcerptDeferred"]!=true);
             crate::engine::rsi_evolve::configure_method_session(&context.state, &input, &mut session);
             session["rsiCodeIndexId"]=input["rsiIndexId"].clone();
             session["rsiSourceDir"]=input["rsiSourceDir"].clone();
@@ -773,6 +789,27 @@ fn schedule_automations(state: &AppState) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_explicit_owner_patch_gets_a_grounded_edit_stage() {
+        let explicit=json!({"rsiAutonomous":false,
+            "rsiFocusFiles":["src/engine/decompose.rs"],
+            "rsiImprovementDirective":{"mode":"implement_research",
+                "reason":"explicit_owner_patch_request_with_source"}});
+        assert!(rsi_focused_edit_goal(&explicit));
+        let mut inherited=explicit.clone();
+        inherited["rsiImprovementDirective"]["mode"]=json!("change_approach");
+        assert!(rsi_focused_edit_goal(&inherited));
+        let mut broad=explicit.clone();
+        broad["rsiAutonomous"]=json!(true);
+        broad["rsiImprovementDirective"]["reason"]=json!("no_recorded_generation");
+        assert!(!rsi_focused_edit_goal(&broad));
+        broad["rsiImprovementDirective"]["reason"]=json!("explicit_owner_patch_request_with_source");
+        assert!(rsi_focused_edit_goal(&broad));
+        let mut research=explicit;
+        research["rsiImprovementDirective"]["mode"]=json!("discover");
+        assert!(!rsi_focused_edit_goal(&research));
+    }
+
     #[test]
     fn patch_generation_retries_once_only_after_real_no_edit_outcome() {
         let base=json!({"rsiImprovementDirective":{"mode":"implement_research"}});

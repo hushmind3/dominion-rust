@@ -3118,6 +3118,14 @@ fn improvement_directive(history:&[Value]) -> Value {
     let new_findings=last["newFindings"].as_u64().unwrap_or(0);
     let mode=if last["accepted"]==true {
         "extend_verified_capability"
+    } else if last["improvementActionObservation"]["status"]=="provider_interrupted" {
+        // Transport failure is not evidence that the model chose to ignore
+        // the patch instruction. Retry the same concrete action if possible,
+        // under the existing user token/time/attempt limits.
+        if matches!(previous_mode,
+            "implement_research"|"change_approach"|"repair_counterexample"|"revise_candidate") {
+            previous_mode
+        } else if new_findings>0 {"implement_research"} else {"discover"}
     } else if last["improvementActionObservation"]["status"]=="not_followed"
         && !matches!(previous_mode,""|"discover"|"change_approach") {
         "change_approach"
@@ -3275,6 +3283,13 @@ fn improvement_action_observation(generation:&Value, diff_bytes:u64) -> Value {
         .sum::<u64>();
     let produced_candidate=generation["candidateId"].is_string();
     let attempted_change=completed_writes>0 || diff_bytes>0 || produced_candidate;
+    let provider_interrupted=!attempted_change
+        && generation["error"].as_str().is_some_and(|error|{
+            let lower=error.to_ascii_lowercase();
+            ["timeout","http 502","connection reset","connection closed",
+                "slow model","too slow","timed out"].iter().any(|part|lower.contains(part))
+                || error.contains("너무 느렸") || error.contains("응답 시간 초과")
+        });
     let previous_files=generation["improvementDirective"]["previousFocusFiles"]
         .as_array().cloned().unwrap_or_default();
     let current_files=generation["focusFiles"].as_array().cloned().unwrap_or_default();
@@ -3293,7 +3308,9 @@ fn improvement_action_observation(generation:&Value, diff_bytes:u64) -> Value {
                     && generation["pairedRevalidated"]==true {"verified_adoption"}
                  else if generation["accepted"]==true {"reported_adoption_unverified"}
                  else if observed {"attempted"}
+                 else if provider_interrupted {"provider_interrupted"}
                  else {"not_followed"},
+        "providerInterrupted":provider_interrupted,
         "completedWrites":completed_writes,
         "diffBytes":diff_bytes,
         "candidateProduced":produced_candidate,
@@ -4001,6 +4018,26 @@ mod tests {
             "rsiObjective":"quantumqzx uniquezzz","rsiTargetDomain":""}),&[],None);
         assert!(no_match.is_empty(),"an unknown goal must trigger discovery, not a forced source");
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_interruption_is_not_mislearned_as_ignored_edit_instruction() {
+        let stalled=json!({"improvementDirective":{"mode":"implement_research"},
+            "error":"최근 응답이 너무 느렸던 모델이라 잠시 건너뜁니다.",
+            "toolsUsed":[{"tool":"workspace_read_range","calls":1}],
+            "candidateId":null,"accepted":false,"newFindings":1});
+        let observation=improvement_action_observation(&stalled,0);
+        assert_eq!(observation["status"],"provider_interrupted");
+        let mut recorded=stalled;
+        recorded["improvementActionObservation"]=observation;
+        assert_eq!(improvement_directive(&[recorded])["mode"],"implement_research");
+        let mut normally_finished=json!({"improvementDirective":{"mode":"implement_research"},
+            "error":null,"toolsUsed":[],"candidateId":null,"accepted":false,
+            "newFindings":0});
+        normally_finished["improvementActionObservation"]=
+            improvement_action_observation(&normally_finished,0);
+        assert_eq!(normally_finished["improvementActionObservation"]["status"],"not_followed");
+        assert_eq!(improvement_directive(&[normally_finished])["mode"],"change_approach");
     }
 
     #[test]
