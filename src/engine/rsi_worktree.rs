@@ -510,6 +510,29 @@ fn run_status(
     ("completed","candidate_compiles_not_performance_verified")
 }
 
+/// Resolve a compiler diagnostic to the source range the next worker
+/// actually needs to READ. Source repair previously observed the beginning of
+/// the indexed function even when rustc reported a distant broken test line.
+/// Accept only a location in the already selected, safe source file.
+pub fn repair_focus_start(checks:&Value,focus:&str)->Option<u64>{
+    if !rsi::safe_path(focus) {return None;}
+    for check in checks.as_array()? {
+        if check["passed"]==true {continue;}
+        let diagnostic=check["stderr"].as_str()
+            .or_else(||check["error"].as_str()).unwrap_or("");
+        for (position,_) in diagnostic.match_indices(focus) {
+            let remainder=&diagnostic[position+focus.len()..];
+            let Some(location)=remainder.strip_prefix(':') else{continue};
+            let digits=location.bytes().take_while(u8::is_ascii_digit).count();
+            if digits==0 || location.as_bytes().get(digits)!=Some(&b':'){continue;}
+            if let Ok(line)=location[..digits].parse::<u64>() {
+                if line>0 {return Some(line.saturating_sub(36).max(1));}
+            }
+        }
+    }
+    None
+}
+
 /// Return a short, grounded repair instruction. Do not repeat blind model
 /// calls for provider errors, missing diffs or checkout integrity failures.
 pub fn repair_feedback(result:&Value)->Option<String>{
