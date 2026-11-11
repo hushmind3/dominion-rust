@@ -830,6 +830,11 @@ async fn stream_completion_once_body(
         "stream": true,
         "stream_options": { "include_usage": true },
     });
+    // This is a real, narrowly scoped recovery path for models whose native
+    // function-call JSON decoder crashes before returning an edit. No guessed
+    // operation is applied: the second response still must contain a valid,
+    // explicitly named source-edit operation.
+    let mut local_rsi_edit = false;
     if !compatible && !tools.is_empty() {
         body["tools"] = json!(tools);
         let focused=tools.len()==1 && matches!(tools[0]["function"]["name"].as_str(),
@@ -840,6 +845,7 @@ async fn stream_completion_once_body(
                     Some("workspace_read_range" | "workspace_read")));
         if let Some(session)=state.store.get("session",session_id) {
             let focused_edit=rsi_edit_requires_tool(&session,tools,observed_read);
+            local_rsi_edit=provider.local && focused_edit;
             if focused_edit || rsi_source_read_requires_tool(&session,tools,observed_read) {
                 body["tool_choice"]=json!("required");
             }
@@ -876,7 +882,42 @@ async fn stream_completion_once_body(
     )
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {}", provider.api_key));
-    let response=super::continuity::send(state,provider,builder,&body,continuity,super::continuity::CacheWire::Key).await?;
+    let mut response=super::continuity::send(state,provider,builder,&body,continuity,super::continuity::CacheWire::Key).await?;
+    let mut text_edit_fallback = false;
+    if local_rsi_edit && response.status()==reqwest::StatusCode::INTERNAL_SERVER_ERROR {
+        // llama.cpp may fail to decode a local model's incomplete native tool
+        // arguments on the server itself. It returns HTTP 500 before DOMINION
+        // can validate or repair anything. Retry exactly once without the
+        // server-side tool decoder, using the existing textual tool grammar.
+        let native_error=response.text().await.unwrap_or_default();
+        if !native_error.contains("invalid tool call arguments") {
+            return Err(format!("{} 네이티브 소스 수정 실패 (HTTP 500): {}",
+                provider.name,native_error.chars().take(600).collect::<String>()));
+        }
+        if state.is_cancelled(session_id) {
+            return Err("실행이 중단되었습니다.".into());
+        }
+        let manual=super::protocol::tool_manual(tools,&request.input).await;
+        let mut retry=body.clone();
+        let params=retry.as_object_mut().ok_or("도구 복구 요청 구성이 올바르지 않습니다.")?;
+        params.remove("tools");
+        params.remove("tool_choice");
+        params.remove("stream_options");
+        retry["stream"]=json!(false);
+        let prompts=retry["messages"].as_array_mut()
+            .ok_or("소스 편집 대화 구성이 올바르지 않습니다.")?;
+        prompts.insert(0,json!({"role":"system","content":format!(
+            "{manual}\nOnly perform a single listed workspace source edit. Respond with one <tool_call> JSON object. Do not explain or invent line numbers or source hashes.")}));
+        crate::engine::gateway::reserve_generation(
+            &provider.base_url,&provider.model,provider.requests_per_minute)?;
+        let builder=crate::engine::gateway::benchmark_request(
+            client.post(format!("{}/chat/completions",provider.base_url)))
+            .header("Content-Type","application/json")
+            .header("Authorization",format!("Bearer {}",provider.api_key));
+        response=super::continuity::send(state,provider,builder,&retry,continuity,
+            super::continuity::CacheWire::Key).await?;
+        text_edit_fallback=true;
+    }
 
     crate::engine::gateway::verify_benchmark_route(&response)?;
 
@@ -920,6 +961,32 @@ async fn stream_completion_once_body(
         completion.content=message["content"].as_str().unwrap_or("").to_string();
         completion.reasoning=message["reasoning_content"].as_str()
             .or_else(||message["reasoning"].as_str()).unwrap_or("").to_string();
+        if text_edit_fallback {
+            let allowed=tools.iter().filter_map(|tool|
+                tool["function"]["name"].as_str().map(str::to_string))
+                .collect::<std::collections::HashSet<_>>();
+            let (parsed,visible)=super::protocol::parse_text_tool_calls_known(
+                &completion.content,&allowed);
+            completion.content=visible;
+            for (name,arguments) in parsed.into_iter().take(1) {
+                if !allowed.contains(&name)
+                    || !serde_json::from_str::<Value>(&arguments)
+                        .is_ok_and(|args|args.is_object()) {
+                    continue;
+                }
+                completion.tool_calls.push(ToolCall{
+                    id:uuid::Uuid::new_v4().to_string(),name,arguments
+                });
+            }
+            if completion.tool_calls.is_empty() {
+                return Err("로컬 모델 텍스트 복구에서도 유효한 소스 편집 도구 호출이 생성되지 않았습니다.".into());
+            }
+            state.store.audit("rsi.native_tool_decoder_recovered",json!({
+                "sessionId":session_id,"providerId":provider.id,
+                "tool":completion.tool_calls[0].name,
+                "method":"single_text_tool_fallback_after_server_500"
+            }));
+        }
         for call in message["tool_calls"].as_array().into_iter().flatten() {
             if completion.tool_calls.len()>=MAX_TOOL_CALLS {
                 return Err("모델이 너무 많은 도구 호출을 반환했습니다.".into());
