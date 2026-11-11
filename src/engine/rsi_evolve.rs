@@ -2395,7 +2395,7 @@ async fn run_loop(
         child_input["rsiImprovementDirective"]=if native_planning {
             record["nextGenerationPlan"]["improvementDirective"].clone()
         } else {
-            improvement_directive(&action_history)
+            generation_improvement_directive(&child_input,&action_history)
         };
         child_input["rsiTargetPlan"]=generation_target_plan(
             &target_domain,&target_selection,&target_strategy,&head);
@@ -3165,6 +3165,26 @@ fn improvement_directive(history:&[Value]) -> Value {
     })
 }
 
+/// A concrete owner-selected repair already has an executable source target.
+/// Spend the first real-model generation editing it, not rediscovering the
+/// same file; later generations still follow observed success/failure.
+fn generation_improvement_directive(input:&Value,history:&[Value])->Value{
+    if history.is_empty() && input["rsiAutonomous"]==false
+        && input["rsiFocusFiles"].as_array().is_some_and(|paths|!paths.is_empty())
+    {
+        let goal=input["rsiObjective"].as_str().unwrap_or("").to_lowercase();
+        if ["fix","repair","modify","implement","patch","고쳐","고치","수정","구현","교정","개선"]
+            .iter().any(|verb|goal.contains(verb))
+        {
+            return json!({"mode":"implement_research",
+                "sourceGenerationId":null,
+                "reason":"explicit_owner_patch_request_with_source",
+                "attemptedAgain":false});
+        }
+    }
+    improvement_directive(history)
+}
+
 /// Preserve chronological ordering across new millisecond RFC3339 records
 /// and older SQLite-created timestamps (YYYY-MM-DD HH:MM:SS, UTC).
 fn generation_completion_millis(row:&Value)->i64 {
@@ -3233,7 +3253,7 @@ fn improvement_history(state:&AppState,input:&Value,history:&[Value],campaign_id
 /// sequence of work and (through choose_focus_files) its source candidates.
 fn improvement_work_contract(directive:&Value) -> &'static str {
     match directive["mode"].as_str().unwrap_or("discover") {
-        "implement_research" => "이번 세대는 연구 반복이 아니라 구현 단계입니다. 이전 세대에서 읽고 저장한 원본 근거를 재사용하여 소스의 구체적인 변경을 만들고 검증 사례를 실행하세요. 같은 소스 검색·자료 요약만으로 끝내지 마세요. 구현 근거가 없으면 실패 원인을 남기세요.",
+        "implement_research" => "이번 세대는 연구 반복이 아니라 구현 단계입니다. 사용자가 지정한 파일이나 이전 세대의 실제 소스 근거에서 구체적인 수정 지점을 찾아 workspace_replace 또는 workspace_write를 실행하고 검증 사례를 시험하세요. 제공된 발췌로 수정이 가능하면 같은 소스 검색·자료 요약만 반복하지 마세요. 편집 도구가 실패하면 오류를 읽고 다른 실제 수정안을 시도하세요.",
         "repair_counterexample" => "이전 후보는 검증에서 실패했습니다. 실패한 holdout 사례와 코드 차이를 먼저 확인하고 그 실패 원인을 해결하는 별도의 수정을 시험하세요. 과거 패치를 그대로 반복하지 마세요.",
         "revise_candidate" => "이전 수정은 채택되지 않았습니다. 실제 실패하거나 미측정된 사례를 확인하고 가설·수정 위치를 바꿔 새 후보를 평가하세요. 이전 후보의 성공을 가정하지 마세요.",
         "change_approach" => "같은 접근의 반복이 성과를 내지 못했습니다. 이전에 시도한 파일·가설·실패 원인을 근거로 다른 코드 위치나 구현 전략을 선택하여 변경과 검증을 시도하세요. 반복 연구만 하는 것은 실패입니다.",
@@ -3445,7 +3465,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "indexId":campaign["planIndexId"],
         "domain":domain,"selection":selection,"strategy":strategy,
         "targetPlan":target_plan,
-        "improvementDirective":improvement_directive(&action_history),
+        "improvementDirective":generation_improvement_directive(source_input,&action_history),
         "rankedFiles":ranked
     }))
 }
@@ -3589,7 +3609,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &objective, continuation, trial_id, selected_domain, &commit);
     // The improved generator must execute the same action it planned before
     // the model call. Reject an outdated or injected retry directive.
-    let expected_directive=improvement_directive(&action_history);
+    let expected_directive=generation_improvement_directive(&job["input"],&action_history);
     if job["input"]["rsiImprovementDirective"].is_object()
         && job["input"]["rsiImprovementDirective"]!=expected_directive {
         return Err("rsi_improvement_directive_mismatch: 개선 행동과 세대 이력이 일치하지 않습니다.".into());
@@ -3796,6 +3816,29 @@ mod tests {
         let continued = research_digest(&state, &json!({"rsiContinueFrom":"digest-prior"}), &json!({"history":[]}));
         assert!(continued.contains("src/engine/memory.rs 10-20"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_owner_patch_starts_with_execution_without_wasting_a_discovery_generation() {
+        let patch=json!({"rsiAutonomous":false,
+            "rsiObjective":"Fix the failing Korean text splitting algorithm",
+            "rsiFocusFiles":["src/engine/decompose.rs"]});
+        let directive=generation_improvement_directive(&patch,&[]);
+        assert_eq!(directive["mode"],"implement_research");
+        assert_eq!(directive["reason"],"explicit_owner_patch_request_with_source");
+        let auto=json!({"rsiAutonomous":true,
+            "rsiObjective":"Improve DOMINION autonomously",
+            "rsiFocusFiles":["src/engine/decompose.rs"]});
+        assert_eq!(generation_improvement_directive(&auto,&[])["mode"],"discover");
+        let inspect=json!({"rsiAutonomous":false,
+            "rsiObjective":"Inspect current memory retrieval performance",
+            "rsiFocusFiles":["src/engine/memory.rs"]});
+        assert_eq!(generation_improvement_directive(&inspect,&[])["mode"],"discover");
+        let failure=json!({"id":"failed","improvementDirective":{"mode":"implement_research"},
+            "improvementActionObservation":{"status":"not_followed"},
+            "newFindings":0,"candidateId":null,"accepted":false});
+        assert_eq!(generation_improvement_directive(&patch,&[failure])["mode"],"change_approach",
+            "past execution failure must override first-generation shortcut");
     }
 
     #[test]
