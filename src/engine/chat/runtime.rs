@@ -2750,7 +2750,7 @@ fn select_room_tools(
                 "삭제해", "삭제하", "만들어", "만들어줘", "작성해", "작성하",
                 "기록", "남겨", "write", "save", "edit", "delete", "create",
             ],
-            &["workspace_read", "workspace_read_range", "workspace_replace", "workspace_write", "file_write"],
+            &["workspace_read", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_write", "file_write"],
         ),
         (
             &["실행", "명령", "터미널", "빌드", "테스트", "설치", "shell", "run", "build", "test", "install"],
@@ -2819,7 +2819,7 @@ fn select_room_tools(
             .filter(|definition| {
                 matches!(
                     tool_name(definition),
-                    "workspace_list" | "workspace_read" | "workspace_read_range" | "workspace_replace" | "workspace_write" | "shell_exec" | "web_search"
+                    "workspace_list" | "workspace_read" | "workspace_read_range" | "workspace_replace_range" | "workspace_replace" | "workspace_write" | "shell_exec" | "web_search"
                 )
             })
             .collect();
@@ -2841,7 +2841,7 @@ fn select_tool_definitions(
         return definitions;
     }
     let default_core = [
-        "workspace_list", "workspace_read", "workspace_read_range", "workspace_replace", "workspace_write", "shell_exec",
+        "workspace_list", "workspace_read", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_write", "shell_exec",
         "web_search", "memory_store", "memory_search", "delegate_task",
         "task_status", "task_result",
     ];
@@ -4000,7 +4000,7 @@ async fn deterministic_tool(
     // dispatch path so the opt-in guard can see this read.
     let file_observation = if matches!(
         tool,
-        "workspace_read" | "workspace_read_range" | "file_read" | "workspace_replace" | "workspace_write"
+        "workspace_read" | "workspace_read_range" | "file_read" | "workspace_replace" | "workspace_replace_range" | "workspace_write"
     ) {
         result
             .as_object_mut()
@@ -4395,7 +4395,7 @@ async fn dispatch_tool_call(
         match outcome {
             Ok(value) => {
                 let mut value = value;
-                if matches!(call.name.as_str(), "workspace_read" | "workspace_read_range" | "file_read" | "workspace_replace" | "workspace_write") {
+                if matches!(call.name.as_str(), "workspace_read" | "workspace_read_range" | "file_read" | "workspace_replace" | "workspace_replace_range" | "workspace_write") {
                     file_observation = value.as_object_mut()
                         .and_then(|value| value.remove("fileObservation"));
                 }

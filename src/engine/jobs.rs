@@ -559,9 +559,9 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             let focused = input["rsiAutonomous"] != true
                 && input["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty());
             let completion = if focused {
-                "명시적 수정 목표를 조사 보고로 대체하지 마세요. 충분한 소스 원문이 확보되면 workspace_replace로 실제 편집을 시도하세요. 수정을 수행할 수 없을 때에는 막힌 정확한 이유를 설명하세요."
+                "명시적 수정 목표를 조사 보고로 대체하지 마세요. 충분한 소스 원문이 확보되면 작은 수정은 workspace_read_range 결과의 줄 번호와 sourceSha256으로 workspace_replace_range를 사용해 바뀔 코드만 제출하세요. 정확한 oldText가 있으면 workspace_replace도 사용하세요. 수정을 수행할 수 없을 때에는 막힌 정확한 이유를 설명하세요."
             } else {
-                "개선 근거가 있으면 workspace_replace로 변경하고, 근거가 없다면 변경 없이 이유를 보고하세요."
+                "개선 근거가 있으면 workspace_replace_range(읽은 줄과 sourceSha256) 또는 workspace_replace로 변경하고, 근거가 없다면 변경 없이 이유를 보고하세요."
             };
             format!("{prompt}{reused_research}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. {completion} 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.")
         } else { prompt },

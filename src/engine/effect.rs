@@ -63,7 +63,8 @@ fn normalize_path(value: &str) -> String {
 pub fn resource_key(tool: &str, arguments: &Value) -> Option<String> {
     let path = arguments["path"].as_str();
     match tool {
-        "workspace_read" | "workspace_write" | "workspace_list" => {
+        "workspace_read" | "workspace_read_range" | "workspace_write"
+        | "workspace_replace" | "workspace_replace_range" | "workspace_list" => {
             path.map(|path| format!("workspace:{}", normalize_path(path)))
         }
         "file_read" | "file_write" | "file_list" => {
@@ -296,7 +297,7 @@ fn failure_layer(ok: bool, denied: bool, result: &Value, effectful: bool) -> Opt
 async fn read_back(workspace: &Path, tool: &str, arguments: &Value) -> Option<(String, u64)> {
     let path = arguments["path"].as_str()?;
     let path: PathBuf = match tool {
-        "workspace_write" | "workspace_read" => {
+        "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_read" | "workspace_read_range" => {
             crate::engine::tools::resolve_workspace(workspace, path).ok()?
         }
         "file_write" | "file_read" => PathBuf::from(path),
@@ -311,11 +312,14 @@ async fn read_back(workspace: &Path, tool: &str, arguments: &Value) -> Option<(S
     Some((format!("sha256:{}", hash(&bytes)), len))
 }
 
-fn expected_version(tool: &str, arguments: &Value) -> Option<String> {
+fn expected_version(tool: &str, arguments: &Value, result: &Value) -> Option<String> {
     if matches!(tool, "workspace_write" | "file_write") {
         return arguments["content"].as_str().map(|content| {
             format!("sha256:{}", hash_text(content))
         });
+    }
+    if matches!(tool, "workspace_replace" | "workspace_replace_range") && result["written"] == true {
+        return result["postSha256"].as_str().map(|digest| format!("sha256:{digest}"));
     }
     None
 }
@@ -353,8 +357,8 @@ pub async fn seal(
         "observed"
     };
 
-    if ok && matches!(tool, "workspace_write" | "file_write") {
-        if let Some(expected) = expected_version(tool, arguments) {
+    if ok && matches!(tool, "workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write") {
+        if let Some(expected) = expected_version(tool, arguments, result) {
             match read_back(workspace, tool, arguments).await {
                 Some((actual, len)) => {
                     cost_bytes = len;
@@ -534,6 +538,14 @@ mod tests {
             Some("workspace:a/../b.txt")
         );
         assert_eq!(
+            resource_key("workspace_replace_range", &json!({"path":"./src/example.rs"})).as_deref(),
+            Some("workspace:src/example.rs")
+        );
+        assert_eq!(
+            resource_key("workspace_read_range", &json!({"path":"./src/example.rs"})).as_deref(),
+            Some("workspace:src/example.rs")
+        );
+        assert_eq!(
             resource_key("github_api", &json!({"path":"/repos/o/r"})).as_deref(),
             Some("github:repos/o/r")
         );
@@ -587,6 +599,26 @@ mod tests {
         assert_eq!(sealed["toolReceipt"]["verified"], true);
         assert_eq!(sealed["toolReceipt"]["verifier"]["kind"], "sha256_readback");
         let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn range_edit_receipt_confirms_actual_target_bytes_not_model_claims() {
+        let dir=std::env::temp_dir().join(format!("dominion-range-receipt-{}",uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(dir.join("src")).await.unwrap();
+        let path=dir.join("src/example.rs");
+        tokio::fs::write(&path,"fn active() { 42 }\n").await.unwrap();
+        let digest=hash(b"fn active() { 42 }\n");
+        let args=json!({"path":"src/example.rs","startLine":1,"endLine":1,
+            "newText":"fn active() { 42 }","expectedSha256":"before"});
+        let effect=prepare("s","workspace_replace_range",&args,&[]);
+        let outcome=json!({"written":true,"postSha256":digest});
+        let success=seal(&dir,"workspace_replace_range",&args,&outcome,true,false,false,&effect).await;
+        assert_eq!(success["effectState"],"verified","{success}");
+        assert_eq!(success["toolReceipt"]["verifier"]["kind"],"sha256_readback");
+        let forged=seal(&dir,"workspace_replace_range",&args,
+            &json!({"written":true,"postSha256":"0".repeat(64)}),true,false,false,&effect).await;
+        assert_eq!(forged["effectState"],"effect_unknown","{forged}");
+        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
     #[tokio::test]

@@ -791,6 +791,7 @@ async fn replace_text(
     let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
     result["replaced"] = json!(true);
     result["replacedChars"] = json!(old_text.chars().count());
+    if result["written"] == true { result["postSha256"] = json!(format!("{:x}",Sha256::digest(updated.as_bytes()))); }
     Ok(result)
 }
 
@@ -843,6 +844,7 @@ async fn replace_range(
     if result["written"] == true {
         result["replaced"] = json!(true);
         result["replacedLines"] = json!(end-start+1);
+        result["postSha256"] = json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
     }
     Ok(result)
 }
