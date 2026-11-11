@@ -2565,6 +2565,45 @@ fn fit_worker_prompt(
     Err("rsi_token_budget: 목표와 핵심 지시문을 유지할 입력 예산이 부족합니다.".into())
 }
 
+/// An opted-in broad RSI campaign must not keep optimizing a now-satisfied
+/// single-file fixture after a verified adoption. Choose the next challenge
+/// from REAL frozen paired measurements and rescan the descendant's source.
+/// Neither the new goal nor a quality gap counts as an adopted generation.
+fn post_adoption_objective(input: &Value, history: &[Value]) -> Option<Value> {
+    if input["rsiExpandAfterGain"] != true { return None; }
+    let accepted = history.iter().rev().find(|row|
+        row["accepted"] == true && row["evaluation"]["metrics"]["eligible"] == true)?;
+    let residuals = accepted["evaluation"]["metrics"]["measurements"].as_array()
+        .into_iter().flatten()
+        .filter_map(|case| {
+            let gaps = case["metrics"].as_array()?.iter()
+                .filter(|metric|metric["key"] == "quality"
+                    && metric["candidate"].as_f64().is_some_and(|value|value < 1.0)
+                    && metric["improved"] != true)
+                .map(|metric|json!({"metric":"quality",
+                    "observed":metric["candidate"],"ceiling":1.0}))
+                .collect::<Vec<_>>();
+            if gaps.is_empty() {return None;}
+            Some(json!({"caseId":case["id"],"domain":case["domain"],
+                "gaps":gaps}))
+        }).take(5).collect::<Vec<_>>();
+    let objective = if residuals.is_empty() {
+        "독립 평가로 채택된 소스 변경을 유지하면서 다른 실제 작업 영역의 정확도·비용·자기개선 실행 능력을 개선한다. 이미 포화된 동결 품질을 중복 최적화하지 않는다.".to_string()
+    } else {
+        format!("독립 평가가 기록한 잔여 작업 결함 {} 중 하나를 실제 코드에서 해결한다. 이전 세대의 채택된 개선을 보존한다.",
+            json!(residuals))
+    };
+    Some(json!({
+        "objective":objective,
+        "residuals":residuals,
+        "previousAcceptedCommit":accepted["acceptedCommit"],
+        "prompt":format!(
+            "DOMINION 연속 자기개선의 후손 세대입니다. 직전 채택 커밋은 {} 입니다. 이진 실행기와 작업 기준 코드는 이미 이 커밋에서 재빌드되었습니다. {} 현재 소스 인덱스로 다른 분야의 원인 파일을 찾고, 안전한 분리 작업공간에서 실제 동작/비용을 바꾸는 최소 구현을 작성하세요. 소스 조사로 끝내지 말고 검증 가능한 패치를 남기세요. 동일한 분해 버그의 재수정은 하지 마세요. 패치가 새로운 동결 평가 개선을 입증하기 전에는 성능 향상이라고 주장하지 마세요.",
+            accepted["acceptedCommit"].as_str().unwrap_or(""),
+            objective)
+    }))
+}
+
 fn should_stop_no_progress(
     streak: u64, research: bool, changed: bool,
     pending_trial: bool, autonomous: bool,
@@ -2763,6 +2802,15 @@ async fn run_loop(
         // the prior implementation and repeatedly produces a neutral patch.
         // The original head remains the immutable A/B baseline.
         let prior_history=record["history"].as_array().cloned().unwrap_or_default();
+        let expanded=post_adoption_objective(input,&prior_history);
+        if let Some(next)=&expanded {
+            child_input["rsiFocusFiles"]=json!([]);
+            child_input["rsiAutonomous"]=json!(true);
+            child_input["rsiObjective"]=next["objective"].clone();
+            child_input["prompt"]=next["prompt"].clone();
+            child_input["rsiResidualEvidence"]=next["residuals"].clone();
+            child_input["rsiSourceScopeExpanded"]=json!(true);
+        }
         if let Some(id)=inherited_neutral_candidate(&context.state,&prior_history,&head) {
             child_input["rsiInheritedCandidateId"]=json!(id);
         } else {
@@ -2828,7 +2876,8 @@ async fn run_loop(
         let trial=child_input["rsiTrialAlgorithmId"].as_str()
             .filter(|_|child_input["rsiAllowedTrialCampaigns"].is_array())
             .map(str::to_string);
-        let suggested=child_input["rsiSelectedDomain"].as_str().map(str::to_string);
+        let suggested=if expanded.is_some(){None}
+            else{child_input["rsiSelectedDomain"].as_str().map(str::to_string)};
         let (target_domain, target_selection, target_strategy)=select_generation_strategy(
             &context.state,&history,&target_objective,continuation,trial,suggested,&head);
         child_input["rsiTargetDomain"]=json!(target_domain);
@@ -2863,7 +2912,7 @@ async fn run_loop(
             "campaignId":context.job_id,"attempt":attempt,
             "generatorCommit":head,"policy":child_input["rsiEditPolicy"]
         }));
-        let inherited = generation_context(&context.state, input, record);
+        let inherited = generation_context(&context.state, &child_input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
         let original = child_input["prompt"].as_str().unwrap_or("").to_string();
@@ -3027,6 +3076,8 @@ async fn run_loop(
             "sourceContextChars":current["input"]["rsiFocusContextChars"],
             "totalPromptChars":current["input"]["rsiPromptContextChars"],
             "focusFiles":current["input"]["rsiFocusFiles"],
+            "scopeExpanded":current["input"]["rsiSourceScopeExpanded"],
+            "residualEvidence":current["input"]["rsiResidualEvidence"],
             "focusSelection":current["input"]["rsiFocusSelection"],
             "targetReplan":current["rsiTargetReplan"],
             "knowledgePartition":research_scope(&current["input"]).partition_key,
