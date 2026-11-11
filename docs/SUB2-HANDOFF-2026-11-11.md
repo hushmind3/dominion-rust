@@ -207,3 +207,30 @@ Sub2는 후보별 control-domain pin을 채택했지만, 전 브랜치를 병합
 5. 문서·테스트만 늘리지 말고 실제 모델 `편집 0회` 병목을 없애는 것을 최우선으로 유지. 대량 재시작·무편집 루프·성공 조작 금지.
 
 참고: `src/engine/chat/provider.rs`, `src/engine/chat/runtime.rs`, `src/engine/jobs.rs`, `src/engine/rsi_evolve.rs`, `scripts/sub2-live-rsi.mjs`, `.github/workflows/sub2-live-rsi.yml`.
+
+
+## 2026-11-11 Sub2 — 심판 39점(5위) 이후 코드 중심 개선
+
+### 판정과 실측 병목
+- 최신 심판: **39/100, 5위** (구현 21/30, 실제 자기개선 3/40, 계승·일반화 9/20, 서비스 통합 6/10). 자리 교환 없음.
+- 실제 [42956089722](https://github.com/hushmind3/dominion-rust/actions/runs/42956089722) 아티팩트 원본: 1세대 Qwen3 4B 모델 호출 5회, 27,835토큰, code_search 1회, workspace_read_range 2회, workspace_write 완료 호출 1회, 유효 후보 0. 2세대 11,731토큰, workspace_read_range 1회, 편집 0회, timeout. 합계 39,566토큰, 채택 0, 후손 개선 0.
+- 이전 영수증의 toolsUsed는 성공 상태의 도구 횟수만 집계. 실제 Git diff와 상태별 도구 영수증이 없어서 쓰기 시도가 실패/무변경/컴파일 실패 중 무엇인지 분리하지 못했다.
+
+### 담당 브랜치에 반영한 코드
+- `87f2cf4`: `jobs.rs`에서 사용자 지정 focusFiles가 있는 연속 RSI도 편집 체크포인트를 활성화. 자동 탐색/연구 작업은 별개.
+- `1802fcf`: `tools.rs`에서 blocked write를 성공한 replace로 표기하지 않도록 교정.
+- `9d32711`: `rsi_worktree.rs` 후보 증거에 실제 편집 도구 상태·경로·written·오류·staleVersion·preflightBlocked 기록.
+- `15db7e4`, `61d99a4`: `rsi_evolve.rs`에서 편집 시도·실제 성공·Git diff·후보 채택 조건 분리. 실패한 쓰기는 새 `repair_failed_edit` 행동 및 원본 오류가 들어간 다음 세대 지시로 전달. 0바이트 diff가 확인되면 실패한 편집의 도구 오류로 다음 패치를 교정.
+- `aaabac2`: 기존 Rust 내장 `workspace_replace`에 `startLine/endLine/expectedSha256/newText` 모드 추가. `workspace_read_range`의 `sourceSha256`에 결속, 최대 120줄, 기존 UTF-8 원문/CRLF 유지, CAS 불일치 시 수정 거부. 원문 전체 재생성이 불필요한 부분 편집.
+- `58bf994`, `91d0174`, `476910b`: 사용자 지정 집중 실행의 프롬프트와 모델 자체 도구 메뉴에 줄 범위 수정 안내 연결.
+- `b9db27e`, `1e48512`: 작업 세션에 집중 파일을 보존해 기존 소스 개선 단계에서는 새 파일 생성용 `workspace_write` 대신 `workspace_replace` 선택하도록 축소.
+- `2a8a31d`: 격리 RSI에서 기존 파일을 `workspace_write`로 통째로 덮으려는 시도는 명시적으로 거절하고 범위 수정을 제시. 정상 채팅/신규 파일 생성에는 영향 없음.
+- `7b74b67`: 실모델 receipt에 editActions, sourceDiffBytes, captureError, 미검증 후보, 정적 검사 결과를 구분하여 포함.
+- `20a9784`: SHA 일치 부분 수정/지정 범위 변경/오래된 해시 거절 회귀 테스트 추가.
+- `bc51046`: CPU 기반 실모델 라이브 워크플로는 최신 커밋만 실행하도록 concurrency 추가.
+
+### 검증과 남은 핵심
+- 코드 수정 중 초기 CI `87f2cf4`, `1802fcf`, `9d32711`은 success 관측. 후속 Rust/실모델 Actions는 이번 인수인계 작성 시점 일부 queued/in_progress. 최신 HEAD 통과·실모델 개선 결과를 미리 주장하지 않는다.
+- 최우선: 최신 실제 receipt에서 `editActions[].written`, `sourceDiffBytes`, `unverifiedCandidateId`, `staticChecksPassed`, `candidateId`, `acceptedCommit`을 직접 확인. 줄 범위 편집이 실제 Git 패치/후보/동결 paired holdout으로 연결되었는지 검증한다.
+- 후보가 형성되었으나 빌드 실패 시 컴파일러 진단을 다음 세대에 전달해 1개 패치로 복구. 후보가 채택되면 반드시 새 바이너리 계보에서 **추가로 다른 개선을 만들어** 2세대 이상 실측. 아직 RSI 완주/품질 향상/39점 상향을 주장하지 않음.
+- 다른 브랜치 및 main은 변경하지 않음.
