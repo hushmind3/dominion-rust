@@ -3070,6 +3070,7 @@ async fn run_loop(
             let mut selected=ranked.iter().filter_map(|row|row["path"].as_str())
                 .map(str::to_string).collect::<Vec<_>>();
             let repair=transfer_repair_focus(&recorded_history,&target_domain,&head)
+                .or_else(||integrity_repair_focus(&recorded_history,&target_domain,&head))
                 .filter(|path|crate::engine::code_index::indexed_source_hash(
                     &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),path).is_some());
             if let Some(path)=repair.as_ref(){selected=vec![path.clone()];}
@@ -3312,6 +3313,23 @@ async fn run_loop(
             crate::engine::rsi_judgement::effects(&context.state,id))
             .unwrap_or_default());
         let candidate_id = verified_candidate_id(&current["result"]);
+        let source=&current["result"]["rsi"];
+        let failed_checks=source["checks"].as_array().into_iter().flatten()
+            .filter(|check|check["passed"]!=true)
+            .take(3).map(|check|json!({"label":check["label"],
+                "error":check["stderr"].as_str().or_else(||check["error"].as_str())
+                    .unwrap_or("").chars().take(850).collect::<String>()}))
+            .collect::<Vec<_>>();
+        generation["sourceIntegrity"]=json!({
+            "diffBytes":source["diffBytes"],"sourceClean":source["sourceClean"],
+            "checksPassed":source["checksPassed"],"failedChecks":failed_checks,
+            "sourceReadback":source["sourceReadback"],
+            "repairAttempts":current["result"]["repairAttempts"],
+            "status":if candidate_id.is_some(){"candidate_ready"}
+                else if source["diffBytes"].as_u64().unwrap_or(0)>0
+                    && source["checksPassed"]!=true {"changed_source_failed_integrity"}
+                else{"no_valid_candidate"}
+        });
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
         if let Some(id) = candidate_id {
             record["phase"] = json!("measuring");
@@ -3435,7 +3453,8 @@ async fn run_loop(
         });
         generation["stopReason"]=json!(stopped);
         if candidate_id.is_none() && new_findings>0 && output.is_ok() && stopped.is_none()
-            && current["result"]["rsi"]["modelError"].is_null() {
+            && current["result"]["rsi"]["modelError"].is_null()
+            && generation["sourceIntegrity"]["diffBytes"].as_u64().unwrap_or(0)==0 {
             generation["error"]=Value::Null;
         }
         if let Some(session)=session {
@@ -4138,6 +4157,48 @@ fn transfer_failure_repair(history:&[Value])->Option<Value> {
     }))
 }
 
+/// A source edit that failed the actual compiler or integrity checks is not
+/// another research observation. The next descendant repairs that SAME
+/// source capability, using the real diagnostic and a fresh source read.
+/// The failed patch is NOT automatically accepted or replayed.
+fn source_integrity_repair(history:&[Value])->Option<Value> {
+    let last=history.last()?;
+    if last["accepted"]==true || last["domainSelection"]=="source_integrity_repair" {
+        return None;
+    }
+    let source=&last["sourceIntegrity"];
+    if source["diffBytes"].as_u64().unwrap_or(0)==0
+        || source["sourceClean"]!=true
+        || source["checksPassed"]==true {return None;}
+    let errors=source["failedChecks"].as_array().filter(|xs|!xs.is_empty())?;
+    let path=last["focusFiles"].as_array()?.iter()
+        .filter_map(Value::as_str).find(|p|crate::engine::rsi::safe_path(p))?;
+    let domain=last["domain"].as_str().filter(|d|DOMAINS.contains(d))?;
+    let commit=last["generatorCommit"].as_str().filter(|s|!s.is_empty())?;
+    Some(json!({"domain":domain,"generatorCommit":commit,"focusPath":path,
+        "sourceGenerationId":last["id"],"failedChecks":errors.iter().take(3).cloned().collect::<Vec<_>>(),
+        "sourceReadback":source["sourceReadback"],
+        "reason":"observed_source_change_failed_compilation"}))
+}
+
+fn integrity_repair_focus(history:&[Value],domain:&str,commit:&str)->Option<String> {
+    let recovery=source_integrity_repair(history)?;
+    if recovery["domain"].as_str()!=Some(domain)
+        || recovery["generatorCommit"].as_str()!=Some(commit){return None;}
+    recovery["focusPath"].as_str().map(str::to_string)
+}
+
+fn integrity_repair_instruction(plan:&Value)->String {
+    let errors=plan["failedChecks"].as_array().into_iter().flatten()
+        .map(|e|format!("{}: {}",e["label"].as_str().unwrap_or("check"),
+            e["error"].as_str().unwrap_or("").chars().take(750).collect::<String>()))
+        .collect::<Vec<_>>().join("\n");
+    let changed=plan["sourceReadback"].to_string().chars().take(1600)
+        .collect::<String>();
+    format!("\n\n### 이전 세대 실제 컴파일 실패 교정\n대상 파일: {}\n검증 오류:\n{}\n실패한 소스 읽기 증거: {}\n원본 작업공간은 이전 기준으로 복원되어 있습니다. 현재 sourceSha256과 실제 소스를 다시 관측하고, 이전에 실패한 변경을 그대로 적용하지 말고 컴파일되는 다른 수정을 실행하세요. 성공은 독립 평가로만 결정합니다.\n",
+        plan["focusPath"].as_str().unwrap_or(""),errors,changed)
+}
+
 fn transfer_repair_focus(history:&[Value],domain:&str,commit:&str)->Option<String> {
     let plan=transfer_failure_repair(history)?;
     if plan["domain"].as_str()!=Some(domain) || plan["generatorCommit"].as_str()!=Some(commit) {
@@ -4193,6 +4254,13 @@ fn select_generation_strategy(
     if let Some(repair)=transfer_failure_repair(history) {
         if let Some(domain)=repair["domain"].as_str() {
             return (domain.to_string(),"method_transfer_repair",Value::Null);
+        }
+    }
+    if let Some(repair)=source_integrity_repair(history) {
+        if repair["generatorCommit"].as_str()==Some(generator_commit) {
+            if let Some(domain)=repair["domain"].as_str() {
+                return (domain.to_string(),"source_integrity_repair",Value::Null);
+            }
         }
     }
     // A queued executable policy trial must not be starved by a further
@@ -4319,6 +4387,7 @@ fn reconcile_descendant_target(
         let mut selected=ranked.iter().filter_map(|item|item["path"].as_str())
             .map(str::to_string).collect::<Vec<_>>();
         let repair=transfer_repair_focus(history,domain,commit)
+            .or_else(||integrity_repair_focus(history,domain,commit))
             .filter(|path|crate::engine::code_index::indexed_source_hash(
                 state,index["id"].as_str().unwrap_or(""),path).is_some());
         if let Some(path)=repair.as_ref(){selected=vec![path.clone()];}
@@ -4412,6 +4481,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let objective = selection_objective(&job["input"]);
     let continuation=transfer_failure_repair(&history)
         .and_then(|plan|plan["domain"].as_str().map(str::to_string))
+        .or_else(||source_integrity_repair(&history)
+            .and_then(|plan|plan["domain"].as_str().map(str::to_string)))
         .or_else(||research_continuation(&history));
     let trial_id = job["input"]["rsiTrialAlgorithmId"]
         .as_str()
@@ -4477,6 +4548,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     if let Some(plan)=transfer_repair.as_ref(){
         action_prompt.push_str(&transfer_repair_instruction(plan));
     }
+    let integrity_repair=source_integrity_repair(&history).filter(|plan|
+        plan["domain"].as_str()==Some(domain.as_str())
+        && plan["generatorCommit"].as_str()==Some(commit.as_str()));
+    if let Some(plan)=integrity_repair.as_ref() {
+        action_prompt.push_str(&integrity_repair_instruction(plan));
+    }
+    job["input"]["rsiSourceIntegrityRepair"]=
+        integrity_repair.unwrap_or(Value::Null);
     let (full_prompt,worker_plan)=match fit_worker_context(
         &action_prompt,&domain,&capability,
         &feedback,job["input"]["rsiRemainingCampaignTokens"].as_u64()
@@ -4513,6 +4592,31 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compiler_failure_retargets_descendant_and_preserves_real_error(){
+        let bad=json!({"id":"g1","jobId":"j1","generatorCommit":"abcdef",
+            "domain":"tools","domainSelection":"algorithm_active","accepted":false,
+            "focusFiles":["src/engine/decompose.rs"],"candidateId":null,
+            "newFindings":2,"sourceIntegrity":{"diffBytes":250,
+                "sourceClean":true,"checksPassed":false,
+                "failedChecks":[{"label":"cargo check","error":"error[E0308]: wrong type"}]}});
+        let history=vec![bad.clone()];
+        let fix=source_integrity_repair(&history).unwrap();
+        assert_eq!(fix["focusPath"],"src/engine/decompose.rs");
+        assert!(integrity_repair_instruction(&fix).contains("E0308"));
+        assert_eq!(integrity_repair_focus(&history,"tools","abcdef"),
+            Some("src/engine/decompose.rs".to_string()));
+        assert!(integrity_repair_focus(&history,"tools","other").is_none());
+        let (state,root)=state();
+        let (domain,selection,_)=select_generation_strategy(&state,&history,
+            "improve tool source",None,None,None,"abcdef");
+        assert_eq!(domain,"tools");
+        assert_eq!(selection,"source_integrity_repair");
+        let mut retried=bad; retried["domainSelection"]=json!("source_integrity_repair");
+        assert!(source_integrity_repair(&[retried]).is_none());
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn actual_source_diff_without_candidate_triggers_capture_repair_not_research() {
         let failed=json!({"id":"g1","jobId":"j1","accepted":false,
