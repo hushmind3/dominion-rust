@@ -6061,7 +6061,8 @@ mod tests {
             assert!(prompt.contains("workspace_read_range"));
             assert!(!prompt.contains("STALE_READ_RANGE"));
             assert!(!prompt.contains("STALE_BASE_SHA"));
-            assert_eq!(prompt.chars().count(),prompt.chars().count());
+            assert!(prompt.contains("실질적으로 다른 동작"),
+                "child prompt must demand behavioral correction");
         }
     }
 
