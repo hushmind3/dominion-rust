@@ -2980,6 +2980,7 @@ async fn run_loop(
             child_input["rsiAutoFocus"]=json!(false);
             child_input["rsiFocusSelection"]=json!({"source":"user_selected"});
         }
+        bind_meta_execution_focus(&context.state,&mut child_input);
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
@@ -3773,6 +3774,39 @@ fn learned_improvement_directive(history:&[Value])->Value {
     decision
 }
 
+
+/*
+ * A learned meta action is a runtime constraint, not a suggestion. An
+ * autonomous descendant selects one indexed source file for an executable
+ * edit/repair action, then the chat harness can use its versioned content
+ * without reopening a broad search loop.
+ */
+fn bind_meta_execution_focus(state:&AppState,input:&mut Value)->bool {
+    input["rsiMetaFocusActive"]=json!(false);
+    if input["rsiAutoFocus"]!=true
+        || !matches!(input["rsiImprovementDirective"]["mode"].as_str(),
+            Some("implement_research"|"repair_edit_execution"|"repair_candidate_capture"
+                |"repair_counterexample"|"revise_candidate"|"change_approach"))
+    {return false;}
+    let Some(index)=input["rsiIndexId"].as_str() else {return false;};
+    let Some(focus)=input["rsiFocusFiles"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str)
+        .find(|p|crate::engine::rsi::safe_path(p)
+            && crate::engine::code_index::indexed_source_hash(state,index,p).is_some())
+        .map(str::to_string) else{return false;};
+    let Some(hash)=crate::engine::code_index::indexed_source_hash(state,index,&focus)
+        else{return false;};
+    input["rsiFocusFiles"]=json!([focus]);
+    input["rsiMetaFocusActive"]=json!(true);
+    if !input["rsiFocusSelection"].is_object(){input["rsiFocusSelection"]=json!({});}
+    input["rsiFocusSelection"]["executionSource"]=json!("evolved_meta_action");
+    input["rsiFocusSelection"]["executionTarget"]=json!(focus);
+    input["rsiFocusSelection"]["executionSourceHash"]=json!(hash);
+    input["rsiFocusSelection"]["actionPolicyRevision"]=
+        input["rsiImprovementDirective"]["policy"]["revision"].clone();
+    true
+}
+
 fn generation_improvement_directive(input:&Value,history:&[Value])->Value{
     if history.is_empty() && input["rsiAutonomous"]==false
         && input["rsiFocusFiles"].as_array().is_some_and(|paths|!paths.is_empty())
@@ -4104,6 +4138,7 @@ fn reconcile_descendant_target(
             "sourceIndexId":index["id"]
         });
     }
+    bind_meta_execution_focus(state,&mut job["input"]);
     let source=job["input"]["rsiSourceDir"].as_str().ok_or("자기개선 소스 경로가 없습니다.")?;
     let focus=focus_file_context(state,&json!({"labDir":source}),&job["input"]);
     let bound=job["input"]["model"].as_str().is_some_and(|s|!s.is_empty())
@@ -4197,6 +4232,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let (domain, domain_selection, strategy) =
         select_generation_strategy(&state, &history, &objective, continuation, trial_id,
             None, &commit);
+    // The rebuilt descendant makes its OWN newest meta-policy decision from
+    // durable experience. The parent stores a provisional plan, not authority.
+    job["input"]["rsiImprovementDirective"]=
+        generation_improvement_directive(&job["input"],&history);
     // Child-authoritative decision: source targeting and the prompt are rebuilt
     // whenever the descendant's policy disagrees with the frozen coordinator.
     // The old plan is preserved as an audit receipt, never silently relabelled.
