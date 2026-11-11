@@ -619,6 +619,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_function_editor_requires_real_disk_sha_before_rsi_credit() {
+        let dir=std::env::temp_dir()
+            .join(format!("dominion-function-effect-{}",uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(dir.join("src")).await.unwrap();
+        let file=dir.join("src/target.rs");
+        let actual="fn target() -> bool { true }\n";
+        tokio::fs::write(&file,actual).await.unwrap();
+        let args=json!({"path":"src/target.rs","functionName":"target",
+            "newText":"fn target() -> bool { true }",
+            "expectedSha256":"a".repeat(64)});
+        assert_eq!(resource_key("workspace_replace_function",&args).as_deref(),
+            Some("workspace:src/target.rs"));
+        assert!(is_effectful("workspace_replace_function",&args));
+        let expected=format!("{:x}",Sha256::digest(actual.as_bytes()));
+        let effect=prepare("rsi","workspace_replace_function",&args,&[]);
+        let success=seal(&dir,"workspace_replace_function",&args,
+            &json!({"written":true,"writtenSha256":expected}),
+            true,false,false,&effect).await;
+        assert_eq!(success["toolReceipt"]["verified"],true,"{success}");
+        assert_eq!(success["toolReceipt"]["verifier"]["kind"],"sha256_readback");
+        let forged=seal(&dir,"workspace_replace_function",&args,
+            &json!({"written":true,"writtenSha256":"f".repeat(64)}),
+            true,false,false,&effect).await;
+        assert_ne!(forged["toolReceipt"]["verified"],true,
+            "An unverified patch cannot train recursive method selection");
+        let rejected=seal(&dir,"workspace_replace_function",&args,
+            &json!({"written":false,"preflightScopeRejected":true,
+                "error":"scope gate rejected the patch"}),
+            false,false,false,&effect).await;
+        assert_ne!(rejected["toolReceipt"]["verified"],true);
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_missing_readback_is_applied_not_verified() {
         let dir = std::env::temp_dir().join(format!("dominion-effect-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
