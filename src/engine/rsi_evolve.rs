@@ -1825,6 +1825,181 @@ fn queue_search_trial(
 /// Returns a candidate belonging to the current campaign or an exact
 /// fingerprint-verified predecessor, never a sibling sharing a goal string.
 /// No new work or extra generation is created by this lookup.
+/// Synthesize an executable search-policy experiment from observed failures,
+/// even when a small model never calls algorithm_propose. This creates only a
+/// candidate: promotion still requires independently measured live trials.
+fn autonomous_search_hypothesis(history:&[Value])->Option<Value> {
+    let recent=history.iter().rev().take(4).collect::<Vec<_>>();
+    if recent.len()<2 {return None;}
+    // The last two attempts must have spent work without an accepted patch or
+    // a new discovery. One bad model response is too little evidence.
+    let failure=|row:&&Value| {
+        row["accepted"]!=true && row["tokens"].as_u64().unwrap_or(0)>0
+        && (row["newFindings"].as_u64().unwrap_or(0)==0
+            || row["evaluation"]["verdict"]=="regressed")
+    };
+    let research_loop=recent.len()>=3 && recent.iter().take(3).all(|row|
+        row["accepted"]!=true
+        && row["candidateId"].is_null()
+        && row["tokens"].as_u64().unwrap_or(0)>0);
+    if !recent.iter().take(2).all(failure) && !research_loop {return None;}
+    let wasted=recent.iter().filter(|row|failure(row)
+        || research_loop && row["accepted"]!=true && row["candidateId"].is_null())
+        .collect::<Vec<_>>();
+    let regressions=wasted.iter().filter(|row|
+        row["evaluation"]["verdict"]=="regressed").count();
+    let stalled=wasted.iter().filter(|row|row["candidateId"].is_null()).count();
+    let mut file_counts=BTreeMap::<String,usize>::new();
+    for row in &wasted {
+        for file in row["focusFiles"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str) {
+            *file_counts.entry(file.to_string()).or_default()+=1;
+        }
+    }
+    let repeated=file_counts.values().filter(|count|**count>=2).count();
+    let novelty_weight=(2+repeated.min(4)+stalled.min(2)) as u64;
+    let repeat_weight=(3+2*repeated.min(3)) as u64;
+    let approach=if regressions>0 {"avoid_regressions"}
+        else if research_loop && recent.iter().take(3)
+            .any(|row|row["newFindings"].as_u64().unwrap_or(0)>0) {
+            "escape_research_loop"
+        } else {"escape_barren_research"};
+    let domain_expression=if regressions>0 {
+        format!("objectiveMatch * 3 + successRate * 4 + exploration * 1.5 + novelty * {novelty_weight} - regressions * 2 - barrenRate - tokenCost * 0.3")
+    } else {
+        format!("objectiveMatch * 3 + exploration * 2 + novelty * {novelty_weight} + successRate * 1.5 - barrenRate * 2 - tokenCost * 0.6")
+    };
+    let target_expression=format!(
+        "bodyEvidence * 3 + symbolEvidence * 2 + pathEvidence + domainEvidence * 2 + productiveEvidence * 3 + novelty * {novelty_weight} - repeatPenalty * {repeat_weight} - sourceCost"
+    );
+    let anchors=wasted.iter().take(4).filter_map(|row|row["id"].as_str())
+        .map(str::to_string).collect::<Vec<_>>();
+    Some(json!({"kind":"selfimprove.search","name":format!("autonomous-{approach}-v1"),
+        "implementation":"expression","source":"rsi-generated",
+        "description":format!(
+            "Engine-generated hypothesis from {} observed failed attempts: {}. Test different code targets and preserve the verified evaluator. Proposal, not measured improvement.",
+            wasted.len(),approach),
+        "parameters":{"expression":domain_expression,
+            "targetExpression":target_expression},
+        "hypothesisEvidence":{"class":approach,
+            "wastedGenerations":wasted.len(),"regressions":regressions,
+            "stalledWithoutCandidate":stalled,"repeatedFiles":repeated,
+            "generationIds":anchors}}))
+}
+
+/// Never seed a second candidate over a pending or previously tried campaign
+/// candidate. The generated strategy is claimed through the same durable
+/// search-trial mechanism as a model-authored proposal.
+fn propose_autonomous_search_trial(
+    state:&AppState,history:&[Value],objective:&str,campaign_id:&str,attempt:u64,auto_focus:bool
+)->Value {
+    if !auto_focus && eligible_domains(objective).len()==1 {
+        return json!({"status":"user_pinned_search_target"});
+    }
+    let owned=state.store.all("algorithm").into_iter().filter(|row|
+        row["kind"]=="selfimprove.search"
+        && row["source"]=="rsi-generated"
+        && row["rsiTrial"]["campaignId"]==campaign_id).collect::<Vec<_>>();
+    if owned.iter().any(|row|matches!(row["rsiTrial"]["status"].as_str(),
+        Some("pending_trial"|"pending_second_trial"))) {
+        return json!({"status":"existing_trial"});
+    }
+    // A failed or inconclusive experiment must not permanently block
+    // subsequent strategies. Keep the number of live hypotheses bounded.
+    if owned.len()>=3 {
+        return json!({"status":"campaign_trial_budget_exhausted","trialCount":owned.len()});
+    }
+    let failed=owned.iter().filter(|row|matches!(row["rsiTrial"]["status"].as_str(),
+        Some("trial_inconclusive"|"trial_rejected"|"trial_supported"))).collect::<Vec<_>>();
+    let Some(mut hypothesis)=autonomous_search_hypothesis(history) else {
+        return json!({"status":"insufficient_failure_evidence"});
+    };
+    if !auto_focus {
+        if let Some(parameters)=hypothesis["parameters"].as_object_mut() {
+            parameters.remove("targetExpression");
+        }
+        hypothesis["hypothesisEvidence"]["targetMode"]=json!("owner_pinned");
+    }
+    // A rejected policy must alter the *next* search hypothesis instead of
+    // causing the same formula to be registered again across new campaigns.
+    let prior_rejections=state.store.all("algorithm").into_iter()
+        .filter(|row|row["kind"]=="selfimprove.search"
+            && row["name"].as_str().is_some_and(|n|n.starts_with("autonomous-"))
+            && row["rsiTrial"]["status"]=="trial_rejected")
+        .count().min(4);
+    if prior_rejections>0 {
+        if auto_focus {
+            let original=hypothesis["parameters"]["targetExpression"].as_str().unwrap_or("");
+            let revised=format!("{original} + productiveEvidence * {} - repeatPenalty * {}",
+                2*prior_rejections,prior_rejections);
+            hypothesis["parameters"]["targetExpression"]=json!(revised);
+        } else {
+            let original=hypothesis["parameters"]["expression"].as_str().unwrap_or("");
+            hypothesis["parameters"]["expression"]=json!(format!(
+                "{original} + exploration * {} - barrenRate * {}",
+                prior_rejections,prior_rejections
+            ));
+        }
+        hypothesis["hypothesisEvidence"]["previousRejectedPolicies"]=json!(prior_rejections);
+    }
+    // Learn from the failed local policy experiment. A retry must explore a
+    // genuinely different executable search formula, not requeue an
+    // inconclusive candidate under its former name and revision.
+    if !failed.is_empty() {
+        let n=failed.len() as u64;
+        let source_scoring_unavailable=failed.iter().any(|row|
+            row["rsiTrial"]["lastReason"]=="target_formula_not_executed");
+        if auto_focus && source_scoring_unavailable {
+            // The registered source-ranking formula never ran. A domain-only
+            // retry can still execute and generate a patch instead of
+            // repeatedly demanding an unavailable indexed source receipt.
+            hypothesis["parameters"].as_object_mut().unwrap().remove("targetExpression");
+            let old=hypothesis["parameters"]["expression"].as_str().unwrap_or("");
+            hypothesis["parameters"]["expression"]=json!(format!(
+                "{old} + exploration * {} + successRate * {}",3*n,n));
+            hypothesis["hypothesisEvidence"]["recoveryMode"]=
+                json!("domain_only_after_unexecuted_target");
+        } else if auto_focus {
+            let old=hypothesis["parameters"]["targetExpression"].as_str().unwrap_or("");
+            hypothesis["parameters"]["targetExpression"]=json!(format!(
+                "{old} + novelty * {} + productiveEvidence * {} - repeatPenalty * {}",
+                3*n,n,2*n));
+            hypothesis["hypothesisEvidence"]["recoveryMode"]=json!("novel_source_exploration");
+        } else {
+            let old=hypothesis["parameters"]["expression"].as_str().unwrap_or("");
+            hypothesis["parameters"]["expression"]=json!(format!(
+                "{old} + exploration * {} - barrenRate * {}",3*n,2*n));
+            hypothesis["hypothesisEvidence"]["recoveryMode"]=json!("domain_exploration");
+        }
+        hypothesis["hypothesisEvidence"]["previousFailedTrials"]=json!(n);
+        hypothesis["hypothesisEvidence"]["previousTrialReasons"]=json!(failed.iter()
+            .map(|row|row["rsiTrial"]["lastReason"].as_str()
+                .or_else(||row["rsiTrial"]["lastComparison"]["reason"].as_str())
+                .unwrap_or("unknown")).collect::<Vec<_>>());
+    }
+    // Content-addressed IDs are campaign-specific: two independent trials
+    // must not share mutable ownership just because their formulas match.
+    hypothesis["name"]=json!(format!("{}-{}-trial{}",
+        hypothesis["name"].as_str().unwrap_or("autonomous"),campaign_id,owned.len()+1));
+    let mut candidate=match crate::engine::algorithms::register(state,&hypothesis) {
+        Ok(candidate)=>candidate,
+        Err(error)=>return json!({"status":"invalid_hypothesis","error":error})
+    };
+    // Store the source-generation receipts with the executable candidate.
+    // Later generations must be able to inspect *why* this search formula
+    // existed without depending on a transient model prompt.
+    candidate["hypothesisEvidence"]=hypothesis["hypothesisEvidence"].clone();
+    if state.store.put("algorithm",&candidate).is_none() {
+        return json!({"status":"hypothesis_not_persisted"});
+    }
+    let active=crate::engine::algorithms::active(state,"selfimprove.search")
+        .unwrap_or_else(||json!({"implementation":"failure-clusters","parameters":{}}));
+    let mut receipt=queue_search_trial(state,&candidate,&active,history,objective,campaign_id,attempt);
+    receipt["origin"]=json!("engine_synthesized_failure_hypothesis");
+    receipt["hypothesisEvidence"]=hypothesis["hypothesisEvidence"].clone();
+    receipt
+}
+
 fn pending_trial_candidate(state: &AppState, objective: &str, allowed_campaigns:&[String]) -> Option<Value> {
     let objective_hash = crate::engine::memory::stable_id(&[objective]);
     let mut candidates = state
@@ -3056,6 +3231,26 @@ async fn run_loop(
                         record["nextTrialAlgorithmId"] = json!(id);
                     }
                     generation["trialOutcome"] = outcome;
+                }
+            }
+            // The learned, outcome-driven search optimizer remains first priority.
+            // When a small model repeatedly produces research but no candidate,
+            // synthesize a distinct executable policy from those real failures.
+            // This queues a normal future trial, never an unmeasured adoption.
+            if queued.is_empty() && record["nextTrialAlgorithmId"].is_null()
+                && input["rsiAutonomous"] == true && generation["accepted"] != true {
+                let mut observed = prior_history.clone();
+                observed.push(generation.clone());
+                let synthesized = propose_autonomous_search_trial(
+                    &context.state, &observed, &selection_objective(input),
+                    &context.job_id, attempt,
+                    current["input"]["rsiAutoFocus"] == true,
+                );
+                generation["autonomousSearchProposal"] = synthesized.clone();
+                if synthesized["status"] == "pending_trial" {
+                    if let Some(id) = synthesized["candidateId"].as_str() {
+                        queued.push(id.to_string());
+                    }
                 }
             }
             if record["nextTrialAlgorithmId"].is_null() {
@@ -6214,6 +6409,34 @@ mod tests {
         }).collect::<Vec<_>>();
         assert!(adaptive_search_expression(&no_proof).is_none(),
             "claimed acceptance without independently verified payoff is insufficient");
+    }
+
+    #[test]
+    fn unproductive_autonomous_generations_queue_a_new_executable_search_policy() {
+        let (state,root)=state();
+        crate::engine::algorithms::seed(&state);
+        let history=(0..3).map(|attempt|json!({
+            "id":format!("failed-{attempt}"),"attempt":attempt+1,
+            "accepted":false,"newFindings":0,"candidateId":null,
+            "domain":"memory","tokens":12000,
+            "focusFiles":["src/engine/memory.rs"],"generatorCommit":"base-1"
+        })).collect::<Vec<_>>();
+        assert!(autonomous_search_hypothesis(&history[..1]).is_none());
+        let hypothesis=autonomous_search_hypothesis(&history).expect("observed failures");
+        assert_eq!(hypothesis["hypothesisEvidence"]["class"],"escape_barren_research");
+        let queued=propose_autonomous_search_trial(
+            &state,&history,"","campaign-autonomous",3,true);
+        assert_eq!(queued["status"],"pending_trial","{queued}");
+        let selected=state.store.get("algorithm",queued["candidateId"].as_str().unwrap())
+            .expect("durable policy candidate");
+        assert_eq!(selected["rsiTrial"]["status"],"pending_trial");
+        assert_eq!(selected["hypothesisEvidence"]["generationIds"],
+            json!(["failed-2","failed-1","failed-0"]));
+        assert_ne!(selected["status"],"active","not yet measured or promoted");
+        let again=propose_autonomous_search_trial(
+            &state,&history,"","campaign-autonomous",4,true);
+        assert_eq!(again["status"],"existing_trial");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
