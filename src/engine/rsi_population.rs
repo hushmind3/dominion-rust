@@ -24,11 +24,22 @@ fn valid_commit(value: &Value) -> bool {
 fn measured_gain(row: &Value) -> Option<u64> {
     let proof = &row["acceptedProof"];
     let evaluation = &row["evaluation"];
-    let metrics = &evaluation["metrics"];
+    let frozen = &proof["evaluation"];
+    let metrics = &frozen["metrics"];
+    // The engine stores a *pair comparison summary* in the generation,
+    // while acceptedProof contains the evaluator's original immutable record.
+    // They have different shapes; connect them by their frozen receipt hash
+    // and exact metric payload, never by whole-object equality.
+    let receipt = frozen["evidenceSha256"].as_str()
+        .filter(|hash| hash.len() == 64
+            && hash.bytes().all(|byte|byte.is_ascii_hexdigit()));
     if row["accepted"] != true
         || proof["status"] != "verified"
-        || proof["evaluation"] != evaluation.clone()
-        || evaluation["source"] != "server_invoked_local_paired_git_worktrees"
+        || receipt.is_none()
+        || frozen["evidenceSha256"] != evaluation["evidenceSha256"]
+        || frozen["metrics"] != evaluation["metrics"]
+        || frozen["source"] != "server_invoked_local_paired_git_worktrees"
+        || evaluation["candidateId"] != row["candidateId"]
         || metrics["eligible"] != true
         || metrics["regressions"].as_u64() != Some(0)
         || proof["baseCommit"] != row["generatorCommit"]
@@ -329,15 +340,18 @@ mod tests {
     }
     fn winner(id: &str, domain: &str) -> Value {
         let mut row = observed(id, domain, 16);
-        let eval = json!({"source":"server_invoked_local_paired_git_worktrees",
-            "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":2}});
+        let metrics=json!({"eligible":true,"regressions":0,"improvedHoldouts":2});
+        let sha="c".repeat(64);
+        let frozen=json!({"source":"server_invoked_local_paired_git_worktrees",
+            "evidenceSha256":sha,"metrics":metrics});
         row["accepted"] = json!(true);
         row["candidateId"] = json!(format!("candidate-{id}"));
         row["acceptedCommit"] = json!("b".repeat(40));
-        row["evaluation"] = eval.clone();
+        row["evaluation"] = json!({"candidateId":row["candidateId"],
+            "evidenceSha256":sha,"metrics":metrics,"verdict":"improved"});
         row["acceptedProof"] = json!({"status":"verified","baseCommit":"a".repeat(40),
             "adoptedCommit":"b".repeat(40),"candidateId":row["candidateId"],
-            "evaluation":eval});
+            "evaluation":frozen});
         row
     }
     #[test]
