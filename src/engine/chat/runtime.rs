@@ -1436,7 +1436,14 @@ async fn run_turn_body(
                     && op["status"]=="completed" && op["arguments"]["path"]==path
                     && op["result"]["sourceSha256"].as_str().is_some_and(|sha|sha.len()==64));
             if !earlier && budget.can_execute_tool() {
-                let start=session["rsiFocusStartLine"].as_u64().unwrap_or(1).max(1);
+                let start=crate::engine::code_index::bootstrap_source_start(
+                    state,
+                    session["rsiIndexId"].as_str().unwrap_or(""),
+                    path,
+                    session["rsiObjective"].as_str().unwrap_or(""),
+                    session["rsiDomain"].as_str().unwrap_or(""),
+                ).or_else(||session["rsiFocusStartLine"].as_u64())
+                    .unwrap_or(1).max(1);
                 let end=start.saturating_add(95);
                 let args=json!({"path":path,"startLine":start,"endLine":end});
                 if !budget.charge_tool() {
