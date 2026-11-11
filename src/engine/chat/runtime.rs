@@ -153,6 +153,16 @@ fn rsi_compact_local_edit_context(
     let hash=read["result"]["sourceSha256"].as_str()?;
     let start=read["result"]["startLine"].as_u64().unwrap_or(1);
     let end=read["result"]["endLine"].as_u64().unwrap_or(start+100);
+    // The read tool returns "   45 actual code" to anchor range edits.
+    // For exact-text compiler repair that prefix is NOT part of the file.
+    // Strip it by verified read line position before asking the model for
+    // oldText, otherwise even a correct replacement cannot match the source.
+    let editable_excerpt=if preferred_tool=="workspace_replace" {
+        source.lines().enumerate().map(|(index,line)|{
+            let numbered=format!("{:>5} ",start.saturating_add(index as u64));
+            line.strip_prefix(&numbered).unwrap_or(line)
+        }).collect::<Vec<_>>().join("\n")
+    }else{source.to_string()};
     let objective=session["rsiObjective"].as_str()
         .filter(|goal|!goal.trim().is_empty()).unwrap_or("DOMINION의 개선 능력 강화");
     // Compact local model turns intentionally omit earlier chat history.
@@ -179,7 +189,7 @@ fn rsi_compact_local_edit_context(
         "목표: {}\n개선 분야: {}\n편집 대상: {}\n실제 관측 범위: {}..{}\n실제 SHA-256: {}\n{}\n현재 파일 내용(원문 번호 포함):\n{}\n\n위에서 읽은 범위 안에서 실제로 개선할 코드를 모델이 결정해 작성하세요. {} 변경할 근거가 없다면 가짜 수정은 하지 마세요. 다른 파일을 수정하지 마세요.",
         objective.chars().take(1200).collect::<String>(),
         session["rsiDomain"].as_str().unwrap_or(""),
-        path,start,end,hash,repair_task,source.chars().take(9500).collect::<String>(),edit_contract);
+        path,start,end,hash,repair_task,editable_excerpt.chars().take(9500).collect::<String>(),edit_contract);
     Some(vec![
         json!({"role":"system","content":
             "DOMINION 독립 개선기. 파일 쓰기는 제공된 native tool 호출로만 수행한다. 소스 해시·줄 번호를 검증하고 독립 품질 평가는 다른 엔진이 수행한다. JSON 또는 실제 도구 호출 이외의 긴 분석은 출력하지 않는다."}),
