@@ -302,3 +302,29 @@ Sub2는 후보별 control-domain pin을 채택했지만, 전 브랜치를 병합
 - GitHub Rust 코드와 단위·통합 테스트 소스 커밋 확인. 이 환경에 cargo/rustc가 없고 GitHub Actions 최신 CI/실모델 작업이 queued이므로 신규 코드의 빌드 통과 및 모델 기반 성능 향상은 아직 입증 전.
 - 메타 방법 합성 자체에는 qualityGain을 설정하지 않으며, 채택된 소스 효과와 방법 자체의 인과적 성능 우월성도 별도로 구분한다.
 - 다음에는 CI 오류 발생 시 즉시 수정, 실제 모델의 후보 패치 생성·독립 frozen paired holdout·채택, 새로운 바이너리 후손에서 다시 방법 진화 및 독립 평가를 3세대 이상 완주해야 한다.
+
+
+## 2026-11-11 Sub2 — 심판 62점 이후 실모델 무수정 정체를 해결하기 위한 자기개선 실행 계층
+
+출발 HEAD e94af6460, 담당 dominion-sub2. 심판 현재 점수 62/100·2위는 새 독립 채점 전까지 그대로 유지한다.
+
+### 적용한 실제 엔진 변경
+
+1. src/engine/rsi_worktree.rs: zero-diff 후 원본 소스가 깨끗하고, 세대가 단일 파일의 실제 소스 인덱스나 성공한 workspace_read_range 증거를 보유할 때만 같은 격리 작업 공간에서 구체적인 코드 편집을 1회 다시 시도하는 no_edit_feedback 추가.
+2. src/engine/jobs.rs: 기존 컴파일 오류에 대한 재작업 경로를 실제 소스 수정 0건 재시도 및 도구 오류 복구와 결합. 한 작업에서 총 2번을 넘지 않고, source_edit_bootstrap / observed_tool_repair / verification_repair 종류별로 실행 영수증을 저장.
+3. src/engine/rsi_worktree.rs: 모델이 workspace_replace staleVersion / preflightBlocked 또는 기존 파일에 workspace_write를 사용해 실패한 원인을 읽고, 기존 내용 재관측 후 실제 수정을 유도하는 failed_edit_feedback 추가. 패치 자동 합성이나 성공 선언이 아니라 후속 모델 도구 실행을 통한 수정 시도.
+4. src/engine/rsi_evolve.rs: 기존 procedure가 전혀 없는 첫 세대에서도 원시 모델 workspace_replace의 staleVersion 또는 preflightBlocked 도구 기록을 기반으로 read_range → 동적 SHA 바인딩 → workspace_replace의 새로운 실행 DAG를 생성. candidate로 저장하고 remember_research를 통해 다음 세대에 계승. 0건 수정 결과를 허위 성공으로 계산하지 않음.
+5. src/engine/rsi_evolve.rs: 각 세대 selfRepair 항목에 실제 재작업 횟수·사용한 방식·소스 diff 생성·후보 등록 여부를 저장. 재시도 후에도 수정 0건이면 다음 세대 행동 선택기의 컨텍스트를 exhausted_recovery로 바꾸고 탐색만 반복하지 않도록 change_approach를 우선 실행.
+6. src/engine/jobs.rs: 사용자 명시 파일과 세대별 소스 색인 hash를 한 번 더 연결하여, 직접 파일 읽기 도구를 호출하지 않고도 이미 인덱스 근거를 가진 첫 세대의 실패를 복구할 수 있게 함.
+7. .github/workflows/sub2-live-rsi.yml: jobs.rs, rsi_worktree.rs 변경도 로컬 Qwen 실모델 워크플로가 감시하도록 수정. scripts/sub2-live-rsi.mjs에 selfRepair·실제 methodExecutions 결과를 추가하여 보고서가 개선 도구의 효과와 단순 CI 통과를 구별하게 함.
+8. 관련 신규 회귀 테스트: 원문 근거가 없는 무편집 상태, 다른 세션의 도구 관측, 모델 API 오류, 실패한 편집과 이미 적용된 수정의 구별, raw model 실패→실제 후손 DAG 도구 의도 생성→경험 저장→다음 세대 선택, 실패한 재시도 후 정책 전환.
+
+### 실행 증거와 완주 미완
+
+- 모든 코드는 GitHub dominion-sub2에 실제 커밋했으며 다른 개발 브랜치는 수정하지 않음.
+- 이 실행 환경에 cargo/rustc가 없으므로 이번 변경의 컴파일·Rust 테스트 완료를 주장하지 않음. 최신 CI/실모델 워크플로는 GitHub Actions에 제출된 상태이고 완료 여부를 별도로 확인해야 한다.
+- 재시도와 복구 DAG를 새로 구현한 것은 실모델 개선 성공 증거가 아님. 실제 소스 diff > 0, 후보 등록, frozen paired holdout 품질 개선, 새 후손 바이너리 재빌드 후 다시 개선 채택까지 확인되어야 완주한다.
+
+### 다음 최우선
+
+HEAD CI/실모델 로그의 첫 컴파일·실행 결함 즉시 수정 → Qwen 4B 실모델의 workspace_replace 실제 수행 확인 → 후보 frozen paired 검증 및 채택 → 재빌드된 후손의 새로운 알고리즘 변형·채택 연쇄 3세대 달성.
