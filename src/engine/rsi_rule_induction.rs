@@ -14,7 +14,7 @@ struct Snapshot { reads:u64, searches:u64, calls:u64 }
 fn metric(snapshot:Snapshot,name:&str)->u64 {
     match name {
         "completed:workspace_read_range"=>snapshot.reads,
-        "search_after_ground"=>snapshot.searches,
+        "completed:code_search"=>snapshot.searches,
         _=>snapshot.calls,
     }
 }
@@ -34,7 +34,7 @@ fn read_snapshot(ops:&[Value], stop:usize, run:&str)->Option<Snapshot> {
         if op["status"]!="completed" {continue;}
         match op["tool"].as_str().unwrap_or("") {
             "workspace_read_range"=>reads+=1,
-            "code_search" if reads>0=>searches+=1,
+            "code_search"=>searches+=1,
             _=>{}
         }
     }
@@ -154,7 +154,7 @@ fn induce_cohort(history:&[&Value])->Vec<Value> {
         // every positive example; choose the one excluding most failures.
         let mut best=None::<(usize,Value)>;
         for name in ["completed:workspace_read_range",
-            "search_after_ground","tool_calls"] {
+            "completed:code_search","tool_calls"] {
             let lo=positive.iter().map(|s|metric(*s,name)).min().unwrap_or(0);
             let hi=positive.iter().map(|s|metric(*s,name)).max().unwrap_or(0);
             for (cmp,value) in [("ge",lo),("lt",hi.saturating_add(1))] {
@@ -181,7 +181,7 @@ fn induce_cohort(history:&[&Value])->Vec<Value> {
         if !remaining.is_empty() {
             let mut second=None::<(usize,Value)>;
             for name in ["completed:workspace_read_range",
-                "search_after_ground","tool_calls"] {
+                "completed:code_search","tool_calls"] {
                 let lo=positive.iter().map(|s|metric(*s,name)).min().unwrap_or(0);
                 let hi=positive.iter().map(|s|metric(*s,name)).max().unwrap_or(0);
                 for (cmp,value) in [("ge",lo),("lt",hi.saturating_add(1))] {
