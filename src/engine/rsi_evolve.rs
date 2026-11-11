@@ -1574,12 +1574,21 @@ fn synthesize_stale_edit_repair(method:&Value, op:&Value)->Option<Value> {
 fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str) -> Vec<Value> {
     let receipts = state.store.get("session", session_id)
         .and_then(|s|s["rsiMethodExecutions"].as_array().cloned()).unwrap_or_default();
+    let operations=state.store.all("execution_operation");
+    let mut repairs=Vec::<Value>::new();
     for receipt in &receipts {
         let Some(mut record) = receipt["experienceId"].as_str().and_then(|id|state.store.get("experience",id)) else {continue};
         let Some(method) = record["executableMethods"].as_array_mut().and_then(|methods|
             methods.iter_mut().find(|m|m["id"] == receipt["methodId"] && m["revision"] == receipt["revision"])) else {continue};
         // Recovered coordinator steps must not count a completed application twice.
         if method["applications"].as_array().is_some_and(|rows|rows.iter().any(|r|r["executionId"]==receipt["executionId"])) {continue;}
+        for op in operations.iter().filter(|op|receipt["operationIds"].as_array()
+            .is_some_and(|ids|ids.contains(&op["id"]))) {
+            if let Some(mut repair)=synthesize_stale_edit_repair(method,op) {
+                repair["sourceGenerationJobId"]=generation["jobId"].clone();
+                if !repairs.iter().any(|r|r["id"]==repair["id"]) {repairs.push(repair);}
+            }
+        }
         let result = &receipt["result"];
         let unknown = result["unknown"] == true || result["status"] == "unknown"
             || result["verified"] != true;
@@ -1602,6 +1611,16 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
         if !method["applications"].is_array() {method["applications"]=json!([]);}
         method["applications"].as_array_mut().unwrap().push(application);
         state.store.put("experience", &record);
+    }
+    if !repairs.is_empty() {
+        if let Some(mut session)=state.store.get("session",session_id) {
+            if !session["rsiMethodProposals"].is_array() {session["rsiMethodProposals"]=json!([]);}
+            let methods=session["rsiMethodProposals"].as_array_mut().unwrap();
+            for repair in repairs {
+                if !methods.iter().any(|m|m["id"]==repair["id"]) {methods.push(repair);}
+            }
+            state.store.put("session",&session);
+        }
     }
     receipts
 }
