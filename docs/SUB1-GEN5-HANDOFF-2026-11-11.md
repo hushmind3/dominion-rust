@@ -56,3 +56,10 @@
 - 후손 재계획 `5d84194` CI **732/732 통과**; 직접 수정 정책 `366fd91` CI https://github.com/hushmind3/dominion-rust/actions/runs/42950015168 **733/733 Rust 테스트 성공**, 웹 타입검사/빌드 성공.
 - 후속 Rust CI: `4f9982a` https://github.com/hushmind3/dominion-rust/actions/runs/42951146157 ; `3fb9675` https://github.com/hushmind3/dominion-rust/actions/runs/42951164178 ; `c185583`은 그 이후. 최종 success/failure 재조회하고 실패면 코드를 수정할 것.
 - 실모델 회귀: `95c72f` https://github.com/hushmind3/dominion-rust/actions/runs/42950467997 ; 무편집 복구 `3fb9675` https://github.com/hushmind3/dominion-rust/actions/runs/42951164189 ; 타임아웃 연장 `c185583` https://github.com/hushmind3/dominion-rust/actions/runs/42951533077 . 세 실행의 원본 `generationEvidence`에서 `toolsUsed`, `candidateId`, `acceptedCommit`, `evaluation.metrics`를 반드시 확인. 모델이 직접 패치하지 못했다면 누적 연구/호출 수를 개선으로 환산 금지.
+
+## 확정된 5세대 최신 추가 실행 결과
+- `95c72f4` 무료 실모델 캠페인 https://github.com/hushmind3/dominion-rust/actions/runs/42950467997 : `completed/no_progress`, **3세대** 시도. 1세대 1회 호출·도구 0; 2세대 6회 모델 호출·`code_search` 2회·`workspace_read_range` 3회·새 발견 5; 3세대 1회 호출·도구 0. **후보 0·소스 편집 0·채택 0·holdout 이득 0.** 모델이 실제 검색/읽기에 도달해도 코드 편집은 수행하지 않았다.
+- `3fb9675` (한 번의 무편집 교정 코드 포함) 실모델 https://github.com/hushmind3/dominion-rust/actions/runs/42951164189 : `needs_review`, 1세대 3회 모델 호출·`workspace_read_range` 2회·새 발견 2, **제공자가 느린 모델을 건너뛰어 실행 종료**. 편집·후보·채택 0. 이 경우는 `modelError`가 존재해 무편집 교정의 **성공 사례가 아니며**, 모델 장애를 교정 성공으로 세지 않음.
+- `3fb9675` 전체 CI https://github.com/hushmind3/dominion-rust/actions/runs/42951164178 : **734/734 Rust 테스트 통과(16+616+3+99), 실패 0**, 새로운 `patch_generation_retries_once_only_after_real_no_edit_outcome` 테스트 통과, 웹 타입검사·빌드 통과.
+- 프록시 제한 240초 수정 `c185583` 실제 모델 실행 https://github.com/hushmind3/dominion-rust/actions/runs/42951533077 은 본 기록 시점 결과 미확인. 담당자는 이 실행의 최종 `candidateId`, `accepted`, `toolsUsed`, 도메인별 holdout을 최우선으로 확인.
+- 공통 목표 관점: 런타임 실행 복구와 후손 재계획 코드는 확인되었지만 **실모델 독립 성능 향상 및 3세대 연속 개선은 미입증**. 다음에는 무료 제공자 병목을 분리한 동일 소스·예산·동결 holdout의 실제 모델 A/B를 해야 한다.
