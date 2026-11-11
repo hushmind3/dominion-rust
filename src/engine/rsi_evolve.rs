@@ -2582,6 +2582,31 @@ fn inherited_neutral_candidate(
     })
 }
 
+/// A neutral inherited patch changes the disposable checkout *after* the
+/// coordinator has indexed the pristine base. Source excerpts and old read
+/// ranges therefore refer to the WRONG bytes for the descendant. Let the
+/// descendant obtain a fresh source SHA from its actual inherited worktree.
+/// Keep paired failure evidence, but never reuse stale source as edit context.
+fn generation_prompt_variants(
+    original: &str, inherited: &str, digest: &str, focus: &str,
+    neutral_id: Option<&str>,
+) -> Vec<(&'static str, String, bool, bool)> {
+    if let Some(id) = neutral_id {
+        let note = format!(
+            "\n\n### 실제 중립 소스 후보의 후손 교정\n후보 {id}의 컴파일 통과·독립 품질 무개선 패치가 이 세대 작업공간에 이미 적용됩니다. 채택된 패치는 아닙니다. 기존 기준 소스 발췌와 과거 읽기 범위의 줄 번호/SHA는 이 작업공간과 다를 수 있습니다. 먼저 workspace_read_range로 현재 함수 원문과 sourceSha256을 새로 읽으세요. 수정할 것은 이전에 실패한 행동이며, 부분적인 문법 수정이나 동일 패치 재제출이 아닙니다. 이전 후보를 보존한 채 실질적으로 다른 동작을 구현하고 검증하세요."
+        );
+        return vec![
+            ("neutral_fresh_source", format!("{original}\n\n{inherited}{note}"), true, true),
+            ("neutral_compact_fresh_source", format!("{original}{note}"), true, true),
+        ];
+    }
+    vec![
+        ("full", format!("{original}\n\n{inherited}{digest}{focus}"), false, false),
+        ("source_on_demand", format!("{original}\n\n{inherited}{digest}"), true, false),
+        ("research_on_demand", format!("{original}\n\n{inherited}"), true, true),
+    ]
+}
+
 async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -2805,11 +2830,10 @@ async fn run_loop(
         // Re-evaluate the ACTUAL complete parent prompt before any paid model
         // call. A large saved research ledger must not silently consume the
         // budget and leave the next generation unable to start.
-        let variants = [
-            ("full", format!("{original}\n\n{inherited}{digest}{focus}"), false, false),
-            ("source_on_demand", format!("{original}\n\n{inherited}{digest}"), true, false),
-            ("research_on_demand", format!("{original}\n\n{inherited}"), true, true),
-        ];
+        let variants = generation_prompt_variants(
+            &original, &inherited, &digest, &focus,
+            child_input["rsiInheritedCandidateId"].as_str(),
+        );
         let Some((mode, composed, defer_focus, defer_research)) = variants.into_iter()
             .find(|(_, text, _, _)| {
                 !model_bound || generation_fits_remaining_budget(
@@ -2829,14 +2853,6 @@ async fn run_loop(
         child_input["rsiFocusContextChars"] = json!(if defer_focus {0} else {focus.chars().count()});
         child_input["rsiPromptContextChars"] = json!(child_input["prompt"]
             .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
-        if child_input["rsiInheritedCandidateId"].is_string() {
-            let inherited_id=child_input["rsiInheritedCandidateId"].as_str().unwrap_or("");
-            let note=format!(
-                "\n\n### 실제 실패 패치를 계승한 수정 실험\n이번 작업공간에는 이미 독립 검사에서 컴파일을 통과했으나 품질이 개선되지 않은 후보 {inherited_id}의 소스 변경이 복원됩니다. 이전 수정은 채택되지 않았습니다. 해당 파일의 현재 코드를 다시 읽고, 개선되지 않은 행동을 고치도록 새 코드 차이를 작성하세요. 이전 패치를 그대로 되풀이하거나 되돌리는 것은 채택되지 않습니다."
-            );
-            let base=child_input["prompt"].as_str().unwrap_or_default().to_string();
-            child_input["prompt"]=json!(format!("{base}{note}"));
-        }
         let child = context
             .state
             .store
@@ -6030,6 +6046,34 @@ mod tests {
         assert_eq!(crate::engine::algorithms::active(&state,"selfimprove.search").unwrap()["id"],
             active_id);
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn neutral_descendant_reloads_current_source_instead_of_stale_base_excerpt() {
+        let variants=generation_prompt_variants(
+            "Improve behavior", "Paired quality unchanged",
+            "STALE_READ_RANGE=10-20", "STALE_BASE_SHA=abc", Some("neutral-id"));
+        assert_eq!(variants.len(),2);
+        for (mode, prompt, defer_focus, defer_research) in variants {
+            assert!(mode.starts_with("neutral_"));
+            assert!(defer_focus && defer_research);
+            assert!(prompt.contains("neutral-id"));
+            assert!(prompt.contains("workspace_read_range"));
+            assert!(!prompt.contains("STALE_READ_RANGE"));
+            assert!(!prompt.contains("STALE_BASE_SHA"));
+            assert_eq!(prompt.chars().count(),prompt.chars().count());
+        }
+    }
+
+    #[test]
+    fn ordinary_generation_still_has_full_and_deferred_source_context() {
+        let variants=generation_prompt_variants(
+            "Improve behavior", "measured", "research", "CURRENT_SOURCE", None);
+        assert_eq!(variants.len(),3);
+        assert_eq!(variants[0].0,"full");
+        assert!(variants[0].1.contains("CURRENT_SOURCE"));
+        assert!(!variants[0].2 && !variants[0].3);
+        assert!(variants[2].2 && variants[2].3);
     }
 
     #[test]
