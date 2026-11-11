@@ -505,7 +505,9 @@ fn run_status(
     // The compiler result is still actionable. Do not discard it in favor
     // of a transport error and strand the candidate without repair.
     if !checks_passed{return ("needs_review","build_or_typecheck_failed");}
-    if !model_error.is_empty(){return ("needs_review","model_error");}
+    // Once a real source diff independently passes all integrity checks,
+    // a late LLM stream failure cannot veto frozen paired evaluation.
+    // Keep modelError in the run receipt; do not mistake transport for code.
     ("completed","candidate_compiles_not_performance_verified")
 }
 
@@ -985,7 +987,9 @@ mod tests {
         assert_eq!(run_status(true,false,true,true,"",""),("needs_review","unsafe_safety_failed"));
         assert_eq!(run_status(true,true,false,true,"",""),("completed","candidate_compiles_not_performance_verified"));
         assert_eq!(run_status(true,true,false,false,"","").0,"needs_review");
-        assert_eq!(run_status(true,true,false,true,"provider timeout","").0,"needs_review");
+        assert_eq!(run_status(true,true,false,true,"provider timeout",""),
+            ("completed","candidate_compiles_not_performance_verified"),
+            "A verifiably compiled source patch must reach paired evaluation despite a late model stream error");
         assert_eq!(run_status(false,true,false,true,"","invalid diff").0,"needs_review");
         let failing=json!({"status":"needs_review","reason":"build_or_typecheck_failed",
             "rsi":{"sourceClean":true,"captureError":"","modelError":"",
