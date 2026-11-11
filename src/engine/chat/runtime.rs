@@ -186,6 +186,52 @@ fn rsi_canonical_arguments(raw:&str)->Option<String>{
     object.is_object().then(||object.to_string())
 }
 
+/// Convert the exact numbered bytes returned by workspace_read_range into
+/// the source excerpt that the model can copy for an exact source replacement.
+/// The line prefix is the renderer's navigation aid, never part of Rust.
+fn rsi_unnumber_source(numbered:&str)->Option<String>{
+    let mut output=String::with_capacity(numbered.len());
+    for line in numbered.split_inclusive('\n'){
+        let prefix=line.get(..5)?;
+        if prefix.trim().parse::<u64>().ok().filter(|n|*n>0).is_none()
+            || line.as_bytes().get(5)!=Some(&b' ') {return None;}
+        output.push_str(line.get(6..)?);
+    }
+    (!output.trim().is_empty()).then_some(output)
+}
+
+/// In a tool-less model transport, accept only TWO model-authored exact
+/// source blocks: the observed old Rust and a newly generated replacement.
+/// Neither the old source nor the replacement is synthesized by the harness.
+/// The witnessed source SHA is bound to the same versioned workspace executor
+/// used by native tool calls, and later frozen A/B remains authoritative.
+fn rsi_literal_source_mutation(
+    response:&str,reads:&[Value],round_tools:&[Value],focus:&Value,
+)->Option<(String,String)>{
+    if !rsi_tool_advertised("workspace_replace",round_tools){return None;}
+    let old=response.split_once("<DOMINION_OLD>\n")?.1
+        .split_once("\n</DOMINION_OLD>")?.0;
+    let new=response.split_once("<DOMINION_NEW>\n")?.1
+        .split_once("\n</DOMINION_NEW>")?.0;
+    if old.trim().is_empty()||new.trim().is_empty()||old==new
+        || old.len()>24_000||new.len()>32_000 {return None;}
+    let matching=reads.iter().filter(|row|row["status"]=="completed"
+        && row["tool"]=="workspace_read_range"
+        && row["result"]["sourceSha256"].as_str().is_some_and(|sha|
+            sha.len()==64&&sha.bytes().all(|b|b.is_ascii_hexdigit()))
+        && row["arguments"]["path"].as_str().is_some_and(|p|
+            focus.as_array().is_some_and(|paths|
+                paths.len()==1&&paths[0].as_str()==Some(p))))
+        .max_by_key(|row|row["opSeq"].as_u64().unwrap_or(0))?;
+    let path=matching["arguments"]["path"].as_str()?;
+    let sha=matching["result"]["sourceSha256"].as_str()?;
+    let witnessed=rsi_unnumber_source(matching["result"]["content"].as_str()?)?;
+    if witnessed.matches(old).count()!=1{return None;}
+    Some(("workspace_replace".into(),json!({
+        "path":path,"oldText":old,"newText":new,"expectedSha256":sha
+    }).to_string()))
+}
+
 /// Free/small models occasionally use a generic "workspace_wrapper" name
 /// while providing an otherwise exact edit function argument object. Recover
 /// ONLY a fully specified mutation for a tool advertised in this round.
@@ -1651,13 +1697,17 @@ async fn run_turn_body(
                 .max_by_key(|op|op["opSeq"].as_u64().unwrap_or(0));
             if !edited {
                 if let Some(read)=last_read {
-                    let selected=if tool_definitions.iter()
-                        .any(|tool|tool_name(tool)=="workspace_replace_range") {
-                        Some("workspace_replace_range")
-                    } else if tool_definitions.iter()
-                        .any(|tool|tool_name(tool)=="workspace_replace") {
-                        Some("workspace_replace")
-                    } else {None};
+                    let requested=session["rsiPreferredEditTool"].as_str()
+                        .or_else(||session["rsiMetaPreferredTool"].as_str());
+                    let selected=requested.filter(|requested|
+                        matches!(*requested,"workspace_replace"|"workspace_replace_range")
+                        && tool_definitions.iter().any(|tool|tool_name(tool)==*requested))
+                        .or_else(||tool_definitions.iter()
+                            .any(|tool|tool_name(tool)=="workspace_replace_range")
+                            .then_some("workspace_replace_range"))
+                        .or_else(||tool_definitions.iter()
+                            .any(|tool|tool_name(tool)=="workspace_replace")
+                            .then_some("workspace_replace"));
                     if let Some(edit)=selected {
                         // The original advertised tool definition is still
                         // subject to all workspace scope and approval checks.
@@ -1740,8 +1790,19 @@ async fn run_turn_body(
                         } else {
                             format!("path, oldText, newText, expectedSha256={sha}. oldText must be an exact, UNNUMBERED file excerpt occurring once")
                         };
+                        let source_view=if editor=="workspace_replace" {
+                            rsi_unnumber_source(raw).unwrap_or_else(||raw.to_string())
+                        } else {raw.to_string()};
+                        let format_label=if editor=="workspace_replace" {
+                            "EXACT RUST SOURCE (no display line prefixes)"
+                        } else {"NUMBERED RUST SOURCE (line prefixes are display-only)"};
+                        let text_protocol=if editor=="workspace_replace" {
+                            "If native tool calls are unsupported, answer ONLY with <DOMINION_OLD> then the exact original Rust snippet, </DOMINION_OLD>, <DOMINION_NEW> then YOUR corrected Rust snippet, </DOMINION_NEW> on their own lines. DOMINION will verify the old bytes, observed SHA and new source through the same native write executor. This is a real edit, not a claimed result."
+                        } else {
+                            "If native tool calls are unsupported, answer ONLY with a valid standalone JSON object containing path, startLine, endLine, newText and expectedSha256. No prose or markdown."
+                        };
                         let task=format!(
-                            "OWNER OBJECTIVE:\n{objective}\n\nPREVIOUS ADOPTED COMMIT (when present): {parent}\n\nACTUAL SOURCE READ:\npath: {path}\nstartLine: {start}\nendLine: {end}\nsourceSha256: {sha}\n\nNUMBERED RUST SOURCE (line prefixes are display-only):\n```rust\n{raw}\n```\n\nNOW invoke {editor} with {arguments}. For range replacement select only relevant complete Rust lines; do not include displayed line prefixes in newText. Write your own corrected implementation. Do not read again or answer in prose."
+                            "OWNER OBJECTIVE:\n{objective}\n\nPREVIOUS ADOPTED COMMIT (when present): {parent}\n\nACTUAL SOURCE READ:\npath: {path}\nstartLine: {start}\nendLine: {end}\nsourceSha256: {sha}\n\n{format_label}:\n```rust\n{source_view}\n```\n\nNOW invoke {editor} with {arguments}. Choose a small, exact real Rust source block. Write your own corrected implementation; do not read again or answer in prose. {text_protocol}"
                         );
                         wire_messages=vec![
                             json!({"role":"system","content":instruction}),
@@ -1950,11 +2011,16 @@ async fn run_turn_body(
 
         if completion.tool_calls.is_empty()
             && session["rsiRun"]==true && rsi_edit_only_announced && !force_final {
+            let reads=state.store.all("execution_operation").into_iter()
+                .filter(|row|row["runId"].as_str()==Some(execution_id))
+                .collect::<Vec<_>>();
             if let Some((name,arguments))=rsi_unnamed_exact_edit(
-                &completion.content,&round_tools,&session["rsiFocusFiles"]) {
+                &completion.content,&round_tools,&session["rsiFocusFiles"])
+                .or_else(||rsi_literal_source_mutation(
+                    &completion.content,&reads,&round_tools,&session["rsiFocusFiles"])) {
                 state.store.audit("rsi.model_text_exact_edit",json!({
                     "executionId":execution_id,"tool":name,
-                    "source":"model_supplied_unnamed_json_not_verified_write"
+                    "source":"model_authored_source_bytes_not_verified_write"
                 }));
                 completion.content.clear();
                 completion.tool_calls.push(ToolCall{

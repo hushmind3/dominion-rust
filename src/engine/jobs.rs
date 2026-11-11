@@ -567,6 +567,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             // generic RSI prompt or a guessed source file.
             session["rsiFocusFiles"]=input["rsiFocusFiles"].clone();
             session["rsiAutoFocus"]=input["rsiAutoFocus"].clone();
+            session["rsiPreferredEditTool"]=input["rsiPreferredEditTool"].clone();
             session["rsiMetaFocusActive"]=input["rsiMetaFocusActive"].clone();
             session["rsiMetaPreferredTool"]=
                 input["rsiImprovementDirective"]["policy"]["preferredEditTool"].clone();
@@ -580,8 +581,9 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             // runs autonomously. Previously "rsiAutonomous" disabled the
             // focused edit contract and native tool_choice=required, leaving
             // the real free-model campaign stuck in read-only generations.
-            session["rsiExplicitFocus"]=json!(input["rsiAutoFocus"] != true
-                && input["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty()));
+            session["rsiExplicitFocus"]=json!(input["rsiFocusFiles"].as_array()
+                .is_some_and(|files|files.len()==1
+                    && files[0].as_str().is_some_and(crate::engine::rsi::safe_path)));
             session["rsiFocusContextReady"]=json!(
                 input["rsiFocusContextChars"].as_u64().unwrap_or(0) > 0
                 && input["rsiContextPlan"]["sourceExcerptDeferred"] != true);
@@ -602,8 +604,9 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     let request = TurnRequest {
         session_id: Some(session_id.clone()),
         input: if rsi_workspace.is_some() {
-            let focused = (input["rsiAutoFocus"] != true
-                && input["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty()))
+            let focused=input["rsiFocusFiles"].as_array()
+                .is_some_and(|files|files.len()==1
+                    && files[0].as_str().is_some_and(crate::engine::rsi::safe_path))
                 || input["rsiMetaFocusActive"]==true;
             let completion = if focused {
                 "명시적 수정 목표를 조사 보고로 대체하지 마세요. 충분한 소스 원문이 확보되면 workspace_read_range에서 받은 줄 번호와 sourceSha256을 이용해 workspace_replace_range로 실제 편집하세요. 정확한 oldText가 있으면 workspace_replace도 가능합니다. 수정을 수행할 수 없을 때에는 막힌 정확한 이유를 설명하세요."

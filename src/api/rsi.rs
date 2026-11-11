@@ -413,6 +413,15 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         }
         input["reasoningEffort"] = json!(effort);
     }
+    // The owner can select the actual edit primitive for an RSI campaign.
+    // This selection changes only the model-visible tool menu, never the
+    // independent source-version, compiler or holdout adoption checks.
+    if let Some(preferred)=body["preferredEditTool"].as_str(){
+        if !matches!(preferred,"workspace_replace"|"workspace_replace_range"){
+            return error("유효하지 않은 RSI 소스 편집 도구입니다.".into());
+        }
+        input["rsiPreferredEditTool"]=json!(preferred);
+    }
     if continuous {
         let limits=match crate::engine::rsi_evolve::limits(&body){Ok(v)=>v,Err(e)=>return error(e)};
         let policy=body["selectionPolicy"].as_str().unwrap_or("manual");
