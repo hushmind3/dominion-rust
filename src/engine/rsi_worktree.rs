@@ -400,7 +400,12 @@ pub async fn finish(
             "target":classify(&patch),"baseCommit":worktree.base,
             "patch":patch,"hypothesis":hypothesis,
             "cases":input["rsiFrozenCases"],"oracleVersion":"rsi-worktree-v2",
-            "generatorModel":input["model"],"generatorEffort":input["reasoningEffort"],
+            "generatorModel":if context.state.store.get("rsi_mutation",&context.job_id).is_some(){
+                Value::Null
+            }else{input["model"].clone()},
+            "generatorEffort":if context.state.store.get("rsi_mutation",&context.job_id).is_some(){
+                Value::Null
+            }else{input["reasoningEffort"].clone()},
             "generatorSourceCommit":worktree.base
         });
         match rsi::propose(&context.state,&proposal) {
