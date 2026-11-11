@@ -862,7 +862,7 @@ async fn replace_text(
     let mut updated=text.clone();
     updated.replace_range(position..position+old_text.len(),new_text);
     let observed_hash=format!("{:x}",Sha256::digest(text.as_bytes()));
-    let guard=if scoped {Some(observed_hash.as_str())}else{expected_sha256};
+    let guard=if scoped {expected_sha256.or(Some(observed_hash.as_str()))}else{expected_sha256};
     let mut result = checked_write(ctx, path, &updated, run_id, true, guard).await?;
     if result["written"] == true {
         result["replaced"] = json!(true);
