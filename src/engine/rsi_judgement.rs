@@ -170,8 +170,8 @@ pub fn evolve(rows:&[Value],objective:&str,domain:&str)->Value{
         let mut inherited=normalize(&parent);
         let mut discovered=contrasted;
         discovered.append(&mut inherited);
-        let normalized=crate::engine::rsi_rule_rewrite::apply(
-            &rewrite_program,&normalize(&json!(discovered)));
+        let normalized=crate::engine::rsi_rule_rewrite::apply_descendant(
+            &rewrite_program,&parent_rewrites,&parent,&normalize(&json!(discovered)));
         let revision=memory::stable_id(&[
             "champion.contrastive-judgement.v2",&json!(normalized).to_string(),
             &json!(rewrite_program).to_string()]);
@@ -250,8 +250,8 @@ pub fn evolve(rows:&[Value],objective:&str,domain:&str)->Value{
     if let Some(rule)=generated{
         rules.insert(0,rule);
     }
-    let normalized=crate::engine::rsi_rule_rewrite::apply(
-        &rewrite_program,&normalize(&json!(rules)));
+    let normalized=crate::engine::rsi_rule_rewrite::apply_descendant(
+        &rewrite_program,&parent_rewrites,&parent,&normalize(&json!(rules)));
     let revision=memory::stable_id(&[
         "champion.judgement-generator.v2",&json!(normalized).to_string(),
         &json!(rewrite_program).to_string()]);
