@@ -1666,7 +1666,8 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
                 transitions.push(json!({"from":from,"to":to,"positive":0,"negative":0,
                     "byDomain":{}}));
             }
-            let row=&mut transitions[existing.unwrap_or(transitions.len()-1)];
+            let position=existing.unwrap_or_else(||transitions.len()-1);
+            let row=&mut transitions[position];
             if good {row["positive"]=json!(row["positive"].as_u64().unwrap_or(0)+reward);}
             if bad {row["negative"]=json!(row["negative"].as_u64().unwrap_or(0)+penalty);}
             if let Some(domain)=domain {
