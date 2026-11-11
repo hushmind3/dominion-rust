@@ -1485,9 +1485,31 @@ fn repair_exploration_order(method:&Value)->u8 {
     }
 }
 
+/// One exploration trial after an observed accepted application. This mutates
+/// the *method-selection algorithm* itself: the new structural candidate gets
+/// one trial against its accepted parent's future performance, then an
+/// unadopted candidate relinquishes priority. Previous acceptance is not
+/// automatically transferred to its child.
+fn pending_success_ablation(method:&Value, methods:&[Value])->bool {
+    if method["synthesis"]["kind"]!="successful_read_ablation"
+        || method["applications"].as_array().is_some_and(|a|!a.is_empty())
+        || method["successfulApplications"].as_u64().unwrap_or(0)>0 {
+        return false
+    }
+    methods.iter().any(|parent|
+        parent["id"]==method["synthesis"]["parentMethodId"]
+        && parent["revision"]==method["synthesis"]["parentRevision"]
+        && parent["successfulApplications"].as_u64().unwrap_or(0)>0)
+}
+
 fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
-    let candidates = applicable_methods(state, &research_scope(input).partition_key, domain,
+    let mut candidates = applicable_methods(state, &research_scope(input).partition_key, domain,
         input["rsiObjective"].as_str().unwrap_or(""));
+    let exploratory=candidates.iter().filter(|m|pending_success_ablation(m,&candidates))
+        .filter_map(|m|m["id"].as_str().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    candidates.sort_by(|a,b|exploratory.contains(b["id"].as_str().unwrap_or(""))
+        .cmp(&exploratory.contains(a["id"].as_str().unwrap_or(""))));
     // Mutually exclusive variants must not edit the same file in one
     // generation: otherwise even sequential trial outcomes are confounded.
     // This scheduling is exploration, not yet a controlled paired A/B proof.
@@ -1522,7 +1544,9 @@ fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value
             "parentRevision":m["synthesis"]["parentRevision"],
             "attemptedApplications":m["applications"].as_array().map(Vec::len).unwrap_or(0),
             "verifiedAdoptions":m["successfulApplications"].as_u64().unwrap_or(0),
-            "selection":"adopted_then_untried_sequential",
+            "selection":if exploratory.contains(m["id"].as_str().unwrap_or("")) {
+                "success_ablation_trial"
+            } else {"adopted_then_untried_sequential"},
             "causalGain":"not_measured_sequential_trials"
         }))})
 }
