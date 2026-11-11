@@ -121,8 +121,14 @@ fn rsi_patch_ready_for_verification(
         return session["rsiFocusFiles"].as_array().is_some_and(|files|
             files.len()==1 && files[0].as_str()==Some(path));
     }
+    // Recovered compiler-failed patches invalidate old source excerpts. A
+    // fresh index and a saved restoration receipt provide the new anchor,
+    // while the actual write still requires independent SHA readback.
+    let recovered=session["rsiRecoveredPatch"]["status"]=="restored_unverified"
+        && session["rsiRecoveredPatch"]["paths"].as_array().is_some_and(|files|
+            files.iter().any(|file|file.as_str()==Some(path)));
     session["rsiCodeIndexId"].as_str().is_some_and(|id|!id.is_empty())
-        && session["rsiFocusContextReady"]==true
+        && (session["rsiFocusContextReady"]==true || recovered)
         && session["rsiFocusFiles"].as_array().is_some_and(|files|
             files.iter().any(|file|file.as_str()==Some(path)))
 }
@@ -6441,6 +6447,13 @@ mod harness_tool_selection_tests {
         not_indexed["rsiFocusContextReady"]=json!(false);
         assert!(!rsi_patch_ready_for_verification(
             &not_indexed,"workspace_replace",&args,&operation));
+        not_indexed["rsiRecoveredPatch"]=json!({
+            "status":"restored_unverified",
+            "paths":["src/engine/memory.rs"]
+        });
+        assert!(rsi_patch_ready_for_verification(
+            &not_indexed,"workspace_replace",&args,&operation),
+            "a newly indexed, actually corrected descendant may advance");
         not_indexed=indexed.clone();
         not_indexed["rsiFocusFiles"]=json!(["src/engine/context.rs"]);
         assert!(!rsi_patch_ready_for_verification(
