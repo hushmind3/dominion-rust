@@ -457,15 +457,16 @@ mod tests {
     }
 
     #[test]
-    fn meta_improver_evolves_streamed_policy_statistics_without_changing_rules() {
+    fn meta_improver_evolves_verified_streamed_statistics_without_dropping_metrics() {
         let source = include_str!("rsi_evolve.rs");
-        let candidate = stream_search_policy_statistics(source)
-            .unwrap_or_else(||source.to_string());
+        let candidate = stream_verified_policy_statistics(source)
+            .expect("Sub3 improver must have a self-optimization opportunity");
         assert!(candidate.contains("let mut last_row: Option<&Value> = None"));
-        assert!(candidate.contains("(row[\"accepted\"]==true) as u8 as f64"));
-        assert!(candidate.contains("scores.first().map(|(domain,_)|*domain)"));
-        assert!(candidate.contains("(\"exploration\".to_string(),exploration)"));
-        assert!(stream_search_policy_statistics(&candidate).is_none());
+        assert!(candidate.contains("row[\"evidenceVerified\"]==true"));
+        assert!(candidate.contains("let holdout_gains = holdout_gains_total as f64;"));
+        assert!(candidate.contains("(\"gainPer10kTokens\".to_string(), gain_efficiency)"));
+        assert!(candidate.contains("let unresolved = if last_row"));
+        assert!(stream_verified_policy_statistics(&candidate).is_none());
     }
 
     #[test]
