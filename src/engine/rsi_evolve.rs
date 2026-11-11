@@ -2820,9 +2820,11 @@ async fn run_loop(
         let target_trial=child_input["rsiTrialAlgorithmId"].as_str().map(str::to_string);
         // The parent can suggest a next domain, but the descendant's rebuilt
         // selector owns the actual choice; operator focus stays in the objective.
+        let repair_domain=pending_method_recovery_domain(&child_input);
         let (target_domain,target_selection,target_strategy)=select_generation_strategy(
             &context.state,&recorded_history,&target_objective,
-            research_continuation(&recorded_history),target_trial,None,&head);
+            if repair_domain.is_some(){None}else{research_continuation(&recorded_history)},
+            target_trial,repair_domain,&head);
         child_input["rsiTargetDomain"]=json!(target_domain);
         child_input["rsiTargetPlan"]=generation_target_plan(
             &target_domain,target_selection,&target_strategy,&head);
@@ -3731,6 +3733,17 @@ fn generation_target_plan(domain: &str, selection: &str, strategy: &Value, commi
     json!({"domain":domain,"selection":selection,"strategy":strategy,"generatorCommit":commit})
 }
 
+/// A synthesized method is a next-generation executable trial, not a
+/// permanent override of the search algorithm. Require that its ID is in
+/// the concrete reuse decision, and preserve higher-priority policy trials.
+fn pending_method_recovery_domain(input:&Value)->Option<String> {
+    let id=input["rsiDecisionInput"]["methodRecoveryCandidateId"].as_str()?;
+    let selected=input["rsiDecisionInput"]["reuseDecision"]["methodIds"].as_array()?;
+    if !selected.iter().any(|item|item.as_str()==Some(id)) {return None}
+    input["rsiSelectedDomain"].as_str().filter(|domain|
+        DOMAINS.contains(domain)).map(str::to_string)
+}
+
 fn select_generation_strategy(
     state: &AppState,
     history: &[Value],
@@ -3960,9 +3973,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             .is_some_and(|algorithm|trial_owned_by(&algorithm,&allowed_campaigns)))
         .map(str::to_string);
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
+    let repair_domain=pending_method_recovery_domain(&job["input"]);
     let (domain, domain_selection, strategy) =
-        select_generation_strategy(&state, &history, &objective, continuation, trial_id,
-            None, &commit);
+        select_generation_strategy(&state, &history, &objective,
+            if repair_domain.is_some(){None}else{continuation},trial_id,
+            repair_domain,&commit);
     // Rebuilt descendants independently recompute the learned policy. Make
     // its executable edit decision available before they replan the target.
     let action=evolved_execution_action(&state,&job["input"],&history);
