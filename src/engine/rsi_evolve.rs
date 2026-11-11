@@ -7938,7 +7938,7 @@ mod tests {
                 "acceptedProof":{"status":if accepted{"verified"}else{"rejected"},
                     "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
                         "metrics":{"eligible":accepted}}},
-                "acceptedSourceHashes":{path:digest},
+                "acceptedSourceHashes":{"src/engine/example.rs":digest},
                 "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
                     "metrics":{"eligible":accepted,
                         "verdict":if accepted{"improved"}else{"inconclusive"}}},
