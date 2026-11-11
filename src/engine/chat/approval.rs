@@ -374,6 +374,54 @@ mod tests {
         })
     }
 
+    #[tokio::test]
+    async fn authorized_native_rsi_write_never_waits_for_a_human_approval() {
+        let dir=std::env::temp_dir().join(format!(
+            "dominion-rsi-auth-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=crate::config::Config{
+            port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()
+        };
+        let state=AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        state.store.put("job",&json!({
+            "id":"campaign","kind":"rsi_evolve","status":"running",
+            "input":{"rsiNativeApproved":true}
+        }));
+        state.store.put("job",&json!({
+            "id":"generation","kind":"rsi_generation","status":"running",
+            "rsiWorkspace":dir,"input":{"rsiCampaignId":"campaign"}
+        }));
+        state.store.put("session",&json!({
+            "id":"s","rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"generation"
+        }));
+        let (tx,mut rx)=tokio::sync::mpsc::unbounded_channel();
+        let valid=json!({"path":"src/engine/memory.rs","startLine":1,
+            "endLine":1,"newText":"// revised","expectedSha256":"frozen"});
+        let allowed=tokio::time::timeout(
+            Duration::from_millis(250),
+            request_approval(&state,&tx,"s","workspace_replace",&valid,
+                "execution","operation",None)
+        ).await.expect("native RSI should never block awaiting a human");
+        assert!(allowed);
+        assert_eq!(state.store.all("approval").len(),0,
+            "the already authorized isolated edit has no human approval record");
+        let forbidden=json!({"path":"../outside.rs","content":"changed"});
+        let rejected=tokio::time::timeout(
+            Duration::from_millis(250),
+            request_approval(&state,&tx,"s","workspace_write",&forbidden,
+                "execution","forbidden",None)
+        ).await.expect("invalid isolated edit should fail without a timeout");
+        assert!(!rejected);
+        assert_eq!(state.store.all("approval").len(),0);
+        let event=rx.try_recv().expect("the model receives an actionable denial");
+        assert_eq!(event["type"],"rsi_write_rejected");
+        assert_eq!(event["reason"],"source_path_not_allowed: use a relative src/ or tests/ path");
+        let _=std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn stale_approvals_expire_once_while_fresh_and_approved_records_survive() {
         let dir = std::env::temp_dir().join(format!("dominion-approval-expire-{}", uuid::Uuid::new_v4()));
