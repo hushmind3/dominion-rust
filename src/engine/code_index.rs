@@ -1278,6 +1278,10 @@ mod tests {
             "src/small.rs", "small", "memory").unwrap();
         assert!(excerpt.contains("대상 파일 전체"));
         assert!(excerpt.contains("println!(\"hello\")"));
+        let expected=format!("{:x}",Sha256::digest(
+            b"fn small() { println!(\"hello\"); }\n"));
+        assert!(excerpt.contains(&format!("sourceSha256: {expected}")));
+        assert!(excerpt.contains("expectedSha256="));
         let _ = std::fs::remove_dir_all(root);
     }
 
