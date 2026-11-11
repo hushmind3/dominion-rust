@@ -2384,6 +2384,7 @@ fn induced_method_application_receipts(state:&AppState,session_id:&str)->Vec<Val
                         "policyId":choice["policyId"],"revision":choice["revision"],
                         "preferredTool":selected,"domain":choice["domain"],
                         "executionProgramId":choice["executionProgramId"],
+                        "decisionRuleId":choice["decisionRuleId"],
                         "afterOpSeq":after,"modelRound":choice["modelRound"],
                         "performed":performed,"verifiedSourceWrite":checked_write,
                         "effectOperationIds":relevant.iter().map(|op|op["id"].clone()).collect::<Vec<_>>(),
@@ -2633,6 +2634,72 @@ fn record_measured_program_feedback(
     state.bus.record("rsi_method_policy",&saved);
     Some(json!({"policyRevision":saved["revision"],"credited":credited,
         "status":"observational_program_feedback_not_causal_proof"}))
+}
+
+/// Independent source quality is the only signal that can alter the
+/// conditional-program GENERATOR. These receipts are exact policy decisions
+/// actually followed by a hash-verified source modification.
+fn record_decision_rule_feedback(
+    state:&AppState,input:&Value,generation:&Value
+)->Option<Value>{
+    let outcome=if measured_system_improvement(generation) {"accepted_gain"}
+        else if generation["candidateId"].is_string()
+            && generation["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+            && matches!(generation["evaluation"]["metrics"]["verdict"].as_str(),
+                Some("regressed"|"build_failed")) {"paired_regression"}
+        else{return None};
+    if generation["methodPolicyTrial"]["arm"]=="control"{return None;}
+    let job_id=generation["jobId"].as_str().filter(|s|!s.is_empty())?;
+    let id=format!("rsi-method-policy-{}",
+        crate::engine::memory::stable_id(&[&research_scope(input).partition_key]));
+    let mut policy=state.store.get("rsi_method_policy",&id)?;
+    let frozen=&input["rsiMethodPolicyTrial"]["policy"]["decisionNodes"];
+    let live=&policy["decisionNodes"];
+    let mut witnessed=policy["decisionRuleEvidence"].as_array().cloned().unwrap_or_default();
+    let mut added=Vec::<Value>::new();
+    for receipt in generation["inducedMethodApplications"].as_array().into_iter().flatten() {
+        if receipt["policyId"]!=policy["id"]
+            || receipt["domain"]!=generation["domain"]
+            || receipt["performed"]!=true || receipt["verifiedSourceWrite"]!=true
+            || receipt["effectOperationIds"].as_array().is_none_or(Vec::is_empty) {
+            continue;
+        }
+        if generation["methodPolicyTrial"]["arm"]=="learned"
+            && receipt["revision"]!=generation["methodPolicyTrial"]["policyRevision"] {
+            continue;
+        }
+        let Some(node_id)=receipt["decisionRuleId"].as_str() else{continue};
+        let known=|nodes:&Value|nodes.as_array().is_some_and(|rules|
+            rules.iter().any(|node|node["id"].as_str()==Some(node_id)));
+        if !known(live) && !known(frozen){continue;}
+        if witnessed.iter().any(|row|row["jobId"]==job_id
+            && row["decisionNodeId"]==node_id) {continue;}
+        let row=json!({"jobId":job_id,"decisionNodeId":node_id,
+            "outcome":outcome,"domain":generation["domain"],
+            "policyRevision":receipt["revision"],
+            "operationIds":receipt["effectOperationIds"],
+            "evaluationId":generation["evaluation"]["id"],
+            "causalProof":false});
+        witnessed.push(row.clone());
+        added.push(row);
+    }
+    if added.is_empty(){return None;}
+    if witnessed.len()>64 {witnessed.drain(..witnessed.len()-64);}
+    policy["decisionRuleEvidence"]=json!(witnessed);
+    evolve_decision_grammar(&mut policy);
+    policy["decisionNodes"]=json!(synthesize_method_decision_nodes(
+        policy["evidence"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+        &policy["decisionGrammar"]));
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([
+        &policy["transitions"],&policy["executionPrograms"],&policy["scoringKernel"],
+        &policy["decisionGrammar"],&policy["decisionNodes"],
+        &policy["decisionRuleEvidence"],&policy["programMeasuredEvidence"]
+    ]).to_string().as_bytes())));
+    policy["updatedAt"]=json!(chrono::Utc::now().to_rfc3339());
+    let saved=state.store.put("rsi_method_policy",&policy)?;
+    state.bus.record("rsi_method_policy",&saved);
+    Some(json!({"revision":saved["revision"],"decisionGrammar":saved["decisionGrammar"],
+        "credited":added,"status":"evaluated_guard_grammar_evolution_not_causal_proof"}))
 }
 
 fn current_induced_method_policy(state:&AppState,input:&Value)->Option<Value> {
@@ -4140,6 +4207,9 @@ async fn run_loop(
             generation["executionProgramFeedback"]=
                 record_measured_program_feedback(&context.state,&current["input"],&generation)
                     .unwrap_or(Value::Null);
+            generation["decisionGrammarFeedback"]=
+                record_decision_rule_feedback(&context.state,&current["input"],&generation)
+                    .unwrap_or(Value::Null);
         }
         generation["methodPolicyTrialReport"]=
             method_policy_trial_report(&context.state,&generation);
@@ -5120,6 +5190,45 @@ mod tests {
         assert_eq!(policy["executionPrograms"][0]["origin"],"trial_counterexample_mutation");
         assert!(mutate_programs_after_trial(&mut policy,&frozen,&rows,"cohort-a")
             .is_empty(),"recovered work must not replay an already-accounted mutation");
+    }
+
+    #[test]
+    fn real_execution_rule_receipts_evolve_the_rule_generator_not_just_tool_scores(){
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root});
+        let id=format!("rsi-method-policy-{}",
+            crate::engine::memory::stable_id(&[&research_scope(&input).partition_key]));
+        let node=json!({"id":"observed-guard","domain":"tools",
+            "guard":{"suffix":[{"tool":"workspace_read_range","status":"completed"}]},
+            "nextTool":"workspace_replace_range","score":4,
+            "status":"candidate_requires_descendant_execution"});
+        let policy=json!({"id":id,"revision":"first","transitions":[
+            {"from":"workspace_read_range","to":"workspace_replace_range",
+                "positive":2,"negative":1}],
+            "decisionGrammar":{"historyWindow":2,"minIndependentRuns":2},
+            "decisionNodes":[node]});
+        state.store.put("rsi_method_policy",&policy).unwrap();
+        for n in 0..2 {
+            let evaluation=json!({"id":format!("evaluation-{n}"),
+                "source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"verdict":"regressed"}});
+            let generation=json!({"jobId":format!("g-{n}"),"domain":"tools",
+                "candidateId":format!("candidate-{n}"),"evaluation":evaluation,
+                "inducedMethodApplications":[{
+                    "policyId":id,"revision":"first","domain":"tools",
+                    "decisionRuleId":"observed-guard",
+                    "performed":true,"verifiedSourceWrite":true,
+                    "effectOperationIds":[format!("op-{n}")]}]});
+            assert!(record_decision_rule_feedback(&state,&input,&generation).is_some());
+            assert!(record_decision_rule_feedback(&state,&input,&generation).is_none());
+        }
+        let evolved=state.store.get("rsi_method_policy",&id).unwrap();
+        assert_eq!(evolved["decisionGrammar"]["historyWindow"],3);
+        assert_eq!(evolved["decisionGrammar"]["minIndependentRuns"],3);
+        assert_eq!(evolved["decisionGrammar"]["rejectedNodeIds"],
+            json!(["observed-guard"]));
+        assert_ne!(evolved["revision"],"first");
+        drop(state);let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
