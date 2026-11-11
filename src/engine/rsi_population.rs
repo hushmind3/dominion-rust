@@ -410,6 +410,39 @@ mod tests {
         assert!(result["expression"].as_str().unwrap().contains("gainPer10kTokens"));
     }
     #[test]
+    fn distinct_verified_island_elites_combine_genes_but_stay_unverified() {
+        let objective="";
+        let key=crate::engine::memory::stable_id(&[objective]);
+        let parent=|id:&str,explore:f64| {
+            let genome=json!({"objective":2.0,"exploration":explore,"holdout":1.0,
+                "efficiency":1.0,"barren":1.0,"token":1.0,
+                "regressions":1.0,"unresolved":1.0});
+            json!({"id":id,"kind":"selfimprove.search",
+                "implementation":"expression","source":"rsi-generated",
+                "parameters":{"genome":genome},"rsiTrial":{
+                    "objectiveHash":key,"status":"adopted",
+                    "trials":[
+                        {"jobId":format!("{id}-t1"),"verdict":"supported",
+                         "comparison":{"baselineJobId":format!("{id}-b1"),
+                            "matchedHoldoutReceipts":true,"holdoutLossesAgainstControl":0}},
+                        {"jobId":format!("{id}-t2"),"verdict":"supported",
+                         "comparison":{"baselineJobId":format!("{id}-b2"),
+                            "matchedHoldoutReceipts":true,"holdoutLossesAgainstControl":0}}
+                    ]}})
+        };
+        let children=breed(
+            &[observed("a","memory",0),observed("b","tools",0)],
+            &[parent("a",1.0),parent("b",3.0)],objective).unwrap();
+        assert_eq!(children["parentId"],"a");
+        assert_eq!(children["mateId"],"b");
+        assert!(children["operator"].as_array().unwrap()
+            .contains(&json!("measured_island_crossover")));
+        assert!(children["genome"]["exploration"].as_f64().unwrap()>2.0);
+        assert_eq!(children["evidence"]["independentHoldoutGains"],0,
+            "crossover is not proof of a new independently measured win");
+    }
+
+    #[test]
     fn action_transfers_only_a_verified_operator_without_claiming_new_gain() {
         let rows=vec![winner("old","memory")];
         let plan=action(&rows,"tools",Some("src/engine/tools.rs"));
