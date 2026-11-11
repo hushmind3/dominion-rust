@@ -6205,6 +6205,85 @@ mod tests {
         let _=std::fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn reconstructed_existing_file_repair_runs_through_actual_native_tools() {
+        use axum::{routing::post,Json,Router,response::IntoResponse};
+        async fn provider(Json(_body):Json<Value>)->axum::response::Response {
+            let events=format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                json!({"choices":[{"delta":{"content":"완료"}}]}),
+                json!({"choices":[{"delta":{},"finish_reason":"stop"}],
+                    "usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}));
+            ([(axum::http::header::CONTENT_TYPE,"text/event-stream")],events).into_response()
+        }
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {
+            axum::serve(listener,Router::new().route("/chat/completions",post(provider)))
+                .await.unwrap()
+        });
+        let (state,root)=state();
+        let _parent=parent(&state);
+        let target="src/engine/memory.rs";
+        std::fs::create_dir_all(state.config.workspace.join("src/engine")).unwrap();
+        std::fs::write(state.config.workspace.join(target),"fn old() {}\n").unwrap();
+        state.store.put("provider",&json!({"id":"repair-provider","kind":"openai",
+            "baseUrl":format!("http://{address}"),"model":"test",
+            "toolMode":"native","enabled":true}));
+        let original=json!({"id":"create","revision":"old","name":"repair file",
+            "domain":"memory","assistanceMode":"harness_assisted",
+            "verification":{"type":"procedure","appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"write","tool":"workspace_write","arguments":{
+                    "path":target,"content":"fn improved() {}\n"}}],
+                "after":[{"kind":"file_contains","path":target,"text":"fn improved()"}]}});
+        let failed=json!({"id":"failed-create","origin":"procedure","status":"failed",
+            "tool":"workspace_write","procedureStrategyId":"create",
+            "procedureRevision":"old","procedureNodeId":"write",
+            "arguments":{"path":target,"content":"fn improved() {}\n"},
+            "result":{"error":"RSI의 workspace_write는 새 파일 생성 전용입니다."}});
+        let repaired=synthesize_existing_file_write_repair(&original,&failed).unwrap();
+        let input=json!({"rsiObjective":"memory improvement","rsiDomain":"memory",
+            "rsiKnowledgeSource":state.config.workspace,"rsiSourceDir":state.config.workspace});
+        state.store.put("experience",&json!({"id":"repaired-experience",
+            "status":"active","partitionKey":research_scope(&input).partition_key,
+            "executableMethods":[repaired.clone()]})).unwrap();
+        state.store.put("job",&json!({"id":"repair-child","kind":"rsi_generation",
+            "status":"running","input":{"rsiCampaignId":"campaign"}})).unwrap();
+        let mut session=json!({"id":"repair-session","providerId":"repair-provider",
+            "rsiRun":true,"rsiObjective":"memory improvement",
+            "rsiCampaignId":"campaign","rsiGenerationJobId":"repair-child"});
+        configure_method_session(&state,&input,&mut session);
+        assert_eq!(method_strategies(&state,&session).len(),1);
+        state.store.put("session",&session).unwrap();
+        let request=crate::engine::chat::TurnRequest::from_value(&json!({
+            "sessionId":"repair-session","input":"memory improvement",
+            "toolsEnabled":true,"toolsExecutionEnabled":true,"autoLearning":false
+        })).unwrap();
+        tokio::time::timeout(Duration::from_secs(10),
+            crate::engine::run_quiet(&state,&request)).await.unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(
+            state.config.workspace.join(target)).unwrap(),"fn improved() {}\n");
+        let operations=state.store.all("execution_operation").into_iter()
+            .filter(|op|op["sessionId"]=="repair-session"
+                && op["origin"]=="procedure")
+            .collect::<Vec<_>>();
+        assert!(operations.iter().any(|op|
+            op["tool"]=="workspace_read_range" && op["status"]=="completed"));
+        assert!(operations.iter().any(|op|
+            op["tool"]=="workspace_replace" && op["status"]=="completed"
+                && op["result"]["written"]==true));
+        collect_method_executions(&state,"repair-session",&state.config.workspace);
+        let feedback=record_method_feedback(&state,
+            &json!({"jobId":"repair-child","accepted":false,
+                "newFindings":1,"tokens":12,"elapsedMs":10}),"repair-session");
+        assert_eq!(feedback.len(),1);
+        assert_eq!(feedback[0]["result"]["followed"],true);
+        assert_eq!(state.store.get("experience","repaired-experience").unwrap()
+            ["executableMethods"][0]["successfulApplications"],Value::Null,
+            "successful tool execution without independently verified source adoption is not quality gain");
+        server.abort();
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn learned_method_unknown_verification_is_held_not_failed() {
         let (state,root)=state();
