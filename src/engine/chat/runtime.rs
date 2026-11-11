@@ -113,10 +113,15 @@ fn ground_observed_range_edit(mut args:Value, observations:&[Value])->Value {
         return args;
     };
     if start==0 || end<start || end.saturating_sub(start)>=120 {return args;}
-    let digest=observations.iter().rev().find_map(|op|{
-        if op["status"]!="completed" || op["tool"]!="workspace_read_range"
-            || op["arguments"]["path"].as_str()!=Some(path)
-            || line(&op["result"]["startLine"]).is_none_or(|first|first>start)
+    // A failed syntax edit changes the file's digest. Earlier reads cannot
+    // grant authority for the new version, even when they cover these lines.
+    // The operation store is not guaranteed to return reads in opSeq order.
+    let latest=observations.iter().filter(|op|
+        op["status"]=="completed" && op["tool"]=="workspace_read_range"
+            && op["arguments"]["path"].as_str()==Some(path))
+        .max_by_key(|op|op["opSeq"].as_u64().unwrap_or(0));
+    let digest=latest.and_then(|op|{
+        if line(&op["result"]["startLine"]).is_none_or(|first|first>start)
             || line(&op["result"]["endLine"]).is_none_or(|last|last<end) {
             return None;
         }
@@ -233,12 +238,18 @@ fn rsi_grounded_json_edit(
             && op["tool"]=="workspace_read_range"
             && op["arguments"]["path"]==parsed["path"])
         .collect::<Vec<_>>();
-    let read=relevant.iter().rev().find(|op|
-        count(&op["result"]["startLine"]).is_some_and(|n|n<=start)
-        && count(&op["result"]["endLine"]).is_some_and(|n|n>=end)
-        && op["result"]["sourceSha256"].as_str().is_some_and(|sha|
-            sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())))?;
+    // Do not fall back to an old read after an unsuccessful syntax patch.
+    // A fresh error-focused observation supersedes earlier source snapshots.
+    let read=relevant.into_iter().max_by_key(|op|
+        op["opSeq"].as_u64().unwrap_or(0))?;
+    if !count(&read["result"]["startLine"]).is_some_and(|n|n<=start)
+        || !count(&read["result"]["endLine"]).is_some_and(|n|n>=end) {
+        return None;
+    }
     let digest=read["result"]["sourceSha256"].as_str()?;
+    if digest.len()!=64 || !digest.bytes().all(|b|b.is_ascii_hexdigit()){
+        return None;
+    }
     if parsed["expectedSha256"].as_str().is_some_and(|sha|sha!=digest) {
         return None;
     }
@@ -294,6 +305,24 @@ fn rsi_grounded_json_exact_edit(
     if parsed["expectedSha256"].as_str().is_some_and(|h|h!=hash){return None;}
     Some(json!({"path":path,"oldText":old,"newText":new,
         "expectedSha256":hash}))
+}
+
+/// A same-turn compiler repair must see real, versioned post-edit bytes.
+fn rsi_syntax_repair_prompt(path:&str,observation:&Value,diagnostics:&str)->Option<String>{
+    if observation["path"].as_str()!=Some(path){return None;}
+    let hash=observation["sourceSha256"].as_str()?;
+    if hash.len()!=64 || !hash.bytes().all(|b|b.is_ascii_hexdigit()){
+        return None;
+    }
+    let excerpt=observation["content"].as_str()?;
+    if excerpt.trim().is_empty(){return None;}
+    let start=observation["startLine"].as_u64()?;
+    let end=observation["endLine"].as_u64()?;
+    if start==0 || end<start {return None;}
+    Some(format!(
+        "The previous Rust edit failed syntax parsing. Fix the ACTUAL changed source below with one minimal workspace_replace call. Preserve the intended optimization. Do not edit tests or claim adoption.\nPath: {path}\nCurrent sourceSha256: {hash}\nObserved lines: {start}..{end}\nParser diagnostic:\n{}\nActual post-edit source (line-numbered):\n{}",
+        diagnostics.chars().take(1600).collect::<String>(),
+        excerpt.chars().take(9000).collect::<String>()))
 }
 
 fn rsi_patch_ready_for_evaluation(
@@ -2773,8 +2802,8 @@ async fn run_turn_body(
             // discover the first broken token in a 4B model's edit.
             if result["syntaxValid"]==false
                 && rsi_generation_has_action_target(&session)
-                && !rsi_syntax_repair_issued {
-                rsi_syntax_repair_issued=true;
+                && !rsi_syntax_repair_issued
+                && round+1<max_rounds {
                 let diagnostics=result["syntaxCheck"]["diagnostic"].as_str()
                     .unwrap_or("Rust syntax validation failed.")
                     .chars().take(1600).collect::<String>();
@@ -2798,8 +2827,10 @@ async fn run_turn_body(
                             &source_call,probe,metrics,op_seq,round,call_index,
                             false,"rsi_parse_feedback",None,None,None,
                         ).await?;
-                        if read_ok && observation["sourceSha256"].as_str()
-                            .is_some_and(|hash|hash.len()==64) {
+                        if let Some(repair_prompt)=read_ok
+                            .then(||rsi_syntax_repair_prompt(&path,&observation,&diagnostics))
+                            .flatten() {
+                            rsi_syntax_repair_issued=true;
                             session["rsiRepairDiagnostics"]=json!([{
                                 "label":"rustfmt observed source syntax",
                                 "error":diagnostics,
@@ -2807,8 +2838,11 @@ async fn run_turn_body(
                             session["rsiRepairFocusStartLine"]=json!(begin);
                             state.store.put("session",&session);
                             rsi_edit_action_pending=true;
-                            messages.push(json!({"role":"system","content":
-                                "Rust parser rejected the source edit. DOMINION has now read the actual broken source again and verified its new SHA. Repair the syntax error with one exact source edit. Do not change tests or abandon the original improvement."}));
+                            // The re-observation happens outside the model's
+                            // tool-call transcript. Explicitly supply the new
+                            // bytes and hash; a generic 'read succeeded' notice
+                            // leaves cloud models repairing the OLD source.
+                            messages.push(json!({"role":"system","content":repair_prompt}));
                             if let Some(mut execution)=state.store.get("execution",execution_id){
                                 execution["rsiParseRepair"]=json!({
                                     "line":line,"observed":true,"status":"retry_model_edit",
@@ -7179,6 +7213,66 @@ mod harness_tool_selection_tests {
             "rsiGenerationJobId":"w","rsiFocusFile":"src/engine/memory.rs"});
         assert_eq!(source_generation_turn_limit(&session),Duration::from_secs(840));
         assert!(turn_limit_error(Duration::from_secs(840)).contains("840초"));
+    }
+
+    #[test]
+    fn syntax_repair_prompt_uses_post_edit_bytes_not_an_unverified_claim() {
+        let hash="b".repeat(64);
+        let source=json!({"path":"src/engine/memory.rs",
+            "startLine":41,"endLine":43,
+            "sourceSha256":hash,
+            "content":"   41 fn improved( {\\n   42     new_result()\\n   43 }"});
+        let prompt=rsi_syntax_repair_prompt("src/engine/memory.rs",&source,
+            "error: expected closing delimiter").unwrap();
+        assert!(prompt.contains(&"b".repeat(64)));
+        assert!(prompt.contains("fn improved("));
+        assert!(prompt.contains("expected closing delimiter"));
+        assert!(rsi_syntax_repair_prompt("src/engine/tools.rs",&source,"error").is_none());
+        let mut stale=source.clone();
+        stale["sourceSha256"]=Value::Null;
+        assert!(rsi_syntax_repair_prompt("src/engine/memory.rs",&stale,"error").is_none());
+        let mut unread=source;
+        unread["content"]=json!("");
+        assert!(rsi_syntax_repair_prompt("src/engine/memory.rs",&unread,"error").is_none());
+    }
+
+    #[test]
+    fn syntax_repair_rejects_stale_range_observations_after_a_new_read() {
+        let path="src/engine/memory.rs";
+        let old=json!({"status":"completed","tool":"workspace_read_range",
+            "opSeq":1,"arguments":{"path":path},
+            "result":{"startLine":20,"endLine":60,"sourceSha256":"a".repeat(64)}});
+        let fresh=json!({"status":"completed","tool":"workspace_read_range",
+            "opSeq":7,"arguments":{"path":path},
+            "result":{"startLine":42,"endLine":48,"sourceSha256":"b".repeat(64)}});
+        let edit=json!({"path":path,"startLine":43,"endLine":44,
+            "newText":"fn repaired() {}"});
+        let adapted=ground_observed_range_edit(edit.clone(),&[fresh.clone(),old.clone()]);
+        assert_eq!(adapted["expectedSha256"],"b".repeat(64));
+        let old_range=json!({"path":path,"startLine":24,"endLine":25,
+            "newText":"stale replacement"});
+        assert!(ground_observed_range_edit(old_range,&[old.clone(),fresh.clone()])
+            ["expectedSha256"].is_null(),
+            "the earlier wide read must not authorize a stale version");
+        let session=json!({"rsiRun":true,"rsiCampaignId":"c",
+            "rsiGenerationJobId":"g","rsiFocusFile":path});
+        let offered=vec![json!({"type":"function",
+            "function":{"name":"workspace_replace_range"}})];
+        let accepted=rsi_grounded_json_edit(&edit.to_string(),&session,
+            &[fresh.clone(),old.clone()],"run",&offered);
+        assert!(accepted.is_none(),
+            "the observation must belong to the same execution");
+        let mut new_read=fresh;
+        new_read["runId"]=json!("run");
+        let mut old_read=old;
+        old_read["runId"]=json!("run");
+        let accepted=rsi_grounded_json_edit(&edit.to_string(),&session,
+            &[new_read.clone(),old_read.clone()],"run",&offered).unwrap();
+        assert_eq!(accepted["expectedSha256"],"b".repeat(64));
+        let stale_edit=json!({"path":path,"startLine":24,"endLine":25,
+            "newText":"do not write"});
+        assert!(rsi_grounded_json_edit(&stale_edit.to_string(),&session,
+            &[new_read,old_read],"run",&offered).is_none());
     }
 
     #[test]
