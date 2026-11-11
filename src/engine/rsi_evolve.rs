@@ -7663,6 +7663,154 @@ mod tests {
     }
 
     #[test]
+    fn accepted_program_rewrites_its_own_research_dag_and_preserves_live_dataflow() {
+        for (domain,investigation,path) in [
+            ("memory","code_search","src/engine/memory.rs"),
+            ("tools","http_fetch","src/engine/tools.rs"),
+        ] {
+            let (state,root)=state();
+            let method=json!({"id":"accepted-method","revision":"parent-v1",
+                "domain":domain,"name":"research then edit",
+                "assistanceMode":"harness_assisted",
+                "verification":{"type":"procedure",
+                    "appliesTo":{"requestContains":["improve"]},
+                    "nodes":[
+                        {"id":"research","tool":investigation,"arguments":
+                            if investigation=="code_search" {
+                                json!({"query":"memory"})
+                            }else{json!({"url":"https://example.org"})}},
+                        {"id":"read","tool":"workspace_read_range","arguments":{
+                            "path":path,"startLine":1,"endLine":1}},
+                        {"id":"edit","tool":"workspace_replace","arguments":{
+                            "path":path,"startLine":1,"endLine":1,
+                            "expectedSha256":"$read.sourceSha256",
+                            "newText":"fn improved() {}\n"}}],
+                    "edges":[{"from":"research","to":"read"},{"from":"read","to":"edit"}],
+                    "after":[{"kind":"file_contains","path":path,
+                        "text":"fn improved()"}]}});
+            let op_ids=json!(["op-search","op-read","op-edit"]);
+            let method_op=|id:&str,node:&str,tool:&str,arguments:Value,result:Value|
+                json!({"id":id,"status":"completed","origin":"procedure",
+                    "procedureStrategyId":"accepted-method",
+                    "procedureRevision":"parent-v1","procedureNodeId":node,
+                    "tool":tool,"arguments":arguments,"result":result});
+            let search=method_op("op-search","research",investigation,
+                json!({}),json!({"matches":[{"path":path}]}));
+            let read=method_op("op-read","read","workspace_read_range",
+                json!({"path":path}),json!({"sourceSha256":"a".repeat(64)}));
+            let edit=method_op("op-edit","edit","workspace_replace",
+                json!({"path":path,"expectedSha256":"a".repeat(64)}),
+                json!({"written":true,"postSha256":"b".repeat(64)}));
+            let ops=vec![search.clone(),read.clone(),edit.clone()];
+            let receipt=json!({"methodId":"accepted-method","revision":"parent-v1",
+                "executionId":"accepted-execution","operationIds":op_ids,
+                "result":{"verified":true,"followed":true,"status":"followed"}});
+            state.store.put("rsi_candidate",&json!({"id":"accepted-candidate",
+                "status":"verified","paths":[path],
+                "evaluation":{"metrics":{"eligible":true}}})).unwrap();
+            let mut accepted=serde_json::Map::new();
+            accepted.insert(path.to_string(),json!("b".repeat(64)));
+            let generation=json!({"jobId":"gen1","accepted":true,
+                "candidateId":"accepted-candidate",
+                "acceptedSourceHashes":Value::Object(accepted)});
+            let proposed=synthesize_observed_dag_pruning(
+                &state,&method,&receipt,&ops,&generation).unwrap();
+            assert_eq!(proposed["synthesis"]["kind"],"successful_observation_pruning");
+            assert_eq!(proposed["status"],"candidate");
+            assert_eq!(proposed["successfulApplications"],0);
+            assert_eq!(proposed["synthesis"]["qualityGain"],Value::Null);
+            assert_eq!(proposed["synthesis"]["prunedNodeId"],"research");
+            assert_eq!(proposed["verification"]["nodes"].as_array().unwrap().len(),2);
+            assert_eq!(proposed["verification"]["edges"],
+                json!([{"from":"read","to":"edit"}]));
+            let bindings=std::collections::HashMap::new();
+            let (first,tool,_)=crate::engine::procedure::ready_intent(
+                &proposed,&[],"improve",&bindings).unwrap();
+            assert_eq!(first,"read");
+            assert_eq!(tool,"workspace_read_range");
+            let mut bindings=bindings;
+            bindings.insert("read".to_string(),json!({"sourceSha256":"fresh-hash"}));
+            let done=json!({"id":"new-read","origin":"procedure","status":"completed",
+                "procedureStrategyId":proposed["id"],
+                "procedureRevision":proposed["revision"],"procedureNodeId":"read",
+                "result":{"sourceSha256":"fresh-hash"}});
+            let (_,tool,args)=crate::engine::procedure::ready_intent(
+                &proposed,&[done],"improve",&bindings).unwrap();
+            assert_eq!(tool,"workspace_replace");
+            assert_eq!(args["expectedSha256"],"fresh-hash");
+            let rejected=json!({"jobId":"gen1","accepted":false});
+            assert!(synthesize_observed_dag_pruning(
+                &state,&method,&receipt,&ops,&rejected).is_none());
+            let mut necessary=method.clone();
+            necessary["verification"]["nodes"][1]["arguments"]["dependsOn"]=
+                json!("$research.matches");
+            assert!(synthesize_observed_dag_pruning(
+                &state,&necessary,&receipt,&ops,&generation).is_none(),
+                "a consumed exploration result cannot be removed");
+            necessary=method.clone();
+            necessary["verification"]["after"].as_array_mut().unwrap()
+                .push(json!({"kind":"tool_called","tool":investigation}));
+            assert!(synthesize_observed_dag_pruning(
+                &state,&necessary,&receipt,&ops,&generation).is_none(),
+                "a required tool observation cannot be pruned");
+            assert!(synthesize_observed_dag_pruning(
+                &state,&method,&receipt,&[read,edit],&generation).is_none(),
+                "never invent a completed observation that did not occur");
+            let _=std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn pruning_preserves_predecessor_successor_dependencies() {
+        let (state,root)=state();
+        let path="src/engine/memory.rs";
+        let method=json!({"id":"program","revision":"p1","name":"three steps",
+            "domain":"memory","assistanceMode":"harness_assisted",
+            "verification":{"type":"procedure",
+                "appliesTo":{"requestContains":["improve"]},
+                "nodes":[
+                    {"id":"read","tool":"workspace_read_range",
+                        "arguments":{"path":path,"startLine":1,"endLine":1}},
+                    {"id":"search","tool":"code_search",
+                        "arguments":{"query":"index"}},
+                    {"id":"edit","tool":"workspace_replace",
+                        "arguments":{"path":path,"startLine":1,"endLine":1,
+                            "expectedSha256":"$read.sourceSha256",
+                            "newText":"fn optimized() {}\n"}}],
+                "edges":[{"from":"read","to":"search"},{"from":"search","to":"edit"}],
+                "after":[{"kind":"file_contains","path":path,
+                    "text":"fn optimized()"}]}});
+        state.store.put("rsi_candidate",&json!({"id":"accept",
+            "status":"verified","paths":[path],
+            "evaluation":{"metrics":{"eligible":true}}})).unwrap();
+        let op=|id:&str,node:&str,tool:&str,args:Value,result:Value|json!({
+            "id":id,"status":"completed","origin":"procedure",
+            "procedureStrategyId":"program","procedureRevision":"p1",
+            "procedureNodeId":node,"tool":tool,"arguments":args,"result":result});
+        let ops=vec![
+            op("op1","read","workspace_read_range",
+                json!({}),json!({"sourceSha256":"a".repeat(64)})),
+            op("op2","search","code_search",
+                json!({}),json!({"matches":[{"path":path}]})),
+            op("op3","edit","workspace_replace",
+                json!({"path":path}),json!({"written":true,
+                    "postSha256":"b".repeat(64)}))
+        ];
+        let receipt=json!({"methodId":"program","revision":"p1",
+            "executionId":"run","operationIds":["op1","op2","op3"],
+            "result":{"verified":true,"followed":true}});
+        let generation=json!({"jobId":"generation","accepted":true,
+            "candidateId":"accept",
+            "acceptedSourceHashes":{"src/engine/memory.rs":"b".repeat(64)}});
+        let proposed=synthesize_observed_dag_pruning(
+            &state,&method,&receipt,&ops,&generation).unwrap();
+        assert_eq!(proposed["verification"]["edges"],
+            json!([{"from":"read","to":"edit"}]),
+            "the edit still waits for the source read after pruning search");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn accepted_parent_tries_compacted_child_once_then_uses_observed_outcome() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
