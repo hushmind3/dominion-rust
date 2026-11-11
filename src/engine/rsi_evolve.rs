@@ -7318,7 +7318,23 @@ mod tests {
         assert_eq!(decision["repairSelectionEvidence"]["selection"],
             "success_ablation_trial");
         assert_eq!(decision["repairTarget"],"src/engine/tools.rs");
+        // A descendant that later gets adopted can teach the same operator
+        // to a third domain. Every transfer is a fresh, uncredited candidate.
         let mut unrelated=state.store.get("experience","memory-donor").unwrap();
+        unrelated["executableMethods"][0]["synthesis"]["kind"]=
+            json!("transferred_read_ablation");
+        unrelated["executableMethods"][0]["synthesis"]["transferDepth"]=json!(1);
+        state.store.put("experience",&unrelated).unwrap();
+        let second_hop=synthesize_successful_dag_ablation(
+            &state,&target,&receipt,&ops,&generation).unwrap();
+        assert_eq!(second_hop["synthesis"]["transferDepth"],2);
+        assert_eq!(second_hop["synthesis"]["qualityGain"],Value::Null);
+        unrelated["executableMethods"][0]["synthesis"]["transferDepth"]=json!(3);
+        state.store.put("experience",&unrelated).unwrap();
+        assert!(synthesize_successful_dag_ablation(
+            &state,&target,&receipt,&ops,&generation).is_none(),
+            "unbounded reuse of the same donor is not recursive proof");
+        unrelated["executableMethods"][0]["synthesis"]["transferDepth"]=json!(1);
         unrelated["partitionKey"]=json!("rsi:foreign-repository");
         state.store.put("experience",&unrelated).unwrap();
         assert!(synthesize_successful_dag_ablation(
