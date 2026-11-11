@@ -213,9 +213,18 @@ fn rsi_induced_next_tool(
             if matches!(to,"workspace_replace"|"workspace_replace_range"|"workspace_write")
                 && !has_observed_focus{return None;}
             if !offered.iter().any(|tool|tool_name(tool)==to){return None;}
-            let yes=row["positive"].as_u64().unwrap_or(0) as i64;
-            let no=row["negative"].as_u64().unwrap_or(0) as i64;
-            (yes>no).then_some((yes-no,to.to_string()))
+            let domain=session["rsiDomain"].as_str().unwrap_or("");
+            let local=&row["byDomain"][domain];
+            let local_evidence=local.is_object();
+            let evidence=if local_evidence{local}else{row};
+            let yes=evidence["positive"].as_u64().unwrap_or(0) as i64;
+            let no=evidence["negative"].as_u64().unwrap_or(0) as i64;
+            // An unsuccessful transfer affects this domain, not every
+            // previously working domain. Untried domains only inherit a
+            // transition after it has twice succeeded elsewhere; the
+            // inherited suggestion is still an experiment.
+            let transferable=local_evidence || yes>=2;
+            (transferable && yes>no).then_some((yes-no,to.to_string()))
         }).collect::<Vec<_>>();
     ranked.sort_by(|a,b|b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     ranked.into_iter().next().map(|(_,tool)|tool)
@@ -6351,6 +6360,34 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn failed_transfer_revises_only_the_target_domain_method_choice() {
+        let base=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"generation","rsiFocusFile":"src/engine/memory.rs",
+            "rsiDomain":"tools",
+            "rsiInducedMethodPolicy":{"kind":"harness.method-transitions",
+                "transitions":[{"from":"workspace_read_range",
+                    "to":"workspace_replace_range","positive":4,"negative":2,
+                    "byDomain":{"memory":{"positive":4,"negative":0},
+                        "tools":{"positive":0,"negative":2}}}]}});
+        let read=json!({"id":"read","runId":"exec","opSeq":1,"status":"completed",
+            "tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/memory.rs"},
+            "result":{"sourceSha256":"a".repeat(64)}});
+        let offered=vec![json!({"type":"function","function":{"name":"workspace_replace_range"}})];
+        assert_eq!(rsi_induced_next_tool(&base,&[read.clone()],"exec",&offered),None,
+            "failed cross-domain transfer must suspend this local action");
+        let mut original=base.clone();
+        original["rsiDomain"]=json!("memory");
+        assert_eq!(rsi_induced_next_tool(&original,&[read.clone()],"exec",&offered),
+            Some("workspace_replace_range".to_string()),
+            "successful source-domain method stays usable");
+        let mut unseen=base.clone();
+        unseen["rsiDomain"]=json!("ui");
+        assert_eq!(rsi_induced_next_tool(&unseen,&[read],"exec",&offered),
+            None,"a failed global trace is not a transferable success");
     }
 
     #[test]
