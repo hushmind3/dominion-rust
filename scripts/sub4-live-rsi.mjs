@@ -15,6 +15,7 @@ const reportPath=process.env.SUB4_LIVE_REPORT||'benchmark/sub4-live-rsi-result.j
 const commit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
 let receipt={schema:'sub4.real-model.rsi.v1',branch:'dominion-sub4',
   sourceCommit:commit,model:selectedModel,providerKind:localModel?'ollama':'openai',
+  modelContextTokens:localModel?16384:null,
   status:'initializing',
   actualModelCalls:0,sourceWriteCalls:0,modelMethodCalls:0,
   acceptedGenerations:0,measuredImprovement:false,transferEvidence:[],
@@ -103,11 +104,12 @@ if(mode==='probe'){
       id:'sub4-live-model',name:localModel?'Sub4 real local model':'Sub4 real public model',
       kind:localModel?'ollama':'openai',
       enabled:true,toolMode:'native',
+      ...(localModel?{contextTokens:16384,maxOutputTokens:1536}:{}),
       baseUrl:localModel?ollamaOrigin:'http://127.0.0.1:5667/v1',model:selectedModel
     });
     receipt.providerId=provider.id||'sub4-live-model';
     await post(host+'/api/dev/config',{sourceDir:process.env.DOMINION_SOURCE_WORKSPACE});
-    const goal='Fix one concrete user-visible planning error in src/engine/decompose.rs. split_markers currently misses Korean ordered actions such as 설계를 읽고 결과를 저장한 다음 검증해. Implement grammar-aware splitting of action suffix -고 and connectors 다음/나서, avoiding false noun splits (사고, 최고), while preserving meaningful step text. Inspect the exact source and CALL workspace_replace with real oldText/newText before final response. Do not just discuss a solution. Then let DOMINION evaluate frozen held-out cases.';
+    const goal='Fix one concrete user-visible planning error in src/engine/decompose.rs. split_markers currently misses Korean ordered actions such as 설계를 읽고 결과를 저장한 다음 검증해. Implement grammar-aware splitting of action suffix -고 and connectors 다음/나서, avoiding false noun splits (사고, 최고), while preserving meaningful step text. Inspect the exact source once using workspace_read_range, then CALL workspace_replace_range with observed startLine, endLine, sourceSha256 as expectedSha256, and improved newText. Do not send oldText or continue searching after the source is observed. Do not just discuss a solution. Then let DOMINION evaluate frozen held-out cases.';
     const started=await post(host+'/api/rsi/start',{
       confirmation:'START_RSI_EVOLUTION',mode:'continuous',
       providerId:receipt.providerId,model:selectedModel,
