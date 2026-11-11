@@ -1693,7 +1693,7 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
 /// its own future application passes the ordinary procedure evaluator.
 fn is_synthesized_source_repair(method:&Value)->bool {
     matches!(method["synthesis"]["kind"].as_str(),
-        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"|"successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning"|"transferred_observation_pruning"|"failed_model_tool_rebase"))
+        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"|"successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning"|"transferred_observation_pruning"|"failed_model_tool_rebase"|"failed_model_reversed_span"))
 }
 
 /// Synthesize a new executable procedure, not just an action ranking.
@@ -2381,6 +2381,82 @@ fn synthesize_failed_model_edit(
     }))
 }
 
+/// Real small-model traces may contain a reversed pair of *absolute* source
+/// line endpoints. Unlike inventing a missing oldText or guessing a relative
+/// line count, sorting both witnessed endpoints describes the identical line
+/// set. Learn a read -> version-bound edit DAG from the failed operation, and
+/// independently test it in a later descendant. Never grant improvement credit
+/// for constructing the candidate.
+fn synthesize_failed_reversed_span(
+    session:&Value, op:&Value, generation:&Value
+)->Option<Value> {
+    if session["rsiRun"]!=true
+        || session["rsiGenerationJobId"]!=generation["jobId"]
+        || op["sessionId"]!=session["id"]
+        || op["origin"]=="procedure"
+        || op["tool"]!="workspace_replace"
+        || !matches!(op["status"].as_str(),Some("completed"|"failed")) {
+        return None;
+    }
+    let error=op["result"]["error"].as_str().or_else(||op["error"].as_str())?;
+    if !error.contains("endLine") || !error.contains("startLine") {return None}
+    let path=op["arguments"]["path"].as_str()
+        .filter(|path|crate::engine::rsi::safe_path(path))?;
+    if !session["rsiFocusFiles"].as_array().is_some_and(|files|
+        files.iter().any(|file|file.as_str()==Some(path))) {return None}
+    if op["arguments"]["oldText"].as_str().is_some_and(|s|!s.is_empty()) {
+        return None;
+    }
+    let coordinate=|key:&str|op["arguments"][key].as_u64()
+        .or_else(||op["arguments"][key].as_str()?.parse::<u64>().ok());
+    let raw_start=coordinate("startLine")?;
+    let raw_end=coordinate("endLine")?;
+    if raw_end==0 || raw_start<=raw_end || raw_start-raw_end>=120 {return None}
+    let new_text=op["arguments"]["newText"].as_str()
+        .filter(|text|!text.trim().is_empty() && text.chars().count()<=2800)?;
+    let objective=session["rsiObjective"].as_str()
+        .filter(|text|!text.trim().is_empty())?;
+    let fingerprint=format!("{:x}",Sha256::digest(json!([
+        op["id"],generation["jobId"],path,raw_start,raw_end,
+        new_text,"reordered-absolute-endpoints-v1"
+    ]).to_string().as_bytes()));
+    let read_id=format!("observe_{}",&fingerprint[..12]);
+    let edit_id=format!("apply_{}",&fingerprint[..12]);
+    let program=crate::engine::procedure::normalize(&json!({
+        "type":"procedure",
+        "appliesTo":{"requestContains":[objective.chars().take(100).collect::<String>()]},
+        "nodes":[
+            {"id":read_id,"tool":"workspace_read_range",
+                "arguments":{"path":path,"startLine":raw_end,"endLine":raw_start}},
+            {"id":edit_id,"tool":"workspace_replace",
+                "arguments":{"path":path,"startLine":raw_end,"endLine":raw_start,
+                    "expectedSha256":format!("{}{}.sourceSha256",char::from(36),read_id),
+                    "newText":new_text}}
+        ],
+        "edges":[{"from":read_id,"to":edit_id}],
+        "after":[{"kind":"file_contains","path":path,"text":new_text.trim()}]
+    }));
+    if program["type"]!="procedure" {return None}
+    let domain=focus_domain_hint(path);
+    let revision=format!("{:x}",Sha256::digest(
+        json!([domain,&program]).to_string().as_bytes()));
+    Some(json!({
+        "id":format!("rsi-method-{revision}"),"revision":revision,
+        "name":format!("Observed model reversed-span · {}",
+            path.chars().take(60).collect::<String>()),
+        "domain":domain,"verification":program,"status":"candidate",
+        "assistanceMode":"harness_assisted","successfulApplications":0,
+        "synthesis":{"kind":"failed_model_reversed_span",
+            "failedOperationId":op["id"],
+            "sourceGenerationJobId":generation["jobId"],
+            "originalStartLine":raw_start,"originalEndLine":raw_end,
+            "derivedStartLine":raw_end,"derivedEndLine":raw_start,
+            "operator":"sort_absolute_endpoints_then_bind_fresh_source_hash",
+            "qualityGain":Value::Null,
+            "causalProof":"awaiting_independent_descendant_application"}
+    }))
+}
+
 fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str) -> Vec<Value> {
     let receipts = state.store.get("session", session_id)
         .and_then(|s|s["rsiMethodExecutions"].as_array().cloned()).unwrap_or_default();
@@ -2391,12 +2467,16 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
     // execution method. The method will not be credited until applied.
     if let Some(session)=state.store.get("session",session_id) {
         for op in operations.iter().filter(|op|op["sessionId"]==session_id) {
-            if let Some(repair)=synthesize_failed_model_edit(&session,op,generation) {
-                if !repairs.iter().any(|m|m["id"]==repair["id"]){
+            for repair in [
+                synthesize_failed_model_edit(&session,op,generation),
+                synthesize_failed_reversed_span(&session,op,generation)
+            ].into_iter().flatten() {
+                if !repairs.iter().any(|m|m["id"]==repair["id"]) {
                     repairs.push(repair);
                 }
                 if repairs.len()>=2 {break}
             }
+            if repairs.len()>=2 {break}
         }
     }
     for receipt in &receipts {
@@ -8168,6 +8248,73 @@ mod tests {
         bad=op.clone();
         bad["origin"]=json!("procedure");
         assert!(synthesize_failed_model_edit(&session,&bad,&gen).is_none());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn genuine_reversed_model_span_evolves_into_versioned_descendant_program() {
+        let (state,root)=state();
+        let path="src/engine/memory.rs";
+        let session=json!({"id":"reversed-s","rsiRun":true,
+            "rsiGenerationJobId":"g1","rsiObjective":"fix memory",
+            "rsiFocusFiles":[path]});
+        let generation=json!({"jobId":"g1","accepted":false,
+            "newFindings":0,"tokens":2400});
+        let failure=json!({"id":"edit-reversed","origin":"model",
+            "sessionId":"reversed-s","status":"failed",
+            "tool":"workspace_replace","arguments":{"path":path,
+                "startLine":"14","endLine":"12",
+                "newText":"let improved = true;"},
+            "result":{"error":"endLine은 startLine 이상이어야 합니다.",
+                "written":false}});
+        let learned=synthesize_failed_reversed_span(
+            &session,&failure,&generation).unwrap();
+        assert_eq!(learned["synthesis"]["kind"],"failed_model_reversed_span");
+        assert_eq!(learned["status"],"candidate");
+        assert_eq!(learned["successfulApplications"],0);
+        assert_eq!(learned["synthesis"]["qualityGain"],Value::Null);
+        let mut results=std::collections::HashMap::new();
+        let (read_id,read_tool,read_args)=crate::engine::procedure::ready_intent(
+            &learned,&[],"fix memory",&results).unwrap();
+        assert_eq!(read_tool,"workspace_read_range");
+        assert_eq!(read_args["startLine"],12);
+        assert_eq!(read_args["endLine"],14);
+        results.insert(read_id.clone(),json!({"sourceSha256":"witnessed-version"}));
+        let receipt=json!({"origin":"procedure","status":"completed",
+            "procedureStrategyId":learned["id"],
+            "procedureRevision":learned["revision"],"procedureNodeId":read_id,
+            "result":{"sourceSha256":"witnessed-version"}});
+        let (_,edit_tool,edit_args)=crate::engine::procedure::ready_intent(
+            &learned,&[receipt],"fix memory",&results).unwrap();
+        assert_eq!(edit_tool,"workspace_replace");
+        assert_eq!(edit_args["expectedSha256"],"witnessed-version");
+        assert_eq!(edit_args["startLine"],12);
+        assert_eq!(edit_args["endLine"],14);
+        assert!(is_synthesized_source_repair(&learned));
+        state.store.put("session",&session).unwrap();
+        state.store.put("execution_operation",&failure).unwrap();
+        record_method_feedback(&state,&generation,"reversed-s");
+        let saved=state.store.get("session","reversed-s").unwrap();
+        assert_eq!(saved["rsiMethodProposals"][0]["id"],learned["id"]);
+        let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
+            "rsiObjective":"fix memory"});
+        let experience=remember_research(&state,&input,&generation,"reversed-s").unwrap();
+        let selected=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(selected["repairMethodId"],learned["id"]);
+        assert_eq!(state.store.get("experience",&experience).unwrap()
+            ["executableMethods"][0]["status"],"candidate");
+        let mut unrelated=failure.clone();
+        unrelated["sessionId"]=json!("other");
+        assert!(synthesize_failed_reversed_span(&session,&unrelated,&generation).is_none());
+        unrelated=failure.clone();
+        unrelated["arguments"]["endLine"]=json!(0);
+        assert!(synthesize_failed_reversed_span(&session,&unrelated,&generation).is_none());
+        unrelated=failure.clone();
+        unrelated["result"]["error"]=json!("no change");
+        assert!(synthesize_failed_reversed_span(&session,&unrelated,&generation).is_none());
+        unrelated=failure.clone();
+        unrelated["arguments"]["startLine"]=json!(140);
+        assert!(synthesize_failed_reversed_span(&session,&unrelated,&generation).is_none());
         let _=std::fs::remove_dir_all(root);
     }
 
