@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/sub1-local-ollama-rsi.yml'
       - 'scripts/sub1-local-ollama-rsi.mjs'
+      - 'src/engine/chat/provider.rs'
+      - 'src/engine/gateway.rs'
   workflow_dispatch:
 
 permissions:

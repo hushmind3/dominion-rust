@@ -606,9 +606,13 @@ pub(super) async fn stream_completion(
             }
             (result, exposed)
         };
-        // A two-minute answer is not a usable room participant. Remember it
-        // so the next round does not pay the same price again.
-        if candidate_started.elapsed() >= std::time::Duration::from_secs(60) {
+        // Room turns must be fast. Source-edit and other long-running jobs
+        // must keep their selected model after a legitimate slow generation:
+        // quarantining every >60s completion for 15 minutes previously broke
+        // RSI just after a successful workspace_read_range tool call.
+        if state.store.get("session",session_id).is_some_and(|session|
+            route_is_too_slow_for_room(&session,candidate_started.elapsed()))
+        {
             crate::engine::gateway::mark_slow(&candidate.base_url, &candidate.model);
         }
         match result {
@@ -668,6 +672,13 @@ fn compat_messages(messages: &[Value]) -> Vec<Value> {
             _ => message.clone(),
         }
     }).collect()
+}
+
+/// Latency-triggered rotation serves conversational room turns only.
+/// It must not terminate paid, model-bound, multi-step tool execution after
+/// a successful read. Hard request timeouts and user budgets still apply.
+fn route_is_too_slow_for_room(session:&Value,elapsed:std::time::Duration)->bool {
+    session["roomId"].is_string() && elapsed>=std::time::Duration::from_secs(60)
 }
 
 /// A grounded, explicit RSI patch task must request a native edit operation,
@@ -1953,6 +1964,17 @@ mod tests {
         assert!(messages[0].get("reasoning_content").is_none());
         normalize_assistant_reasoning(&mut messages, false);
         assert!(messages[1].get("reasoning_content").is_none(), "{messages:?}");
+    }
+
+    #[test]
+    fn slow_room_rotation_never_quarantines_a_long_running_rsi_worker() {
+        let long=std::time::Duration::from_secs(180);
+        let quick=std::time::Duration::from_secs(20);
+        assert!(route_is_too_slow_for_room(&json!({"roomId":"room1"}),long));
+        assert!(!route_is_too_slow_for_room(&json!({"roomId":"room1"}),quick));
+        assert!(!route_is_too_slow_for_room(
+            &json!({"rsiRun":true,"rsiCampaignId":"campaign1"}),long));
+        assert!(!route_is_too_slow_for_room(&json!({"kind":"task"}),long));
     }
 
     #[test]
