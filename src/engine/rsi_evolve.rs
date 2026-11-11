@@ -6034,6 +6034,100 @@ mod tests {
     }
 
     #[test]
+    fn learned_source_rebase_program_executes_a_fresh_hash_binding() {
+        let original=json!({"id":"old-method","revision":"old-revision",
+            "name":"source edit","domain":"memory","assistanceMode":"harness_assisted",
+            "verification":{"type":"procedure","appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"edit","tool":"workspace_replace","arguments":{
+                    "path":"src/engine/memory.rs","startLine":3,"endLine":3,
+                    "newText":"let fixed = true;","expectedSha256":"old-sha"}}],
+                "after":[{"kind":"tool_called","tool":"workspace_replace",
+                    "path":"src/engine/memory.rs"}]}});
+        let failed=json!({"id":"failed-op","origin":"procedure","status":"failed",
+            "procedureStrategyId":"old-method","procedureRevision":"old-revision",
+            "procedureNodeId":"edit","tool":"workspace_replace",
+            "arguments":{"path":"src/engine/memory.rs","startLine":3,"endLine":3,
+                "newText":"let fixed = true;","expectedSha256":"old-sha"},
+            "result":{"error":"stale version","staleVersion":true}});
+        let learned=synthesize_stale_edit_repair(&original,&failed).unwrap();
+        assert_eq!(learned["status"],"candidate");
+        assert_eq!(learned["synthesis"]["kind"],"stale_source_rebase");
+        assert_ne!(learned["revision"],original["revision"]);
+        let mut results=std::collections::HashMap::new();
+        let (node,tool,args)=crate::engine::procedure::ready_intent(
+            &learned,&[],"memory improvement",&results).unwrap();
+        assert_eq!(tool,"workspace_read_range");
+        assert_eq!(args["startLine"],3);
+        let read_result=json!({"sourceSha256":"new-observed-hash",
+            "path":"src/engine/memory.rs","content":"3 let old = true;"});
+        let read_op=json!({"id":"observed-read","origin":"procedure",
+            "procedureStrategyId":learned["id"],"procedureRevision":learned["revision"],
+            "procedureNodeId":node,"tool":"workspace_read_range",
+            "status":"completed","result":read_result});
+        results.insert(node,read_result);
+        let (next,tool,args)=crate::engine::procedure::ready_intent(
+            &learned,&[read_op],"memory improvement",&results).unwrap();
+        assert_eq!(next,"edit");
+        assert_eq!(tool,"workspace_replace");
+        assert_eq!(args["expectedSha256"],"new-observed-hash");
+        assert_eq!(args["newText"],"let fixed = true;");
+        let mut fake=failed.clone();
+        fake["result"]["staleVersion"]=json!(false);
+        assert!(synthesize_stale_edit_repair(&original,&fake).is_none());
+        assert!(synthesize_stale_edit_repair(&learned,&failed).is_none());
+    }
+
+    #[test]
+    fn failed_method_evolves_into_a_separate_inherited_candidate() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
+            "rsiObjective":"memory improvement"});
+        let partition=research_scope(&input).partition_key;
+        let original=json!({"id":"old-method","revision":"old-revision",
+            "name":"old source edit","domain":"memory","status":"executable",
+            "assistanceMode":"harness_assisted","verification":{
+                "type":"procedure","appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"edit","tool":"workspace_replace","arguments":{
+                    "path":"src/engine/memory.rs","startLine":1,"endLine":1,
+                    "newText":"fn fixed() {}","expectedSha256":"outdated"}}],
+                "after":[{"kind":"tool_called","tool":"workspace_replace",
+                    "path":"src/engine/memory.rs"}]}});
+        state.store.put("experience",&json!({"id":"prior-method",
+            "status":"active","partitionKey":partition,
+            "executableMethods":[original.clone()]})).unwrap();
+        state.store.put("execution_operation",&json!({"id":"failed-edit",
+            "sessionId":"s","origin":"procedure","status":"failed",
+            "procedureStrategyId":"old-method","procedureRevision":"old-revision",
+            "procedureNodeId":"edit","tool":"workspace_replace",
+            "arguments":{"path":"src/engine/memory.rs","startLine":1,"endLine":1,
+                "expectedSha256":"outdated","newText":"fn fixed() {}"},
+            "result":{"error":"stale SHA","staleVersion":true}})).unwrap();
+        state.store.put("session",&json!({"id":"s","rsiMethodExecutions":[{
+            "experienceId":"prior-method","methodId":"old-method",
+            "revision":"old-revision","executionId":"e","operationIds":["failed-edit"],
+            "result":{"verified":true,"status":"violated","violations":["failed"]}
+        }]})).unwrap();
+        let generation=json!({"jobId":"generation-1","domain":"memory",
+            "accepted":false,"newFindings":0,"tokens":100,"elapsedMs":50});
+        record_method_feedback(&state,&generation,"s");
+        assert_eq!(state.store.get("experience","prior-method").unwrap()
+            ["executableMethods"][0]["status"],"suspended");
+        let proposed=state.store.get("session","s").unwrap()
+            ["rsiMethodProposals"][0].clone();
+        assert_eq!(proposed["status"],"candidate");
+        assert_eq!(proposed["sourceGenerationJobId"],"generation-1");
+        assert_eq!(proposed["successfulApplications"],0);
+        let saved=remember_research(&state,&input,&generation,"s").unwrap();
+        assert_eq!(state.store.get("experience",&saved).unwrap()
+            ["executableMethods"][0]["id"],proposed["id"]);
+        let decision=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(decision["action"],"execute_methods");
+        assert_eq!(decision["methodIds"][0],proposed["id"]);
+        assert_ne!(decision["methodIds"][0],original["id"]);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn learned_method_proposals_require_running_rsi_and_executable_verification() {
         let (state,root)=state();
         let _context=parent(&state);
