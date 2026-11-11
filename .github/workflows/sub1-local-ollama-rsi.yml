@@ -76,7 +76,7 @@ jobs:
               for (raw,) in connection.execute("SELECT data FROM records WHERE kind='execution_operation'"):
                   try: row=json.loads(raw)
                   except (TypeError,ValueError): continue
-                  if row.get("tool") in ("code_search","workspace_read_range","workspace_replace","workspace_replace_range","workspace_write"):
+                  if row.get("tool") in ("code_search","workspace_read_range","workspace_replace","workspace_replace_range","workspace_replace_function","workspace_write"):
                       result=row.get("result") or {}
                       receipt=row.get("toolReceipt") or {}
                       evidence["operationCalls"].append({"tool":row.get("tool"),"status":row.get("status"),

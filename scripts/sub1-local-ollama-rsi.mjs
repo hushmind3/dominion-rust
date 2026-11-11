@@ -46,7 +46,7 @@ async function run(){
  if(!worktree)throw Error("Isolated DOMINION_WORKSPACE not configured");
  await json(host+"/api/dev/config","POST",{sourceDir:worktree});
  // Match the public-run task so differences are in model execution, not a new benchmark.
- const request="Fix a reproducible behavior bug in src/engine/decompose.rs. split_markers() misses Korean action suffix -고 and connectives 다음/나서, causing 설계를 읽고 결과를 저장한 다음 검증해 to stay one step instead of three actions. Read the exact source range with workspace_read_range, then call workspace_replace_range with its startLine, endLine and sourceSha256 as expectedSha256, sending the corrected Rust lines as newText. You may use workspace_replace when an exact oldText is available. Avoid splitting nouns like 사고/최고. Preserve subtask text and list handling. If a tool rejects an edit, read the error and correct the tool arguments. Continue to independent frozen baseline/candidate evaluation; reporting ideas without a source edit is not completion.";
+ const request="Fix a reproducible behavior bug in src/engine/decompose.rs. split_markers() misses Korean action suffix -고 and connectives 다음/나서, causing 설계를 읽고 결과를 저장한 다음 검증해 to stay one step instead of three actions. Read the exact source via workspace_read_range, then prefer workspace_replace_function with functionName=split_markers and newText containing the complete correct Rust function. The engine binds the observed file SHA and preserves siblings. If unavailable, call workspace_replace_range with startLine, endLine and sourceSha256 as expectedSha256. You may use workspace_replace when an exact oldText is available. Avoid splitting nouns like 사고/최고. Preserve subtask text and list handling. If a tool rejects an edit, read the error and correct the tool arguments. Continue to independent frozen baseline/candidate evaluation; reporting ideas without a source edit is not completion.";
  const started=await json(host+"/api/rsi/start","POST",{
     mode:"continuous",confirmation:"START_RSI_EVOLUTION",selectionPolicy:"automatic",
     providerId:report.providerId,model,request,
@@ -73,7 +73,7 @@ async function run(){
      candidateId:g.candidateId||null,attemptedCandidateId:g.attemptedCandidateId||null,
      accepted:g.accepted===true,acceptedCommit:g.acceptedCommit||null,
      verdict:g.evaluation?.verdict||null,metrics:g.evaluation?.metrics||null,error:g.error||null}));
-  const editTools=new Set(["workspace_replace","workspace_replace_range","workspace_write"]);
+  const editTools=new Set(["workspace_replace","workspace_replace_range","workspace_replace_function","workspace_write"]);
   const edits=report.history.flatMap(g=>g.toolsUsed).filter(x=>editTools.has(x.tool));
   const receipts=report.history.flatMap(g=>g.writeReceipts).filter(x=>editTools.has(x.tool));
   report.summary={

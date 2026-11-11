@@ -89,7 +89,7 @@ if(mode==='probe'){
       mode:'continuous',confirmation:'START_RSI_EVOLUTION',
       selectionPolicy:'automatic',providerId:'sub1-free-proxy',model:'openai-fast',
       thinking:false,reasoningEffort:'low',
-      request:'Improve the source implementation of split_markers() in src/engine/decompose.rs to recognize sequential Korean actions connected with verbal -고 and 다음/나서 while retaining original task words and numbered-list behavior. Example: 문서를 열고 항목을 비교한 다음 알려줘 should produce three ordered subtasks; nouns like 사고 and 최고 are not action connectors. Change ONLY split_markers() and its directly necessary helpers; do NOT erase or repurpose marker_at(), which must remain a bool-returning standalone-marker predicate. After observing the exact source via workspace_read_range, author a minimal valid-Rust replacement with workspace_replace_range or workspace_replace. A compile failure is a request for an actual corrected source revision, not repeated research. The independent evaluator will execute previously withheld task examples and reject any regressions. A succeeding descendant must learn from the actual source changes and evaluation failures and improve a different behavior next. Do not end with analysis or a report if a real tool-backed source edit is still possible',
+      request:'Improve the source implementation of split_markers() in src/engine/decompose.rs to recognize sequential Korean actions connected with verbal -고 and 다음/나서 while retaining original task words and numbered-list behavior. Example: 문서를 열고 항목을 비교한 다음 알려줘 should produce three ordered subtasks; nouns like 사고 and 최고 are not action connectors. Change ONLY split_markers() and its directly necessary helpers; do NOT erase or repurpose marker_at(), which must remain a bool-returning standalone-marker predicate. After observing the exact source with workspace_read_range, PREFER workspace_replace_function(path,functionName=split_markers,newText=one complete valid Rust fn) to preserve sibling definitions and eliminate guessed line ranges. Otherwise use workspace_replace_range or workspace_replace. A compile failure is a request for an actual corrected source revision, not repeated research. The independent evaluator will execute previously withheld task examples and reject any regressions. A succeeding descendant must learn from the actual source changes and evaluation failures and improve a different behavior next. Do not end with analysis or a report if a real tool-backed source edit is still possible',
       focusFiles:['src/engine/decompose.rs'],
       maxAttempts:Number(process.env.SUB1_LIVE_MAX_ATTEMPTS||3),
       tokenBudget:Number(process.env.SUB1_LIVE_TOKEN_BUDGET||90000),
@@ -160,7 +160,7 @@ if(mode==='probe'){
     };
     trace.status=last.status;trace.result=last.result||null;
     trace.stopReason=last.evolution?.stopReason||last.result?.evolution?.stopReason||null;
-    const editTools=new Set(['workspace_replace','workspace_replace_range','workspace_write']);
+    const editTools=new Set(['workspace_replace','workspace_replace_range','workspace_replace_function','workspace_write']);
     const countCalls=(generation,names)=>generation.toolsUsed
       .filter(tool=>names.has(tool.tool)).reduce((sum,tool)=>sum+(tool.calls||0),0);
     const sourceEditCalls=trace.generationEvidence.reduce((sum,g)=>

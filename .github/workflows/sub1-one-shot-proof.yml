@@ -1,7 +1,7 @@
 name: Sub1 three-generation actual quality improvement campaign
 
 # Execute up to three real descendant generations and measure compiled, frozen holdout improvement and actual parent adoption.
-# This workflow revision explicitly probes atomic syntax AND scoped-function recovery.
+# This workflow revision probes genuine function-level model edits, atomic syntax and source-scoped recovery.
 # Other source pushes still run ordinary CI only.
 # Normal code pushes must never repeat model calls or incur model costs.
 on:
