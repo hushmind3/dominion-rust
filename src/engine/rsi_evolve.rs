@@ -2410,14 +2410,25 @@ fn fit_worker_prompt(
             "tokens":row["tokens"],"elapsedMs":row["elapsedMs"],
             "verdict":row["evaluation"]["verdict"],"measurements":cases,
             "error":row["error"].as_str().map(|error|
-                error.chars().take(240).collect::<String>())
+                error.chars().take(240).collect::<String>()),
+            // A descendant must know the real compiler failure from the
+            // parent run, not merely that "no candidate" was adopted.
+            "compilerDiagnostic":row["verification"]["checks"].as_array()
+                .into_iter().flatten().find(|check|check["passed"]!=true)
+                .and_then(|check|check["detail"].as_str())
+                .map(|error|error.chars().take(780).collect::<String>()),
+            "repairAttempts":row["verification"]["repairAttempts"]
         })
     }).collect::<Vec<_>>();
     let compact = history.iter().rev().take(2).map(|row|json!({
         "domain":row["domain"],"accepted":row["accepted"],
         "tokens":row["tokens"],"verdict":row["evaluation"]["verdict"],
         "error":row["error"].as_str().map(|error|
-            error.chars().take(120).collect::<String>())
+            error.chars().take(120).collect::<String>()),
+        "compilerDiagnostic":row["verification"]["checks"].as_array()
+            .into_iter().flatten().find(|check|check["passed"]!=true)
+            .and_then(|check|check["detail"].as_str())
+            .map(|error|error.chars().take(450).collect::<String>())
     })).collect::<Vec<_>>();
     for (mode, rows) in [("full",full),("compact",compact),("deferred",Vec::new())] {
         let mut prompt = format!("{base}{directive}");
