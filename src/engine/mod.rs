@@ -34,6 +34,7 @@ pub mod rsi_mutation;
 pub mod rsi_evolve;
 pub mod rsi_scan;
 pub mod rsi_worktree;
+pub mod rsi_compiler_repair;
 pub mod recovery;
 pub mod reasoning;
 pub mod remote_backup;

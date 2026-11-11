@@ -737,7 +737,41 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         let mut finished=crate::engine::rsi_worktree::finish(
             context,&prepared_job,worktree,message,&session_id
         ).await;
-        for revision in 0..MAX_REPAIRS {
+        let mut compiler_repairs=Vec::<Value>::new();
+        for revision in 0..=MAX_REPAIRS {
+            // Bring the compiler's machine-applicable suggestions into the
+            // same detached worktree BEFORE another expensive model call.
+            // Never treat rustc repair as proof of better source behavior.
+            let compiler_failed=finished.as_ref().ok().is_some_and(|prior|
+                prior["reason"]=="build_or_typecheck_failed"
+                && prior["rsi"]["sourceClean"]==true
+                && prior["rsi"]["candidateId"].is_string()
+                && prior["rsi"]["modelError"].as_str().unwrap_or("").is_empty()
+                && prior["rsi"]["captureError"].as_str().unwrap_or("").is_empty());
+            if compiler_failed {
+                match crate::engine::rsi_compiler_repair::recover(worktree).await {
+                    Ok(Some(receipt)) => {
+                        match crate::engine::rsi_worktree::finish(
+                            context,&prepared_job,worktree,Ok(None),&session_id
+                        ).await {
+                            Ok(rechecked) => {
+                                context.state.store.audit("rsi.compiler_repair_verified",
+                                    json!({"jobId":context.job_id,"receipt":receipt,
+                                        "candidateId":rechecked["rsi"]["candidateId"]}));
+                                compiler_repairs.push(receipt);
+                                finished=Ok(rechecked);
+                            }
+                            Err(error) => context.state.store.audit(
+                                "rsi.compiler_repair_capture_failed",
+                                json!({"jobId":context.job_id,"error":error})),
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => context.state.store.audit("rsi.compiler_repair_unavailable",
+                        json!({"jobId":context.job_id,"error":error})),
+                }
+            }
+            if revision==MAX_REPAIRS {break;}
             let Some(prior)=finished.as_ref().ok() else {break;};
             let compiler_feedback=crate::engine::rsi_worktree::repair_feedback(prior);
             let session=context.state.store.get("session",&session_id)
@@ -836,6 +870,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         }
         let mut output=finished?;
         output["repairAttempts"]=json!(attempts.len());
+        output["compilerRepairReceipts"]=json!(compiler_repairs);
         output["previousAttempts"]=json!(attempts);
         output
     } else {
