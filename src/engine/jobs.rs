@@ -654,7 +654,8 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         for revision in 0..=max_repairs {
             let compiler_failed=finished.as_ref().ok().is_some_and(|prior|
                 prior["reason"]=="build_or_typecheck_failed"
-                && prior["rsi"]["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)>0);
+                && (prior["rsi"]["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)>0
+                    || prior["rsi"]["candidateOrigin"]=="native_inductive_source_mutation"));
             if compiler_failed {
                 match crate::engine::rsi_compiler_repair::recover(worktree).await {
                     Ok(Some(receipt)) => {
