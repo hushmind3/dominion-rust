@@ -7222,6 +7222,11 @@ mod tests {
             assert!(synthesize_successful_dag_ablation(
                 &state,&method,&receipt,&[read.clone(),edit.clone()],&unrelated).is_none(),
                 "a successful but unrelated method must not inherit a different source change");
+            let mut changed_again=generation.clone();
+            changed_again["acceptedSourceHashes"][path]=json!("e".repeat(64));
+            assert!(synthesize_successful_dag_ablation(
+                &state,&method,&receipt,&[read.clone(),edit.clone()],&changed_again).is_none(),
+                "a later write to the same path must not credit this method");
             assert_eq!(candidate["verification"]["nodes"].as_array().unwrap().len(),1);
             assert_eq!(candidate["verification"]["edges"],json!([]));
             let (node,tool,args)=crate::engine::procedure::ready_intent(
