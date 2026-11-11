@@ -1498,6 +1498,31 @@ async fn run_turn_body(
             }
         }
 
+        // A small local model can supply a valid patch-argument JSON object
+        // but fail to emit a provider-specific function-call envelope. DOMINION
+        // interprets the arguments as a real tool intent and routes them
+        // through the same approvals, source hash, receipts and evaluator.
+        // Narrative prose or unversioned range replacements are not executed.
+        if session["rsiRun"]==true && completion.tool_calls.is_empty()
+            && !force_final && request.tools_enabled && request.tools_execution_enabled {
+            let allowed=round_tools.iter().map(tool_name)
+                .filter(|name|!name.is_empty())
+                .map(str::to_string)
+                .collect::<std::collections::HashSet<_>>();
+            if let Some((name,arguments))=super::protocol::parse_rsi_unwrapped_edit(
+                &completion.content,&allowed) {
+                state.store.audit("rsi.structured_patch_interpreted",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "tool":name,"round":round,
+                    "source":"standalone_model_json"
+                }));
+                completion.tool_calls.push(ToolCall{
+                    id:uuid::Uuid::new_v4().to_string(),name,arguments
+                });
+                completion.content.clear();
+            }
+        }
+
         if completion.tool_calls.is_empty() {
             // A final prose explanation after a successful source read is not
             // a completed explicit code repair. Give the same model one
@@ -1518,7 +1543,7 @@ async fn run_turn_body(
                         "round":round,"sourceRead":has_read
                     }));
                     messages.push(json!({"role":"user","content":
-                        "앞선 답변은 코드 변경이 아닙니다. workspace_replace 또는 파일 SHA와 줄 번호 기반 workspace_replace_range를 호출하세요. 새 파일일 때만 workspace_write를 사용하세요. 불가능하면 구체적인 코드·도구 오류를 설명하세요."}));
+                        "앞선 답변은 코드 변경이 아닙니다. workspace_replace 또는 파일 SHA와 줄 번호 기반 workspace_replace_range를 호출하세요. 모델이 함수 호출 형식을 생성하지 못한다면 설명문 없이 {\"path\":\"src/...\",\"startLine\":1,\"endLine\":1,\"newText\":\"...\",\"expectedSha256\":\"읽은 파일 SHA256\"} JSON 객체만 출력하세요. DOMINION이 검증된 도구 실행으로 변환합니다. 불가능하면 구체적인 코드·도구 오류를 설명하세요."}));
                     continue;
                 }
             }
@@ -6429,6 +6454,34 @@ mod harness_tool_selection_tests {
             "workspace_replace_range"));
         assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range"));
         assert!(rsi_action_program_next(&plan,&[],"unrelated").is_some());
+    }
+
+    #[test]
+    fn local_model_json_patch_is_interpreted_only_with_full_revision_evidence() {
+        let mut allowed=std::collections::HashSet::new();
+        allowed.insert("workspace_replace_range".to_string());
+        allowed.insert("workspace_replace".to_string());
+        let sha="a".repeat(64);
+        let args=json!({"path":"src/engine/memory.rs",
+            "startLine":10,"endLine":11,"newText":"fn changed() {}",
+            "expectedSha256":sha});
+        let parsed=super::protocol::parse_rsi_unwrapped_edit(
+            &format!("```json\n{}\n```",args),&allowed).unwrap();
+        assert_eq!(parsed.0,"workspace_replace_range");
+        assert_eq!(serde_json::from_str::<Value>(&parsed.1).unwrap()["startLine"],10);
+        assert!(super::protocol::parse_rsi_unwrapped_edit(
+            "I suggest changing your code next.",&allowed).is_none());
+        assert!(super::protocol::parse_rsi_unwrapped_edit(
+            &json!({"path":"src/engine/memory.rs","startLine":1,"endLine":1,
+                "newText":"bad"}).to_string(),&allowed).is_none(),
+            "No read source hash, no range write");
+        assert!(super::protocol::parse_rsi_unwrapped_edit(
+            &json!({"path":"../escape.rs","oldText":"a","newText":"b"})
+                .to_string(),&allowed).is_none());
+        let block=super::protocol::parse_rsi_unwrapped_edit(
+            &json!({"path":"src/engine/memory.rs","oldText":"old","newText":"new"})
+                .to_string(),&allowed).unwrap();
+        assert_eq!(block.0,"workspace_replace");
     }
 
     #[test]
