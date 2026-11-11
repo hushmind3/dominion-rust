@@ -670,6 +670,20 @@ fn compat_messages(messages: &[Value]) -> Vec<Value> {
     }).collect()
 }
 
+/// Once a focused RSI generation has genuine source evidence and only edit
+/// functions remain, require the native OpenAI-compatible model to choose an
+/// actual tool action instead of another prose explanation. The model still
+/// authors the patch; the independent frozen verifier decides usefulness.
+fn rsi_edit_requires_tool(session: &Value, tools: &[Value]) -> bool {
+    session["rsiRun"] == true
+        && session["rsiExplicitFocus"] == true
+        && !tools.is_empty()
+        && tools.iter().all(|tool| matches!(
+            tool["function"]["name"].as_str(),
+            Some("workspace_replace" | "workspace_write")
+        ))
+}
+
 async fn stream_completion_once(
     state: &AppState,
     client: &reqwest::Client,
@@ -795,6 +809,10 @@ async fn stream_completion_once_body(
     });
     if !compatible && !tools.is_empty() {
         body["tools"] = json!(tools);
+        if state.store.get("session",session_id)
+            .is_some_and(|session| rsi_edit_requires_tool(&session,tools)) {
+            body["tool_choice"] = json!("required");
+        }
     }
     if let Some(limit) = provider.max_output_tokens {
         body["max_tokens"] = json!(limit);
@@ -1940,6 +1958,23 @@ mod tests {
         assert!(messages[0].get("reasoning_content").is_none());
         normalize_assistant_reasoning(&mut messages, false);
         assert!(messages[1].get("reasoning_content").is_none(), "{messages:?}");
+    }
+
+    #[test]
+    fn a_grounded_rsi_edit_only_stage_requires_a_model_action() {
+        let focus = json!({"rsiRun":true,"rsiExplicitFocus":true});
+        let tools = vec![
+            json!({"type":"function","function":{"name":"workspace_replace"}}),
+            json!({"type":"function","function":{"name":"workspace_write"}}),
+        ];
+        assert!(rsi_edit_requires_tool(&focus,&tools));
+        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&tools));
+        assert!(!rsi_edit_requires_tool(&json!({}),&tools));
+        let mut reads = tools.clone();
+        reads.push(json!({"type":"function","function":{"name":"workspace_read_range"}}));
+        assert!(!rsi_edit_requires_tool(&focus,&reads),
+            "do not force a write before collecting source evidence");
+        assert!(!rsi_edit_requires_tool(&focus,&[]));
     }
 
     #[test]
