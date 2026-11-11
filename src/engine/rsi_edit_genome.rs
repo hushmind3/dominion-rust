@@ -178,10 +178,13 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
                     "workspace_replace_range"
                 }else{"workspace_replace"},
                 repair_limit:(index + parent.repair_limit) % 4,
-                program: if index % 3 == 0 {
-                    crate::engine::rsi_edit_program::recombine(&parent.program,
-                        &Genome::from_policy(&last["editPolicy"]).program)
-                } else { parent.program.clone() },
+                // Keep the failure-learned stage topology while exploring
+                // alternative budgets/tools. Only after exhausting those
+                // combinations may a proven older topology donate a stage.
+                program: if index >= 16 && proven > 0 {
+                    crate::engine::rsi_edit_program::recombine(
+                        &generated.program, &best_genome.program)
+                } else { generated.program.clone() },
             };
             if !used.contains(candidate.revision().as_str()) {
                 generated=candidate;
@@ -283,6 +286,36 @@ mod tests {
         assert!(again["program"].as_array().unwrap().iter().any(|s|s=="contrast"));
         assert!(again["program"].as_array().unwrap().iter().any(|s|s=="reground"));
         assert_eq!(again["improvementProven"],false);
+    }
+
+    #[test]
+    fn three_descendant_generations_rewrite_their_own_execution_procedure() {
+        let mut history=Vec::new();
+        let base=evolve(&history,reward);
+        let mut first=row("generation-1",base);
+        first["editEvidence"]["recentFailures"]=json!(["source sha mismatch"]);
+        history.push(first);
+        let second=evolve(&history,reward);
+        assert!(second["program"].as_array().unwrap().contains(&json!("reground")));
+
+        let mut generated=row("generation-2",second.clone());
+        generated["candidateId"]=json!("candidate-2");
+        generated["evaluation"]=json!({"verdict":"unchanged"});
+        history.push(generated);
+        let third=evolve(&history,reward);
+        assert!(third["program"].as_array().unwrap().contains(&json!("contrast")));
+        assert!(third["program"].as_array().unwrap().contains(&json!("reground")));
+
+        let mut stalled=row("generation-3",third);
+        stalled["programStages"]=json!([
+            {"phase":"ground","toolCalls":1},{"phase":"contrast","toolCalls":3}
+        ]);
+        history.push(stalled);
+        let fourth=evolve(&history,reward);
+        assert!(!fourth["program"].as_array().unwrap().contains(&json!("contrast")),
+            "the real stage stall must not be overwritten by duplicate-genome exploration");
+        assert!(fourth["program"].as_array().unwrap().contains(&json!("reground")));
+        assert_eq!(fourth["improvementProven"],false);
     }
 
     #[test]
