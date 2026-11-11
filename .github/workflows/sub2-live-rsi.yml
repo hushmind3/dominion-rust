@@ -94,7 +94,12 @@ jobs:
           echo "DOMINION_DATA=${RUNNER_TEMP}/dominion-live/data" >> "${GITHUB_ENV}"
           echo "DOMINION_WORKSPACE=${RUNNER_TEMP}/dominion-live/workspace" >> "${GITHUB_ENV}"
           echo "DOMINION_LIVE_REPORT=${RUNNER_TEMP}/dominion-live/live-rsi-receipt.json" >> "${GITHUB_ENV}"
-          mkdir -p "${RUNNER_TEMP}/dominion-live/data" "${RUNNER_TEMP}/dominion-live/workspace"
+          mkdir -p "${RUNNER_TEMP}/dominion-live/data/rsi-build" "${RUNNER_TEMP}/dominion-live/workspace"
+          # Reuse the compiled dependencies from the exact checked-out source.
+          # The RSI coordinator still invokes cargo with its per-commit
+          # DOMINION_RSI_BUILD_COMMIT marker, rebuilding the changed engine
+          # itself for each accepted descendant instead of faking lineage.
+          ln -s "${GITHUB_WORKSPACE}/target" "${RUNNER_TEMP}/dominion-live/data/rsi-build/generator"
           DOMINION_DATA="${RUNNER_TEMP}/dominion-live/data" \
             DOMINION_WORKSPACE="${RUNNER_TEMP}/dominion-live/workspace" \
             nohup ./target/release/dominion-rust > "${RUNNER_TEMP}/dominion-live/engine.log" 2>&1 &
