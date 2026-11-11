@@ -1018,7 +1018,8 @@ fn choose_focus_files(
         .filter(|generation|generation["knowledgePartition"]==partition &&
             generation["objectiveId"]==objective_id)
         .collect::<Vec<_>>();
-    prior.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
+    prior.sort_by(|a,b|generation_completion_millis(b).cmp(&generation_completion_millis(a))
+        .then_with(||b["id"].as_str().cmp(&a["id"].as_str())));
     for generation in prior.iter().take(8) {consider(generation,true);}
     // If a prior generation produced real source evidence but no patch,
     // target that exact still-current source before spending more model calls
