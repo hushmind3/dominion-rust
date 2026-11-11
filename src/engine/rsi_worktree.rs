@@ -507,8 +507,8 @@ pub fn compiler_repair_context(workspace:&Path,result:&Value)->Option<String>{
             let sha=format!("{:x}",Sha256::digest(source.as_bytes()));
             output.push(format!(
                 "실제 컴파일 오류 파일: {relative}; 오류 줄: {line}; \
-                 현재 전체 파일 sourceSha256: {sha}; 검증된 원문 {start}~{end}줄                  (아래 원문에는 줄 번호가 포함되지 않습니다):\n{excerpt}\n\
-                 이 파일의 오류를 원문 기준으로 고치세요. newText에는 소스 코드만 넣고                  줄 번호와 마크다운 장식은 넣지 마세요. 수정 도구: \
+                 현재 전체 파일 sourceSha256: {sha}; 검증된 원문 {start}~{end}줄 (아래 원문에는 줄 번호가 포함되지 않습니다):\n{excerpt}\n\
+                 이 파일의 오류를 원문 기준으로 고치세요. newText에는 소스 코드만 넣고 줄 번호와 마크다운 장식은 넣지 마세요. 수정 도구: \
                  workspace_replace_range(path, startLine, endLine, newText, expectedSha256={sha}) \
                  또는 workspace_replace(path, oldText, newText). \
                  이전 변경을 유지하고 필요한 부분만 고치세요."
@@ -935,7 +935,9 @@ mod tests {
         let repair=compiler_repair_context(&root,&failure).unwrap();
         let digest=format!("{:x}",Sha256::digest(source.as_bytes()));
         assert!(repair.contains("src/engine/example.rs"));
-        assert!(repair.contains("3 |     println!"));
+        assert!(repair.contains("    println!(\\\"{}\\\", x);"));
+        assert!(!repair.contains("3 |     println!"),
+            "Repair input must be raw source, never numbered source");
         assert!(repair.contains(&digest));
         assert!(repair.contains("workspace_replace_range"));
         let spoof=json!({"rsi":{"checks":[{"passed":false,
