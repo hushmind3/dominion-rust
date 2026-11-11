@@ -1938,16 +1938,26 @@ fn method_wrote_accepted_candidate(
         || candidate["evaluation"]["metrics"]["eligible"]!=true {return false}
     let Some(paths)=candidate["paths"].as_array() else{return false};
     let Some(operation_ids)=receipt["operationIds"].as_array() else{return false};
-    operations.iter().any(|op|
+    operations.iter().filter(|op|
         operation_ids.contains(&op["id"])
         && op["origin"]=="procedure"
         && op["procedureStrategyId"]==receipt["methodId"]
         && op["procedureRevision"]==receipt["revision"]
         && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_write"))
         && crate::engine::procedure::operation_succeeded(op)
-        && op["result"]["written"]==true
-        && op["arguments"]["path"].as_str().is_some_and(|path|
-            paths.iter().any(|candidate_path|candidate_path.as_str()==Some(path))))
+        && op["result"]["written"]==true)
+        .any(|op|{
+            let Some(path)=op["arguments"]["path"].as_str() else{return false};
+            if !paths.iter().any(|item|item.as_str()==Some(path)){return false}
+            let Some(adopted_hash)=generation["acceptedSourceHashes"][path].as_str()
+                else{return false};
+            let actual_post=op["result"]["postSha256"].as_str().map(str::to_string)
+                .or_else(||if op["tool"]=="workspace_write"{
+                    op["arguments"]["content"].as_str().map(|content|format!(
+                        "{:x}",Sha256::digest(content.as_bytes())))
+                }else{None});
+            actual_post.as_deref().is_some_and(|hash|hash.eq_ignore_ascii_case(adopted_hash))
+        })
 }
 
 /// Cross-domain transfer is learned from an *adopted descendant*, not from
