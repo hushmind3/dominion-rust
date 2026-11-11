@@ -990,9 +990,11 @@ mod tests {
             "rsi":{"sourceClean":true,"captureError":"","modelError":"",
                 "checks":[{"label":"unsafe_safety","passed":false,"error":"unsafe 블록에 SAFETY 근거가 없습니다."}]}});
         assert!(repair_feedback(&unsafe_failure).unwrap().contains("SAFETY"));
-        let mut no_retry=failing;
-        no_retry["rsi"]["modelError"]=json!("provider unavailable");
-        assert!(repair_feedback(&no_retry).is_none());
+        let mut after_edit_error=failing;
+        after_edit_error["rsi"]["modelError"]=json!("provider unavailable");
+        // An independently failed compilation takes precedence over a
+        // provider error that happened after an actual source edit.
+        assert!(repair_feedback(&after_edit_error).unwrap().contains("error[E0308]"));
     }
     #[test]
     fn failed_real_edit_attempt_receives_grounded_same_generation_repair() {
