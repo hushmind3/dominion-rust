@@ -1,17 +1,8 @@
 name: Sub2 live local-model RSI proof
 
+# Heavy Qwen/Ollama experiments are explicit opt-in, never auto-launched
+# by ordinary engine commits. The short native CI remains on every push.
 on:
-  push:
-    branches: [dominion-sub2]
-    paths:
-      - '.github/workflows/sub2-live-rsi.yml'
-      - 'src/engine/gateway.rs'
-      - 'src/engine/chat/provider.rs'
-      - 'src/engine/chat/runtime.rs'
-      - 'src/engine/jobs.rs'
-      - 'src/engine/rsi_worktree.rs'
-      - 'src/engine/rsi_evolve.rs'
-      - 'scripts/sub2-live-rsi.mjs'
   workflow_dispatch:
 
 # Only the latest source revision should consume the CPU-bound live Qwen
