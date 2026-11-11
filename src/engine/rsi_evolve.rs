@@ -3757,11 +3757,12 @@ async fn run_loop(
                 prior["unverifiedCandidateId"].as_str(),
                 prior["jobId"].as_str()
             ) {
-                if context.state.store.get("rsi_candidate",id).is_some_and(|candidate|
-                    candidate["baseCommit"]==head
-                    && candidate["experimentCampaignId"]==context.job_id
-                    && candidate["patchSha256"].is_string()
-                    && candidate["patch"].as_str().is_some_and(|patch|!patch.is_empty())) {
+                if let Some(candidate)=context.state.store.get("rsi_candidate",id)
+                    .filter(|candidate|
+                        candidate["baseCommit"]==head
+                        && candidate["experimentCampaignId"]==context.job_id
+                        && candidate["patchSha256"].is_string()
+                        && candidate["patch"].as_str().is_some_and(|patch|!patch.is_empty())) {
                     let evidence=context.state.store.get("rsi_run",&format!("rsi-run-{failed_job}"))
                         .unwrap_or(Value::Null);
                     let failed_checks=evidence["checks"].as_array()
