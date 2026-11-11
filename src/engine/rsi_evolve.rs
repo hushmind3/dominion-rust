@@ -1668,11 +1668,21 @@ fn propose_autonomous_search_trial(
     if !auto_focus && eligible_domains(objective).len()==1 {
         return json!({"status":"user_pinned_search_target"});
     }
-    if state.store.all("algorithm").iter().any(|row|
+    let owned=state.store.all("algorithm").into_iter().filter(|row|
         row["kind"]=="selfimprove.search"
-        && row["rsiTrial"]["campaignId"]==campaign_id) {
+        && row["source"]=="rsi-generated"
+        && row["rsiTrial"]["campaignId"]==campaign_id).collect::<Vec<_>>();
+    if owned.iter().any(|row|matches!(row["rsiTrial"]["status"].as_str(),
+        Some("pending_trial"|"pending_second_trial"))) {
         return json!({"status":"existing_trial"});
     }
+    // A failed or inconclusive experiment must not permanently block
+    // subsequent strategies. Keep the number of live hypotheses bounded.
+    if owned.len()>=3 {
+        return json!({"status":"campaign_trial_budget_exhausted","trialCount":owned.len()});
+    }
+    let failed=owned.iter().filter(|row|matches!(row["rsiTrial"]["status"].as_str(),
+        Some("trial_inconclusive"|"trial_rejected"|"trial_supported"))).collect::<Vec<_>>();
     let Some(mut hypothesis)=autonomous_search_hypothesis(history) else {
         return json!({"status":"insufficient_failure_evidence"});
     };
@@ -1704,9 +1714,31 @@ fn propose_autonomous_search_trial(
         }
         hypothesis["hypothesisEvidence"]["previousRejectedPolicies"]=json!(prior_rejections);
     }
+    // Learn from the failed local policy experiment. A retry must explore a
+    // genuinely different executable search formula, not requeue an
+    // inconclusive candidate under its former name and revision.
+    if !failed.is_empty() {
+        let n=failed.len() as u64;
+        if auto_focus {
+            let old=hypothesis["parameters"]["targetExpression"].as_str().unwrap_or("");
+            hypothesis["parameters"]["targetExpression"]=json!(format!(
+                "{old} + novelty * {} + productiveEvidence * {} - repeatPenalty * {}",
+                3*n,n,2*n));
+        } else {
+            let old=hypothesis["parameters"]["expression"].as_str().unwrap_or("");
+            hypothesis["parameters"]["expression"]=json!(format!(
+                "{old} + exploration * {} - barrenRate * {}",3*n,2*n));
+        }
+        hypothesis["hypothesisEvidence"]["previousFailedTrials"]=json!(n);
+        hypothesis["hypothesisEvidence"]["previousTrialReasons"]=json!(failed.iter()
+            .map(|row|row["rsiTrial"]["lastReason"].as_str()
+                .or_else(||row["rsiTrial"]["lastComparison"]["reason"].as_str())
+                .unwrap_or("unknown")).collect::<Vec<_>>());
+    }
     // Content-addressed IDs are campaign-specific: two independent trials
     // must not share mutable ownership just because their formulas match.
-    hypothesis["name"]=json!(format!("{}-{}",hypothesis["name"].as_str().unwrap_or("autonomous"),campaign_id));
+    hypothesis["name"]=json!(format!("{}-{}-trial{}",
+        hypothesis["name"].as_str().unwrap_or("autonomous"),campaign_id,owned.len()+1));
     let mut candidate=match crate::engine::algorithms::register(state,&hypothesis) {
         Ok(candidate)=>candidate,
         Err(error)=>return json!({"status":"invalid_hypothesis","error":error})
@@ -1740,6 +1772,8 @@ fn pending_trial_candidate(state: &AppState, objective: &str, allowed_campaigns:
                 && algorithm["source"] == "rsi-generated"
                 && algorithm["rsiTrial"]["objectiveHash"] == objective_hash
                 && trial_owned_by(algorithm,allowed_campaigns)
+                && matches!(algorithm["rsiTrial"]["status"].as_str(),
+                    Some("pending_trial"|"pending_second_trial"))
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|algorithm| {
@@ -2827,10 +2861,25 @@ async fn run_loop(
                     }
                 }
             }
-            // A failed generation must still improve the *search process*.
-            // No model tool call is required to propose the next algorithm.
-            // The candidate is never called successful until real paired runs.
-            if queued.is_empty() {
+            record["nextTrialAlgorithmId"] = Value::Null;
+            if generation["domainSelection"].as_str() == Some("algorithm_trial") {
+                if let Some(id) = generation["searchStrategy"]["id"].as_str() {
+                    let outcome =
+                        record_trial_outcome(&context.state, id, &generation, &prior_history);
+                    // A research continuation did not run the formula. Keep the
+                    // candidate pending for the next already scheduled generation.
+                    if outcome["status"] == "not_used" {
+                        record["nextTrialAlgorithmId"] = json!(id);
+                    } else if outcome["status"] == "pending_second_trial" {
+                        record["nextTrialAlgorithmId"] = json!(id);
+                    }
+                    generation["trialOutcome"] = outcome;
+                }
+            }
+            // First record the policy's actual execution result. Otherwise an
+            // unresolved trial is still marked pending when the coordinator
+            // tries to synthesize its replacement, ending the campaign early.
+            if queued.is_empty() && record["nextTrialAlgorithmId"].is_null() {
                 let mut observed=prior_history.clone();
                 observed.push(generation.clone());
                 let synthesized=propose_autonomous_search_trial(
@@ -2846,22 +2895,7 @@ async fn run_loop(
                 }
             }
             if !queued.is_empty() {
-                generation["searchTrialsQueued"] = json!(queued);
-            }
-            record["nextTrialAlgorithmId"] = Value::Null;
-            if generation["domainSelection"].as_str() == Some("algorithm_trial") {
-                if let Some(id) = generation["searchStrategy"]["id"].as_str() {
-                    let outcome =
-                        record_trial_outcome(&context.state, id, &generation, &prior_history);
-                    // A research continuation did not run the formula. Keep the
-                    // candidate pending for the next already scheduled generation.
-                    if outcome["status"] == "not_used" {
-                        record["nextTrialAlgorithmId"] = json!(id);
-                    } else if outcome["status"] == "pending_second_trial" {
-                        record["nextTrialAlgorithmId"] = json!(id);
-                    }
-                    generation["trialOutcome"] = outcome;
-                }
+                generation["searchTrialsQueued"] = json!(queued.clone());
             }
             if record["nextTrialAlgorithmId"].is_null() {
                 if let Some(id) = queued.into_iter().next() {
@@ -3510,6 +3544,89 @@ mod tests {
         let candidate=state.store.get("algorithm",multi["candidateId"].as_str().unwrap()).unwrap();
         assert!(candidate["parameters"]["targetExpression"].is_null(),
             "owner pinned source must remain under owner control");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_policy_trial_is_replaced_by_a_distinct_executable_search_strategy() {
+        let (state,root)=state();
+        let failed=(0..4).map(|i|json!({
+            "id":format!("failed-{i}"),"accepted":false,
+            "tokens":3000,"newFindings":0,"candidateId":null,
+            "focusFiles":["src/engine/memory.rs"]
+        })).collect::<Vec<_>>();
+        let first=propose_autonomous_search_trial(
+            &state,&failed[..2],"","retry-trial",2,true);
+        assert_eq!(first["status"],"pending_trial","{first}");
+        let first_id=first["candidateId"].as_str().unwrap().to_string();
+        assert_eq!(pending_trial_candidate(&state,"",&["retry-trial".into()])
+            .unwrap()["id"],first_id);
+
+        let mut stale=state.store.get("algorithm",&first_id).unwrap();
+        stale["rsiTrial"]["status"]=json!("trial_inconclusive");
+        stale["rsiTrial"]["lastReason"]=json!("comparable_baseline_missing");
+        state.store.put("algorithm",&stale);
+        assert!(pending_trial_candidate(&state,"",&["retry-trial".into()]).is_none(),
+            "a concluded inconclusive trial must not be selected on every restart");
+
+        let second=propose_autonomous_search_trial(
+            &state,&failed[..3],"","retry-trial",3,true);
+        assert_eq!(second["status"],"pending_trial","{second}");
+        let second_id=second["candidateId"].as_str().unwrap().to_string();
+        assert_ne!(first_id,second_id);
+        let replacement=state.store.get("algorithm",&second_id).unwrap();
+        assert_eq!(replacement["hypothesisEvidence"]["previousFailedTrials"],1);
+        assert_eq!(replacement["hypothesisEvidence"]["previousTrialReasons"][0],
+            "comparable_baseline_missing");
+        assert_ne!(replacement["parameters"]["targetExpression"],
+            stale["parameters"]["targetExpression"],
+            "next generation must execute a different hypothesis");
+        assert_eq!(pending_trial_candidate(&state,"",&["retry-trial".into()])
+            .unwrap()["id"],second_id);
+        assert_eq!(propose_autonomous_search_trial(
+            &state,&failed,"","retry-trial",4,true)["status"],"existing_trial");
+
+        let mut second_record=replacement;
+        second_record["rsiTrial"]["status"]=json!("trial_rejected");
+        state.store.put("algorithm",&second_record);
+        let third=propose_autonomous_search_trial(
+            &state,&failed,"","retry-trial",4,true);
+        assert_eq!(third["status"],"pending_trial","{third}");
+        assert_ne!(third["candidateId"],second_id);
+        let third_id=third["candidateId"].as_str().unwrap();
+        let mut third_record=state.store.get("algorithm",third_id).unwrap();
+        third_record["rsiTrial"]["status"]=json!("trial_inconclusive");
+        state.store.put("algorithm",&third_record);
+        assert_eq!(propose_autonomous_search_trial(
+            &state,&failed,"","retry-trial",5,true)["status"],
+            "campaign_trial_budget_exhausted",
+            "recovery must not create an unbounded proposal loop");
+        assert!(pending_trial_candidate(&state,"",&["retry-trial".into()]).is_none());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pinned_objective_retry_preserves_owner_target_and_adapts_domain_policy() {
+        let (state,root)=state();
+        let failures=(0..3).map(|i|json!({
+            "id":format!("failure-{i}"),"accepted":false,
+            "tokens":4000,"newFindings":0,"candidateId":null,
+            "focusFiles":["src/engine/tools.rs"]
+        })).collect::<Vec<_>>();
+        let first=propose_autonomous_search_trial(
+            &state,&failures[..2],"","pinned-retry",2,false);
+        assert_eq!(first["status"],"pending_trial","{first}");
+        let id=first["candidateId"].as_str().unwrap();
+        let mut old=state.store.get("algorithm",id).unwrap();
+        old["rsiTrial"]["status"]=json!("trial_rejected");
+        state.store.put("algorithm",&old);
+        let second=propose_autonomous_search_trial(
+            &state,&failures,"","pinned-retry",3,false);
+        assert_eq!(second["status"],"pending_trial","{second}");
+        let replacement=state.store.get("algorithm",second["candidateId"].as_str().unwrap()).unwrap();
+        assert!(replacement["parameters"]["targetExpression"].is_null(),
+            "a retry cannot rewrite the user's source targets");
+        assert_ne!(old["parameters"]["expression"],replacement["parameters"]["expression"]);
         let _=std::fs::remove_dir_all(root);
     }
 
