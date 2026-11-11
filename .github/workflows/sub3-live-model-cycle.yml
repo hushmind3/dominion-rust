@@ -18,6 +18,8 @@ jobs:
     env:
       DOMINION_PORT: '43173'
       SUB3_LIVE_REPORT: benchmark/sub3-live-campaign-result.json
+      # Build the latest RSI harness; only restore the historical target bug.
+      # Run again after fixing the self-throttling of a slow real model.
       BASE_SHA: 1d94e1da1ed4f47243a793ab0625182f5a2c9656
     steps:
       - uses: actions/checkout@v4

@@ -608,7 +608,9 @@ pub(super) async fn stream_completion(
         };
         // A two-minute answer is not a usable room participant. Remember it
         // so the next round does not pay the same price again.
-        if candidate_started.elapsed() >= std::time::Duration::from_secs(60) {
+        let rsi_run = state.store.get("session",session_id)
+            .is_some_and(|session| session["rsiRun"] == true);
+        if should_mark_slow_provider(candidate_started.elapsed(), rsi_run) {
             crate::engine::gateway::mark_slow(&candidate.base_url, &candidate.model);
         }
         match result {
@@ -674,6 +676,14 @@ fn compat_messages(messages: &[Value]) -> Vec<Value> {
 /// functions remain, require the native OpenAI-compatible model to choose an
 /// actual tool action instead of another prose explanation. The model still
 /// authors the patch; the independent frozen verifier decides usefulness.
+/// Autonomous RSI runs can already spend up to their explicit time/token
+/// limits. A slow but productive first response must not blacklist the only
+/// selected provider before the model can issue its source-edit action.
+/// Ordinary chats retain the existing slow-route failover heuristic.
+fn should_mark_slow_provider(elapsed: std::time::Duration, rsi_run: bool) -> bool {
+    !rsi_run && elapsed >= std::time::Duration::from_secs(60)
+}
+
 fn rsi_edit_requires_tool(session: &Value, tools: &[Value]) -> bool {
     session["rsiRun"] == true
         && session["rsiExplicitFocus"] == true
@@ -1958,6 +1968,14 @@ mod tests {
         assert!(messages[0].get("reasoning_content").is_none());
         normalize_assistant_reasoning(&mut messages, false);
         assert!(messages[1].get("reasoning_content").is_none(), "{messages:?}");
+    }
+
+    #[test]
+    fn rsi_time_budget_does_not_blacklist_its_only_model_after_a_slow_read() {
+        assert!(should_mark_slow_provider(std::time::Duration::from_secs(61), false));
+        assert!(!should_mark_slow_provider(std::time::Duration::from_secs(59), false));
+        assert!(!should_mark_slow_provider(std::time::Duration::from_secs(61), true));
+        assert!(!should_mark_slow_provider(std::time::Duration::from_secs(600), true));
     }
 
     #[test]
