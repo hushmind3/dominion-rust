@@ -7193,7 +7193,8 @@ mod tests {
                 "procedureRevision":"old-method-revision","procedureNodeId":"edit",
                 "tool":"workspace_replace","arguments":{
                     "path":path,"expectedSha256":sha},
-                "result":{"written":true,"replaced":true}});
+                "result":{"written":true,"replaced":true,
+                    "postSha256":"c".repeat(64)}});
             let receipt=json!({"executionId":"execution-1",
                 "methodId":"accepted-procedure","revision":"old-method-revision",
                 "operationIds":["op-read","op-edit"],
@@ -7201,8 +7202,11 @@ mod tests {
             state.store.put("rsi_candidate",&json!({"id":"accepted-source",
                 "status":"verified","paths":[path],
                 "evaluation":{"metrics":{"eligible":true}}})).unwrap();
+            let mut adopted_hashes=serde_json::Map::new();
+            adopted_hashes.insert(path.to_string(),json!("c".repeat(64)));
             let generation=json!({"jobId":"accepted-generation","accepted":true,
                 "candidateId":"accepted-source",
+                "acceptedSourceHashes":Value::Object(adopted_hashes),
                 "domain":domain,"tokens":500,"elapsedMs":5000});
             let candidate=synthesize_successful_dag_ablation(
                 &state,&method,&receipt,&[read.clone(),edit.clone()],&generation).unwrap();
@@ -7296,7 +7300,8 @@ mod tests {
                 "procedureRevision":"p1","procedureNodeId":"edit",
                 "arguments":{"path":"src/engine/memory.rs",
                     "expectedSha256":"b".repeat(64)},
-                "result":{"written":true,"replaced":true}})
+                "result":{"written":true,"replaced":true,
+                    "postSha256":"d".repeat(64)}})
         ] {
             state.store.put("execution_operation",&op).unwrap();
         }
@@ -7311,6 +7316,7 @@ mod tests {
             "evaluation":{"metrics":{"eligible":true}}})).unwrap();
         let generation=json!({"jobId":"accepted-generation",
             "domain":"memory","accepted":true,"candidateId":"accepted-source",
+            "acceptedSourceHashes":{"src/engine/memory.rs":"d".repeat(64)},
             "newFindings":1,"tokens":650,"elapsedMs":900});
         let first=record_method_feedback(&state,&generation,"accepted-session");
         assert_eq!(first.len(),1);
