@@ -4969,13 +4969,23 @@ fn reconcile_descendant_target(
         let ranked=choose_focus_files(state,&job["input"],history,policy.as_ref());
         let mut selected=ranked.iter().filter_map(|item|item["path"].as_str())
             .map(str::to_string).collect::<Vec<_>>();
+        // Keep the actual compiler-failing source as the next editable
+        // target. Otherwise auto-focus can silently replace it with a new
+        // high-ranked file while the worker tries to repair the old patch.
         let repair=transfer_repair_focus(history,domain,commit)
+            .or_else(||source_integrity_repair(history)
+                .filter(|plan|plan["domain"].as_str()==Some(domain)
+                    && plan["generatorCommit"].as_str()==Some(commit))
+                .and_then(|plan|plan["focusPath"].as_str().map(str::to_string)))
             .filter(|path|crate::engine::code_index::indexed_source_hash(
                 state,index["id"].as_str().unwrap_or(""),path).is_some());
         if let Some(path)=repair.as_ref() {selected=vec![path.clone()];}
         job["input"]["rsiFocusFiles"]=json!(selected);
         job["input"]["rsiFocusSelection"]=json!({
-            "source":if repair.is_some(){"failed_method_transfer_repair"}else{"descendant_indexed_evidence"},
+            "source":if repair.is_some() {
+                if selection=="source_integrity_repair" {"failed_compiler_patch_repair"}
+                else {"failed_method_transfer_repair"}
+            }else{"descendant_indexed_evidence"},
             "candidates":ranked,"domain":domain,
             "policyRevision":policy.as_ref().map(|item|item["revision"].clone()),
             "sourceIndexId":index["id"]
