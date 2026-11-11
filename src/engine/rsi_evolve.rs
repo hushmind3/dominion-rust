@@ -7060,7 +7060,8 @@ mod tests {
             "status":"active","partitionKey":research_scope(&input).partition_key,
             "executableMethods":[repaired.clone()]})).unwrap();
         state.store.put("job",&json!({"id":"repair-child","kind":"rsi_generation",
-            "status":"running","input":{"rsiCampaignId":"campaign"}})).unwrap();
+            "status":"running","rsiWorkspace":state.config.workspace,
+            "input":{"rsiCampaignId":"campaign"}})).unwrap();
         let mut session=json!({"id":"repair-session","providerId":"repair-provider",
             "rsiRun":true,"rsiObjective":"memory improvement",
             "rsiCampaignId":"campaign","rsiGenerationJobId":"repair-child"});
@@ -7158,6 +7159,7 @@ mod tests {
             "executableMethods":[parent,child]})).unwrap();
         state.store.put("job",&json!({"id":"compact-generation",
             "kind":"rsi_generation","status":"running",
+            "rsiWorkspace":state.config.workspace,
             "input":{"rsiCampaignId":"campaign",
                 "rsiSourceDir":state.config.workspace,"rsiIndexId":index["id"]}})).unwrap();
         let mut session=json!({"id":"compact-session","providerId":"index-provider",
@@ -8205,7 +8207,12 @@ mod tests {
         assert!(second["methodIds"].as_array().unwrap().iter().any(|id|id=="parent"));
         assert_eq!(second["repairMethodId"],Value::Null,
             "unadopted child no longer has priority over proven parent");
-        history["executableMethods"][1]["successfulApplications"]=json!(3);
+        // An adoption must have an actual accepted, postcondition-passing
+        // application receipt. A counter alone is not proof of a child gain.
+        history["executableMethods"][1]["applications"]=json!([{
+            "accepted":true,"postconditionsPassed":true,"verificationVerdict":"passed"
+        }]);
+        history["executableMethods"][1]["successfulApplications"]=json!(1);
         state.store.put("experience",&history).unwrap();
         let third=method_reuse_decision(&state,&input,"memory");
         assert_eq!(third["repairMethodId"],"child",
