@@ -1072,6 +1072,60 @@ pub fn choose_for_agent(
     Some(chosen)
 }
 
+/// Route genuinely multi-step goals to an executable decomposition kernel
+/// instead of leaving the active "single-step" default in charge of every new
+/// agent. Grade the *same owner request* with each eligible kernel first, while
+/// keeping the learned UCB decision for ties and simple requests. The selected
+/// kernel, not the ignored UCB suggestion, receives execution feedback.
+pub fn choose_decomposition_for_agent(
+    state: &AppState,
+    agent_id: Option<&str>,
+    execution_id: Option<&str>,
+    request: &str,
+) -> Option<Value> {
+    let selected = choose_for_agent(state, "task.decomposition", agent_id, None)?;
+    let baseline = crate::engine::decompose::decompose(request, &selected);
+    let mut best_score = baseline["qualityScore"].as_f64().unwrap_or(0.0);
+    let mut chosen = selected;
+    let candidates = state.store.all("algorithm");
+    for candidate in candidates {
+        if candidate["kind"] != "task.decomposition"
+            || !(matches!(candidate["status"].as_str(), Some("active" | "validated"))
+                || (candidate["status"] == "available" && candidate["source"] == "builtin"))
+            || !candidate["implementation"].as_str()
+                .is_some_and(|kernel| kernel_exists("task.decomposition", kernel))
+        {
+            continue;
+        }
+        let decomposition = crate::engine::decompose::decompose(request, &candidate);
+        let score = decomposition["qualityScore"].as_f64().unwrap_or(0.0);
+        let ordered = decomposition["quality"]["orderPreserved"] == true;
+        let step_count = decomposition["subtasks"].as_array().map(Vec::len).unwrap_or(0);
+        // Only override UCB when the alternative demonstrably extracts
+        // multiple ordered actions. A vague increase in heuristic score alone
+        // must not replace a user's learned selection.
+        if ordered && step_count > 1 && score > best_score + 0.05 {
+            best_score = score;
+            chosen = candidate;
+        }
+    }
+    if let Some(execution_id) = execution_id {
+        let agent=agent_of(state,agent_id)?;
+        let id=format!("algorithm-usage-{}",
+            crate::engine::memory::stable_id(&[execution_id,"task.decomposition"]));
+        if state.store.get("algorithm_usage",&id).is_none() {
+            if let Some(saved)=state.store.put("algorithm_usage",&json!({
+                "id":id,"executionId":execution_id,"agentId":agent,
+                "kind":"task.decomposition","revision":chosen["revision"],
+                "status":"pending","createdAt":chrono::Utc::now().to_rfc3339()
+            })) {
+                state.bus.record("algorithm_usage",&saved);
+            }
+        }
+    }
+    Some(chosen)
+}
+
 pub fn variant_for_agent(
     state: &AppState,
     kind: &str,
@@ -1808,6 +1862,30 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         (AppState::new(config, store, vault), dir)
+    }
+
+    #[test]
+    fn genuine_multistep_goals_use_the_improved_kernel_in_live_selection() {
+        let (state,dir)=state();
+        let input="설정을 읽고 결과를 저장한 다음 검증해";
+        let initial=choose_for_agent(&state,"task.decomposition",Some("agent"),None).unwrap();
+        assert_eq!(initial["implementation"],"single-step");
+        let chosen=choose_decomposition_for_agent(
+            &state,Some("agent"),Some("real-execution"),input).unwrap();
+        assert_ne!(chosen["implementation"],"single-step");
+        let actual=crate::engine::decompose::decompose(input,&chosen);
+        assert_eq!(actual["subtasks"].as_array().unwrap().len(),3);
+        assert!(actual["qualityScore"].as_f64().unwrap()>0.75);
+        let id=format!("algorithm-usage-{}",
+            crate::engine::memory::stable_id(&["real-execution","task.decomposition"]));
+        let usage=state.store.get("algorithm_usage",&id).unwrap();
+        assert_eq!(usage["revision"],chosen["revision"],
+            "feedback must reach the kernel that actually ran");
+        let simple=choose_decomposition_for_agent(
+            &state,Some("other-agent"),Some("simple-execution"),"파일을 열어").unwrap();
+        assert_eq!(simple["implementation"],"single-step",
+            "single actions should still use the learned/default kernel");
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[test]
