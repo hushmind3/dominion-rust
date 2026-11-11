@@ -134,3 +134,38 @@ Sub2는 후보별 control-domain pin을 채택했지만, 전 브랜치를 병합
 3. 후보는 있었으나 동결 holdout 성능이 개선되지 않았다면 실제 평가의 점수·도메인과 수정 대상을 연결한다.
 4. 첫 검증 개선이 나오면 같은 계보에서 **재빌드된 후속 개선기가 새 패치를 만들고 독립 평가에서 또 개선**하도록 계속한다.
 5. 개선을 한 번 채택했다는 사건만으로 40점 이상 혹은 RSI 완주를 선언하지 않는다.
+
+
+## 2026-11-11 Sub2 후속 — 실제 Ollama 실행 장애 3단계 수정과 다음 완주 목표
+
+### 담당 및 비교 기준
+- 현재 역할 **Sub2**, 담당 브랜치 **dominion-sub2**. 본 회차 시작 `873a91e34f`.
+- 최신 공통 심판 기준: **37/100, 2위** (구현 22/40, 완주 8/30, 자기개선 4/20, 일반화 3/10). 점수 재채점은 심판의 몫이며 이번 구현만으로 점수를 올려 쓰지 않음.
+- Champion의 실패 결과→실행 행동 지시, Sub1의 연구/실패 인계, Sub3의 실제 목표 경로의 코드 향상, Sub4의 실행 가능한 다른 도메인 절차 전이를 조사하여 개발 목표를 정함. 타 브랜치 직접 수정 없음.
+
+### 실제 수정 커밋
+1. `633d529`: Ollama URL을 /v1/chat/completions에 일관되게 정규화, regression test.
+2. `6f1394c`: gateway 변경이 실제 로컬 모델 캠페인을 자동 재실행하도록 workflow 경로 연결.
+3. `1def363`: API 키 없는 Ollama 연결 테스트 및 native /api/tags 모델 조회, HTTP 모의서버 regression.
+4. `6d0841f`: 세대의 직접 관측된 성공/실패/코드 편집 횟수를 다음 세대의 **서로 다른 실행 행동** (implement_research / repair_failed_case / revise_candidate / complete_candidate / change_approach / extend_verified_capability)으로 연결. 현재 생성기와 후손 worker가 동일한 저장 기록을 기준으로 지시를 재구성.
+5. `ac73f66`: 조사만 수행→실제 편집 지시, 편집했으나 후보 없음→후보 완성, holdout 실패→다른 수정 및 반복 실패 시 접근 변경, 실제 편집 도구 영수증 검사 회귀 테스트.
+6. `8ad1e11`: 실제 Qwen 모델의 Ollama /api/chat preflight가 native code_search tool call을 반환하면 DOMINION 제공자를 native tool mode로 등록. 기존 compat 강제의 텍스트 도구 안내 한계를 제거.
+7. `57a262c`/`801f7d3`: 자기개선 worker(최대 900초) 안에서 CPU 로컬 모델이 실제 토큰을 반환하도록 RSI 한정 840초 요청/라운드 제한. 일반 채팅·그룹 제한 유지. 최초 회귀 테스트 import 컴파일 오류 E0432를 즉시 고침.
+8. `b24d2c6`: 작은 Ollama 모델은 실제 색인 소스 발췌를 6000자로 제한하고 나머지는 workspace_read_range로 읽도록 연결. 과도하게 긴 발췌가 통째로 사라지는 문제도 수정, regression.
+9. `f8c01a6`: CI Ollama 설치기가 먼저 띄운 **기본 4096토큰 systemd 서비스**를 종료하고 작업 러너의 OLLAMA_CONTEXT_LENGTH=16384를 가진 서버를 실행. 문맥 초과 400을 근본 교정.
+10. `cc44bfc`: 실모델 사전실행에 num_ctx 16384 명시, /api/ps에서 실제 상주 컨텍스트 기록·최소 크기 검사. 세대별 도구 호출/실제 편집/프롬프트 길이/선택된 행동을 원본 영수증에 저장.
+
+### 실제 실모델 결과와 수정 원인
+- [42944539721](https://github.com/hushmind3/dominion-rust/actions/runs/42944539721) 최초: Qwen3:4b-instruct Ollama native preflight에서 **code_search tool call 1회 실제 생성**. DOMINION 자체 호출은 잘못된 경로의 HTTP 404, 후보 0/편집 0.
+- [42949302635](https://github.com/hushmind3/dominion-rust/actions/runs/42949302635): /v1 경로 수정으로 실제 스트리밍 HTTP 진입. **300초 후 stream decoding error**; 세대 1회, 토큰 0, 도구 호출 0, 채택 0. 이때는 Qwen의 native 지원에도 제공자를 compat으로 강제해 도구 스키마 안내 비용이 큼.
+- [42950399582](https://github.com/hushmind3/dominion-rust/actions/runs/42950399582): native mode 연결 후 **HTTP 400: 요청 4288토큰 / 서버 실제 한도 4096토큰**. Ollama 시스템 서비스가 workflow의 OLLAMA_CONTEXT_LENGTH=16384를 적용받지 않는 직접 원인. 후보·채택 0, 실제 향상 증거 없음.
+- 최신 context 서비스 수정/실모델 증거: [42951534602](https://github.com/hushmind3/dominion-rust/actions/runs/42951534602)와 [42951576225](https://github.com/hushmind3/dominion-rust/actions/runs/42951576225). **종료 후 아티팩트 `sub2-native-live-rsi-<run_id>`를 열어 실제 model context, toolsUsed, actionObservation, candidateId, acceptedCommit, paired holdout gain을 먼저 확인. 현재 결과를 미리 성공으로 기록하지 말 것.**
+- CI [42950399563](https://github.com/hushmind3/dominion-rust/actions/runs/42950399563): `8ad1e11` Rust/웹 전체 성공. 후속 `57a262c`/`b24d2c6` 중간 CI에서 새 테스트의 모듈 import 오타 E0432 발생해 `801f7d3`에서 수정. 최신 결과는 [42951576269](https://github.com/hushmind3/dominion-rust/actions/runs/42951576269)를 확인할 것.
+
+### 다음 세션이 할 가장 중요한 일
+1. 최신 CI와 두 실모델 워크플로의 **완료 아티팩트를 확인**하고 실패 지점을 수치로 분리. 불명확한 실패를 성공으로 포장하지 말 것.
+2. 실제 Ollama context가 16384 이상인데 후보가 안 나오면 **Qwen의 native structured tool dispatch → code_search → workspace_read_range → workspace_replace → 실험 후보 생성**을 먼저 실제 실행하게 고친다. 도구 호출의 존재와 파일 변경 성공은 별개.
+3. 진짜 수정 후보가 나오면 **분리된 동결 paired holdout의 개선/퇴보/실행비용**으로 평가. 미달 원인에 따라 다음 세대에 정확한 수정 행동을 넘기고, 재빌드된 후손이 이전 능력을 계승하여 새 문제를 해결하는지 실측.
+4. 성과가 나오면 Champion이 통합할 수 있도록 **실제 커밋·워크플로·영수증·성능 수치**를 전달. 실패했으면 동일한 실행 환경에서 다른 원인 수정 후 재실행할 것.
+
+실행 근거 경로: `scripts/sub2-live-rsi.mjs`, `.github/workflows/sub2-live-rsi.yml`, `src/engine/gateway.rs`, `src/api/providers.rs`, `src/engine/chat/runtime.rs`, `src/engine/rsi_evolve.rs`; GitHub Actions 해당 run의 업로드 아티팩트.
