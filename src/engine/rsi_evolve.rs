@@ -3733,6 +3733,41 @@ async fn run_loop(
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
         child_input["rsiActionDirective"]=evolved_execution_action(
             &context.state,&child_input,&recorded_history);
+        // Do not lose a genuine but noncompiling source candidate between
+        // generations. Preserve the exact source patch as an executable
+        // repair starting point, never as an adopted capability.
+        if let Some(prior)=recorded_history.last().filter(|prior|
+            prior["accepted"]!=true
+            && prior["staticChecksPassed"]==false
+            && prior["generatorCommit"]==head
+            && prior["sourceDiffBytes"].as_u64().unwrap_or(0)>0) {
+            if let (Some(id),Some(failed_job))=(
+                prior["unverifiedCandidateId"].as_str(),
+                prior["jobId"].as_str()
+            ) {
+                if context.state.store.get("rsi_candidate",id).is_some_and(|candidate|
+                    candidate["baseCommit"]==head
+                    && candidate["experimentCampaignId"]==context.job_id
+                    && candidate["patchSha256"].is_string()
+                    && candidate["patch"].as_str().is_some_and(|patch|!patch.is_empty())) {
+                    let evidence=context.state.store.get("rsi_run",&format!("rsi-run-{failed_job}"))
+                        .unwrap_or(Value::Null);
+                    let failed_checks=evidence["checks"].as_array()
+                        .into_iter().flatten().filter(|check|check["passed"]!=true)
+                        .take(2).map(|check|json!({
+                            "label":check["label"],
+                            "diagnostic":check["stderr"].as_str()
+                                .or_else(||check["error"].as_str())
+                                .unwrap_or("").chars().take(1400).collect::<String>()
+                        })).collect::<Vec<_>>();
+                    child_input["rsiFailedPatchRecovery"]=json!({
+                        "candidateId":id,"baseCommit":head,
+                        "failedGenerationJobId":failed_job,
+                        "checks":failed_checks
+                    });
+                }
+            }
+        }
         let target_objective=selection_objective(&child_input);
         // Compute the same domain decision that the worker will use. Keep it
         // distinct from rsiSelectedDomain, which represents an explicit choice.
@@ -3907,6 +3942,7 @@ async fn run_loop(
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
             "editActions":current["result"]["rsi"]["editActions"],
+            "recoveredFailedPatch":current["rsiRecoveredPatch"],
             "sourceDiffBytes":current["result"]["rsi"]["diffBytes"],
             "sourceCaptureError":current["result"]["rsi"]["captureError"],
             "unverifiedCandidateId":current["result"]["rsi"]["candidateId"],
@@ -4663,7 +4699,9 @@ fn next_execution_action(history:&[Value])->Value {
     let failed_edit=edited && last["actionObservation"]["appliedEditCalls"].as_u64()==Some(0)
         || last["actionObservation"]["status"]=="write_without_diff";
     let mode=if last["accepted"]==true {"extend_verified_capability"}
-        else if matches!(verdict,"regressed"|"build_failed") {
+        else if matches!(verdict,"regressed"|"build_failed")
+            || (last["unverifiedCandidateId"].is_string()
+                && last["staticChecksPassed"]==false) {
             if previous=="repair_failed_case" {"change_approach"} else {"repair_failed_case"}
         } else if last["candidateId"].is_string() {
             if previous=="revise_candidate" {"change_approach"} else {"revise_candidate"}
