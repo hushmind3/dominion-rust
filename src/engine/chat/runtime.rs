@@ -101,7 +101,9 @@ fn rsi_compiler_repair_route(
     for op in operations {
         if op["tool"]=="workspace_read_range"
             && op["status"]=="completed"
-            && op["arguments"]["path"].as_str()==Some(target) {
+            && op["arguments"]["path"].as_str()==Some(target)
+            && op["result"]["sourceSha256"].as_str().is_some_and(|digest|
+                digest.len()==64 && digest.bytes().all(|byte|byte.is_ascii_hexdigit())) {
             grounded=true;
         }
         if matches!(op["tool"].as_str(),
@@ -1333,7 +1335,11 @@ async fn run_turn_body(
                 .any(|op|matches!(op["tool"].as_str(),
                     Some("workspace_replace_range"|"workspace_replace"))
                     && (op["status"]!="completed" || op["result"]["written"]==false));
-            let edit_retry_override=rsi_edit_stage_requested && grounded && !has_write
+            // A compiler-directed retry needs a fresh read of its exact
+            // failing file. An older "try editing now" hint must not remove
+            // workspace_read_range from the only repair tool menu.
+            let edit_retry_override=session["rsiRepairPath"].as_str().is_none()
+                && rsi_edit_stage_requested && grounded && !has_write
                 && !failed_edit_since_read;
             let stage = if edit_retry_override {Some(true)} else {
                 rule_decision.as_ref().map(|decision|decision.edit_only())
