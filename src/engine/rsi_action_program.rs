@@ -38,7 +38,7 @@ pub fn action_trace(state:&AppState,session_id:&str)->Vec<Value> {
 /// Predictive concordance is not a claim that applying the rule caused gains.
 fn episode_prediction(row:&Value,rule:&Value)->f64 {
     let writes=row["observedSourceEdits"].as_u64().unwrap_or(0).min(3) as f64;
-    let capture=f64::from(row["candidateId"].is_string());
+    let capture=if row["candidateId"].is_string(){1.0}else{0.0};
     let findings=row["newFindings"].as_u64().unwrap_or(0).min(5) as f64;
     let failures=row["editOperations"].as_array().map(|ops|
         ops.iter().filter(|op|op["status"]=="failed"
@@ -559,7 +559,8 @@ pub fn recompose_after_failed_cohort(
         let report=trial_plan(rows,trial["program"].clone(),
             source,objective,model,provider,domain);
         if matches!(report["status"].as_str(),
-            Some("baseline_preferred_by_holdout"|"paired_no_quality_gain")) {
+            Some("baseline_preferred_by_holdout"|"paired_no_quality_gain"
+                |"program_never_executed"|"program_insufficient_effects")) {
             candidates.push(trial["program"].clone());
         }
     }
@@ -616,7 +617,9 @@ pub fn pinned_program(rows:&[Value],source:&str,objective:&str,model:&str,
     })?;
     let proposal=incumbent["actionProgramTrial"]["program"].clone();
     let report=trial_plan(rows,proposal.clone(),source,objective,model,provider,domain);
-    (report["status"]=="collecting_frozen_cohorts").then_some(proposal)
+    matches!(report["status"].as_str(),
+        Some("collecting_frozen_cohorts"|"collecting_executable_effects"))
+        .then_some(proposal)
 }
 
 /// Frozen cohort: same program revision, source commit, objective, model and
@@ -669,14 +672,18 @@ pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
     }
     let paired=trial>=2 && control>=2;
     let status=if !paired{"collecting_frozen_cohorts"}
+        else if actually_executed==0 {"program_never_executed"}
+        else if actually_executed<2 && trial<4 {"collecting_executable_effects"}
+        else if actually_executed<2 {"program_insufficient_effects"}
         else if trial_regressions==0 && trial_gains>control_gains {
             "candidate_supported_by_holdout"
         } else if trial_gains<control_gains || trial_regressions>0 {
             "baseline_preferred_by_holdout"
         } else {"paired_no_quality_gain"};
     let arm=if status=="candidate_supported_by_holdout" {"candidate"}
-        else if status=="baseline_preferred_by_holdout"
-            || status=="paired_no_quality_gain" {"baseline"}
+        else if matches!(status,"baseline_preferred_by_holdout"
+            |"paired_no_quality_gain"|"program_never_executed"
+            |"program_insufficient_effects") {"baseline"}
         else if trial<=control {"candidate"} else {"baseline"};
     json!({"arm":arm,"status":status,"revision":revision,"program":program,
         "frozen":{"sourceCommit":source,"objectiveId":objective,
@@ -793,6 +800,56 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(evolve_meta_evaluator(&rows)["status"],
             "insufficient_independent_outcomes");
+    }
+
+    #[test]
+    fn adopted_method_can_mutate_for_three_rebuilt_generations(){
+        let mut method=json!({"revision":"founder",
+            "sequence":["code_search","workspace_replace"],"onFailure":[],
+            "controller":{"checkpointAfter":6}});
+        for depth in 1..=3u64 {
+            let head=format!("adopted-{depth}");
+            let revision=method["revision"].clone();
+            let prior=format!("source-{}",depth-1);
+            let row=json!({"jobId":format!("worker-{depth}"),
+                "generatorCommit":prior,"acceptedCommit":head,
+                "objectiveId":"goal","domain":"improver","accepted":true,
+                "acceptedProof":{"status":"verified",
+                    "evaluation":{"metrics":{"eligible":true}}},
+                "actionProgramTrial":{"arm":"candidate","revision":revision,
+                    "program":method},
+                "actionProgramEffects":[{"programRevision":revision,
+                    "performed":true,"verifiedSourceWrite":true}]});
+            let successor=offspring_from_adoption(
+                &[row],&head,"goal","improver").unwrap();
+            assert_eq!(successor["lineage"]["depth"],depth);
+            assert_ne!(successor["revision"],revision);
+            assert_eq!(successor["qualityProven"],false);
+            method=successor;
+        }
+    }
+    #[test]
+    fn unexecuted_program_is_replaced_not_wrongly_ranked_as_quality_loss(){
+        let method=json!({"revision":"unused","sequence":["code_search"],
+            "controller":{"checkpointAfter":6}});
+        let rows=["candidate","baseline","candidate","baseline"].iter()
+            .enumerate().map(|(i,arm)|json!({
+                "jobId":format!("unused-{i}"),"generatorCommit":"head",
+                "objectiveId":"goal","generatorModel":"model",
+                "generatorProviderId":"provider","domain":"improver",
+                "actionProgramTrial":{"arm":arm,"revision":"unused",
+                    "program":method,"frozen":{"domain":"improver",
+                        "sourceCommit":"head","objectiveId":"goal",
+                        "model":"model","provider":"provider"}},
+                "actionProgramEffects":[],"accepted":false
+            })).collect::<Vec<_>>();
+        let assessed=trial_plan(&rows,method,"head","goal","model","provider","improver");
+        assert_eq!(assessed["status"],"program_never_executed");
+        let recomposed=recompose_after_failed_cohort(&rows,"head","goal",
+            "model","provider","improver").unwrap();
+        assert_eq!(recomposed["sequence"],json!([
+            "code_search","workspace_read_range","workspace_replace_range"]));
+        assert_eq!(recomposed["qualityProven"],false);
     }
     #[test]
     fn independently_witnessed_recovery_steps_become_a_multi_step_native_program(){
