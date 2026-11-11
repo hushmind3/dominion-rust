@@ -154,8 +154,8 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
     }
     let (best_genome,best_revision,best_score,proven)=best.expect("observed cohort");
     if proven>=2 && best_score>=0.9 {
-        return serialize(best_genome,
-            if best_genome==fallback {"balanced"} else {"validated-composition"},
+        let selected_name=if best_genome==fallback {"balanced"} else {"validated-composition"};
+        return serialize(best_genome, selected_name,
             &best_revision,"reuse_measured_successful_method",
             observed.len(),best_score,observed.last().and_then(|r|r["jobId"].as_str()));
     }

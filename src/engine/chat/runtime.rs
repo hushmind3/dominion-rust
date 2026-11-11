@@ -1183,9 +1183,14 @@ async fn run_turn_body(
         }
         if session["rsiRun"]==true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
-            let all_operations = state.store.all("execution_operation").into_iter()
+            let mut all_operations = state.store.all("execution_operation").into_iter()
                 .filter(|operation| operation["runId"].as_str() == Some(execution_id))
                 .collect::<Vec<_>>();
+            // The generic store returns most-recently-updated first. A
+            // program must consume operations in true execution order:
+            // failed edit -> fresh read means recovery, not another failure.
+            all_operations.sort_by_key(|operation|
+                operation["opSeq"].as_u64().unwrap_or(u64::MAX));
             let completed = all_operations.iter().filter(|operation|
                 operation["status"] == "completed").cloned().collect::<Vec<_>>();
             let has_write = completed.iter().any(rsi_verified_write_operation);
