@@ -2262,12 +2262,75 @@ fn synthesize_action_program(rows:&[Value])->Value {
         "discoveryEvidence":best_discovery.0.max(0),
         "mutationEvidence":best_mutation.0.max(0),
         "recoveryRules":rules.len()});
+    // Keep strategy identity separate from rolling measurements. Otherwise
+    // every new episode creates a false policy "revision" even when the
+    // algorithm and tool sequence stayed identical.
     let revision=crate::engine::memory::stable_id(&[
-        &json!([&sequence,&rules,&evidence]).to_string()]);
-    json!({"revision":revision,"kind":"rsi.induced_action_program",
+        &json!([&sequence,&rules]).to_string()]);
+    let evidence_revision=crate::engine::memory::stable_id(&[&evidence.to_string()]);
+    json!({"revision":revision,"evidenceRevision":evidence_revision,
+        "kind":"rsi.induced_action_program",
         "status":"trial_unverified","sequence":sequence,
         "onFailure":rules,"evidence":evidence,
         "origin":"cross_episode_composition"})
+}
+
+/// Evolve the method that evolves the harness: after multiple independent
+/// attempts of the *same policy* produce neither a candidate nor a verified
+/// source edit, modify the executable program rather than retrying the same
+/// ranked tools. The new revision becomes a trial; there is no quality claim.
+fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Value {
+    let Some(parent)=plan["revision"].as_str().map(str::to_string) else {return plan;};
+    let mut stalled=0u64;
+    let mut seen=BTreeSet::<String>::new();
+    for row in rows {
+        let method=&row["executionMethod"]["actionProgram"];
+        if method["revision"].as_str()!=Some(&parent) {continue;}
+        let job=row["jobId"].as_str().or_else(||row["id"].as_str()).unwrap_or("");
+        if job.is_empty() || !seen.insert(job.to_string()) {continue;}
+        // A research-only generation with no actual policy action is not a
+        // failed trial of the synthesized program.
+        if !row["methodActions"].as_array().is_some_and(|actions|
+            actions.iter().any(|action|action["inducedProgramDecision"].is_object())) {
+            continue;
+        }
+        if generation_is_verified(row) || row["attemptedCandidateId"].is_string()
+            || row["writeReceipts"].as_array().is_some_and(|receipts|
+                receipts.iter().any(|receipt|receipt["written"]==true)) {
+            continue;
+        }
+        stalled+=1;
+    }
+    if stalled<2{return plan;}
+    let mut sequence=plan["sequence"].as_array().cloned().unwrap_or_default();
+    // Transform the control algorithm itself. When a previous program spent
+    // generations on discovery, drop its first redundant investigation.
+    // If it never contained a mutation, append a previously learned edit
+    // operator; this is an executable procedure change, not a prompt change.
+    let transform=if sequence.len()>=2 {
+        sequence.remove(0);
+        "drop_unproductive_discovery"
+    } else if !sequence.iter().any(|step|matches!(step.as_str(),
+        Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))) {
+        sequence.push(json!(fallback));
+        "append_source_mutation"
+    } else {
+        let other=if fallback=="workspace_replace" {
+            "workspace_replace_range"
+        } else {"workspace_replace"};
+        sequence.push(json!(other));
+        "expand_edit_operator"
+    };
+    let revision=crate::engine::memory::stable_id(&[
+        &json!([&sequence,&plan["onFailure"]]).to_string()]);
+    if revision==parent {return plan;}
+    plan["revision"]=json!(revision);
+    plan["sequence"]=json!(sequence);
+    plan["mutatedFrom"]=json!(parent);
+    plan["mutationOperator"]=json!(transform);
+    plan["failureEpisodes"]=json!(stalled);
+    plan["status"]=json!("trial_after_unproductive_predecessor");
+    plan
 }
 
 /// Induce a new *execution method*, not a new model weight or a replayed
@@ -2292,7 +2355,7 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         if !key.is_empty() {episodes.insert(key.to_string(),generation);}
     }
     let rows=revalidated_history(state,&episodes.into_values().collect::<Vec<_>>());
-    let action_program=synthesize_action_program(&rows);
+    let base_action_program=synthesize_action_program(&rows);
     let mut exact=Arm::default();
     let mut range=Arm::default();
     let mut sources=BTreeSet::<String>::new();
@@ -2390,6 +2453,7 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     let fallback=if preferred=="workspace_replace" {
         "workspace_replace_range"
     } else {"workspace_replace"};
+    let action_program=evolve_stalled_action_program(base_action_program,&rows,preferred);
     // General autonomous research (without an explicit source focus) uses
     // this learned call limit to exit unproductive discovery. A single
     // episode is not an improvement claim; later generations measure it.
@@ -4689,6 +4753,32 @@ mod tests {
             "accepted":true,"pairedRevalidated":false,"candidateId":"paired-1",
             "improvementDirective":{"mode":"implement_research"}}),0);
         assert_eq!(unproven["status"],"reported_adoption_unverified");
+    }
+
+    #[test]
+    fn repeated_unproductive_action_program_evolves_its_own_algorithm() {
+        let source=json!({"id":"source","newFindings":2,
+            "actionTrace":[{"tool":"code_search","executed":true},
+                {"tool":"workspace_read_range","executed":true}]});
+        let original=synthesize_action_program(&[source]);
+        let revision=original["revision"].clone();
+        let failed=|job:&str|json!({"id":job,"jobId":job,
+            "executionMethod":{"actionProgram":{"revision":revision}},
+            "methodActions":[{"inducedProgramDecision":{"chosenTool":"code_search"}}],
+            "attemptedCandidateId":null,"writeReceipts":[],"accepted":false});
+        let one=evolve_stalled_action_program(original.clone(),&[failed("j1")],
+            "workspace_replace_range");
+        assert_eq!(one["revision"],revision,"A single failure must not overfit");
+        let changed=evolve_stalled_action_program(original.clone(),
+            &[failed("j1"),failed("j2")],"workspace_replace_range");
+        assert_ne!(changed["revision"],revision);
+        assert_eq!(changed["mutationOperator"],"drop_unproductive_discovery");
+        assert_eq!(changed["sequence"],json!(["workspace_read_range"]));
+        assert_eq!(changed["failureEpisodes"],2);
+        let duplicate=evolve_stalled_action_program(original,
+            &[failed("j1"),failed("j1")],"workspace_replace_range");
+        assert_eq!(duplicate["revision"],revision,
+            "Replaying a generation is not a second independent trial");
     }
 
     #[test]
