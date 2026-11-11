@@ -538,12 +538,21 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             // leaving a small model free to spend its next generation reading.
             // Auto-selected research remains optional and is never forced to
             // write without an owner-selected source target.
+            let engine_selected_edit=
+                crate::engine::rsi_evolve::policy_requests_source_edit(&input);
             session["rsiExplicitFocus"]=json!(
+                engine_selected_edit ||
                 input["rsiAutoFocus"] != true
                 && input["rsiFocusFiles"].as_array().is_some_and(|files|
                     files.iter().any(|file| file.as_str()
                         .is_some_and(crate::engine::rsi::safe_path)))
             );
+            // Distinguish a real owner-selected target from the DOMINION
+            // execution policy that promoted indexed research into a single
+            // executable edit target. Both run in the isolated worktree.
+            session["rsiPolicyFocus"]=json!(engine_selected_edit);
+            session["rsiActionPolicyRevision"]=
+                input["rsiActionDirective"]["policy"]["revision"].clone();
             // The worktree coordinator injected a bounded indexed source
             // excerpt, and recorded its byte count before launching this
             // exact generation. A model can act on that excerpt without
