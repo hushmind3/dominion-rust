@@ -5831,7 +5831,7 @@ mod tests {
         let candidate=crate::engine::algorithms::register(&state,&json!({
             "kind":"selfimprove.search","name":"escape-stalled-search",
             "source":"rsi-generated","implementation":"expression",
-            "parameters":{"expression":"novelty * 5 + exploration"}
+            "parameters":{"expression":"objectiveMatch * 20 + exploration"}
         })).unwrap();
         let id=candidate["id"].as_str().unwrap().to_string();
         let queued=queue_search_trial(&state,&candidate,
