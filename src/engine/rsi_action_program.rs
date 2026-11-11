@@ -851,6 +851,7 @@ pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
     let mut trial_regressions=0u64;
     let mut unattributed_adoptions=0u64;
     let mut actually_executed=0u64;
+    let mut independent_jobs=BTreeSet::new();
     for row in rows {
         if row["actionProgramTrial"]["revision"]!=revision
             || row["generatorCommit"]!=source
@@ -859,7 +860,10 @@ pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
             || row["generatorProviderId"]!=provider
             || row["domain"]!=domain
             || row["actionProgramTrial"]["frozen"]["domain"]!=domain {continue;}
+        let Some(job)=row["jobId"].as_str().filter(|id|!id.is_empty()) else {continue;};
+        if !independent_jobs.insert(job.to_string()) {continue;}
         let gain=row["accepted"]==true
+            && row["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
             && row["evaluation"]["metrics"]["eligible"]==true
             && row["evaluation"]["metrics"]["regressions"].as_u64()==Some(0)
             && row["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)>0;
@@ -885,13 +889,23 @@ pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
         }
     }
     let paired=trial>=2 && control>=2;
+    // Compare exposure-normalized success rates; a ten-trial arm must not
+    // beat two baselines merely by having more total attempts. The winning
+    // policy also needs two independently attributed source-write gains.
+    let trial_rate=if trial==0 {0.0} else {
+        trial_gains as f64 / trial as f64
+    };
+    let control_rate=if control==0 {0.0} else {
+        control_gains as f64 / control as f64
+    };
+    let supported=paired && actually_executed>=2 && trial_gains>=2
+        && trial_regressions==0 && trial_rate>control_rate+0.10;
     let status=if !paired{"collecting_frozen_cohorts"}
         else if actually_executed==0 {"program_never_executed"}
         else if actually_executed<2 && trial<4 {"collecting_executable_effects"}
         else if actually_executed<2 {"program_insufficient_effects"}
-        else if trial_regressions==0 && trial_gains>control_gains {
-            "candidate_supported_by_holdout"
-        } else if trial_gains<control_gains || trial_regressions>0 {
+        else if supported {"candidate_supported_by_holdout"}
+        else if trial_rate<control_rate || trial_regressions>0 {
             "baseline_preferred_by_holdout"
         } else {"paired_no_quality_gain"};
     let arm=if status=="candidate_supported_by_holdout" {"candidate"}
@@ -906,6 +920,8 @@ pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
             "candidateHoldoutGains":trial_gains,"baselineHoldoutGains":control_gains,
             "candidateRegressions":trial_regressions,
             "candidatePolicyActionsExecuted":actually_executed,
+            "candidateSuccessRate":trial_rate,"baselineSuccessRate":control_rate,
+            "independentJobs":independent_jobs.len(),
             "adoptionsWithoutAttributableProgramWrite":unattributed_adoptions,
             "qualityProven":status=="candidate_supported_by_holdout",
             "causalQualityGain":"not_estimated_by_sequential_cohorts"}})
@@ -983,6 +999,60 @@ mod tests {
         assert_eq!(evolved["controller"]["checkpointAfter"],5);
         assert_eq!(evolved["controller"]["qualityProven"],false);
     }
+    fn sample_program_trial(id:&str,arm:&str,accepted:bool)->Value {
+        json!({"jobId":id,"generatorCommit":"head",
+            "objectiveId":"goal","generatorModel":"model",
+            "generatorProviderId":"provider","domain":"tools",
+            "actionProgramTrial":{"revision":"r1","arm":arm,
+                "frozen":{"domain":"tools"}},
+            "actionProgramEffects":[{"programRevision":"r1",
+                "performed":true,"verifiedSourceWrite":true}],
+            "accepted":accepted,
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"eligible":accepted,"regressions":0,
+                    "improvedHoldouts":if accepted{1}else{0}}}})
+    }
+    #[test]
+    fn program_tournament_rejects_raw_win_bias_and_replayed_jobs() {
+        let program=json!({"revision":"r1","sequence":["workspace_replace_range"]});
+        let mut rows=vec![
+            sample_program_trial("b1","baseline",true),
+            sample_program_trial("b2","baseline",false),
+            sample_program_trial("c1","candidate",true),
+            sample_program_trial("c2","candidate",true),
+        ];
+        for i in 3..=6 {
+            rows.push(sample_program_trial(&format!("c-fail-{i}"),
+                "candidate",false));
+        }
+        // Candidate has two wins versus baseline's one, but only 2/6 vs 1/2.
+        let outcome=trial_plan(&rows,program.clone(),
+            "head","goal","model","provider","tools");
+        assert_eq!(outcome["status"],"baseline_preferred_by_holdout");
+        assert_eq!(outcome["comparison"]["candidateSuccessRate"],2.0/6.0);
+        assert_eq!(outcome["comparison"]["independentJobs"],8);
+        rows.push(sample_program_trial("c2","candidate",true));
+        let same=trial_plan(&rows,program,
+            "head","goal","model","provider","tools");
+        assert_eq!(same["comparison"]["independentJobs"],8);
+    }
+    #[test]
+    fn program_tournament_needs_independently_verified_paired_effects() {
+        let program=json!({"revision":"r1","sequence":["workspace_replace_range"]});
+        let mut rows=vec![
+            sample_program_trial("b1","baseline",false),
+            sample_program_trial("b2","baseline",false),
+            sample_program_trial("c1","candidate",true),
+            sample_program_trial("c2","candidate",true)];
+        let winner=trial_plan(&rows,program.clone(),
+            "head","goal","model","provider","tools");
+        assert_eq!(winner["status"],"candidate_supported_by_holdout");
+        rows[2]["evaluation"]["source"]=json!("model_claim");
+        let rejected=trial_plan(&rows,program,
+            "head","goal","model","provider","tools");
+        assert_ne!(rejected["status"],"candidate_supported_by_holdout");
+    }
+
     #[test]
     fn independent_model_edit_does_not_promote_an_unexecuted_program(){
         let program=json!({"sequence":["workspace_replace"],"revision":"r1"});
