@@ -1273,7 +1273,15 @@ fn focus_domain_hint(path:&str)->&'static str {
 /// The objective used for capability selection. Focus files are appended as
 /// capability words so the selected domain follows the user's actual target.
 fn selection_objective(input:&Value)->String {
-    let objective=input["rsiObjective"].as_str().unwrap_or("");
+    // The autonomous default sentence mentions "지식" and "경험", which are
+    // learning aliases. Treating it as an owner constraint collapses every
+    // autonomous campaign onto learning. Only an explicit user objective may
+    // narrow the eligible domains.
+    let objective=if input["rsiAutonomous"]==true {
+        ""
+    } else {
+        input["rsiObjective"].as_str().unwrap_or("")
+    };
     // Auto-discovered files must not feed their own inferred domain back into
     // selection. Only the user's explicit focus can constrain the objective.
     let hints=if input["rsiAutoFocus"]==true {Vec::new()} else {
@@ -7213,6 +7221,18 @@ mod tests {
         assert!(lineage_fingerprint_valid(&first));
         assert!(!lineage_fingerprint_valid(empty_hash));
         assert!(!lineage_fingerprint_valid(""));
+    }
+
+    #[test]
+    fn autonomous_default_objective_does_not_constrain_the_domain() {
+        let generic=json!({"rsiAutonomous":true,
+            "rsiObjective":"기존 코드 지식과 경험을 재사용해 실제 작업에 필요한 능력 하나를 개선한다."});
+        assert_eq!(selection_objective(&generic),"");
+        assert_eq!(select_domain(&json!({"implementation":"failure-clusters"}),&[],""),"memory",
+            "an autonomous goal must consider the full declared domain order");
+        let explicit=json!({"rsiAutonomous":false,"rsiObjective":"기억 검색 정확도"});
+        assert_eq!(selection_objective(&explicit),"기억 검색 정확도");
+        assert_eq!(select_domain(&json!({"implementation":"failure-clusters"}),&[],&selection_objective(&explicit)),"memory");
     }
 
     #[test]
