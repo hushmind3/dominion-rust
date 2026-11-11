@@ -303,6 +303,7 @@ fn rsi_patch_ready_for_evaluation(
         || !matches!(tool, "workspace_replace" | "workspace_replace_range")
         || args["path"] != session["rsiFocusFile"]
         || result["written"] != true
+        || result["syntaxValid"] == false
         || receipt["status"] != "completed"
         || receipt["toolReceipt"]["verified"] != true {
         return false;
@@ -1506,6 +1507,7 @@ async fn run_turn_body(
     let mut rsi_final_edit_retry = false;
     let mut rsi_edit_action_pending = false;
     let mut rsi_patch_written = false;
+    let mut rsi_syntax_repair_issued = false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -2763,6 +2765,62 @@ async fn run_turn_body(
             messages.push(json!({
                 "role":"tool","tool_call_id":call.id,"content":tool_content,
             }));
+            // A model-authored source write is not a finished improvement
+            // when the independent Rust parser reports invalid syntax.
+            // Reobserve the ACTUAL modified file with its new SHA, feed the
+            // failure back, and permit one focused, same-turn correction.
+            // This avoids a whole cargo check + new generation merely to
+            // discover the first broken token in a 4B model's edit.
+            if result["syntaxValid"]==false
+                && rsi_generation_has_action_target(&session)
+                && !rsi_syntax_repair_issued {
+                rsi_syntax_repair_issued=true;
+                let diagnostics=result["syntaxCheck"]["diagnostic"].as_str()
+                    .unwrap_or("Rust syntax validation failed.")
+                    .chars().take(1600).collect::<String>();
+                let path=session["rsiFocusFile"].as_str().unwrap_or("").to_string();
+                if !path.is_empty() && budget.can_execute_tool() {
+                    let line=result["syntaxCheck"]["line"].as_u64()
+                        .or_else(||arguments["startLine"].as_u64())
+                        .unwrap_or(1);
+                    let begin=line.saturating_sub(20).max(1);
+                    let probe=json!({"path":path,"startLine":begin,
+                        "endLine":begin.saturating_add(63)});
+                    if budget.charge_tool() {
+                        op_seq+=1;
+                        let source_call=ToolCall{
+                            id:format!("rsi-parse-reobserve-{}",uuid::Uuid::new_v4()),
+                            name:"workspace_read_range".to_string(),
+                            arguments:probe.to_string(),
+                        };
+                        let (observation,read_ok,_)=dispatch_tool_call(
+                            state,tx,&session,request,session_id,execution_id,
+                            &source_call,probe,metrics,op_seq,round,call_index,
+                            false,"rsi_parse_feedback",None,None,None,
+                        ).await?;
+                        if read_ok && observation["sourceSha256"].as_str()
+                            .is_some_and(|hash|hash.len()==64) {
+                            session["rsiRepairDiagnostics"]=json!([{
+                                "label":"rustfmt observed source syntax",
+                                "error":diagnostics,
+                            }]);
+                            session["rsiRepairFocusStartLine"]=json!(begin);
+                            state.store.put("session",&session);
+                            rsi_edit_action_pending=true;
+                            messages.push(json!({"role":"system","content":
+                                "Rust parser rejected the source edit. DOMINION has now read the actual broken source again and verified its new SHA. Repair the syntax error with one exact source edit. Do not change tests or abandon the original improvement."}));
+                            if let Some(mut execution)=state.store.get("execution",execution_id){
+                                execution["rsiParseRepair"]=json!({
+                                    "line":line,"observed":true,"status":"retry_model_edit",
+                                    "firstEditTool":call.name,
+                                    "sourceSha256":observation["sourceSha256"],
+                                });
+                                state.store.put("execution",&execution);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         if ordering_used {
