@@ -23,9 +23,14 @@ fn read_snapshot(ops:&[Value], stop:usize, run:&str)->Option<Snapshot> {
     let mut reads=0u64;
     let mut searches=0u64;
     let mut calls=0u64;
+    let mut attempted_edit=false;
     for op in ops.iter().take(stop) {
         if op["runId"].as_str()!=Some(run) {continue;}
         calls+=1;
+        if matches!(op["tool"].as_str(),
+            Some("workspace_replace_range"|"workspace_replace"|"workspace_write")) {
+            attempted_edit=true;
+        }
         if op["status"]!="completed" {continue;}
         match op["tool"].as_str().unwrap_or("") {
             "workspace_read_range"=>reads+=1,
@@ -33,7 +38,10 @@ fn read_snapshot(ops:&[Value], stop:usize, run:&str)->Option<Snapshot> {
             _=>{}
         }
     }
-    (reads>0 && calls<=48).then_some(Snapshot{reads,searches,calls})
+    // All induced rules require edit_attempts == 0: their training positives
+    // must satisfy that condition when the learned action would fire.
+    (reads>0 && !attempted_edit && calls<=48)
+        .then_some(Snapshot{reads,searches,calls})
 }
 
 fn accepted_edit(row:&Value, ops:&[Value])->Option<(String,Snapshot)> {
@@ -230,6 +238,19 @@ mod tests {
         let rows=[child("good-1",true,0,"workspace_replace_range"),
             child("good-2",true,0,"workspace_replace_range")];
         assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
+    }
+    #[test]
+    fn learned_rule_must_have_been_executable_before_its_training_edit(){
+        let mut rows=[
+            child("g1",true,0,"workspace_replace_range"),
+            child("g2",true,0,"workspace_replace_range"),
+            child("bad1",false,3,"workspace_replace_range"),
+            child("bad2",false,4,"workspace_replace_range")];
+        rows[0]["toolTimeline"].as_array_mut().unwrap().insert(1,
+            json!({"runId":"g1","opSeq":2,"tool":"workspace_replace_range",
+                "status":"failed"}));
+        assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty(),
+            "a rule requiring zero previous edits cannot learn from a retry");
     }
     #[test]
     fn adoption_with_no_prior_matching_file_read_is_not_success_evidence(){
