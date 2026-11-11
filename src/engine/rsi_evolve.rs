@@ -1488,7 +1488,8 @@ fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value
     let candidates = applicable_methods(state, &research_scope(input).partition_key, domain,
         input["rsiObjective"].as_str().unwrap_or(""));
     // Mutually exclusive variants must not edit the same file in one
-    // generation: otherwise there is no attributable A/B observation.
+    // generation: otherwise even sequential trial outcomes are confounded.
+    // This scheduling is exploration, not yet a controlled paired A/B proof.
     let mut occupied=BTreeSet::new();
     let mut methods=Vec::new();
     for method in candidates {
@@ -1514,7 +1515,15 @@ fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value
         "methodIds":methods.iter().map(|m|m["id"].clone()).collect::<Vec<_>>(),
         "repairMethodId":repair.map(|m|m["id"].clone()),
         "repairRevision":repair.map(|m|m["revision"].clone()),
-        "repairTarget":repair_path})
+        "repairTarget":repair_path,
+        "repairSelectionEvidence":repair.map(|m|json!({
+            "operator":m["synthesis"]["kind"],
+            "parentRevision":m["synthesis"]["parentRevision"],
+            "attemptedApplications":m["applications"].as_array().map(Vec::len).unwrap_or(0),
+            "verifiedAdoptions":m["successfulApplications"].as_u64().unwrap_or(0),
+            "selection":"adopted_then_untried_sequential",
+            "causalGain":"not_measured_sequential_trials"
+        }))})
 }
 
 pub(crate) fn configure_method_session(state: &AppState, input: &Value, session: &mut Value) {
