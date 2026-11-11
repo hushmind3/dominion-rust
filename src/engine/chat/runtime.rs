@@ -1136,6 +1136,7 @@ async fn run_turn_body(
             let has_write = state.store.all("execution_operation").iter().any(|operation| {
                 operation["runId"].as_str() == Some(execution_id)
                     && operation["status"].as_str() == Some("completed")
+                    && operation["result"]["written"] == true
                     && matches!(
                         operation["tool"].as_str(),
                         Some("workspace_write" | "workspace_replace" | "workspace_replace_range")
