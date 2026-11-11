@@ -259,6 +259,7 @@ pub fn trial(rows:&[Value],policy:Value,head:&str,objective:&str,
     let mut candidate_gain=0u64;
     let mut baseline_gain=0u64;
     let mut observed=0u64;
+    let mut independent_jobs=BTreeSet::new();
     for row in rows{
         if row["rsiJudgementTrial"]["revision"]!=revision
             || row["generatorCommit"]!=head
@@ -266,7 +267,11 @@ pub fn trial(rows:&[Value],policy:Value,head:&str,objective:&str,
             || row["generatorModel"]!=model
             || row["generatorProviderId"]!=provider
             || row["domain"]!=domain {continue;}
+        let Some(job)=row["jobId"].as_str().filter(|job|!job.is_empty()) else{continue;};
+        // A retried/replayed worker is not an additional experimental unit.
+        if !independent_jobs.insert(job.to_string()) {continue;}
         let gain=row["accepted"]==true
+            && row["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
             && row["evaluation"]["metrics"]["eligible"]==true
             && row["evaluation"]["metrics"]["regressions"].as_u64()==Some(0)
             && row["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)>0;
@@ -285,9 +290,20 @@ pub fn trial(rows:&[Value],policy:Value,head:&str,objective:&str,
         }
     }
     let paired=candidate>=2&&baseline>=2;
+    // Unequal cohorts must be compared by success rate, never the raw number
+    // of successes. Two independent verified candidate wins are required to
+    // prevent a single lucky adoption from selecting the new controller.
+    let candidate_rate=if candidate==0 {0.0} else {
+        candidate_gain as f64 / candidate as f64
+    };
+    let baseline_rate=if baseline==0 {0.0} else {
+        baseline_gain as f64 / baseline as f64
+    };
+    let preferred=paired && observed>=2 && candidate_gain>=2
+        && candidate_rate>baseline_rate+0.10;
     let status=if !paired{"collecting_frozen_judgement_cohorts"}
         else if observed==0{"judgement_not_executed"}
-        else if candidate_gain>baseline_gain{"judgement_holdout_candidate_preferred"}
+        else if preferred{"judgement_holdout_candidate_preferred"}
         else{"judgement_no_measured_gain"};
     let arm=if status=="judgement_holdout_candidate_preferred" {"candidate"}
         else if matches!(status,"judgement_not_executed"|"judgement_no_measured_gain") {
@@ -298,6 +314,8 @@ pub fn trial(rows:&[Value],policy:Value,head:&str,objective:&str,
             "model":model,"provider":provider,"domain":domain},
         "comparison":{"candidate":candidate,"baseline":baseline,
             "candidateHoldoutGains":candidate_gain,"baselineHoldoutGains":baseline_gain,
+            "candidateSuccessRate":candidate_rate,"baselineSuccessRate":baseline_rate,
+            "independentJobs":independent_jobs.len(),
             "executedCandidateRules":observed,
             "qualityProven":status=="judgement_holdout_candidate_preferred",
             "causalGain":"not_estimated_by_sequential_cohorts"}})
