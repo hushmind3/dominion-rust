@@ -92,6 +92,27 @@ fn rsi_generation_has_action_target(session:&Value)->bool {
 /// Switch a genuine generation from repeated exploration to one concrete
 /// edit decision as soon as it has studied its chosen file. The model still
 /// authors all changed lines; the evaluator decides whether they improve it.
+/// Hand a model-authored patch to frozen worktree evaluation without another
+/// expensive LLM round. Only the exact selected source and independently
+/// verified post-write bytes qualify; neither a tool call nor an unchanged
+/// write is improvement evidence.
+fn rsi_patch_ready_for_evaluation(
+    session: &Value, tool: &str, args: &Value, result: &Value, receipt: &Value,
+) -> bool {
+    if !rsi_generation_has_action_target(session)
+        || !matches!(tool, "workspace_replace" | "workspace_replace_range")
+        || args["path"] != session["rsiFocusFile"]
+        || result["written"] != true
+        || receipt["status"] != "completed"
+        || receipt["toolReceipt"]["verified"] != true {
+        return false;
+    }
+    let Some(digest)=result["postSha256"].as_str() else { return false };
+    digest.len()==64
+        && digest.bytes().all(|b|b.is_ascii_hexdigit())
+        && receipt["observedVersion"].as_str() == Some(format!("sha256:{digest}").as_str())
+}
+
 fn rsi_focused_edit_due(
     session: &Value, operations: &[Value], execution_id: &str,
     tool_calls: u64, already_issued: bool,
@@ -1010,6 +1031,7 @@ async fn run_turn_body(
     let mut rsi_decision_checkpoint = false;
     let mut rsi_final_edit_retry = false;
     let mut rsi_edit_action_pending = false;
+    let mut rsi_patch_written = false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1980,6 +2002,21 @@ async fn run_turn_body(
             if !ok {
                 ordering_ok = false;
             }
+            // A source mutation is evaluated by the frozen worktree harness,
+            // rather than requiring the 4B model to restate its patch in prose.
+            if ok && rsi_patch_ready_for_evaluation(
+                &session, &call.name, &arguments, &result,
+                &state.store.get("execution_operation",
+                    &format!("{execution_id}:{round}:{call_index}:{}", call.id))
+                    .unwrap_or(Value::Null),
+            ) {
+                rsi_patch_written = true;
+                state.store.audit("rsi.patch_submitted_for_evaluation", json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "tool":call.name,"path":arguments["path"],
+                    "postSha256":result["postSha256"]
+                }));
+            }
             crate::engine::algorithms::mark_signal(
                 state, execution_id, "tool.selection", ok,
             );
@@ -2075,6 +2112,11 @@ async fn run_turn_body(
             crate::engine::algorithms::mark_signal(
                 state, execution_id, "execution.ordering", ordering_ok,
             );
+        }
+        if rsi_patch_written {
+            final_content = "수정한 소스가 실제 기록됐습니다. 독립 빌드와 holdout 비교는 자기개선 실행 엔진이 판정합니다.".into();
+            finished = true;
+            break;
         }
 
         // Check acceptance after the tool round, not only when the model
@@ -6191,6 +6233,29 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn source_patch_hand_off_requires_real_independently_verified_focus_edit() {
+        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"worker","rsiFocusFile":"src/engine/decompose.rs"});
+        let args=json!({"path":"src/engine/decompose.rs"});
+        let digest="a".repeat(64);
+        let result=json!({"written":true,"postSha256":digest});
+        let receipt=json!({"status":"completed",
+            "toolReceipt":{"verified":true},
+            "observedVersion":format!("sha256:{}",digest)});
+        assert!(rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",&args,&result,&receipt));
+        assert!(rsi_patch_ready_for_evaluation(&session,"workspace_replace",&args,&result,&receipt));
+        assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_read_range",&args,&result,&receipt));
+        assert!(!rsi_patch_ready_for_evaluation(&json!({"rsiRun":true}),"workspace_replace_range",&args,&result,&receipt));
+        assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",
+            &json!({"path":"src/engine/memory.rs"}),&result,&receipt));
+        let mut false_receipt=receipt.clone();
+        false_receipt["toolReceipt"]["verified"]=json!(false);
+        assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",&args,&result,&false_receipt));
+        assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",
+            &args,&json!({"written":false,"postSha256":digest}),&receipt));
     }
 
     #[test]
