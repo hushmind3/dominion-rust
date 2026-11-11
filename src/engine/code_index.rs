@@ -993,6 +993,21 @@ pub fn bootstrap_source_start(
     let content=String::from_utf8(bytes).ok()?;
     let lines=content.lines().collect::<Vec<_>>();
     let symbols=indexed["symbols"].as_array()?;
+    // Native model traces showed an explicit request for split_markers
+    // starting at line 1, then blindly editing the final observed line.
+    // When the owner names an EXACT indexed symbol, navigate to that symbol
+    // before any fuzzy body ranking. It is an evidence-based source location,
+    // not a hard-coded file or synthesized source change.
+    let exact=objective.split(|c:char|!c.is_ascii_alphanumeric() && c!='_')
+        .filter(|word|word.len()>=4);
+    for word in exact {
+        if let Some(symbol)=symbols.iter().find(|item|
+            item["name"].as_str().is_some_and(|name|name.eq_ignore_ascii_case(word))) {
+            if let Some(line)=symbol["line"].as_u64().filter(|line|*line>0) {
+                return Some(line.saturating_sub(4).max(1));
+            }
+        }
+    }
     let terms=focus_terms(objective,domain);
     let ranked=rank_focus_spans(symbols,indexed["tests"].as_array(),&lines,&terms);
     let (_,line,_,_)=ranked.first()?;
