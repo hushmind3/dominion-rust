@@ -1,20 +1,26 @@
 name: Sub4 actual local Ollama RSI attempt
-# Explicit opt-in only: code commits must not launch a 25-minute 4B model campaign.
+# One bounded real-model source-repair run for this explicit branch experiment.
+# The push trigger is limited to a source-index change; normal code pushes
+# still cannot start an expensive model campaign.
 on:
   workflow_dispatch:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - 'src/engine/code_index.rs'
 permissions:
   contents: read
 jobs:
   local-model-rsi:
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 35
     env:
       SUB4_MODEL_KIND: ollama
       SUB4_BASE_MODEL: qwen3:4b-instruct
       SUB4_MODEL_NAME: sub4-qwen3-16k:latest
       SUB4_OLLAMA_URL: http://127.0.0.1:11434
-      SUB4_CAMPAIGN_SECONDS: '1500'
-      SUB4_RUN_DEADLINE_MS: '1600000'
+      SUB4_CAMPAIGN_SECONDS: '840'
+      SUB4_RUN_DEADLINE_MS: '920000'
       DOMINION_PORT: '43179'
       DOMINION_JOB_WORKERS: '1'
       OLLAMA_CONTEXT_LENGTH: '16384'
