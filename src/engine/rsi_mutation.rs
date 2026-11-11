@@ -306,6 +306,64 @@ fn inductive_target_path(input: &Value) -> Option<&str> {
     }
 }
 
+/// Portfolio-based source improvement, following the archive principle of
+/// Darwin Godel Machine (kew-lab/darwin-godel-machine). Independent frozen
+/// measurements, not the candidate generator, still decide adoption.
+fn source_mutations(source:&str)->Vec<(&'static str,String)> {
+    let mut candidates=Vec::new();
+    let transforms:[(&str,fn(&str)->Option<String>);5]=[
+        ("streamed_improver_policy_statistics_v1",stream_search_policy_statistics),
+        ("verified_owner_provenance_cache_v1",materialize_verified_owner_provenance),
+        ("loop_invariant_term_hoist_v1",hoist_invariant_query_terms),
+        ("immutable_owner_fact_token_cache_v1",cache_invariant_fact_terms),
+        ("loop_invariant_domain_hoist_v2",hoist_invariant_query_domain),
+    ];
+    for (name, transform) in transforms {
+        if let Some(next)=transform(source).filter(|next|next!=source) {
+            candidates.push((name,next));
+        }
+    }
+    candidates
+}
+
+/// Select from independent candidate transformations. Never replay the exact
+/// source/operator pair on a repository after it has been attempted; a failed
+/// first candidate must not starve the remaining search space. Untried
+/// operators are explored first, followed by those with verified prior gains.
+/// The archive may affect search PRIORITY, never the holdout verdict.
+fn choose_source_mutation<'a>(
+    candidates:Vec<(&'static str,String)>,archive:&[Value],
+    repository:&str,path:&str,before:&str
+)->Option<(&'static str,String)> {
+    let mut ranked=Vec::new();
+    for (ordinal,(name,body)) in candidates.into_iter().enumerate() {
+        let observed=archive.iter().filter(|record|
+            record["sourceDir"].as_str()==Some(repository)
+            && record["path"].as_str()==Some(path)
+            && record["operator"].as_str()==Some(name)).collect::<Vec<_>>();
+        if observed.iter().any(|record|record["beforeSha256"]==before) {
+            continue;
+        }
+        let measured=observed.iter().filter(|record|
+            record["evaluation"].is_object()).collect::<Vec<_>>();
+        let wins=measured.iter().filter(|record|
+            record["accepted"]==true
+            && record["evaluation"]["metrics"]["eligible"]==true).count();
+        // Parent selection from a tested archive rewards earned successes and
+        // exploration, rather than first-applicable rules or prompt claims.
+        let trials=measured.len();
+        let score=if trials==0 {2.0}else{
+            let exploitation=(wins as f64+0.5)/(trials as f64+1.0);
+            let exploration=(2.0*((archive.len()+1) as f64).ln()
+                /(trials as f64+1.0)).sqrt().min(1.0);
+            exploitation+exploration
+        };
+        ranked.push((score,ordinal,name,body));
+    }
+    ranked.sort_by(|a,b|b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    ranked.into_iter().next().map(|(_,_,name,body)|(name,body))
+}
+
 /// One inductive change, isolated in the disposable git worktree. If the
 /// model or inherited descendant already changed bytes, do not mix authors.
 pub(crate) fn induce(
@@ -319,30 +377,16 @@ pub(crate) fn induce(
     let original = fs::read_to_string(source.join(relative)).map_err(|e| e.to_string())?;
     let existing = fs::read_to_string(isolated.join(relative)).map_err(|e| e.to_string())?;
     if original != existing { return Ok(None); }
-    let (operator,transformed)=if let Some(next)=stream_search_policy_statistics(&existing) {
-        ("streamed_improver_policy_statistics_v1",next)
-    }else if let Some(next)=materialize_verified_owner_provenance(&existing) {
-        ("verified_owner_provenance_cache_v1",next)
-    }else if let Some(next)=hoist_invariant_query_terms(&existing) {
-        ("loop_invariant_term_hoist_v1",next)
-    }else if let Some(next)=cache_invariant_fact_terms(&existing) {
-        ("immutable_owner_fact_token_cache_v1",next)
-    }else if let Some(next)=hoist_invariant_query_domain(&existing) {
-        ("loop_invariant_domain_hoist_v2",next)
-    }else{
-        return Ok(None);
-    };
-    // The exact same code transformation is deterministic. A rejected
-    // source hash/operator pair must not loop forever as a new generation.
-    // Keep each repository partition isolated from other users' histories.
+    // DGM-inspired archive selection: keep more than the first syntactically
+    // applicable rewrite. Each historical candidate is a measured experiment,
+    // not a global ban on trying a different source-level operator.
     let repository=source.to_string_lossy().to_string();
     let before=digest(&existing);
-    let already_measured=state.store.all("rsi_mutation").iter().any(|trial|
-        trial["sourceDir"].as_str()==Some(repository.as_str())
-            && trial["beforeSha256"].as_str()==Some(before.as_str())
-            && trial["operator"].as_str()==Some(operator)
-            && trial["evaluation"].is_object());
-    if already_measured { return Ok(None); }
+    let archive=state.store.all("rsi_mutation");
+    let candidates=source_mutations(&existing);
+    let Some((operator,transformed))=choose_source_mutation(
+        candidates,&archive,&repository,relative,&before
+    ) else {return Ok(None);};
     let receipt = json!({
         "id": job_id, "operator": operator, "sourceDir": repository,
         "campaignId": input["rsiCampaignId"],
@@ -362,6 +406,34 @@ pub(crate) fn induce(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_archive_explores_alternative_after_failed_first_operator() {
+        let baseline=include_str!("room_state.rs");
+        let source=materialize_verified_owner_provenance(baseline)
+            .unwrap_or_else(||baseline.to_string());
+        let candidates=source_mutations(&source);
+        assert!(candidates.len()>=2);
+        let first=candidates[0].0;
+        let archive=vec![json!({"sourceDir":"/repo","path":"src/engine/room_state.rs",
+            "beforeSha256":"source-v1","operator":first,"evaluation":{"verdict":"regressed"},
+            "accepted":false})];
+        let picked=choose_source_mutation(candidates.clone(),&archive,"/repo",
+            "src/engine/room_state.rs","source-v1").unwrap();
+        assert_ne!(picked.0,first,"rejected operator cannot block the portfolio");
+        let fresh=choose_source_mutation(candidates,&[],"/repo",
+            "src/engine/room_state.rs","source-v1").unwrap();
+        assert_eq!(fresh.0,first,"cold-start priority is stable");
+    }
+
+    #[test]
+    fn source_archive_rejects_repeated_identical_attempt_without_evaluation() {
+        let archive=vec![json!({"sourceDir":"/repo","path":"src/engine/room_state.rs",
+            "beforeSha256":"same","operator":"a","accepted":false})];
+        let chosen=choose_source_mutation(vec![("a","first".into()),("b","second".into())],
+            &archive,"/repo","src/engine/room_state.rs","same").unwrap();
+        assert_eq!(chosen.0,"b");
+    }
+
     #[test]
     fn verified_owner_origin_cache_keeps_legacy_validation() {
         // The compiled descendant may already contain these mutations. A
