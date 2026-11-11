@@ -36,6 +36,7 @@ pub fn definitions() -> Vec<Value> {
         tool("workspace_read", "Read a UTF-8 file from the workspace", object(json!({"path": text("Relative file path")}), vec!["path"])),
         tool("workspace_read_range", "Read only a line range from a workspace file. Use the line numbers from the repository index instead of reading a large file end to end.", object(json!({"path": text("Relative file path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1, "description":"Inclusive end line; at most 400 lines are returned"})}), vec!["path","startLine"])),
         tool("code_search", "Search the persistent repository index for file paths, symbols and line numbers. Use this before reading a large file.", object(json!({"query": text("Function, type, path or keyword fragment"), "limit": json!({"type":"integer","minimum":1,"maximum":50})}), vec!["query"])),
+        tool("workspace_replace_range", "Replace a previously read inclusive line range with newText only. Use startLine/endLine and sourceSha256 returned by workspace_read_range; old text is not required.", object(json!({"path": text("Relative file path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1,"description":"Inclusive line number; at most 120 lines"}), "newText": text("Replacement lines (without old source text)"), "expectedSha256": text("Exact sourceSha256 from the successful prior read")}), vec!["path","startLine","endLine","newText","expectedSha256"])),
         tool("workspace_replace", "Replace one exact block in a workspace file without resending the whole file (approval required). oldText must occur exactly once.", object(json!({"path": text("Relative file path"), "oldText": text("Exact existing text to replace; must occur exactly once"), "newText": text("Replacement text"), "expectedSha256": text("Optional SHA-256 observed before editing")}), vec!["path","oldText","newText"])),
         tool("workspace_write", "Write a UTF-8 file inside the workspace (approval required)", object(json!({"path": text("Relative file path"), "content": text("UTF-8 content")}), vec!["path", "content"])),
         tool("file_list", "List any folder on this computer using an absolute path", object(json!({"path": text("Absolute folder path")}), vec!["path"])),
@@ -96,6 +97,7 @@ pub fn requires_approval(name: &str) -> bool {
         name,
         "workspace_write"
             | "workspace_replace"
+            | "workspace_replace_range"
             | "file_write"
             | "shell_exec"
             | "terminal_exec"
@@ -105,7 +107,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose")
+    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose")
 }
 
 pub async fn execute(
@@ -119,7 +121,7 @@ pub async fn execute(
     if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
     }
-    if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace") {
+    if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range") {
         let path=args["path"].as_str().unwrap_or("");
         if !crate::engine::rsi::safe_path(path) {
             return Err("자기개선은 허용된 소스코드 경로만 수정할 수 있습니다.".into());
@@ -179,6 +181,18 @@ pub async fn execute(
                 run_id,
             )
             .await
+        }
+        "workspace_replace_range" => {
+            let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
+            replace_range(
+                ctx,
+                &path,
+                args["startLine"].as_u64().ok_or("startLine must be a positive integer")?,
+                args["endLine"].as_u64().ok_or("endLine must be a positive integer")?,
+                &required_arg(args, "newText")?,
+                &required_arg(args, "expectedSha256")?,
+                run_id,
+            ).await
         }
         "workspace_write" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
@@ -777,6 +791,59 @@ async fn replace_text(
     let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
     result["replaced"] = json!(true);
     result["replacedChars"] = json!(old_text.chars().count());
+    Ok(result)
+}
+
+/// A token-efficient edit path: the model emits changed lines, not a second
+/// copy of source text already returned by workspace_read_range. The frozen
+/// file digest is checked both before assembling the patch and again under
+/// the regular per-file write lock, so concurrent edits cannot be lost.
+async fn replace_range(
+    ctx: &ToolContext<'_>, path: &Path, start: u64, end: u64,
+    new_text: &str, expected_sha256: &str, run_id: &str,
+) -> Result<Value, String> {
+    if start == 0 || end < start || end.saturating_sub(start) >= 120 {
+        return Err("Replace range must contain 1-120 inclusive source lines".into());
+    }
+    if expected_sha256.len() != 64
+        || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("expectedSha256 must be the sourceSha256 from workspace_read_range".into());
+    }
+    if new_text.len() > 64_000 {
+        return Err("Replacement is larger than the source edit limit".into());
+    }
+    let source = tokio::fs::read_to_string(path)
+        .await.map_err(|error| format!("{}: {error}", path.display()))?;
+    let digest = format!("{:x}", Sha256::digest(source.as_bytes()));
+    if digest != expected_sha256 {
+        return Ok(json!({"error":"Source changed since the observed range",
+            "staleVersion":true, "expectedSha256":expected_sha256,
+            "observedSha256":digest, "path":path.to_string_lossy()}));
+    }
+    let lines = source.split_inclusive('\n').collect::<Vec<_>>();
+    let from = (start - 1) as usize;
+    let to = end as usize;
+    if to > lines.len() {
+        return Err(format!("Line range {start}..{end} exceeds {} lines; read a valid range first", lines.len()));
+    }
+    let before = lines[..from].iter().map(|part| part.len()).sum::<usize>();
+    let after = lines[..to].iter().map(|part| part.len()).sum::<usize>();
+    let old = &source[before..after];
+    let mut replacement = new_text.to_string();
+    if !replacement.is_empty() && old.ends_with("\r\n") && !replacement.ends_with('\n') {
+        replacement.push_str("\r\n");
+    } else if !replacement.is_empty() && old.ends_with('\n') && !replacement.ends_with('\n') {
+        replacement.push('\n');
+    }
+    let updated = format!("{}{}{}", &source[..before], replacement, &source[after..]);
+    if updated == source {
+        return Ok(json!({"path":path.to_string_lossy(), "written":false, "unchanged":true}));
+    }
+    let mut result = checked_write(ctx, path, &updated, run_id, true, Some(expected_sha256)).await?;
+    if result["written"] == true {
+        result["replaced"] = json!(true);
+        result["replacedLines"] = json!(end-start+1);
+    }
     Ok(result)
 }
 
@@ -1480,12 +1547,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[tokio::test]
+    async fn range_replacement_edits_one_repeated_line_with_frozen_source_and_rejects_stale_edits() {
+        use crate::{config::Config, db::Store, vault::Vault};
+        let dir=std::env::temp_dir().join(format!("dominion-range-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let config=Config {port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()};
+        let state=crate::state::AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
+        let source="first();\nlet value = 0;\nlet value = 0;\nlast();\n";
+        let path=dir.join("src/example.rs");
+        std::fs::write(&path,source).unwrap();
+        let digest=format!("{:x}",Sha256::digest(source.as_bytes()));
+        let ctx=ToolContext {workspace:&dir,store:&state.store,state:&state,
+            session_id:"s",agent_id:None,tools_enabled:true,tools_execution_enabled:true};
+        let args=json!({"path":"src/example.rs","startLine":3,"endLine":3,
+            "newText":"let value = 42;","expectedSha256":digest});
+        let result=execute(&ctx,"workspace_replace_range",&args,"run").await.unwrap();
+        assert_eq!(result["replaced"],true,"{result}");
+        assert_eq!(result["replacedLines"],1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),
+            "first();\nlet value = 0;\nlet value = 42;\nlast();\n");
+        let stale=execute(&ctx,"workspace_replace_range",&args,"run").await.unwrap();
+        assert_eq!(stale["staleVersion"],true,"{stale}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),
+            "first();\nlet value = 0;\nlet value = 42;\nlast();\n");
+        let mut bad=args.clone();
+        bad["endLine"]=json!(999);
+        bad["expectedSha256"]=json!(format!("{:x}",Sha256::digest(std::fs::read(&path).unwrap())));
+        assert!(execute(&ctx,"workspace_replace_range",&bad,"run").await.is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn rsi_can_read_only_a_range_or_replace_a_block() {
         assert!(rsi_allowed("code_search"));
         assert!(!rsi_allowed("workspace_list"));
         assert!(rsi_allowed("workspace_read_range"));
         assert!(rsi_allowed("workspace_replace"));
+        assert!(rsi_allowed("workspace_replace_range"));
         assert!(rsi_allowed("workspace_write"));
         assert!(rsi_allowed("algorithm_propose"));
         assert!(rsi_allowed("unsafe_audit"));

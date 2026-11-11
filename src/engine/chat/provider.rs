@@ -690,7 +690,7 @@ fn rsi_edit_requires_tool(session: &Value, tools: &[Value]) -> bool {
         && !tools.is_empty()
         && tools.iter().all(|tool| matches!(
             tool["function"]["name"].as_str(),
-            Some("workspace_replace" | "workspace_write")
+            Some("workspace_replace" | "workspace_replace_range" | "workspace_write")
         ))
 }
 
@@ -1983,6 +1983,7 @@ mod tests {
         let focus = json!({"rsiRun":true,"rsiExplicitFocus":true});
         let tools = vec![
             json!({"type":"function","function":{"name":"workspace_replace"}}),
+            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
             json!({"type":"function","function":{"name":"workspace_write"}}),
         ];
         assert!(rsi_edit_requires_tool(&focus,&tools));

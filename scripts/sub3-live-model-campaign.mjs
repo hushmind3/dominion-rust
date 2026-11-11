@@ -75,7 +75,7 @@ if(mode==='probe'){
       // The anonymous model caps a response near 1500 output tokens. Low
       // reasoning effort leaves room for an executable workspace_replace call.
       reasoningEffort:'low',
-      request:'Fix a reproducible behavior bug in src/engine/decompose.rs. The existing split_markers() recognizes isolated marker words (e.g. 그리고, 뒤) but misses Korean action suffix -고 and connective 다음/나서. On baseline, Korean text 설계를 읽고 결과를 저장한 다음 검증해 produces one step where three real ordered actions are required. Modify the Rust function now: after reading the exact existing source block, call workspace_replace with path=src/engine/decompose.rs, oldText=the exact source text and newText=your implementation. Distinguish action verb suffix -고 from nouns such as 사고/최고; preserve original subtask text and list handling. Do not end after code_search or workspace_read_range. DOMINION will run independent frozen baseline/candidate tests after editing.',
+      request:'Fix a reproducible behavior bug in src/engine/decompose.rs. The existing split_markers() recognizes isolated marker words (e.g. 그리고, 뒤) but misses Korean action suffix -고 and connective 다음/나서. On baseline, Korean text 설계를 읽고 결과를 저장한 다음 검증해 produces one step where three real ordered actions are required. Modify the Rust function now: after reading the exact existing source block, call workspace_replace_range with path=src/engine/decompose.rs, startLine/endLine and expectedSha256 from the source read, and newText containing only modified source lines. If you already have an exact oldText block, workspace_replace also works. Distinguish action verb suffix -고 from nouns such as 사고/최고; preserve original subtask text and list handling. Do not end after code_search or workspace_read_range. DOMINION will run independent frozen baseline/candidate tests after editing.',
       focusFiles:['src/engine/decompose.rs'],maxAttempts:3,
       tokenBudget:90000,timeBudgetSeconds:2700
     };
@@ -107,7 +107,7 @@ if(mode==='probe'){
       'campaign_finished':'campaign_timeout';
     trace.status=last.status;trace.result=last.result||null;
     trace.stopReason=last.evolution?.stopReason||last.result?.evolution?.stopReason||null;
-    const editTools=new Set(['workspace_replace','workspace_write']);
+    const editTools=new Set(['workspace_replace','workspace_replace_range','workspace_write']);
     const countCalls=(generation,names)=>generation.toolsUsed
       .filter(tool=>names.has(tool.tool)).reduce((sum,tool)=>sum+(tool.calls||0),0);
     const sourceEditCalls=trace.generationEvidence.reduce((sum,g)=>

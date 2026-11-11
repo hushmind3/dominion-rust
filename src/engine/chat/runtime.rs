@@ -74,11 +74,11 @@ fn rsi_checkpoint_stage(
 /// excerpts are intentionally incomplete, so banning all reads would prevent edits.
 fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
     if edit_only {
-        return matches!(name, "workspace_write" | "workspace_replace");
+        return matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range");
     }
     matches!(
         name,
-        "workspace_read_range" | "workspace_write" | "workspace_replace" | "rsi_method_propose" | "algorithm_propose"
+        "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_range" | "rsi_method_propose" | "algorithm_propose"
     )
 }
 
@@ -1106,7 +1106,7 @@ async fn run_turn_body(
                     && operation["status"].as_str() == Some("completed"))
                 .collect::<Vec<_>>();
             let has_write = completed.iter().any(|operation| matches!(
-                operation["tool"].as_str(), Some("workspace_write" | "workspace_replace")));
+                operation["tool"].as_str(), Some("workspace_write" | "workspace_replace" | "workspace_replace_range")));
             let read_calls = completed.iter().filter(|operation| matches!(
                 operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read"))).count() as u64;
             let grounded = session["rsiFocusContextReady"] == true || read_calls > 0;
@@ -1124,7 +1124,7 @@ async fn run_turn_body(
                 round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition), edit_only));
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system",
-                        "content":"소스 근거 확인 단계는 종료되었습니다. 이미 받은 소스 발췌 또는 정확히 읽은 원문으로 workspace_replace(oldText,newText)를 호출해 사용자 목표의 코드 수정을 시도하세요. 조회 도구는 더 제공되지 않습니다. 구현할 수 없는 경우에는 실제 이유를 최종 응답에 남기세요. 코드 변경 전에는 테스트·완료를 주장하지 마세요."
+                        "content":"소스 근거 확인 단계는 종료되었습니다. workspace_read_range를 호출했다면 그 결과의 startLine/endLine/sourceSha256을 사용해 workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 호출하세요. 기존 oldText를 정확히 안다면 workspace_replace도 가능합니다. 새 파일에만 workspace_write를 사용합니다. 조회 도구는 더 제공되지 않습니다. 실제 변경 전에는 테스트·완료를 주장하지 마세요."
                     }));
                     rsi_edit_only_announced = true;
                 } else if !rsi_decision_checkpoint {
@@ -1339,7 +1339,7 @@ async fn run_turn_body(
                         && operation["status"].as_str() == Some("completed"))
                     .collect::<Vec<_>>();
                 let has_write = completed.iter().any(|operation| matches!(
-                    operation["tool"].as_str(), Some("workspace_write" | "workspace_replace")));
+                    operation["tool"].as_str(), Some("workspace_write" | "workspace_replace" | "workspace_replace_range")));
                 let has_read = completed.iter().any(|operation| matches!(
                     operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read")));
                 // The model may try to finish after its FIRST read, before the
@@ -1355,7 +1355,7 @@ async fn run_turn_body(
                         "sourceInPrompt":session["rsiFocusContextReady"] == true
                     }));
                     messages.push(json!({"role":"user",
-                        "content":"명시된 코드 수정은 아직 수행되지 않았습니다. 기존에 받은 소스에서 정확한 oldText와 동작하는 newText를 구성해 workspace_replace를 호출하세요. 새 파일이 실제로 필요한 경우에만 workspace_write를 사용하세요. 수정 불가능하다면 구체적인 이유를 말하세요. 추가 조사로 이 목표를 대신하지 마세요."
+                        "content":"명시된 코드 수정은 아직 수행되지 않았습니다. 이전 workspace_read_range 결과의 startLine/endLine/sourceSha256으로 workspace_replace_range를 호출하고 바꿀 코드만 newText에 넣으세요. 이전에 받은 정확한 oldText가 있다면 workspace_replace도 가능합니다. 새 파일에만 workspace_write를 사용하세요. 수정 불가능하다면 이유를 보고하세요."
                     }));
                     continue;
                 }
@@ -1804,7 +1804,7 @@ async fn run_turn_body(
             }
             let mutating_call = matches!(
                 call.name.as_str(),
-                "workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec"
+                "workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write" | "shell_exec" | "terminal_exec"
             );
             let has_prior_read = completed_operations.iter().any(|operation| {
                 matches!(
@@ -1872,7 +1872,7 @@ async fn run_turn_body(
             // actually changed environment fingerprint.
             let mutating = matches!(
                 call.name.as_str(),
-                "workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec"
+                "workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write" | "shell_exec" | "terminal_exec"
                     | "github_api" | "delegate_task"
             );
             if mutating {
@@ -1959,7 +1959,7 @@ async fn run_turn_body(
                 failed_calls.remove(&call_key);
                 if matches!(
                     call.name.as_str(),
-                    "workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task"
+                    "workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task"
                 ) {
                     environment_version += 1;
                 }
@@ -2004,7 +2004,7 @@ async fn run_turn_body(
                         if tool_succeeded(result)
                             && matches!(
                                 selected["tool"].as_str(),
-                                Some("workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task")
+                                Some("workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task")
                             )
                         {
                             environment_version += 1;
@@ -6179,10 +6179,10 @@ mod harness_tool_selection_tests {
         // If a targeted model stops after one successful source read, the
         // runtime requests a single edit-only continuation instead of
         // silently ending the generation as research-only.
-        for name in ["workspace_replace", "workspace_write", "workspace_read_range", "rsi_method_propose", "algorithm_propose"] {
+        for name in ["workspace_replace", "workspace_replace_range", "workspace_write", "workspace_read_range", "rsi_method_propose", "algorithm_propose"] {
             assert!(rsi_checkpoint_tool(name, false), "{name} must stay available at the general checkpoint");
         }
-        for name in ["workspace_replace", "workspace_write"] {
+        for name in ["workspace_replace", "workspace_replace_range", "workspace_write"] {
             assert!(rsi_checkpoint_tool(name, true), "{name} must remain in the edit stage");
         }
         for name in ["code_search", "shell_exec", "file_write", "web_search", "workspace_read_range", "algorithm_propose"] {
