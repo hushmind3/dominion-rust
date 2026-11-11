@@ -3840,6 +3840,28 @@ mod tests {
     }
 
     #[test]
+    fn tight_context_preserves_complete_research_receipts_before_deferral() {
+        let base="Improve the existing model-independent harness";
+        let evidence="\\nVerified inherited outcome: accepted patch had a paired gain.\\n";
+        let reads=(0..24).map(|i|format!(
+            "- 읽음: src/engine/component_{i}.rs 1-500\\n"
+        )).collect::<String>();
+        let source="source excerpt ".repeat(3000);
+        let short=(0..8).map(|i|format!(
+            "- 읽음: src/engine/component_{i}.rs 1-500\\n"
+        )).collect::<String>();
+        let compact=format!("{base}\\n\\n{evidence}\\n### 이전 세대가 확인한 소스 (압축)\\n{short}");
+        let budget=crate::engine::chat::estimate_text_tokens(&compact)+300;
+        let record=json!({"limits":{"tokenBudget":budget},"tokens":0});
+        let (prompt,plan)=fit_generation_context(&record,base,evidence,&reads,&source).unwrap();
+        assert_eq!(plan["mode"],"compact_research");
+        assert_eq!(plan["researchReadLedgerCompacted"],true);
+        assert!(prompt.contains("component_0.rs 1-500"));
+        assert!(!prompt.contains("component_23.rs 1-500"));
+        assert!(prompt.contains(evidence.trim()));
+    }
+
+    #[test]
     fn autonomous_source_excerpt_uses_selected_domain_not_generic_owner_prompt() {
         let generic="improve knowledge and experience with tools";
         let chosen=json!({"rsiAutonomous":true,"rsiObjective":generic,"rsiTargetDomain":"memory"});
