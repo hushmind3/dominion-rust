@@ -70,6 +70,21 @@ jobs:
       - name: Check source-induced descendants before expensive live inference
         run: cargo test --release --locked --bin dominion-rust rsi_mutation::tests -- --nocapture
 
+      - name: Verify the actual campaign objective selects memory and improver only
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const source = readFileSync('scripts/sub2-live-rsi.mjs','utf8');
+          const match = source.match(/request:\s*("(?:\\.|[^"\\])*"),\s*\n\s*focusFiles:/u);
+          if (!match) throw Error('RSI campaign objective is not a literal');
+          const goal = JSON.parse(match[1]);
+          if (!goal.includes('기억') || !goal.includes('자기개선')
+              || ['토큰','문맥','대화','캐시','학습','지식','경험','검색','도구','모델','화면','버튼','사용성','인터페이스']
+                  .some(word => goal.includes(word)))
+            throw Error('RSI campaign objective would redirect source-domain selection');
+          NODE
+
+
       - name: Install actual local inference runtime
         run: |
           curl -fsSL https://ollama.com/install.sh -o "${RUNNER_TEMP}/ollama-install.sh"
