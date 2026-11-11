@@ -132,6 +132,16 @@ fn rsi_method_edit_choice(method:&Value, operations:&[Value], execution_id:&str)
     Some((if failed {fallback}else{primary}.to_string(),failed))
 }
 
+/// A learned method must change the tools the worker can choose, not
+/// merely their display order in a model prompt. Only the two competing
+/// source-replacement operations are mutually exclusive; reads and new-file
+/// writes remain available as independent actions.
+fn rsi_method_tool_allowed(name:&str, chosen:&str, learned:bool)->bool {
+    !learned
+        || !matches!(name,"workspace_replace"|"workspace_replace_range")
+        || name==chosen
+}
+
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
 /// needs read, search and replace together to produce a grounded patch.
 fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
@@ -1203,6 +1213,13 @@ async fn run_turn_body(
                 if let Some((chosen,corrected))=rsi_method_edit_choice(
                     &session["rsiExecutionMethod"],&operations,execution_id) {
                     if round_tools.iter().any(|row|tool_name(row)==chosen) {
+                        // Cold starts retain both alternatives. Once a
+                        // method is induced from actual past operations, it
+                        // determines the replacement tool for this round.
+                        // An observed failed call switches to its fallback.
+                        let learned=session["rsiExecutionMethod"]["status"]!="unmeasured_default";
+                        round_tools.retain(|definition|
+                            rsi_method_tool_allowed(tool_name(definition),&chosen,learned));
                         round_tools.sort_by_key(|definition|
                             if tool_name(definition)==chosen {0usize}
                             else if matches!(tool_name(definition),
@@ -1213,6 +1230,7 @@ async fn run_turn_body(
                             "revision":session["rsiExecutionMethod"]["revision"],
                             "preferredTool":session["rsiExecutionMethod"]["preferredTool"],
                             "chosenTool":chosen,
+                            "enforced":learned,
                             "correctedAfterFailure":corrected,
                             "readCalls":read_calls,
                             "source":"native_rsi_method_controller"
@@ -6312,6 +6330,16 @@ mod harness_tool_selection_tests {
         assert!(rsi_checkpoint_tool("workspace_replace_range",true));
         assert!(!rsi_checkpoint_tool("workspace_read_range",true));
         assert!(rsi_checkpoint_tool("workspace_read_range",false));
+    }
+
+    #[test]
+    fn learned_method_filters_competing_edit_tools_after_evidence() {
+        assert!(rsi_method_tool_allowed("workspace_replace","workspace_replace_range",false));
+        assert!(rsi_method_tool_allowed("workspace_replace_range","workspace_replace_range",true));
+        assert!(!rsi_method_tool_allowed("workspace_replace","workspace_replace_range",true));
+        assert!(rsi_method_tool_allowed("workspace_read_range","workspace_replace_range",true));
+        assert!(rsi_method_tool_allowed("workspace_write","workspace_replace_range",true));
+        assert!(rsi_method_tool_allowed("workspace_replace","workspace_replace",true));
     }
 
     #[test]
