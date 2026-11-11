@@ -2308,6 +2308,29 @@ fn synthesize_action_program(rows:&[Value])->Value {
 /// source edit, modify the executable program rather than retrying the same
 /// ranked tools. The new revision becomes a trial; there is no quality claim.
 fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Value {
+    // Follow previously *executed* descendants of this synthesized recipe.
+    // Without lineage replay we would mutate the root once, then keep
+    // returning that same first child forever even when the child also fails.
+    // Only decisions recorded by the native runner count as a trial.
+    let mut seen_revisions=BTreeSet::<String>::new();
+    for _ in 0..8 {
+        let Some(current)=plan["revision"].as_str() else {return plan;};
+        if !seen_revisions.insert(current.to_string()) {break;}
+        let child=rows.iter().filter(|row|{
+            let method=&row["executionMethod"]["actionProgram"];
+            method["mutatedFrom"].as_str()==Some(current)
+                && method["revision"].as_str()
+                    .is_some_and(|revision|revision!=current && !seen_revisions.contains(revision))
+                && row["methodActions"].as_array().is_some_and(|actions|actions.iter()
+                    .any(|action|action["inducedProgramDecision"]["programRevision"]
+                        ==method["revision"]
+                        || (action["inducedProgramDecision"].is_object()
+                            && action["inducedProgramDecision"]["programRevision"].is_null())))
+        }).max_by(|a,b|a["createdAt"].as_str().cmp(&b["createdAt"].as_str())
+            .then_with(||a["id"].as_str().cmp(&b["id"].as_str())));
+        let Some(child)=child else {break;};
+        plan=child["executionMethod"]["actionProgram"].clone();
+    }
     let Some(parent)=plan["revision"].as_str().map(str::to_string) else {return plan;};
     let mut stalled=0u64;
     let mut seen=BTreeSet::<String>::new();
@@ -4861,6 +4884,39 @@ mod tests {
             "New execution observations must revise the harness algorithm");
         let empty=synthesize_action_program(&[]);
         assert_eq!(empty["sequence"],json!([]));
+    }
+
+    #[test]
+    fn a_failed_descendant_mutates_the_improvement_algorithm_again() {
+        let parent=synthesize_action_program(&[json!({"id":"research",
+            "newFindings":2,"actionTrace":[
+                {"tool":"code_search","executed":true},
+                {"tool":"workspace_read_range","executed":true}]})]);
+        let row=|id:&str,policy:&Value|json!({"id":id,"jobId":id,
+            "createdAt":id,"executionMethod":{"actionProgram":policy},
+            "methodActions":[{"inducedProgramDecision":{
+                "programRevision":policy["revision"],"chosenTool":"code_search"}}],
+            "writeReceipts":[],"attemptedCandidateId":null});
+        let first=evolve_stalled_action_program(parent.clone(),
+            &[row("a",&parent),row("b",&parent)],"workspace_replace");
+        assert_eq!(first["mutatedFrom"],parent["revision"]);
+        assert_eq!(first["mutationOperator"],"append_source_mutation");
+        let adopted=evolve_stalled_action_program(parent.clone(),
+            &[row("a",&parent),row("b",&parent),row("c",&first)],
+            "workspace_replace");
+        assert_eq!(adopted["revision"],first["revision"],
+            "One unsuccessful descendant trial does not invent a second gain");
+        let second=evolve_stalled_action_program(parent.clone(),
+            &[row("a",&parent),row("b",&parent),row("c",&first),row("d",&first)],
+            "workspace_replace");
+        assert_eq!(second["mutatedFrom"],first["revision"]);
+        assert_ne!(second["revision"],first["revision"]);
+        assert_ne!(second["mutationOperator"],first["mutationOperator"]);
+        assert_ne!(second["sequence"],first["sequence"]);
+        // A duplicated failed receipt must not count twice for the child.
+        let replay=evolve_stalled_action_program(parent,
+            &[row("a",&first),row("a",&first)],"workspace_replace");
+        assert_ne!(replay["revision"],second["revision"]);
     }
 
     #[test]
