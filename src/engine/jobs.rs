@@ -492,8 +492,8 @@ async fn run_job(state: AppState, job: Value) {
 }
 
 pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> {
-    let input = job.get("input").cloned().unwrap_or_else(|| json!({}));
-    let prompt = input
+    let mut input = job.get("input").cloned().unwrap_or_else(|| json!({}));
+    let mut prompt = input
         .get("prompt")
         .and_then(|value| value.as_str())
         .unwrap_or("")
@@ -516,6 +516,38 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     let rsi_workspace = if input["rsiSourceDir"].is_string() {
         Some(crate::engine::rsi_worktree::prepare(context,&input).await?)
     } else { None };
+    // Preserve a real previously failed patch for the child to repair. A
+    // restored source is not a verified new candidate; the model must create
+    // an actual correction and the ordinary compiler/paired judge still runs.
+    let recovered=if let Some(worktree)=&rsi_workspace {
+        match crate::engine::rsi_worktree::restore_failed_patch(
+            context,&input,worktree).await {
+            Ok(restored)=>restored,
+            Err(error)=>{
+                let _=crate::engine::rsi_worktree::cleanup(worktree).await;
+                return Err(error);
+            }
+        }
+    } else {Value::Null};
+    if recovered["status"]=="restored_unverified" {
+        let index=crate::engine::code_index::refresh(
+            &context.state,&rsi_workspace.as_ref().unwrap().path)?;
+        input["rsiIndexId"]=index["id"].clone();
+        input["rsiFocusFiles"]=recovered["paths"].clone();
+        // Excerpts composed before restoration describe the old source and
+        // must never be used as a versioned edit receipt.
+        input["rsiFocusContextChars"]=json!(0);
+        input["rsiFocusGrounded"]=json!(false);
+        let check_notes=input["rsiFailedPatchRecovery"]["checks"].as_array()
+            .into_iter().flatten().map(|check|format!(
+                "{}: {}",check["label"].as_str().unwrap_or("compiler"),
+                check["diagnostic"].as_str().unwrap_or("").chars().take(900).collect::<String>()
+            )).take(2).collect::<Vec<_>>().join("\n");
+        prompt.push_str(&format!(
+            "\n\n### 차세대 실제 소스 복구\n이전 세대가 실제 작성한 미채택 패치를 이 세대의 별도 작업공간에 복원했습니다. 기존 발췌의 SHA는 오래된 값입니다. 현재 파일을 새로 읽고 컴파일 오류를 고치는 코드 수정을 실행하세요. 복원 자체는 개선 성공이 아닙니다.\n복구 대상: {}\n실제 이전 검증 실패:\n{}\n",
+            recovered["paths"],check_notes
+        ));
+    }
     // The dedicated source checkout is validated and detached before a model
     // call, never modified directly by the RSI execution.
     let session_id = job
@@ -532,6 +564,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         if let Some(mut session)=context.state.store.get("session",&session_id) {
             session["rsiRun"]=json!(true);
             session["rsiObjective"]=input["rsiObjective"].clone();
+            session["rsiRecoveredPatch"]=recovered.clone();
             // A user-selected source file is an execution target even in a
             // continuous campaign. Previously rsiAutonomous disabled the edit
             // checkpoint for every continuous job, including focused runs,
