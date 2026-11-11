@@ -266,6 +266,137 @@ pub fn observed_effects(state:&AppState,session_id:&str)->Vec<Value> {
     effects
 }
 
+
+/// Reproduction is an executable transfer, not merely inheriting the
+/// predecessor's source. A genuinely adopted candidate can change the
+/// *next generation's own improvement procedure*. The new program is always
+/// a fresh trial; an inherited successful patch does not prove this mutation.
+pub fn offspring_from_adoption(rows:&[Value],head:&str,objective:&str,domain:&str)->Option<Value>{
+    let parent=rows.iter().rev().find(|row|{
+        row["accepted"]==true
+            && row["acceptedCommit"]==head
+            && row["objectiveId"]==objective
+            && row["domain"]==domain
+            && row["acceptedProof"]["status"]=="verified"
+            && row["acceptedProof"]["evaluation"]["metrics"]["eligible"]==true
+            && row["actionProgramTrial"]["arm"]=="candidate"
+            && row["actionProgramEffects"].as_array().is_some_and(|effects|
+                effects.iter().any(|effect|
+                    effect["programRevision"]==row["actionProgramTrial"]["revision"]
+                    && effect["performed"]==true
+                    && effect["verifiedSourceWrite"]==true))
+            && row["actionProgramTrial"]["program"]["sequence"].as_array()
+                .is_some_and(|sequence|!sequence.is_empty())
+    })?;
+    let mut offspring=parent["actionProgramTrial"]["program"].clone();
+    let old_revision=offspring["revision"].as_str()?.to_string();
+    let prior_checkpoint=offspring["controller"]["checkpointAfter"]
+        .as_u64().unwrap_or(6).clamp(2,8);
+    let mut sequence=offspring["sequence"].as_array()?.clone();
+    let first_edit=sequence.iter().position(|tool|tool.as_str().is_some_and(edit));
+    let mut next_checkpoint=prior_checkpoint;
+    let transform=if let Some(position)=first_edit {
+        if !sequence[..position].iter().any(|tool|tool=="workspace_read_range") {
+            // The original adopted patch succeeded, but the descendant gets
+            // an explicit versioned observation before another source edit.
+            sequence.insert(position,json!("workspace_read_range"));
+            "insert_fresh_source_observation"
+        } else {
+            next_checkpoint=prior_checkpoint.saturating_sub(1).max(2);
+            "shorten_discovery_after_verified_adoption"
+        }
+    } else {
+        sequence.push(json!("workspace_read_range"));
+        sequence.push(json!("workspace_replace_range"));
+        "add_versioned_mutation_to_verified_discovery"
+    };
+    let revision=memory::stable_id(&[
+        "offspring-program-v1",
+        &json!([&sequence,&offspring["onFailure"],next_checkpoint]).to_string()]);
+    if revision==old_revision {return None;}
+    let prior_depth=offspring["lineage"]["depth"].as_u64().unwrap_or(0);
+    offspring["revision"]=json!(revision);
+    offspring["sequence"]=json!(sequence);
+    offspring["controller"]["checkpointAfter"]=json!(next_checkpoint);
+    offspring["controller"]["parentRevision"]=json!(old_revision);
+    offspring["status"]=json!("descendant_trial_unproven");
+    offspring["qualityProven"]=json!(false);
+    offspring["lineage"]=json!({
+        "depth":prior_depth.saturating_add(1),
+        "parentRevision":old_revision,
+        "sourceParentCommit":parent["generatorCommit"],
+        "adoptedParentCommit":head,
+        "parentJobId":parent["jobId"],
+        "mutation":transform,
+        "verifiedParentSourceGain":true,
+        "offspringQualityProven":false
+    });
+    Some(offspring)
+}
+
+/// An experimentally rejected method must not be reselected under a new
+/// cosmetic ID. Regenerate its EXECUTABLE graph from the rejected cohort's
+/// witnessed failure, and give the replacement a fresh independent trial.
+pub fn recompose_after_failed_cohort(
+    rows:&[Value],source:&str,objective:&str,model:&str,
+    provider:&str,domain:&str,
+)->Option<Value>{
+    let mut seen=BTreeSet::<String>::new();
+    let mut candidates=Vec::<Value>::new();
+    for row in rows.iter().rev() {
+        let trial=&row["actionProgramTrial"];
+        let frozen=&trial["frozen"];
+        let revision=trial["revision"].as_str().unwrap_or("");
+        if revision.is_empty() || !seen.insert(revision.to_string())
+            || frozen["sourceCommit"]!=source
+            || frozen["objectiveId"]!=objective
+            || frozen["model"]!=model
+            || frozen["provider"]!=provider
+            || frozen["domain"]!=domain {continue;}
+        let report=trial_plan(rows,trial["program"].clone(),
+            source,objective,model,provider,domain);
+        if matches!(report["status"].as_str(),
+            Some("baseline_preferred_by_holdout"|"paired_no_quality_gain")) {
+            candidates.push(trial["program"].clone());
+        }
+    }
+    let mut parent=candidates.into_iter().next()?;
+    let old=parent["revision"].as_str()?.to_string();
+    let mut sequence=parent["sequence"].as_array()?.clone();
+    if sequence.is_empty() {return None;}
+    let transform=if let Some(at)=sequence.iter().position(|tool|tool.as_str().is_some_and(edit)) {
+        if !sequence[..at].iter().any(|tool|tool=="workspace_read_range") {
+            sequence.insert(at,json!("workspace_read_range"));
+            "insert_observation_before_failed_mutation"
+        } else {
+            let current=sequence[at].as_str().unwrap_or("");
+            sequence[at]=json!(if current=="workspace_replace" {
+                "workspace_replace_range"
+            } else {"workspace_replace"});
+            "change_edit_operator_after_rejected_comparison"
+        }
+    } else {
+        sequence.push(json!("workspace_read_range"));
+        sequence.push(json!("workspace_replace_range"));
+        "replace_research_only_policy_with_versioned_edit"
+    };
+    let checkpoint=parent["controller"]["checkpointAfter"]
+        .as_u64().unwrap_or(6).saturating_sub(1).max(2);
+    let revision=memory::stable_id(&[
+        "recomposed-after-cohort-v1",
+        &json!([&sequence,&parent["onFailure"],checkpoint]).to_string()]);
+    if revision==old || seen.contains(&revision) {return None;}
+    parent["sequence"]=json!(sequence);
+    parent["revision"]=json!(revision);
+    parent["controller"]["checkpointAfter"]=json!(checkpoint);
+    parent["controller"]["parentRevision"]=json!(old);
+    parent["mutatedFrom"]=json!(old);
+    parent["mutationOperator"]=json!(transform);
+    parent["qualityProven"]=json!(false);
+    parent["status"]=json!("post_comparison_recomposition_trial");
+    Some(parent)
+}
+
 /// Reuse the SAME executable candidate while a matched comparison is still
 /// running. Re-synthesizing every generation silently invalidates the cohort
 /// before its baseline arm can be measured.
@@ -420,6 +551,60 @@ mod tests {
         assert_eq!(plan["comparison"]["candidateHoldoutGains"],0);
         assert_eq!(plan["comparison"]["adoptionsWithoutAttributableProgramWrite"],2);
         assert_eq!(plan["comparison"]["qualityProven"],false);
+    }
+
+    #[test]
+    fn real_adopted_parent_reproduces_a_changed_descendant_program(){
+        let parent_program=json!({"revision":"parent-program",
+            "sequence":["code_search","workspace_replace"],"onFailure":[],
+            "controller":{"checkpointAfter":6}});
+        let first=json!({"jobId":"parent-job","accepted":true,
+            "generatorCommit":"source-v0","acceptedCommit":"source-v1",
+            "objectiveId":"goal","domain":"improver",
+            "acceptedProof":{"status":"verified","evaluation":{"metrics":{"eligible":true}}},
+            "actionProgramTrial":{"arm":"candidate","revision":"parent-program",
+                "program":parent_program},
+            "actionProgramEffects":[{"programRevision":"parent-program",
+                "performed":true,"verifiedSourceWrite":true}]});
+        let offspring=offspring_from_adoption(&[first],"source-v1","goal","improver").unwrap();
+        assert_ne!(offspring["revision"],"parent-program");
+        assert_eq!(offspring["lineage"]["depth"],1);
+        assert_eq!(offspring["lineage"]["adoptedParentCommit"],"source-v1");
+        assert_eq!(offspring["sequence"],
+            json!(["code_search","workspace_read_range","workspace_replace"]));
+        assert_eq!(offspring["qualityProven"],false);
+    }
+    #[test]
+    fn unexecuted_or_unverified_parent_cannot_produce_an_offspring(){
+        let first=json!({"jobId":"parent-job","accepted":true,
+            "generatorCommit":"source-v0","acceptedCommit":"source-v1",
+            "objectiveId":"goal","domain":"improver",
+            "acceptedProof":{"status":"verified","evaluation":{"metrics":{"eligible":true}}},
+            "actionProgramTrial":{"arm":"candidate","revision":"p",
+                "program":{"revision":"p","sequence":["workspace_replace"]}},
+            "actionProgramEffects":[]});
+        assert!(offspring_from_adoption(&[first],"source-v1","goal","improver").is_none());
+    }
+    #[test]
+    fn measured_rejection_rewrites_method_instead_of_repeating_it(){
+        let parent=json!({"revision":"loser","sequence":["code_search","workspace_replace"],
+            "onFailure":[],"controller":{"checkpointAfter":6}});
+        let rows=["candidate","baseline","candidate","baseline"].iter().enumerate()
+            .map(|(n,arm)|json!({"jobId":format!("job-{n}"),"generatorCommit":"source",
+                "objectiveId":"goal","generatorModel":"model",
+                "generatorProviderId":"provider","domain":"improver",
+                "actionProgramTrial":{"arm":arm,"revision":"loser",
+                    "program":parent,"frozen":{"sourceCommit":"source",
+                    "objectiveId":"goal","model":"model","provider":"provider",
+                    "domain":"improver"}},"accepted":false}))
+            .collect::<Vec<_>>();
+        let child=recompose_after_failed_cohort(&rows,"source","goal",
+            "model","provider","improver").unwrap();
+        assert_ne!(child["revision"],"loser");
+        assert_eq!(child["sequence"],json!([
+            "code_search","workspace_read_range","workspace_replace"]));
+        assert_eq!(child["mutatedFrom"],"loser");
+        assert_eq!(child["qualityProven"],false);
     }
     #[test]
     fn policy_cannot_gain_quality_from_tool_calls_or_mismatched_source(){

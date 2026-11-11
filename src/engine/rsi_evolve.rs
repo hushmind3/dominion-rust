@@ -2995,8 +2995,15 @@ async fn run_loop(
         // ACTUALLY received, including its changed native checkpoint.
         let proposed=crate::engine::rsi_action_program::evolve_stalled(
             &policy_training,controlled);
-        let composed=crate::engine::rsi_action_program::pinned_program(
-            &policy_training,&head,&objective_id,model,provider,&target_domain)
+        // An adopted source revision generates a modified descendant method.
+        // If a paired cohort rejected a method, mutate its executable
+        // procedure rather than resurrecting the same losing strategy.
+        let composed=crate::engine::rsi_action_program::offspring_from_adoption(
+            &policy_training,&head,&objective_id,&target_domain)
+            .or_else(||crate::engine::rsi_action_program::pinned_program(
+                &policy_training,&head,&objective_id,model,provider,&target_domain))
+            .or_else(||crate::engine::rsi_action_program::recompose_after_failed_cohort(
+                &policy_training,&head,&objective_id,model,provider,&target_domain))
             .unwrap_or(proposed);
         let program_trial=crate::engine::rsi_action_program::trial_plan(
             &policy_training,composed,&head,&objective_id,model,provider,&target_domain);
