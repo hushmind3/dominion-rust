@@ -174,6 +174,15 @@ pub fn parse_text_tool_calls_known(
 pub fn parse_rsi_unwrapped_edit(
     content:&str, available:&std::collections::HashSet<String>,
 )->Option<(String,String)> {
+    parse_rsi_unwrapped_edit_observed(content,available,|_|None)
+}
+
+/// The model proposes source and edit text. Only the native runner may
+/// supply a missing file SHA from a completed same-session range read.
+pub fn parse_rsi_unwrapped_edit_observed(
+    content:&str, available:&std::collections::HashSet<String>,
+    observed:impl Fn(&str)->Option<String>,
+)->Option<(String,String)> {
     let trimmed=content.trim();
     // One fenced patch remains an explicit tool intent even if the model
     // surrounds it with explanation. Multiple blocks are ambiguous.
@@ -204,9 +213,16 @@ pub fn parse_rsi_unwrapped_edit(
     if path.starts_with('/') || path.contains("..") {return None;}
     if ["name","tool","tool_name","function","action"].iter()
         .any(|key|args.get(*key).is_some()) {return None;}
+    if args["expectedSha256"].is_null() && args["sourceSha256"].is_null() {
+        if let Some(hash)=observed(path) {
+            if hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit()){
+                args["expectedSha256"]=json!(hash);
+            }
+        }
+    }
     if available.contains("workspace_replace_range") {
         let sha=args["expectedSha256"].as_str().unwrap_or("");
-        if (sha.is_empty() || (sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit())))
+        if sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit())
             && args["startLine"].as_u64().is_some_and(|line|line>0)
             && args["endLine"].as_u64().is_some_and(|line|
                 line>=args["startLine"].as_u64().unwrap_or(u64::MAX))
