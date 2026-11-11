@@ -388,13 +388,16 @@ mod tests {
     fn verified_success_spawns_a_shorter_executable_child_instead_of_only_reusing_it() {
         let base=evolve(&[],reward);
         let successful_tool=json!({"runId":"test-run","tool":"workspace_replace_range","status":"completed",
-            "result":{"written":true},"toolReceipt":{"verified":true}});
+            "path":"src/engine/test.rs",
+            "result":{"written":true,"postSha256":"a".repeat(64)},
+            "toolReceipt":{"verified":true}});
         let mut outcomes=Vec::new();
         for id in ["adopted-1","adopted-2"] {
             let mut row=row(id,base.clone());
             row["accepted"]=json!(true);
             row["evidenceVerified"]=json!(true);
             row["evaluation"]=json!({"metrics":{"eligible":true}});
+            row["acceptedSourceHashes"]=json!({"src/engine/test.rs":"a".repeat(64)});
             row["toolTimeline"]=json!([
                 {"runId":"test-run","tool":"workspace_read_range","status":"completed"},
                 {"runId":"test-run","tool":"code_search","status":"completed"},

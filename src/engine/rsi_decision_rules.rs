@@ -241,8 +241,15 @@ fn proposed_success_compression(outcome:&Value)->Option<Value> {
             && entry.0 && entry.1>0 && op["status"]=="completed"
             && op["result"]["written"]==true
             && op["toolReceipt"]["verified"]==true {
-            winner=Some((name,run));
-            break;
+            let matches_adopted=outcome["acceptedSourceHashes"].as_object()
+                .and_then(|files|op["path"].as_str().and_then(|path|files.get(path)))
+                .and_then(Value::as_str)
+                .is_some_and(|sha|sha.len()==64 &&
+                    op["result"]["postSha256"].as_str()==Some(sha));
+            if matches_adopted {
+                winner=Some((name,run));
+                break;
+            }
         }
     }
     let (winner,winning_run)=winner?;
@@ -460,8 +467,11 @@ mod tests {
             event("code_search","completed"),
             event("code_search","completed"),
             json!({"runId":"test-run","tool":"workspace_replace","status":"completed",
-                "result":{"written":true},"toolReceipt":{"verified":true}}),
+                "path":"src/engine/example.rs",
+                "result":{"written":true,"postSha256":"a".repeat(64)},
+                "toolReceipt":{"verified":true}}),
         ]);
+        result["acceptedSourceHashes"]=json!({"src/engine/example.rs":"a".repeat(64)});
         result["accepted"]=json!(true);
         result["evidenceVerified"]=json!(true);
         result["evaluation"]=json!({"metrics":{"eligible":true}});
@@ -484,9 +494,12 @@ mod tests {
             event("workspace_read_range","completed"),
             event("code_search","completed"),
             json!({"runId":"test-run","tool":"workspace_replace_range","status":"completed",
-                "result":{"written":true},"toolReceipt":{"verified":true}})
+                "path":"src/engine/example.rs",
+                "result":{"written":true,"postSha256":"a".repeat(64)},
+                "toolReceipt":{"verified":true}})
         ]);
         let mut successful=base;
+        successful["acceptedSourceHashes"]=json!({"src/engine/example.rs":"a".repeat(64)});
         successful["accepted"]=json!(true);
         successful["evidenceVerified"]=json!(true);
         successful["evaluation"]=json!({"metrics":{"eligible":true}});

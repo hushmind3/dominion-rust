@@ -298,6 +298,14 @@ fn executed_policy_rule(generation:&Value)->bool {
                     allowed.iter().any(|tool|tool==&op["tool"]))
         });
         let patched=operations.iter().any(|op|{
+            // Match the final accepted file content. A verified edit to some
+            // other file or an intermediate overwritten version is not the
+            // rule's independently accepted implementation.
+            let matches_adopted_source=generation["acceptedSourceHashes"].as_object()
+                .and_then(|files|op["path"].as_str().and_then(|path|files.get(path)))
+                .and_then(Value::as_str)
+                .is_some_and(|hash|hash.len()==64 &&
+                    op["result"]["postSha256"].as_str()==Some(hash));
             op["runId"].as_str()==Some(run)
                 && op["opSeq"].as_u64().is_some_and(|seq|seq>before)
                 && matches!(op["tool"].as_str(),
@@ -305,6 +313,7 @@ fn executed_policy_rule(generation:&Value)->bool {
                 && op["status"]=="completed"
                 && op["result"]["written"]==true
                 && op["toolReceipt"]["verified"]==true
+                && matches_adopted_source
         });
         acted && patched
     })
@@ -2797,7 +2806,9 @@ async fn run_loop(
                 "runId":op["runId"],"opSeq":op["opSeq"],
                 "startedAt":op["startedAt"],
                 "tool":op["tool"],"status":op["status"],
-                "result":{"written":op["result"]["written"]},
+                "path":op["arguments"]["path"],
+                "result":{"written":op["result"]["written"],
+                    "postSha256":op["result"]["postSha256"]},
                 "toolReceipt":{"verified":op["toolReceipt"]["verified"]},
             })).collect::<Vec<_>>()).unwrap_or_default();
         tool_timeline.sort_by(|a,b|a["startedAt"].as_str().unwrap_or("")
@@ -4010,8 +4021,11 @@ mod tests {
         real["toolTimeline"]=json!([
             {"runId":"run-g1","opSeq":1,"tool":"workspace_read_range","status":"completed"},
             {"runId":"run-g1","opSeq":2,"tool":"workspace_replace_range","status":"completed",
-                "result":{"written":true},"toolReceipt":{"verified":true}}
+                "path":"src/engine/test.rs",
+                "result":{"written":true,"postSha256":"a".repeat(64)},
+                "toolReceipt":{"verified":true}}
         ]);
+        real["acceptedSourceHashes"]=json!({"src/engine/test.rs":"a".repeat(64)});
         assert_eq!(edit_method_reward(&real),1.0);
         real["ruleExecutions"][0]["toolCalls"]=json!(3);
         assert_eq!(edit_method_reward(&real),0.0,
