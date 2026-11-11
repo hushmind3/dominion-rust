@@ -1309,6 +1309,10 @@ async fn run_turn_body(
             round_tools = trim_tool_definitions(round_tools, budget);
         }
         if session["rsiRun"]==true && !force_final {
+            let session_operations=state.store.all("execution_operation").into_iter()
+                .filter(|operation|operation["sessionId"].as_str()==Some(session_id))
+                .collect::<Vec<_>>();
+            let tool_calls=session_operations.len() as u64;
             // A concrete edit whose hash-checked source excerpt is already in
             // the prompt needs direct read/replace options from round zero.
             // General autonomous search and an excerpt-deferred task retain
@@ -1318,14 +1322,8 @@ async fn run_turn_body(
                 round_tools.retain(|definition|
                     rsi_initial_focused_tool(tool_name(definition)));
             }
-            let session_operations=state.store.all("execution_operation").into_iter()
-                .filter(|operation|operation["sessionId"].as_str()==Some(session_id))
-                .collect::<Vec<_>>();
-            // Counts must survive another model call for this same isolated
-            // generation; otherwise every retry sees zero calls and reopens
-            // research. This also makes the explicit-focus edit checkpoint
-            // active at the start of the resumed execution.
-            let tool_calls=session_operations.len() as u64;
+            // Counts survive model retries in the same isolated generation.
+            // Later turns therefore resume edit-only instead of reopening research.
             let operations=session_operations.iter().filter(|operation|
                 operation["runId"].as_str()==Some(execution_id))
                 .cloned().collect::<Vec<_>>();
