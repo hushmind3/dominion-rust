@@ -3881,6 +3881,38 @@ fn select_generation_strategy(
     )
 }
 
+/// A target derived from independent frozen paired outcomes is scoped to
+/// this exact adopted revision. A descendant can synthesize its OWN edit
+/// policy, but its speculative search selector must not silently overwrite
+/// the measured objective before testing the next candidate.
+fn paired_descendant_target(input:&Value)->bool {
+    input["rsiSourceScopeExpanded"]==true
+        && input["rsiDecisionInput"]["basis"]==
+            "independently_measured_post_adoption_target"
+        && input["rsiSelectedDomain"]==input["rsiDecisionInput"]["targetDomain"]
+        && input["rsiSelectedDomain"].as_str()
+            .is_some_and(|domain|DOMAINS.contains(&domain))
+}
+
+#[cfg(test)]
+mod paired_descendant_target_tests {
+    use super::*;
+    #[test]
+    fn immutable_paired_target_outvotes_unmeasured_descendant_exploration() {
+        let evidence=json!({"rsiSourceScopeExpanded":true,
+            "rsiSelectedDomain":"improver",
+            "rsiDecisionInput":{"basis":"independently_measured_post_adoption_target",
+                "targetDomain":"improver"}});
+        assert!(paired_descendant_target(&evidence));
+        let mut mismatched=evidence.clone();
+        mismatched["rsiSelectedDomain"]=json!("memory");
+        assert!(!paired_descendant_target(&mismatched));
+        let mut speculative=evidence;
+        speculative["rsiDecisionInput"]["basis"]=json!("parent_next_decision");
+        assert!(!paired_descendant_target(&speculative));
+    }
+}
+
 /// Executes only one durable generation, without starting a server, scheduler,
 /// migrations or recovering another process's jobs in the shared ledger.
 pub async fn worker(job_id: &str) -> Result<(), String> {
@@ -3915,10 +3947,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
+    let paired_target=paired_descendant_target(&job["input"]);
     let latest=history.iter().max_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
-    let continuation = latest.filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)
+    let continuation = latest.filter(|_|!paired_target)
+        .filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)
         .and_then(|g|g["domain"].as_str()).map(str::to_string);
     let trial_id = job["input"]["rsiTrialAlgorithmId"].as_str()
+        .filter(|_|!paired_target)
         .filter(|value| !value.is_empty())
         .and_then(|id|state.store.get("algorithm",id))
         .filter(|algorithm|algorithm["rsiTrial"]["campaignId"].as_str()
@@ -3938,13 +3973,19 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // conclusion on the same durable history and objective.
     if job["input"]["rsiSourceAdvanced"]==true
         && job["input"]["rsiAutoFocus"]==true && continuation.is_none()
-        && selected_domain.is_some() {
+        && selected_domain.is_some() && !paired_target {
         let fresh=select_generation_strategy(&state,&history,&objective,
             None,trial_id,None,&commit);
         if fresh.0!=domain {
             (domain,domain_selection,strategy)=fresh;
             strategy["decisionSource"]=json!("descendant_algorithm");
         }
+    }
+    if paired_target {
+        state.store.audit("rsi.independent_target_preserved",json!({
+            "jobId":job_id,"generatorCommit":commit,
+            "targetDomain":domain,"source":"frozen_paired_post_adoption"
+        }));
     }
     if let Err(error)=reconcile_descendant_target(&state,&mut job,&history,
         &domain,domain_selection,&strategy,&commit) {
