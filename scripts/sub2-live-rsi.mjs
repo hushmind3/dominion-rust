@@ -70,6 +70,11 @@ function observedGeneration(g) {
     generatorBinarySha256: g?.generatorBinarySha256 || null,
     workerMarker: g?.workerMarker || null, model: g?.generatorModel || null,
     tokens: g?.tokens ?? null, elapsedMs: g?.elapsedMs ?? null,
+    tokenUsage: g?.tokenUsage ?? null,
+    sourceContextChars: g?.sourceContextChars ?? null,
+    totalPromptChars: g?.totalPromptChars ?? null,
+    actionDirective: g?.actionDirective ?? null,
+    actionObservation: g?.actionObservation ?? null,
     toolsUsed: g?.toolsUsed || [], domain: g?.domain || null,
     focusFiles: g?.focusFiles || [], domainSelection: g?.domainSelection || null,
     candidateId: g?.candidateId || null, accepted: g?.accepted === true,
@@ -93,7 +98,7 @@ async function main() {
   // A failed tool-call capability is diagnostic, never auto-repaired with a fake response.
   const preflight = await json(ollama + "/api/chat", "POST", {
     model, stream: false, think: false,
-    options: { temperature: 0 },
+    options: { temperature: 0, num_ctx: 16384 },
     messages: [{ role: "user", content: "Find the Rust symbol named memory_retrieve. Use code_search with query memory_retrieve before answering." }],
     tools: [{ type: "function", function: {
       name: "code_search", description: "Find source code symbols",
@@ -101,7 +106,12 @@ async function main() {
     }}]
   }, 180_000);
   const nativeCalls = preflight?.message?.tool_calls || [];
+  const resident = await json(ollama + "/api/ps");
+  const activeModel = (resident.models || []).find((item) =>
+    item.name === model || item.model === model);
+  const contextLength = activeModel?.context_length ?? null;
   receipt.preflight = {
+    serverContextLength: contextLength,
     modelReturnedToolCalls: nativeCalls.length,
     totalDurationNs: preflight?.total_duration ?? null,
     evalCount: preflight?.eval_count ?? null,
@@ -115,6 +125,9 @@ async function main() {
   receipt.providerToolMode = nativeCalls.some((call) =>
     call?.function?.name === "code_search") ? "native" : "compat";
   persist();
+  if (typeof contextLength === "number" && contextLength < 8192) {
+    throw new Error(`Ollama effective context is only ${contextLength} tokens; need at least 8192 for indexed code tools`);
+  }
 
   const provider = await json(base + "/api/providers", "POST", {
     name: "Sub2 isolated live Ollama", kind: "ollama", local: true, enabled: true,
@@ -167,6 +180,7 @@ async function main() {
   persist();
   console.log(JSON.stringify({
     campaignId: receipt.campaignId, model, preflight: receipt.preflight,
+    providerToolMode: receipt.providerToolMode,
     status: receipt.status, attempts: receipt.history.length,
     acceptedGenerations: receipt.acceptedGenerations,
     firstMeasuredImprovement: receipt.firstMeasuredImprovement,
