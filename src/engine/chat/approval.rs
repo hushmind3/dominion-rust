@@ -217,6 +217,19 @@ pub(super) async fn request_approval(
         state.store.audit("rsi.isolated_write_authorized",json!({"sessionId":session_id,"runId":execution_id,"operationId":operation_id,"args":args}));
         return true;
     }
+    // A continuous RSI campaign already carries the operator's native-edit
+    // consent, scoped to its disposable worktree. A mismatched model path or
+    // generation must fail immediately, not sit for 60 seconds awaiting a UI
+    // approval that no autonomous worker can supply.
+    if matches!(tool,"workspace_write"|"workspace_replace"|"workspace_replace_range")
+        && state.store.get("session",session_id).is_some_and(|session|
+            session["rsiRun"]==true && session["rsiCampaignId"].is_string()) {
+        state.store.audit("rsi.isolated_write_scope_denied",json!({
+            "sessionId":session_id,"runId":execution_id,
+            "operationId":operation_id,"tool":tool,"path":args["path"]
+        }));
+        return false;
+    }
     let policy = state
         .store
         .get("policy", "default")
