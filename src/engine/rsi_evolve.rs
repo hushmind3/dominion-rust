@@ -7140,6 +7140,88 @@ mod tests {
     }
 
     #[test]
+    fn proven_ablation_operator_transfers_to_new_capability_without_gain_credit() {
+        let (state,root)=state();
+        let source=root.join("source");
+        std::fs::create_dir_all(source.join("src/engine")).unwrap();
+        std::fs::write(source.join("src/engine/tools.rs"),"fn tool() {}\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&source).unwrap();
+        let input=json!({"rsiSourceDir":source,"rsiObjective":"tools improve"});
+        state.store.put("job",&json!({"id":"tools-generation",
+            "kind":"rsi_generation","status":"running","input":{
+                "rsiSourceDir":source,"rsiIndexId":index["id"]}})).unwrap();
+        let donor=json!({"id":"adopted-memory-ablation","revision":"m1",
+            "status":"executable","domain":"memory","successfulApplications":1,
+            "applications":[{"accepted":true,"postconditionsPassed":true}],
+            "synthesis":{"kind":"successful_read_ablation"}});
+        state.store.put("experience",&json!({"id":"memory-donor",
+            "status":"active","partitionKey":research_scope(&input).partition_key,
+            "executableMethods":[donor]})).unwrap();
+        let target=json!({"id":"target-tools","revision":"t1","name":"improve tools",
+            "status":"executable","domain":"tools",
+            "assistanceMode":"harness_assisted",
+            "verification":{"type":"procedure",
+                "appliesTo":{"requestContains":["tools"]},
+                "nodes":[{"id":"read","tool":"workspace_read_range",
+                    "arguments":{"path":"src/engine/tools.rs","startLine":1,"endLine":1}},
+                    {"id":"edit","tool":"workspace_replace",
+                    "arguments":{"path":"src/engine/tools.rs","startLine":1,
+                        "endLine":1,"newText":"fn improved() {}",
+                        "expectedSha256":"$read.sourceSha256"}}],
+                "edges":[{"from":"read","to":"edit"}],
+                "after":[{"kind":"file_contains","path":"src/engine/tools.rs",
+                    "text":"fn improved()"}]}});
+        let receipt=json!({"executionId":"tools-execution",
+            "operationIds":["tools-read","tools-edit"],
+            "result":{"verified":true,"status":"followed","followed":true}});
+        let ops=vec![
+            json!({"id":"tools-read","status":"completed","origin":"procedure",
+                "tool":"workspace_read_range","procedureNodeId":"read",
+                "procedureStrategyId":"target-tools","procedureRevision":"t1",
+                "result":{"sourceSha256":"a".repeat(64)}}),
+            json!({"id":"tools-edit","status":"completed","origin":"procedure",
+                "tool":"workspace_replace","procedureNodeId":"edit",
+                "procedureStrategyId":"target-tools","procedureRevision":"t1",
+                "arguments":{"path":"src/engine/tools.rs"},
+                "result":{"written":true}})];
+        let generation=json!({"jobId":"tools-generation","accepted":false});
+        let transferred=synthesize_successful_dag_ablation(
+            &state,&target,&receipt,&ops,&generation).unwrap();
+        assert_eq!(transferred["synthesis"]["kind"],"transferred_read_ablation");
+        assert_eq!(transferred["synthesis"]["transferDonor"]["domain"],"memory");
+        assert_eq!(transferred["synthesis"]["transferDonor"]["methodId"],
+            "adopted-memory-ablation");
+        assert_eq!(transferred["successfulApplications"],0);
+        assert_eq!(transferred["synthesis"]["qualityGain"],Value::Null);
+        let (_,tool,args)=crate::engine::procedure::ready_intent(
+            &transferred,&[],"tools improve",&std::collections::HashMap::new()).unwrap();
+        assert_eq!(tool,"workspace_replace");
+        assert!(args["expectedSha256"].is_null());
+        // A previously accepted method in another domain is an operator
+        // hypothesis, not proof the target method's quality has improved.
+        state.store.put("experience",&json!({"id":"tools-methods",
+            "status":"active","partitionKey":research_scope(&input).partition_key,
+            "executableMethods":[target.clone(),transferred]})).unwrap();
+        let decision=method_reuse_decision(&state,&input,"tools");
+        assert_eq!(decision["repairSelectionEvidence"]["selection"],
+            "success_ablation_trial");
+        assert_eq!(decision["repairTarget"],"src/engine/tools.rs");
+        let mut unrelated=state.store.get("experience","memory-donor").unwrap();
+        unrelated["partitionKey"]=json!("rsi:foreign-repository");
+        state.store.put("experience",&unrelated).unwrap();
+        assert!(synthesize_successful_dag_ablation(
+            &state,&target,&receipt,&ops,&generation).is_none(),
+            "cross-repository donor inheritance is forbidden");
+        unrelated["partitionKey"]=research_scope(&input).partition_key.into();
+        unrelated["executableMethods"][0]["successfulApplications"]=json!(0);
+        state.store.put("experience",&unrelated).unwrap();
+        assert!(synthesize_successful_dag_ablation(
+            &state,&target,&receipt,&ops,&generation).is_none(),
+            "a donor with no accepted descendant cannot train the meta operator");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn accepted_parent_tries_compacted_child_once_then_uses_observed_outcome() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
