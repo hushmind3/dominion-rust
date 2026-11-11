@@ -566,6 +566,10 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 && input["rsiParentContextFit"]["sourceExcerptDeferred"]!=true);
             crate::engine::rsi_evolve::configure_method_session(&context.state, &input, &mut session);
             session["rsiCodeIndexId"]=input["rsiIndexId"].clone();
+            // The coordinator learned this native execution policy from
+            // prior real source/evaluation receipts. The model is a worker,
+            // never the authority for upgrading the policy.
+            session["rsiExecutionMethod"]=input["rsiExecutionMethod"].clone();
             session["rsiSourceDir"]=input["rsiSourceDir"].clone();
             if let Some(id)=input["rsiCampaignId"].as_str(){
                 session["rsiCampaignId"]=json!(id);
