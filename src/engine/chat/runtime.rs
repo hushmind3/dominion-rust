@@ -945,7 +945,7 @@ async fn run_turn_body(
     source_message_id: Option<&str>,
 ) -> Result<Option<Value>, String> {
     let turn_started = std::time::Instant::now();
-    let session = state
+    let mut session = state
         .store
         .get("session", session_id)
         .ok_or("Session not found")?;
