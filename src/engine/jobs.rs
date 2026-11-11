@@ -516,6 +516,22 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     let rsi_workspace = if input["rsiSourceDir"].is_string() {
         Some(crate::engine::rsi_worktree::prepare(context,&input).await?)
     } else { None };
+    // The failed model patch is recovered only inside the fresh detached
+    // worktree. The running branch remains at the exact original commit.
+    let restored=if let Some(worktree)=rsi_workspace.as_ref() {
+        match crate::engine::rsi_worktree::restore_failed_candidate(
+            context,&input,worktree).await {
+            Ok(receipt)=>receipt,
+            Err(error)=>{
+                let _=crate::engine::rsi_worktree::cleanup(worktree).await;
+                return Err(error);
+            }
+        }
+    }else{None};
+    let repair_context=if let Some(receipt)=restored.as_ref() {
+        format!("\n\n이전 세대의 실제 컴파일 실패 패치를 분리 작업공간에 복원했습니다. 복원 후보: {}. 이전 파일이 아니라 현재 복원된 파일의 정확한 해시·줄 번호를 읽고 컴파일 오류만 교정하세요. 실패 패치를 그대로 두면 새로운 후보로 인정되지 않습니다.",
+            receipt["candidateId"].as_str().unwrap_or(""))
+    }else{String::new()};
     // The dedicated source checkout is validated and detached before a model
     // call, never modified directly by the RSI execution.
     let session_id = job
@@ -575,7 +591,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             } else {
                 "개선 근거가 있으면 workspace_replace_range 또는 workspace_replace로 실제 변경하고, 근거가 없다면 변경 없이 이유를 보고하세요."
             };
-            format!("{prompt}{reused_research}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. {completion} 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.")
+            format!("{prompt}{reused_research}{repair_context}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. {completion} 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.")
         } else { prompt },
         agent_id: input
             .get("agentId")

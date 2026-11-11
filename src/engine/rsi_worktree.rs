@@ -334,6 +334,65 @@ fn current_patch_readback(workspace:&Path,patch:&str,checks:&[Value])->Option<Va
         "qualityProven":false}))
 }
 
+
+/// Reapply only an actual model-generated, compiler-failed candidate to a
+/// NEW detached worktree. A descendant must edit this postimage itself; the
+/// imported failure is never a valid new candidate by itself.
+pub async fn restore_failed_candidate(
+    context:&JobContext,input:&Value,worktree:&Worktree,
+)->Result<Option<Value>,String>{
+    let Some(id)=input["rsiSourceRepairCandidateId"].as_str() else {return Ok(None);};
+    let candidate=context.state.store.get("rsi_candidate",id)
+        .ok_or("이전 세대 실패 후보가 저장소에 없습니다.")?;
+    let job_id=candidate["rsiJobId"].as_str()
+        .ok_or("실패 후보의 모델 실행 출처가 없습니다.")?;
+    let observed=context.state.store.get("rsi_run",&format!("rsi-run-{job_id}"))
+        .ok_or("이전 세대 소스 검사 영수증이 없습니다.")?;
+    let actual_failed=observed["checks"].as_array().is_some_and(|checks|
+        checks.iter().any(|check|check["passed"]==false
+            && check["ran"]==true && check["label"]=="cargo check --all-targets"));
+    if candidate["baseCommit"]!=worktree.base
+        || candidate["actualGeneratorCommit"]!=worktree.base
+        || candidate["experimentCampaignId"]!=input["rsiCampaignId"]
+        || candidate["sourceBranch"]!=input["rsiSourceBranch"]
+        || observed["candidateId"]!=id
+        || observed["diffSha256"]!=candidate["patchSha256"]
+        || observed["sourceClean"]!=true || observed["checksPassed"]==true
+        || !actual_failed {
+        return Err("실제 동일 계보의 컴파일 실패 후보가 아니므로 복원하지 않았습니다.".into());
+    }
+    let paths=candidate["paths"].as_array().ok_or("실패 패치 파일 목록 없음")?;
+    let focus=input["rsiFocusFiles"].as_array().ok_or("복구 파일 범위 없음")?;
+    if paths.is_empty()||paths.len()>focus.len()
+        || paths.iter().any(|path|!path.as_str().is_some_and(|p|
+            rsi::safe_path(p)&&focus.iter().any(|f|f.as_str()==Some(p)))) {
+        return Err("실패 패치가 이번 세대의 실제 수정 대상 범위를 벗어납니다.".into());
+    }
+    let patch=candidate["patch"].as_str().ok_or("실패 패치 원본 없음")?;
+    if patch.is_empty()||patch.len()>=MAX_CAPTURE_BYTES
+        || digest(patch)!=candidate["patchSha256"].as_str().unwrap_or("") {
+        return Err("실패 패치 크기 또는 해시 검증 실패".into());
+    }
+    let file=std::env::temp_dir().join(format!("dominion-rsi-restore-{}.patch",uuid::Uuid::new_v4()));
+    std::fs::write(&file,patch).map_err(|e|e.to_string())?;
+    let argument=file.to_str().ok_or("임시 패치 경로 오류")?.to_string();
+    let result=async {
+        git(&worktree.path,&["apply","--check",&argument]).await?;
+        git(&worktree.path,&["apply",&argument]).await?;
+        Ok::<(),String>(())
+    }.await;
+    let _=std::fs::remove_file(&file);
+    result?;
+    context.state.store.audit("rsi.failed_patch_restored_for_descendant",json!({
+        "jobId":context.job_id,"fromJobId":job_id,"candidateId":id,
+        "patchSha256":candidate["patchSha256"],"generatorCommit":worktree.base,
+        "status":"restored_unverified_failure_not_new_edit"
+    }));
+    Ok(Some(json!({"candidateId":id,"fromJobId":job_id,
+        "patchSha256":candidate["patchSha256"],"status":"restored_for_repair",
+        "qualityProven":false})))
+}
+
 pub async fn finish(
     context:&JobContext, job:&Value, worktree:&Worktree, model_result:Result<Option<Value>,String>,
     session_id:&str,
@@ -358,8 +417,15 @@ pub async fn finish(
     let mut capture_error=String::new();
     let mut checks=Vec::<Value>::new();
     let mut unsafe_audit=Value::Null;
+    let unchanged_seed=input["rsiSourceRepairCandidateId"].as_str()
+        .and_then(|id|context.state.store.get("rsi_candidate",id))
+        .is_some_and(|seed|seed["patchSha256"]==patch_sha);
     if patch.trim().is_empty(){
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
+    } else if unchanged_seed {
+        // An old compiler-failed patch is NOT a new generation's mutation.
+        // Without a new edit it cannot enter the paired evaluator.
+        capture_error="후손이 이전 세대의 실패 패치를 수정하지 않았습니다.".into();
     } else if patch_size>=MAX_CAPTURE_BYTES {
         capture_error="코드 변경량이 79KB를 초과해 증거를 안전하게 수집하지 않았습니다.".into();
     } else {

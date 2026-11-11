@@ -3322,6 +3322,7 @@ async fn run_loop(
             .collect::<Vec<_>>();
         generation["sourceIntegrity"]=json!({
             "diffBytes":source["diffBytes"],"sourceClean":source["sourceClean"],
+            "failedCandidateId":source["candidateId"],
             "checksPassed":source["checksPassed"],"failedChecks":failed_checks,
             "sourceReadback":source["sourceReadback"],
             "repairAttempts":current["result"]["repairAttempts"],
@@ -4178,6 +4179,7 @@ fn source_integrity_repair(history:&[Value])->Option<Value> {
     Some(json!({"domain":domain,"generatorCommit":commit,"focusPath":path,
         "sourceGenerationId":last["id"],"failedChecks":errors.iter().take(3).cloned().collect::<Vec<_>>(),
         "sourceReadback":source["sourceReadback"],
+        "failedCandidateId":source["failedCandidateId"],
         "reason":"observed_source_change_failed_compilation"}))
 }
 
@@ -4553,6 +4555,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         && plan["generatorCommit"].as_str()==Some(commit.as_str()));
     if let Some(plan)=integrity_repair.as_ref() {
         action_prompt.push_str(&integrity_repair_instruction(plan));
+        // The worker's fresh, authoritative lineage decides which *observed*
+        // failed patch may be restored in the next detached worktree.
+        job["input"]["rsiSourceRepairCandidateId"]=plan["failedCandidateId"].clone();
     }
     job["input"]["rsiSourceIntegrityRepair"]=
         integrity_repair.unwrap_or(Value::Null);
