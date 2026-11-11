@@ -65,7 +65,10 @@ pub(super) async fn tool_manual(native: &[Value], query: &str) -> String {
             function.get("parameters").cloned().unwrap_or(json!({}))
         ));
     }
-    manual.push_str("\nExample: <tool_call>{\"name\":\"workspace_read\",\"arguments\":{\"path\":\"a.txt\"}}</tool_call>");
+    // Show no fabricated workspace_read example when only workspace_replace
+    // is advertised: 4B local models copied the unavailable name into calls.
+    // The exact edit argument schema above is the source of truth.
+    manual.push_str("\nCall ONLY a listed tool, using actual observed paths, line numbers and source hash. No placeholders.");
     manual
 }
 
