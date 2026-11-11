@@ -962,6 +962,67 @@ pub async fn cleanup(worktree:&Worktree)->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn descendant_restores_only_same_campaign_failed_patch_in_its_own_tree() {
+        use crate::{config::Config,db::Store,state::AppState,vault::Vault};
+        let root=std::env::temp_dir().join(format!(
+            "rsi-recover-{}",uuid::Uuid::new_v4()));
+        let source=root.join("source");
+        let child=root.join("child");
+        let data=root.join("data");
+        for location in [&source,&child] {
+            std::fs::create_dir_all(location.join("src/engine")).unwrap();
+            std::fs::write(location.join("src/engine/memory.rs"),
+                "fn old() {}\n").unwrap();
+        }
+        std::fs::create_dir_all(&data).unwrap();
+        git(&child,&["init","-q"]).await.unwrap();
+        let cfg=Config{port:0,data_dir:data.clone(),
+            web_dir:data.join("web"),workspace:child.clone()};
+        let state=AppState::new(cfg.clone(),
+            Store::open(&cfg.db_path()).unwrap(),Vault::open(&cfg.key_path()));
+        state.store.put("job",&json!({
+            "id":"restore-job","kind":"rsi_generation","status":"running"
+        })).unwrap();
+        let ctx=JobContext::new(state.clone(),"restore-job".into());
+        let patch=concat!(
+            "diff --git a/src/engine/memory.rs b/src/engine/memory.rs\n",
+            "--- a/src/engine/memory.rs\n",
+            "+++ b/src/engine/memory.rs\n",
+            "@@ -1 +1 @@\n",
+            "-fn old() {}\n",
+            "+fn broken( {}\n"
+        );
+        let base="a".repeat(40);
+        state.store.put("rsi_candidate",&json!({
+            "id":"failed-patch","baseCommit":base,
+            "patch":patch,"patchSha256":digest(patch),
+            "paths":["src/engine/memory.rs"],
+            "experimentCampaignId":"campaign-1"
+        })).unwrap();
+        let input=json!({
+            "rsiCampaignId":"campaign-1",
+            "rsiFailedPatchRecovery":{
+                "candidateId":"failed-patch","baseCommit":base,
+                "failedGenerationJobId":"prior"
+            }
+        });
+        let worktree=Worktree{source:source.clone(),
+            path:child.clone(),base:base.clone()};
+        let restored=restore_failed_patch(&ctx,&input,&worktree)
+            .await.unwrap();
+        assert_eq!(restored["status"],"restored_unverified");
+        assert!(restored["independentGain"].is_null());
+        assert_eq!(std::fs::read_to_string(
+            child.join("src/engine/memory.rs")).unwrap(),"fn broken( {}\n");
+        assert_eq!(std::fs::read_to_string(
+            source.join("src/engine/memory.rs")).unwrap(),"fn old() {}\n");
+        let mut foreign=input.clone();
+        foreign["rsiCampaignId"]=json!("different-campaign");
+        assert!(restore_failed_patch(&ctx,&foreign,&worktree).await.is_err());
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn search_algorithm_mutation_is_classified_as_self_improver() {
         let patch="diff --git a/src/engine/algorithms.rs b/src/engine/algorithms.rs\n--- a/src/engine/algorithms.rs\n+++ b/src/engine/algorithms.rs\n@@ -1 +1 @@\n-a\n+b\n";
