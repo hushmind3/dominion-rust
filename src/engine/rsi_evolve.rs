@@ -4643,6 +4643,20 @@ async fn run_loop(
         save(context, record)?;
         if let Some(reason)=stopped {return Ok(reason.into());}
         if let Some(error)=generation_model_error(&current) {
+            // A model connection can fail AFTER a real source mutation. If
+            // cargo separately established a compiler failure, the native
+            // descendant must inherit the patch and repair it. Previously
+            // this unconditional error return terminated the entire RSI
+            // campaign before its built-in repair generation could execute.
+            // The repair is bounded: source_integrity_repair rejects a second
+            // consecutive repair and the campaign still enforces its budget.
+            if source_integrity_repair(&decision_history).is_some() {
+                record["nextDecision"]["basis"]=json!("source_integrity_repair_after_model_error");
+                record["nextDecision"]["priorModelError"]=json!(
+                    error.chars().take(360).collect::<String>());
+                save(context, record)?;
+                continue;
+            }
             return Err(error.to_string());
         }
         if no_edit && should_stop_no_progress(streak, research, changed)
@@ -8442,6 +8456,37 @@ mod tests {
         assert_eq!(crate::engine::algorithms::active(&state,"selfimprove.search").unwrap()["id"],
             before["id"],"a fallback score must not be credited to an AI-authored formula");
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compiler_failed_candidate_remains_repairable_after_provider_disconnect() {
+        let first=json!({
+            "attempt":1,"id":"campaign-1","jobId":"first-worker",
+            "generatorCommit":"e".repeat(40),"domain":"planning",
+            "domainSelection":"algorithm_active","accepted":false,
+            "focusFiles":["src/engine/decompose.rs"],
+            "sourceIntegrity":{
+                "evaluationStatus":"changed_source_failed_integrity",
+                "sourceClean":true,
+                "diffBytes":554,
+                "candidateId":"failed-rust-patch",
+                "failedChecks":[{"label":"cargo check --all-targets",
+                    "error":"src/engine/decompose.rs:278:13 expected expression"}]
+            }
+        });
+        let first_history=vec![first.clone()];
+        let repair=source_integrity_repair(&first_history)
+            .expect("a real failed patch must be passed to the descendant");
+        assert_eq!(repair["candidateId"],"failed-rust-patch");
+        assert_eq!(repair["sourceGenerationJobId"],"first-worker");
+        let model_disconnect=json!({"result":{"rsi":{"modelError":
+            "error sending request for url (http://127.0.0.1:11434/v1/chat/completions)"}}});
+        assert!(generation_model_error(&model_disconnect).is_some());
+        // The repair handoff, not the presence of a provider error, is the
+        // evidence needed to continue. A failed repair does not requeue itself.
+        let second=json!({"domainSelection":"source_integrity_repair",
+            "sourceIntegrity":first["sourceIntegrity"],"accepted":false});
+        assert!(source_integrity_repair(&[first,second]).is_none());
     }
 
     #[test]
