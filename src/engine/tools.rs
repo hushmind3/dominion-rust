@@ -778,8 +778,13 @@ async fn replace_text(
     }
     let updated = text.replacen(old_text, new_text, 1);
     let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
-    result["replaced"] = json!(true);
-    result["replacedChars"] = json!(old_text.chars().count());
+    // A blocked preflight returns Ok({error, preflightBlocked}) instead of
+    // throwing. Do not label that result a completed replacement: the RSI
+    // coordinator must distinguish an attempted edit from bytes on disk.
+    result["replaced"] = json!(result["written"] == true);
+    if result["written"] == true {
+        result["replacedChars"] = json!(old_text.chars().count());
+    }
     Ok(result)
 }
 
