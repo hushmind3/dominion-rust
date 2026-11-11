@@ -215,9 +215,9 @@ mod tests {
         for directory in [&source,&work] {
             fs::create_dir_all(directory.join("src")).unwrap();
             fs::write(directory.join("Cargo.toml"),
-                "[package]\\nname = \\"compiler-repair-fixture\\"\\nversion = \\"0.1.0\\"\\nedition = \\"2021\\"\\n").unwrap();
+                "[package]\nname = \"compiler-repair-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
             fs::write(directory.join("src/lib.rs"),
-                "pub fn intact() -> bool { true }\\n").unwrap();
+                "pub fn intact() -> bool { true }\n").unwrap();
             let run=|arguments:&[&str]|std::process::Command::new("git")
                 .current_dir(directory).args(arguments).output().unwrap();
             assert!(run(&["init","-q"]).status.success());
@@ -227,13 +227,13 @@ mod tests {
         }
         let source_before=fs::read(source.join("src/lib.rs")).unwrap();
         fs::write(work.join("src/lib.rs"),
-            "pub fn broken() { for marker in &[\\"고\\"] { if marker == \\"고\\" {} } }\\n").unwrap();
+            "pub fn broken() { for marker in &[\"고\"] { if marker == \"고\" {} } }\n").unwrap();
         let isolated=Worktree{source:source.clone(),path:work.clone(),
             base:"a".repeat(40)};
         let receipt=recover(&isolated).await.unwrap();
         assert_eq!(receipt.as_ref().map(|r|r["status"].as_str()),Some(Some("compiler_verified")));
         let fixed=fs::read_to_string(work.join("src/lib.rs")).unwrap();
-        assert!(fixed.contains("*marker == \\"고\\""));
+        assert!(fixed.contains("*marker == \"고\""));
         assert_eq!(fs::read(source.join("src/lib.rs")).unwrap(),source_before);
         assert_eq!(check(&isolated).await.unwrap().status.success(),true);
         fs::remove_dir_all(root).unwrap();
