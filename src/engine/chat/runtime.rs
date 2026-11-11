@@ -163,6 +163,14 @@ fn turn_limit_error(limit:Duration)->String {
     }
 }
 
+/// Only real descendant generations with an indexed source target may
+/// bootstrap source inspection. A first model response without tool calls is
+/// otherwise a common cause of RSI ending with no file modification.
+fn rsi_bootstrap_read_due(session:&Value, offered:&[Value], round:usize)->bool {
+    round==0 && rsi_generation_has_action_target(session)
+        && offered.iter().any(|tool|tool_name(tool)=="workspace_read_range")
+}
+
 fn rsi_focused_edit_due(
     session: &Value, operations: &[Value], execution_id: &str,
     tool_calls: u64, already_issued: bool,
@@ -1385,6 +1393,21 @@ async fn run_turn_body(
                 })
                 .unwrap_or(60_000);
             round_tools = trim_tool_definitions(round_tools, budget);
+        }
+        if !force_final && request.tools_enabled && request.tools_execution_enabled
+            && rsi_bootstrap_read_due(&session,&round_tools,round) {
+            // A weak local model cannot enter the edit stage without a
+            // witnessed source read. Offer the existing native tool once,
+            // with the same approval / evidence path as every other call.
+            round_tools.retain(|definition|tool_name(definition)=="workspace_read_range");
+            messages.push(json!({"role":"system","content":format!(
+                "자기개선 시작: 먼저 workspace_read_range를 호출해 {}의 개선할 소스 구간을 읽으세요. 이 실행에서 실제 sourceSha256과 줄 번호를 확보한 뒤 수정을 작성하세요. 이미 주어진 파일 이외의 경로는 사용하지 마세요.",
+                session["rsiFocusFile"].as_str().unwrap_or(""))}));
+            if let Some(mut record)=state.store.get("execution",execution_id) {
+                record["rsiBootstrapRead"]=json!({"target":session["rsiFocusFile"],
+                    "mode":"required_witnessed_source_read","round":round});
+                state.store.put("execution",&record);
+            }
         }
         if session["rsiRun"]==true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
@@ -6699,6 +6722,25 @@ mod harness_tool_selection_tests {
         assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",&args,&result,&false_receipt));
         assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",
             &args,&json!({"written":false,"postSha256":digest}),&receipt));
+    }
+
+    #[test]
+    fn native_rsi_descendant_bootstraps_a_witnessed_source_read_before_edits() {
+        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"worker",
+            "rsiFocusFile":"src/engine/rsi_evolve.rs"});
+        let tools=vec![
+            json!({"type":"function","function":{"name":"workspace_read_range"}}),
+            json!({"type":"function","function":{"name":"workspace_replace_range"}})
+        ];
+        assert!(rsi_bootstrap_read_due(&session,&tools,0));
+        assert!(!rsi_bootstrap_read_due(&session,&tools,1));
+        assert!(!rsi_bootstrap_read_due(&json!({"rsiRun":true}),&tools,0));
+        assert!(!rsi_bootstrap_read_due(&session,&tools[1..],0));
+        let bootstrap=tools.iter().filter(|tool|
+            tool_name(tool)=="workspace_read_range").collect::<Vec<_>>();
+        assert_eq!(bootstrap.len(),1);
+        assert_eq!(tool_name(bootstrap[0]),"workspace_read_range");
     }
 
     #[test]
