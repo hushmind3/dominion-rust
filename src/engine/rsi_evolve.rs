@@ -3399,6 +3399,21 @@ async fn run_loop(
             child_input["rsiAutoFocus"]=json!(false);
             child_input["rsiFocusSelection"]=json!({"source":"user_selected"});
         }
+        // Repair generations must read the exact file touched by the failed
+        // source patch. Re-running the ordinary domain planner can otherwise
+        // select unrelated files and strand the inherited code once again.
+        if let Some(id)=child_input["rsiRepairCandidateId"].as_str() {
+            if let Some(candidate)=context.state.store.get("rsi_candidate",id) {
+                child_input["rsiFocusFiles"]=candidate["paths"].clone();
+                child_input["rsiAutoFocus"]=json!(true);
+                child_input["rsiFocusSelection"]=json!({
+                    "source":"failed_candidate_compiler_repair",
+                    "candidateId":id,
+                    "paths":candidate["paths"],
+                    "generatorCommit":head
+                });
+            }
+        }
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
