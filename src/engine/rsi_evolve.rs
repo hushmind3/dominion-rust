@@ -2728,6 +2728,9 @@ async fn run_loop(
         }
         let prior_history = record["history"].as_array().cloned().unwrap_or_default();
         if let Some(session)=session {
+            // Queue identity and next-generation lookup must use one target
+            // objective. Autonomous system prompts are not owner constraints.
+            let trial_objective=selection_objective(input);
             let proposals = proposed_algorithms(&context.state, session);
             let active = crate::engine::algorithms::active(&context.state, "selfimprove.search")
                 .unwrap_or_else(|| json!({"id":Value::Null,"revision":Value::Null,"implementation":"failure-clusters","parameters":{}}));
@@ -2742,7 +2745,7 @@ async fn run_loop(
                     candidate,
                     &active,
                     &prior_history,
-                    input["rsiObjective"].as_str().unwrap_or(""),
+                    &trial_objective,
                     &context.job_id,
                     attempt,
                 );
@@ -2765,7 +2768,7 @@ async fn run_loop(
                 complete.push(generation.clone());
                 if let Some(report)=queue_adaptive_search_trial(
                     &context.state,&complete,&active,
-                    input["rsiObjective"].as_str().unwrap_or(""),
+                    &trial_objective,
                     &context.job_id,attempt,
                 ){
                     if let Some(id)=report["candidateId"].as_str() {
@@ -4722,6 +4725,29 @@ mod tests {
         assert_eq!(state.store.get("session","s").unwrap()["rsiMethodProposals"].as_array().unwrap().len(),1);
         state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve","status":"cancelled"}));
         assert!(propose_method(&state,"s",&valid).is_err());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn autonomous_trial_queue_identity_matches_descendant_lookup_objective() {
+        let input=json!({"rsiAutonomous":true,
+            "rsiObjective":"기존 코드 지식과 경험을 재사용해 자기개선"});
+        assert_eq!(selection_objective(&input),"");
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"aligned-goal",
+            "implementation":"expression","source":"rsi-generated",
+            "parameters":{"expression":"exploration + objectiveMatch"}})).unwrap();
+        let objective=selection_objective(&input);
+        let report=queue_search_trial(&state,&candidate,&active,&[],&objective,"campaign",1);
+        assert_eq!(report["status"],"pending_trial");
+        let pending=pending_trial_candidate(&state,&objective,&["campaign".into()]);
+        assert_eq!(pending.unwrap()["id"],candidate["id"],
+            "a policy queued by an autonomous campaign must be selectable by its child");
+        let raw_prompt=input["rsiObjective"].as_str().unwrap();
+        assert!(pending_trial_candidate(&state,raw_prompt,&["campaign".into()]).is_none(),
+            "generic system wording must not replace the canonical selection objective");
         let _=std::fs::remove_dir_all(root);
     }
 
