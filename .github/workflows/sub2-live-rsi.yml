@@ -14,13 +14,13 @@ on:
 # This dispatch is intentionally renewed after fixing the mismatch between
 # Qwen's indexed-source edit checkpoint and its advertised tool menu.
 # The proof remains fully model-driven: no synthetic patch or acceptance.
-# Exercise three distinct source-derived improvement operators: trusted
-# owner provenance, invariant query tokens, and invariant query domain.
-# Run the native source-induction plus real-model fallback through the same
-# independent frozen holdout; the engine must author and adopt a new Git diff.
-# The explicitly triggered live campaign now targets the frozen
-# long_owner_recall path: one query-tokenization per selected owner context,
-# not inactive BM25 code. Intermediate edits do not count as RSI proof.
+# Exercise source-derived improvements in TWO independent domains: owner
+# memory retrieval and the improver's own search feature computation.
+# Source-induced revisions use the same compiled, frozen paired holdout as
+# model-written revisions; neither earns a success until measured. A later
+# committed binary must generate and adopt the next improvement itself.
+# The probe exits as soon as three consecutive verified generations establish
+# actual improver gain and cross-domain transfer.
 # Only the latest source revision should consume the CPU-bound live Qwen
 # evaluation. Intermediate commits are diagnostic, not independent campaigns.
 concurrency:
@@ -33,12 +33,12 @@ permissions:
 jobs:
   native-live-rsi:
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 75
     env:
       DOMINION_LIVE_MODEL: qwen3:4b-instruct
       DOMINION_LIVE_BASE: http://127.0.0.1:44327
       DOMINION_LIVE_OLLAMA: http://127.0.0.1:11434
-      DOMINION_LIVE_TIMEOUT_MS: '2400000'
+      DOMINION_LIVE_TIMEOUT_MS: '3060000'
       OLLAMA_CONTEXT_LENGTH: '16384'
       OLLAMA_NUM_PARALLEL: '1'
       OLLAMA_KEEP_ALIVE: '45m'
@@ -66,6 +66,9 @@ jobs:
         run: |
           node --check scripts/sub2-live-rsi.mjs
           cargo build --release --locked --bin dominion-rust
+
+      - name: Check source-induced descendants before expensive live inference
+        run: cargo test --release --locked --bin dominion-rust rsi_mutation::tests -- --nocapture
 
       - name: Install actual local inference runtime
         run: |
