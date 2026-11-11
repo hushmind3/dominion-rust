@@ -14,7 +14,7 @@ permissions:
 jobs:
   real-model:
     runs-on: ubuntu-latest
-    timeout-minutes: 42
+    timeout-minutes: 55
     env:
       DOMINION_PORT: '43173'
       SUB3_LIVE_REPORT: benchmark/sub3-live-campaign-result.json
