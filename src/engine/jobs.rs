@@ -542,6 +542,13 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                     files.iter().any(|file| file.as_str()
                         .is_some_and(crate::engine::rsi::safe_path)))
             );
+            // The worktree coordinator injected a bounded indexed source
+            // excerpt, and recorded its byte count before launching this
+            // exact generation. A model can act on that excerpt without
+            // spending six expensive calls reading it back.
+            session["rsiFocusContextReady"]=json!(
+                input["rsiFocusContextChars"].as_u64().unwrap_or(0)>0
+            );
             crate::engine::rsi_evolve::configure_method_session(&context.state, &input, &mut session);
             session["rsiCodeIndexId"]=input["rsiIndexId"].clone();
             session["rsiSourceDir"]=input["rsiSourceDir"].clone();

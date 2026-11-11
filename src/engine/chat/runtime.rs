@@ -70,9 +70,9 @@ fn rsi_should_checkpoint(tool_calls: u64, has_write: bool) -> bool {
 /// After three successful tool calls, source editing becomes the next phase;
 /// if only broad search happened, six calls trigger a read/edit checkpoint.
 fn rsi_should_retry_read_only(
-    focused_generation: bool, has_successful_read: bool, has_write: bool, retried: bool,
+    focused_generation: bool, source_observed: bool, has_write: bool, retried: bool,
 ) -> bool {
-    focused_generation && has_successful_read && !has_write && !retried
+    focused_generation && source_observed && !has_write && !retried
 }
 
 fn rsi_checkpoint_stage(tool_calls: u64, read_calls: u64, has_write: bool) -> Option<bool> {
@@ -1124,6 +1124,11 @@ async fn run_turn_body(
                 && session["rsiGenerationJobId"].is_string();
             let checkpoint = if focused_generation && rsi_force_edit_stage && !has_write {
                 Some(true)
+            } else if focused_generation && session["rsiFocusContextReady"] == true
+                && tool_calls >= 1 && !has_write {
+                // Quoted, indexed source came with the generation. After a
+                // genuine tool action, stop reopening search for that source.
+                Some(true)
             } else {
                 rsi_checkpoint_stage(
                     tool_calls, if focused_generation { read_calls } else { 0 }, has_write
@@ -1359,25 +1364,28 @@ async fn run_turn_body(
             let has_successful_read = relevant_operations.iter().any(|operation| matches!(
                 operation["tool"].as_str(), Some("workspace_read" | "workspace_read_range")
             ));
+            let source_observed = has_successful_read
+                || session["rsiFocusContextReady"] == true;
             let has_write = relevant_operations.iter().any(|operation| matches!(
                 operation["tool"].as_str(), Some("workspace_write" | "workspace_replace")
             ));
             if !force_final && round + 1 < max_rounds && budget.can_execute_tool()
                 && rsi_should_retry_read_only(
-                    focused_generation, has_successful_read, has_write, rsi_edit_retry_used
+                    focused_generation, source_observed, has_write, rsi_edit_retry_used
                 )
             {
                 rsi_edit_retry_used = true;
                 rsi_force_edit_stage = true;
                 state.store.audit("rsi.edit_retry", json!({
                     "sessionId":session_id, "executionId":execution_id,
-                    "round":round, "sourceRead":true, "sourceWrite":false,
-                    "reason":"focused_source_read_without_edit"
+                    "round":round, "sourceRead":has_successful_read,
+                    "sourceInPrompt":session["rsiFocusContextReady"] == true,
+                    "sourceWrite":false, "reason":"focused_source_observed_without_edit"
                 }));
                 let _ = tx.send(json!({"type":"rsi_edit_retry","round":round}));
                 messages.push(json!({"role":"assistant","content":completion.content}));
                 messages.push(json!({"role":"system",
-                    "content":"앞에서 소스 원문을 읽었지만 아직 실제 파일 수정 도구를 실행하지 않았습니다. 기존 원문을 근거로 workspace_replace(oldText,newText)를 호출해 구체적인 변경을 시도하세요. 실행이 불가능하면 이유를 설명하고 종료하세요. 추측으로 코드를 쓰거나 수정 성공을 주장하지 마세요."
+                    "content":"제공된 코드 발췌 또는 직전 읽기 결과에 소스 근거가 있습니다. 아직 파일 수정 도구를 실행하지 않았습니다. 해당 원문을 근거로 workspace_replace(oldText,newText)를 실행해 구체적인 수정을 시도하세요. 소스가 불충분하면 추측으로 작성하지 말고 이유를 설명하고 종료하세요."
                 }));
                 continue;
             }
