@@ -11,6 +11,9 @@ on:
     paths:
       - .github/workflows/sub2-live-rsi.yml
 
+# This dispatch is intentionally renewed after fixing the mismatch between
+# Qwen's indexed-source edit checkpoint and its advertised tool menu.
+# The proof remains fully model-driven: no synthetic patch or acceptance.
 # The explicitly triggered live campaign now targets the frozen
 # long_owner_recall path: one query-tokenization per selected owner context,
 # not inactive BM25 code. Intermediate edits do not count as RSI proof.
