@@ -1227,7 +1227,7 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
                 let evidence=json!({"accepted":generation["accepted"],"commit":generation["acceptedCommit"],
                     "hypothesis":candidate.as_ref().map(|c|&c["hypothesis"]),"paths":candidate.as_ref().map(|c|&c["paths"]),
                     "verdict":generation["evaluation"]["verdict"],"error":generation["error"],
-                    "pairedGains":measured["gains"],"improvedHoldouts":measured["improvedHoldouts"],
+                    "sourceIntegrity":generation["sourceIntegrity"],"pairedGains":measured["gains"],"improvedHoldouts":measured["improvedHoldouts"],
                     "regressions":measured["regressions"],"metricGains":measured["metricGains"],
                     "metricRegressions":measured["metricRegressions"],"changedCases":changed_cases});
                 text.push_str(&format!("- {}세대: {}\n",generation["attempt"],
@@ -2325,6 +2325,9 @@ fn evolve_program_synthesis_grammar(policy:&Value)->Value {
     let mut losses=0u64;
     let mut short_gains=0u64;
     let mut long_gains=0u64;
+    let integrity_failures=policy["evidence"].as_array().into_iter().flatten()
+        .filter(|sample|sample["sourceIntegrityFailure"]==true)
+        .filter_map(|sample|sample["jobId"].as_str()).collect::<BTreeSet<_>>().len() as u64;
     let mut observed=BTreeSet::<String>::new();
     for row in policy["programMeasuredEvidence"].as_array().into_iter().flatten() {
         let (Some(job),Some(program))=(row["jobId"].as_str(),row["programId"].as_str())
@@ -2350,7 +2353,7 @@ fn evolve_program_synthesis_grammar(policy:&Value)->Value {
     // admits an extra source observation. Two successful short descendants
     // compress the grammar instead. These are candidates, never quality claims.
     let (max_steps,allow_search_detours,step_penalty)=
-        if losses>=2 && losses>=gains {(5usize,true,1i64)}
+        if (losses>=2 && losses>=gains) || integrity_failures>=2 {(5usize,true,1i64)}
         else if short_gains>=2 && losses==0 {(3usize,false,2i64)}
         else if long_gains>=2 && gains>losses {(5usize,true,1i64)}
         else {(4usize,true,2i64)};
@@ -2358,6 +2361,7 @@ fn evolve_program_synthesis_grammar(policy:&Value)->Value {
         "allowSearchAfterRead":allow_search_detours,
         "stepPenalty":step_penalty,"minIndependentJobs":2,
         "measuredGains":gains,"measuredRegressions":losses,
+        "witnessedSourceIntegrityFailures":integrity_failures,
         "shortProgramGains":short_gains,"longProgramGains":long_gains});
     let revision=format!("{:x}",Sha256::digest(genes.to_string().as_bytes()));
     json!({"kind":"evolved_execution_program_generator",
@@ -2622,6 +2626,10 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         .or_else(||evaluated["verdict"].as_str()).unwrap_or("");
     let observed_edit=trace.iter().any(|tool|
         matches!(tool.as_str(),"workspace_write"|"workspace_replace"|"workspace_replace_range"));
+    let integrity_failure=observed_edit
+        && generation["sourceIntegrity"]["evaluationStatus"]=="changed_source_failed_integrity"
+        && generation["sourceIntegrity"]["failedChecks"].as_array().is_some_and(|c|!c.is_empty())
+        && generation["accepted"]!=true;
     let paired_regression=generation["candidateId"].as_str().is_some_and(|id|!id.is_empty())
         && observed_edit
         && evaluated["source"]=="server_invoked_local_paired_git_worktrees"
@@ -2629,7 +2637,7 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     // Before a candidate exists, an observed failed source edit is still a
     // method failure. Penalise only the actual read -> failed edit transition.
     let failed_edit=if !procedural_pass && !procedural_failure
-        && !capability_gain && !paired_regression {
+        && !capability_gain && !paired_regression && !integrity_failure {
         failed_edit_after_observation(state,session_id,generation)
     }else{None};
     if let Some(tool)=failed_edit.as_deref() {
@@ -2642,7 +2650,7 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     // Model prose or an inconclusive experiment never becomes a learning
     // outcome. A measured regression overrides a local procedure pass.
     if !procedural_pass && !procedural_failure && !capability_gain
-        && !paired_regression && failed_edit.is_none() {
+        && !paired_regression && !integrity_failure && failed_edit.is_none() {
         return None;
     }
     let job_id=generation["jobId"].as_str().filter(|id|!id.is_empty())?;
@@ -2659,10 +2667,13 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     evidence.push(json!({"jobId":job_id,"domain":generation["domain"],
         "sequence":trace,"events":witnessed_decision_events(state,session_id,generation),
         "appliedPolicy":generation["inducedMethodApplications"],
-        "operationalPass":procedural_pass,
-        "operationalFailure":procedural_failure,"pairedImprovement":capability_gain,
+        "operationalPass":procedural_pass && !integrity_failure,
+        "operationalFailure":procedural_failure || integrity_failure,
+        "sourceIntegrityFailure":integrity_failure,
+        "pairedImprovement":capability_gain,
         "pairedRegression":paired_regression,"toolFailure":failed_edit.is_some(),
         "failureReason":if paired_regression{json!(paired_verdict)}
+            else if integrity_failure {json!("source_integrity_failed_after_verified_edit")}
             else{failed_edit.as_deref().map(|tool|json!(format!("tool_execution:{tool}")))
                 .unwrap_or(Value::Null)},
         "acceptedCommit":if capability_gain{generation["acceptedCommit"].clone()}else{Value::Null},
@@ -2675,8 +2686,10 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         let Some(sequence)=sample["sequence"].as_array() else {continue};
         let measured_gain=sample["pairedImprovement"]==true;
         let paired_loss=sample["pairedRegression"]==true;
-        let good=!paired_loss && (sample["operationalPass"]==true || measured_gain);
-        let bad=paired_loss || sample["toolFailure"]==true
+        let integrity_loss=sample["sourceIntegrityFailure"]==true;
+        let good=!paired_loss && !integrity_loss
+            && (sample["operationalPass"]==true || measured_gain);
+        let bad=paired_loss || integrity_loss || sample["toolFailure"]==true
             || (sample["operationalFailure"]==true && !good);
         let reward=if measured_gain {3u64}else{1};
         let penalty=if paired_loss {2u64}else{1};
@@ -4136,6 +4149,10 @@ async fn run_loop(
             let mut selected=ranked.iter().filter_map(|row|row["path"].as_str())
                 .map(str::to_string).collect::<Vec<_>>();
             let repair=transfer_repair_focus(&recorded_history,&target_domain,&head)
+                .or_else(||source_integrity_repair(&recorded_history)
+                    .filter(|plan|plan["domain"].as_str()==Some(target_domain.as_str())
+                        && plan["generatorCommit"].as_str()==Some(head.as_str()))
+                    .and_then(|plan|plan["focusPath"].as_str().map(str::to_string)))
                 .filter(|path|crate::engine::code_index::indexed_source_hash(
                     &context.state,current_index["id"].as_str().unwrap_or(""),path).is_some());
             if let Some(path)=repair.as_ref() {selected=vec![path.clone()];}
@@ -4303,6 +4320,32 @@ async fn run_loop(
             });
         }
         let candidate_id = verified_candidate_id(&current["result"]);
+        // A successfully executed source edit can still be an unbuildable
+        // candidate. Preserve its *actual* validation verdict and diagnostics
+        // so the next generation can learn a different repair procedure.
+        // Never relabel an unbuildable patch as an accepted improvement.
+        let source_result=&current["result"]["rsi"];
+        let failed_checks=source_result["checks"].as_array().into_iter().flatten()
+            .filter(|check|check["passed"]!=true)
+            .take(4).map(|check|json!({
+                "label":check["label"],
+                "error":check["stderr"].as_str().or_else(||check["error"].as_str())
+                    .unwrap_or("").chars().take(950).collect::<String>()
+            })).collect::<Vec<_>>();
+        generation["sourceIntegrity"]=json!({
+            "diffBytes":source_result["diffBytes"],
+            "candidateId":source_result["candidateId"],
+            "checksPassed":source_result["checksPassed"],
+            "captureError":source_result["captureError"],
+            "sourceClean":source_result["sourceClean"],
+            "repairAttempts":current["result"]["repairAttempts"],
+            "failedChecks":failed_checks,
+            "evaluationStatus":if candidate_id.is_some(){"eligible_for_paired_comparison"}
+                else if source_result["diffBytes"].as_u64().unwrap_or(0)>0
+                    && source_result["checksPassed"]!=true
+                    {"changed_source_failed_integrity"}
+                else{"no_eligible_source_candidate"}
+        });
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
         if let Some(id) = candidate_id {
             record["phase"] = json!("measuring");
@@ -4410,7 +4453,8 @@ async fn run_loop(
         generation["newFindings"]=json!(new_findings);
         generation["stopReason"]=json!(stopped);
         if candidate_id.is_none() && new_findings>0 && output.is_ok() && stopped.is_none()
-            && current["result"]["rsi"]["modelError"].is_null() {
+            && current["result"]["rsi"]["modelError"].is_null()
+            && generation["sourceIntegrity"]["diffBytes"].as_u64().unwrap_or(0)==0 {
             generation["error"]=Value::Null;
         }
         if let Some(session)=session {
@@ -4685,6 +4729,43 @@ pub(crate) async fn adopt(
  * assertion nor an unexecuted proposed method changes the execution plan.
  * The retry is bounded to one generation and never bypasses paired adoption.
  */
+/// Repair a REAL compiler/integrity failure in the next generation. Do not
+/// confuse a model tool write with a passing patch, or a failed cargo check
+/// with a frozen paired quality regression. Keep the owner-selected focus.
+fn source_integrity_repair(history:&[Value])->Option<Value> {
+    let last=history.last()?;
+    if last["accepted"]==true || last["domainSelection"]=="source_integrity_repair" {
+        return None;
+    }
+    let integrity=&last["sourceIntegrity"];
+    if integrity["evaluationStatus"]!="changed_source_failed_integrity"
+        || integrity["diffBytes"].as_u64().unwrap_or(0)==0
+        || integrity["sourceClean"]!=true {return None;}
+    let errors=integrity["failedChecks"].as_array()?;
+    if errors.is_empty(){return None;}
+    let path=last["focusFiles"].as_array()?.iter()
+        .filter_map(Value::as_str).find(|p|crate::engine::rsi::safe_path(p))?;
+    let domain=last["domain"].as_str().filter(|d|DOMAINS.contains(d))?;
+    let commit=last["generatorCommit"].as_str().filter(|s|!s.is_empty())?;
+    Some(json!({"domain":domain,"generatorCommit":commit,
+        "focusPath":path,"sourceGenerationId":last["id"],
+        "failures":errors.iter().take(3).cloned().collect::<Vec<_>>(),
+        "reason":"actual_source_integrity_failure_not_paired_quality"}))
+}
+
+fn source_integrity_repair_instruction(plan:&Value)->String {
+    let diagnostics=plan["failures"].as_array().into_iter().flatten()
+        .take(3).map(|item|format!("{}: {}",
+            item["label"].as_str().unwrap_or("verification"),
+            item["error"].as_str().unwrap_or("").chars().take(780).collect::<String>()))
+        .collect::<Vec<_>>().join("\n");
+    format!("\n\n### 이전 세대의 검증된 소스 수정 실패를 교정하세요\n\
+실제로 수정했지만 독립 컴파일 검사를 통과하지 못했습니다. 현재 소스를 다시 읽고 \
+최소 수정으로 오류를 해결하세요. 동일한 무효 코드를 반복하거나 \
+검사 자체를 삭제하지 마세요. 이전 오류는 현재 커밋의 새 검사 결과가 아니므로 \
+현재 소스 SHA·줄 번호를 다시 확인한 다음 편집하세요.\n{}\n",diagnostics)
+}
+
 fn transfer_failure_repair(history:&[Value])->Option<Value> {
     let last=history.last()?;
     let domain=last["domain"].as_str().filter(|domain| DOMAINS.contains(domain))?;
@@ -4732,6 +4813,7 @@ fn research_continuation(history: &[Value]) -> Option<String> {
     let useful_research=|row:&Value| {
         row["domain"]==domain && row["accepted"]!=true
             && row["candidateId"].is_null()
+            && row["sourceIntegrity"]["diffBytes"].as_u64().unwrap_or(0)==0
             && row["newFindings"].as_u64().unwrap_or(0)>0
     };
     if !useful_research(last) { return None; }
@@ -4763,6 +4845,13 @@ fn select_generation_strategy(
     if let Some(repair)=transfer_failure_repair(history) {
         if let Some(domain)=repair["domain"].as_str() {
             return (domain.to_string(),"method_transfer_repair",Value::Null);
+        }
+    }
+    if let Some(repair)=source_integrity_repair(history) {
+        if repair["generatorCommit"].as_str()==Some(generator_commit) {
+            if let Some(domain)=repair["domain"].as_str() {
+                return (domain.to_string(),"source_integrity_repair",Value::Null);
+            }
         }
     }
     // Never starve an already queued improver experiment with more research.
@@ -5020,6 +5109,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     }
     let mut worker_base=job["input"]["prompt"].as_str().unwrap_or("").to_string();
     if let Some(plan)=repair.as_ref() {worker_base.push_str(&transfer_repair_instruction(plan));}
+    if let Some(plan)=source_integrity_repair(&history)
+        .filter(|p|p["domain"].as_str()==Some(domain.as_str())
+            && p["generatorCommit"].as_str()==Some(commit.as_str())) {
+        worker_base.push_str(&source_integrity_repair_instruction(&plan));
+        job["input"]["rsiSourceIntegrityRepair"]=plan;
+    }
     let (full_prompt,worker_plan)=match fit_worker_context(
         &worker_base,&domain,&capability,
         &feedback,job["input"]["rsiRemainingCampaignTokens"].as_u64()
