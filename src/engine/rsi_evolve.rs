@@ -6928,6 +6928,141 @@ mod tests {
     }
 
     #[test]
+    fn adopted_method_can_synthesize_a_smaller_executable_dag_in_multiple_domains() {
+        for (domain,path) in [
+            ("memory","src/engine/memory.rs"),
+            ("tools","src/engine/tools.rs"),
+        ] {
+            let (state,root)=state();
+            let source=root.join("source");
+            std::fs::create_dir_all(source.join("src/engine")).unwrap();
+            std::fs::write(source.join(path),"fn original() {}\n").unwrap();
+            let index=crate::engine::code_index::refresh(&state,&source).unwrap();
+            state.store.put("job",&json!({"id":"accepted-generation",
+                "kind":"rsi_generation","status":"running",
+                "input":{"rsiIndexId":index["id"],"rsiSourceDir":source}})).unwrap();
+            let method=json!({"id":"accepted-procedure","revision":"old-method-revision",
+                "name":"source edit","domain":domain,
+                "assistanceMode":"harness_assisted",
+                "verification":{"type":"procedure",
+                    "appliesTo":{"requestContains":["improve"]},
+                    "nodes":[
+                        {"id":"read","tool":"workspace_read_range","arguments":{
+                            "path":path,"startLine":1,"endLine":1}},
+                        {"id":"edit","tool":"workspace_replace","arguments":{
+                            "path":path,"startLine":1,"endLine":1,
+                            "expectedSha256":"$read.sourceSha256",
+                            "newText":"fn improved() {}"}}
+                    ],
+                    "edges":[{"from":"read","to":"edit"}],
+                    "after":[{"kind":"file_contains","path":path,
+                        "text":"fn improved()"}]}});
+            let sha="a".repeat(64);
+            let read=json!({"id":"op-read","status":"completed","origin":"procedure",
+                "procedureStrategyId":"accepted-procedure",
+                "procedureRevision":"old-method-revision","procedureNodeId":"read",
+                "tool":"workspace_read_range","result":{"sourceSha256":sha}});
+            let edit=json!({"id":"op-edit","status":"completed","origin":"procedure",
+                "procedureStrategyId":"accepted-procedure",
+                "procedureRevision":"old-method-revision","procedureNodeId":"edit",
+                "tool":"workspace_replace","arguments":{"path":path},
+                "result":{"written":true,"replaced":true}});
+            let receipt=json!({"executionId":"execution-1",
+                "operationIds":["op-read","op-edit"],
+                "result":{"verified":true,"followed":true,"status":"followed"}});
+            let generation=json!({"jobId":"accepted-generation","accepted":true,
+                "domain":domain,"tokens":500,"elapsedMs":5000});
+            let candidate=synthesize_successful_dag_ablation(
+                &state,&method,&receipt,&[read.clone(),edit.clone()],&generation).unwrap();
+            assert_eq!(candidate["synthesis"]["kind"],"successful_read_ablation");
+            assert_eq!(candidate["status"],"candidate");
+            assert_eq!(candidate["successfulApplications"],0);
+            assert_eq!(candidate["synthesis"]["qualityGain"],Value::Null);
+            assert_eq!(candidate["verification"]["nodes"].as_array().unwrap().len(),1);
+            assert_eq!(candidate["verification"]["edges"],json!([]));
+            let (node,tool,args)=crate::engine::procedure::ready_intent(
+                &candidate,&[],"improve",&std::collections::HashMap::new()).unwrap();
+            assert_eq!(node,"edit");
+            assert_eq!(tool,"workspace_replace");
+            assert_eq!(args["path"],path);
+            assert!(args["expectedSha256"].is_null(),
+                "the next descendant must bind SHA through its own source index");
+            let denied=json!({"jobId":"accepted-generation","accepted":false});
+            assert!(synthesize_successful_dag_ablation(
+                &state,&method,&receipt,&[read.clone(),edit.clone()],&denied).is_none());
+            let not_written=json!({"id":"op-edit","status":"completed","origin":"procedure",
+                "procedureStrategyId":"accepted-procedure",
+                "procedureRevision":"old-method-revision","procedureNodeId":"edit",
+                "tool":"workspace_replace","arguments":{"path":path},
+                "result":{"written":false}});
+            assert!(synthesize_successful_dag_ablation(
+                &state,&method,&receipt,&[read.clone(),not_written],&generation).is_none());
+            let mut dependent=method.clone();
+            dependent["verification"]["after"]=json!([{"kind":"tool_called",
+                "tool":"workspace_read_range","path":path}]);
+            assert!(synthesize_successful_dag_ablation(
+                &state,&dependent,&receipt,&[read.clone(),edit.clone()],&generation).is_none());
+            let mut different=method.clone();
+            different["verification"]["nodes"][1]["arguments"]["expectedSha256"]=
+                json!("manually-pinned-hash");
+            assert!(synthesize_successful_dag_ablation(
+                &state,&different,&receipt,&[read,edit],&generation).is_none());
+            let _=std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn accepted_parent_tries_compacted_child_once_then_uses_observed_outcome() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
+            "rsiObjective":"memory improve"});
+        let scope=research_scope(&input).partition_key;
+        let parent=json!({"id":"parent","revision":"p1","status":"executable",
+            "assistanceMode":"harness_assisted","name":"parent",
+            "domain":"memory","successfulApplications":2,
+            "applications":[{"accepted":true},{"accepted":true}],
+            "verification":{"type":"procedure",
+                "appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"read","tool":"workspace_read_range",
+                    "arguments":{"path":"src/engine/memory.rs","startLine":1}}],
+                "after":[{"kind":"file_exists","path":"src/engine/memory.rs"}]}});
+        let child=json!({"id":"child","revision":"c1","status":"candidate",
+            "assistanceMode":"harness_assisted","name":"compact child",
+            "domain":"memory","successfulApplications":0,
+            "verification":{"type":"procedure",
+                "appliesTo":{"requestContains":["memory"]},
+                "nodes":[{"id":"edit","tool":"workspace_replace","arguments":{
+                    "path":"src/engine/memory.rs","startLine":1,"endLine":1,
+                    "expectedSha256":null,"newText":"fn better() {}"}}],
+                "after":[{"kind":"file_contains","path":"src/engine/memory.rs",
+                    "text":"fn better()"}]},
+            "synthesis":{"kind":"successful_read_ablation",
+                "parentMethodId":"parent","parentRevision":"p1"}});
+        state.store.put("experience",&json!({"id":"success-lineage",
+            "partitionKey":scope,"status":"active",
+            "executableMethods":[parent,child]})).unwrap();
+        let first=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(first["repairMethodId"],"child",
+            "a previously successful parent must actually test its untried child");
+        assert_eq!(first["repairSelectionEvidence"]["selection"],"success_ablation_trial");
+        let mut history=state.store.get("experience","success-lineage").unwrap();
+        history["executableMethods"][1]["applications"]=json!([{
+            "accepted":false,"verificationVerdict":"passed"}]);
+        history["executableMethods"][1]["status"]=json!("executable");
+        state.store.put("experience",&history).unwrap();
+        let second=method_reuse_decision(&state,&input,"memory");
+        assert!(second["methodIds"].as_array().unwrap().iter().any(|id|id=="parent"));
+        assert_eq!(second["repairMethodId"],Value::Null,
+            "unadopted child no longer has priority over proven parent");
+        history["executableMethods"][1]["successfulApplications"]=json!(3);
+        state.store.put("experience",&history).unwrap();
+        let third=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(third["repairMethodId"],"child",
+            "once the improved descendant is itself adopted, prefer it");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn failed_method_evolves_into_a_separate_inherited_candidate() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
