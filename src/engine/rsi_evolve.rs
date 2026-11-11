@@ -5457,7 +5457,7 @@ mod tests {
         assert_eq!(changed["sequence"],json!([
             "code_search","workspace_read_range","workspace_replace_range"]));
         assert_ne!(changed["revision"],program["revision"]);
-        let phantom=evolve_stalled_action_program(program,
+        let phantom=evolve_stalled_action_program(program.clone(),
             &[episode("one",true),episode("two",false)],"workspace_replace");
         assert_eq!(phantom["qualityNoGainEpisodes"],Value::Null,
             "A displayed method choice without an executed tool is not a trial");
