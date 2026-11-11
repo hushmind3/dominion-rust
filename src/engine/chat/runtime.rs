@@ -327,9 +327,9 @@ fn rsi_method_edit_choice(method:&Value, operations:&[Value], execution_id:&str)
     -> Option<(String,bool)>
 {
     let primary=method["preferredTool"].as_str()
-        .filter(|tool|matches!(*tool,"workspace_replace"|"workspace_replace_range"))?;
+        .filter(|tool|matches!(*tool,"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"))?;
     let fallback=method["fallbackTool"].as_str()
-        .filter(|tool|matches!(*tool,"workspace_replace"|"workspace_replace_range"))?;
+        .filter(|tool|matches!(*tool,"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"))?;
     let failed=operations.iter().any(|row|
         row["runId"]==execution_id
         && row["tool"]==primary
@@ -340,12 +340,12 @@ fn rsi_method_edit_choice(method:&Value, operations:&[Value], execution_id:&str)
 }
 
 /// A learned method must change the tools the worker can choose, not
-/// merely their display order in a model prompt. Only the two competing
-/// source-replacement operations are mutually exclusive; reads and new-file
-/// writes remain available as independent actions.
+/// merely their display order in a model prompt. The three competing
+/// existing-source editors are mutually exclusive once empirical evidence
+/// chooses one; reads and new-file writes remain available independently.
 fn rsi_method_tool_allowed(name:&str, chosen:&str, learned:bool)->bool {
     !learned
-        || !matches!(name,"workspace_replace"|"workspace_replace_range")
+        || !matches!(name,"workspace_replace"|"workspace_replace_range"|"workspace_replace_function")
         || name==chosen
 }
 
@@ -366,14 +366,14 @@ fn rsi_action_failed(operation:&Value)->bool {
 /// recovery operator is selected from the actual tool error, not prose.
 fn rsi_needs_fresh_source(operation:&Value)->bool {
     if !matches!(operation["tool"].as_str(),
-        Some("workspace_replace"|"workspace_replace_range")) || !rsi_action_failed(operation) {
+        Some("workspace_replace"|"workspace_replace_range"|"workspace_replace_function")) || !rsi_action_failed(operation) {
         return false;
     }
     let text=operation["result"]["error"].as_str()
         .or_else(||operation["error"].as_str()).unwrap_or("");
     operation["result"]["staleVersion"]==true
         || ["소스가 읽은 뒤 변경","source version","oldText 출현",
-            "oldText mismatch","expectedSha256","stale source",
+            "oldText mismatch","expectedSha256","file version changed","stale source",
             "re-read the source"].iter().any(|fragment|text.contains(fragment))
 }
 
@@ -483,7 +483,7 @@ fn rsi_action_program_tool_allowed(
 )->bool {
     name==selected || (!has_source_read
         && name=="workspace_read_range"
-        && matches!(selected,"workspace_replace"|"workspace_replace_range"))
+        && matches!(selected,"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"))
 }
 
 /// Native RSI program decisions are executable restrictions, not simply
@@ -6777,6 +6777,29 @@ mod harness_tool_selection_tests {
         let nested="  fn split_markers() {}\n  fn marker_at() {}\n";
         assert_eq!(rsi_target_function_window(
             "Improve split_markers()",nested,1),None);
+    }
+
+    #[test]
+    fn sub1_learned_function_editor_receives_exclusive_source_tool_menu() {
+        let method=json!({"preferredTool":"workspace_replace_function",
+            "fallbackTool":"workspace_replace_range"});
+        assert_eq!(rsi_method_edit_choice(&method,&[],"run"),
+            Some(("workspace_replace_function".into(),false)));
+        let failed=json!({"runId":"run","tool":"workspace_replace_function",
+            "status":"failed","result":{"written":false}});
+        assert_eq!(rsi_method_edit_choice(&method,&[failed],"run"),
+            Some(("workspace_replace_range".into(),true)));
+        assert!(rsi_method_tool_allowed(
+            "workspace_replace_function","workspace_replace_function",true));
+        assert!(!rsi_method_tool_allowed(
+            "workspace_replace_range","workspace_replace_function",true));
+        assert!(rsi_method_tool_allowed(
+            "workspace_read_range","workspace_replace_function",true));
+        let stale=json!({"tool":"workspace_replace_function","status":"failed",
+            "result":{"error":"workspace_replace_function: file version changed; read again before editing"}});
+        assert!(rsi_needs_fresh_source(&stale));
+        assert!(rsi_action_program_tool_allowed(
+            "workspace_read_range","workspace_replace_function",false));
     }
 
     #[test]
