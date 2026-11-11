@@ -1,6 +1,6 @@
 name: Sub1 one-shot genuine-model source-edit proof
 
-# This proof executes with low reasoning effort after evidence of empty tool responses despite required native editor selection.
+# Proof: native read + required tool-choice; on empty tool outputs, retry with source-bound strict JSON and no advertised tool schemas.
 # Normal code pushes must never repeat model calls or incur model costs.
 on:
   push:
