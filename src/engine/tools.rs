@@ -798,6 +798,9 @@ async fn replace_text(
     let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
     result["replaced"] = json!(true);
     result["replacedChars"] = json!(old_text.chars().count());
+    if result["written"] == true {
+        result["postSha256"] = json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
+    }
     Ok(result)
 }
 
@@ -844,6 +847,10 @@ async fn replace_range(
     }
     let updated = format!("{}{}{}", &source[..before], replacement, &source[after..]);
     if updated == source {
+        if ctx.store.get("session",ctx.session_id).is_some_and(|s|s["rsiRun"]==true) {
+            return Ok(json!({"path":path.to_string_lossy(),"written":false,
+                "unchanged":true,"error":"Source bytes unchanged. Submit an actual implementation."}));
+        }
         return Ok(json!({"path":path.to_string_lossy(), "written":false, "unchanged":true}));
     }
     let mut result = checked_write(ctx, path, &updated, run_id, true, Some(expected_sha256)).await?;

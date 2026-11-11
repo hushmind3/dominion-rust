@@ -534,6 +534,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             session["rsiObjective"]=input["rsiObjective"].clone();
             // The task classifier uses the owner's actual target, not the
             // generic RSI prompt or a guessed source file.
+            session["rsiFocusFiles"]=input["rsiFocusFiles"].clone();
             session["rsiExplicitFocus"]=json!(input["rsiAutonomous"] != true
                 && input["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty()));
             session["rsiFocusContextReady"]=json!(
