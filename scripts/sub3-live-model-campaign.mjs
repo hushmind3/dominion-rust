@@ -100,6 +100,7 @@ if(mode==='probe'){
       improvedHoldouts:g.evaluation?.metrics?.improvedHoldouts,
       generatorCommit:g.generatorCommit,domain:g.domain,searchStrategy:g.searchStrategy,
       error:g.error,toolsUsed:g.toolsUsed,newFindings:g.newFindings,
+      editEvidence:g.editEvidence,diffBytes:g.diffBytes,captureError:g.captureError,
       focusFiles:g.focusFiles,knowledgeId:g.knowledgeId,
       evaluation:g.evaluation?.metrics
     }));
@@ -115,14 +116,21 @@ if(mode==='probe'){
     const rangeEditCalls=trace.generationEvidence.reduce((sum,g)=>
       sum+countCalls(g,new Set(['workspace_replace_range'])),0);
     const legacyEditCalls=sourceEditCalls-rangeEditCalls;
+    const verifiedWrites=trace.generationEvidence.reduce((sum,g)=>sum+(g.editEvidence?.verifiedWrites||0),0);
+    const unsuccessfulEdits=trace.generationEvidence.reduce((sum,g)=>
+      sum+Math.max(0,(g.editEvidence?.attempts||0)-(g.editEvidence?.verifiedWrites||0)),0);
+    const candidateCaptureFailures=trace.generationEvidence.filter(g=>!g.candidateId
+      && (g.editEvidence?.verifiedWrites||0)>0).length;
     const candidateCount=trace.generationEvidence.filter(g=>g.candidateId).length;
     const accepted=trace.generationEvidence.filter(g=>g.accepted===true
       && typeof g.acceptedCommit==='string' && g.acceptedCommit.length>0);
     trace.summary={
       modelCalls:trace.generationEvidence.reduce((sum,g)=>sum+(g.tokenUsage?.calls||0),0),
-      sourceEditCalls,rangeEditCalls,legacyEditCalls,candidateCount,acceptedGenerations:accepted.length,
+      sourceEditCalls,rangeEditCalls,legacyEditCalls,verifiedWrites,unsuccessfulEdits,
+      candidateCaptureFailures,candidateCount,acceptedGenerations:accepted.length,
       acceptedCommits:accepted.map(g=>g.acceptedCommit),
       readOnlyGenerations:trace.generationEvidence.filter(g=>!g.candidateId
+        && (g.editEvidence?.verifiedWrites||0)===0
         && countCalls(g,new Set(['code_search','workspace_read_range']))>0).length,
       independentlyVerifiedImprovement:accepted.some(g=>g.verdict==='improved'),
       note:'CI completed does not imply an accepted model-generated RSI improvement'
