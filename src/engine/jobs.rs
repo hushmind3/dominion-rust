@@ -571,7 +571,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     context.checkpoint(json!({"sessionId":session_id,"promptState":{"inFlight":true}}))?;
     let request = TurnRequest {
         session_id: Some(session_id.clone()),
-        input: if rsi_workspace.is_some() { format!("{prompt}{reused_research}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. 개선 근거가 있을 때 workspace_replace로 수정하고, 근거가 없으면 변경 없이 종료하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.") } else { prompt },
+        input: if rsi_workspace.is_some() { format!("{prompt}{reused_research}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. 개선 근거가 있을 때 workspace_replace_range의 startLine, endLine, newText, expectedSha256로 120줄 이내의 실제 코드를 수정하고, 근거가 없으면 변경 없이 종료하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.") } else { prompt },
         agent_id: input
             .get("agentId")
             .and_then(|value| value.as_str())
@@ -607,20 +607,42 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         // All attempts share the same detached worktree and model selection.
         const MAX_REPAIRS:usize=2;
         let mut attempts=Vec::<Value>::new();
+        let mut failed_edit_retried=false;
+        let mut read_only_retried=false;
         let mut finished=crate::engine::rsi_worktree::finish(
             context,job,worktree,message,&session_id
         ).await;
         for revision in 0..MAX_REPAIRS {
-            let Some(feedback)=finished.as_ref().ok()
-                .and_then(crate::engine::rsi_worktree::repair_feedback) else {break;};
+            // Prefer the independent compiler/audit failure, then an observed
+            // source-tool failure, then a genuinely grounded read-only turn.
+            // A remote model outage or mere research is never a retry signal.
+            let selected=finished.as_ref().ok().and_then(|prior| {
+                if let Some(feedback)=crate::engine::rsi_worktree::repair_feedback(prior) {
+                    return Some((feedback,"verification_repair"));
+                }
+                let session=context.state.store.get("session",&session_id)?;
+                let operations=context.state.store.all("execution_operation");
+                crate::engine::rsi_worktree::grounded_edit_feedback(
+                    &context.state,prior,&session,&operations
+                ).map(|(feedback,mode)|(feedback,mode))
+            });
+            let Some((feedback,mode))=selected else {break;};
+            if mode=="observed_tool_repair" {
+                if failed_edit_retried {break;}
+                failed_edit_retried=true;
+            } else if mode=="source_edit_bootstrap" {
+                if read_only_retried {break;}
+                read_only_retried=true;
+            }
             // Cancellation or process restart is never a reason to replay a write.
             if context.checkpoint(json!({
-                "rsiPhase":"repairing","rsiRepairAttempt":revision+1
+                "rsiPhase":"repairing","rsiRepairAttempt":revision+1,
+                "rsiRepairMode":mode
             })).is_err(){break;}
             let prior=finished.as_ref().unwrap();
             let iteration=json!({
                 "id":format!("{}-{}",context.job_id,revision),
-                "jobId":context.job_id,
+                "jobId":context.job_id,"mode":mode,
                 "attempt":revision+1,"result":prior["rsi"],
                 "status":prior["status"],"reason":prior["reason"]
             });
