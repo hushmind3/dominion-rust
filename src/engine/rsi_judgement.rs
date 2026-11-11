@@ -151,6 +151,16 @@ pub fn evolve(rows:&[Value],objective:&str,domain:&str)->Value{
         row["rsiJudgementTrial"]["policy"]["rules"].is_array());
     let parent=previous.map(|row|row["rsiJudgementTrial"]["policy"]["rules"].clone())
         .unwrap_or(json!([]));
+    // A child inherits a bounded program that rewrites its rule generator.
+    // Only durable executed operation evidence can mutate this grammar.
+    let parent_rewrites=previous
+        .and_then(|row|row["rsiJudgementTrial"]["policy"]["rewriteProgram"].as_array())
+        .cloned().unwrap_or_default();
+    let rewrite_program=same.iter().rev()
+        .find(|row|row["tokens"].as_u64().unwrap_or(0)>0
+            && row["toolTimeline"].as_array().is_some_and(|ops|!ops.is_empty()))
+        .map(|row|crate::engine::rsi_rule_rewrite::evolve(&parent_rewrites,row))
+        .unwrap_or(parent_rewrites);
     // Transfer a measured contrast between accepted and rejected descendants
     // into the actual executable runtime grammar. A two-sided cohort is
     // required; the induced rule remains an unproven, isolated trial.
@@ -160,11 +170,14 @@ pub fn evolve(rows:&[Value],objective:&str,domain:&str)->Value{
         let mut inherited=normalize(&parent);
         let mut discovered=contrasted;
         discovered.append(&mut inherited);
-        let normalized=normalize(&json!(discovered));
+        let normalized=crate::engine::rsi_rule_rewrite::apply(
+            &rewrite_program,&normalize(&json!(discovered)));
         let revision=memory::stable_id(&[
-            "champion.contrastive-judgement.v1",&json!(normalized).to_string()]);
+            "champion.contrastive-judgement.v2",&json!(normalized).to_string(),
+            &json!(rewrite_program).to_string()]);
         return json!({"kind":"selfimprove.generated-judgement-program",
             "revision":revision,"rules":normalized,
+            "rewriteProgram":rewrite_program,
             "sourceJobId":"independent_adopted_vs_rejected_descendant_cohorts",
             "qualityProven":false,"status":"requires_independent_real_execution",
             "operator":"contrastive_counterexample_guard_synthesis"});
@@ -237,11 +250,14 @@ pub fn evolve(rows:&[Value],objective:&str,domain:&str)->Value{
     if let Some(rule)=generated{
         rules.insert(0,rule);
     }
-    let normalized=normalize(&json!(rules));
+    let normalized=crate::engine::rsi_rule_rewrite::apply(
+        &rewrite_program,&normalize(&json!(rules)));
     let revision=memory::stable_id(&[
-        "champion.judgement-generator.v1",&json!(normalized).to_string()]);
+        "champion.judgement-generator.v2",&json!(normalized).to_string(),
+        &json!(rewrite_program).to_string()]);
     json!({"kind":"selfimprove.generated-judgement-program",
         "revision":revision,"rules":normalized,
+        "rewriteProgram":rewrite_program,
         "sourceJobId":evidence_job,"qualityProven":false,
         "status":"requires_independent_real_execution",
         "operator":"condition_synthesis_from_observed_events"})
@@ -467,4 +483,25 @@ mod tests{
         invalid["rules"][0]["allow"]=json!(["shell_exec"]);
         assert!(normalize(&invalid["rules"]).is_empty());
     }
+    #[test]
+    fn failed_source_edit_evolves_a_rule_rewriter_and_changes_actual_tool_choice() {
+        let prior=json!({"jobId":"prior","objectiveId":"goal","domain":"tools",
+            "rsiJudgementTrial":{"policy":{"rules":[{
+                "guard":{"all":[
+                    {"metric":"grounded","cmp":"eq","value":1},
+                    {"metric":"edit_attempts","cmp":"eq","value":0}
+                ]},"allow":["workspace_replace_range"]
+            }],"rewriteProgram":[]}}});
+        let failure=json!({"jobId":"failed","objectiveId":"goal","domain":"tools",
+            "tokens":1000,
+            "toolTimeline":[{"tool":"workspace_replace_range","status":"failed"}],
+            "editOperations":[{"tool":"workspace_replace_range","status":"failed"}]});
+        let next=evolve(&[prior,failure],"goal","tools");
+        assert_eq!(next["rewriteProgram"][0]["kind"],"switch_edit");
+        let operations=[json!({"tool":"workspace_read_range","status":"completed"})];
+        let decision=choose(&next,&operations,1,true,false).unwrap();
+        assert_eq!(decision["allow"],json!(["workspace_replace"]));
+        assert_eq!(next["qualityProven"],false);
+    }
+
 }
