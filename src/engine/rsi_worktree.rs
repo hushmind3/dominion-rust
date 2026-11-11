@@ -526,7 +526,11 @@ pub fn repair_target(result:&Value)->Option<(String,u64)> {
     if result["reason"]!="build_or_typecheck_failed" {return None;}
     for check in result["rsi"]["checks"].as_array()? {
         if check["passed"]==true {continue;}
-        let diagnostic=check["stderr"].as_str()
+        // Native validation stores focused cargo output in "detail".
+        // Looking only for stderr/error discards the actual file:line
+        // diagnostic and turns repair into another blind model attempt.
+        let diagnostic=check["detail"].as_str()
+            .or_else(||check["stderr"].as_str())
             .or_else(||check["error"].as_str()).unwrap_or("");
         for text in diagnostic.lines() {
             // cargo often emits ANSI-colored diagnostics even when its
