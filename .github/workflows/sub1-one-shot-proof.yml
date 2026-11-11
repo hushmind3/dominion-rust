@@ -25,6 +25,8 @@ jobs:
       DOMINION_JOB_WORKERS: '1'
       DOMINION_EXPERIMENT_SCHEDULER: '0'
       SUB1_LIVE_MAX_ATTEMPTS: '3'
+      # Verified model failure spent 83,383 input tokens in generation one.
+      # The current Rust coordinator reserves actual tokens for descendants.
       SUB1_LIVE_TOKEN_BUDGET: '90000'
       SUB1_LIVE_TIME_BUDGET: '3000'
       SUB1_LIVE_DEADLINE_MS: '3300000'
