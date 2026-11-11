@@ -100,18 +100,25 @@ async function main() {
       parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
     }}]
   }, 180_000);
+  const nativeCalls = preflight?.message?.tool_calls || [];
   receipt.preflight = {
-    modelReturnedToolCalls: (preflight?.message?.tool_calls || []).length,
+    modelReturnedToolCalls: nativeCalls.length,
     totalDurationNs: preflight?.total_duration ?? null,
     evalCount: preflight?.eval_count ?? null,
     responseContentPresent: Boolean(preflight?.message?.content?.trim()),
     // Never describe generated text as an actual executed tool call.
   };
+  // The model just demonstrated native structured tool calls against the
+  // actual Ollama API. Do not downgrade it to a text-only tool manual:
+  // DOMINION would omit the OpenAI tools array and lose structured execution.
+  // Keep the compatibility path for models that did not demonstrate tools.
+  receipt.providerToolMode = nativeCalls.some((call) =>
+    call?.function?.name === "code_search") ? "native" : "compat";
   persist();
 
   const provider = await json(base + "/api/providers", "POST", {
     name: "Sub2 isolated live Ollama", kind: "ollama", local: true, enabled: true,
-    baseUrl: ollama, model, toolMode: "compat", contextTokens: 16384,
+    baseUrl: ollama, model, toolMode: receipt.providerToolMode, contextTokens: 16384,
   });
   receipt.providerId = provider.id;
   if (!receipt.providerId) throw new Error("Provider was not persisted by DOMINION");
