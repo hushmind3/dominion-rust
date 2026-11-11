@@ -281,13 +281,9 @@ const RSI_EDIT_METHODS: &[(&str,u64,&str)] = &[
 
 fn edit_method_reward(generation:&Value)->f64 {
     if generation["accepted"]==true
+        && generation["evidenceVerified"]==true
         && generation["evaluation"]["metrics"]["eligible"]==true {
         return 1.0;
-    }
-    if generation["evaluation"]["metrics"]["improvedHoldouts"]
-        .as_u64().is_some_and(|gains|gains>0)
-        && generation["evaluation"]["metrics"]["regressions"].as_u64()==Some(0) {
-        return 0.65;
     }
     if generation["candidateId"].is_string() && generation["evaluation"].is_object() {
         // Neutral paired holdouts demonstrate a valid trial, not useful gain.
@@ -364,7 +360,10 @@ fn learned_edit_method(state:&AppState,input:&Value,history:&[Value])->Value {
         let Some(job)=row["jobId"].as_str().filter(|id|!id.is_empty()) else {continue};
         if seen.insert(job.to_string()) {rows.push(row.clone());}
     }
-    let mut policy=synthesize_edit_method(&rows);
+    // Proved payoff requires the original candidate's independent paired
+    // receipt, matching adopted commit and verified source lineage.
+    let verified=history_with_verified_payoffs(state,&rows);
+    let mut policy=synthesize_edit_method(&verified);
     policy["objectiveId"]=json!(objective);
     policy["knowledgePartition"]=json!(partition);
     policy
@@ -2924,7 +2923,10 @@ async fn run_loop(
         let hashes=artifacts.iter().map(|a|a["hash"].clone()).collect::<Vec<_>>();
         let new_findings=new_research_findings(&context.state,&current["input"],child_id,
             &hashes,record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]));
-        generation["editMethodReward"]=json!(edit_method_reward(&generation));
+        let verified_outcomes=history_with_verified_payoffs(
+            &context.state,&[generation.clone()]);
+        generation["editMethodReward"]=json!(verified_outcomes.first()
+            .map(edit_method_reward).unwrap_or(0.0));
         generation["knowledgeArtifactHashes"]=json!(hashes);
         generation["newFindings"]=json!(new_findings);
         generation["stopReason"]=json!(stopped);
@@ -3900,9 +3902,31 @@ mod tests {
     }
 
     #[test]
+    fn repeated_verified_success_can_outweigh_exploration_of_failed_methods() {
+        let mut generations=Vec::new();
+        for (method,reward) in [("balanced",true),("focused-range",false),
+            ("exact-context",false)] {
+            for i in 0..8 {
+                generations.push(json!({
+                    "jobId":format!("{method}-{i}"),"tokens":10000,
+                    "editPolicy":{"method":method},
+                    "accepted":reward,"evidenceVerified":reward,
+                    "candidateId":if reward {json!(format!("candidate-{i}"))} else {Value::Null},
+                    "evaluation":{"metrics":{"eligible":reward}}
+                }));
+            }
+        }
+        assert_eq!(synthesize_edit_method(&generations)["method"],"balanced",
+            "measured quality, not raw tool use, must eventually dominate exploration");
+    }
+
+    #[test]
     fn edit_method_reward_requires_measured_quality_for_full_credit() {
-        assert_eq!(edit_method_reward(&json!({"accepted":true,
+        assert_eq!(edit_method_reward(&json!({"accepted":true,"evidenceVerified":true,
             "evaluation":{"metrics":{"eligible":true}}})),1.0);
+        assert_eq!(edit_method_reward(&json!({"accepted":true,"evidenceVerified":false,
+            "evaluation":{"metrics":{"eligible":true}}})),0.0,
+            "unverified summaries cannot earn a successful improvement reward");
         assert!(edit_method_reward(&json!({"candidateId":"c",
             "evaluation":{"verdict":"inconclusive","metrics":{"improvedHoldouts":0}}}))<0.2);
         assert_eq!(edit_method_reward(&json!({"accepted":false,"candidateId":null})),0.0);
