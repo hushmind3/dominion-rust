@@ -1934,6 +1934,12 @@ fn synthesize_successful_dag_ablation(
             .collect::<Vec<_>>();
         if edits.len()!=1 {continue}
         let edit_id=edits[0]["id"].as_str()?;
+        // Removing a read must not strand other dynamic arguments: only the
+        // expected-SHA binding may depend on this node.
+        let mut edited_arguments=edits[0]["arguments"].clone();
+        edited_arguments["expectedSha256"]=Value::Null;
+        if edited_arguments.to_string().contains(
+            &format!("{}{}.",char::from(36),read_id)) {continue}
         let edges=method["verification"]["edges"].as_array()?;
         // Read cannot have any other consumer or a prerequisite that must
         // remain satisfied. A DAG rewrite must preserve all remaining edges.
