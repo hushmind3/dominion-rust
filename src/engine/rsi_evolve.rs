@@ -3368,7 +3368,7 @@ mod tests {
             "status":"active","generationJobId":"current-worker","researchArtifacts":artifacts}));
         let hashes=artifacts.iter().map(|a|a["hash"].clone()).collect::<Vec<_>>();
         assert_eq!(new_research_findings(&state,&input,"current-worker",&hashes,&[]),1,"worker pre-save must not erase its own progress");
-        assert!(!should_stop_no_progress(1,true,true));
+        assert!(!should_stop_no_progress(1, true, true, false, false));
         assert_eq!(new_research_findings(&state,&input,"next-worker",&hashes,&[]),0,"re-proposing the same program is not new research");
         let _=std::fs::remove_dir_all(root);
     }
@@ -3703,12 +3703,12 @@ mod tests {
 
     #[test]
     fn research_continues_for_new_findings_not_for_new_query_spellings() {
-        assert!(!should_stop_no_progress(1, true, true));
-        assert!(should_stop_no_progress(1, true, false));
-        assert!(should_stop_no_progress(1, false, true));
-        assert!(!should_stop_no_progress(2, true, true));
-        assert!(!should_stop_no_progress(3, true, true));
-        assert!(should_stop_no_progress(3, true, false));
+        assert!(!should_stop_no_progress(1, true, true, false, false));
+        assert!(should_stop_no_progress(1, true, false, false, false));
+        assert!(should_stop_no_progress(1, false, true, false, false));
+        assert!(!should_stop_no_progress(2, true, true, false, false));
+        assert!(!should_stop_no_progress(3, true, true, false, false));
+        assert!(should_stop_no_progress(3, true, false, false, false));
     }
 
     #[test]
