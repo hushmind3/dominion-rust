@@ -261,6 +261,14 @@ pub(crate) fn induce(
         rsi::safe_path(path) && source.join(path).is_file() && isolated.join(path).is_file()
     ) else { return Ok(None); };
     if input["rsiFailedPatchRecovery"]["candidateId"].is_string() { return Ok(None); }
+    // Do not append a native edit to model-written or inherited source. Only
+    // create a new candidate when the *whole* disposable tree is pristine.
+    let clean=std::process::Command::new("git").current_dir(isolated)
+        .args(["status","--porcelain","--untracked-files=normal"])
+        .output().map_err(|e|e.to_string())?;
+    if !clean.status.success() || !clean.stdout.is_empty() {
+        return Ok(None);
+    }
     let original = fs::read_to_string(source.join(relative)).map_err(|e| e.to_string())?;
     let existing = fs::read_to_string(isolated.join(relative)).map_err(|e| e.to_string())?;
     if original != existing { return Ok(None); }
