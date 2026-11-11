@@ -89,6 +89,30 @@ fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
     )
 }
 
+/// Learned search/contrast stages must not deadlock a grounded RSI worker.
+/// Real anonymous models sometimes choose an edit before the controller's
+/// search-only substage advances. If a CURRENT source read succeeded and no
+/// re-ground is required, offer both existing-file edits as bounded fallback.
+/// Hash/oldText preconditions and detached worktree verification still apply.
+fn rsi_offer_grounded_edit_fallback(
+    menu:&mut Vec<Value>, catalog:&[Value],
+    focused:bool, has_current_read:bool, must_reground:bool, verified_write:bool,
+)->bool {
+    if !focused || !has_current_read || must_reground || verified_write {
+        return false;
+    }
+    let mut changed=false;
+    for definition in catalog {
+        let name=tool_name(definition);
+        if matches!(name,"workspace_replace_range"|"workspace_replace")
+            && !rsi_tool_advertised(name,menu) {
+            menu.push(definition.clone());
+            changed=true;
+        }
+    }
+    changed
+}
+
 /// Execute the verifier-selected compiler repair as an actual tool menu
 /// transition. Every retry re-observes the failed source in this run before
 /// an edit is offered. A failed edit invalidates that observation again.
@@ -1322,7 +1346,7 @@ async fn run_turn_body(
                             "이전 편집 실행이 실패했습니다. 소스 버전이 변경됐을 수 있습니다. workspace_read_range로 현재 범위와 해시를 다시 관찰한 뒤 정확한 버전에서 재편집하세요."}));
                     } else if decision.phase == "contrast" {
                         messages.push(json!({"role":"system","content":
-                            "독립 평가에서 개선이 없었던 이전 방법과 다른 가설을 확인하는 단계입니다. code_search로 대안 실행 경로를 찾아 현재 소스 근거와 비교하세요. 확인 이후 편집 단계로 전환됩니다."}));
+                            "독립 평가에서 개선이 없었던 이전 방법과 다른 가설을 확인하세요. 대안 탐색에 code_search를 사용할 수 있습니다. 이미 현재 소스 원문과 해시를 읽어 수정 근거가 있다면 검색 반복 없이 workspace_replace_range 또는 workspace_replace로 새 구현을 작성하세요."}));
                     }
                     let stage_receipt = json!({
                         "id":crate::engine::memory::stable_id(&[
@@ -1424,6 +1448,22 @@ async fn run_turn_body(
                     }));
                 }
                 rsi_decision_checkpoint = true;
+            }
+            // A learned contrast/search-only menu formerly rejected native
+            // writes forever: rejected calls are soft errors and do not
+            // advance the executed-tool counter used by the stage scheduler.
+            // One successful live read is sufficient to OFFER both editors;
+            // their preconditions still decide whether any patch is written.
+            if rsi_offer_grounded_edit_fallback(
+                &mut round_tools,&tool_definitions,focused,read_calls>0,
+                must_ground,has_write,
+            ) {
+                state.store.audit("rsi.grounded_edit_menu_recovered",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "toolCalls":tool_calls,"readCalls":read_calls,
+                    "programPhase":program_stage.map(|phase|phase.phase),
+                    "policyRevision":session["rsiEditPolicy"]["revision"]
+                }));
             }
         }
         let wire_messages = messages.clone();
@@ -6496,6 +6536,30 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn grounded_neutral_descendant_can_edit_despite_search_only_controller(){
+        let catalog=vec![
+            json!({"function":{"name":"code_search"}}),
+            json!({"function":{"name":"workspace_read_range"}}),
+            json!({"function":{"name":"workspace_replace_range"}}),
+            json!({"function":{"name":"workspace_replace"}}),
+        ];
+        let mut contrast=catalog[..2].to_vec();
+        assert!(rsi_offer_grounded_edit_fallback(
+            &mut contrast,&catalog,true,true,false,false));
+        assert!(rsi_tool_advertised("workspace_replace_range",&contrast));
+        assert!(rsi_tool_advertised("workspace_replace",&contrast));
+        assert_eq!(contrast.len(),4);
+        assert!(!rsi_offer_grounded_edit_fallback(
+            &mut contrast,&catalog,true,true,false,false));
+        let mut reground=catalog[..2].to_vec();
+        assert!(!rsi_offer_grounded_edit_fallback(
+            &mut reground,&catalog,true,true,true,false));
+        assert!(!rsi_tool_advertised("workspace_replace_range",&reground));
+        assert!(!rsi_offer_grounded_edit_fallback(
+            &mut reground,&catalog,true,false,false,false));
     }
 
     #[test]
