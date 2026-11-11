@@ -661,11 +661,30 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             context.state.store.put("rsi_iteration",&iteration);
             attempts.push(iteration);
             let mut retry=request.clone();
-            retry.input=feedback;
+            // Supply the current compiler-failing source and its full-file
+            // digest; this is an executable edit target, not a vague model
+            // instruction or an old excerpt from a previous generation.
+            let source=crate::engine::rsi_worktree::compiler_repair_context(
+                &worktree.path,prior);
+            retry.input=match source {
+                Some(context)=>format!("{feedback}\n\n{context}"),
+                None=>feedback,
+            };
+            // This is a correction attempt, not a new research generation.
+            // The native runtime must not restart its inherited discovery
+            // procedure ahead of the compiler-failing source edit.
+            if let Some(mut session)=scoped_state.store.get("session",&session_id) {
+                session["rsiCompilerRepair"]=json!(true);
+                scoped_state.store.put("session",&session);
+            }
             message=run_quiet(&scoped_state,&retry).await;
             finished=crate::engine::rsi_worktree::finish(
                 context,job,worktree,message,&session_id
             ).await;
+        }
+        if let Some(mut session)=scoped_state.store.get("session",&session_id) {
+            session["rsiCompilerRepair"]=json!(false);
+            scoped_state.store.put("session",&session);
         }
         let candidate_id=finished.as_ref().ok().map(|result|result["rsi"]["candidateId"].clone()).unwrap_or(Value::Null);
         let hypothesis=finished.as_ref().ok().map(|result|result["rsi"]["modelMessageId"].clone()).unwrap_or(Value::Null);
