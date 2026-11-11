@@ -1782,7 +1782,7 @@ async fn run_turn_body(
         }
         if completion.tool_calls.is_empty()
             && request.tools_enabled
-            && (provider.tool_mode != "native" || has_dsml_call
+            && (round_provider.tool_mode != "native" || has_dsml_call
                 || rsi_textual_edit_fallback(session["rsiRun"] == true,
                     session["rsiExplicitFocus"] == true || session["rsiMetaFocusActive"] == true,
                     rsi_edit_only_announced))
@@ -2185,7 +2185,7 @@ async fn run_turn_body(
                                 base_seq + offset as u64 + 1,
                                 round,
                                 offset,
-                                provider.tool_mode == "compat",
+                                round_provider.tool_mode == "compat",
                                 "model",
                                 None,
                                 None,
@@ -2499,7 +2499,7 @@ async fn run_turn_body(
                 op_seq,
                 round,
                 call_index,
-                provider.tool_mode == "compat",
+                round_provider.tool_mode == "compat",
                 "model",
                 None,
                 None,
