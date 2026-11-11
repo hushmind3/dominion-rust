@@ -3377,6 +3377,23 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
     let exploration_coefficient=if mutation_scores.len()>=2 && retained_scores.len()>=2 {
         (0.55+0.12*(mean(&mutation_scores)-mean(&retained_scores))).clamp(0.15,1.15)
     } else {0.55};
+    // The DOMINION harness synthesizes an executable scoring program, not
+    // just a label chosen by a hardcoded failure switch. Each observed failure
+    // or adoption can change both the weights and the expression's structure.
+    // A symbolic program is interpreted by the existing safe algorithm
+    // expression evaluator; it does not rely on model-generated prose.
+    let any_failures=observations.values().any(|xs|
+        xs.iter().any(|(value,_)|*value<0.0));
+    let any_adoption=episodes.iter().any(|g|g["accepted"]==true);
+    let failure_coefficient=(0.12+0.08*count as f64).min(0.65);
+    let adoption_coefficient=(0.2+0.03*count as f64).min(0.5);
+    let mut program=format!("posterior + exploration * {exploration_coefficient:.6}");
+    if any_failures {
+        program.push_str(&format!(" - failureRate * {failure_coefficient:.6}"));
+    }
+    if any_adoption {
+        program.push_str(&format!(" + verifiedAdoption * {adoption_coefficient:.6}"));
+    }
     let mut ranking=Vec::<(String,f64,usize)>::new();
     let mut evidence=Vec::<String>::new();
     let total=count as f64;
@@ -3386,9 +3403,19 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
         let sum=samples.iter().map(|(value,_)|*value).sum::<f64>();
         let prior=if action==baseline {0.25}else{-0.20};
         let posterior=(sum+prior)/(n as f64+1.0);
-        let exploration=exploration_coefficient
-            *((1.0+total).ln()/(n as f64+1.0)).sqrt();
-        ranking.push((action.to_string(),posterior+exploration,n));
+        let features=BTreeMap::from([
+            ("posterior".to_string(),posterior),
+            ("exploration".to_string(),((1.0+total).ln()/(n as f64+1.0)).sqrt()),
+            ("failureRate".to_string(),if n==0 {0.0}else{
+                samples.iter().filter(|(v,_)|*v<0.0).count() as f64/n as f64}),
+            ("verifiedAdoption".to_string(),if n==0 {0.0}else{
+                samples.iter().filter(|(_,id)|episodes.iter().any(|row|
+                    row["id"].as_str()==Some(id) && row["accepted"]==true))
+                    .count() as f64/n as f64}),
+        ]);
+        let score=crate::engine::algorithms::eval_expression(&program,&features)
+            .ok().filter(|score|score.is_finite()).unwrap_or(posterior);
+        ranking.push((action.to_string(),score,n));
         evidence.extend(samples.into_iter().map(|(_,id)|id));
     }
     ranking.sort_by(|a,b|b.1.total_cmp(&a.1).then_with(||a.0.cmp(&b.0)));
@@ -3402,12 +3429,15 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
     let revision=crate::engine::memory::stable_id(&[
         &research_scope(input).partition_key,
         input["rsiObjective"].as_str().unwrap_or(""),
-        context,&json!({"rank":ranking,"evidence":evidence}).to_string()
+        context,&json!({"rank":ranking,"evidence":evidence,"program":program}).to_string()
     ]);
     decision["mode"]=json!(chosen);
     decision["policy"]=json!({
-        "kind":"selfimprove.action","implementation":"contextual_observed_utility",
+        "kind":"selfimprove.action","implementation":"synthesized_symbolic_action_program",
         "revision":revision,"context":context,"trainingTransitions":count,
+        "scoreExpression":program,
+        "programStructure":{"hasFailurePenalty":any_failures,
+            "hasAdoptionReward":any_adoption},
         "trainingGenerationIds":evidence,
         "scoreComponents":["observed_action_value","token_cost","posterior_utility","exploration"],
         "metaTuning":{"explorationCoefficient":exploration_coefficient,
