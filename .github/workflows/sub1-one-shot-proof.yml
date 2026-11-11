@@ -1,7 +1,7 @@
 name: Sub1 three-generation actual quality improvement campaign
 
 # Execute up to three real descendant generations and measure compiled, frozen holdout improvement and actual parent adoption.
-# This workflow revision explicitly initiates a syntax-recovery model proof.
+# This workflow revision explicitly probes atomic syntax AND scoped-function recovery.
 # Other source pushes still run ordinary CI only.
 # Normal code pushes must never repeat model calls or incur model costs.
 on:
@@ -86,6 +86,36 @@ jobs:
           curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
           node scripts/sub1-live-model-campaign.mjs run
           cat "$SUB1_LIVE_REPORT"
+      - name: Report genuine result without confusing workflow success with RSI quality
+        if: always()
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = process.env.SUB1_LIVE_REPORT;
+          let record = {};
+          try { record = JSON.parse(fs.readFileSync(path, 'utf8')); }
+          catch (error) { record = {phase:'missing_report', error:String(error)}; }
+          const summary = record.summary || {};
+          const lineage = record.lineage || {};
+          const proof = record.actualCompletion === true
+            && lineage.capabilityDemonstrated === true
+            && lineage.metaTransferProven === true
+            && Number(lineage.maxVerifiedStreak) >= 3;
+          const report = [
+            '### Sub1 real-model, independent holdout proof',
+            '- Model contacted: ' + (summary.modelCalls || 0) + ' actual generation calls',
+            '- Verified source writes: ' + (summary.verifiedSourceWrites || 0),
+            '- Candidate generations: ' + (summary.candidateCount || 0),
+            '- Independently accepted generations: ' + (summary.acceptedGenerations || 0),
+            '- Verified descendant streak: ' + (lineage.maxVerifiedStreak || 0),
+            '- Capability and meta-transfer both demonstrated: ' + (proof ? 'YES' : 'NO'),
+            '- Stop reason: ' + (record.stopReason || record.phase || 'unknown'),
+            '',
+          ].join('\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, report);
+          console.log('SUB1_REAL_THREE_GENERATION_PROVEN=' + (proof ? 'true' : 'false'));
+          NODE
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -93,4 +123,6 @@ jobs:
           path: |
             benchmark/sub1-three-generation-result.json
             benchmark/sub1-proxy-tool-choice.jsonl
+            ${{ runner.temp }}/sub1-engine.log
+            ${{ runner.temp }}/sub1-proxy.log
           if-no-files-found: warn
