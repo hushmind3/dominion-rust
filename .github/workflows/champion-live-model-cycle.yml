@@ -8,6 +8,7 @@ on:
       - 'scripts/champion-live-model-campaign.mjs'
       - 'src/engine/chat/runtime.rs'
       - 'src/engine/rsi_evolve.rs'
+      - 'src/engine/rsi.rs'
       - 'src/engine/rsi_action_program.rs'
       - 'src/engine/rsi_repair_synthesis.rs'
       - 'src/engine/rsi_success_ablation.rs'
