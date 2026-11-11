@@ -5477,7 +5477,9 @@ mod tests {
         assert_eq!(mode, "algorithm_active");
         assert_eq!(strategy["trialFallback"], "collecting_same_domain_control");
 
-        let baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
+        let mut baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
+        baseline["searchStrategy"]["pendingCandidateId"]=json!(id);
+        baseline["searchStrategy"]["pendingCandidateRevision"]=candidate["revision"].clone();
         let (_, mode, _) = select_generation_strategy(
             &state, &[baseline.clone()], "context", None, Some(id.to_string()), None, "commit-2");
         assert_eq!(mode, "algorithm_active", "another generator's result is not a control");
@@ -5744,6 +5746,8 @@ mod tests {
         assert!(comparable_trial_baseline(&[baseline.clone()], &first, &saved).is_none());
 
         let mut baseline2 = active_generation("base-2", 3, "context", false, "commit-1", 10_000, 1_000);
+        baseline2["searchStrategy"]["pendingCandidateId"]=json!(id);
+        baseline2["searchStrategy"]["pendingCandidateRevision"]=candidate["revision"].clone();
         let (_, mode, _) = select_generation_strategy(
             &state, &[baseline.clone(), first.clone(), baseline2.clone()], "context", None, Some(id.into()), None, "commit-1");
         assert_eq!(mode, "algorithm_trial", "a fresh control permits the pending trial");
