@@ -193,10 +193,24 @@ fn rsi_composed_program_next_tool(
     let domain=session["rsiDomain"].as_str()?;
     let focus=session["rsiFocusFile"].as_str()?;
     let programs=session["rsiInducedMethodPolicy"]["executionPrograms"].as_array()?;
+    // A failed edit (or an unversioned follow-up read) invalidates the old
+    // source snapshot. Never replay a previously matched program prefix as
+    // if the failed edit did not happen.
+    let barrier=operations.iter().filter(|op|
+        op["runId"].as_str()==Some(execution_id)
+            && op["arguments"]["path"].as_str()==Some(focus)
+            && (op["status"]=="failed"
+                && matches!(op["tool"].as_str(),
+                    Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))
+                || op["status"]=="completed" && op["tool"]=="workspace_read_range"
+                    && !op["result"]["sourceSha256"].as_str()
+                        .is_some_and(|sha|sha.len()==64
+                            && sha.bytes().all(|b|b.is_ascii_hexdigit()))))
+        .filter_map(|op|op["opSeq"].as_u64()).max().unwrap_or(0);
     let mut witnessed=operations.iter().filter(|op|
         op["runId"].as_str()==Some(execution_id)
             && op["status"]=="completed"
-            && op["opSeq"].as_u64().is_some()
+            && op["opSeq"].as_u64().is_some_and(|seq|seq>barrier)
             && (op["tool"]=="code_search" ||
                 op["arguments"]["path"].as_str()==Some(focus)))
         .filter(|op|match op["tool"].as_str().unwrap_or("") {
@@ -6524,9 +6538,22 @@ mod harness_tool_selection_tests {
         invalid["result"]["sourceSha256"]=json!("no-source-proof");
         assert!(rsi_composed_program_next_tool(&session,&[search.clone(),invalid],
             "run",&menu).is_none(),"an unverified source read cannot advance a program");
-        assert!(rsi_composed_program_next_tool(&session,&[search,read],
+        assert!(rsi_composed_program_next_tool(&session,&[search.clone(),read.clone()],
             "different-run",&menu).is_none(),
             "a prior generation cannot be mistaken for this one's execution");
+        let failed=json!({"id":"failed-edit","runId":"run","opSeq":3,
+            "tool":"workspace_replace","status":"failed",
+            "arguments":{"path":"src/engine/tools.rs"}});
+        assert!(rsi_composed_program_next_tool(&session,
+            &[search.clone(),read.clone(),failed],"run",&menu).is_none(),
+            "a failed edit must invalidate the old program prefix");
+        let invalid_read=json!({"id":"stale-read","runId":"run","opSeq":3,
+            "tool":"workspace_read_range","status":"completed",
+            "arguments":{"path":"src/engine/tools.rs"},
+            "result":{"sourceSha256":"invalid"}});
+        assert!(rsi_composed_program_next_tool(&session,
+            &[search,read,invalid_read],"run",&menu).is_none(),
+            "an unversioned later read must invalidate the earlier source snapshot");
         let wrong=menu[..1].to_vec();
         assert!(rsi_composed_program_next_tool(&session,&[], "run",&wrong).is_none());
     }
