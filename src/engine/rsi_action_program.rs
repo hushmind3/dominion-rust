@@ -441,10 +441,28 @@ pub fn next_tool(program:&Value,ops:&[Value],execution_id:&str)->Option<(String,
 }
 
 pub fn tool_allowed(name:&str,chosen:&str)->bool {
-    // Once a versioned source read completed and the program chooses its
-    // mutation node, re-offering read allows a small model to loop forever.
-    // A failed edit learns an explicit recovery read as its NEXT phase.
+    // The synthesized procedure owns its advertised primary tool.
     name==chosen
+}
+
+/// A chosen edit may need a small amount of exact source grounding before
+/// its first mutation. Earlier generations locked the model to an edit
+/// primitive while it was still asking for the source range, causing repeated
+/// rejected reads and zero patches. Allow at most TWO witnessed read attempts
+/// in this execution, without reopening code_search or restarting discovery.
+/// After any actual edit attempt, only the procedure's explicit recovery
+/// state may choose a read. Tool choice is not evidence of quality gain.
+pub fn tool_allowed_with_evidence(
+    name:&str,chosen:&str,ops:&[Value],execution_id:&str,
+)->bool {
+    if tool_allowed(name,chosen) {return true;}
+    if name!="workspace_read_range" || !edit(chosen) {return false;}
+    let mut reads=0usize;
+    for op in ops.iter().filter(|op|op["runId"].as_str()==Some(execution_id)) {
+        if op["tool"].as_str().is_some_and(edit) {return false;}
+        if op["tool"]=="workspace_read_range" {reads+=1;}
+    }
+    reads<2
 }
 
 /// Every chosen tool must be witnessed *after* the choice on the same execution.
@@ -1038,6 +1056,31 @@ mod tests {
             "code_search","workspace_read_range","workspace_replace"]));
         assert_eq!(child["mutatedFrom"],"loser");
         assert_eq!(child["qualityProven"],false);
+    }
+    #[test]
+    fn grounded_edit_menu_has_two_reads_then_requires_a_write(){
+        let chosen="workspace_replace";
+        assert!(tool_allowed_with_evidence(chosen,chosen,&[],"run"));
+        assert!(tool_allowed_with_evidence("workspace_read_range",chosen,&[],"run"));
+        assert!(!tool_allowed_with_evidence("code_search",chosen,&[],"run"));
+        let first=json!({"runId":"run","opSeq":1,"tool":"workspace_read_range",
+            "status":"completed","result":{"sourceSha256":"a".repeat(64)}});
+        assert!(tool_allowed_with_evidence("workspace_read_range",chosen,
+            &[first.clone()],"run"));
+        let second=json!({"runId":"run","opSeq":2,"tool":"workspace_read_range",
+            "status":"completed","result":{"sourceSha256":"a".repeat(64)}});
+        assert!(!tool_allowed_with_evidence("workspace_read_range",chosen,
+            &[first.clone(),second],"run"));
+        assert!(tool_allowed_with_evidence("workspace_read_range",chosen,
+            &[first.clone()],"other-run"));
+        let failed=json!({"runId":"run","opSeq":2,"tool":"workspace_replace",
+            "status":"failed","result":{"error":"stale digest"}});
+        assert!(!tool_allowed_with_evidence("workspace_read_range",chosen,
+            &[first,failed],"run"));
+        // If the evolved program explicitly selects a recovery read, it is
+        // not blocked by the edit-stage supplementary-read budget.
+        assert!(tool_allowed_with_evidence("workspace_read_range",
+            "workspace_read_range",&[],"run"));
     }
     #[test]
     fn policy_cannot_gain_quality_from_tool_calls_or_mismatched_source(){

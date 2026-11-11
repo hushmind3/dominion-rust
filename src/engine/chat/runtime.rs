@@ -142,6 +142,13 @@ fn rsi_tool_advertised(name: &str, round_tools: &[Value]) -> bool {
     round_tools.iter().any(|definition| tool_name(definition) == name)
 }
 
+/// A descendant's learned Boolean judgement cannot resurrect tools that the
+/// current checkpoint or composed execution program has already removed.
+fn rsi_judgement_menu(current:&[Value],chosen:&[&str])->Vec<Value>{
+    current.iter().filter(|schema|chosen.contains(&tool_name(schema)))
+        .cloned().collect()
+}
+
 /// Some open-compatible local gateways append their channel delimiter to a
 /// function name. Recover ONLY an exact advertised RSI tool followed by a
 /// recognized channel token. No fuzzy tool lookup or invented authority.
@@ -1375,7 +1382,12 @@ async fn run_turn_body(
                         .filter(|name|matches!(*name,"workspace_replace"|"workspace_replace_range"))
                     {
                         if round_tools.iter().any(|tool|tool_name(tool)==preferred) {
-                            round_tools.retain(|tool|tool_name(tool)==preferred);
+                            let prior=state.store.all("execution_operation").into_iter()
+                                .filter(|op|op["runId"].as_str()==Some(execution_id))
+                                .collect::<Vec<_>>();
+                            round_tools.retain(|tool|
+                                crate::engine::rsi_action_program::tool_allowed_with_evidence(
+                                    tool_name(tool),preferred,&prior,execution_id));
                             if let Some(mut execution)=state.store.get("execution",execution_id) {
                                 execution["rsiMetaPolicySelection"]=json!({
                                     "policyRevision":session["rsiMetaPolicyRevision"],
@@ -1422,8 +1434,9 @@ async fn run_turn_body(
             if let Some((selected,reason))=crate::engine::rsi_action_program::next_tool(
                 &session["rsiActionProgram"],&operations,execution_id) {
                 if round_tools.iter().any(|tool|tool_name(tool)==selected) {
-                    round_tools.retain(|tool|crate::engine::rsi_action_program::tool_allowed(
-                        tool_name(tool),&selected));
+                    round_tools.retain(|tool|
+                        crate::engine::rsi_action_program::tool_allowed_with_evidence(
+                            tool_name(tool),&selected,&operations,execution_id));
                     let after=operations.iter().filter_map(|op|op["opSeq"].as_u64())
                         .max();
                     let previous=state.store.get("execution",execution_id)
@@ -1487,9 +1500,7 @@ async fn run_turn_body(
                 metrics.lock().unwrap().tool_calls as u64,focused,grounded) {
                 let chosen=decision["allow"].as_array().into_iter().flatten()
                     .filter_map(Value::as_str).collect::<Vec<_>>();
-                let controlled=tool_definitions.iter().filter(|schema|
-                    chosen.contains(&tool_name(schema))).cloned()
-                    .collect::<Vec<_>>();
+                let controlled=rsi_judgement_menu(&round_tools,&chosen);
                 if !controlled.is_empty(){
                     round_tools=controlled;
                     let after=observed.iter()
@@ -6772,6 +6783,17 @@ mod harness_tool_selection_tests {
     }
 
     #[test]
+    fn evolved_judgement_cannot_override_composed_program_or_checkpoint(){
+        let edit=json!({"type":"function","function":{"name":"workspace_replace"}});
+        let read=json!({"type":"function","function":{"name":"workspace_read_range"}});
+        let baseline=vec![edit.clone()];
+        assert!(rsi_judgement_menu(&baseline,&["workspace_read_range"]).is_empty());
+        let permitted=rsi_judgement_menu(&baseline,&["workspace_replace","code_search"]);
+        assert_eq!(permitted,baseline);
+        assert_eq!(rsi_judgement_menu(&[read,edit],&["workspace_replace"]),
+            vec![permitted[0].clone()]);
+    }
+    #[test]
     fn rsi_checkpoint_allows_an_edit_or_a_no_change_finish() {
         assert!(!rsi_should_checkpoint(5, false));
         assert!(rsi_should_checkpoint(6, false));
@@ -6791,10 +6813,10 @@ mod harness_tool_selection_tests {
         for name in ["workspace_replace", "workspace_replace_range", "workspace_write", "workspace_read_range", "rsi_method_propose", "algorithm_propose"] {
             assert!(rsi_checkpoint_tool(name, false), "{name} must stay available at the general checkpoint");
         }
-        for name in ["workspace_replace", "workspace_replace_range", "workspace_write"] {
+        for name in ["workspace_replace", "workspace_replace_range", "workspace_write", "workspace_read_range"] {
             assert!(rsi_checkpoint_tool(name, true), "{name} must remain in the edit stage");
         }
-        for name in ["code_search", "shell_exec", "file_write", "web_search", "workspace_read_range", "algorithm_propose"] {
+        for name in ["code_search", "shell_exec", "file_write", "web_search", "algorithm_propose"] {
             assert!(!rsi_checkpoint_tool(name, true), "{name} must not reopen in the edit stage");
         }
         assert!(tool_discovery_applies(false, false));
