@@ -608,6 +608,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         let max_repairs=input["rsiEditPolicy"]["repairLimit"]
             .as_u64().unwrap_or(2).min(3) as usize;
         let mut attempts=Vec::<Value>::new();
+        let mut repair_failure=Value::Null;
         let mut finished=crate::engine::rsi_worktree::finish(
             context,job,worktree,message,&session_id
         ).await;
@@ -630,9 +631,29 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             let mut retry=request.clone();
             retry.input=feedback;
             message=run_quiet(&scoped_state,&retry).await;
-            finished=crate::engine::rsi_worktree::finish(
+            if let Err(error)=&message {
+                // Do not erase the existing candidate/checks merely because
+                // a later repair model call exhausted its token budget.
+                repair_failure=json!(error);
+                let mut attempted=iteration.clone();
+                attempted["repairModelError"]=json!(error);
+                context.state.store.put("rsi_iteration",&attempted);
+                context.state.store.audit("rsi.repair_interrupted_preserved_candidate",
+                    json!({"jobId":context.job_id,"reason":error,
+                        "candidateId":prior["rsi"]["candidateId"]}));
+                break;
+            }
+            let next=crate::engine::rsi_worktree::finish(
                 context,job,worktree,message,&session_id
             ).await;
+            if let Err(error)=&next {
+                repair_failure=json!(error);
+                context.state.store.audit("rsi.repair_capture_interrupted",
+                    json!({"jobId":context.job_id,"reason":error,
+                        "candidateId":prior["rsi"]["candidateId"]}));
+                break;
+            }
+            finished=next;
         }
         let candidate_id=finished.as_ref().ok().map(|result|result["rsi"]["candidateId"].clone()).unwrap_or(Value::Null);
         let hypothesis=finished.as_ref().ok().map(|result|result["rsi"]["modelMessageId"].clone()).unwrap_or(Value::Null);
@@ -645,6 +666,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         }
         let mut output=finished?;
         output["repairAttempts"]=json!(attempts.len());
+        output["repairError"]=repair_failure;
         output["previousAttempts"]=json!(attempts);
         output
     } else {
