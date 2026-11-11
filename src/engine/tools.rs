@@ -157,10 +157,15 @@ pub async fn execute(
             // can consume most of the remaining campaign budget on its own.
             let line_cap = if isolated_rsi { 120 } else { 400 };
             let end = (requested_end as usize).min(lines.len()).max(begin).min(begin.saturating_add(line_cap));
-            let mut numbered = String::new();
-            for (offset, line) in lines[begin.saturating_sub(1)..end].iter().enumerate() {
-                numbered.push_str(&format!("{:>5} {}\n", begin + offset, line));
-            }
+            // Return *raw source* for native model edits. Earlier responses
+            // embedded line numbers in content; small models copied those
+            // numbers into newText and produced uncompilable Rust. The exact
+            // start/end line and source SHA are already separate fields.
+            let source_excerpt = lines[begin.saturating_sub(1)..end].join("\n");
+            let source_excerpt = if !source_excerpt.is_empty()
+                && text.ends_with('\n') && end==lines.len() {
+                format!("{source_excerpt}\n")
+            } else {source_excerpt};
             // The absolute detached worktree path is an internal engine
             // detail. If exposed in the read result, a small model reuses it
             // as the write argument and loses the RSI scoped-write approval.
@@ -184,7 +189,8 @@ pub async fn execute(
                 "endLine": end,
                 "totalLines": lines.len(),
                 "sourceSha256":format!("{:x}",Sha256::digest(text.as_bytes())),
-                "content": numbered,
+                "content": source_excerpt,
+                "contentFormat": "raw_source_no_line_prefix",
             });
             if let Some(observation) = result.get("fileObservation") {
                 output["fileObservation"] = observation.clone();
@@ -1618,6 +1624,9 @@ mod tests {
             "run").await.unwrap();
         assert_eq!(read["path"],"src/engine/target.rs");
         assert!(!read["path"].as_str().unwrap().starts_with('/'));
+        assert_eq!(read["content"], "fn target() {\n    good();\n}\n",
+            "Line numbers must never leak into editable source content");
+        assert_eq!(read["contentFormat"], "raw_source_no_line_prefix");
         assert_eq!(read["sourceSha256"],
             format!("{:x}",Sha256::digest(std::fs::read(&path).unwrap())));
         let _=std::fs::remove_dir_all(dir);
