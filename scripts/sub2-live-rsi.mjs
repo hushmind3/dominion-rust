@@ -228,8 +228,14 @@ async function main() {
       regressions: g.regressions, accepted: g.accepted, error: g.error,
     })),
   }, null, 2));
-  if (!receipt.firstMeasuredImprovement) {
-    throw new Error("Actual-model independently measured first RSI improvement NOT demonstrated; evidence saved");
+  // Completion is all-or-nothing. A compiled patch, a single held-out
+  // adoption, or a rebuilt descendant is not recursive self-improvement.
+  // The native campaign itself requires an accepted 3-generation lineage,
+  // genuine improver gain and measured generalization to a new domain.
+  if (!receipt.firstMeasuredImprovement
+      || !receipt.descendantInheritedImprovement
+      || !receipt.capabilityDemonstrated) {
+    throw new Error("Full autonomous RSI NOT demonstrated: 3 adopted generations, meta-method improvement and new-domain transfer are required; evidence saved");
   }
 }
 try { await main(); }
