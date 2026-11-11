@@ -533,6 +533,9 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             session["rsiRun"]=json!(true);
             session["rsiObjective"]=input["rsiObjective"].clone();
             session["rsiFocusFiles"]=input["rsiFocusFiles"].clone();
+            // The improvement algorithm, not the model, selects exploration
+            // budget and preferred source-edit operator for this generation.
+            session["rsiEditPolicy"]=input["rsiEditPolicy"].clone();
             // The task classifier uses the owner's actual target, not the
             // generic RSI prompt or a guessed source file.
             session["rsiExplicitFocus"]=json!(input["rsiAutonomous"] != true
