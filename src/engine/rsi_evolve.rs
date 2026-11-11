@@ -3042,6 +3042,41 @@ async fn run_loop(
             child_input["rsiFocusSelection"]=json!({"source":"user_selected"});
         }
         bind_meta_execution_focus(&context.state,&mut child_input);
+        // Real-model evidence: a read-only first generation may consume all
+        // rounds without writing. Ground an executable mutation programme on
+        // the CURRENT source index; learn later policies from its real effects.
+        if child_input["rsiAutonomous"]!=true && matches!(
+            child_input["rsiImprovementDirective"]["mode"].as_str(),
+            Some("implement_research"|"repair_edit_execution"
+                |"repair_candidate_capture"|"revise_candidate"
+                |"repair_counterexample"|"change_approach")) {
+            if let (Some(index),Some(path))=(
+                child_input["rsiIndexId"].as_str(),
+                child_input["rsiFocusFiles"].as_array().into_iter()
+                    .flatten().filter_map(Value::as_str)
+                    .find(|path|crate::engine::rsi::safe_path(path))) {
+                if let Some(source_sha)=crate::engine::code_index::indexed_source_hash(
+                    &context.state,index,path) {
+                    let base=child_input["rsiActionProgramTrial"]["program"].clone();
+                    let selected=crate::engine::rsi_action_program::seed_grounded_source_edit(
+                        base,path,&source_sha,
+                        child_input["rsiImprovementDirective"]["policy"]["preferredEditTool"]
+                            .as_str().unwrap_or("workspace_replace"));
+                    if selected["revision"]!=child_input["rsiActionProgramTrial"]["revision"] {
+                        let objective=crate::engine::memory::stable_id(&[
+                            child_input["rsiObjective"].as_str().unwrap_or("")]);
+                        let plan=crate::engine::rsi_action_program::trial_plan(
+                            &policy_training,selected,&head,&objective,
+                            child_input["model"].as_str().unwrap_or(""),
+                            child_input["providerId"].as_str().unwrap_or(""),&target_domain);
+                        child_input["rsiActionProgram"]=if plan["arm"]=="candidate" {
+                            plan["program"].clone()
+                        }else{Value::Null};
+                        child_input["rsiActionProgramTrial"]=plan;
+                    }
+                }
+            }
+        }
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);

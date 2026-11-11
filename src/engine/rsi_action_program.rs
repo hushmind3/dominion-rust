@@ -469,6 +469,51 @@ pub fn observed_effects(state:&AppState,session_id:&str)->Vec<Value> {
 }
 
 
+
+/// Cold-start a model's first actual source edit using a SHA-grounded source
+/// target. The bootstrapped grammar is only a TRIAL; subsequent programs are
+/// synthesized from the run's real operations. Never manufacture edit text or
+/// bypass the ordinary independent candidate capture and holdout evaluator.
+pub fn seed_grounded_source_edit(mut program:Value,path:&str,sha:&str,
+    preferred:&str)->Value {
+    if !crate::engine::rsi::safe_path(path)
+        || sha.len()!=64 || !sha.bytes().all(|b|b.is_ascii_hexdigit()){
+        return program;
+    }
+    let mut steps=program["sequence"].as_array().cloned().unwrap_or_default();
+    if steps.iter().any(|step|step.as_str().is_some_and(edit)){
+        return program;
+    }
+    // Reading the exact indexed source is a prerequisite for every cold
+    // source modification. Repeated read-only episodes are not rewarded.
+    steps.retain(|step|step=="workspace_read_range");
+    if steps.is_empty(){steps.push(json!("workspace_read_range"));}
+    let tool=if matches!(preferred,"workspace_replace"|"workspace_replace_range"){
+        preferred
+    }else{"workspace_replace"};
+    steps.push(json!(tool));
+    let checkpoint=2u64;
+    if !program["onFailure"].is_array(){program["onFailure"]=json!([]);}
+    if !program["recoveryPaths"].is_array(){program["recoveryPaths"]=json!([]);}
+    let old=program["revision"].clone();
+    let revision=memory::stable_id(&[
+        "grounded-source-bootstrap-v1",
+        &json!([&steps,&program["onFailure"],&program["recoveryPaths"],
+            checkpoint]).to_string()]);
+    program["kind"]=json!("selfimprove.composed-tool-program");
+    program["revision"]=json!(revision);
+    program["sequence"]=json!(steps);
+    program["status"]=json!("grounded_source_execution_trial_unproven");
+    program["qualityProven"]=json!(false);
+    program["controller"]=json!({"checkpointAfter":checkpoint,
+        "mutation":"repair_read_only_cold_start",
+        "parentRevision":old,"qualityProven":false});
+    program["sourceGrounding"]=json!({"path":path,"sourceSha256":sha,
+        "origin":"current_index_verified_source",
+        "synthesisStatus":"runnable_unverified_not_an_adopted_improvement"});
+    program
+}
+
 /// Reproduction is an executable transfer, not merely inheriting the
 /// predecessor's source. A genuinely adopted candidate can change the
 /// *next generation's own improvement procedure*. The new program is always
@@ -877,6 +922,31 @@ mod tests {
             "status":"completed","result":{"written":true},
             "toolReceipt":{"verified":true}});
         assert!(next_tool(&program,&[failure,read,edit],"run").is_none());
+    }
+
+    #[test]
+    fn index_grounded_cold_start_produces_executable_edit_not_a_quality_claim(){
+        let no_training=json!({"revision":"no-training","sequence":[],
+            "qualityProven":false});
+        let seeded=seed_grounded_source_edit(no_training,
+            "src/engine/decompose.rs",&"a".repeat(64),"workspace_replace");
+        assert_eq!(seeded["sequence"],
+            json!(["workspace_read_range","workspace_replace"]));
+        assert_eq!(seeded["controller"]["checkpointAfter"],2);
+        assert_eq!(seeded["qualityProven"],false);
+        assert_eq!(seeded["sourceGrounding"]["sourceSha256"],"a".repeat(64));
+        let again=seed_grounded_source_edit(seeded.clone(),"src/engine/decompose.rs",
+            &"a".repeat(64),"workspace_replace_range");
+        assert_eq!(again["revision"],seeded["revision"],
+            "do not replace a learned edit with a new bootstrapped program");
+    }
+    #[test]
+    fn bootstrap_never_bypasses_missing_index_or_unsafe_target(){
+        let empty=json!({"revision":"zero","sequence":[]});
+        assert_eq!(seed_grounded_source_edit(empty.clone(),
+            "../outside.rs",&"a".repeat(64),"workspace_replace"),empty);
+        assert_eq!(seed_grounded_source_edit(empty.clone(),
+            "src/engine/decompose.rs","unverified","workspace_replace"),empty);
     }
     #[test]
     fn real_adopted_parent_reproduces_a_changed_descendant_program(){
