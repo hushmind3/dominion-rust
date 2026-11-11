@@ -1510,19 +1510,21 @@ fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value
         .collect::<BTreeSet<_>>();
     candidates.sort_by(|a,b|exploratory.contains(b["id"].as_str().unwrap_or(""))
         .cmp(&exploratory.contains(a["id"].as_str().unwrap_or(""))));
-    // Mutually exclusive variants must not edit the same file in one
-    // generation: otherwise even sequential trial outcomes are confounded.
-    // This scheduling is exploration, not yet a controlled paired A/B proof.
+    // Mutually exclusive *writing methods* must never edit the same file
+    // in one generation. This applies to inherited parent methods too, not
+    // only newly synthesized candidates; otherwise a compact child may edit
+    // the file after its parent and falsely appear to perform better.
+    // Sequential trials are exploratory, not a causal paired A/B proof.
     let mut occupied=BTreeSet::new();
     let mut methods=Vec::new();
     for method in candidates {
-        if is_synthesized_source_repair(&method) {
-            let path=method["verification"]["nodes"].as_array()
-                .and_then(|nodes|nodes.iter().find(|n|
-                    matches!(n["tool"].as_str(),Some("workspace_replace"|"workspace_write"))))
-                .and_then(|node|node["arguments"]["path"].as_str())
-                .unwrap_or("");
-            if path.is_empty() || !occupied.insert(path.to_string()) {continue}
+        let target=method["verification"]["nodes"].as_array()
+            .and_then(|nodes|nodes.iter().find(|n|
+                matches!(n["tool"].as_str(),Some("workspace_replace"|"workspace_write"))))
+            .and_then(|node|node["arguments"]["path"].as_str());
+        if is_synthesized_source_repair(&method) && target.is_none(){continue}
+        if let Some(path)=target {
+            if !occupied.insert(path.to_string()){continue}
         }
         methods.push(method);
         if methods.len()>=3{break}
@@ -7024,7 +7026,12 @@ mod tests {
             "verification":{"type":"procedure",
                 "appliesTo":{"requestContains":["memory"]},
                 "nodes":[{"id":"read","tool":"workspace_read_range",
-                    "arguments":{"path":"src/engine/memory.rs","startLine":1}}],
+                    "arguments":{"path":"src/engine/memory.rs","startLine":1}},
+                    {"id":"edit","tool":"workspace_replace","arguments":{
+                    "path":"src/engine/memory.rs","startLine":1,"endLine":1,
+                    "expectedSha256":"$read.sourceSha256",
+                    "newText":"fn original() {}"}}],
+                "edges":[{"from":"read","to":"edit"}],
                 "after":[{"kind":"file_exists","path":"src/engine/memory.rs"}]}});
         let child=json!({"id":"child","revision":"c1","status":"candidate",
             "assistanceMode":"harness_assisted","name":"compact child",
