@@ -129,7 +129,8 @@ fn rsi_verified_write_operation(operation: &Value) -> bool {
 fn rsi_patch_ready_for_verification(
     session: &Value, tool: &str, args: &Value, result: &Value, ok: bool,
 ) -> bool {
-    ok && session["rsiRun"] == true && session["rsiExplicitFocus"] == true
+    ok && session["rsiRun"] == true
+        && (session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true)
         && session["rsiCampaignId"].is_string()
         && session["rsiFocusFiles"].as_array().is_some_and(|files|
             files.len() == 1 && files[0].as_str() == args["path"].as_str())
@@ -1391,7 +1392,8 @@ async fn run_turn_body(
             && request.tools_enabled
             && (provider.tool_mode != "native" || has_dsml_call
                 || rsi_textual_edit_fallback(session["rsiRun"] == true,
-                    session["rsiExplicitFocus"] == true, rsi_edit_only_announced))
+                    session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true,
+                    rsi_edit_only_announced))
             && !force_final
         {
             let known = round_tools
@@ -6386,6 +6388,10 @@ mod harness_tool_selection_tests {
         assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &args, &json!({"written":false}), true));
         assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range",
             &json!({"path":"src/engine/other.rs"}), &written, true));
+        let autonomous=json!({"rsiRun":true,"rsiAutoFocus":true,"rsiCampaignId":"c",
+            "rsiFocusFiles":["src/engine/decompose.rs"]});
+        assert!(rsi_patch_ready_for_verification(&autonomous,"workspace_replace_range",
+            &args,&written,true));
         let multi = json!({"rsiRun":true,"rsiExplicitFocus":true,"rsiCampaignId":"c",
             "rsiFocusFiles":["src/engine/decompose.rs","src/engine/other.rs"]});
         assert!(!rsi_patch_ready_for_verification(&multi, "workspace_replace_range", &args, &written, true));
