@@ -5749,11 +5749,13 @@ mod tests {
 
     #[test]
     fn real_unbuildable_source_edit_becomes_next_generation_repair_not_research_success() {
-        let row=json!({"attempt":1,"id":"first","domain":"tools",
-            "domainSelection":"algorithm_active","generatorCommit":"a".repeat(40),
+        let row=json!({"attempt":1,"id":"first","jobId":"source-job",
+            "domain":"tools","domainSelection":"algorithm_active",
+            "generatorCommit":"a".repeat(40),
             "accepted":false,"candidateId":null,
             "newFindings":2,"focusFiles":["src/engine/decompose.rs"],
             "sourceIntegrity":{"diffBytes":2048,"sourceClean":true,
+                "candidateId":"rsi-failed-source-candidate",
                 "evaluationStatus":"changed_source_failed_integrity",
                 "checksPassed":false,"failedChecks":[{"label":"cargo check --all-targets",
                     "error":"error[E0308]: expected String, found &str"}]}});
