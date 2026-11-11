@@ -1632,8 +1632,10 @@ fn autonomous_search_hypothesis(history:&[Value])->Option<Value> {
     let novelty_weight=(2+repeated.min(4)+stalled.min(2)) as u64;
     let repeat_weight=(3+2*repeated.min(3)) as u64;
     let approach=if regressions>0 {"avoid_regressions"}
-        else if research_loop {"escape_research_loop"}
-        else {"escape_barren_research"};
+        else if research_loop && recent.iter().take(3)
+            .any(|row|row["newFindings"].as_u64().unwrap_or(0)>0) {
+            "escape_research_loop"
+        } else {"escape_barren_research"};
     let domain_expression=if regressions>0 {
         format!("objectiveMatch * 3 + successRate * 4 + exploration * 1.5 + novelty * {novelty_weight} - regressions * 2 - barrenRate - tokenCost * 0.3")
     } else {
