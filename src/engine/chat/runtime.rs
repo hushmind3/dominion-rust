@@ -1440,11 +1440,18 @@ async fn run_turn_body(
                 }
             }
             if session["rsiCompilerRepair"]==true {
-                // Preserve exactly the compiler-repair actions. The previous
-                // generation's search method is not a useful plan for fixing
-                // a known syntax/type error in a known file.
+                // A restored failed patch is a different file revision from
+                // the clean-parent prompt excerpt. Force one actual source
+                // observation before offering a second edit; otherwise the
+                // model patches obsolete text and repeats the same failure.
+                let requires_current_read=session["rsiRestoredCandidateId"].is_string()
+                    && read_calls==0;
                 round_tools.retain(|definition|
-                    rsi_compiler_repair_tool(tool_name(definition)));
+                    if requires_current_read {
+                        tool_name(definition)=="workspace_read_range"
+                    } else {
+                        rsi_compiler_repair_tool(tool_name(definition))
+                    });
                 round_tools.sort_by_key(|definition|match tool_name(definition){
                     "workspace_replace_range"=>0usize,"workspace_replace"=>1,_=>2
                 });
