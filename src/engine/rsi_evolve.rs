@@ -2618,6 +2618,14 @@ async fn run_loop(
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
+        // Warm-start an empty campaign from matching prior evidence rather
+        // than sending the next model back to discovery-only research.
+        let action_history=if recorded_history.is_empty() {
+            matching_prior_campaign(&context.state,input,record)
+                .and_then(|prior|prior["history"].as_array().cloned())
+                .unwrap_or_default()
+        } else {recorded_history.clone()};
+        child_input["rsiImprovementDirective"]=improvement_directive(&action_history);
         let target_objective=selection_objective(&child_input);
         // Compute the same domain decision that the worker will use. Keep it
         // distinct from rsiSelectedDomain, which represents an explicit choice.
@@ -2781,6 +2789,7 @@ async fn run_loop(
             "totalPromptChars":current["input"]["rsiPromptContextChars"],
             "contextPlan":current["input"]["rsiContextPlan"],
             "workerContextPlan":current["rsiWorkerContextPlan"],
+            "improvementDirective":current["input"]["rsiImprovementDirective"],
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
@@ -2898,6 +2907,20 @@ async fn run_loop(
             &hashes,record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]));
         generation["knowledgeArtifactHashes"]=json!(hashes);
         generation["newFindings"]=json!(new_findings);
+        let writes=generation["toolsUsed"].as_array().into_iter().flatten()
+            .filter(|row|matches!(row["tool"].as_str(),
+                Some("workspace_write"|"workspace_replace"|"file_write")))
+            .map(|row|row["calls"].as_u64().unwrap_or(0)).sum::<u64>();
+        let bytes=current["result"]["rsi"]["diffBytes"].as_u64().unwrap_or(0);
+        let attempted=writes>0 || bytes>0 || candidate_id.is_some();
+        let expected=matches!(generation["improvementDirective"]["mode"].as_str(),
+            Some("implement_research"|"repair_counterexample"|"revise_candidate"|"change_approach"));
+        generation["improvementActionObservation"]=json!({
+            "status":if generation["accepted"]==true {"verified_adoption"}
+                else if attempted {"attempted"}
+                else if expected {"not_followed"} else {"research_only"},
+            "attemptedCodeChange":attempted,"completedWrites":writes,"diffBytes":bytes
+        });
         generation["stopReason"]=json!(stopped);
         if candidate_id.is_none() && new_findings>0 && output.is_ok() && stopped.is_none()
             && current["result"]["rsi"]["modelError"].is_null() {
@@ -3068,7 +3091,12 @@ async fn run_loop(
             return Err(error.to_string());
         }
         if no_edit && should_stop_no_progress(streak, research, changed) {
-            return Ok("no_progress".into());
+            // Sub1's corrective retry, bounded by evidence and attempt budget.
+            // The next worker must CHANGE execution approach, not reread notes.
+            if !(input["rsiAutonomous"]==true
+                && corrective_retry_allowed(&decision_history,streak)) {
+                return Ok("no_progress".into());
+            }
         }
     }
 }
@@ -3141,6 +3169,66 @@ pub(crate) async fn adopt(
     )
     .await?;
     git(context, lab, &["rev-parse", "HEAD"]).await
+}
+
+/// The next generation must use the observed previous result as an EXECUTION
+/// decision. Reading an insight is not the same as attempting a repair.
+fn improvement_directive(history:&[Value]) -> Value {
+    let Some(last)=history.last() else {
+        return json!({"mode":"discover","sourceGenerationId":null});
+    };
+    let previous=last["improvementDirective"]["mode"].as_str().unwrap_or("");
+    let verdict=last["evaluation"]["verdict"].as_str().unwrap_or("");
+    let patch=last["candidateId"].is_string();
+    let findings=last["newFindings"].as_u64().unwrap_or(0);
+    let mode=if last["accepted"]==true {"extend_verified_capability"}
+    else if last["improvementActionObservation"]["status"]=="not_followed"
+        && !matches!(previous,""|"discover"|"change_approach") {"change_approach"}
+    else if matches!(verdict,"regressed"|"build_failed") {
+        if previous=="repair_counterexample" {"change_approach"} else {"repair_counterexample"}
+    } else if patch {
+        if matches!(previous,"revise_candidate"|"repair_counterexample") {"change_approach"}
+        else {"revise_candidate"}
+    } else if findings>0 {
+        if previous=="implement_research" {"change_approach"} else {"implement_research"}
+    } else {"change_approach"};
+    let cases=last["evaluation"]["metrics"]["measurements"].as_array()
+        .into_iter().flatten().filter(|row|row["holdout"]==true
+            && (row["candidatePass"]==false || row["metrics"].as_array().is_some_and(|m|
+                m.iter().any(|metric|metric["regressed"]==true))))
+        .filter_map(|row|row["id"].as_str()).take(4).collect::<Vec<_>>();
+    json!({"mode":mode,"sourceGenerationId":last["id"],"sourceJobId":last["jobId"],
+        "domain":last["domain"],"candidateId":last["candidateId"],
+        "newFindings":findings,"previousVerdict":last["evaluation"]["verdict"],
+        "failureCaseIds":cases,
+        "previousFocusFiles":last["focusFiles"].as_array().map(|rows|
+            rows.iter().take(4).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "evidenceHashes":last["knowledgeArtifactHashes"].as_array().map(|rows|
+            rows.iter().take(6).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "previousError":last["error"].as_str().unwrap_or("").chars().take(300).collect::<String>()})
+}
+
+fn improvement_work_contract(directive:&Value)->&'static str {
+    match directive["mode"].as_str().unwrap_or("discover") {
+        "implement_research" => "이전 세대의 유효한 조사와 소스 근거를 사용해 이번에는 코드를 수정하고 검증을 실행하세요. 같은 검색만 반복하지 마세요.",
+        "repair_counterexample" => "이전 후보가 실패한 holdout 사례와 실패한 코드 경로를 분석하여 다른 수정안을 실행하고 재평가하세요.",
+        "revise_candidate" => "이전 후보의 미달 원인을 확인하고 가설 또는 수정 위치를 바꾼 다음 검증 가능한 새 후보를 실행하세요.",
+        "change_approach" => "반복 실패한 원인을 근거로 기존과 다른 파일·구현 전략을 선택해 실제 코드 변경을 시도하세요.",
+        "extend_verified_capability" => "이전 독립 평가에서 채택한 기능은 유지하고 다음 결함을 해결하여 별도 holdout에서 개선을 증명하세요.",
+        _ => "원인이 있는 결함 하나를 선택하고 구현·검증까지 수행하세요. 조사 요약 자체는 완료가 아닙니다."
+    }
+}
+
+/// Only one corrective implementation retry is allowed after an actual
+/// implementation directive was not followed. Existing attempt/time/token
+/// budgets remain the authoritative cap.
+fn corrective_retry_allowed(history:&[Value],streak:u64)->bool {
+    if streak>2 {return false;}
+    let Some(last)=history.last() else {return false;};
+    last["accepted"]!=true && last["candidateId"].is_null()
+        && last["newFindings"].as_u64().unwrap_or(0)==0
+        && matches!(last["improvementDirective"]["mode"].as_str(),
+            Some("implement_research"|"repair_counterexample"|"revise_candidate"))
 }
 
 // A generation's research continuation must be decided identically by the
@@ -3430,8 +3518,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
+    let directive=job["input"]["rsiImprovementDirective"].clone();
+    let action_prompt=format!("{}\n\n### 이번 세대의 실행 방식\n{}\n실제 이전 세대 근거: {}\n",
+        job["input"]["prompt"].as_str().unwrap_or(""),
+        improvement_work_contract(&directive),directive);
     let (full_prompt,worker_plan)=match fit_worker_context(
-        job["input"]["prompt"].as_str().unwrap_or(""),&domain,&capability,
+        &action_prompt,&domain,&capability,
         &feedback,job["input"]["rsiRemainingCampaignTokens"].as_u64()
     ) {
         Ok(context)=>context,
@@ -3487,6 +3579,25 @@ mod tests {
         state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve","status":"running","input":{"rsiNativeApproved":true}})).unwrap();
         JobContext::new(state.clone(), "campaign".into())
     }
+    #[test]
+    fn failed_implementation_becomes_a_different_executable_directive() {
+        let investigated=json!({"id":"g1","jobId":"j1","domain":"memory","newFindings":3,
+            "focusFiles":["src/engine/memory.rs"],"accepted":false});
+        let implement=improvement_directive(&[investigated.clone()]);
+        assert_eq!(implement["mode"],"implement_research");
+        let mut tried=investigated;
+        tried["id"]=json!("g2");
+        tried["newFindings"]=json!(0);
+        tried["improvementDirective"]=implement;
+        tried["improvementActionObservation"]=json!({"status":"not_followed"});
+        let revise=improvement_directive(&[tried.clone()]);
+        assert_eq!(revise["mode"],"change_approach");
+        assert!(corrective_retry_allowed(&[tried],2));
+        assert!(!corrective_retry_allowed(&[],1));
+        assert!(!corrective_retry_allowed(&[json!({"improvementDirective":{"mode":"implement_research"},
+            "newFindings":0,"candidateId":null})],3));
+    }
+
     #[test]
     fn appended_research_context_must_fit_the_remaining_generation_budget() {
         let record=json!({"limits":{"tokenBudget":1000},"tokens":200});
