@@ -67,7 +67,7 @@ fn rsi_checkpoint_applies(tool_calls:u64,has_write:bool,previously_entered:bool)
 fn rsi_checkpoint_tool(name: &str) -> bool {
     matches!(
         name,
-        "workspace_read_range" | "workspace_write" | "workspace_replace" | "rsi_method_propose" | "algorithm_propose"
+        "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_range" | "rsi_method_propose" | "algorithm_propose"
     )
 }
 
@@ -90,7 +90,10 @@ fn rsi_generation_has_action_target(session:&Value)->bool {
 
 /// A single, observed read-only completion gets a source-edit action round.
 fn rsi_final_edit_tools(available:&[Value])->Vec<Value> {
-    available.iter().filter(|tool|tool_name(tool)=="workspace_replace").cloned().collect()
+    // Prefer a short digest-bound edit to repeating oldText in a small model.
+    available.iter().find(|tool|tool_name(tool)=="workspace_replace_range")
+        .or_else(||available.iter().find(|tool|tool_name(tool)=="workspace_replace"))
+        .into_iter().cloned().collect()
 }
 
 fn rsi_read_only_completion(operations: &[Value], execution_id: &str) -> bool {
@@ -100,7 +103,7 @@ fn rsi_read_only_completion(operations: &[Value], execution_id: &str) -> bool {
         match op["tool"].as_str() {
             Some("workspace_read_range" | "workspace_read")
                 if op["status"] == "completed" => read = true,
-            Some("workspace_replace" | "workspace_write" |
+            Some("workspace_replace" | "workspace_replace_range" | "workspace_write" |
                 "rsi_method_propose" | "algorithm_propose") => return false,
             _ => {}
         }
@@ -1116,7 +1119,7 @@ async fn run_turn_body(
                     && operation["status"].as_str() == Some("completed")
                     && matches!(
                         operation["tool"].as_str(),
-                        Some("workspace_write" | "workspace_replace")
+                        Some("workspace_write" | "workspace_replace" | "workspace_replace_range")
                     )
             });
             if rsi_checkpoint_applies(tool_calls,has_write,rsi_decision_checkpoint) {
@@ -1137,7 +1140,7 @@ async fn run_turn_body(
             // requires an action; the model still authors oldText/newText.
             round_tools=rsi_final_edit_tools(&tool_definitions);
             if let Some(mut record)=state.store.get("execution",execution_id) {
-                record["rsiActionRetry"]["toolChoice"]=json!("native_required_workspace_replace");
+                record["rsiActionRetry"]["toolChoice"]=json!("native_required_workspace_replace_range_or_exact");
                 state.store.put("execution",&record);
             }
         }
@@ -1334,7 +1337,7 @@ async fn run_turn_body(
             // offer one further choice, not a synthetic/automatic mutation.
             if rsi_generation_has_action_target(&session) && request.tools_execution_enabled
                 && !force_final && !rsi_final_edit_retry && round + 1 < max_rounds
-                && round_tools.iter().any(|tool| tool_name(tool)=="workspace_replace")
+                && round_tools.iter().any(|tool| matches!(tool_name(tool),"workspace_replace" | "workspace_replace_range"))
                 && rsi_read_only_completion(&state.store.all("execution_operation"), execution_id)
             {
                 rsi_final_edit_retry = true;
@@ -1344,7 +1347,7 @@ async fn run_turn_body(
                         completion.content.chars().take(1200).collect::<String>()}));
                 }
                 messages.push(json!({"role":"system","content":
-                    "지금까지 실제 소스 코드를 읽었으나 수정·재사용 방법 도구를 한 번도 실행하지 않았습니다. 현재 목표를 완주할 근거가 있다면 즉시 workspace_replace(oldText, newText)를 호출하여 실제 변경을 시도하세요. 코드 수정 대신 재사용 가능한 실제 절차를 찾았다면 rsi_method_propose를 호출할 수 있습니다. 근거가 없다면 파일을 수정했다고 주장하지 말고 마지막 답변에서 수정하지 못한 이유를 밝히세요. 같은 소스 구간을 다시 읽는 일만 반복하지 마세요."}));
+                    "실제 소스를 읽은 근거가 있으므로 확인한 줄 번호와 sourceSha256으로 workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 호출하세요. 원본 코드를 oldText로 다시 복사하지 않아도 됩니다. 수정 근거가 없다면 파일을 고쳤다고 주장하지 말고 이유를 최종 보고에 남기세요. 이미 읽은 코드를 검색만 반복하지 마세요."}));
                 if let Some(mut record)=state.store.get("execution",execution_id) {
                     record["rsiActionRetry"]=json!({"reason":"read_only_completion",
                         "issued":true,"priorRound":round});
@@ -1796,7 +1799,7 @@ async fn run_turn_body(
             }
             let mutating_call = matches!(
                 call.name.as_str(),
-                "workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec"
+                "workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write" | "shell_exec" | "terminal_exec"
             );
             let has_prior_read = completed_operations.iter().any(|operation| {
                 matches!(
@@ -1864,7 +1867,7 @@ async fn run_turn_body(
             // actually changed environment fingerprint.
             let mutating = matches!(
                 call.name.as_str(),
-                "workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec"
+                "workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write" | "shell_exec" | "terminal_exec"
                     | "github_api" | "delegate_task"
             );
             if mutating {
@@ -1951,7 +1954,7 @@ async fn run_turn_body(
                 failed_calls.remove(&call_key);
                 if matches!(
                     call.name.as_str(),
-                    "workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task"
+                    "workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task"
                 ) {
                     environment_version += 1;
                 }
@@ -1996,7 +1999,7 @@ async fn run_turn_body(
                         if tool_succeeded(result)
                             && matches!(
                                 selected["tool"].as_str(),
-                                Some("workspace_write" | "workspace_replace" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task")
+                                Some("workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write" | "shell_exec" | "terminal_exec" | "github_api" | "delegate_task")
                             )
                         {
                             environment_version += 1;
@@ -2742,7 +2745,7 @@ fn select_room_tools(
                 "삭제해", "삭제하", "만들어", "만들어줘", "작성해", "작성하",
                 "기록", "남겨", "write", "save", "edit", "delete", "create",
             ],
-            &["workspace_read", "workspace_read_range", "workspace_replace", "workspace_write", "file_write"],
+            &["workspace_read", "workspace_read_range", "workspace_replace", "workspace_replace_range", "workspace_write", "file_write"],
         ),
         (
             &["실행", "명령", "터미널", "빌드", "테스트", "설치", "shell", "run", "build", "test", "install"],
@@ -2811,7 +2814,7 @@ fn select_room_tools(
             .filter(|definition| {
                 matches!(
                     tool_name(definition),
-                    "workspace_list" | "workspace_read" | "workspace_read_range" | "workspace_replace" | "workspace_write" | "shell_exec" | "web_search"
+                    "workspace_list" | "workspace_read" | "workspace_read_range" | "workspace_replace" | "workspace_replace_range" | "workspace_write" | "shell_exec" | "web_search"
                 )
             })
             .collect();
@@ -2833,7 +2836,7 @@ fn select_tool_definitions(
         return definitions;
     }
     let default_core = [
-        "workspace_list", "workspace_read", "workspace_read_range", "workspace_replace", "workspace_write", "shell_exec",
+        "workspace_list", "workspace_read", "workspace_read_range", "workspace_replace", "workspace_replace_range", "workspace_write", "shell_exec",
         "web_search", "memory_store", "memory_search", "delegate_task",
         "task_status", "task_result",
     ];
@@ -3992,7 +3995,7 @@ async fn deterministic_tool(
     // dispatch path so the opt-in guard can see this read.
     let file_observation = if matches!(
         tool,
-        "workspace_read" | "workspace_read_range" | "file_read" | "workspace_replace" | "workspace_write"
+        "workspace_read" | "workspace_read_range" | "file_read" | "workspace_replace" | "workspace_replace_range" | "workspace_write"
     ) {
         result
             .as_object_mut()
@@ -4387,7 +4390,7 @@ async fn dispatch_tool_call(
         match outcome {
             Ok(value) => {
                 let mut value = value;
-                if matches!(call.name.as_str(), "workspace_read" | "workspace_read_range" | "file_read" | "workspace_replace" | "workspace_write") {
+                if matches!(call.name.as_str(), "workspace_read" | "workspace_read_range" | "file_read" | "workspace_replace" | "workspace_replace_range" | "workspace_write") {
                     file_observation = value.as_object_mut()
                         .and_then(|value| value.remove("fileObservation"));
                 }
@@ -6160,11 +6163,12 @@ mod harness_tool_selection_tests {
             json!({"type":"function","function":{"name":"code_search"}}),
             json!({"type":"function","function":{"name":"workspace_read_range"}}),
             json!({"type":"function","function":{"name":"workspace_replace"}}),
+            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
             json!({"type":"function","function":{"name":"rsi_method_propose"}}),
         ];
         let selected=rsi_final_edit_tools(&menu);
         assert_eq!(selected.len(),1);
-        assert_eq!(tool_name(&selected[0]),"workspace_replace");
+        assert_eq!(tool_name(&selected[0]),"workspace_replace_range");
         assert!(rsi_final_edit_tools(&[]).is_empty());
     }
 
@@ -6182,7 +6186,7 @@ mod harness_tool_selection_tests {
         assert!(rsi_read_only_completion(&[read.clone()],"r1"));
         assert!(!rsi_read_only_completion(&[read.clone()],"different"));
         assert!(!rsi_read_only_completion(&[],"r1"));
-        for action in ["workspace_replace","workspace_write",
+        for action in ["workspace_replace","workspace_replace_range","workspace_write",
             "rsi_method_propose","algorithm_propose"] {
             assert!(!rsi_read_only_completion(&[read.clone(),
                 json!({"runId":"r1","status":"failed","tool":action})],"r1"),
@@ -6201,7 +6205,7 @@ mod harness_tool_selection_tests {
         assert!(!rsi_checkpoint_applies(7,true,true),
             "verified edit ends the research checkpoint");
         assert!(!rsi_checkpoint_applies(3,false,false));
-        for name in ["workspace_replace", "workspace_write", "workspace_read_range", "rsi_method_propose", "algorithm_propose"] {
+        for name in ["workspace_replace", "workspace_replace_range", "workspace_write", "workspace_read_range", "rsi_method_propose", "algorithm_propose"] {
             assert!(rsi_checkpoint_tool(name), "{name} must stay available at the checkpoint");
         }
         for name in ["code_search", "shell_exec", "file_write", "web_search"] {
