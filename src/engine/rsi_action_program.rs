@@ -447,8 +447,9 @@ pub fn next_tool(program:&Value,ops:&[Value],execution_id:&str)->Option<(String,
                 && witnessed(op)
                 && op["result"]["sourceSha256"].as_str().is_some_and(|sha|
                     sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())));
-            return Some((if refreshed {"workspace_replace_range"}
-                else {"workspace_read_range"}.to_string(),
+            let next=if refreshed {"workspace_replace_range"}
+                else {"workspace_read_range"};
+            return Some((next.to_string(),
                 "observed_nonunique_oldtext_requires_versioned_range"));
         }
     }
