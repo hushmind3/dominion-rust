@@ -98,6 +98,7 @@ pub fn metric_cases()->Vec<Value>{
         ("memory-quality","memory","memory_ranking",false),
         ("long-recall-quality","memory","long_owner_recall",true),
         ("planning-quality","planning","planning_quality",true),
+        ("action-language-generalization","planning","action_language_generalization",true),
         ("search-quality","improver","improvement_search",true),
         ("group-chat-input-cost","context","group_chat_context_efficiency",true),
     ].into_iter().map(|(id,domain,name,holdout)|json!({

@@ -234,6 +234,65 @@ fn planning_quality() {
     metric(quality, started, json!({}));
 }
 
+/// Independent regression/generalization oracle for task decomposition.
+/// Frozen BEFORE model execution, identically compiled into baseline and
+/// candidate worktrees. It checks functional coverage, not model-generated
+/// tests or source-text similarity. Baselines may score poorly without making
+/// the test fail; comparison is decided by the paired runner.
+#[test]
+fn action_language_generalization() {
+    let cases: &[(&str, &[&str])] = &[
+        ("파일을 바꾸고 결과를 검증해",
+            &["파일을 바꾸고","결과를 검증해"]),
+        ("상태를 알리고 보고서를 작성해",
+            &["상태를 알리고","보고서를 작성해"]),
+        ("모델을 고르고 응답을 기록해",
+            &["모델을 고르고","응답을 기록해"]),
+        ("설정을 고치고 빌드를 실행해",
+            &["설정을 고치고","빌드를 실행해"]),
+        ("원본을 지우고 다시 만들고 검증해",
+            &["원본을 지우고","다시 만들고","검증해"]),
+        ("문서를 만들고 결과를 저장한 다음 검증해",
+            &["문서를 만들고","결과를 저장한","검증해"]),
+        ("파일을 읽고 로그를 남겨",
+            &["파일을 읽고","로그를 남겨"]),
+        ("서버를 켜고 로그를 보고 결과를 정리해",
+            &["서버를 켜고","로그를 보고","결과를 정리해"]),
+        ("최고 수준의 설계를 작성해",
+            &["최고 수준의 설계를 작성해"]),
+        ("교통사고 보고서를 확인해",
+            &["교통사고 보고서를 확인해"]),
+        ("최고 기술을 적용하고 결과를 분석해",
+            &["최고 기술을 적용하고","결과를 분석해"]),
+        ("사고 보고서를 만들고 기록해",
+            &["사고 보고서를 만들고","기록해"]),
+        ("1. 파일을 읽는다\n2. 코드를 고친다\n3. 결과를 검증한다",
+            &["파일을 읽는다","코드를 고친다","결과를 검증한다"]),
+        ("파일을 수정하고 빌드한 뒤 테스트해",
+            &["파일을 수정하고","빌드한","테스트해"]),
+    ];
+    let algorithm=json!({"implementation":"numbered-first",
+        "parameters":{"kernel":"numbered-first"}});
+    let started=Instant::now();
+    let mut successes=0usize;
+    for _ in 0..400 {
+        for (input, expected) in cases {
+            let result=decompose::decompose(input,&algorithm);
+            let actual=result["subtasks"].as_array()
+                .into_iter().flatten()
+                .filter_map(|item|item["text"].as_str())
+                .collect::<Vec<_>>();
+            if actual==*expected
+                && result["quality"]["orderPreserved"]==true {
+                successes+=1;
+            }
+        }
+    }
+    let quality=successes as f64/(400*cases.len()) as f64;
+    assert!((0.0..=1.0).contains(&quality));
+    metric(quality,started,json!({"generalizationCases":cases.len()}));
+}
+
 #[test]
 fn improvement_search() {
     let mut scenarios = vec![(Vec::<Value>::new(), "memory")];
