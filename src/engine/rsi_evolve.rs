@@ -2945,6 +2945,7 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     let base_action_program=synthesize_action_program(&rows);
     let mut exact=Arm::default();
     let mut range=Arm::default();
+    let mut function=Arm::default();
     let mut sources=BTreeSet::<String>::new();
     let mut transfer_domains=BTreeSet::<String>::new();
     let mut productive_reads=Vec::<u64>::new();
@@ -2957,7 +2958,8 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         for receipt in receipts.into_iter().flatten() {
             let arm=match receipt["tool"].as_str() {
                 Some("workspace_replace")=>&mut exact,
-                Some("workspace_replace_range" | "workspace_replace_function")=>&mut range,
+                Some("workspace_replace_range")=>&mut range,
+                Some("workspace_replace_function")=>&mut function,
                 _=>continue
             };
             arm.attempts+=1;
@@ -3010,7 +3012,12 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         // teach exploration without falsely proving either edit operator.
         if working.len()!=1 {continue;}
         let name=working.iter().next().unwrap();
-        let arm=if name=="workspace_replace" {&mut exact}else{&mut range};
+        let arm=match name.as_str() {
+            "workspace_replace"=>&mut exact,
+            "workspace_replace_range"=>&mut range,
+            "workspace_replace_function"=>&mut function,
+            _=>continue,
+        };
         if compiled_candidate {arm.candidates+=1;}
         if generation_is_verified(row) {arm.accepted+=1;}
         arm.tokens=arm.tokens.saturating_add(row["tokens"].as_u64().unwrap_or(0));
@@ -3028,7 +3035,8 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     };
     let exact_score=score(&exact);
     let range_score=score(&range);
-    let (preferred,why)=if exact.accepted>range.accepted {
+    let function_score=score(&function);
+    let (base_preferred,base_reason)=if exact.accepted>range.accepted {
         ("workspace_replace","measured_adoption")
     } else if range.accepted>exact.accepted {
         ("workspace_replace_range","measured_adoption")
@@ -3049,7 +3057,26 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     } else {
         ("workspace_replace_range","default_unmeasured")
     };
-    let fallback=if preferred=="workspace_replace" {
+    // Function-scoped changes are a third, independently measured arm.
+    // Never credit a function patch to the old line-range arm: it would
+    // teach future generations to choose the wrong editing primitive.
+    let base=if base_preferred=="workspace_replace" {&exact}else{&range};
+    let function_preferred=function.writes>0 && (
+        function.accepted>base.accepted
+        || (function.accepted==base.accepted && function.candidates>base.candidates)
+        || (function.accepted==base.accepted
+            && function.candidates==base.candidates
+            && function_score>score(base))
+    );
+    let (preferred,why)=if function_preferred {
+        ("workspace_replace_function",
+            if function.accepted>0 {"measured_function_adoption"}
+            else if function.candidates>0 {"verified_function_candidate"}
+            else {"observed_scoped_function_throughput"})
+    }else{(base_preferred,base_reason)};
+    let fallback=if preferred=="workspace_replace_function" {
+        if exact_score>range_score {"workspace_replace"}else{"workspace_replace_range"}
+    }else if preferred=="workspace_replace" {
         "workspace_replace_range"
     } else {"workspace_replace"};
     // A single real read-only episode can produce an executable edit trial.
@@ -3077,6 +3104,9 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         "workspace_replace_range":{"attempts":range.attempts,"confirmedWrites":range.writes,
             "checkedCandidates":range.candidates,"verifiedAdoptions":range.accepted,
             "rejectedCalls":range.rejected,"tokens":range.tokens},
+        "workspace_replace_function":{"attempts":function.attempts,"confirmedWrites":function.writes,
+            "checkedCandidates":function.candidates,"verifiedAdoptions":function.accepted,
+            "rejectedCalls":function.rejected,"tokens":function.tokens},
         "verifiedTransferObjectives":sources.len(),
         "verifiedTransferDomains":transfer_domains.len(),
         "productiveReadSamples":productive_reads.len(),
@@ -3085,7 +3115,7 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
     });
     let revision=crate::engine::memory::stable_id(&[
         &partition,&objective,preferred,&exploration_limit.to_string(),&evidence.to_string()]);
-    let learned=(exact.attempts+range.attempts)>0;
+    let learned=(exact.attempts+range.attempts+function.attempts)>0;
     json!({
         "id":format!("rsi-execution-method-{}",crate::engine::memory::stable_id(&[&partition,&objective])),
         "revision":revision,"kind":"rsi.execution_method",
@@ -3096,9 +3126,9 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         "programComparison":program_comparison,
         "reason":why,
         "status":if sources.len()>=2 && transfer_domains.len()>=2
-            && (exact.accepted+range.accepted)>=2 {
+            && (exact.accepted+range.accepted+function.accepted)>=2 {
             "measured_transfer_observed"
-        } else if exact.accepted+range.accepted>0 {"quality_evidence_observed"}
+        } else if exact.accepted+range.accepted+function.accepted>0 {"quality_evidence_observed"}
           else if learned {"trial_unverified"}else{"unmeasured_default"},
         "program":[
             {"step":"discover","maxToolCalls":exploration_limit},
@@ -5890,6 +5920,33 @@ mod tests {
         let other=json!({"rsiObjective":"브라우저 자동화 개선",
             "rsiKnowledgeSource":root,"rsiTargetDomain":"tools"});
         assert_eq!(learn_execution_method(&state,&other,&[])["status"],"unmeasured_default");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn actual_function_editor_receipts_train_separate_model_tool_selection() {
+        let (state,root)=state();
+        let input=json!({"rsiObjective":"Improve named source function",
+            "rsiKnowledgeSource":root,"rsiTargetDomain":"tools"});
+        let partition=research_scope(&input).partition_key;
+        let objective=crate::engine::memory::stable_id(&["Improve named source function"]);
+        state.store.put("rsi_run",&json!({
+            "id":"rsi-run-scoped-function-worker","jobId":"scoped-function-worker",
+            "candidateId":"scoped-candidate","checksPassed":true
+        })).unwrap();
+        let generation=json!({"id":"scoped-function-gen","jobId":"scoped-function-worker",
+            "knowledgePartition":partition,"objectiveId":objective,"domain":"tools",
+            "accepted":false,"attemptedCandidateId":"scoped-candidate",
+            "writeReceipts":[{"tool":"workspace_replace_function","written":true,
+                "status":"completed"}]});
+        let learned=learn_execution_method(&state,&input,&[generation]);
+        assert_eq!(learned["preferredTool"],"workspace_replace_function");
+        assert_eq!(learned["fallbackTool"],"workspace_replace_range");
+        assert_eq!(learned["evidence"]["workspace_replace_function"]["checkedCandidates"],1);
+        assert_eq!(learned["evidence"]["workspace_replace_range"]["checkedCandidates"],0,
+            "A function-scoped source change must not be attributed to line range editing");
+        assert_eq!(learned["status"],"trial_unverified",
+            "Compiler success is not independently adopted improvement");
         let _=std::fs::remove_dir_all(root);
     }
 
