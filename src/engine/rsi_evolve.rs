@@ -1316,8 +1316,20 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
         // the next model receives the previous hypothesis, its measured
         // verdict, and an explicit requirement to change the experiment.
         let selected=input["rsiTargetDomain"].as_str().unwrap_or("");
+        // A newer read-only / compile-failed generation must not erase the
+        // earlier compiler-passing candidate's concrete, unsolved holdout.
+        // Without prioritizing measured behavioral failure, the next worker
+        // keeps learning from the latest generic error instead of the actual
+        // unchanged user task (e.g. planning quality 0.75 -> 0.75).
+        let unsolved=|row:&&Value| row["accepted"]!=true
+            && row["candidateId"].is_string()
+            && row["evaluation"]["metrics"]["measurements"].as_array()
+                .is_some_and(|cases|cases.iter().any(unresolved_quality_case));
         if let Some(failure)=history.iter().rev().find(|row|
-            row["domain"]==selected && row["accepted"]!=true)
+                row["domain"]==selected && unsolved(row))
+            .or_else(||history.iter().rev().find(unsolved))
+            .or_else(||history.iter().rev().find(|row|
+                row["domain"]==selected && row["accepted"]!=true))
             .or_else(||history.iter().rev().find(|row|
                 row["accepted"]!=true && row["candidateId"].is_string()
                     && row["evaluation"]["metrics"]["metricGains"]==0)) {
@@ -3267,7 +3279,15 @@ async fn run_loop(
         save(context, record)?;
         if let Some(reason)=stopped {return Ok(reason.into());}
         if let Some(error)=generation_model_error(&current) {
-            return Err(error.to_string());
+            // A late provider failure after source bytes were written,
+            // compiled and independently paired-evaluated is not a reason
+            // to terminate the lineage before its next measured mutation.
+            // An unmeasured error still stops this campaign.
+            let paired=record["history"].as_array()
+                .and_then(|rows|rows.last())
+                .is_some_and(|last|last["evaluation"]["source"]
+                    =="server_invoked_local_paired_git_worktrees");
+            if !paired {return Err(error.to_string());}
         }
         if no_edit && should_stop_no_progress(streak, research, changed,
             record["nextTrialAlgorithmId"].is_string(),
