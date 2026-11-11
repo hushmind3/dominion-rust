@@ -103,6 +103,8 @@ if(mode==='probe'){
       editEvidence:g.editEvidence,diffBytes:g.diffBytes,captureError:g.captureError,
       editPolicy:g.editPolicy,programStages:g.programStages,
       ruleExecutions:g.ruleExecutions,toolTimeline:g.toolTimeline,
+      acceptedSourceHashes:g.acceptedSourceHashes,
+      competitionEvidence:g.editPolicy?.competitionEvidence,
       editMethodReward:g.editMethodReward,
       focusFiles:g.focusFiles,knowledgeId:g.knowledgeId,
       evaluation:g.evaluation?.metrics
@@ -152,6 +154,13 @@ if(mode==='probe'){
         && (g.editEvidence?.verifiedWrites||0)===0
         && countCalls(g,new Set(['code_search','workspace_read_range']))>0).length,
       independentlyVerifiedImprovement:accepted.some(g=>g.verdict==='improved'),
+      // Match the engine's actual policy reward: a generated controller
+      // cannot borrow credit from an edit it did not cause.
+      causallyAttributedRuleAdoptions:accepted.filter(g=>
+        (g.editPolicy?.rules||[]).length>0 && (g.editMethodReward||0)>=0.95
+        && (g.ruleExecutions||[]).length>0).length,
+      ruleComparisons:trace.generationEvidence.filter(g=>
+        g.competitionEvidence?.promotion===true).length,
       note:'CI completed does not imply an accepted model-generated RSI improvement'
     };
     trace.actualCompletion=trace.summary.independentlyVerifiedImprovement;
