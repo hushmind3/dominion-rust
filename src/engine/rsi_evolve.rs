@@ -2609,6 +2609,65 @@ fn select_evaluated_action_program(rows:&[Value],proposed:Value)->(Value,Value) 
         "comparisons":reports}))
 }
 
+/// Success-derived algorithm invention: when independently adopted edits
+/// repeatedly bypass an investigation tool yet still use a real source read,
+/// compose a *shorter* trial method. This is program ablation inferred from
+/// observed execution, not a claim that shortening improves holdout quality.
+/// The existing matched parent/child evaluator determines later promotion.
+fn compress_successful_action_program(mut program:Value, rows:&[Value])->Value {
+    // Never override a descendant currently being repaired after failures.
+    if program["mutatedFrom"].is_string(){return program;}
+    let Some(revision)=program["revision"].as_str().map(str::to_string) else{return program;};
+    let mut sequence=program["sequence"].as_array().cloned().unwrap_or_default();
+    let Some(search_position)=sequence.iter().position(|step|step=="code_search") else{return program;};
+    // A read must remain before source changes: it grounds edit ranges and
+    // their SHA, so compression only removes genuinely redundant discovery.
+    if !sequence.iter().skip(search_position+1).any(|step|step=="workspace_read_range") {
+        return program;
+    }
+    let mut verified_jobs=BTreeSet::<String>::new();
+    let mut witnessed_domains=BTreeSet::<String>::new();
+    for row in rows {
+        if observed_induced_program(row)!=Some(revision.as_str())
+            || !generation_is_verified(row)
+            || row["sourceContextChars"].as_u64().unwrap_or(0)==0
+            || row["parentContextFit"]["sourceExcerptDeferred"]==true
+        {continue;}
+        let Some(job)=row["jobId"].as_str().filter(|id|!id.is_empty()) else{continue;};
+        let Some(trace)=row["actionTrace"].as_array() else{continue;};
+        let Some(edit_position)=trace.iter().position(|step|
+            step["executed"]==true && step["sourceChanged"]==true
+            && matches!(step["tool"].as_str(),
+                Some("workspace_replace"|"workspace_replace_range"|"workspace_write")))
+        else{continue;};
+        let before=&trace[..edit_position];
+        let grounded=before.iter().any(|step|
+            step["tool"]=="workspace_read_range" && step["executed"]==true);
+        let searched=before.iter().any(|step|
+            step["tool"]=="code_search" && step["executed"]==true);
+        if grounded && !searched {
+            verified_jobs.insert(job.to_string());
+            if let Some(domain)=row["domain"].as_str(){witnessed_domains.insert(domain.to_string());}
+        }
+    }
+    if verified_jobs.len()<2 {return program;}
+    sequence.remove(search_position);
+    let updated=crate::engine::memory::stable_id(&[
+        &json!([&sequence,&program["onFailure"],&program["recoveryPaths"]]).to_string()]);
+    if updated==revision{return program;}
+    program["revision"]=json!(updated);
+    program["sequence"]=json!(sequence);
+    program["mutatedFrom"]=json!(revision);
+    program["mutationOperator"]=json!("success_derived_discovery_ablation");
+    program["status"]=json!("trial_success_compression_unverified");
+    program["successfulShortcutEvidence"]=json!({
+        "verifiedIndependentJobs":verified_jobs.len(),
+        "observedDomains":witnessed_domains.into_iter().collect::<Vec<_>>(),
+        "removed":"code_search","preserved":"workspace_read_range"
+    });
+    program
+}
+
 /// Induce a new *execution method*, not a new model weight or a replayed
 /// patch. Concrete edit receipts are training examples; independent paired
 /// evidence, when present, outweighs mere file writes. The result controls
@@ -2730,7 +2789,8 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         "workspace_replace_range"
     } else {"workspace_replace"};
     let proposal=evolve_stalled_action_program(base_action_program,&rows,preferred);
-    let (action_program,program_comparison)=select_evaluated_action_program(&rows,proposal);
+    let proposed=compress_successful_action_program(proposal,&rows);
+    let (action_program,program_comparison)=select_evaluated_action_program(&rows,proposed);
     // General autonomous research (without an explicit source focus) uses
     // this learned call limit to exit unproductive discovery. A single
     // episode is not an improvement claim; later generations measure it.
