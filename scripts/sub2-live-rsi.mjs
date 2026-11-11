@@ -86,6 +86,8 @@ function observedGeneration(g) {
     })),
     editActions: g?.editActions || [],
     sourceDiffBytes: g?.sourceDiffBytes ?? null,
+    novelSourceDiffBytes: g?.novelSourceDiffBytes ?? null,
+    inheritedPatchUnchanged: g?.inheritedPatchUnchanged === true,
     sourceCaptureError: g?.sourceCaptureError ?? null,
     unverifiedCandidateId: g?.unverifiedCandidateId ?? null,
     staticChecksPassed: g?.staticChecksPassed === true,
@@ -155,9 +157,9 @@ async function main() {
   const job = await json(base + "/api/rsi/start", "POST", {
     mode: "continuous", confirmation: "START_RSI_EVOLUTION",
     providerId: receipt.providerId, model, selectionPolicy: "automatic",
-    request: "개선 대상은 DOMINION의 실제 기억 검색 품질입니다. src/engine/memory.rs에서 기존 검색 정확도나 속도를 낮추는 가장 구체적인 원인 하나를 찾아 실제 코드 변경으로 해결하세요. 코드 인덱스와 제공된 발췌를 재사용하고, 새로운 설명이나 조사만 반복하지 마세요. 수정 증거는 workspace_replace를 실행해 남기세요. 모든 기존 회상 기능을 유지하면서 동결 평가에서 정확도 또는 성능 개선을 만들어야 합니다.",
+    request: "src/engine/memory.rs의 bm25_scores 함수를 실제로 최적화하세요. 현재 구현은 query_terms 각 항목마다 documents 전체를 두 번 순회하고 term별 Vec<f64>를 할당한 뒤 fold합니다. 정확히 같은 BM25 결과와 모든 기억 회상 기능을 유지하면서 중간 Vec 할당을 줄이고 계산을 재사용하는 작은 Rust 수정 1개를 구현하세요. 제공된 코드 인덱스에서 bm25_scores 위치를 찾아 현재 함수 원문을 정확히 읽고, workspace_replace의 path/startLine/endLine/newText/expectedSha256 인자로 실제 파일을 수정하세요. 네이티브 함수 호출이 불가능하면 정확히 동일한 인자들의 단일 JSON 객체로 출력하세요. 설명이나 조사로 완료하지 마세요. 저장 후 Rust 컴파일과 동결 비교 품질 판정은 엔진이 독립 실행합니다.",
     focusFiles: ["src/engine/memory.rs"],
-    maxAttempts: 4, tokenBudget: 120_000, timeBudgetSeconds: 1500,
+    maxAttempts: 2, tokenBudget: 85_000, timeBudgetSeconds: 1800,
   }, 120_000);
   receipt.campaignId = job.id;
   if (!receipt.campaignId) throw new Error("No native RSI job ID returned");
