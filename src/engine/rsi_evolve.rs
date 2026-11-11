@@ -4242,6 +4242,29 @@ async fn run_loop(
         save(context, record)?;
         if let Some(reason)=stopped {return Ok(reason.into());}
         if let Some(error)=generation_model_error(&current) {
+            let remaining=record["limits"]["timeBudgetSeconds"].as_u64()
+                .map(|limit|limit.saturating_sub(started.elapsed().as_secs()
+                    .saturating_sub(record["waitingMs"].as_u64().unwrap_or(0)/1000)))
+                .unwrap_or(u64::MAX);
+            let retries=record["modelErrorRecoveryCount"].as_u64().unwrap_or(0);
+            if retry_learned_model_failure(
+                error, &generation, pending_repair.is_some(),
+                retries, remaining,
+                record["attempts"].as_u64().unwrap_or(0),
+                record["limits"]["maxAttempts"].as_u64().unwrap_or(10)
+            ) {
+                record["modelErrorRecoveryCount"]=json!(retries+1);
+                record["lastModelErrorRecovery"]=json!({
+                    "failedGenerationJobId":child_id,
+                    "error":error,
+                    "learnedMethodId":pending_repair.as_ref().map(|m|m["id"].clone()),
+                    "remainingSeconds":remaining,
+                    "note":"one_followup_descendant_trial_not_a_source_improvement"
+                });
+                record["phase"]=json!("learned_source_failure_recovery");
+                save(context,record)?;
+                continue;
+            }
             return Err(error.to_string());
         }
         let trial_pending=record["nextTrialAlgorithmId"].as_str().is_some_and(|id|
@@ -4256,6 +4279,26 @@ async fn run_loop(
             return Ok("no_progress".into());
         }
     }
+}
+
+/// A terminal per-turn model timeout must not discard an executable source
+/// repair that DOMINION just induced from real tool failures. Permit at most
+/// one descendant attempt if there is still meaningful owner time and another
+/// generation slot. Provider outages and errors without observed failed edits
+/// remain terminal. Learning a method is not an independently measured gain.
+fn retry_learned_model_failure(
+    error:&str, generation:&Value, has_method:bool, recovery_count:u64,
+    remaining_seconds:u64, attempts:u64, maximum_attempts:u64,
+)->bool {
+    let timed_out=error.contains("시간 제한")
+        || error.contains("timed out")
+        || error.contains("timeout");
+    let failed_edit=generation["actionObservation"]["failedEditCalls"]
+        .as_u64().unwrap_or(0)>0
+        || generation["editActions"].as_array().is_some_and(|rows|
+            rows.iter().any(|row|row["status"]=="failed" && row["written"]!=true));
+    timed_out && failed_edit && has_method && recovery_count<1
+        && remaining_seconds>=120 && attempts<maximum_attempts
 }
 
 /// Empty strings are not model errors; a research-only generation sets the
@@ -8316,6 +8359,28 @@ mod tests {
         unrelated["arguments"]["startLine"]=json!(140);
         assert!(synthesize_failed_reversed_span(&session,&unrelated,&generation).is_none());
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn witnessed_model_timeout_can_run_one_inherited_fix_not_repeat_full_research() {
+        let failed=json!({"actionObservation":{"failedEditCalls":2},
+            "editActions":[{"status":"failed","written":false}],
+            "candidateId":null,"accepted":false});
+        assert!(retry_learned_model_failure(
+            "실행 시간 제한(10분)을 초과했습니다.",&failed,true,0,300,1,4));
+        assert!(!retry_learned_model_failure(
+            "실행 시간 제한(10분)을 초과했습니다.",&failed,false,0,300,1,4));
+        assert!(!retry_learned_model_failure(
+            "실행 시간 제한(10분)을 초과했습니다.",&failed,true,1,300,1,4));
+        assert!(!retry_learned_model_failure(
+            "실행 시간 제한(10분)을 초과했습니다.",&failed,true,0,119,1,4));
+        assert!(!retry_learned_model_failure(
+            "실행 시간 제한(10분)을 초과했습니다.",&failed,true,0,300,4,4));
+        assert!(!retry_learned_model_failure(
+            "provider authentication failed",&failed,true,0,300,1,4));
+        let never_tried=json!({"actionObservation":{"failedEditCalls":0},"editActions":[]});
+        assert!(!retry_learned_model_failure(
+            "model timeout",&never_tried,true,0,300,1,4));
     }
 
     #[test]
