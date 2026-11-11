@@ -7200,6 +7200,14 @@ mod tests {
             assert_eq!(candidate["status"],"candidate");
             assert_eq!(candidate["successfulApplications"],0);
             assert_eq!(candidate["synthesis"]["qualityGain"],Value::Null);
+            state.store.put("rsi_candidate",&json!({"id":"unrelated-accepted",
+                "status":"verified","paths":["src/engine/unrelated.rs"],
+                "evaluation":{"metrics":{"eligible":true}}})).unwrap();
+            let mut unrelated=generation.clone();
+            unrelated["candidateId"]=json!("unrelated-accepted");
+            assert!(synthesize_successful_dag_ablation(
+                &state,&method,&receipt,&[read.clone(),edit.clone()],&unrelated).is_none(),
+                "a successful but unrelated method must not inherit a different source change");
             assert_eq!(candidate["verification"]["nodes"].as_array().unwrap().len(),1);
             assert_eq!(candidate["verification"]["edges"],json!([]));
             let (node,tool,args)=crate::engine::procedure::ready_intent(
