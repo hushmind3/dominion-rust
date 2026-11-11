@@ -7924,6 +7924,66 @@ mod tests {
     }
 
     #[test]
+    fn method_scheduler_learns_evidence_weighted_utility_not_lifetime_popularity() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root.join("src").to_string_lossy(),
+            "rsiObjective":"memory improve"});
+        let method=|id:&str,kind:&str,wins:usize,trials:usize|{
+            let mut applications=Vec::new();
+            for i in 0..trials {
+                let accepted=i<wins;
+                applications.push(json!({"accepted":accepted,
+                    "postconditionsPassed":accepted,
+                    "methodWroteAcceptedCandidate":accepted}));
+            }
+            json!({"id":id,"revision":id,"name":id,
+                "domain":"memory","status":"executable",
+                "assistanceMode":"harness_assisted",
+                "successfulApplications":wins,
+                "applications":applications,
+                "synthesis":{"kind":kind},
+                "verification":{"type":"procedure",
+                    "appliesTo":{"requestContains":["memory"]},
+                    "nodes":[{"id":"edit","tool":"workspace_replace",
+                        "arguments":{"path":"src/engine/memory.rs",
+                            "startLine":1,"endLine":1,
+                            "newText":"fn improved() {}","expectedSha256":null}}],
+                    "after":[{"kind":"file_contains",
+                        "path":"src/engine/memory.rs","text":"improved"}]}})
+        };
+        let historical=method("historical","stale_source_rebase",6,20);
+        let efficient=method("efficient","indexed_source_rebase",2,2);
+        let (observations,coefficient)=method_selection_feedback(
+            &[historical.clone(),efficient.clone()]);
+        assert_eq!(observations,22);
+        assert!(coefficient>0.20 && coefficient<0.45);
+        assert!(method_observed_selection_score(
+            &efficient,observations,coefficient)
+                >method_observed_selection_score(
+                    &historical,observations,coefficient));
+        state.store.put("experience",&json!({"id":"observed-methods",
+            "status":"active","partitionKey":research_scope(&input).partition_key,
+            "executableMethods":[historical,efficient]})).unwrap();
+        let selected=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(selected["repairMethodId"],"efficient",
+            "fewer but more reliable adopted changes must outrank raw usage counts");
+        assert_eq!(selected["methodIds"].as_array().unwrap().len(),1,
+            "alternative source-edit programs may not mutate one path together");
+        assert_eq!(selected["repairSelectionEvidence"]["selectionPolicy"],
+            "observed_method_outcomes_posterior_v1");
+        assert_eq!(selected["repairSelectionEvidence"]["selectionPolicyTrials"],22);
+        let (n_old,e_old)=method_selection_feedback(
+            &[method("a","stale_source_rebase",8,8)]);
+        let (n_bad,e_bad)=method_selection_feedback(
+            &[method("a","stale_source_rebase",8,20)]);
+        assert_eq!(n_old,8);
+        assert_eq!(n_bad,20);
+        assert!(e_bad>e_old,
+            "after more observed failures the next scheduler explores more");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn pruning_preserves_predecessor_successor_dependencies() {
         let (state,root)=state();
         let path="src/engine/memory.rs";
