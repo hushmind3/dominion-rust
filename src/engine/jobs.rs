@@ -606,7 +606,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     context.checkpoint(json!({"sessionId":session_id,"promptState":{"inFlight":true}}))?;
     let request = TurnRequest {
         session_id: Some(session_id.clone()),
-        input: if rsi_workspace.is_some() { format!("{prompt}{reused_research}{repair_instruction}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. 개선 근거가 있을 때 workspace_replace 또는 workspace_replace_range로 수정하세요. workspace_replace_range는 workspace_read_range가 제공한 파일 SHA와 줄 번호를 사용하고 새 코드만 전달합니다. 변경이 불가능하면 실제 도구 오류를 설명하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.") } else { prompt },
+        input: if rsi_workspace.is_some() { format!("{prompt}{reused_research}{repair_instruction}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. 개선 근거가 있을 때 workspace_replace 또는 workspace_replace_range로 수정하세요. workspace_replace_range는 workspace_read_range에서 읽은 파일의 수정 범위와 newText를 사용합니다. 모델이 SHA를 누락해도 엔진이 같은 파일의 실제 읽기 영수증에서 자동 연결하고, 쓰기 직전에 파일 버전을 다시 검사합니다. 변경이 불가능하면 실제 도구 오류를 설명하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.") } else { prompt },
         agent_id: input
             .get("agentId")
             .and_then(|value| value.as_str())
