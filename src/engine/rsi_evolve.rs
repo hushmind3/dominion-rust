@@ -1824,11 +1824,19 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
             if let Some(programs)=policy["executionPrograms"].as_array_mut() {
                 programs.retain(|program| !rejected_ids.contains(&program["id"]));
             }
-            rescore_execution_programs(&mut policy);
+            // Quality measured while a frozen cohort was running also
+            // evolves the generator to be used by the next descendant. No
+            // measurement means no gratuitous change to the frozen winner.
+            if policy["programMeasuredEvidence"].as_array().is_some_and(|rows|!rows.is_empty()) {
+                refresh_adaptive_execution_programs(&mut policy);
+            } else {
+                rescore_execution_programs(&mut policy);
+            }
             // A later quality observation may change ranking after the
             // A/B snapshot. Keep its full history and mark the new revision
             // as a candidate rather than claiming it was the tested winner.
             let changed=policy["executionPrograms"]!=cohort["policy"]["executionPrograms"]
+                || policy["programSynthesisGrammar"]!=cohort["policy"]["programSynthesisGrammar"]
                 || policy["decisionGrammar"]!=cohort["policy"]["decisionGrammar"]
                 || policy["decisionNodes"]!=cohort["policy"]["decisionNodes"];
             if changed {
@@ -1836,6 +1844,7 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
                     &policy["transitions"],&policy["executionPrograms"],
                     &policy["programMeasuredEvidence"],&policy["rejectedProgramIds"],
                     &policy["programMutations"],&policy["decisionGrammar"],
+                    &policy["programSynthesisGrammar"],
                     &policy["decisionNodes"],&policy["decisionRuleEvidence"],
                     &policy["scoringKernel"]
                 ]).to_string().as_bytes())));
@@ -2790,6 +2799,10 @@ fn record_measured_program_feedback(
         crate::engine::memory::stable_id(&[&research_scope(input).partition_key]));
     let mut policy=state.store.get("rsi_method_policy",&id)?;
     let programs=policy["executionPrograms"].as_array()?.clone();
+    // A frozen cohort may have executed a program since retired from the
+    // evolving live policy. Its real receipt must still teach the generator.
+    let frozen=generation["methodPolicyTrial"]["policy"]["executionPrograms"]
+        .as_array().cloned().unwrap_or_default();
     let seen=policy["programMeasuredEvidence"].as_array().cloned().unwrap_or_default();
     let mut updated=seen.clone();
     let mut credited=Vec::<Value>::new();
@@ -2805,16 +2818,16 @@ fn record_measured_program_feedback(
             continue;
         }
         let Some(program_id)=receipt["executionProgramId"].as_str() else{continue};
-        if !programs.iter().any(|program|program["id"].as_str()==Some(program_id)) {
-            continue;
-        }
+        let Some(program)=frozen.iter().chain(programs.iter())
+            .find(|program|program["id"].as_str()==Some(program_id)) else{continue};
         if updated.iter().any(|row|row["jobId"]==job_id && row["programId"]==program_id) {
             continue;
         }
-        let program=programs.iter().find(|program|program["id"]==program_id).unwrap();
         let row=json!({"jobId":job_id,"programId":program_id,
             "programSteps":program["steps"],
-            "generatorRevision":policy["programSynthesisGrammar"]["revision"],
+            "generatorRevision":if program["generatorRevision"].is_string() {
+                program["generatorRevision"].clone()
+            }else{policy["programSynthesisGrammar"]["revision"].clone()},
             "policyRevision":receipt["revision"],"domain":generation["domain"],
             "generatorCommit":generation["generatorCommit"],
             "operationIds":receipt["effectOperationIds"],
