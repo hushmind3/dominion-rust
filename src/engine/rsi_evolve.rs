@@ -3160,6 +3160,8 @@ async fn run_loop(
             "diffBytes":current["result"]["rsi"]["diffBytes"],
             "captureError":current["result"]["rsi"]["captureError"],
             "repairFailure":current["result"]["repairError"],
+            "nativeMutation":current["result"]["nativeMutation"],
+            "candidateOrigin":current["result"]["rsi"]["candidateOrigin"],
             "compilerRepairReceipts":current["result"]["compilerRepairReceipts"],
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         generation.as_object_mut().expect("generation object")
