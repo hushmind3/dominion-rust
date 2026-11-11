@@ -181,6 +181,9 @@ if(mode==='probe'){
         typeof g.inheritedCandidateId==='string'
         && g.inheritedPatchChanged===true
         && (g.editEvidence?.verifiedWrites||0)>0).length,
+      inheritedSourceAdoptions:accepted.filter(g=>
+        typeof g.inheritedCandidateId==='string'
+        && g.inheritedPatchChanged===true).length,
       rawRegisteredCandidates:trace.generationEvidence.filter(g=>
         typeof g.verification?.rawCandidateId==='string').length,
       compileRejectedGenerations:trace.generationEvidence.filter(g=>
