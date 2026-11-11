@@ -509,7 +509,13 @@ fn run_status(
     // drives the next generation's source-repair method.
     if audit_failed{return ("needs_review","unsafe_safety_failed");}
     if !checks_passed{return ("needs_review","build_or_typecheck_failed");}
-    if !model_error.is_empty(){return ("needs_review","model_error");}
+    // A real patch that passed an independent compiler verification can be
+    // compared even if the provider failed during its final prose turn.
+    // A user-initiated cancellation remains a hard stop.
+    if model_error.contains("중단") || model_error.contains("cancelled")
+        || model_error.contains("canceled") {
+        return ("needs_review","model_error");
+    }
     ("completed","candidate_compiles_not_performance_verified")
 }
 
@@ -980,7 +986,8 @@ mod tests {
         assert_eq!(run_status(true,false,true,true,"",""),("needs_review","unsafe_safety_failed"));
         assert_eq!(run_status(true,true,false,true,"",""),("completed","candidate_compiles_not_performance_verified"));
         assert_eq!(run_status(true,true,false,false,"","").0,"needs_review");
-        assert_eq!(run_status(true,true,false,true,"provider timeout","").0,"needs_review");
+        assert_eq!(run_status(true,true,false,true,"provider timeout","").0,"completed");
+        assert_eq!(run_status(true,true,false,true,"cancelled by user","").0,"needs_review");
         assert_eq!(run_status(false,true,false,true,"","invalid diff").0,"needs_review");
         let failing=json!({"status":"needs_review","reason":"build_or_typecheck_failed",
             "rsi":{"sourceClean":true,"captureError":"","modelError":"",
