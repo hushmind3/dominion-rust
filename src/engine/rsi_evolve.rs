@@ -5547,6 +5547,48 @@ mod tests {
     }
 
     #[test]
+    fn adopted_meta_operator_changes_a_new_domains_executable_program() {
+        let parent=json!({"revision":"root-method",
+            "sequence":["code_search","workspace_read_range","workspace_replace_range"],
+            "onFailure":[],"recoveryPaths":[]});
+        let generation=|job:&str,domain:&str,accepted:bool|{
+            let execution=format!("exec-{job}");
+            json!({"id":job,"jobId":job,"domain":domain,
+                "accepted":accepted,"pairedRevalidated":accepted,
+                "evaluation":{"candidateStatus":"verified",
+                    "measurementScope":"frozen_native_cases_only",
+                    "metrics":{"eligible":true,"holdoutCases":2,"regressions":0}},
+                "executionMethod":{"actionProgram":{
+                    "revision":"source-revision",
+                    "mutationOperator":"success_derived_discovery_ablation"}},
+                "methodActions":[{"executionId":execution,
+                    "inducedProgramDecision":{"programRevision":"source-revision",
+                        "chosenTool":"workspace_replace_range","actionCount":0}}],
+                "actionTrace":[{"runId":execution,"opSeq":1,
+                    "tool":"workspace_replace_range","status":"completed"}]})
+        };
+        let one=generation("job-a","memory",true);
+        let two=generation("job-b","tools",true);
+        let transferred=transfer_verified_mutation_operator(parent.clone(),
+            &[one.clone(),two.clone()]);
+        assert_eq!(transferred["sequence"],
+            json!(["workspace_read_range","workspace_replace_range"]));
+        assert_eq!(transferred["metaTransfer"]["operator"],
+            "omit_redundant_discovery");
+        assert_eq!(transferred["mutatedFrom"],"root-method");
+        assert_ne!(transferred["revision"],parent["revision"]);
+        assert_eq!(transferred["status"],"trial_cross_domain_meta_operator");
+        assert_eq!(transfer_verified_mutation_operator(parent.clone(),
+            &[one.clone()])["revision"],"root-method");
+        assert_eq!(transfer_verified_mutation_operator(parent.clone(),
+            &[one.clone(),generation("job-b","tools",false)])["revision"],
+            "root-method","Unverified outcomes cannot train the meta-operator");
+        assert_eq!(transfer_verified_mutation_operator(parent,
+            &[one,generation("job-c","memory",true)])["revision"],"root-method",
+            "The same domain twice is not cross-domain transfer");
+    }
+
+    #[test]
     fn independent_matched_source_program_trials_promote_only_measured_quality() {
         let root=json!({"revision":"root","sequence":["workspace_read_range",
             "workspace_replace"],"status":"trial_unverified"});
