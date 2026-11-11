@@ -113,8 +113,20 @@ pub(crate) fn induce(
     }else{
         return Ok(None);
     };
+    // The exact same code transformation is deterministic. A rejected
+    // source hash/operator pair must not loop forever as a new generation.
+    // Keep each repository partition isolated from other users' histories.
+    let repository=source.to_string_lossy().to_string();
+    let before=digest(&existing);
+    let already_measured=state.store.all("rsi_mutation").iter().any(|trial|
+        trial["sourceDir"].as_str()==Some(repository.as_str())
+            && trial["beforeSha256"].as_str()==Some(before.as_str())
+            && trial["operator"].as_str()==Some(operator)
+            && trial["evaluation"].is_object());
+    if already_measured { return Ok(None); }
     let receipt = json!({
-        "id": job_id, "operator": operator,
+        "id": job_id, "operator": operator, "sourceDir": repository,
+        "campaignId": input["rsiCampaignId"],
         "origin": "native_inductive_source_mutation",
         "path": relative, "beforeSha256": digest(&existing),
         "afterSha256": digest(&transformed),
@@ -131,6 +143,18 @@ pub(crate) fn induce(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn current_engine_has_two_distinct_source_generations() {
+        let original=include_str!("room_state.rs");
+        let first=hoist_invariant_query_terms(original).expect("first source generation");
+        assert_ne!(first,original);
+        let second=hoist_invariant_query_domain(&first).expect("descendant source generation");
+        assert_ne!(second,first);
+        assert!(second.contains("let asked_domain = fact_domain(query);"));
+        assert!(hoist_invariant_query_terms(&second).is_none());
+        assert!(hoist_invariant_query_domain(&second).is_none());
+    }
+
     #[test]
     fn derives_new_query_domain_hoist_after_first_generation() {
         let source=r#"fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>) -> usize {
