@@ -765,6 +765,43 @@ fn search_code_index(
     Ok(json!({"query":query,"indexId":index_id,"indexedFiles":meta["files"],"matchCount":matches.len(),"matches":matches}))
 }
 
+/// For an isolated RSI Rust patch, parse the *proposed bytes* before they
+/// become a verified source write. This does not run the frozen evaluator or
+/// edit the target file. Invalid syntax is fed back to the SAME model turn,
+/// so the tool budget can repair it without a costly full cargo build.
+async fn rsi_rust_syntax_failure(
+    ctx: &ToolContext<'_>, path: &Path, proposed: &str,
+) -> Option<Value> {
+    if path.extension().and_then(|ext|ext.to_str())!=Some("rs")
+        || !ctx.store.get("session",ctx.session_id)
+            .is_some_and(|session|session["rsiRun"]==true) {
+        return None;
+    }
+    use tokio::io::AsyncWriteExt;
+    let mut command=tokio::process::Command::new("rustfmt");
+    command.args(["--emit","stdout","--edition","2021"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    // A system without rustfmt retains the independent cargo-check path.
+    let Ok(mut child)=command.spawn() else {return None};
+    if let Some(mut stdin)=child.stdin.take() {
+        if stdin.write_all(proposed.as_bytes()).await.is_err() {return None;}
+    }
+    let Ok(Ok(output))=tokio::time::timeout(
+        Duration::from_secs(5),child.wait_with_output()).await else {return None};
+    if output.status.success() {return None;}
+    let diagnostic=String::from_utf8_lossy(&output.stderr);
+    Some(json!({
+        "path":path.to_string_lossy(),
+        "written":false,"syntaxInvalid":true,
+        "error":format!(
+            "Rust source was NOT written: syntax parsing failed. Repair the specific compiler-like error and retry with the CURRENT sourceSha256: {}",
+            diagnostic.chars().take(1100).collect::<String>()),
+    }))
+}
+
 async fn replace_text(
     ctx: &ToolContext<'_>,
     path: &Path,
@@ -788,6 +825,9 @@ async fn replace_text(
         }));
     }
     let updated = text.replacen(old_text, new_text, 1);
+    if let Some(error)=rsi_rust_syntax_failure(ctx,path,&updated).await {
+        return Ok(error);
+    }
     let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
     result["replaced"] = json!(true);
     result["replacedChars"] = json!(old_text.chars().count());
@@ -848,6 +888,9 @@ async fn replace_range(
                 "error":"The proposed replacement left source bytes unchanged. Write a different implementation, not the original source."}));
         }
         return Ok(json!({"path":path.to_string_lossy(), "written":false, "unchanged":true}));
+    }
+    if let Some(error)=rsi_rust_syntax_failure(ctx,path,&updated).await {
+        return Ok(error);
     }
     let mut result = checked_write(ctx, path, &updated, run_id, true, Some(expected_sha256)).await?;
     if result["written"] == true {
