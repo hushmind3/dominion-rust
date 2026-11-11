@@ -3058,7 +3058,13 @@ fn select_generation_strategy(
     generator_commit: &str,
 ) -> (String, &'static str, Value) {
     let active = crate::engine::algorithms::active(state, "selfimprove.search");
-    if let Some(domain) = continuation {
+    // A queued executable policy trial must not be starved by a further
+    // research-only turn. It still needs independent measurement before credit.
+    let queued_trial = trial_id.as_deref()
+        .and_then(|id|state.store.get("algorithm",id))
+        .is_some_and(|candidate|matches!(candidate["rsiTrial"]["status"].as_str(),
+            Some("pending_trial" | "pending_second_trial")));
+    if let Some(domain) = continuation.filter(|_|!queued_trial) {
         return (domain, "research_continuation", Value::Null);
     }
     if let Some(id) = trial_id {
@@ -3079,6 +3085,24 @@ fn select_generation_strategy(
             let generation = json!({"domain":domain,"generatorCommit":generator_commit});
             if comparable_trial_baseline(history, &generation, &algorithm).is_some() {
                 return (domain, "algorithm_trial", search_strategy(&algorithm, "trial"));
+            }
+            // Two distinct no-patch controls for this candidate cannot become
+            // a measurable baseline. Actually exercise the different search
+            // policy once; the attempt is exploratory, never promotion proof.
+            let barren_controls=history.iter()
+                .filter(|row|row["generatorCommit"]==generator_commit
+                    && row["domain"]==domain
+                    && row["domainSelection"]=="algorithm_active"
+                    && row["candidateId"].is_null() && row["accepted"]==false
+                    && row["searchStrategy"]["pendingCandidateId"]==algorithm["id"])
+                .filter_map(|row|row["jobId"].as_str().filter(|id|!id.is_empty()))
+                .collect::<BTreeSet<_>>().len();
+            if barren_controls>=2 && algorithm["rsiTrial"]["trials"].as_array()
+                .is_none_or(Vec::is_empty) {
+                let mut exploratory=search_strategy(&algorithm,"trial");
+                exploratory["trialFallback"]=json!("exploratory_after_two_no_patch_controls");
+                exploratory["policyEvidence"]=json!("unpaired_exploration_not_promotion");
+                return (domain,"algorithm_trial",exploratory);
             }
             // Bootstrap a control on the SAME target domain the candidate
             // would evaluate. Choosing the active algorithm's unrelated domain
@@ -5700,5 +5724,46 @@ mod tests {
         history.push(json!({"domain":"tools","accepted":false,
             "candidateId":null,"newFindings":1}));
         assert_eq!(research_continuation(&history).as_deref(),Some("tools"));
+    }
+
+    #[test]
+    fn barren_active_controls_trigger_one_real_policy_trial_without_false_promotion() {
+        let (state,root)=state();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"escape-stalled-search",
+            "source":"rsi-generated","implementation":"expression",
+            "parameters":{"expression":"novelty * 5 + exploration"}
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap().to_string();
+        let queued=queue_search_trial(&state,&candidate,
+            &crate::engine::algorithms::active(&state,"selfimprove.search").unwrap(),
+            &[],"","campaign-explore",1);
+        assert_eq!(queued["status"],"pending_trial");
+        let first=json!({"jobId":"control-one","domain":"memory",
+            "generatorCommit":"commit-1","domainSelection":"algorithm_active",
+            "candidateId":null,"accepted":false,"evaluation":null});
+        let second=json!({"jobId":"control-two","domain":"memory",
+            "generatorCommit":"commit-1","domainSelection":"algorithm_active",
+            "candidateId":null,"accepted":false,"evaluation":null});
+        // Force an explicit domain constraint; the policy has no evaluated
+        // active control after two attempts and must get to execute itself.
+        let objective="기억";
+        let (_domain,mode,strategy)=select_generation_strategy(
+            &state,&[first.clone(),second.clone()],objective,Some("memory".into()),
+            Some(id.clone()),None,"commit-1");
+        assert_eq!(mode,"algorithm_trial");
+        assert_eq!(strategy["trialFallback"],"exploratory_after_two_no_patch_controls");
+        assert_eq!(strategy["policyEvidence"],"unpaired_exploration_not_promotion");
+        let trial=json!({"jobId":"experimental","attempt":3,"domain":"memory",
+            "domainSelection":"algorithm_trial",
+            "accepted":false,"generatorCommit":"commit-1",
+            "searchStrategy":{"id":id,"mode":"trial"}});
+        let result=record_trial_outcome(&state,&id,&trial,&[first,second]);
+        assert_eq!(result["reason"],"comparable_baseline_missing",
+            "running the policy alone is not evidence it is better");
+        assert_ne!(crate::engine::algorithms::active(&state,"selfimprove.search")
+            .unwrap()["id"],id,
+            "never automatically promote an exploratory search trial");
+        let _=std::fs::remove_dir_all(root);
     }
 }
