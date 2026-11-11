@@ -1547,12 +1547,19 @@ fn method_policy_trial_report(state:&AppState,generation:&Value)->Value {
     let learned=arm_stats("learned");
     let comparable=control["generations"].as_u64().unwrap_or(0)>=2
         && learned["generations"].as_u64().unwrap_or(0)>=2;
+    let independently_measured=[
+        &control["measuredImprovements"],&learned["measuredImprovements"],
+        &control["pairedRegressions"],&learned["pairedRegressions"]
+    ].iter().any(|n|n.as_u64().unwrap_or(0)>0);
     json!({"cohortId":id,"key":trial["key"],"sourceCommit":trial["sourceCommit"],
         "model":trial["model"],"domain":trial["domain"],"focus":trial["focus"],
         "policyRevision":trial["policyRevision"],
         "control":control,"learned":learned,
-        "status":if comparable{"matched_observational_4_generation_result"}
-            else{"waiting_for_matched_control_and_learned_generations"},
+        "status":if comparable && independently_measured {
+            "matched_observational_quality_result"
+        } else if comparable {
+            "matched_executions_but_no_independent_quality_evidence"
+        } else {"waiting_for_matched_control_and_learned_generations"},
         "causalProof":false,
         "qualityEvidence":"accepted_frozen_paired_worktree_results_only"})
 }
@@ -4173,6 +4180,69 @@ mod tests {
         let expanded=json!({"prompt":format!("small source{}", "research context ".repeat(3000))});
         assert!(!generation_fits_remaining_budget(&budget,&expanded),
             "check the complete composed worker prompt before creating the next job");
+    }
+
+    #[test]
+    fn real_descendant_trial_freezes_method_and_runs_balanced_control() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiDomain":"tools",
+            "rsiBaseCommit":"a".repeat(40),
+            "rsiObjective":"improve workspace source edit engine",
+            "rsiFocusFiles":["src/engine/tools.rs"],
+            "model":"same-model","providerId":"same-provider"});
+        let partition=research_scope(&input).partition_key;
+        let policy_id=format!("rsi-method-policy-{}",
+            crate::engine::memory::stable_id(&[&partition]));
+        let mut policy=json!({"id":policy_id,"kind":"harness.method-transitions",
+            "revision":"rev-1","transitions":[{"from":"workspace_read_range",
+                "to":"workspace_replace_range","positive":3,"negative":1}]});
+        state.store.put("rsi_method_policy",&policy).unwrap();
+        let first=method_policy_trial_plan(&state,&input);
+        assert_eq!(first["arm"],"control");
+        assert_eq!(first["policyRevision"],"rev-1");
+        let cohort=first["cohortId"].clone();
+        let policy_at_assignment=first["policy"].clone();
+        for n in 0..3 {
+            let plan=method_policy_trial_plan(&state,&input);
+            assert_eq!(plan["cohortId"],cohort);
+            assert_eq!(plan["arm"],if n%2==0 {"control"}else{"learned"});
+            assert_eq!(plan["policy"],policy_at_assignment);
+            let mut session=json!({"rsiRun":true});
+            let mut worker=input.clone();
+            worker["rsiMethodPolicyTrial"]=plan.clone();
+            configure_method_session(&state,&worker,&mut session);
+            if plan["arm"]=="control"{
+                assert!(session["rsiInducedMethodPolicy"].is_null());
+            }else{
+                assert_eq!(session["rsiInducedMethodPolicy"]["revision"],"rev-1");
+            }
+            state.store.put("rsi_generation",&json!({
+                "id":format!("trial-{n}"),"jobId":format!("trial-{n}"),
+                "methodPolicyTrial":plan,"accepted":false,
+                "domain":"tools","toolsUsed":[]
+            })).unwrap();
+            // Change the live policy while the 4-generation comparison is
+            // underway. The active cohort must retain its original scorer.
+            policy["revision"]=json!("rev-2");
+            state.store.put("rsi_method_policy",&policy).unwrap();
+        }
+        let fourth=method_policy_trial_plan(&state,&input);
+        assert_eq!(fourth["cohortId"],cohort);
+        assert_eq!(fourth["arm"],"learned");
+        assert_eq!(fourth["policyRevision"],"rev-1");
+        let last=json!({"id":"trial-3","jobId":"trial-3",
+            "methodPolicyTrial":fourth,"accepted":false,"domain":"tools","toolsUsed":[]});
+        let report=method_policy_trial_report(&state,&last);
+        assert_eq!(report["control"]["generations"],2);
+        assert_eq!(report["learned"]["generations"],2);
+        assert_eq!(report["status"],
+            "matched_executions_but_no_independent_quality_evidence",
+            "two models making attempts are not proof of higher DOMINION capability");
+        state.store.put("rsi_generation",&last).unwrap();
+        let next=method_policy_trial_plan(&state,&input);
+        assert_ne!(next["cohortId"],cohort);
+        assert_eq!(next["policyRevision"],"rev-2");
+        drop(state);let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
