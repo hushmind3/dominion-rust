@@ -169,3 +169,41 @@ Sub2는 후보별 control-domain pin을 채택했지만, 전 브랜치를 병합
 4. 성과가 나오면 Champion이 통합할 수 있도록 **실제 커밋·워크플로·영수증·성능 수치**를 전달. 실패했으면 동일한 실행 환경에서 다른 원인 수정 후 재실행할 것.
 
 실행 근거 경로: `scripts/sub2-live-rsi.mjs`, `.github/workflows/sub2-live-rsi.yml`, `src/engine/gateway.rs`, `src/api/providers.rs`, `src/engine/chat/runtime.rs`, `src/engine/rsi_evolve.rs`; GitHub Actions 해당 run의 업로드 아티팩트.
+
+
+## 2026-11-11 5세대 Sub2 — 심판 69점 피드백 이후 실제 개선과 인수인계
+
+### 역할 / 담당 / 최신 코드
+- 역할: **Sub2**, 담당 브랜치 **`dominion-sub2`**. 심판의 확인 기준 `00d6e66`에서 이어서 개발.
+- 심판 직전 점수: **69/100, 5위** (핵심 구현 34/40, 완주 17/30, 자기개선 12/20, 일반화 6/10). 이번 변경의 신점수는 심판 재검사 전이므로 추정하지 않음.
+- 코드 변경 HEAD: **`641cbdf19041674d56f4c551f92c0fcb76b6e2ab`**. 타 브랜치, main은 수정하지 않음.
+
+### 발견한 실제 실패
+- 실모델 Qwen3 4B [run 42951576225](https://github.com/hushmind3/dominion-rust/actions/runs/42951576225) 최종 **failure**, 실제 영수증 status `needs_review`, accepted 0, source edit 0. Ollama 상주 컨텍스트 **16384**, native `code_search` 도구 생성 **1회**. 실패 이유는 `최근 응답이 너무 느렸던 모델이라 잠시 건너뜁니다.`.
+- 원인: `chat/provider.rs`가 정상 완료 여부나 RSI 특성과 무관하게 60초 이상 진행된 모델 호출을 15분간 slow quarantine에 등록, 같은 도구 작업의 후속 요청을 스스로 차단.
+- 기존 Champion [run 42951558544](https://github.com/hushmind3/dominion-rust/actions/runs/42951558544)에서는 실제 로컬 `workspace_list` 왕복+저장을 이미 입증했음. 이것을 RSI 소스 수정 성공으로 오인하지 않음.
+- Sub3의 지속되는 편집 전용 도구 단계와 Sub4의 연구용 RSI 강제 쓰기 회귀 및 교정 기록을 비교해 적용 범위를 좁힘.
+
+### 실제로 Sub2에 반영한 코드
+1. **`10cf76c`**: `provider.rs` slow quarantine을 대화형 회의실 응답 지연에만 적용해 정상 로컬 장시간 RSI 다음 라운드 차단을 해제. 실제 Rust 채팅 RSI는 60초 초과해도 후속 모델 호출을 이어갈 수 있는 경로를 제공. `provider.rs`에서 native 편집 전용 도구 메뉴에 `tool_choice=required` 적용. `runtime.rs`에서 소스 읽기 관측 후 다음 라운드에도 edit-only 메뉴를 유지.
+2. **`f79b5a7`**: 기존 연구용 RSI E2E 1건 회귀를 실제 CI 실패로 발견한 뒤, edit-only 진입을 사용자가 지정한 소스의 **실제 세대 작업**으로 제한. 일반 연구 RSI가 방법 제안 및 변경 없는 종료를 계속 수행할 수 있게 복구.
+3. **`6b57928`**: 집중 소스 개선 세대가 소스를 읽고도 설명만 남기면 같은 턴에서 최대 1회 추가 실행 기회와 edit-only 메뉴를 제공. 실제 패치 생성/성공을 조작하지 않음.
+4. **`dcd87e9`**: 모델에 이미 전달된 인덱스 기반 소스 발췌(`rsiFocusContextChars>0`)를 세대 세션에 기록해, 중복 검색 없이 이 근거에서 바로 1회 수정 시도로 전환 가능. 일반 연구와 무근거 편집은 제외.
+5. **`641cbdf`**: 실제 모의 HTTP 모델 요청에서 집중된 RSI 소스 편집 메뉴에 `tool_choice: required`가 전송되고, 일반 채팅에는 전송되지 않는지 검증하는 통합 경로 테스트.
+
+### 실행·검증 현황(작성 시점)
+- 초기 `10cf76c` CI [42954705217](https://github.com/hushmind3/dominion-rust/actions/runs/42954705217): **실패 1건**, `rsi_context_is_not_reinterpreted_as_tasks_or_forced_into_a_write`. 이유는 연구형 RSI에도 edit-only 적용된 범위 오류.
+- 수정 `f79b5a7` CI [42955076641](https://github.com/hushmind3/dominion-rust/actions/runs/42955076641): **success**.
+- 수정 `6b57928` CI [42955262103](https://github.com/hushmind3/dominion-rust/actions/runs/42955262103): **success**.
+- `dcd87e9` CI [42955861963](https://github.com/hushmind3/dominion-rust/actions/runs/42955861963), 최신 `641cbdf` CI [42956089564](https://github.com/hushmind3/dominion-rust/actions/runs/42956089564): **작성 시점 진행 중. 최종 결과 재확인 필수**.
+- 실모델 전 과정: `10cf76c` [42954705461](https://github.com/hushmind3/dominion-rust/actions/runs/42954705461), `6b57928` [42955262116](https://github.com/hushmind3/dominion-rust/actions/runs/42955262116), 최신 `641cbdf` [42956089722](https://github.com/hushmind3/dominion-rust/actions/runs/42956089722) 등 **작성 시점 진행 중**. 실제 편집/후보 채택은 성공으로 주장하지 않음.
+- 실행 환경에는 cargo/rustc가 없고 Rust 실험은 GitHub Actions가 맡음. 모델 호출 성공, 도구 요청/실제 실행, 목표 완주, 독립 held-out 개선을 각각 다른 상태로 기록.
+
+### 다음 세션 최우선 — 실제 완주를 향한 정확한 진행 순서
+1. **최신 `641cbdf` CI 로그와 실모델 아티팩트**를 확인. CI 실패는 해당 원인의 Rust 코드를 고치고 동일 브랜치에 재실행. 실모델의 `history[].toolsUsed`, `actionObservation`, `candidateId`, `acceptedCommit`, `evaluation.metrics`를 직접 확인.
+2. 모델이 실제 편집 도구를 호출하지 않았다면 `rsiFocusContextReady`, `rsiExplicitFocus`, `rsiGenerationJobId`, `rsi.action_checkpoint`, 모델에 전송된 native `tool_choice`와 후속 `workspace_replace` 이벤트를 **같은 세대의 실제 증거**로 대조하고 해당 단계 수정.
+3. 모델이 수정 요청을 했는데 적용이 실패했다면 `workspace_replace`의 정확한 `oldText`와 거절 결과를 다음 시도에 전달하는 도구 실패 교정부터 해결.
+4. 실제 소스 패치가 생성되면 동결된 baseline/candidate paired holdout에서 작업 품질·속도·회귀·토큰을 재측정. 독립 성능 개선을 채택한 뒤 다음 세대의 **새 바이너리**에 인계, 다시 다른 개선을 만드는지 증명.
+5. 문서·테스트만 늘리지 말고 실제 모델 `편집 0회` 병목을 없애는 것을 최우선으로 유지. 대량 재시작·무편집 루프·성공 조작 금지.
+
+참고: `src/engine/chat/provider.rs`, `src/engine/chat/runtime.rs`, `src/engine/jobs.rs`, `src/engine/rsi_evolve.rs`, `scripts/sub2-live-rsi.mjs`, `.github/workflows/sub2-live-rsi.yml`.
