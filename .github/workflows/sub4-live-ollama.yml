@@ -1,7 +1,11 @@
 name: Sub4 actual local Ollama RSI attempt
-# Explicit opt-in only: code commits must not launch recurring 4B campaigns.
+# One bounded real-model run after fixing source navigation compilation.
 on:
   workflow_dispatch:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - 'src/engine/code_index.rs'
 permissions:
   contents: read
 jobs:
