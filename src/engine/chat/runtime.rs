@@ -232,16 +232,24 @@ fn rsi_focused_edit_due(
     session: &Value, operations: &[Value], execution_id: &str,
     tool_calls: u64, already_issued: bool,
 ) -> bool {
-    if already_issued || tool_calls < 2 || !rsi_generation_has_action_target(session)
+    if already_issued || tool_calls==0 || !rsi_generation_has_action_target(session)
         || !rsi_read_only_completion(operations,execution_id) {
         return false;
     }
     let Some(path)=session["rsiFocusFile"].as_str() else { return false };
-    operations.iter().any(|op|
-        op["runId"].as_str()==Some(execution_id)
-        && op["status"]=="completed"
-        && op["tool"]=="workspace_read_range"
-        && op["arguments"]["path"].as_str()==Some(path))
+    operations.iter().any(|op|{
+        if op["runId"].as_str()!=Some(execution_id)
+            || op["status"]!="completed"
+            || op["tool"]!="workspace_read_range"
+            || op["arguments"]["path"].as_str()!=Some(path) {
+            return false;
+        }
+        // When the first read includes a versioned excerpt, act on it NOW.
+        // Legacy unversioned reads still require a second tool observation.
+        let versioned=op["result"]["sourceSha256"].as_str().is_some_and(|sha|
+            sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()));
+        versioned || tool_calls>=2
+    })
 }
 
 /// Run a source-work program COMPOSED from independently observed method
@@ -6890,6 +6898,11 @@ mod harness_tool_selection_tests {
             "arguments":{"path":"src/engine/memory.rs"}});
         assert!(!rsi_focused_edit_due(&session,&[read.clone()],"run",1,false));
         assert!(rsi_focused_edit_due(&session,&[read.clone()],"run",2,false));
+        let mut versioned=read.clone();
+        versioned["result"]=json!({"startLine":1,"endLine":80,
+            "sourceSha256":"a".repeat(64)});
+        assert!(rsi_focused_edit_due(&session,&[versioned],"run",1,false),
+            "one verified bootstrap read should lead to source editing immediately");
         assert!(!rsi_focused_edit_due(&session,&[read.clone()],"run",5,true));
         assert!(!rsi_focused_edit_due(&session,&[read.clone()],"unrelated",4,false));
         let wrong=json!({"runId":"run","status":"completed",
