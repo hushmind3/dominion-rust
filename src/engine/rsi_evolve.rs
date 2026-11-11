@@ -3164,9 +3164,14 @@ fn adaptive_search_expression(history: &[Value]) -> Option<String> {
 fn queue_population_search_trial(
     state:&AppState, history:&[Value], active:&Value,
     objective:&str, campaign_id:&str, attempt:u64,
+    descendant_offspring:Option<&Value>,
 )->Option<Value>{
-    let ancestors=state.store.all("algorithm");
-    let child=crate::engine::rsi_population::breed(history,&ancestors,objective)?;
+    let child=descendant_offspring.filter(|value|value["expression"].is_string()
+            && value["genome"].is_object() && value["evidence"].is_object())
+        .cloned().or_else(||{
+            let ancestors=state.store.all("algorithm");
+            crate::engine::rsi_population::breed(history,&ancestors,objective)
+        })?;
     let expression=child["expression"].as_str()?;
     if active["parameters"]["expression"].as_str()==Some(expression) {
         return None;
@@ -4372,6 +4377,7 @@ async fn run_loop(
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
             "evolutionaryAction":current["input"]["rsiEvolutionaryAction"],
+            "offspringGeneratedByDescendant":current["rsiProposedGenome"],
             "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
             "boundaryResult":current["rsiBoundaryResult"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
@@ -4606,7 +4612,8 @@ async fn run_loop(
                 measured_history.push(generation.clone());
                 if let Some(report)=queue_population_search_trial(
                     &context.state,&measured_history,&active,
-                    &trial_objective,&context.job_id,attempt
+                    &trial_objective,&context.job_id,attempt,
+                    Some(&current["rsiProposedGenome"])
                 ).or_else(||queue_adaptive_search_trial(
                     &context.state,&measured_history,&active,
                     &trial_objective,&context.job_id,attempt
@@ -5211,6 +5218,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
+    // The actual rebuilt descendant synthesizes the next executable search
+    // genome. The frozen coordinator may register it, but cannot impersonate
+    // the child as its inventor. Outcome measurement remains independent.
+    let offspring=crate::engine::rsi_population::breed(
+        &history,&state.store.all("algorithm"),&objective);
+    job["rsiProposedGenome"]=offspring.unwrap_or(Value::Null);
     let continuation = transfer_failure_repair(&history)
         .and_then(|plan|plan["domain"].as_str().map(str::to_string))
         .or_else(||research_continuation(&history));
@@ -5357,7 +5370,7 @@ mod tests {
         })).collect::<Vec<_>>();
         let active=json!({"id":"active","implementation":"failure-clusters","parameters":{}});
         let report=queue_population_search_trial(
-            &state,&history,&active,objective,"campaign",2).unwrap();
+            &state,&history,&active,objective,"campaign",2,None).unwrap();
         assert_eq!(report["status"],"pending_trial");
         assert_eq!(report["evidence"]["independentHoldoutGains"],0);
         let id=report["candidateId"].as_str().unwrap();
