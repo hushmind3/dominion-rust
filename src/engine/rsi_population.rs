@@ -62,6 +62,7 @@ pub fn breed(history: &[Value], parents: &[Value], objective: &str) -> Option<Va
     let objective_hash = crate::engine::memory::stable_id(&[objective]);
     let mut parent: Option<&Value> = None;
     let mut parent_rank = f64::NEG_INFINITY;
+    let mut supported_parents = Vec::<&Value>::new();
     for item in parents {
         if item["kind"] != "selfimprove.search"
             || item["implementation"] != "expression"
@@ -76,13 +77,29 @@ pub fn breed(history: &[Value], parents: &[Value], objective: &str) -> Option<Va
             continue;
         }
         let (mut supported, mut rejected, mut inconclusive) = (0usize, 0usize, 0usize);
+        let mut used_pairs = BTreeSet::new();
         for trial in trials.into_iter().flatten() {
             match trial["verdict"].as_str().unwrap_or("") {
-                "supported" => supported += 1,
+                "supported" => {
+                    let pair = (trial["jobId"].as_str(), trial["comparison"]["baselineJobId"].as_str());
+                    if trial["comparison"]["matchedHoldoutReceipts"] == true
+                        && trial["comparison"]["holdoutLossesAgainstControl"].as_u64() == Some(0)
+                        && let (Some(job), Some(baseline)) = pair
+                        && !job.is_empty() && !baseline.is_empty()
+                        && used_pairs.insert((job.to_string(), baseline.to_string()))
+                    {
+                        supported += 1;
+                    } else {
+                        inconclusive += 1;
+                    }
+                }
                 "rejected" => rejected += 1,
                 "inconclusive" => inconclusive += 1,
                 _ => {}
             }
+        }
+        if supported >= 2 && item["rsiTrial"]["status"] == "adopted" {
+            supported_parents.push(item);
         }
         // A measured failure remains eligible as a mutation parent but
         // cannot outrank an independently supported solution.
@@ -102,6 +119,25 @@ pub fn breed(history: &[Value], parents: &[Value], objective: &str) -> Option<Va
             weights[i] = number(&ancestor["parameters"]["genome"], key, DEFAULT[i]);
         }
     }
+    // Preserve diversity: combine alternate gene axes from a different
+    // independently measured island elite, never from an untested proposal.
+    let mate = supported_parents.into_iter()
+        .filter(|candidate| parent.is_none_or(|p| candidate["id"] != p["id"]))
+        .filter(|candidate| candidate["parameters"]["genome"]
+            != parent.map(|p|p["parameters"]["genome"].clone()).unwrap_or(Value::Null))
+        .min_by(|a,b| a["id"].as_str().unwrap_or("")
+            .cmp(b["id"].as_str().unwrap_or("")));
+    let crossed = if let Some(second) = mate {
+        for (i, key) in GENES.iter().enumerate() {
+            if i % 2 == 1 {
+                weights[i] = (weights[i] + number(
+                    &second["parameters"]["genome"],key,DEFAULT[i])) / 2.0;
+            }
+        }
+        true
+    } else {
+        false
+    };
     let mut islands = BTreeMap::<String, (usize, usize, usize)>::new();
     let mut verified = 0u64;
     let mut barren = 0usize;
@@ -136,6 +172,9 @@ pub fn breed(history: &[Value], parents: &[Value], objective: &str) -> Option<Va
     // on the model's belief about its own performance. Each dimension alters
     // an executable scoring formula used by select_domain().
     let mut mutation = Vec::new();
+    if crossed {
+        mutation.push("measured_island_crossover");
+    }
     if barren_rate >= 0.4 {
         weights[1] += 0.65;
         weights[4] += 0.5;
@@ -198,6 +237,7 @@ pub fn breed(history: &[Value], parents: &[Value], objective: &str) -> Option<Va
         "operator": mutation,
         "parentId": parent.map(|p|p["id"].clone()).unwrap_or(Value::Null),
         "parentRevision": parent.map(|p|p["revision"].clone()).unwrap_or(Value::Null),
+        "mateId": mate.map(|p|p["id"].clone()).unwrap_or(Value::Null),
         "evidence": {
             "observedGenerations": observed.len(),
             "domains": islands.iter().map(|(domain, (attempts, wins, failures))| json!({
@@ -331,7 +371,14 @@ mod tests {
             "implementation":"expression","source":"rsi-generated",
             "parameters":{"genome":genome},"rsiTrial":{
                 "objectiveHash":goal,"status":"adopted",
-                "trials":[{"verdict":"supported"},{"verdict":"supported"}]}});
+                "trials":[
+                    {"jobId":"trial-1","verdict":"supported",
+                     "comparison":{"baselineJobId":"control-1",
+                        "matchedHoldoutReceipts":true,"holdoutLossesAgainstControl":0}},
+                    {"jobId":"trial-2","verdict":"supported",
+                     "comparison":{"baselineJobId":"control-2",
+                        "matchedHoldoutReceipts":true,"holdoutLossesAgainstControl":0}}
+                ]}});
         let bad=json!({"id":"z","revision":"rev-z","kind":"selfimprove.search",
             "implementation":"expression","source":"rsi-generated",
             "parameters":{"genome":genome},"rsiTrial":{
