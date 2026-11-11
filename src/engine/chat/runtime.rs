@@ -718,11 +718,11 @@ async fn run_turn_body(
     // Deterministic decomposition runs before any model call. It gives the
     // turn an engine-owned ordered sub-goal list and an independently graded
     // signal that does not depend on whole-task success.
-    let decomposition_algorithm = crate::engine::algorithms::choose_for_agent(
+    let decomposition_algorithm = crate::engine::algorithms::choose_decomposition_for_agent(
         state,
-        "task.decomposition",
         request.agent_id.as_deref(),
         Some(execution_id),
+        task_input(&session,&request.input),
     )
     .unwrap_or(Value::Null);
     let decomposition =
