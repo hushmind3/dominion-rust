@@ -532,6 +532,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         if let Some(mut session)=context.state.store.get("session",&session_id) {
             session["rsiRun"]=json!(true);
             session["rsiObjective"]=input["rsiObjective"].clone();
+            session["rsiFocusFiles"]=input["rsiFocusFiles"].clone();
             // The task classifier uses the owner's actual target, not the
             // generic RSI prompt or a guessed source file.
             session["rsiExplicitFocus"]=json!(input["rsiAutonomous"] != true
