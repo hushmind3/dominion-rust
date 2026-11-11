@@ -197,15 +197,62 @@ fn conjunction(conditions:Vec<Value>)->Value {json!({"all":conditions})}
 /// Mutate a learned Boolean program without growing its AST depth forever.
 /// Preserve its existing predicates, then specialize its call budget.
 fn specialize_call_guard(guard:&Value,limit:u64)->Value {
-    let mut clauses=guard["all"].as_array().cloned().unwrap_or_else(||vec![guard.clone()]);
-    let cap=limit.min(48);
-    if let Some(existing)=clauses.iter_mut().find(|p|p["metric"]=="tool_calls") {
-        *existing=condition("tool_calls","lt",cap);
-    } else {
-        if clauses.len()>=4 {clauses.remove(clauses.len()-1);}
-        clauses.push(condition("tool_calls","lt",cap));
+    // Flatten descendants' conjunctions, retaining predicates rather than
+    // infinitely wrapping all(all(all(...))). Replace obsolete call limits:
+    // preserving two contradictory limits means the child never evolves.
+    fn flatten(guard:&Value, clauses:&mut Vec<Value>){
+        if let Some(all)=guard.get("all").and_then(Value::as_array) {
+            for child in all {flatten(child,clauses);}
+        } else if guard["metric"]!="tool_calls" && clauses.len()<3 {
+            clauses.push(guard.clone());
+        }
     }
+    let mut clauses=Vec::new();
+    flatten(guard,&mut clauses);
+    clauses.push(condition("tool_calls","lt",limit.min(48)));
     conjunction(clauses)
+}
+
+/// A verified, actually adopted source improvement can teach DOMINION to
+/// eliminate the search work that preceded its successful grounded edit.
+/// The compressed method is only a *proposal* until a descendant independently
+/// measures and adopts its source change. Success must originate from the
+/// immutable paired-evaluation receipt, not model prose or a generated test.
+fn proposed_success_compression(outcome:&Value)->Option<Value> {
+    if outcome["accepted"]!=true || outcome["evidenceVerified"]!=true
+        || outcome["evaluation"]["metrics"]["eligible"]!=true {return None;}
+    let job=outcome["jobId"].as_str().filter(|s|!s.is_empty())?;
+    let timeline=outcome["toolTimeline"].as_array()?;
+    let mut grounded=false;
+    let mut winner=None;
+    let mut prior_searches=0u64;
+    for op in timeline {
+        let name=op["tool"].as_str().unwrap_or("");
+        if name=="workspace_read_range" && op["status"]=="completed" {
+            grounded=true;
+        }
+        if name=="code_search" && op["status"]=="completed" && grounded {
+            prior_searches+=1;
+        }
+        if matches!(name,"workspace_replace_range"|"workspace_replace")
+            && grounded && op["status"]=="completed"
+            && op["result"]["written"]==true
+            && op["toolReceipt"]["verified"]==true {
+            winner=Some(name);
+            break;
+        }
+    }
+    let winner=winner?;
+    // Compress at least one observed exploratory call. Do not infer that
+    // earlier search was redundant when none occurred.
+    if prior_searches==0 {return None;}
+    let losing=outcome["ruleExecutions"].as_array().into_iter().flatten()
+        .last().and_then(|e|e["ruleId"].as_str()).unwrap_or("");
+    Some(new_rule(conjunction(vec![
+        condition("completed:workspace_read_range","ge",1),
+        condition("edit_attempts","eq",0),
+        condition("successful_write","eq",0),
+    ]),&[winner],job,losing))
 }
 
 fn timeline_counts(outcome:&Value, tool:&str, status:&str)->u64 {
@@ -232,11 +279,11 @@ pub fn evolve(parent:&[Value],outcome:&Value)->Vec<Value> {
     let attempts=failed_range+failed_exact
         +timeline_counts(outcome,"workspace_replace_range","completed")
         +timeline_counts(outcome,"workspace_replace","completed");
-    let mut generated=None::<Value>;
+    let mut generated=proposed_success_compression(outcome);
 
     // A historical rule actually ran but stalled: mutate the rule's *guard*
     // instead of simply retaining its fixed numeric retry controller.
-    if outcome["accepted"]!=true {
+    if outcome["accepted"]!=true && generated.is_none() {
         if let Some(id)=outcome["ruleExecutions"].as_array().into_iter().flatten()
             .last().and_then(|row|row["ruleId"].as_str()) {
             if let Some(index)=rules.iter().position(|rule|rule["id"]==id) {
@@ -399,6 +446,50 @@ mod tests {
             assert_eq!(rules.len(),1);
             assert!(guard_valid(&rules[0]["guard"],0));
         }
+    }
+    #[test]
+    fn verified_success_compresses_source_search_into_a_new_edit_rule(){
+        let mut result=worker("successful-child",&json!({}),vec![
+            event("code_search","completed"),
+            event("workspace_read_range","completed"),
+            event("code_search","completed"),
+            event("code_search","completed"),
+            json!({"tool":"workspace_replace","status":"completed",
+                "result":{"written":true},"toolReceipt":{"verified":true}}),
+        ]);
+        result["accepted"]=json!(true);
+        result["evidenceVerified"]=json!(true);
+        result["evaluation"]=json!({"metrics":{"eligible":true}});
+        let compressed=evolve(&[],&result);
+        assert_eq!(compressed.len(),1);
+        assert_eq!(compressed[0]["sourceJobId"],"successful-child");
+        assert_eq!(compressed[0]["allow"],json!(["workspace_replace"]));
+        let read=vec![event("workspace_read_range","completed")];
+        let next=choose(&json!({"rules":compressed}),&read,1,true,false).unwrap();
+        assert!(next.edit_only());
+        assert!(next.allows("workspace_replace"));
+        assert!(!next.allows("code_search"));
+        let mut insufficient=result.clone();
+        insufficient["evidenceVerified"]=json!(false);
+        assert!(evolve(&[],&insufficient).is_empty());
+    }
+    #[test]
+    fn inherited_success_guard_only_earns_quality_if_next_child_executes(){
+        let base=worker("g1",&json!({}),vec![
+            event("workspace_read_range","completed"),
+            event("code_search","completed"),
+            json!({"tool":"workspace_replace_range","status":"completed",
+                "result":{"written":true},"toolReceipt":{"verified":true}})
+        ]);
+        let mut successful=base;
+        successful["accepted"]=json!(true);
+        successful["evidenceVerified"]=json!(true);
+        successful["evaluation"]=json!({"metrics":{"eligible":true}});
+        let child=evolve(&[],&successful);
+        assert_eq!(child.len(),1);
+        // A policy proposal is not evidence that the next model used it.
+        let next=worker("g2",&json!({"rules":child.clone()}),vec![]);
+        assert!(evolve(&child,&next).len()>=1);
     }
     #[test]
     fn false_success_and_unknown_tool_cannot_become_rules(){

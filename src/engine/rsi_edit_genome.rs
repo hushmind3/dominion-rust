@@ -160,6 +160,21 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
     }
     let (best_genome,best_revision,best_score,proven)=best.expect("observed cohort");
     if proven>=2 && best_score>=0.9 {
+        let last=observed.last().copied().expect("nonempty observations");
+        // Exploitation is the default, yet a verified successful procedure
+        // with observed redundant source-search admits a measurable child
+        // experiment. Keep the champion source method intact; only the next
+        // detached worker receives this candidate controller.
+        if last["accepted"]==true && last["evidenceVerified"]==true {
+            let mut challenge=best_genome.clone();
+            challenge.rules=crate::engine::rsi_decision_rules::evolve(
+                &best_genome.rules,last);
+            if challenge.rules!=best_genome.rules && !cohorts.contains_key(&challenge.revision()) {
+                return serialize(challenge,"verified-success-compression-trial",
+                    &best_revision,"compress_successful_source_edit_strategy",
+                    observed.len(),best_score,last["jobId"].as_str());
+            }
+        }
         let selected_name=if best_genome==fallback {"balanced"} else {"validated-composition"};
         return serialize(best_genome, selected_name,
             &best_revision,"reuse_measured_successful_method",
@@ -340,6 +355,36 @@ mod tests {
         assert_eq!(evolved["rules"][0]["guard"]["all"][2]["value"],3);
         assert_eq!(evolved["improvementProven"],false);
         assert!(evolved["revision"]!=evolved["parentRevision"]);
+    }
+
+    #[test]
+    fn verified_success_spawns_a_shorter_executable_child_instead_of_only_reusing_it() {
+        let base=evolve(&[],reward);
+        let successful_tool=json!({"tool":"workspace_replace_range","status":"completed",
+            "result":{"written":true},"toolReceipt":{"verified":true}});
+        let mut outcomes=Vec::new();
+        for id in ["adopted-1","adopted-2"] {
+            let mut row=row(id,base.clone());
+            row["accepted"]=json!(true);
+            row["evidenceVerified"]=json!(true);
+            row["evaluation"]=json!({"metrics":{"eligible":true}});
+            row["toolTimeline"]=json!([
+                {"tool":"workspace_read_range","status":"completed"},
+                {"tool":"code_search","status":"completed"},
+                successful_tool
+            ]);
+            outcomes.push(row);
+        }
+        let trial=evolve(&outcomes,reward);
+        assert_eq!(trial["mutation"],"compress_successful_source_edit_strategy");
+        assert!(trial["rules"].as_array().is_some_and(|rules|!rules.is_empty()));
+        assert_eq!(trial["parentRevision"],base["revision"]);
+        assert_eq!(trial["improvementProven"],false);
+        let mut failed=row("failed-trial",trial.clone());
+        failed["candidateId"]=Value::Null;
+        outcomes.push(failed);
+        let resumed=evolve(&outcomes,reward);
+        assert_ne!(resumed["revision"],trial["revision"]);
     }
 
     #[test]

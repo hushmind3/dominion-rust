@@ -101,7 +101,9 @@ if(mode==='probe'){
       generatorCommit:g.generatorCommit,domain:g.domain,searchStrategy:g.searchStrategy,
       error:g.error,toolsUsed:g.toolsUsed,newFindings:g.newFindings,
       editEvidence:g.editEvidence,diffBytes:g.diffBytes,captureError:g.captureError,
-      editPolicy:g.editPolicy,programStages:g.programStages,editMethodReward:g.editMethodReward,
+      editPolicy:g.editPolicy,programStages:g.programStages,
+      ruleExecutions:g.ruleExecutions,toolTimeline:g.toolTimeline,
+      editMethodReward:g.editMethodReward,
       focusFiles:g.focusFiles,knowledgeId:g.knowledgeId,
       evaluation:g.evaluation?.metrics
     }));
@@ -130,6 +132,8 @@ if(mode==='probe'){
       improvementMethodHistory:trace.generationEvidence.map(g=>({
         attempt:g.attempt,
         method:g.editPolicy?.method||null,
+        synthesizedRuleIds:(g.editPolicy?.rules||[]).map(rule=>rule.id),
+        firedRuleIds:(g.ruleExecutions||[]).map(receipt=>receipt.ruleId),
         policyRevision:g.editPolicy?.revision||null,
         parentRevision:g.editPolicy?.parentRevision||null,
         mutation:g.editPolicy?.mutation||null,
