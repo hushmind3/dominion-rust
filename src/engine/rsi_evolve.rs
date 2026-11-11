@@ -1215,6 +1215,29 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
                 text.push_str(&format!("- 검증에 실패한 이전 가설: {}\n",
                     hypothesis.chars().take(280).collect::<String>()));
             }
+            // A compiled candidate with no holdout gain is a failed behavioral
+            // hypothesis. Preserve its actual neutral quality measurements:
+            // the next model must address the unchanged task, not celebrate
+            // a successful build or repeat the same patch.
+            let unchanged=failure["evaluation"]["metrics"]["measurements"].as_array()
+                .into_iter().flatten()
+                .filter(|case|case["holdout"]==true)
+                .filter_map(|case|{
+                    let metric=case["metrics"].as_array()?.iter().find(|metric|
+                        metric["key"]=="quality"
+                        && metric["improved"]==false
+                        && metric["regressed"]==false
+                        && metric["baseline"].as_f64().is_some_and(|v|v<1.0)
+                        && metric["candidate"].as_f64()==metric["baseline"].as_f64())?;
+                    Some(format!("{} ({}): baseline={}, candidate={}",
+                        case["id"],case["domain"],metric["baseline"],metric["candidate"]))
+                })
+                .take(3).collect::<Vec<_>>();
+            if !unchanged.is_empty() {
+                text.push_str("- 동결된 실제 작업 품질이 개선되지 않은 항목: ");
+                text.push_str(&unchanged.join("; "));
+                text.push_str(". 같은 소스를 재수정하되 이전 패치를 되풀이하지 않고 해당 작업 결과를 바꾸는 구현을 작성하세요.\n");
+            }
             let attempted=failure["editEvidence"]["attempts"].as_u64().unwrap_or(0);
             let verified=failure["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0);
             if attempted>0 && failure["candidateId"].is_null(){
