@@ -1402,7 +1402,10 @@ pub async fn test_provider(
         .map(str::to_string)
         .or_else(|| state.read_secret(&format!("provider:{id}")))
         .unwrap_or_default();
-    if key.is_empty() {
+    // Ollama is a local runtime: its native /api/tags health endpoint
+    // does not need an API key. Requiring one makes a working model look
+    // disconnected before any user goal can run.
+    if key.is_empty() && provider["kind"].as_str() != Some("ollama") {
         return Json(json!({"ok":false,"message":"API 키가 저장되어 있지 않습니다."})).into_response();
     }
     let key = key.trim();
@@ -1503,9 +1506,10 @@ pub async fn test_provider(
                 "stream":false
             }))
     } else if kind == "ollama" {
+        // Ollama exposes native model discovery at /api/tags, not /models.
+        // Generation itself uses the independently resolved /v1 endpoint.
         client
-            .get(format!("{}/models", base.trim_end_matches("/v1").trim_end_matches('/')))
-            .header("Authorization", format!("Bearer {key}"))
+            .get(format!("{}/api/tags", base.trim_end_matches("/v1").trim_end_matches('/')))
     } else if kind == "openai" && !model.is_empty() {
         client
             .post(format!("{base}/chat/completions"))
@@ -1849,6 +1853,42 @@ pub async fn provider_models(State(state): State<AppState>, Path(id): Path<Strin
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn ollama_can_be_tested_without_an_api_key_using_native_model_discovery() {
+        use crate::config::Config;
+        use crate::db::Store;
+        use crate::vault::Vault;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let router = axum::Router::new().route(
+                "/api/tags",
+                axum::routing::get(|| async { axum::Json(json!({"models":[{"name":"qwen3:4b-instruct"}]})) }),
+            );
+            axum::serve(listener, router).await.unwrap();
+        });
+        let dir = std::env::temp_dir().join(format!("dominion-ollama-probe-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            port: 0, data_dir: dir.clone(), web_dir: dir.join("web"),
+            workspace: dir.clone(),
+        };
+        let store = Store::open(&config.db_path()).unwrap();
+        let state = AppState::new(config.clone(), store, Vault::open(&config.key_path()));
+        let response = test_provider(
+            State(state),
+            Path("new".to_string()),
+            Json(json!({"kind":"ollama","baseUrl":format!("http://{addr}"),
+                "model":"qwen3:4b-instruct"})),
+        ).await;
+        let bytes = axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        let result: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(result["ok"], true, "response: {result}");
+        assert_eq!(result["status"], 200);
+        server.abort();
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn codex_catalog_uses_real_slugs_and_no_obsolete_stub() {
