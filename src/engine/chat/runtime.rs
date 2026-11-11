@@ -1716,12 +1716,14 @@ async fn run_turn_body(
                 && op["status"]=="completed" && op["result"]["written"]==true
                 && op["toolReceipt"]["verified"]==true);
             if !wrote {
-                let stale_read=operations.iter().any(|op|
-                    op["status"]=="failed" && op["result"]["staleVersion"]==true);
-                let has_read=!stale_read && operations.iter().any(|op|
+                let stale_at=operations.iter().filter(|op|
+                    op["status"]=="failed" && op["result"]["staleVersion"]==true)
+                    .filter_map(|op|op["finishedAt"].as_str()).max();
+                let has_read=operations.iter().any(|op|
                     op["status"]=="completed" && op["tool"]=="workspace_read_range"
                     && op["result"]["sourceSha256"].as_str().is_some_and(|sha|
-                        sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())));
+                        sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
+                    && stale_at.is_none_or(|at|op["finishedAt"].as_str().is_some_and(|read|read>at)));
                 round_tools=tool_definitions.iter()
                     .filter(|tool|rsi_quality_revision_tool(tool_name(tool),has_read))
                     .cloned().collect();
