@@ -7685,6 +7685,11 @@ mod tests {
         bad=op.clone();
         bad["arguments"]["path"]=json!("src/engine/unobserved.rs");
         assert!(synthesize_failed_model_edit(&session,&bad,&gen).is_none());
+        let mut blocked=op.clone();
+        blocked["result"]["staleVersion"]=json!(false);
+        blocked["result"]["preflightBlocked"]=json!(true);
+        assert!(synthesize_failed_model_edit(&session,&blocked,&gen).is_some(),
+            "observed preflight blocks should produce a re-read-before-edit method");
         bad=op.clone();
         bad["origin"]=json!("procedure");
         assert!(synthesize_failed_model_edit(&session,&bad,&gen).is_none());
