@@ -51,3 +51,12 @@
 - This continuation fixes a runtime integration gap: Champion's emitted strategy uses `controlForCandidateId` while Sub2's prototype examined `pendingCandidateId`. The learner now accepts both and tests actual generated control metadata.
 - Latest CI needs inspection. Earlier integration `f730c419` completed **16 benchmark / 634 unit / 3 extra / 99 E2E** all green; do not convert pending tests into success claims.
 - Sub1's corrective failure-to-executable multi-campaign path remains the next significant missing integration, followed by a real 3+ generation model-backed cross-domain paired holdout campaign.
+
+## 4세대 Champion 계속 작업 — 2026-11-11
+- 현재 구현 HEAD: `cf5ce8a886a37896cb71e7b46cdde6cf7c14a6df` (`dominion-champion` only; Sub1~4와 `main` 미수정).
+- 5개 브랜치의 현재 차이와 각 Sub 인수인계 문서를 직접 대조. Sub1의 자율 목표 맞춤형 코드 탐색, 연구/실행 문맥 계승을 보완할 가치가 높다고 판정. Sub2의 대조군-후보 결속, Sub3의 실패 기반 정책 실험, Sub4의 실행형 방법 전이는 Champion에 이미 부분 통합되어 있음.
+- `4080262`: 코드 색인 검색과 `bounded_focus_context` 발췌가 같은 자율 선택 도메인(`rsiTargetDomain`)을 사용하도록 `source_focus_objective`를 공통 적용. 명시적 비자율 사용자 목표는 보존; 도메인이 유효하지 않으면 원래 목표로 복귀.
+- `7c42a2b`: `fit_generation_context`에 `compact_research` 경로 추가. 전체 검색·읽기 목록이 예산에 들어가지 않으면 완전한 소스 확인 기록 최대 8줄을 다음 세대로 전달하고, 텍스트를 중간 절단하지 않음. 모드와 압축 여부를 `rsiContextPlan`에 저장.
+- `459027c`, `cf5ce8a`: 목표/도메인 일치와 연구 문맥 계승 회귀 테스트 추가; 테스트 문자열의 실제 줄바꿈을 교정.
+- 확인: 위 코드 변경은 GitHub에 커밋됨. 이 회차의 최신 커밋에 대한 CI 결과는 아직 확인되지 않았으며, 실제 LLM 기반 3세대 연속 holdout 개선 실험은 미실행. 테스트 추가와 실제 통과를 혼동하지 말 것.
+- 다음 최우선 작업: 최신 CI 실패가 있으면 수정 → 같은 공급자·동결 holdout·예산으로 Champion과 Sub1의 소스 타깃/문맥 구성 실제 개선률 비교 → 후보 생성 및 독립 채택을 3세대까지 실측. 실제 성공 조건은 연구 횟수가 아니라 실행된 코드 변경, 세대 재빌드, 독립 측정에서의 이득, 타 분야 적용 영수증.
