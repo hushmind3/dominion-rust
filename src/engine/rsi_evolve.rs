@@ -3582,11 +3582,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .as_str()
         .filter(|domain| DOMAINS.contains(domain))
         .map(str::to_string);
-    let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("");
+    let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
     let (domain, domain_selection, strategy) =
         select_generation_strategy(&state,
             if trial_id.is_some(){&history}else{&action_history},
-            &objective, continuation, trial_id, selected_domain, commit);
+            &objective, continuation, trial_id, selected_domain, &commit);
     // The improved generator must execute the same action it planned before
     // the model call. Reject an outdated or injected retry directive.
     let expected_directive=improvement_directive(&action_history);
@@ -3602,7 +3602,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // Follow the rebuilt descendant's actual selection. The recomposed prompt
     // must refer to its files, not the parent's now-obsolete focus.
     if let Err(error)=reconcile_descendant_target(&state,&mut job,&action_history,
-        &domain,domain_selection,&strategy,commit) {
+        &domain,domain_selection,&strategy,&commit) {
         job["status"]=json!("failed");
         job["error"]=json!(error);
         job["result"]=json!({"rsi":{"modelError":error,"phase":"descendant_replan"}});
