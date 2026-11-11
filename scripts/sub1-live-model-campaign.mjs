@@ -73,15 +73,17 @@ if(mode==='probe'){
       mode:'continuous',confirmation:'START_RSI_EVOLUTION',
       selectionPolicy:'automatic',providerId:'sub1-free-proxy',model:'openai-fast',
       request:'Fix a reproducible behavior bug in src/engine/decompose.rs. The existing split_markers() recognizes isolated marker words (e.g. 그리고, 뒤) but misses Korean action suffix -고 and connective 다음/나서. On baseline, Korean text 설계를 읽고 결과를 저장한 다음 검증해 produces one step where three real ordered actions are required. Modify the Rust function now: after reading the exact existing source block, call workspace_replace with path=src/engine/decompose.rs, oldText=the exact source text and newText=your implementation. Distinguish action verb suffix -고 from nouns such as 사고/최고; preserve original subtask text and list handling. Do not end after code_search or workspace_read_range. If the first edit is rejected, inspect the tool error and retry with the exact current oldText. DOMINION will run independent frozen baseline/candidate tests after editing.',
-      focusFiles:['src/engine/decompose.rs'],maxAttempts:3,
-      tokenBudget:90000,timeBudgetSeconds:2700
+      focusFiles:['src/engine/decompose.rs'],
+      maxAttempts:Number(process.env.SUB1_LIVE_MAX_ATTEMPTS||3),
+      tokenBudget:Number(process.env.SUB1_LIVE_TOKEN_BUDGET||90000),
+      timeBudgetSeconds:Number(process.env.SUB1_LIVE_TIME_BUDGET||2700)
     };
     trace.submittedRequest={...request,request:request.request.slice(0,320)};
     const queued=await call('/api/rsi/start',request);
     trace.jobId=queued.id;
     if(typeof trace.jobId!=='string'||!trace.jobId)throw Error(`RSI did not return a job id: ${content(queued)}`);
     trace.phase='running';save(trace);
-    const deadline=Date.now()+42*60*1000;
+    const deadline=Date.now()+Number(process.env.SUB1_LIVE_DEADLINE_MS||42*60*1000);
     let last=null;
     while(Date.now()<deadline){
       await new Promise(resolve=>setTimeout(resolve,10000));
@@ -100,9 +102,27 @@ if(mode==='probe'){
       writeReceipts:g.writeReceipts||[],actionTrace:g.actionTrace||[],
       methodActions:g.methodActions||[],executionMethod:g.executionMethod||null,
       attemptedCandidateId:g.attemptedCandidateId||null,
+      candidateCapture:g.candidateCapture||null,
+      improvementDirective:g.improvementDirective||null,
       focusFiles:g.focusFiles,knowledgeId:g.knowledgeId,
       evaluation:g.evaluation?.metrics
     }));
+    // Preserve actual model-authored diffs, independent build evidence and
+    // holdout reports, not a fabricated success count.
+    trace.sourceCandidates=[];
+    const candidateIds=[...new Set(trace.generationEvidence.flatMap(g=>
+      [g.candidateId,g.attemptedCandidateId].filter(id=>typeof id==='string')))];
+    for(const id of candidateIds){
+      try{
+        const candidate=await call(`/api/rsi/${encodeURIComponent(id)}`);
+        trace.sourceCandidates.push({
+          id,baseCommit:candidate.baseCommit,target:candidate.target,
+          patch:candidate.patch,patchSha256:candidate.patchSha256,
+          paths:candidate.paths,status:candidate.status,
+          evaluation:candidate.evaluation||null
+        });
+      }catch(error){trace.errors.push(`candidate ${id}: ${String(error)}`);}
+    }
     trace.phase=['completed','failed','cancelled','needs_review'].includes(last.status)?
       'campaign_finished':'campaign_timeout';
     trace.status=last.status;trace.result=last.result||null;
