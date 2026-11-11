@@ -59,15 +59,22 @@ fn rsi_should_checkpoint(tool_calls: u64, has_write: bool) -> bool {
 /// evidence. An edit-only stage is reached only after real source material was
 /// delivered in the prompt or returned by a successful read tool. Unfocused
 /// autonomous research retains its more permissive decision checkpoint.
+fn rsi_checkpoint_stage_with_method(
+    tool_calls:u64, read_calls:u64, has_write:bool,
+    focus_available:bool, source_in_prompt:bool, policy:&Value,
+)->Option<bool>{
+    if has_write {return None;}
+    let threshold=policy["checkpointAfter"].as_u64().unwrap_or(3).clamp(2,5);
+    if focus_available && (source_in_prompt || read_calls>0)
+        && tool_calls>=threshold {return Some(true);}
+    rsi_should_checkpoint(tool_calls,has_write).then_some(false)
+}
 fn rsi_checkpoint_stage(
     tool_calls: u64, read_calls: u64, has_write: bool,
     explicit_focus: bool, source_in_prompt: bool,
 ) -> Option<bool> {
-    if has_write { return None; }
-    if explicit_focus && (source_in_prompt || read_calls > 0) && tool_calls >= 3 {
-        return Some(true);
-    }
-    rsi_should_checkpoint(tool_calls, has_write).then_some(false)
+    rsi_checkpoint_stage_with_method(tool_calls,read_calls,has_write,
+        explicit_focus,source_in_prompt,&Value::Null)
 }
 
 /// Stop broad discovery but allow exact missing ranges to be read. Bounded
@@ -1182,10 +1189,11 @@ async fn run_turn_body(
             let read_calls = completed.iter().filter(|operation| matches!(
                 operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read"))).count() as u64;
             let grounded = session["rsiFocusContextReady"] == true || read_calls > 0;
-            let stage = rsi_checkpoint_stage(
+            let focused=session["rsiExplicitFocus"]==true || session["rsiAutoFocus"]==true;
+            let stage = rsi_checkpoint_stage_with_method(
                 tool_calls, read_calls, has_write,
-                session["rsiExplicitFocus"] == true,
-                session["rsiFocusContextReady"] == true,
+                focused, session["rsiFocusContextReady"] == true,
+                &session["rsiEditPolicy"],
             ).or_else(|| {
                 (rsi_edit_stage_requested && grounded && !has_write).then_some(true)
             });
@@ -1194,9 +1202,23 @@ async fn run_turn_body(
                 // The old one-shot guard reopened code_search and all read
                 // tools after the first checkpoint, allowing read-only loops.
                 round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition), edit_only));
+                // The learned algorithm changes the executable edit menu's
+                // order after a real source observation, independently of
+                // the model's preference or prose. Both grounded edit tools
+                // remain available as recovery options.
+                let preferred=session["rsiEditPolicy"]["preferredTool"].as_str()
+                    .filter(|tool| matches!(*tool,"workspace_replace_range"|"workspace_replace"));
+                if edit_only {
+                    if let Some(preferred)=preferred {
+                        round_tools.sort_by_key(|definition|tool_name(definition)!=preferred);
+                    }
+                }
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system",
-                        "content":"소스 근거 확인 단계는 종료되었습니다. workspace_read_range를 호출했다면 그 결과의 startLine/endLine/sourceSha256을 사용해 workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 호출하세요. 기존 oldText를 정확히 안다면 workspace_replace도 가능합니다. 새 파일에만 workspace_write를 사용합니다. 조회 도구는 더 제공되지 않습니다. 실제 변경 전에는 테스트·완료를 주장하지 마세요."
+                        "content":format!("DOMINION 개선 방법 선택: {:?} (정책 revision={}). 소스 근거 확인 단계는 종료되었습니다. 가능한 편집 연산 중 {}를 먼저 시도하세요. 해당 방식이 실제 관찰된 근거에 맞지 않으면 다른 편집 도구를 사용하세요. workspace_read_range의 startLine/endLine/sourceSha256을 이용한 범위 편집 또는 정확한 oldText 치환으로 소스를 수정하세요. 새 파일에만 workspace_write를 사용합니다. 조회 도구는 더 제공되지 않습니다. 실제 변경 전에는 테스트·완료를 주장하지 마세요.",
+                            session["rsiEditPolicy"]["method"].as_str().unwrap_or("balanced"),
+                            session["rsiEditPolicy"]["revision"].as_str().unwrap_or("default"),
+                            preferred.unwrap_or("workspace_replace_range"))
                     }));
                     rsi_edit_only_announced = true;
                 } else if !rsi_decision_checkpoint {
@@ -1208,7 +1230,7 @@ async fn run_turn_body(
                     state.store.audit("rsi.action_checkpoint", json!({
                         "sessionId":session_id,"executionId":execution_id,
                         "toolCalls":tool_calls,"readCalls":read_calls,
-                        "editOnly":edit_only
+                        "editOnly":edit_only,"editPolicy":session["rsiEditPolicy"]
                     }));
                 }
                 rsi_decision_checkpoint = true;
@@ -6270,6 +6292,20 @@ mod harness_tool_selection_tests {
             .map(|tool| serde_json::to_string(tool).unwrap().len())
             .sum::<usize>();
         assert!(total <= 2_000 || kept.len() == 1);
+    }
+
+    #[test]
+    fn learned_rsi_method_changes_the_real_edit_checkpoint() {
+        let fast=json!({"method":"focused-range","checkpointAfter":2,
+            "preferredTool":"workspace_replace_range"});
+        let slow=json!({"method":"exact-context","checkpointAfter":4,
+            "preferredTool":"workspace_replace"});
+        assert_eq!(rsi_checkpoint_stage_with_method(2,1,false,true,true,&fast),Some(true));
+        assert_eq!(rsi_checkpoint_stage_with_method(2,1,false,true,true,&slow),None);
+        assert_eq!(rsi_checkpoint_stage_with_method(4,1,false,true,true,&slow),Some(true));
+        assert_eq!(rsi_checkpoint_stage_with_method(5,0,false,true,false,&fast),None);
+        assert_eq!(rsi_checkpoint_stage_with_method(6,0,false,true,false,&fast),Some(false));
+        assert_eq!(rsi_checkpoint_stage_with_method(5,1,true,true,true,&fast),None);
     }
 
     #[test]
