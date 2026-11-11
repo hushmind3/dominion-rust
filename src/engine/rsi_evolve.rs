@@ -4109,6 +4109,22 @@ async fn run_loop(
                 .or_else(|| current["error"].as_str())
                 .unwrap_or("유효한 변경이나 검사 통과 없음"));
         }
+        // The independent evaluator, not the code generator, supplies the
+        // outcome of the native operator. Persist both failed and successful
+        // applications so descendants can learn from execution evidence.
+        if let Some(mut mutation)=context.state.store.get("rsi_mutation",child_id) {
+            mutation["candidateId"]=generation["candidateId"].clone();
+            mutation["evaluation"]=generation["evaluation"].clone();
+            mutation["accepted"]=json!(generation["accepted"]==true);
+            mutation["acceptedCommit"]=generation["acceptedCommit"].clone();
+            mutation["completedAt"]=json!(chrono::Utc::now().to_rfc3339());
+            mutation["qualityGain"]=if generation["accepted"]==true {
+                generation["evaluation"]["metrics"]["metricGains"].clone()
+            }else{Value::Null};
+            context.state.store.put("rsi_mutation",&mutation)
+                .ok_or("코드 변형 결과의 지속 저장 실패")?;
+            generation["nativeMutation"]=mutation;
+        }
         generation["elapsedMs"] = json!((worker_started.elapsed().as_millis() as u64)
             .saturating_sub(
                 record["waitingMs"]
