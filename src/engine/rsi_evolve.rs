@@ -3158,6 +3158,18 @@ fn improvement_directive(history:&[Value]) -> Value {
     })
 }
 
+/// Preserve chronological ordering across new millisecond RFC3339 records
+/// and older SQLite-created timestamps (YYYY-MM-DD HH:MM:SS, UTC).
+fn generation_completion_millis(row:&Value)->i64 {
+    row["completedAt"].as_str()
+        .and_then(|text|chrono::DateTime::parse_from_rfc3339(text).ok())
+        .map(|date|date.timestamp_millis())
+        .or_else(||row["createdAt"].as_str().and_then(|text|
+            chrono::NaiveDateTime::parse_from_str(text,"%Y-%m-%d %H:%M:%S")
+                .ok().map(|date|date.and_utc().timestamp_millis())))
+        .unwrap_or(i64::MIN)
+}
+
 /// A new campaign inherits the last *outcome*, not only the last discovery.
 /// Otherwise a research→failed implementation sequence restarts as
 /// research→the identical failed implementation forever. A newer accepted
@@ -3176,9 +3188,7 @@ fn improvement_history(state:&AppState,input:&Value,history:&[Value],campaign_id
     // completedAt is high-resolution and survives Store::get, which replaces
     // createdAt with the SQLite-created seconds-resolution timestamp.
     previous.sort_by(|a,b| {
-        let timestamp=|row:&Value|row["completedAt"].as_str()
-            .or_else(||row["createdAt"].as_str()).unwrap_or("");
-        timestamp(b).cmp(timestamp(a))
+        generation_completion_millis(b).cmp(&generation_completion_millis(a))
             .then_with(|| {
                 if a["campaignId"]==b["campaignId"] {
                     b["attempt"].as_u64().cmp(&a["attempt"].as_u64())
@@ -3904,6 +3914,16 @@ mod tests {
         input["rsiObjective"]=json!("browser automation");
         assert!(improvement_history(&state,&input,&[],"new").is_empty());
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completion_order_handles_legacy_sqlite_utc_and_new_rfc3339() {
+        let old=json!({"createdAt":"2026-11-11 11:00:00"});
+        let earlier_new=json!({"completedAt":"2026-11-11T10:59:59.999Z"});
+        let later_new=json!({"completedAt":"2026-11-11T11:00:00.001Z"});
+        assert!(generation_completion_millis(&earlier_new)<generation_completion_millis(&old));
+        assert!(generation_completion_millis(&later_new)>generation_completion_millis(&old));
+        assert_eq!(generation_completion_millis(&json!({"createdAt":"bad"})),i64::MIN);
     }
 
     #[test]
