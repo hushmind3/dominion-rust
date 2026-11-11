@@ -6278,7 +6278,7 @@ mod tests {
         assert_eq!(feedback.len(),1);
         assert_eq!(feedback[0]["result"]["followed"],true);
         assert_eq!(state.store.get("experience","repaired-experience").unwrap()
-            ["executableMethods"][0]["successfulApplications"],Value::Null,
+            ["executableMethods"][0]["successfulApplications"],json!(0),
             "successful tool execution without independently verified source adoption is not quality gain");
         server.abort();
         let _=std::fs::remove_dir_all(root);
