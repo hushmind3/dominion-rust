@@ -5180,6 +5180,97 @@ mod tests {
         let _=std::fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn learned_procedure_executes_on_two_distinct_source_domains_with_real_tool_receipts() {
+        let (state,root)=state();
+        let workspace=root.join("work");
+        std::fs::create_dir_all(workspace.join("src/engine")).unwrap();
+        // Different real source files, not two evaluations of the same path.
+        std::fs::write(workspace.join("src/engine/memory.rs"),
+            "pub fn remember() -> bool { true }\n").unwrap();
+        std::fs::write(workspace.join("src/engine/tools.rs"),
+            "pub fn invoke_tool() -> bool { true }\n").unwrap();
+        let partition=research_scope(&json!({"rsiSourceDir":workspace})).partition_key;
+        let verification=crate::engine::procedure::normalize(&json!({
+            "type":"procedure","appliesTo":{"requestContains":["src/engine/"]},
+            "bindings":{"rsiFocusPath":"__rsi_dynamic_focus__"},
+            "nodes":[{"id":"inspect_source","tool":"workspace_read_range",
+                "arguments":{"path":"$rsiFocusPath","startLine":1,"endLine":2}}],
+            "edges":[],"after":[{"kind":"file_contains",
+                "path":"$rsiFocusPath","text":"pub fn"}]
+        }));
+        assert_eq!(verification["type"],"procedure");
+        let method=json!({"id":"cross-domain-source-inspect","revision":"v1",
+            "domain":"memory","transferDomains":["tools"],"status":"candidate",
+            "successfulApplications":0,"verification":verification,
+            "assistanceMode":"harness_assisted"});
+        state.store.put("experience",&json!({"id":"source-experience",
+            "status":"active","partitionKey":partition,
+            "executableMethods":[method]})).unwrap();
+        state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve",
+            "status":"running","cancelRequested":false})).unwrap();
+        for (domain,focus) in [("memory","src/engine/memory.rs"),
+            ("tools","src/engine/tools.rs")] {
+            let child_id=format!("generation-{domain}");
+            let session_id=format!("session-{domain}");
+            let execution_id=format!("execution-{domain}");
+            state.store.put("job",&json!({"id":child_id,"kind":"rsi_generation",
+                "status":"running","cancelRequested":false,
+                "input":{"rsiCampaignId":"campaign"}})).unwrap();
+            let input=json!({"rsiSourceDir":workspace,"rsiDomain":domain,
+                "rsiFocusFiles":[focus],"rsiAutoFocus":true,
+                "rsiObjective":"Improve src/engine/ source code"});
+            let mut session=json!({"id":session_id,"rsiRun":true,
+                "rsiCampaignId":"campaign","rsiGenerationJobId":child_id,
+                "rsiObjective":"Improve src/engine/ source code"});
+            configure_method_session(&state,&input,&mut session);
+            state.store.put("session",&session).unwrap();
+            let strategies=method_strategies(&state,&session);
+            assert_eq!(strategies.len(),1,"real {domain} task should reuse learned procedure");
+            let strategy=&strategies[0];
+            assert_eq!(strategy["rsiBoundFocusFile"],json!(focus));
+            assert_eq!(strategy["rsiTransferTrial"],json!(domain=="tools"));
+            let (node,tool,args)=crate::engine::procedure::ready_intent(
+                strategy,&[],"Improve src/engine/ source code",
+                &std::collections::HashMap::new()).unwrap();
+            assert_eq!(args["path"],focus,"execution must target CURRENT task, not source task");
+            let ctx=tools::ToolContext {workspace:&workspace,store:&state.store,state:&state,
+                session_id:&session_id,agent_id:None,tools_enabled:true,
+                tools_execution_enabled:true};
+            let result=tools::execute(&ctx,&tool,&args,&execution_id).await.unwrap();
+            assert!(result["content"].as_str().is_some_and(|s|s.contains("pub fn")),
+                "{domain} tool must read the actual source file");
+            state.store.put("execution",&json!({"id":execution_id,"sessionId":session_id,
+                "strategyCandidates":strategies})).unwrap();
+            state.store.put("execution_operation",&json!({
+                "id":format!("operation-{domain}"),"runId":execution_id,
+                "sessionId":session_id,"origin":"procedure",
+                "procedureStrategyId":strategy["id"],"procedureRevision":strategy["revision"],
+                "procedureNodeId":node,"tool":tool,"arguments":args,"result":result,
+                "status":"completed","opSeq":1
+            })).unwrap();
+            collect_method_executions(&state,&session_id,&workspace);
+            let stored=state.store.get("session",&session_id).unwrap();
+            let receipt=&stored["rsiMethodExecutions"][0];
+            assert_eq!(receipt["focusPath"],json!(focus));
+            assert_eq!(receipt["result"]["verified"],true);
+            assert_eq!(receipt["result"]["followed"],true);
+            record_method_feedback(&state,&json!({"domain":domain,
+                "accepted":true,"jobId":child_id,"newFindings":0,
+                "tokens":100,"elapsedMs":10}),&session_id);
+        }
+        let record=state.store.get("experience","source-experience").unwrap();
+        let method=&record["executableMethods"][0];
+        assert_eq!(method["status"],"executable");
+        assert_eq!(method["successfulApplications"],2);
+        assert_eq!(method["transferVerifiedDomains"],json!(["tools"]));
+        let applied=method["applications"].as_array().unwrap();
+        assert_eq!(applied.len(),2);
+        assert_eq!(applied[0]["focusPath"],"src/engine/memory.rs");
+        assert_eq!(applied[1]["focusPath"],"src/engine/tools.rs");
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn verified_executable_method_can_be_retested_in_an_explicit_new_domain() {
         let (state,root)=state();
