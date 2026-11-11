@@ -409,8 +409,12 @@ mod tests {
     #[test]
     fn source_archive_explores_alternative_after_failed_first_operator() {
         let baseline=include_str!("room_state.rs");
-        let source=materialize_verified_owner_provenance(baseline)
+        let trusted=materialize_verified_owner_provenance(baseline)
             .unwrap_or_else(||baseline.to_string());
+        let source=hoist_invariant_query_terms(&trusted)
+            .unwrap_or(trusted);
+        // After the first source optimization, token caching and domain
+        // hoisting are BOTH independently applicable next-generation edits.
         let candidates=source_mutations(&source);
         assert!(candidates.len()>=2);
         let first=candidates[0].0;
