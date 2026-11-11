@@ -2127,6 +2127,16 @@ fn remaining_generation_tokens(record:&Value)->Option<u64> {
     record["limits"]["tokenBudget"].as_u64().map(|budget|
         budget.saturating_sub(record["tokens"].as_u64().unwrap_or(0)))
 }
+
+/// One failed real-model generation previously spent the entire campaign
+/// budget, so no descendant could inherit its compiler failure. Allocate
+/// the remaining tokens across the remaining actual generation slots.
+fn generation_token_quota(record:&Value)->Option<u64> {
+    let available=remaining_generation_tokens(record)?;
+    let attempts_left=record["limits"]["maxAttempts"].as_u64().unwrap_or(10)
+        .saturating_sub(record["attempts"].as_u64().unwrap_or(0)).max(1);
+    Some(available.div_ceil(attempts_left).max(1).min(available))
+}
 fn prompt_fits_allowance(prompt:&str,available:Option<u64>,reserve:u64)->bool {
     available.is_none_or(|limit|
         crate::engine::chat::estimate_text_tokens(prompt).saturating_add(reserve)<=limit)
@@ -3487,7 +3497,7 @@ async fn run_loop(
             && child_input["providerId"].as_str().is_some_and(|s|!s.is_empty());
         // Fixture workers have no model costs. Real workers need both a
         // budget-fitting inherited context and space for their own directives.
-        let available=if model_bound {remaining_generation_tokens(record)} else {None};
+        let available=if model_bound {generation_token_quota(record)} else {None};
         let Some((composed,fit))=fit_parent_generation_context(
             child_input["prompt"].as_str().unwrap_or(""),
             &inherited,&digest,&focus,available
@@ -3501,6 +3511,7 @@ async fn run_loop(
         child_input["prompt"]=json!(composed);
         child_input["rsiParentContextFit"]=fit;
         child_input["rsiRemainingCampaignTokens"]=json!(available);
+        child_input["rsiGenerationTokenLimit"]=json!(available);
         if model_bound && !generation_fits_remaining_budget(record,&child_input) {
             return Ok("token_budget".into());
         }
@@ -4156,7 +4167,8 @@ fn target_plan_mismatch(error: &str) -> bool {
 fn generation_model_error(current: &Value) -> Option<&str> {
     current["result"]["rsi"]["modelError"]
         .as_str()
-        .filter(|error| !error.trim().is_empty())
+        .filter(|error| !error.trim().is_empty()
+            && !error.starts_with("rsi_generation_quota_reached:"))
 }
 
 pub(crate) async fn adopt(
@@ -4857,6 +4869,24 @@ mod tests {
         assert!(prompt_fits_allowance(&prompt,Some(2200),256));
         assert!(fit_worker_generation_context(&"H".repeat(30000),
             "memory","memory",&history,&directive,Some(100)).is_err());
+    }
+
+    #[test]
+    fn sub1_fair_generation_quota_preserves_real_descendant_token_budget(){
+        let mut campaign=json!({"limits":{"tokenBudget":90000,"maxAttempts":3},
+            "tokens":0,"attempts":0});
+        assert_eq!(generation_token_quota(&campaign),Some(30000));
+        campaign["tokens"]=json!(27800);
+        campaign["attempts"]=json!(1);
+        assert_eq!(generation_token_quota(&campaign),Some(31100));
+        campaign["tokens"]=json!(58900);
+        campaign["attempts"]=json!(2);
+        assert_eq!(generation_token_quota(&campaign),Some(31100));
+        let local=json!({"result":{"rsi":{"modelError":
+            "rsi_generation_quota_reached: reserve tokens for descendant"}}});
+        assert!(generation_model_error(&local).is_none());
+        let network=json!({"result":{"rsi":{"modelError":"HTTP 502 timeout"}}});
+        assert_eq!(generation_model_error(&network),Some("HTTP 502 timeout"));
     }
 
     #[test]
