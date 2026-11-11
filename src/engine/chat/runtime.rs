@@ -1439,7 +1439,7 @@ async fn run_turn_body(
         // second provider or another planning/research phase.
         let mut round_provider=provider.clone();
         if rsi_text_edit_retry && round_provider.tool_mode=="native"
-            && round_provider.kind=="openai"
+            && matches!(round_provider.kind.as_str(),"ollama"|"openai"|"openai-compatible")
             && session["rsiRun"]==true && rsi_edit_only_announced {
             round_provider.tool_mode="compat".into();
             state.store.audit("rsi.edit_text_protocol_repair",json!({
