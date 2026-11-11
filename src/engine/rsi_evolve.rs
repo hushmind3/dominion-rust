@@ -3740,7 +3740,13 @@ async fn run_loop(
             prior["accepted"]!=true
             && prior["staticChecksPassed"]==false
             && prior["generatorCommit"]==head
-            && prior["sourceDiffBytes"].as_u64().unwrap_or(0)>0) {
+            && prior["sourceDiffBytes"].as_u64().unwrap_or(0)>0
+            // Do not replay a failed patch unchanged for another generation.
+            // The child must have produced a different source diff to earn
+            // another repair continuation.
+            && (prior["recoveredFailedPatch"]["candidateId"].is_null()
+                || prior["recoveredFailedPatch"]["candidateId"]
+                    !=prior["unverifiedCandidateId"])) {
             if let (Some(id),Some(failed_job))=(
                 prior["unverifiedCandidateId"].as_str(),
                 prior["jobId"].as_str()
