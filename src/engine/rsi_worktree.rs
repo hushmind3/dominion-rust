@@ -217,6 +217,69 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     }
     Ok(Worktree{source,path,base:base.to_string()})
 }
+/// Resume a real compiler-rejected source patch in the *next detached
+/// worktree*. The worker sees the exact failed bytes, edits them in place,
+/// and the normal finish()/paired evaluator measures the corrected diff
+/// against the unchanged original base. No source branch is ever modified.
+pub async fn restore_failed_candidate(
+    context:&JobContext,input:&Value,worktree:&Worktree,
+)->Result<Option<Value>,String>{
+    let Some(id)=input["rsiRepairCandidateId"].as_str()
+        .filter(|id|!id.is_empty()) else {return Ok(None);};
+    let candidate=context.state.store.get("rsi_candidate",id)
+        .ok_or("후손의 실패 패치 기록이 사라졌습니다.")?;
+    let parent=input["rsiRepairParentJobId"].as_str()
+        .ok_or("실패 패치의 원래 실행 작업이 없습니다.")?;
+    if candidate["id"]!=id || candidate["rsiJobId"]!=parent
+        || candidate["baseCommit"]!=worktree.base
+        || candidate["status"]!="proposed" {
+        return Err("후손 복구 대상의 작업·기준 커밋·후보 상태가 다릅니다.".into());
+    }
+    let run=context.state.store.get("rsi_run",&format!("rsi-run-{parent}"))
+        .ok_or("컴파일 실패를 관찰한 원본 실행 기록이 없습니다.")?;
+    if run["candidateId"]!=id || run["checksPassed"]!=false
+        || run["baseCommit"]!=worktree.base
+        || run["checks"].as_array().is_none_or(|checks|!checks.iter().any(|check|
+            check["passed"]==false && check["ran"]==true)) {
+        return Err("실제 컴파일 실패가 아닌 패치는 다음 세대 복구 대상으로 사용하지 않습니다.".into());
+    }
+    let patch=candidate["patch"].as_str().ok_or("실패 후보의 패치가 없습니다.")?;
+    if patch.is_empty() || patch.len()>=MAX_CAPTURE_BYTES
+        || candidate["patchSha256"].as_str()!=Some(digest(patch).as_str()) {
+        return Err("계승할 패치의 내용·해시가 원본과 다릅니다.".into());
+    }
+    if !candidate["paths"].as_array().is_some_and(|paths|
+        !paths.is_empty() && paths.iter().all(|path|path.as_str()
+            .is_some_and(crate::engine::rsi::safe_path))) {
+        return Err("계승할 변경 파일의 경로가 유효하지 않습니다.".into());
+    }
+    // Use an external temporary patch: placing it inside the worktree would
+    // make the patch file itself appear as a forged source change.
+    let path=std::env::temp_dir()
+        .join(format!("dominion-rsi-restore-{}.patch",uuid::Uuid::new_v4()));
+    std::fs::write(&path,patch).map_err(|e|e.to_string())?;
+    let patch_path=path.to_str().ok_or("임시 패치 파일 경로 오류")?;
+    let result=async {
+        git(&worktree.path,&["apply","--check",patch_path]).await?;
+        git(&worktree.path,&["apply",patch_path]).await?;
+        Ok::<_,String>(())
+    }.await;
+    let _=std::fs::remove_file(&path);
+    result?;
+    context.checkpoint(json!({"rsiPhase":"restored_failed_source",
+        "rsiRepairCandidateId":id,"rsiRepairBaseCommit":worktree.base}))?;
+    let failures=run["checks"].as_array().into_iter().flatten()
+        .filter(|check|check["passed"]==false).take(2)
+        .map(|check|format!("{}: {}",check["label"].as_str().unwrap_or("cargo check"),
+            check["stderr"].as_str().or_else(||check["error"].as_str())
+                .unwrap_or("").chars().take(900).collect::<String>()))
+        .collect::<Vec<_>>();
+    Ok(Some(json!({"candidateId":id,"parentJobId":parent,
+        "baseCommit":worktree.base,"paths":candidate["paths"],
+        "compilerErrors":failures,
+        "patchSha256":candidate["patchSha256"]})))
+}
+
 fn classify(patch:&str)->&'static str {
     if patch.lines().any(|line|line.starts_with("diff --git ")
         && (line.contains("src/engine/rsi.rs ")
