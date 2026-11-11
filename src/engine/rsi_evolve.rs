@@ -2303,6 +2303,175 @@ fn evolve_decision_grammar(policy:&mut Value){
     policy["decisionGrammar"]=grammar;
 }
 
+/// A second-order RSI genome. These parameters control WHICH future programs
+/// DOMINION can invent, not just the score of already observed tool sequences.
+/// Only independently evaluated, witnessed source edits update this grammar.
+fn evolve_program_synthesis_grammar(policy:&Value)->Value {
+    let mut gains=0u64;
+    let mut losses=0u64;
+    let mut short_gains=0u64;
+    let mut long_gains=0u64;
+    let mut observed=BTreeSet::<String>::new();
+    for row in policy["programMeasuredEvidence"].as_array().into_iter().flatten() {
+        let (Some(job),Some(program))=(row["jobId"].as_str(),row["programId"].as_str())
+            else{continue};
+        if !observed.insert(format!("{job}:{program}")){continue;}
+        let measured=match row["outcome"].as_str() {
+            Some("accepted_gain")=>true,
+            Some("paired_regression")=>false,
+            _=>continue,
+        };
+        let length=row["programSteps"].as_array().map(Vec::len).or_else(||
+            policy["executionPrograms"].as_array().and_then(|programs|
+                programs.iter().find(|p|p["id"]==program)
+                    .and_then(|p|p["steps"].as_array()).map(Vec::len)));
+        if measured {
+            gains+=1;
+            if length.is_some_and(|n|n<=2){short_gains+=1;}
+            if length.is_some_and(|n|n>=4){long_gains+=1;}
+        }else{losses+=1;}
+    }
+    // An unevaluated generator explores a four-step splice. A repeated
+    // independent regression extends the search grammar to five steps and
+    // admits an extra source observation. Two successful short descendants
+    // compress the grammar instead. These are candidates, never quality claims.
+    let (max_steps,allow_search_detours,step_penalty)=
+        if losses>=2 && losses>=gains {(5usize,true,1i64)}
+        else if short_gains>=2 && losses==0 {(3usize,false,2i64)}
+        else if long_gains>=2 && gains>losses {(5usize,true,1i64)}
+        else {(4usize,true,2i64)};
+    let genes=json!({"maxSteps":max_steps,
+        "allowSearchAfterRead":allow_search_detours,
+        "stepPenalty":step_penalty,"minIndependentJobs":2,
+        "measuredGains":gains,"measuredRegressions":losses,
+        "shortProgramGains":short_gains,"longProgramGains":long_gains});
+    let revision=format!("{:x}",Sha256::digest(genes.to_string().as_bytes()));
+    json!({"kind":"evolved_execution_program_generator",
+        "genes":genes,"revision":revision,
+        "status":"new_generator_revision_requires_descendant_evaluation",
+        "source":"verified_source_write_and_independent_paired_evaluation",
+        "causalProof":false})
+}
+
+/// Compose bounded 4-5 step paths from edges witnessed in DIFFERENT real
+/// generations. A path may be entirely novel; every constituent edge needs
+/// positive independent execution evidence and no prevailing failure signal.
+/// The evolved genome determines the topology that can be generated.
+fn synthesize_evolved_execution_programs(evidence:&[Value],genome:&Value)->Vec<Value> {
+    type Edge=(BTreeSet<String>,BTreeSet<String>);
+    let mut graph=BTreeMap::<(String,String,String),Edge>::new();
+    let known=["code_search","workspace_read_range",
+        "workspace_replace","workspace_replace_range","workspace_write"];
+    for sample in evidence {
+        let (Some(job),Some(domain),Some(ok),Some(steps))=(
+            sample["jobId"].as_str().filter(|v|!v.is_empty()),
+            sample["domain"].as_str().filter(|v|DOMAINS.contains(v)),
+            method_sample_outcome(sample),sample["sequence"].as_array()) else{continue};
+        for pair in steps.windows(2) {
+            let (Some(from),Some(to))=(pair[0].as_str(),pair[1].as_str())
+                else{continue};
+            if from==to || !known.contains(&from) || !known.contains(&to)
+                || matches!(from,"workspace_replace"|"workspace_replace_range"|"workspace_write")
+                || matches!(to,"workspace_replace"|"workspace_replace_range"|"workspace_write")
+                    && from!="workspace_read_range" {continue;}
+            let edge=graph.entry((domain.into(),from.into(),to.into())).or_default();
+            if ok{edge.0.insert(job.into());}else{edge.1.insert(job.into());}
+        }
+    }
+    let max_steps=genome["genes"]["maxSteps"].as_u64().unwrap_or(4).clamp(3,5) as usize;
+    let allow_detours=genome["genes"]["allowSearchAfterRead"]!=false;
+    let penalty=genome["genes"]["stepPenalty"].as_i64().unwrap_or(2).clamp(1,4);
+    let minimum=genome["genes"]["minIndependentJobs"].as_u64().unwrap_or(2).clamp(2,4) as usize;
+    let mut results=Vec::<Value>::new();
+    // Bounded beam search through independently supported source-work edges.
+    // Do not seed an edit: the descendant must first witness the actual source.
+    for domain in DOMAINS {
+        let mut frontier=vec![
+            (vec!["workspace_read_range".to_string()],BTreeSet::<String>::new(),0i64),
+            (vec!["code_search".to_string()],BTreeSet::<String>::new(),0i64)
+        ];
+        for _ in 1..max_steps {
+            let mut expanded=Vec::new();
+            for (steps,sources,score) in frontier {
+                let from=steps.last().map(String::as_str).unwrap_or("");
+                for ((edge_domain,edge_from,edge_to),(good,bad)) in &graph {
+                    if edge_domain!=*domain || edge_from!=from
+                        || good.is_empty() || good.len()<=bad.len() {continue;}
+                    if !allow_detours && from=="workspace_read_range"
+                        && edge_to=="code_search" {continue;}
+                    // One search/read detour is enough. Repeating a cycle
+                    // cannot manufacture additional independent witnesses.
+                    if steps.windows(2).any(|pair|
+                        pair[0]==*edge_from && pair[1]==*edge_to) {continue;}
+                    let mut next=steps.clone();
+                    next.push(edge_to.clone());
+                    let mut witnessed=sources.clone();
+                    witnessed.extend(good.iter().cloned());
+                    let quality=score+good.len() as i64*3-bad.len() as i64*2-penalty;
+                    let editing=matches!(edge_to.as_str(),
+                        "workspace_replace"|"workspace_replace_range"|"workspace_write");
+                    if editing {
+                        if next.len()<4 || witnessed.len()<minimum || quality<=0
+                            || next[next.len()-2]!="workspace_read_range" {continue;}
+                        let id_parts=std::iter::once(*domain)
+                            .chain(next.iter().map(String::as_str)).collect::<Vec<_>>();
+                        let id=format!("rsi-evolved-program-{}",
+                            crate::engine::memory::stable_id(&id_parts));
+                        let observed_whole=evidence.iter().any(|sample|
+                            sample["domain"].as_str()==Some(*domain)
+                            && method_sample_outcome(sample)==Some(true)
+                            && sample["sequence"].as_array().is_some_and(|seq|
+                                seq.windows(next.len()).any(|window|
+                                    window.iter().zip(&next).all(|(tool,name)|
+                                        tool.as_str()==Some(name.as_str())))));
+                        results.push(json!({"id":id,"domain":domain,"steps":next,
+                            "score":quality.clamp(-100,100),
+                            "origin":"adaptive_program_synthesis_grammar",
+                            "composition":if observed_whole{"observed_then_generalized"}
+                                else{"stitched_across_generations"},
+                            "generatorRevision":genome["revision"],
+                            "sourceGenerationJobs":witnessed.into_iter().take(8)
+                                .collect::<Vec<_>>(),
+                            "status":"candidate_requires_descendant_execution",
+                            "causalProof":false}));
+                    }else if next.len()<max_steps {
+                        expanded.push((next,witnessed,quality));
+                    }
+                }
+            }
+            expanded.sort_by(|a,b|b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+            expanded.truncate(40);
+            frontier=expanded;
+        }
+    }
+    results.sort_by(|a,b|b["score"].as_i64().cmp(&a["score"].as_i64())
+        .then(a["id"].as_str().cmp(&b["id"].as_str())));
+    results.dedup_by(|a,b|a["id"]==b["id"]);
+    results.truncate(6);
+    results
+}
+
+/// Rebuild only the genome-derived subset when its generation algorithm
+/// changes. Ordinary verified programs and frozen trial mutations survive.
+fn refresh_adaptive_execution_programs(policy:&mut Value) {
+    let grammar=evolve_program_synthesis_grammar(policy);
+    let evidence=policy["evidence"].as_array().cloned().unwrap_or_default();
+    let mut programs=policy["executionPrograms"].as_array().cloned().unwrap_or_default();
+    programs.retain(|program|program["origin"]!="adaptive_program_synthesis_grammar");
+    programs.extend(synthesize_evolved_execution_programs(&evidence,&grammar));
+    let rejected=policy["rejectedProgramIds"].as_array().cloned().unwrap_or_default();
+    programs.retain(|program|!rejected.contains(&program["id"]));
+    programs.sort_by(|a,b|b["score"].as_i64().cmp(&a["score"].as_i64())
+        .then(a["id"].as_str().cmp(&b["id"].as_str())));
+    let mut ids=BTreeSet::<String>::new();
+    programs.retain(|program|program["id"].as_str()
+        .is_some_and(|id|ids.insert(id.to_string())));
+    programs.truncate(12);
+    policy["programSynthesisGrammar"]=grammar;
+    policy["executionPrograms"]=json!(programs);
+    rescore_execution_programs(policy);
+}
+
 fn synthesize_method_execution_programs(evidence:&[Value])->Vec<Value> {
     type Edges=BTreeMap<(String,String,String),(BTreeSet<String>,BTreeSet<String>)>;
     let mut edges=Edges::new();
@@ -2534,8 +2703,8 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         }
     }
     policy["executionPrograms"]=json!(programs);
-    rescore_execution_programs(&mut policy);
     policy["evidence"]=json!(evidence);
+    refresh_adaptive_execution_programs(&mut policy);
     evolve_decision_grammar(&mut policy);
     policy["decisionNodes"]=json!(synthesize_method_decision_nodes(
         policy["evidence"].as_array().map(Vec::as_slice).unwrap_or(&[]),
@@ -2557,6 +2726,7 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         &policy["executionPrograms"],&policy["rejectedProgramIds"],
         &policy["programMutations"],&policy["programMeasuredEvidence"],
         &policy["decisionGrammar"],&policy["decisionNodes"],
+        &policy["programSynthesisGrammar"],
         &policy["decisionRuleEvidence"],&policy["evidence"],
         &policy["scoringKernel"]]).to_string().as_bytes())));
     policy["causalImprovement"]="unmeasured_until_matched_policy_trials".into();
@@ -2634,7 +2804,10 @@ fn record_measured_program_feedback(
         if updated.iter().any(|row|row["jobId"]==job_id && row["programId"]==program_id) {
             continue;
         }
+        let program=programs.iter().find(|program|program["id"]==program_id).unwrap();
         let row=json!({"jobId":job_id,"programId":program_id,
+            "programSteps":program["steps"],
+            "generatorRevision":policy["programSynthesisGrammar"]["revision"],
             "policyRevision":receipt["revision"],"domain":generation["domain"],
             "generatorCommit":generation["generatorCommit"],
             "operationIds":receipt["effectOperationIds"],
@@ -2646,10 +2819,11 @@ fn record_measured_program_feedback(
     if credited.is_empty(){return None;}
     if updated.len()>64{updated.drain(..updated.len()-64);}
     policy["programMeasuredEvidence"]=json!(updated);
-    rescore_execution_programs(&mut policy);
+    refresh_adaptive_execution_programs(&mut policy);
     policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([
         &policy["transitions"],&policy["executionPrograms"],
         &policy["programMeasuredEvidence"],&policy["scoringKernel"],
+        &policy["programSynthesisGrammar"],
         &policy["rejectedProgramIds"],&policy["programMutations"]
     ]).to_string().as_bytes())));
     policy["updatedAt"]=json!(chrono::Utc::now().to_rfc3339());
