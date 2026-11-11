@@ -491,16 +491,17 @@ async fn run_job(state: AppState, job: Value) {
     }
 }
 
-/// A source-specific owner repair needs an executable action stage, even if
-/// the campaign automatically selected a search domain. Broad autonomous
-/// exploration and general research must retain normal tool discovery.
+/// An implementation-stage generation must carry a real edit contract,
+/// including autonomous descendants. Previously autonomous=true disabled the
+/// edit-only continuation even after a successful source read: three live
+/// generations read the target but made zero write calls. Discovery-stage
+/// workers still retain the broad tool palette.
 fn rsi_focused_edit_goal(input:&Value)->bool {
-    let has_file=input["rsiFocusFiles"].as_array().is_some_and(|paths|!paths.is_empty());
+    let has_file=input["rsiFocusFiles"].as_array().is_some_and(|paths|
+        paths.iter().any(|path|path.as_str().is_some_and(|path|!path.is_empty())));
     let patch_mode=matches!(input["rsiImprovementDirective"]["mode"].as_str(),
         Some("implement_research"|"change_approach"|"revise_candidate"|"repair_counterexample"));
     has_file && patch_mode
-        && (input["rsiAutonomous"]!=true
-            || input["rsiImprovementDirective"]["reason"]=="explicit_owner_patch_request_with_source")
 }
 
 /// A patch-oriented generation that made zero tool-backed edits is an
