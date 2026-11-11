@@ -150,7 +150,20 @@ pub fn resolved_base_url(provider: &Value) -> String {
             return "https://opencode.ai/inference/go/openai/v1".to_string();
         }
     }
-    resolved
+    // Ollama's native discovery API lives at /api/tags, but DOMINION's
+    // generation transports use its OpenAI-compatible /v1/chat/completions.
+    // People commonly register Ollama with the server root (:11434).
+    // Resolve that root once for EVERY generation caller (chat, goals, RSI)
+    // rather than sending generation requests to the nonexistent
+    // :11434/chat/completions endpoint.
+    if provider["kind"].as_str() == Some("ollama")
+        && !resolved.is_empty()
+        && !resolved.ends_with("/v1")
+    {
+        format!("{resolved}/v1")
+    } else {
+        resolved
+    }
 }
 
 /// Builds a route from a provider record. Disabled providers and providers
@@ -599,6 +612,31 @@ mod tests {
         assert!(reserve_generation(base, "Qwen3.6-27B-test", Some(2)).is_err());
         // Keyed routes are not subject to the anonymous limit.
         assert!(reserve_generation(base, "Qwen3.8-27B-test", None).is_ok());
+    }
+
+    #[test]
+    fn ollama_root_routes_all_generation_callers_through_v1() {
+        let state = state();
+        for (raw, expected) in [
+            ("http://127.0.0.1:11434", "http://127.0.0.1:11434/v1"),
+            ("http://127.0.0.1:11434/", "http://127.0.0.1:11434/v1"),
+            ("http://127.0.0.1:11434/v1", "http://127.0.0.1:11434/v1"),
+            ("https://model.example/ollama", "https://model.example/ollama/v1"),
+        ] {
+            let provider = json!({"id":"local-ollama","kind":"ollama","name":"local",
+                "baseUrl":raw,"model":"qwen3:4b-instruct","enabled":true});
+            let route = route_from_provider(&state, &provider, None).unwrap();
+            assert_eq!(route.base_url, expected, "{raw}");
+            assert_eq!(route.endpoint("/chat/completions"),
+                format!("{expected}/chat/completions"), "{raw}");
+            // The model-list path continues to resolve to Ollama's native
+            // /api/tags once the /v1 suffix is stripped by model discovery.
+            assert_eq!(route.base_url.trim_end_matches("/v1"),
+                expected.trim_end_matches("/v1"));
+        }
+        let generic = json!({"id":"generic","kind":"openai","baseUrl":"http://127.0.0.1:9000","model":"m"});
+        assert_eq!(route_from_provider(&state, &generic, None).unwrap().base_url,
+            "http://127.0.0.1:9000");
     }
 
     #[test]
