@@ -70,6 +70,10 @@ fn rsi_checkpoint_stage(
     rsi_should_checkpoint(tool_calls,has_write).then_some(false)
 }
 
+fn rsi_initial_focused_tool(name:&str)->bool {
+    matches!(name,"workspace_read_range"|"workspace_replace"|"workspace_write")
+}
+
 fn rsi_checkpoint_tool(name: &str, edit_only:bool) -> bool {
     if edit_only {return matches!(name,"workspace_write"|"workspace_replace");}
     matches!(
@@ -1087,6 +1091,15 @@ async fn run_turn_body(
         }
         if session["rsiRun"]==true && !force_final {
             let tool_calls=metrics.lock().unwrap().tool_calls as u64;
+            // A concrete edit whose hash-checked source excerpt is already in
+            // the prompt needs direct read/replace options from round zero.
+            // General autonomous search and an excerpt-deferred task retain
+            // unrestricted discovery instead of blindly requiring a write.
+            if session["rsiExplicitFocus"]==true
+                && session["rsiFocusContextReady"]==true && tool_calls==0 {
+                round_tools.retain(|definition|
+                    rsi_initial_focused_tool(tool_name(definition)));
+            }
             let completed=state.store.all("execution_operation").into_iter()
                 .filter(|operation|operation["runId"].as_str()==Some(execution_id)
                     && operation["status"].as_str()==Some("completed"))
@@ -6162,6 +6175,11 @@ mod harness_tool_selection_tests {
 
     #[test]
     fn grounded_explicit_repairs_enter_edit_stage_after_first_read() {
+        assert!(rsi_initial_focused_tool("workspace_read_range"));
+        assert!(rsi_initial_focused_tool("workspace_replace"));
+        assert!(rsi_initial_focused_tool("workspace_write"));
+        assert!(!rsi_initial_focused_tool("code_search"));
+        assert!(!rsi_initial_focused_tool("algorithm_propose"));
         assert_eq!(rsi_checkpoint_stage(1,1,false,true,false),Some(true));
         assert_eq!(rsi_checkpoint_stage(1,0,false,true,true),Some(true));
         assert_eq!(rsi_checkpoint_stage(1,0,false,true,false),None);
