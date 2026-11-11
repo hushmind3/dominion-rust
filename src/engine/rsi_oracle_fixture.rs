@@ -231,20 +231,37 @@ fn planning_quality() {
         ("1) inspect\n2) implement\n3) verify", 3),
         ("파일을 읽어", 1),
     ];
+    // Frozen anti-oversegmentation probes. A source candidate that blindly
+    // splits every Korean -고 suffix can improve the positive prompts while
+    // corrupting noun phrases. Keep these cases independent of source edits.
+    const NEGATIVE_START: usize = 7;
+    const NEGATIVE_END: usize = 11;
     let started = Instant::now();
     let mut hits = 0;
+    let mut false_splits = 0;
     for _ in 0..3000 {
-        for (input, expected) in cases {
+        for (index, (input, expected)) in cases.iter().enumerate() {
             let result = decompose::decompose(
                 input,
                 &json!({"implementation":"numbered-first","parameters":{"kernel":"numbered-first"}}),
             );
-            hits += usize::from(result["subtasks"].as_array().map(Vec::len) == Some(expected));
+            let correct = result["subtasks"].as_array().map(Vec::len) == Some(*expected);
+            hits += usize::from(correct);
+            if (NEGATIVE_START..NEGATIVE_END).contains(&index) && !correct {
+                false_splits += 1;
+            }
         }
     }
-    let quality = hits as f64 / (cases.len() * 3000) as f64;
+    // A learned shortcut must preserve noun semantics, not simply raise an
+    // average by adding more boundaries. Any false split makes this oracle
+    // inadmissible; the independent holdout still measures positive accuracy.
+    let quality = if false_splits == 0 {
+        hits as f64 / (cases.len() * 3000) as f64
+    } else {
+        0.0
+    };
     assert!(quality >= 0.5);
-    metric(quality, started, json!({}));
+    metric(quality, started, json!({"falseSplits":false_splits}));
 }
 
 #[test]
