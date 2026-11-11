@@ -411,6 +411,8 @@ pub async fn finish(
     let model_error=model_result.as_ref().err().cloned().unwrap_or_default();
     let all_checks_pass=!checks.is_empty()&&checks.iter().all(|item|item["passed"]==true);
     let result=json!({
+        "restoredParentCandidateId":input["rsiRepairCandidateId"],
+        "restoredParentJobId":input["rsiRepairParentJobId"],
         "id":format!("rsi-run-{}",context.job_id),
         "jobId":context.job_id,"sessionId":session_id,
         "baseCommit":worktree.base,"candidateId":candidate_id,
@@ -494,12 +496,16 @@ fn run_status(
     model_error:&str,capture_error:&str,
 )->(&'static str,&'static str){
     if !source_clean {return ("needs_review","original_source_changed");}
-    if !model_error.is_empty(){return ("needs_review","model_error");}
     if !capture_error.is_empty()||!has_candidate {
-        return ("needs_review","no_valid_candidate");
+        return ("needs_review",if !model_error.is_empty() {"model_error"}
+            else {"no_valid_candidate"});
     }
     if audit_failed{return ("needs_review","unsafe_safety_failed");}
+    // A model stream may fail AFTER a real tool-backed patch was written.
+    // The compiler result is still actionable. Do not discard it in favor
+    // of a transport error and strand the candidate without repair.
     if !checks_passed{return ("needs_review","build_or_typecheck_failed");}
+    if !model_error.is_empty(){return ("needs_review","model_error");}
     ("completed","candidate_compiles_not_performance_verified")
 }
 
@@ -510,8 +516,7 @@ pub fn repair_feedback(result:&Value)->Option<String>{
         ||!matches!(result["reason"].as_str(),
             Some("build_or_typecheck_failed"|"unsafe_safety_failed"))
         ||result["rsi"]["sourceClean"]!=true
-        ||!result["rsi"]["captureError"].as_str().unwrap_or("").is_empty()
-        ||!result["rsi"]["modelError"].as_str().unwrap_or("").is_empty(){
+        ||!result["rsi"]["captureError"].as_str().unwrap_or("").is_empty(){
         return None;
     }
     let checks=result["rsi"]["checks"].as_array()?;
