@@ -4043,6 +4043,36 @@ mod tests {
     }
 
     #[test]
+    fn self_improver_synthesizes_a_new_scoring_rule_from_later_observations() {
+        let sample=|to:&str,good:bool|json!({"domain":"tools",
+            "sequence":["workspace_read_range",to],
+            "operationalPass":good,"operationalFailure":!good});
+        let mut evidence=Vec::<Value>::new();
+        for _ in 0..9 { evidence.push(sample("workspace_replace_range",true)); }
+        for _ in 0..2 { evidence.push(sample("workspace_replace_range",false)); }
+        evidence.push(sample("workspace_replace",true));
+        for _ in 0..3 { evidence.push(sample("workspace_replace",true)); }
+        for _ in 0..3 { evidence.push(sample("workspace_replace_range",false)); }
+        let evolved=synthesize_method_scoring_kernel(&evidence)
+            .expect("later successful exact edits and failed range edits should evolve the scorer");
+        assert_eq!(evolved["validation"]["status"],"predictive_not_causal");
+        assert_eq!(evolved["validation"]["trainGenerations"],12);
+        assert_eq!(evolved["validation"]["testGenerations"],6);
+        assert!(evolved["validation"]["selectedScore"].as_i64().unwrap()
+            > evolved["validation"]["baselineScore"].as_i64().unwrap());
+        let old=json!({"rewardWeight":1.0,"failureWeight":1.0,
+            "smoothing":1.0,"exploration":0.0});
+        let train=&evidence[..12];
+        assert_eq!(predict_method_by_rule(train,"tools","workspace_read_range",&old),
+            Some("workspace_replace_range".to_string()));
+        assert_eq!(predict_method_by_rule(train,"tools","workspace_read_range",&evolved["rule"]),
+            Some("workspace_replace".to_string()),
+            "the descendant method choice must change because the scoring formula changed");
+        assert!(synthesize_method_scoring_kernel(&evidence[..6]).is_none(),
+            "insufficient later evidence must not create an evolved scoring formula");
+    }
+
+    #[test]
     fn actual_failed_source_edit_revises_method_without_any_candidate() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root,"rsiObjective":"repair tool procedure"});
