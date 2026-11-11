@@ -81,6 +81,79 @@ fn hoist_invariant_query_terms(source: &str) -> Option<String> {
 /// Synthesize one streaming accumulator, retaining the original scoring,
 /// objective scope, and ordering semantics. The frozen improver holdout is
 /// still responsible for proving any execution-time gain.
+/// Stream all measured domain statistics in one pass. This operator is derived
+/// from the CURRENT Sub3 search_features implementation, including verified
+/// holdout gains. The older Sub2 optimization drops those features and must
+/// never overwrite Sub3's richer selection algorithm.
+fn stream_verified_policy_statistics(source: &str) -> Option<String> {
+    const START: &str =
+        "    let rows = history\n        .iter()\n        .filter(|row| row[\"domain\"] == domain)\n        .collect::<Vec<_>>();";
+    const END: &str = "    let gain_efficiency=if verified_tokens>0.0 {";
+    const UNRESOLVED: &str = "let unresolved = if rows\n        .last()";
+    let signature = "fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap<String, f64> {";
+    if source.matches(signature).count() != 1 || source.matches(START).count() != 1
+        || source.matches(UNRESOLVED).count() != 1 {
+        return None;
+    }
+    let block_start = source.find(START)?;
+    let block_end = block_start + source[block_start..].find(END)?;
+    let prior = &source[block_start..block_end];
+    for required in [
+        "let accepted = rows.iter()",
+        "let regressions = rows",
+        "let inconclusive = rows",
+        "let tokens = rows",
+        "let useful = rows",
+        "let verified=rows.iter()",
+        "let verified_outcomes=verified.len()",
+        "let holdout_gains=verified.iter()",
+        "let verified_tokens=verified.iter()",
+        "row[\"newFindings\"]",
+        "row[\"evidenceVerified\"]",
+    ] {
+        if !prior.contains(required) {return None;}
+    }
+    let replacement = r#"    // Stream each domain's candidate, evidence and cost statistics in one pass.
+    // This preserves measured holdout selection while eliminating temporary
+    // row/verified Vec allocations and repeated scans of the same history.
+    let mut attempts = 0.0_f64;
+    let mut accepted = 0.0_f64;
+    let mut regressions = 0.0_f64;
+    let mut inconclusive = 0.0_f64;
+    let mut tokens_total = 0u64;
+    let mut useful = 0.0_f64;
+    let mut verified_outcomes = 0.0_f64;
+    let mut holdout_gains_total = 0u64;
+    let mut verified_tokens_total = 0u64;
+    let mut last_row: Option<&Value> = None;
+    for row in history.iter().filter(|row|row["domain"]==domain) {
+        attempts += 1.0;
+        if row["accepted"]==true {accepted += 1.0;}
+        if row["evaluation"]["verdict"]=="regressed" {regressions += 1.0;}
+        if row["evaluation"]["verdict"]=="inconclusive" {inconclusive += 1.0;}
+        tokens_total += row["tokens"].as_u64().unwrap_or(0);
+        if row["accepted"]==true || row["newFindings"].as_u64().unwrap_or(0)>0 {
+            useful += 1.0;
+        }
+        if row["evidenceVerified"]==true {
+            verified_outcomes += 1.0;
+            holdout_gains_total += row["verifiedHoldoutGains"].as_u64().unwrap_or(0).min(64);
+            verified_tokens_total += row["tokens"].as_u64().unwrap_or(0).max(1000);
+        }
+        last_row=Some(row);
+    }
+    let tokens = tokens_total as f64;
+    let holdout_gains = holdout_gains_total as f64;
+    let verified_tokens = verified_tokens_total as f64;
+"#;
+    let mut result=String::with_capacity(source.len());
+    result.push_str(&source[..block_start]);
+    result.push_str(replacement);
+    result.push_str(&source[block_end..]);
+    result= result.replacen(UNRESOLVED, "let unresolved = if last_row",1);
+    (result!=source).then_some(result)
+}
+
 fn stream_search_policy_statistics(source: &str) -> Option<String> {
     let first = "fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap<String, f64> {";
     let after = "\n}\n\nfn score_domain(";
@@ -272,7 +345,9 @@ pub(crate) fn induce(
     let original = fs::read_to_string(source.join(relative)).map_err(|e| e.to_string())?;
     let existing = fs::read_to_string(isolated.join(relative)).map_err(|e| e.to_string())?;
     if original != existing { return Ok(None); }
-    let (operator,transformed)=if let Some(next)=stream_search_policy_statistics(&existing) {
+    let (operator,transformed)=if let Some(next)=stream_verified_policy_statistics(&existing) {
+        ("streamed_verified_improver_statistics_v2",next)
+    }else if let Some(next)=stream_search_policy_statistics(&existing) {
         ("streamed_improver_policy_statistics_v1",next)
     }else if let Some(next)=materialize_verified_owner_provenance(&existing) {
         ("verified_owner_provenance_cache_v1",next)
@@ -315,6 +390,21 @@ pub(crate) fn induce(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn current_sub3_improver_streaming_keeps_verified_payoff_features() {
+        let source=include_str!("rsi_evolve.rs");
+        let output=stream_verified_policy_statistics(source)
+            .unwrap_or_else(||source.to_string());
+        assert!(output.contains("gainPer10kTokens"));
+        assert!(output.contains("verifiedHoldoutGains"));
+        assert!(output.contains("holdoutGains"));
+        assert!(output.contains("let unresolved = if last_row")
+            || output.contains("let unresolved = if rows"));
+        if output!=source {
+            assert!(output.contains("let mut last_row: Option<&Value>"));
+            assert!(stream_verified_policy_statistics(&output).is_none());
+        }
+    }
     #[test]
     fn verified_owner_origin_cache_keeps_legacy_validation() {
         // The compiled descendant may already contain these mutations. A
