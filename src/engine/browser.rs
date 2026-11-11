@@ -104,7 +104,13 @@ async fn ensure_session(data_dir: &Path) -> Result<u16, String> {
     let profile = data_dir.join("browser-profile");
     std::fs::create_dir_all(&profile).map_err(|error| error.to_string())?;
     let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
-    let mut child = Command::new(&bin)
+    // Some CI containers disallow Chrome's sandbox namespaces. Desktop sessions
+    // keep the sandbox by default; only an explicit opt-in changes this.
+    let mut command = Command::new(&bin);
+    if std::env::var("DOMINION_BROWSER_NO_SANDBOX").as_deref() == Ok("1") {
+        command.arg("--no-sandbox");
+    }
+    let mut child = command
         .args([
             "--headless=new",
             "--remote-debugging-port=0",

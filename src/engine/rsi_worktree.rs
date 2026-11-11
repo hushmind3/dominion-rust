@@ -179,10 +179,10 @@ async fn git(dir:&Path, args:&[&str])->Result<String,String>{
 fn valid_sha(value:&str)->bool {
     value.len()==40 && value.bytes().all(|byte|byte.is_ascii_hexdigit())
 }
-/// Only disposable RSI work branches are eligible for source application.
-/// The champion and main refs are intentionally never mutation targets.
+/// Explicit development refs are eligible for evidence-gated source application.
+/// Production main remains excluded, while the Champion integration ref is eligible.
 pub fn is_rsi_work_branch(branch:&str)->bool {
-    if branch=="dominion-sub" {return true;}
+    if branch=="dominion-champion" || branch=="dominion-sub" {return true;}
     let Some(suffix)=branch.strip_prefix("dominion-sub") else{return false;};
     !suffix.is_empty() && suffix.len()<=2 && !suffix.starts_with('0')
         && suffix.bytes().all(|ch|ch.is_ascii_digit())
@@ -561,7 +561,7 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
 /// integration branch. Other branches, including production refs, are never
 /// valid RSI sources or application targets.
 pub(crate) fn is_work_branch(name: &str) -> bool {
-    name == "dominion-champion" || name.starts_with("dominion-sub")
+    is_rsi_work_branch(name)
 }
 
 pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expected:&str)->Result<Value,String>{
@@ -578,7 +578,7 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     let source_branch=campaign["sourceBranch"].as_str().unwrap_or("dominion-sub").to_string();
     if !is_rsi_work_branch(&source_branch) || configured.as_ref()!=Some(&source)
         || status["branch"]!=source_branch {
-        return Err("dominion-sub 계열의 해당 캠페인 원본 브랜치에만 적용할 수 있습니다.".into());
+        return Err("검증된 변경은 같은 DOMINION 개발 브랜치(Champion 또는 Sub)에만 적용할 수 있습니다.".into());
     }
     if !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
         return Err("미저장 코드를 보존했습니다. 현재 소스를 정리한 뒤 반영하세요.".into());
@@ -661,7 +661,7 @@ pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
         .ok_or("비교할 후보 기록이 없습니다.")?;
     let status=crate::engine::dev::status(&context.state).await;
     if !paired_compare_source_matches(&status,&candidate) {
-        return Err("독립 비교는 후보를 생성한 동일한 dominion-sub 계열 작업 브랜치에서만 시작하세요.".into());
+        return Err("독립 비교는 후보를 생성한 동일한 DOMINION 개발 브랜치에서만 시작하세요.".into());
     }
     let source=std::fs::canonicalize(status["config"]["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     compare_at(context,id,&source,&source).await
@@ -842,7 +842,7 @@ mod tests {
     }
     #[test]
     fn paired_comparison_requires_the_candidates_original_experimental_branch() {
-        for branch in ["dominion-sub", "dominion-sub2", "dominion-sub3", "dominion-sub4"] {
+        for branch in ["dominion-sub", "dominion-sub2", "dominion-sub3", "dominion-sub4", "dominion-champion"] {
             assert!(paired_compare_source_matches(
                 &json!({"git":true,"branch":branch}),
                 &json!({"sourceBranch":branch})
@@ -852,7 +852,7 @@ mod tests {
             &json!({"git":true,"branch":"dominion-sub4"}),
             &json!({"sourceBranch":"dominion-sub3"})
         ), "sibling candidates cannot be judged on the wrong branch");
-        for branch in ["main", "champion", "dominion-champion", "dominion-sub4-extra"] {
+        for branch in ["main", "champion", "dominion-sub4-extra"] {
             assert!(!paired_compare_source_matches(
                 &json!({"git":true,"branch":branch}),
                 &json!({"sourceBranch":branch})
@@ -865,10 +865,10 @@ mod tests {
     }
     #[test]
     fn source_application_is_limited_to_explicit_rsi_work_branches() {
-        for branch in ["dominion-sub","dominion-sub2","dominion-sub3","dominion-sub4","dominion-sub10"] {
+        for branch in ["dominion-champion","dominion-sub","dominion-sub2","dominion-sub3","dominion-sub4","dominion-sub10"] {
             assert!(is_rsi_work_branch(branch), "{branch} should be a safe experimental branch");
         }
-        for branch in ["main","dominion-champion","dominion-sub0","dominion-sub04",
+        for branch in ["main","dominion-sub0","dominion-sub04",
             "dominion-subx","dominion-sub4-extra","dominion-sub100","dominion-sub/4",""] {
             assert!(!is_rsi_work_branch(branch), "{branch} must not be an RSI publishing target");
         }
