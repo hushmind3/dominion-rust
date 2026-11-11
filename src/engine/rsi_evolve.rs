@@ -1455,8 +1455,12 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     session["rsiDomain"] = json!(domain);
     session["rsiMethodContext"] = json!(method_application_context(input,domain));
     session["rsiFocusFile"] = json!(current_rsi_focus(input));
+    // This is selected by DOMINION's learned transition weights. Neither
+    // model instructions nor a copied old procedure are executable authority.
+    session["rsiInducedMethodPolicy"]=current_induced_method_policy(state,input)
+        .unwrap_or(Value::Null);
     let mut decision = input["rsiDecisionInput"].clone();
-    if !decision.is_object() {decision=json!({});}
+    if !decision.is_object() {decision=json!({});
     // The parent predicted reuse BEFORE the descendant indexed and selected
     // the current source files. Replan at the execution boundary; otherwise
     // an old "research_only" decision vetoes a now-applicable learned method.
@@ -1507,6 +1511,156 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
     }
     session["rsiMethodExecutions"] = json!(receipts);
     state.store.put("session", &session);
+}
+
+/// DOMINION learns a new *execution method* from witnessed procedures and
+/// independently evaluated self-improvements, not from model prose. The method
+/// is an abstract transition graph: paths, replacement text, model identity,
+/// and source offsets are deliberately NOT memorised as executable actions.
+/// This changes the future harness's tool-selection policy. A transition
+/// learned from a passed procedural postcondition is operational evidence;
+/// only a frozen paired adoption is evidence of better system capability.
+fn witnessed_method_trace(state:&AppState,session_id:&str)->Vec<String> {
+    let mut operations=state.store.all("execution_operation").into_iter()
+        .filter(|op|op["sessionId"].as_str()==Some(session_id)
+            && op["status"]=="completed")
+        .collect::<Vec<_>>();
+    operations.sort_by(|a,b|a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64())
+        .then(a["id"].as_str().cmp(&b["id"].as_str())));
+    let mut steps=Vec::<String>::new();
+    for op in operations {
+        let Some(tool)=op["tool"].as_str() else {continue};
+        let valid=match tool {
+            "code_search" => op["result"]["matchCount"].as_u64().unwrap_or(0)>0,
+            "workspace_read_range" => op["result"]["sourceSha256"].as_str()
+                .is_some_and(|sha|sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())),
+            "workspace_replace" | "workspace_replace_range" | "workspace_write" =>
+                op["result"]["written"]==true && op["toolReceipt"]["verified"]==true,
+            "rsi_method_propose" => op["result"]["method"]["verification"]["type"]=="procedure",
+            "algorithm_propose" => op["result"]["algorithmId"].is_string(),
+            _ => false,
+        };
+        if !valid {continue;}
+        if steps.last().map(String::as_str)!=Some(tool) {
+            steps.push(tool.to_string());
+        }
+        if steps.len()>=12 {break;}
+    }
+    steps
+}
+fn measured_system_improvement(generation:&Value)->bool {
+    let proof=&generation["acceptedProof"];
+    let metrics=&generation["evaluation"]["metrics"];
+    generation["accepted"]==true
+        && proof["status"]=="verified"
+        && proof["evaluation"]==generation["evaluation"]
+        && generation["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+        && metrics["eligible"]==true
+        && metrics["regressions"].as_u64()==Some(0)
+        && metrics["improvedHoldouts"].as_u64().is_some_and(|n|n>0)
+}
+
+/// Online induction updates the *method-selection algorithm itself*.
+/// Different outcomes modify the observed transition weights. The next native
+/// generation reads this revision from the durable ledger rather than replaying
+/// a fixed prompt or a model-specific recipe.
+fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,session_id:&str)->Option<Value> {
+    let trace=witnessed_method_trace(state,session_id);
+    if trace.len()<2 {return None;}
+    let outcomes=generation["methodExecutions"].as_array();
+    let procedural_pass=outcomes.is_some_and(|rows|rows.iter().any(|row|
+        row["result"]["verified"]==true && row["result"]["followed"]==true
+            && row["result"]["status"]!="violated"));
+    let procedural_failure=outcomes.is_some_and(|rows|rows.iter().any(|row|
+        row["result"]["verified"]==true && row["result"]["status"]=="violated"
+            && row["operationIds"].as_array().is_some_and(|ids|!ids.is_empty())));
+    let capability_gain=measured_system_improvement(generation);
+    // An ordinary successful model/tool call cannot teach this engine a
+    // successful method; postconditions or independent paired measurements
+    // must have witnessed an outcome.
+    if !procedural_pass && !procedural_failure && !capability_gain {return None;}
+    let job_id=generation["jobId"].as_str().filter(|id|!id.is_empty())?;
+    let scope=research_scope(input);
+    let key=format!("rsi-method-policy-{}",
+        crate::engine::memory::stable_id(&[&scope.partition_key]));
+    let mut policy=state.store.get("rsi_method_policy",&key)
+        .unwrap_or_else(||json!({"id":key,"partitionKey":scope.partition_key,
+            "kind":"harness.method-transitions","evidence":[],"transitions":[],"status":"candidate"}));
+    let history=policy["evidence"].as_array().cloned().unwrap_or_default();
+    if history.iter().any(|row|row["jobId"].as_str()==Some(job_id)){return Some(policy);}
+    let positive=procedural_pass || capability_gain;
+    let negative=procedural_failure && !positive;
+    let strength=if capability_gain {3} else {1};
+    let mut transitions=policy["transitions"].as_array().cloned().unwrap_or_default();
+    for pair in trace.windows(2) {
+        let from=&pair[0];let to=&pair[1];
+        let item=transitions.iter_mut().find(|row|row["from"]==*from && row["to"]==*to);
+        if let Some(item)=item {
+            if positive {item["positive"]=json!(item["positive"].as_u64().unwrap_or(0)+strength);}
+            if negative {item["negative"]=json!(item["negative"].as_u64().unwrap_or(0)+1);}
+        } else {
+            transitions.push(json!({"from":from,"to":to,
+                "positive":if positive {strength}else{0},
+                "negative":if negative {1}else{0}}));
+        }
+    }
+    transitions.sort_by(|a,b|a["from"].as_str().cmp(&b["from"].as_str())
+        .then(a["to"].as_str().cmp(&b["to"].as_str())));
+    let mut evidence=history;
+    evidence.push(json!({"jobId":job_id,"domain":generation["domain"],
+        "sequence":trace,"operationalPass":procedural_pass,
+        "operationalFailure":procedural_failure,"pairedImprovement":capability_gain,
+        "acceptedCommit":if capability_gain{generation["acceptedCommit"].clone()}else{Value::Null},
+        "evaluationId":if capability_gain{generation["evaluation"]["id"].clone()}else{Value::Null}}));
+    // Keep only recent evidence. Recompute the weights from retained evidence,
+    // so eviction does not leave phantom successes in the selection policy.
+    if evidence.len()>32 {evidence.drain(..evidence.len()-32);}
+    transitions.clear();
+    for sample in &evidence {
+        let Some(sequence)=sample["sequence"].as_array() else {continue};
+        let weight=if sample["pairedImprovement"]==true {3}else{1};
+        let good=sample["operationalPass"]==true || sample["pairedImprovement"]==true;
+        let bad=sample["operationalFailure"]==true && !good;
+        for pair in sequence.windows(2) {
+            let (Some(from),Some(to))=(pair[0].as_str(),pair[1].as_str()) else{continue};
+            if let Some(item)=transitions.iter_mut().find(|row:&mut Value|
+                row["from"]==from && row["to"]==to) {
+                if good {item["positive"]=json!(item["positive"].as_u64().unwrap_or(0)+weight);}
+                if bad {item["negative"]=json!(item["negative"].as_u64().unwrap_or(0)+1);}
+            } else {
+                transitions.push(json!({"from":from,"to":to,"positive":if good{weight}else{0},
+                    "negative":if bad{1}else{0}}));
+            }
+        }
+    }
+    transitions.sort_by(|a,b|a["from"].as_str().cmp(&b["from"].as_str())
+        .then(a["to"].as_str().cmp(&b["to"].as_str())));
+    let quality_domains=evidence.iter().filter(|row|row["pairedImprovement"]==true)
+        .filter_map(|row|row["domain"].as_str()).collect::<BTreeSet<_>>();
+    let cross_domain=quality_domains.len()>=2;
+    policy["transitions"]=json!(transitions);
+    policy["evidence"]=json!(evidence);
+    policy["status"]=json!(if cross_domain{"cross_domain_observed"}else{"candidate"});
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([&policy["transitions"],
+        &policy["evidence"]]).to_string().as_bytes())));
+    policy["causalImprovement"]="unmeasured_until_matched_policy_trials".into();
+    policy["updatedAt"]=json!(chrono::Utc::now().to_rfc3339());
+    let saved=state.store.put("rsi_method_policy",&policy)?;
+    state.bus.record("rsi_method_policy",&saved);
+    Some(saved)
+}
+
+/// A candidate learnt in one domain is deliberately offered in another.
+/// Tool ordering is a trial, not proof: unchanged and failed edits carry no
+/// credit, and a failed method trace reduces rather than raises a transition.
+fn current_induced_method_policy(state:&AppState,input:&Value)->Option<Value> {
+    let scope=research_scope(input);
+    let id=format!("rsi-method-policy-{}",
+        crate::engine::memory::stable_id(&[&scope.partition_key]));
+    let policy=state.store.get("rsi_method_policy",&id)?;
+    let useful=policy["transitions"].as_array()?.iter().any(|row|
+        row["positive"].as_u64().unwrap_or(0)>row["negative"].as_u64().unwrap_or(0));
+    useful.then_some(policy)
 }
 
 fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str) -> Vec<Value> {
@@ -2982,6 +3136,12 @@ async fn run_loop(
         }
         if let Some(session)=session {
             generation["methodExecutions"]=json!(record_method_feedback(&context.state,&generation,session));
+            if let Some(policy)=learn_method_transitions(&context.state,&current["input"],
+                &generation,session) {
+                generation["inducedMethodPolicy"]=json!({"id":policy["id"],
+                    "revision":policy["revision"],"status":policy["status"],
+                    "evidence":policy["evidence"].as_array().map(Vec::len).unwrap_or(0)});
+            }
         }
         generation["knowledgeId"]=json!(remember_research(&context.state,&current["input"],&generation,session.unwrap_or("")));
         if let Some(session)=session {
