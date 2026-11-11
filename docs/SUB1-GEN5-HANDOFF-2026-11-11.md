@@ -41,3 +41,10 @@
 - 다른 개발 브랜치의 상태를 임의로 덮어쓰지 말 것.
 
 참조: `src/engine/rsi_evolve.rs`, `src/engine/code_index.rs`, `scripts/sub1-live-model-campaign.mjs`, `.github/workflows/sub1-live-model-cycle.yml`, `docs/SUB1-GEN4-JUDGE-FOLLOWUP-2026-11-11.md`, 프로젝트 공통 `DOMINION_COMMON_SOURCE.md`.
+
+## 5세대 추가 라이브 결과 및 코드 보정
+- 코드 `95c72f4efe8239015e189317823d3b70b5af90bf`: 명시적 수정 목표 탐지의 `goal.contains(*verb)` str-pattern 인수 명확화. 최신 실행 코드 기준.
+- 최초 실모델 캠페인 (수정 전 `b896298`) GitHub Actions https://github.com/hushmind3/dominion-rust/actions/runs/42949753956 **workflow SUCCESS**, 실제 결과는 `status=completed, stopReason=no_progress`. 실모델 `openai-fast`, 1세대 `promptTokens=3095`, `completionTokens=1500`, `calls=1`, **toolsUsed=[], candidateId=null, accepted=false, newFindings=0**. 즉 모델 연결·캠페인 구동은 작동했지만 실행·개선은 실패. 이 실패 때문에 첫 세대에서 실행을 바로 요구하는 `366fd91`을 추가함.
+- 첫세대 구현 정책의 실모델 실행: https://github.com/hushmind3/dominion-rust/actions/runs/42950166931 (source `c6566e4`)과 후속 https://github.com/hushmind3/dominion-rust/actions/runs/42950467997 (source `95c72f4`), 최종 outcome/실제 편집 도구 호출·패치·paired holdout 성공 여부를 확인하기 전엔 채택 성과로 간주하지 않음.
+- 첫 후손 재계획 + 테스트 `5d84194`: https://github.com/hushmind3/dominion-rust/actions/runs/42949616011 **성공**. Rust **732/732 (16+614+3+99)** 통과, 웹 타입 검사·빌드 성공.
+- 최신 전체 CI: https://github.com/hushmind3/dominion-rust/actions/runs/42950468115. 최종 status를 후속 확인.
