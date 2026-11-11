@@ -840,7 +840,7 @@ async fn replace_source_lines(
     let updated=format!("{}{}{}",
         lines[..first].concat(),replacement,lines[last..].concat());
     let mut result=checked_write(ctx,path,&updated,run_id,true,Some(&expected)).await?;
-    if result["preflightSyntaxRejected"]==true {return Ok(result);}
+    if result["preflightSyntaxRejected"]==true || result["preflightScopeRejected"]==true {return Ok(result);}
     if result["written"]!=true {
         return Err(format!(
             "workspace_replace_range 쓰기 거부: {}",
@@ -1047,7 +1047,7 @@ async fn replace_text(
     }
     let updated = text.replacen(old_text, new_text, 1);
     let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
-    if result["preflightSyntaxRejected"]==true {return Ok(result);}
+    if result["preflightSyntaxRejected"]==true || result["preflightScopeRejected"]==true {return Ok(result);}
     // checked_write can return an error *inside* an Ok(Value) for a stale
     // revision or a preflight refusal. Do not label that as a real edit.
     if result["written"] != true {
@@ -1095,7 +1095,15 @@ async fn checked_write(
         }
     };
     let _guard = lock.lock().await;
-    rsi_rust_scope_preview(ctx, path, content).await?;
+    if let Err(error)=rsi_rust_scope_preview(ctx,path,content).await {
+        if error.starts_with("rsi_scope_rejected:") {
+            // Keep the same-turn native editor alive and preserve its read SHA.
+            return Ok(json!({"path":path.to_string_lossy(),
+                "written":false,"sourceUnchanged":true,
+                "preflightScopeRejected":true,"error":error}));
+        }
+        return Err(error);
+    }
     if let Err(error)=rsi_rust_parse_preview(ctx,path,content).await {
         if error.starts_with("rsi_rust_syntax_rejected:") {
             // A recoverable model proposal failure, not a changed file.
@@ -1825,8 +1833,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         let sibling_drift = "fn marker_at() -> bool { false }\n\nfn split_markers() -> Vec<String> { vec![] }\n";
         let scope_failure = replace_source_lines(&ctx, &path, 1, 3, sibling_drift, &sha, "run")
-            .await.unwrap_err();
-        assert!(scope_failure.contains("rsi_scope_rejected"), "{scope_failure}");
+            .await.unwrap();
+        assert_eq!(scope_failure["preflightScopeRejected"],true,"{scope_failure}");
+        assert_eq!(scope_failure["written"],false,"{scope_failure}");
+        assert_eq!(scope_failure["sourceUnchanged"],true,"{scope_failure}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         let valid = "fn marker_at() -> bool { true }\n\nfn split_markers() -> Vec<String> { vec![\"ok\".to_owned()] }\n";
         let result = replace_source_lines(&ctx, &path, 1, 3, valid, &sha, "run")
