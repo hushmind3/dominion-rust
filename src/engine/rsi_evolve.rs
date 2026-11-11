@@ -4077,6 +4077,11 @@ async fn run_loop(
         child_input["rsiBaseCommit"] = json!(head);
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
+        let prior_history=record["history"].as_array().cloned().unwrap_or_default();
+        let neutral=neutral_candidate_continuation(&context.state,&prior_history,&head);
+        child_input["rsiInheritedNeutralCandidateId"]=neutral.as_ref()
+            .map(|row|row["id"].clone()).unwrap_or(Value::Null);
+        child_input["rsiNeutralContinuation"]=neutral.clone().unwrap_or(Value::Null);
         let objective = input["rsiObjective"].as_str().unwrap_or("");
         let mut eligible_campaigns=vec![context.job_id.to_string()];
         if let Some(prior)=matching_prior_campaign(&context.state,input,record) {
@@ -4173,6 +4178,8 @@ async fn run_loop(
                     .filter(|plan|plan["domain"].as_str()==Some(target_domain.as_str())
                         && plan["generatorCommit"].as_str()==Some(head.as_str()))
                     .and_then(|plan|plan["focusPath"].as_str().map(str::to_string)))
+                .or_else(||neutral.as_ref()
+                    .and_then(|plan|plan["focusPath"].as_str().map(str::to_string)))
                 .filter(|path|crate::engine::code_index::indexed_source_hash(
                     &context.state,current_index["id"].as_str().unwrap_or(""),path).is_some());
             if let Some(path)=repair.as_ref() {selected=vec![path.clone()];}
@@ -4191,7 +4198,12 @@ async fn run_loop(
         }
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
-        let focus = focus_file_context(&context.state, record, &child_input);
+        // A neutral patch is restored only inside the descendant worktree.
+        // The parent index/source excerpts describe the pristine baseline,
+        // not the inherited bytes. Bootstrap the real current source instead.
+        let focus = if neutral.is_some(){String::new()}else{
+            focus_file_context(&context.state, record, &child_input)
+        };
         // The descendant needs the unmixed parts to rebuild a truthful prompt
         // if its upgraded selector changes the coordinator's provisional plan.
         child_input["rsiPromptBase"]=child_input["prompt"].clone();
@@ -4327,6 +4339,8 @@ async fn run_loop(
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
+            "inheritedNeutralCandidateId":current["input"]["rsiInheritedNeutralCandidateId"],
+            "inheritedNeutralPatchChanged":current["result"]["rsi"]["inheritedNeutralPatchChanged"],
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
@@ -4766,6 +4780,38 @@ pub(crate) async fn adopt(
 /// Repair a REAL compiler/integrity failure in the next generation. Do not
 /// confuse a model tool write with a passing patch, or a failed cargo check
 /// with a frozen paired quality regression. Keep the owner-selected focus.
+/// Keep a compiler-passing implementation that reached an independent
+/// quality-neutral verdict as the NEXT generation's starting source. It is
+/// not an accepted improvement and cannot change the frozen A/B baseline.
+fn neutral_candidate_continuation(
+    state:&AppState,history:&[Value],base:&str
+)->Option<Value>{
+    let last=history.last()?;
+    if last["accepted"]==true
+        || last["generatorCommit"].as_str()!=Some(base)
+        || last["sourceIntegrity"]["checksPassed"]!=true
+        || last["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+        || last["evaluation"]["metrics"]["metricGains"].as_u64()!=Some(0)
+        || last["evaluation"]["metrics"]["regressions"].as_u64()!=Some(0) {
+        return None;
+    }
+    let id=last["candidateId"].as_str()?;
+    let candidate=state.store.get("rsi_candidate",id)?;
+    let domain=last["domain"].as_str().filter(|d|DOMAINS.contains(d))?;
+    let focus=last["focusFiles"].as_array()?.iter().filter_map(Value::as_str)
+        .find(|p|crate::engine::rsi::safe_path(p))?;
+    if candidate["baseCommit"]!=base
+        || candidate["origin"]!="model_driven_detached_worktree"
+        || candidate["pairedComparisonComplete"]!=true
+        || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+        || candidate["patch"].as_str().is_none_or(str::is_empty) {
+        return None;
+    }
+    Some(json!({"id":id,"domain":domain,"focusPath":focus,
+        "generatorCommit":base,"previousGeneration":last["id"],
+        "reason":"independently_measured_neutral_source_revision"}))
+}
+
 fn source_integrity_repair(history:&[Value])->Option<Value> {
     let last=history.last()?;
     if last["accepted"]==true || last["domainSelection"]=="source_integrity_repair" {
@@ -4894,6 +4940,11 @@ fn select_generation_strategy(
             }
         }
     }
+    if let Some(neutral)=neutral_candidate_continuation(state,history,generator_commit){
+        if let Some(domain)=neutral["domain"].as_str(){
+            return (domain.to_string(),"neutral_candidate_revision",Value::Null);
+        }
+    }
     // Never starve an already queued improver experiment with more research.
     // Both parent and descendant run this identical decision function.
     if let Some(id) = trial_id {
@@ -5006,6 +5057,8 @@ fn reconcile_descendant_target(
                 .filter(|plan|plan["domain"].as_str()==Some(domain)
                     && plan["generatorCommit"].as_str()==Some(commit))
                 .and_then(|plan|plan["focusPath"].as_str().map(str::to_string)))
+            .or_else(||neutral_candidate_continuation(state,history,commit)
+                .and_then(|plan|plan["focusPath"].as_str().map(str::to_string)))
             .filter(|path|crate::engine::code_index::indexed_source_hash(
                 state,index["id"].as_str().unwrap_or(""),path).is_some());
         if let Some(path)=repair.as_ref() {selected=vec![path.clone()];}
@@ -5021,7 +5074,9 @@ fn reconcile_descendant_target(
         });
     }
     let source=job["input"]["rsiSourceDir"].as_str().ok_or("자기개선 소스 경로가 없습니다.")?;
-    let focus=focus_file_context(state,&json!({"labDir":source}),&job["input"]);
+    let focus=if job["input"]["rsiInheritedNeutralCandidateId"].is_string(){
+        String::new()
+    }else{focus_file_context(state,&json!({"labDir":source}),&job["input"])};
     let bound=job["input"]["model"].as_str().is_some_and(|s|!s.is_empty())
         && job["input"]["providerId"].as_str().is_some_and(|s|!s.is_empty());
     let (composed,plan)=if bound {
