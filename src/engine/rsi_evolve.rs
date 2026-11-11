@@ -3321,6 +3321,8 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
     let episodes=action_learning_history(state,input,history);
     let mut observations=BTreeMap::<String,Vec<(f64,String)>>::new();
     let mut count=0usize;
+    let mut retained_scores=Vec::<f64>::new();
+    let mut mutation_scores=Vec::<f64>::new();
     for pair in episodes.windows(2) {
         let prior=&pair[0];
         let next=&pair[1];
@@ -3335,8 +3337,14 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
         let Some(action)=next["actionDirective"]["mode"].as_str() else {continue};
         if !alternatives.contains(&action) {continue}
         let id=next["id"].as_str().unwrap_or("").to_string();
+        let outcome=observed_action_value(next);
         observations.entry(action.to_string()).or_default()
-            .push((observed_action_value(next),id));
+            .push((outcome,id));
+        if next["actionDirective"]["policy"]["status"]=="exploratory_policy_mutation" {
+            mutation_scores.push(outcome);
+        } else if next["actionDirective"]["policy"]["status"]=="evidence_based_retention" {
+            retained_scores.push(outcome);
+        }
         count+=1;
     }
     if count<2 {
@@ -3344,6 +3352,14 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
             "context":context,"trainingTransitions":count,"activeAction":baseline});
         return decision;
     }
+    // Meta-adaptation: the exploration coefficient is itself revised from
+    // *later* results of previously mutated policies versus retained ones
+    // in the same observed failure context. It is deliberately a bounded,
+    // observational update, never a claim of causal superiority.
+    let mean=|values:&[f64]|values.iter().sum::<f64>()/values.len().max(1) as f64;
+    let exploration_coefficient=if mutation_scores.len()>=2 && retained_scores.len()>=2 {
+        (0.55+0.12*(mean(&mutation_scores)-mean(&retained_scores))).clamp(0.15,1.15)
+    } else {0.55};
     let mut ranking=Vec::<(String,f64,usize)>::new();
     let mut evidence=Vec::<String>::new();
     let total=count as f64;
@@ -3353,7 +3369,8 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
         let sum=samples.iter().map(|(value,_)|*value).sum::<f64>();
         let prior=if action==baseline {0.25}else{-0.20};
         let posterior=(sum+prior)/(n as f64+1.0);
-        let exploration=0.55*((1.0+total).ln()/(n as f64+1.0)).sqrt();
+        let exploration=exploration_coefficient
+            *((1.0+total).ln()/(n as f64+1.0)).sqrt();
         ranking.push((action.to_string(),posterior+exploration,n));
         evidence.extend(samples.into_iter().map(|(_,id)|id));
     }
@@ -3376,6 +3393,12 @@ fn evolved_execution_action(state:&AppState,input:&Value,history:&[Value])->Valu
         "revision":revision,"context":context,"trainingTransitions":count,
         "trainingGenerationIds":evidence,
         "scoreComponents":["observed_action_value","token_cost","posterior_utility","exploration"],
+        "metaTuning":{"explorationCoefficient":exploration_coefficient,
+            "retainedObservations":retained_scores.len(),
+            "mutatedObservations":mutation_scores.len(),
+            "retainedMean":if retained_scores.is_empty(){Value::Null}else{json!(mean(&retained_scores))},
+            "mutatedMean":if mutation_scores.is_empty(){Value::Null}else{json!(mean(&mutation_scores))},
+            "causalAttribution":"unmeasured"},
         "rankedAlternatives":ranking.iter().map(|(name,score,n)|json!({
             "action":name,"score":score,"observations":n
         })).collect::<Vec<_>>(),
