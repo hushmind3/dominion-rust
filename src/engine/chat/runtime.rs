@@ -112,6 +112,32 @@ fn rsi_checkpoint_with_recovery(
                 chosen=="workspace_read_range" && reason=="learned_multi_step_recovery"))
 }
 
+/// Normalize *only* RSI-scoped source paths before approval/effect capture.
+/// Some local models echo the absolute path returned by older read tools.
+/// The resulting path must resolve to an existing source file within the
+/// disposable worktree; external paths can never become authorized edits.
+fn rsi_relative_edit_path(workspace:&std::path::Path,raw:&str)->Option<String>{
+    let root=std::fs::canonicalize(workspace).ok()?;
+    let path=std::path::Path::new(raw);
+    let relative=if path.is_absolute() {
+        let actual=std::fs::canonicalize(path).ok()?;
+        actual.strip_prefix(&root).ok()?.to_str()?.to_string()
+    } else {
+        let trimmed=raw.strip_prefix("./").unwrap_or(raw);
+        trimmed.to_string()
+    };
+    if !crate::engine::rsi::safe_path(&relative){return None;}
+    let candidate=root.join(&relative);
+    if candidate.exists() {
+        let actual=std::fs::canonicalize(candidate).ok()?;
+        if !actual.starts_with(&root){return None;}
+    } else {
+        let parent=std::fs::canonicalize(candidate.parent()?).ok()?;
+        if !parent.starts_with(&root){return None;}
+    }
+    Some(relative)
+}
+
 /// Compiler repair has an actual source target and exact failing lines.
 /// It must not spend its limited retry round doing repository discovery.
 fn rsi_compiler_repair_tool(name:&str)->bool {
@@ -4545,7 +4571,22 @@ async fn dispatch_tool_call(
             .map(str::to_string)
     })
     .unwrap_or_default();
-    let arguments = normalize_tool_arguments(arguments, &argument_strategy);
+    let mut arguments = normalize_tool_arguments(arguments, &argument_strategy);
+    if session["rsiRun"]==true
+        && matches!(call.name.as_str(),
+            "workspace_write"|"workspace_replace"|"workspace_replace_range") {
+        if let Some(original)=arguments["path"].as_str() {
+            if let Some(relative)=rsi_relative_edit_path(&state.config.workspace,original) {
+                if original!=relative {
+                    state.store.audit("rsi.source_path_normalized",json!({
+                        "executionId":execution_id,"tool":call.name,
+                        "originalPath":original,"normalizedPath":relative
+                    }));
+                    arguments["path"]=json!(relative);
+                }
+            }
+        }
+    }
     crate::engine::algorithms::mark_signal(state, execution_id, "tool.arguments", true);
     // Record what the effect would be before asking for approval or running it.
     // Only mutating calls need the session history scan.
@@ -6533,6 +6574,26 @@ mod harness_tool_selection_tests {
             "workspace_replace_range"));
         assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range"));
         assert!(rsi_action_program_next(&plan,&[],"unrelated").is_some());
+    }
+
+    #[test]
+    fn old_absolute_rsi_read_paths_become_scoped_relative_edit_arguments() {
+        let root=std::env::temp_dir().join(format!("rsi-normalize-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        let file=root.join("src/engine/edit.rs");
+        std::fs::write(&file,"fn example() {}\n").unwrap();
+        assert_eq!(rsi_relative_edit_path(&root,&file.to_string_lossy()),
+            Some("src/engine/edit.rs".into()));
+        assert_eq!(rsi_relative_edit_path(&root,"./src/engine/edit.rs"),
+            Some("src/engine/edit.rs".into()));
+        assert_eq!(rsi_relative_edit_path(&root,"src/engine/new.rs"),
+            Some("src/engine/new.rs".into()));
+        assert!(rsi_relative_edit_path(&root,"../outside.rs").is_none());
+        let outside=std::env::temp_dir().join(format!("rsi-outside-{}.rs",uuid::Uuid::new_v4()));
+        std::fs::write(&outside,"// outside\n").unwrap();
+        assert!(rsi_relative_edit_path(&root,&outside.to_string_lossy()).is_none());
+        let _=std::fs::remove_file(outside);
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
