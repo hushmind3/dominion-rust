@@ -4664,7 +4664,7 @@ mod tests {
         let change=json!({"path":"src/reuse.rs","oldText":"REUSABLE_RESEARCH_SOURCE","newText":"IMPROVED_RESEARCH_SOURCE"});
         let ctx=tools::ToolContext{state:&state,store:&state.store,workspace:&root,session_id:"research-2",agent_id:None,tools_enabled:true,tools_execution_enabled:true};
         let written=tools::execute(&ctx,"workspace_replace",&change,"run-2").await.unwrap();
-        state.store.put("execution_operation",&json!({"id":"real-next-change","sessionId":"research-2","tool":"workspace_replace","arguments":change,"result":written,"status":"completed"}));
+        state.store.put("execution_operation",&json!({"id":"real-next-change","sessionId":"research-2","tool":"workspace_replace","arguments":change,"result":written,"status":"completed","toolReceipt":{"verified":true}}));
         state.store.put("rsi_candidate",&json!({"id":"c","status":"verified","hypothesis":"Apply the observed implementation","paths":["src/reuse.rs"],"evaluation":{"metrics":{"eligible":true}}}));
         let second=json!({"jobId":"generation-2","accepted":true,"candidateId":"c","acceptedCommit":"a".repeat(40),"domain":"memory"});
         let next_id=remember_research(&state,&input,&second,"research-2").unwrap();
