@@ -509,6 +509,29 @@ fn run_status(
     ("completed","candidate_compiles_not_performance_verified")
 }
 
+/// Extract the FIRST actual compiler location from the failed verifier.
+/// The next model turn must read this precise file/line in the same detached
+/// worktree, not spend another generation searching the entire repository.
+pub fn repair_target(result:&Value)->Option<(String,u64)> {
+    if result["reason"]!="build_or_typecheck_failed" {return None;}
+    for check in result["rsi"]["checks"].as_array()? {
+        if check["passed"]==true {continue;}
+        let diagnostic=check["stderr"].as_str()
+            .or_else(||check["error"].as_str()).unwrap_or("");
+        for text in diagnostic.lines() {
+            let Some(location)=text.trim().strip_prefix("-->") else {continue;};
+            let mut fields=location.trim().rsplitn(3, ':');
+            let _column=fields.next();
+            let Some(line)=fields.next().and_then(|s|s.parse::<u64>().ok()) else {continue;};
+            let Some(path)=fields.next() else {continue;};
+            if line==0 || line>100_000 || !path.ends_with(".rs")
+                || !crate::engine::rsi::safe_path(path) {continue;}
+            return Some((path.to_string(),line));
+        }
+    }
+    None
+}
+
 /// Return a short, grounded repair instruction. Do not repeat blind model
 /// calls for provider errors, missing diffs or checkout integrity failures.
 pub fn repair_feedback(result:&Value)->Option<String>{
@@ -545,9 +568,13 @@ pub fn repair_feedback(result:&Value)->Option<String>{
             format!("{label}: {}",detail.chars().take(1100).collect::<String>())
         }).collect::<Vec<_>>();
     if failures.is_empty(){return None;}
+    let target=repair_target(result).map(|(path,line)|format!(
+        "우선 고칠 오류 위치: {path}:{line}. workspace_read_range를 path={path}, startLine={}, endLine={}로 호출해 현재 원문과 sourceSha256을 확보한 뒤, 그 파일의 실제 오류를 workspace_replace_range로 수정하세요. 다른 파일 탐색으로 돌아가지 마세요.\n\n",
+        line.saturating_sub(12).max(1),line.saturating_add(12)
+    )).unwrap_or_default();
     Some(format!(
-        "이전 소스 변경 후 별도의 컴파일/타입 검사에서 오류가 발견됐습니다. 기존 변경을 읽고 실제 오류를 고쳐 다시 저장하세요. 검사 자체를 삭제하거나 우회하지 마세요. 수정 전과 무관한 파일은 건드리지 마세요. 테스트는 엔진이 다시 실행합니다.\n\n{}",
-        failures.join("\n\n")
+        "이전 소스 변경 후 별도의 컴파일/타입 검사에서 오류가 발견됐습니다. 기존 변경을 읽고 실제 오류를 고쳐 다시 저장하세요. 검사 자체를 삭제하거나 우회하지 마세요. 수정 전과 무관한 파일은 건드리지 마세요. 테스트는 엔진이 다시 실행합니다.\n\n{}{}",
+        target,failures.join("\n\n")
     ))
 }
 /// Apply a model-generated patch only after explicit owner review. A successful
