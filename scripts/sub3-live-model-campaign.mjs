@@ -72,6 +72,9 @@ if(mode==='probe'){
     const request={
       mode:'continuous',confirmation:'START_RSI_EVOLUTION',
       selectionPolicy:'automatic',providerId:'sub3-free-proxy',model:'openai-fast',
+      // The anonymous model caps a response near 1500 output tokens. Low
+      // reasoning effort leaves room for an executable workspace_replace call.
+      reasoningEffort:'low',
       request:'Fix a reproducible behavior bug in src/engine/decompose.rs. The existing split_markers() recognizes isolated marker words (e.g. 그리고, 뒤) but misses Korean action suffix -고 and connective 다음/나서. On baseline, Korean text 설계를 읽고 결과를 저장한 다음 검증해 produces one step where three real ordered actions are required. Modify the Rust function now: after reading the exact existing source block, call workspace_replace with path=src/engine/decompose.rs, oldText=the exact source text and newText=your implementation. Distinguish action verb suffix -고 from nouns such as 사고/최고; preserve original subtask text and list handling. Do not end after code_search or workspace_read_range. DOMINION will run independent frozen baseline/candidate tests after editing.',
       focusFiles:['src/engine/decompose.rs'],maxAttempts:3,
       tokenBudget:90000,timeBudgetSeconds:2700
