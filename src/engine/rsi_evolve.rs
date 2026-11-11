@@ -1480,7 +1480,7 @@ fn repair_exploration_order(method:&Value)->u8 {
         Some("existing_file_to_versioned_edit")=>1,
         Some("indexed_source_rebase")=>2,
         Some("indexed_path_retarget")=>3,
-        Some("successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning")=>4,
+        Some("successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning"|"transferred_observation_pruning")=>4,
         Some("failed_model_tool_rebase")=>5,
         _=>6,
     }
@@ -1493,12 +1493,13 @@ fn repair_exploration_order(method:&Value)->u8 {
 /// automatically transferred to its child.
 fn pending_success_ablation(method:&Value, methods:&[Value])->bool {
     if !matches!(method["synthesis"]["kind"].as_str(),
-        Some("successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning"))
+        Some("successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning"|"transferred_observation_pruning"))
         || method["applications"].as_array().is_some_and(|a|!a.is_empty())
         || method["successfulApplications"].as_u64().unwrap_or(0)>0 {
         return false
     }
-    (method["synthesis"]["kind"]=="transferred_read_ablation"
+    (matches!(method["synthesis"]["kind"].as_str(),
+        Some("transferred_read_ablation"|"transferred_observation_pruning"))
         && method["synthesis"]["transferDonor"]["methodId"].is_string()
         && method["synthesis"]["transferDonor"]["adoptedApplications"]
             .as_u64().unwrap_or(0)>0)
@@ -1522,7 +1523,8 @@ fn adopted_structural_descendant(method:&Value, methods:&[Value])->bool {
     let parent=methods.iter().any(|prior|
         prior["id"]==method["synthesis"]["parentMethodId"]
         && prior["revision"]==method["synthesis"]["parentRevision"]);
-    let transferred=method["synthesis"]["kind"]=="transferred_read_ablation"
+    let transferred=matches!(method["synthesis"]["kind"].as_str(),
+        Some("transferred_read_ablation"|"transferred_observation_pruning"))
         && method["synthesis"]["transferDonor"]["adoptedApplications"]
             .as_u64().unwrap_or(0)>0;
     parent || transferred
@@ -1645,7 +1647,7 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
 /// its own future application passes the ordinary procedure evaluator.
 fn is_synthesized_source_repair(method:&Value)->bool {
     matches!(method["synthesis"]["kind"].as_str(),
-        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"|"successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning"|"failed_model_tool_rebase"))
+        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"|"indexed_path_retarget"|"successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning"|"transferred_observation_pruning"|"failed_model_tool_rebase"))
 }
 
 /// Synthesize a new executable procedure, not just an action ranking.
@@ -2124,6 +2126,37 @@ fn synthesize_successful_dag_ablation(
     None
 }
 
+/// A proved method *transformation* can be transplanted across independent
+/// capability domains, but only within the same repository partition and
+/// only after the donor itself was used in a verified adopted patch. This is
+/// operator inheritance, not an inference of target quality improvement.
+fn adopted_pruning_donor(
+    state:&AppState, generation:&Value, target_domain:&str
+)->Option<Value>{
+    let job=state.store.get("job",generation["jobId"].as_str()?)?;
+    let partition=research_scope(&job["input"]).partition_key;
+    let mut donors=state.store.all("experience").into_iter()
+        .filter(|e|e["status"]=="active" && e["partitionKey"]==partition)
+        .flat_map(|e|e["executableMethods"].as_array().cloned().unwrap_or_default())
+        .filter(|m|matches!(m["synthesis"]["kind"].as_str(),
+            Some("successful_observation_pruning"|"transferred_observation_pruning"))
+            && m["domain"].as_str().is_some_and(|d|d!=target_domain)
+            && m["synthesis"]["transferDepth"].as_u64().unwrap_or(0)<3
+            && m["status"]=="executable"
+            && m["successfulApplications"].as_u64().unwrap_or(0)>0
+            && m["applications"].as_array().is_some_and(|apps|apps.iter().any(|app|
+                app["accepted"]==true && app["postconditionsPassed"]==true)))
+        .collect::<Vec<_>>();
+    donors.sort_by(|a,b|b["successfulApplications"].as_u64().unwrap_or(0)
+        .cmp(&a["successfulApplications"].as_u64().unwrap_or(0))
+        .then(a["id"].as_str().cmp(&b["id"].as_str())));
+    donors.into_iter().next().map(|m|json!({
+        "methodId":m["id"],"revision":m["revision"],"domain":m["domain"],
+        "adoptedApplications":m["successfulApplications"],
+        "transferDepth":m["synthesis"]["transferDepth"].as_u64().unwrap_or(0)
+    }))
+}
+
 /// Derive a second, genuinely different meta-operator from an accepted source
 /// improvement: remove an observed but dataflow-dead exploration node, then
 /// rewire its predecessor/successor dependencies. Unlike source-SHA ablation,
@@ -2136,10 +2169,12 @@ fn synthesize_observed_dag_pruning(
     if method["assistanceMode"]!="harness_assisted"
         || method["verification"]["type"]!="procedure"
         || receipt["result"]["verified"]!=true || receipt["result"]["followed"]!=true
-        || receipt["result"]["unknown"]==true
-        || !method_wrote_accepted_candidate(state,generation,receipt,operations) {
-        return None
-    }
+        || receipt["result"]["unknown"]==true {return None}
+    let local_adoption=method_wrote_accepted_candidate(
+        state,generation,receipt,operations);
+    let transfer=if local_adoption {None}
+        else {adopted_pruning_donor(state,generation,method["domain"].as_str()?)};
+    if !local_adoption && transfer.is_none() {return None}
     let nodes=method["verification"]["nodes"].as_array()?;
     if nodes.len()<2 || !nodes.iter().any(|n|
         matches!(n["tool"].as_str(),Some("workspace_replace"|"workspace_write"))) {
@@ -2209,7 +2244,11 @@ fn synthesize_observed_dag_pruning(
             "domain":domain,"verification":normalized,"status":"candidate",
             "assistanceMode":"harness_assisted","successfulApplications":0,
             "synthesis":{
-                "kind":"successful_observation_pruning",
+                "kind":if transfer.is_some() {"transferred_observation_pruning"}
+                    else {"successful_observation_pruning"},
+                "transferDepth":transfer.as_ref().map(|donor|
+                    donor["transferDepth"].as_u64().unwrap_or(0)+1).unwrap_or(0),
+                "transferDonor":transfer,
                 "parentMethodId":method["id"],"parentRevision":method["revision"],
                 "sourceExecutionId":receipt["executionId"],
                 "sourceGenerationJobId":generation["jobId"],
