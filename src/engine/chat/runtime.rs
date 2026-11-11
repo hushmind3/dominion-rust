@@ -6196,7 +6196,7 @@ mod harness_tool_selection_tests {
         assert!(!rsi_textual_edit_fallback(true, true, false));
         assert!(!rsi_textual_edit_fallback(false, true, true));
         let known = std::collections::HashSet::from(["workspace_replace".to_string()]);
-        let (calls, cleaned) = super::protocol::parse_text_tool_calls_known(
+        let (calls, cleaned) = super::super::protocol::parse_text_tool_calls_known(
             r#"<tool_call>{"name":"workspace_replace","arguments":{"path":"src/engine/example.rs","oldText":"old","newText":"new"}}</tool_call>"#, &known);
         assert_eq!(calls.len(), 1, "native textual tools must be converted to executable calls");
         assert_eq!(calls[0].0, "workspace_replace");
