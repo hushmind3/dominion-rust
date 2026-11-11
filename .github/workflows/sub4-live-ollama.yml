@@ -1,11 +1,7 @@
 name: Sub4 actual local Ollama RSI attempt
-# One bounded, user-requested completion campaign. Restore manual-only after launch.
+# Manual-only for later runs. One explicitly requested campaign was launched.
 on:
   workflow_dispatch:
-  push:
-    branches: [dominion-sub4]
-    paths:
-      - '.github/sub4-run-once-20261112'
 permissions:
   contents: read
 jobs:
