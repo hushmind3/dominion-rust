@@ -55,6 +55,9 @@ function summarize(g) {
     toolsUsed:ops,sourceWriteCalls:ops.filter(o=>['workspace_replace','workspace_replace_range','workspace_write'].includes(o.tool)).reduce((n,o)=>n+Number(o.actualWrites||0),0),
     modelMethodCalls:count('rsi_method_propose'),
     focusFiles:g.focusFiles,domain:g.domain,domainSelection:g.domainSelection,
+    evolutionaryAction:g.evolutionaryAction||null,
+    descendantOffspring:g.offspringGeneratedByDescendant||null,
+    autoEvolvedSearch:g.autoEvolvedSearch||null,
     candidateId:g.candidateId||null,accepted:g.accepted===true,
     acceptedCommit:g.acceptedCommit||null,holdoutEligible:metrics.eligible===true,
     improvedHoldouts:metrics.improvedHoldouts??null,regressions:metrics.regressions??null,
@@ -184,6 +187,9 @@ if(mode==='probe'){
       completionProof:receipt.completionProof,repairModes:receipt.repairModes,
       generations:receipt.generations.map(g=>({attempt:g.attempt,writes:g.sourceWriteCalls,
         tools:g.toolsUsed,accepted:g.accepted,sourceIntegrity:g.sourceIntegrity,
+        evolutionaryAction:g.evolutionaryAction,
+        descendantOffspring:g.descendantOffspring,
+        autoEvolvedSearch:g.autoEvolvedSearch,
         error:g.error}))},null,2));
     // CI must fail when a real-model run ends without three independently
     // accepted, rebuilt generations and the engine's meta-transfer proof.
