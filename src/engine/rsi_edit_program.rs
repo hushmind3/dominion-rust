@@ -148,7 +148,9 @@ pub fn route(policy: &Value, operations: &[Value], calls: u64,
             if completed && operation["result"]["written"]==true
                 && operation["toolReceipt"]["verified"]==true {
                 verified_write=true;
-            } else if !completed || operation["result"]["written"]==false {
+            } else {
+                // A failed or unverified edit cannot be retried against a
+                // potentially stale source. Re-observe the native file hash.
                 reground_needed=true;
             }
         }
@@ -168,7 +170,10 @@ pub fn route(policy: &Value, operations: &[Value], calls: u64,
         }
         return Some(Route{phase:"ground"});
     }
-    if reground_needed && has("reground") {
+    if reground_needed {
+        // Enforce recovery even for first-generation policies that do not
+        // yet include the learned reground node; record the phase so the
+        // next descendant can incorporate it into its stage program.
         return Some(Route{phase:"reground"});
     }
     if has("contrast") && !post_ground_search && calls < checkpoint+2 {
@@ -277,6 +282,19 @@ mod tests {
         let p2=serde_json::json!({"program":["ground","edit","reground","verify"]});
         assert_eq!(route(&p2,&recovered,2,true,true).unwrap().phase,"reground");
         assert!(route(&p,&[],0,false,true).is_none());
+    }
+    #[test]
+    fn unverified_hash_edit_forces_recovery_without_learned_repair_node(){
+        let policy=serde_json::json!({"program":["discover","ground","edit","verify"],
+            "checkpointAfter":2});
+        let ops=vec![
+            op("workspace_read_range","completed",serde_json::json!({})),
+            op("workspace_replace_range","completed",serde_json::json!({"written":true}))
+        ];
+        assert_eq!(route(&policy,&ops,2,true,false).unwrap().phase,"reground");
+        let mut recovered=ops;
+        recovered.push(op("workspace_read_range","completed",serde_json::json!({})));
+        assert_eq!(route(&policy,&recovered,3,true,false).unwrap().phase,"edit");
     }
     #[test]
     fn normal_chat_and_legacy_controller_are_unchanged() {
