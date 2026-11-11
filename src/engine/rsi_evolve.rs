@@ -2812,10 +2812,15 @@ fn record_measured_program_feedback(
         crate::engine::memory::stable_id(&[&research_scope(input).partition_key]));
     let mut policy=state.store.get("rsi_method_policy",&id)?;
     let programs=policy["executionPrograms"].as_array()?.clone();
-    // A frozen cohort may have executed a program since retired from the
-    // evolving live policy. Its real receipt must still teach the generator.
-    let frozen=generation["methodPolicyTrial"]["policy"]["executionPrograms"]
-        .as_array().cloned().unwrap_or_default();
+    // The durable generation receipt deliberately stores only a SUMMARY of
+    // its trial. The actual frozen execution program is in the worker input.
+    // Reading generation.methodPolicyTrial.policy always returned null and
+    // silently discarded quality feedback after the live program rotated.
+    let trial=&input["rsiMethodPolicyTrial"];
+    let frozen=if trial["cohortId"]==generation["methodPolicyTrial"]["cohortId"]
+        && trial["policyRevision"]==generation["methodPolicyTrial"]["policyRevision"] {
+        trial["policy"]["executionPrograms"].as_array()
+    }else{None}.cloned().unwrap_or_default();
     let seen=policy["programMeasuredEvidence"].as_array().cloned().unwrap_or_default();
     let mut updated=seen.clone();
     let mut credited=Vec::<Value>::new();
@@ -5202,6 +5207,45 @@ mod tests {
         let expanded=json!({"prompt":format!("small source{}", "research context ".repeat(3000))});
         assert!(!generation_fits_remaining_budget(&budget,&expanded),
             "check the complete composed worker prompt before creating the next job");
+    }
+
+    #[test]
+    fn frozen_program_quality_feedback_survives_live_policy_rotation() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiMethodPolicyTrial":{
+            "cohortId":"cohort-1","policyRevision":"frozen-v1",
+            "policy":{"executionPrograms":[{"id":"program-retired",
+                "steps":["workspace_read_range","workspace_replace_range"],
+                "generatorRevision":"g0"}]}}});
+        let key=format!("rsi-method-policy-{}",
+            crate::engine::memory::stable_id(&[&research_scope(&input).partition_key]));
+        state.store.put("rsi_method_policy",&json!({
+            "id":key,"partitionKey":research_scope(&input).partition_key,
+            "kind":"harness.method-transitions","revision":"live-newer",
+            "executionPrograms":[],"evidence":[],"transitions":[]})).unwrap();
+        let generation=json!({
+            "jobId":"child-2","domain":"tools","generatorCommit":"a".repeat(40),
+            "candidateId":"real-patch","accepted":false,
+            "evaluation":{"id":"real-paired","source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"verdict":"regressed"}},
+            "methodPolicyTrial":{"arm":"learned","cohortId":"cohort-1",
+                "policyRevision":"frozen-v1"},
+            "inducedMethodApplications":[{"policyId":key,"revision":"frozen-v1",
+                "domain":"tools","performed":true,"verifiedSourceWrite":true,
+                "executionProgramId":"program-retired","effectOperationIds":["actual-op-1"]}]
+        });
+        let credited=record_measured_program_feedback(&state,&input,&generation)
+            .expect("real frozen policy execution must survive later live replacement");
+        assert_eq!(credited["credited"][0]["programId"],"program-retired");
+        assert_eq!(credited["credited"][0]["outcome"],"paired_regression");
+        assert_eq!(credited["credited"][0]["generatorRevision"],"g0");
+        let current=state.store.get("rsi_method_policy",&key).unwrap();
+        assert_eq!(current["programMeasuredEvidence"][0]["jobId"],"child-2");
+        assert_eq!(current["programSynthesisGrammar"]["genes"]["measuredRegressions"],1);
+        assert!(record_measured_program_feedback(&state,&input,&generation).is_none(),
+            "the same generation cannot be rewarded or penalized twice");
+        drop(state);
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
