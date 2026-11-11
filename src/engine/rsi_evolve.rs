@@ -3866,6 +3866,81 @@ mod tests {
     }
 
     #[test]
+    fn independently_regressed_candidate_teaches_negative_method_without_model_approval() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiObjective":"improve executor"});
+        for (n,tool,result) in [
+            ("1","code_search",json!({"matchCount":1})),
+            ("2","workspace_read_range",json!({"sourceSha256":"a".repeat(64)})),
+            ("3","workspace_replace_range",json!({"written":true,"postSha256":"b".repeat(64)}))
+        ] {
+            state.store.put("execution_operation",&json!({
+                "id":format!("regression-{n}"),"sessionId":"candidate-run",
+                "opSeq":n.parse::<u64>().unwrap(),"tool":tool,"status":"completed",
+                "result":result,"toolReceipt":{"verified":true}
+            })).unwrap();
+        }
+        let outcome=json!({
+            "jobId":"real-frozen-rejected","domain":"tools","candidateId":"candidate-42",
+            "accepted":false,"evaluation":{
+                "source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"verdict":"regressed","regressions":1,"eligible":false}
+            }
+        });
+        let policy=learn_method_transitions(&state,&input,&outcome,"candidate-run")
+            .expect("a measured regression must update DOMINION's selection method");
+        assert!(policy["transitions"].as_array().unwrap().iter().any(|row|
+            row["from"]=="workspace_read_range" && row["to"]=="workspace_replace_range"
+                && row["negative"]==2 && row["positive"]==0
+                && row["byDomain"]["tools"]["negative"]==2));
+        assert!(current_induced_method_policy(&state,&input).is_none(),
+            "a rejected method must not be recommended merely because it was executed");
+        let stale=json!({"jobId":"unsupported-candidate","domain":"tools","candidateId":"candidate-2",
+            "evaluation":{"source":"model_prose",
+                "metrics":{"verdict":"regressed"}}});
+        assert!(learn_method_transitions(&state,&input,&stale,"candidate-run").is_none(),
+            "the model cannot create negative or positive learning without paired evidence");
+        let again=learn_method_transitions(&state,&input,&outcome,"candidate-run").unwrap();
+        assert_eq!(again["revision"],policy["revision"],
+            "a replayed job must not train the policy twice");
+        drop(state);let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn descendant_policy_receipt_counts_only_actions_after_policy_selection() {
+        let (state,root)=state();
+        state.store.put("execution",&json!({
+            "id":"run","sessionId":"s",
+            "rsiInducedMethodChoices":[
+                {"policyId":"policy","revision":"rev-1","preferredTool":"workspace_replace_range",
+                    "domain":"tools","focusPath":"src/engine/tools.rs",
+                    "afterOpSeq":2,"modelRound":1},
+                {"policyId":"policy","revision":"rev-1","preferredTool":"workspace_replace_range",
+                    "domain":"tools","focusPath":"src/engine/tools.rs",
+                    "afterOpSeq":3,"modelRound":2}
+            ]
+        })).unwrap();
+        for seq in [1,3] {
+            state.store.put("execution_operation",&json!({
+                "id":format!("edit-{seq}"),"runId":"run","sessionId":"s",
+                "opSeq":seq,"tool":"workspace_replace_range","status":"completed",
+                "arguments":{"path":"src/engine/tools.rs"},
+                "result":{"written":true},"toolReceipt":{"verified":true}
+            })).unwrap();
+        }
+        let receipts=induced_method_application_receipts(&state,"s");
+        assert_eq!(receipts.len(),2);
+        assert_eq!(receipts[0]["afterOpSeq"],2);
+        assert_eq!(receipts[0]["performed"],true);
+        assert_eq!(receipts[0]["verifiedSourceWrite"],true);
+        assert_eq!(receipts[0]["effectOperationIds"],json!(["edit-3"]));
+        assert_eq!(receipts[1]["afterOpSeq"],3);
+        assert_eq!(receipts[1]["performed"],false);
+        assert_eq!(receipts[1]["verifiedSourceWrite"],false);
+        drop(state);let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn dominion_induces_and_revises_abstract_execution_method_from_actual_receipts() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root,"rsiObjective":"evolve execution method"});
