@@ -160,7 +160,7 @@ pub fn evolve(rows:&[Value],objective:&str,domain:&str)->Value{
         .find(|row|row["tokens"].as_u64().unwrap_or(0)>0
             && row["toolTimeline"].as_array().is_some_and(|ops|!ops.is_empty()))
         .map(|row|crate::engine::rsi_rule_rewrite::evolve(&parent_rewrites,row))
-        .unwrap_or(parent_rewrites);
+        .unwrap_or_else(|| parent_rewrites.clone());
     // Transfer a measured contrast between accepted and rejected descendants
     // into the actual executable runtime grammar. A two-sided cohort is
     // required; the induced rule remains an unproven, isolated trial.
