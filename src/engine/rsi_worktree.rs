@@ -406,7 +406,16 @@ pub async fn finish(
         match rsi::propose(&context.state,&proposal) {
             Ok(mut candidate)=>{
                 candidate["rsiJobId"]=json!(context.job_id);
-                candidate["origin"]="model_driven_detached_worktree".into();
+                // Attribute the bytes to their actual author. A native
+                // source transform is a separate autonomous candidate,
+                // never a tool call the local model supposedly made.
+                let mutation=context.state.store.get("rsi_mutation",&context.job_id);
+                candidate["origin"]=json!(if mutation.is_some(){
+                    "native_inductive_source_mutation"
+                } else {
+                    "model_driven_detached_worktree"
+                });
+                candidate["nativeMutation"]=mutation.unwrap_or(Value::Null);
                 candidate["pairedComparisonComplete"]=json!(false);
                 candidate["reviewRequired"]=json!(true);
                 candidate["experimentCampaignId"]=input["rsiCampaignId"].clone();
