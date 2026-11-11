@@ -66,3 +66,12 @@
 2. 실모델 격리 캠페인에서 **검증된 원본 방법 → 다른 분야 실행 실패 → 도구 영수증 → 재빌드 후손 교정 실행 → 독립 holdout**을 같은 계보로 추적한다. `methodExecutions`, `rsiTransferRepair`, `rsiFocusSelection`, `domainSelection`, `toolsUsed`, `candidateId`, `acceptedCommit`, `evaluation.metrics`를 함께 보존한다.
 3. 모델이 소스 읽기만 했다면 마지막 도구 호출을 기준으로 왜 `workspace_replace`가 나오지 않았는지 수정한다. API 동작 성공/CI 통과를 실제 RSI 품질 상승으로 치환하지 않는다.
 4. 실제 개선 패치·독립 holdout 순이익·후손 바이너리 계승·다른 도메인에서의 재개선을 3세대에 걸쳐 실측한다. 종전 21캠페인/41세대/1채택은 새로운 측정 없이 갱신하지 않는다.
+
+
+### 5세대 추가 2차 개선 — 실모델의 읽기 전용 종료를 실행 결정으로 전환
+
+- `25d212778c7a2ef70616771e7a0dc52665516440`: `src/engine/chat/runtime.rs`의 RSI 런타임에 `rsi_read_only_completion` 도입. 모델이 실제 `workspace_read_range`를 성공적으로 끝내고 `workspace_replace/workspace_write/rsi_method_propose/algorithm_propose`를 전혀 시도하지 않은 채 최종 답변을 내면, 동일 턴의 소스 근거를 보존해 딱 1회 더 **실행 선택**을 요청. 충분한 근거가 없으면 그 뒤 최종 보고 허용; 모델 대신 패치·성공 생성 없음. `execution.rsiActionRetry` 영수증과 단위 테스트 추가.
+- `b90f7abc`: `scripts/sub4-live-rsi.mjs` 실모델 검증 스크립트 작성. 도구 호출, 실제 소스 변경, 방법 제안, paired holdout 판정, 세대별 성적을 별도로 기록. 
+- `da71da359306567e65000c42b1e94ca26de49fc5`: `.github/workflows/sub4-live-rsi.yml`로 외부 무료 `openai-fast`를 실제 DOMINION 바이너리와 연결한 격리된 RSI 캠페인 자동 실험 시작. 해당 실행: https://github.com/hushmind3/dominion-rust/actions/runs/42951068895 . 작성 시 probe 성공 후 native Rust 바이너리 빌드 단계 진행 중. **실모델 수정·채택·계승 성과는 결과가 나오기 전까지 미확인**.
+- 변경 범위를 모두 포함한 신규 CI: https://github.com/hushmind3/dominion-rust/actions/runs/42951068772 . 코어 교정 경로 `98379a7` CI는 https://github.com/hushmind3/dominion-rust/actions/runs/42950244534 에서 성공, Rust 16+646+3+99=764건 통과. 중간 `7a2d8cd` 한 번의 브라우저 원격 디버깅 포트 실패는 다음 같은 핵심 코드의 CI에서 정상 통과했으므로 코드 개선의 근거로 취급하지 않음.
+- 다음 세션은 실모델 `42951068895`의 artifact `sub4-genuine-model-proof`에서 `generations[].toolsUsed`와 `sourceWriteCalls` 및 `acceptedCommit`를 반드시 대조. `rsiActionRetry` 발생 여부는 각 execution 영수증으로 확인. model endpoint 실패는 개선 실패와 구별. 실제 수정과 held-out 품질 개선은 별도 증명해야 함.
