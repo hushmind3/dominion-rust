@@ -1,6 +1,12 @@
 name: Sub4 actual local Ollama RSI attempt
-# Owner-requested campaigns have been launched; future runs are manual.
+# One explicit source-completion proof run when this workflow is changed.
+# Routine code pushes continue to use the much faster CI workflow.
 on:
+  push:
+    branches:
+      - dominion-sub4
+    paths:
+      - .github/workflows/sub4-live-ollama.yml
   workflow_dispatch:
 permissions:
   contents: read
