@@ -176,6 +176,56 @@ fn rsi_ground_range_edit_args(mut args: Value, completed: &[Value]) -> Value {
     args
 }
 
+
+/*
+ * A learned procedure is an executable DOMINION improvement method.
+ * If the harness has already changed the focused source file, finished its
+ * DAG and verified the write receipts, do not spend another model call asking
+ * whether the model thinks the improvement is complete. Hand the real patch
+ * to the detached worktree candidate verifier instead.
+ *
+ * The method's verified postconditions are only execution evidence; they
+ * never stand in for an independent paired improvement measurement.
+ */
+fn rsi_harness_patch_ready_for_verification(
+    session: &Value, strategies: &[Value], operations: &[Value],
+    workspace: &std::path::Path,
+) -> Option<Value> {
+    if session["rsiRun"] != true { return None; }
+    let procedure_writes=operations.iter().filter(|op|
+        op["origin"]=="procedure"
+            && matches!(op["tool"].as_str(),
+                Some("workspace_replace" | "workspace_replace_range" | "workspace_write")))
+        .collect::<Vec<_>>();
+    if procedure_writes.is_empty() || procedure_writes.iter().any(|op|
+        !rsi_verified_write_operation(op)
+            || !rsi_patch_ready_for_verification(
+                session,op["tool"].as_str().unwrap_or(""),
+                &op["arguments"],&op["result"],true))
+    {
+        return None;
+    }
+    for method in strategies {
+        if method["assistanceMode"]!="harness_assisted"
+            || !method["rsiMethodExperienceId"].is_string() { continue; }
+        let owned=procedure_writes.iter().filter(|op|
+            op["procedureStrategyId"]==method["id"]
+                && op["procedureRevision"]==method["revision"])
+            .collect::<Vec<_>>();
+        if owned.is_empty() { continue; }
+        let verdict=crate::engine::procedure::evaluate(method,operations,workspace);
+        if verdict["verified"]!=true || verdict["followed"]!=true { continue; }
+        let write=owned[0];
+        return Some(json!({
+            "methodId":method["id"],"revision":method["revision"],
+            "operationId":write["id"],"path":write["arguments"]["path"],
+            "postSha256":write["result"]["postSha256"],
+            "procedureVerdict":verdict["status"]
+        }));
+    }
+    None
+}
+
 pub async fn run_turn(
     state: &AppState,
     request: &TurnRequest,
@@ -1083,6 +1133,24 @@ async fn run_turn_body(
         Vec::new()
     };
     messages.extend(harness_messages);
+
+    // DOMINION's learned harness may have completed the source edit before
+    // the model's first round. Its verified result is sufficient to submit
+    // the candidate for independent evaluation without further model tokens.
+    let harness_operations=state.store.all("execution_operation").into_iter()
+        .filter(|op|op["runId"].as_str()==Some(execution_id))
+        .collect::<Vec<_>>();
+    if let Some(verified)=rsi_harness_patch_ready_for_verification(
+        &session,&strategy_candidates,&harness_operations,&state.config.workspace)
+    {
+        state.store.audit("rsi.learned_method_patch_submitted",json!({
+            "sessionId":session_id,"executionId":execution_id,
+            "methodId":verified["methodId"],"revision":verified["revision"],
+            "operationId":verified["operationId"],"path":verified["path"]
+        }));
+        final_content="학습된 DOMINION 실행 절차가 실제 소스를 변경했고 검증 영수증을 남겼습니다. 개선 효과는 독립 평가에서 판단합니다.".into();
+        finished=true;
+    }
 
     for round in 0..max_rounds {
         if finished { break; }
@@ -6343,6 +6411,57 @@ mod harness_tool_selection_tests {
         assert_eq!(grounded["expectedSha256"],hash);
         assert!(rsi_ground_range_edit_args(json!({"path":"src/b.rs",
             "startLine":12,"endLine":15,"newText":"fixed"}),&read)["expectedSha256"].is_null());
+    }
+
+
+    #[test]
+    fn learned_harness_patch_advances_to_independent_candidate_capture_without_model_round() {
+        let workspace=std::env::temp_dir().join(format!(
+            "dominion-rsi-method-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(workspace.join("src/engine")).unwrap();
+        std::fs::write(workspace.join("src/engine/decompose.rs"),
+            "pub fn decomposition() -> bool { true }\n").unwrap();
+        let procedure=crate::engine::procedure::normalize(&json!({
+            "type":"procedure","appliesTo":{"requestContains":["decompose"]},
+            "nodes":[{"id":"edit","tool":"workspace_replace_range",
+                "arguments":{"path":"src/engine/decompose.rs","startLine":1,
+                    "endLine":1,"newText":"changed","expectedSha256":"a".repeat(64)}}],
+            "edges":[],"after":[{"kind":"file_contains",
+                "path":"src/engine/decompose.rs","text":"true"}]
+        }));
+        assert_eq!(procedure["type"],"procedure");
+        let strategy=json!({"id":"learned-method","revision":"revision-1",
+            "assistanceMode":"harness_assisted","rsiMethodExperienceId":"experience-1",
+            "verification":procedure});
+        let session=json!({"rsiRun":true,"rsiAutoFocus":true,"rsiCampaignId":"c",
+            "rsiFocusFiles":["src/engine/decompose.rs"]});
+        let operation=json!({"id":"op1","origin":"procedure","status":"completed",
+            "tool":"workspace_replace_range","procedureStrategyId":"learned-method",
+            "procedureRevision":"revision-1","procedureNodeId":"edit",
+            "arguments":{"path":"src/engine/decompose.rs"},
+            "result":{"written":true,"postSha256":"b".repeat(64)},
+            "toolReceipt":{"verified":true}});
+        let evidence=rsi_harness_patch_ready_for_verification(
+            &session,&[strategy.clone()],&[operation.clone()],&workspace).unwrap();
+        assert_eq!(evidence["methodId"],"learned-method");
+        let mut failed=operation.clone();
+        failed["toolReceipt"]["verified"]=json!(false);
+        assert!(rsi_harness_patch_ready_for_verification(
+            &session,&[strategy.clone()],&[failed],&workspace).is_none());
+        let mut no_change=operation.clone();
+        no_change["result"]["written"]=json!(false);
+        assert!(rsi_harness_patch_ready_for_verification(
+            &session,&[strategy.clone()],&[no_change],&workspace).is_none());
+        std::fs::write(workspace.join("src/engine/decompose.rs"),
+            "pub fn decomposition() -> bool { false }\n").unwrap();
+        assert!(rsi_harness_patch_ready_for_verification(
+            &session,&[strategy.clone()],&[operation.clone()],&workspace).is_none(),
+            "a violated procedure cannot skip the model's correction round");
+        let mut foreign=session.clone();
+        foreign["rsiFocusFiles"]=json!(["src/other.rs"]);
+        assert!(rsi_harness_patch_ready_for_verification(
+            &foreign,&[strategy],&[operation],&workspace).is_none());
+        let _=std::fs::remove_dir_all(workspace);
     }
 
     #[test]
