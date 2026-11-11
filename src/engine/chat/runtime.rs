@@ -321,6 +321,13 @@ fn rsi_action_program_tool_allowed(name:&str, selected:&str)->bool {
             && name=="code_search")
 }
 
+/// Native RSI program decisions are executable restrictions, not simply
+/// tool hints to the model. A model may emit a stale/hallucinated tool call
+/// even when that function was not advertised on this exact round.
+fn rsi_tool_offered_this_round(tools:&[Value], requested:&str)->bool {
+    tools.iter().any(|entry|tool_name(entry)==requested)
+}
+
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
 /// needs read, search and replace together to produce a grounded patch.
 fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
@@ -1969,7 +1976,7 @@ async fn run_turn_body(
             request.agent_id.as_deref(),
             None,
         );
-        if combination
+        if session["rsiRun"]!=true && combination
             .as_ref()
             .and_then(|algorithm| algorithm["implementation"].as_str())
             == Some("parallel-reads")
@@ -2102,6 +2109,29 @@ async fn run_turn_body(
                     continue;
                 }
             };
+            if session["rsiRun"]==true
+                && !rsi_tool_offered_this_round(&round_tools,&call.name) {
+                let offered=round_tools.iter().map(tool_name).filter(|name|!name.is_empty())
+                    .collect::<Vec<_>>().join(", ");
+                let error=format!(
+                    "RSI executable program blocked stale tool {}. Current native step permits: {}. Follow the offered tool or report why its source preconditions cannot be met.",
+                    call.name,offered
+                );
+                state.store.audit("rsi.program_tool_blocked",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "tool":call.name,"allowed":offered,
+                    "programRevision":session["rsiExecutionMethod"]["actionProgram"]["revision"]
+                }));
+                record_soft_tool_error(
+                    state,tx,session_id,request,execution_id,&call.name,
+                    &call.id,&error,metrics
+                );
+                messages.push(json!({
+                    "role":"tool","tool_call_id":call.id,
+                    "content":json!({"error":error,"rsiProgramBlocked":true}).to_string()
+                }));
+                continue;
+            }
             let completed_operations = state
                 .store
                 .all("execution_operation")
@@ -6645,6 +6675,20 @@ mod harness_tool_selection_tests {
             "workspace_replace_range"));
         assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range"));
         assert!(rsi_action_program_next(&plan,&[],"unrelated").is_some());
+    }
+
+    #[test]
+    fn model_cannot_execute_tools_omitted_by_its_native_rsi_program() {
+        let definitions=vec![
+            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
+            json!({"type":"function","function":{"name":"workspace_replace"}})
+        ];
+        assert!(rsi_tool_offered_this_round(&definitions,"workspace_replace_range"));
+        assert!(rsi_tool_offered_this_round(&definitions,"workspace_replace"));
+        assert!(!rsi_tool_offered_this_round(&definitions,"workspace_read_range"));
+        assert!(!rsi_tool_offered_this_round(&definitions,"code_search"));
+        assert!(!rsi_tool_offered_this_round(&[],"workspace_replace"),
+            "An empty forced-final tool menu cannot execute a model tool call");
     }
 
     #[test]
