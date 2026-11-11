@@ -4377,6 +4377,146 @@ mod tests {
     }
 
     #[test]
+    fn policy_trial_decision_promotes_only_the_frozen_measured_revision() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiDomain":"tools",
+            "rsiBaseCommit":"a".repeat(40),
+            "rsiObjective":"improve source edits",
+            "rsiFocusFiles":["src/engine/tools.rs"],
+            "model":"same-model","providerId":"same-provider"});
+        let partition=research_scope(&input).partition_key;
+        let id=format!("rsi-method-policy-{}",
+            crate::engine::memory::stable_id(&[&partition]));
+        let mut policy=json!({"id":id,"partitionKey":partition,
+            "revision":"first-revision","kind":"harness.method-transitions",
+            "transitions":[{"from":"workspace_read_range",
+                "to":"workspace_replace_range","positive":3,"negative":1}],
+            "evidence":[]});
+        state.store.put("rsi_method_policy",&policy).unwrap();
+        let base=input["rsiBaseCommit"].clone();
+        let mut last=Value::Null;
+        for n in 0..4 {
+            let plan=method_policy_trial_plan(&state,&input);
+            assert_eq!(plan["arm"],if n%2==0 {"control"}else{"learned"});
+            let evaluation=json!({"source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"eligible":n==3,"regressions":0,
+                    "improvedHoldouts":if n==3 {1}else{0},
+                    "verdict":if n==3 {"improved"}else{"unchanged"}}});
+            let mut generation=json!({"id":format!("policy-promote-{n}"),
+                "jobId":format!("policy-promote-{n}"),
+                "generatorCommit":base,"methodPolicyTrial":plan,
+                "domain":"tools","accepted":n==3,"evaluation":evaluation});
+            if n==3 {
+                generation["acceptedProof"]=json!({"status":"verified",
+                    "evaluation":evaluation});
+                // New evidence may have changed the live revision during the
+                // trial. Only the original frozen scorer can be promoted.
+                policy["revision"]=json!("unmeasured-new-revision");
+                state.store.put("rsi_method_policy",&policy).unwrap();
+                last=generation;
+            } else {
+                state.store.put("rsi_generation",&generation).unwrap();
+            }
+        }
+        let decision=settle_method_policy_trial(&state,&last);
+        assert_eq!(decision["verdict"],"promote_observational");
+        assert_eq!(decision["control"]["pairedEvaluations"],2);
+        assert_eq!(decision["learned"]["acceptedGains"],1);
+        assert_eq!(decision["causalProof"],false);
+        assert_eq!(state.store.get("rsi_method_policy",&id).unwrap()["revision"],
+            "first-revision");
+        assert_eq!(settle_method_policy_trial(&state,&last),decision,
+            "a recovered coordinator cannot promote the same cohort twice");
+        drop(state);let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn policy_trial_decision_rejects_and_generates_a_new_scoring_kernel() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiDomain":"tools",
+            "rsiBaseCommit":"b".repeat(40),
+            "rsiObjective":"improve source edits",
+            "rsiFocusFiles":["src/engine/tools.rs"],
+            "model":"same-model","providerId":"same-provider"});
+        let partition=research_scope(&input).partition_key;
+        let id=format!("rsi-method-policy-{}",
+            crate::engine::memory::stable_id(&[&partition]));
+        let policy=json!({"id":id,"partitionKey":partition,
+            "revision":"failed-revision","kind":"harness.method-transitions",
+            "transitions":[{"from":"workspace_read_range",
+                "to":"workspace_replace_range","positive":2,"negative":1}],
+            "scoringKernel":{"rule":{"rewardWeight":1.0,"failureWeight":1.0,
+                "smoothing":1.0,"exploration":0.0}},"evidence":[]});
+        state.store.put("rsi_method_policy",&policy).unwrap();
+        let mut last=Value::Null;
+        for n in 0..4 {
+            let plan=method_policy_trial_plan(&state,&input);
+            let regression=n%2==1;
+            let generation=json!({"id":format!("policy-reject-{n}"),
+                "jobId":format!("policy-reject-{n}"),
+                "generatorCommit":input["rsiBaseCommit"],"methodPolicyTrial":plan,
+                "domain":"tools","accepted":false,
+                "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                    "metrics":{"eligible":false,
+                        "verdict":if regression {"regressed"}else{"unchanged"}}}});
+            if n==3 {last=generation;} else {
+                state.store.put("rsi_generation",&generation).unwrap();
+            }
+        }
+        let decision=settle_method_policy_trial(&state,&last);
+        assert_eq!(decision["verdict"],"reject_and_mutate");
+        assert_eq!(decision["learned"]["pairedRegressions"],2);
+        let evolved=state.store.get("rsi_method_policy",&id).unwrap();
+        assert_ne!(evolved["revision"],"failed-revision");
+        assert_eq!(evolved["scoringKernel"]["validation"]["status"],
+            "new_trial_candidate_not_proven");
+        assert!(evolved["scoringKernel"]["rule"]["failureWeight"].as_f64().unwrap()>1.0);
+        assert_eq!(decision["nextPolicyRevision"],evolved["revision"]);
+        let snapshot=evolved.clone();
+        assert_eq!(settle_method_policy_trial(&state,&last),decision);
+        assert_eq!(state.store.get("rsi_method_policy",&id).unwrap(),snapshot);
+        drop(state);let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn policy_trial_abstains_without_independent_evidence_for_both_arms() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiDomain":"tools",
+            "rsiBaseCommit":"c".repeat(40),"rsiObjective":"improve edits",
+            "rsiFocusFiles":["src/engine/tools.rs"],
+            "model":"same-model","providerId":"same-provider"});
+        let partition=research_scope(&input).partition_key;
+        let id=format!("rsi-method-policy-{}",
+            crate::engine::memory::stable_id(&[&partition]));
+        let policy=json!({"id":id,"partitionKey":partition,
+            "revision":"candidate-rev","kind":"harness.method-transitions",
+            "transitions":[{"from":"workspace_read_range",
+                "to":"workspace_replace","positive":2,"negative":1}]});
+        state.store.put("rsi_method_policy",&policy).unwrap();
+        let mut last=Value::Null;
+        for n in 0..4 {
+            let plan=method_policy_trial_plan(&state,&input);
+            let mut generation=json!({"id":format!("policy-inconclusive-{n}"),
+                "jobId":format!("policy-inconclusive-{n}"),
+                "generatorCommit":input["rsiBaseCommit"],"methodPolicyTrial":plan,
+                "accepted":false});
+            if n==3 {
+                let eval=json!({"source":"server_invoked_local_paired_git_worktrees",
+                    "metrics":{"eligible":true,"regressions":0,"improvedHoldouts":1}});
+                generation["accepted"]=json!(true);
+                generation["evaluation"]=eval.clone();
+                generation["acceptedProof"]=json!({"status":"verified","evaluation":eval});
+                last=generation;
+            } else { state.store.put("rsi_generation",&generation).unwrap(); }
+        }
+        let decision=settle_method_policy_trial(&state,&last);
+        assert_eq!(decision["verdict"],"insufficient_matched_quality");
+        assert_eq!(decision["independentlyEvaluated"],false);
+        assert_eq!(state.store.get("rsi_method_policy",&id).unwrap(),policy);
+        drop(state);let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn self_improver_synthesizes_a_new_scoring_rule_from_later_observations() {
         let sample=|to:&str,good:bool|json!({"domain":"tools",
             "sequence":["workspace_read_range",to],
