@@ -7,6 +7,8 @@ on:
       - '.github/workflows/sub2-live-rsi.yml'
       - 'src/engine/gateway.rs'
       - 'src/engine/chat/provider.rs'
+      - 'src/engine/chat/runtime.rs'
+      - 'src/engine/rsi_evolve.rs'
       - 'scripts/sub2-live-rsi.mjs'
   workflow_dispatch:
 
@@ -55,12 +57,20 @@ jobs:
           curl -fsSL https://ollama.com/install.sh -o "${RUNNER_TEMP}/ollama-install.sh"
           sh "${RUNNER_TEMP}/ollama-install.sh"
           ollama --version
+          # The installer auto-starts a systemd Ollama daemon with its default
+          # 4096-token context. Stop it: a second "ollama serve" would silently
+          # fail to bind and DOMINION's 16k model calls would receive HTTP 400.
+          sudo systemctl disable --now ollama
           nohup ollama serve > "${RUNNER_TEMP}/ollama-live.log" 2>&1 &
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then break; fi
             sleep 2
           done
           curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          if grep -Fq 'bind: address already in use' "${RUNNER_TEMP}/ollama-live.log"; then
+            echo "Ollama custom-context daemon failed to start" >&2
+            exit 1
+          fi
           ollama pull "${DOMINION_LIVE_MODEL}"
 
       - name: Boot isolated DOMINION engine at same checked-out revision
