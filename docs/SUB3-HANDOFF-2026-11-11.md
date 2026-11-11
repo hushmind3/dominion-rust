@@ -152,3 +152,37 @@
 2. 여전히 편집 0이라면 실제 assistant 반환 내용·미완료/실패한 `execution_operation`을 수집해 **도구 선택 미발생과 도구 호출 실패**를 구분. 네이티브 텍스트 도구 복구 `f7797bf`을 포함한 동일 실모델 실험을 재실행하고 그 결과에 따라 실제 실행기를 수정.
 3. 생성한 candidate가 있으면 이미 있는 frozen paired holdout 비교에서 성공/회귀/토큰을 확인하고, 승격 후 **후손 바이너리 재빌드와 이어지는 다음 개선**까지 실제 실행한다.
 4. 이후 Sub1의 최신 실패 피드백 계승과 Sub4의 실행형 방법 전이를 비교 실험으로 연결한다. 새로운 검증 규칙보다 실제 패치 생성·완주와 성능 개선이 우선.
+
+
+## 5세대 Sub3 — 실제 코드 편집 출력량 병목 개선 (2026-11-11)
+
+### 최신 역할 / 배정 / 심판
+- 담당 Sub3 / 수정 브랜치 `dominion-sub3`. 시작 HEAD `976900fe2`.
+- 새로 전달된 독립 심판: **74/100, 2위** (구현 35/40, 완주 20/30, 자기개선 12/20, 일반화 7/10). Champion 78, Sub4 73, Sub1 70, Sub2 69. 이 점수는 아래 추가 코드에 대한 새 채점이 아니다.
+- 공통 목표: 모델에 비종속적인 하네스가 실행·교정·기억 일반화·자기개선·후손 계승을 **실제 작업에서 완주**하는 것. 정적 검사나 모델 호출 자체는 완주가 아니다.
+
+### 이번 작업의 실제 수정
+1. **`8dd4e59999fe56b27356cde39b4df412e7084b34`**: `workspace_replace_range(path,startLine,endLine,newText,expectedSha256)`를 Rust 실행 도구로 구현. `workspace_read_range`의 원문 해시·줄 번호를 이용해 oldText 복제 없이 새 코드만 생성·대체, 최대 120줄, UTF-8 바이트 오프셋 계산, 기존 줄바꿈 유지, 해시 불일치 시 파일 보존. 기존 `workspace_replace` 유지.
+   - `chat/runtime.rs` 편집 체크포인트·쓰기 인식, `chat/provider.rs` 실제 모델 네이티브 `tool_choice: required`, `api/rsi.rs`와 `rsi_evolve.rs` 연구→편집 지시, 실모델 캠페인 도구 집계 연결.
+   - 실제 모델의 약 1,500 output tokens 제한에서 oldText와 newText를 중복 출력해야 하는 문제를 줄이는 **새 실행 수단**. 채택 성공이라고 해석하지 않는다.
+2. **`43d0ef255e05b6f5759a501c33757e1919427fe3`**: 새 편집 도구의 실제 파일 변경 후 `postSha256`을 반환하고, `effect::seal`이 읽어 확인한 결과와 비교해 `verified` / `effect_unknown` 기록. 편집/읽기 도구의 동일 리소스 정체성 연결. 부모/후손 세대 도구 메뉴와 프롬프트에도 새 도구 등록.
+3. **`2c06b00170e1628515b5543bd98eeeefaf15106a`**: 기존 `research_survives_restart_and_executes_hash_checked_reuse_in_the_next_session` 통합 검증 경로에서 실제 파일 수정 수단을 새 줄 단위 편집으로 변경. 1세대 연구 영구 저장 → 재시작 → 2세대 해시 검증 편집 → 개선 코드 계승과 갱신된 소스 재사용을 한 실행 경로로 확인하도록 수정. 이 변경의 CI 결과는 별도 확인해야 한다.
+
+### 직접 실행해 확인한 결과 (코드 검증과 모델 성능을 구분)
+- **`8dd4e59` CI https://github.com/hushmind3/dominion-rust/actions/runs/42956290382 성공**: 16 benchmark + 626 unit + 3 extra + 99 E2E = **744/744**, 실패 0. 반복 원문 줄에서 지정한 줄만 바꾸고 stale SHA를 거부하는 새 Rust 테스트 포함.
+- **`43d0ef2` CI https://github.com/hushmind3/dominion-rust/actions/runs/42956709647 성공**: 16 benchmark + 627 unit + 3 extra + 99 E2E = **745/745**, 실패 0. 수정 해시 영수증을 별도로 재검증하는 테스트 포함.
+- **`2c06b00` CI https://github.com/hushmind3/dominion-rust/actions/runs/42957662159**: 이 문서 작성 시 진행 중. 성공으로 선기록하지 않는다.
+- 기존 실제 무료 모델 `42953014650`: 모델 6호출, 코드 탐색 1회+파일 읽기 1회, **편집 0, 후보 0, 채택 0**, 종료 `no_progress`.
+- 새 `workspace_replace_range`를 포함한 실모델 run https://github.com/hushmind3/dominion-rust/actions/runs/42956290333 : 이 문서 작성 시 진행 중. 해당 run은 **첫 커밋 `8dd4e59` 기준**이므로 둘째 해시 영수증 통합/셋째 계승 테스트 코드는 포함하지 않는다. 종료 후 `sourceEditCalls`, 도구별 영수증, `candidateId`, `acceptedCommit`, `improvedHoldouts`를 확인해야 한다.
+- 로컬에서 `cargo` 직접 실행 불가, Rust 실제 컴파일·테스트는 GitHub Actions 기록 기준.
+
+### 핵심 미완성과 이어갈 실제 개발
+1. 완료된 `42956290333` 영수증에서 **새 도구 호출을 실제 모델이 했는지**를 확인. 실패하면 처음 코드를 읽은 직후의 tool_choice, 공급자 응답 툴 형식, 줄 번호/해시 일치, 실제 실행_operation 실패 결과로 원인을 분리해 **엔진 코드** 수정.
+2. 최초 유효한 도구 소스 패치를 얻으면 그 후보를 동일 원본과 독립 frozen baseline/holdout에서 실행. 채택은 품질·시간·회귀를 실제 계측한 경우만 인정.
+3. 채택 바이너리의 후손 세대가 **그 능력으로 다음 패치와 추가 성능 향상**을 만드는지 2·3세대까지 돌리고 다른 문제/모델로 전이. 연구 등록만으로 완료 표시 금지.
+4. Sub1의 최신 교정 재시도/지연 모델 구분, Sub2의 실제 로컬 모델 도구 호출과 Sub4의 전이 교정, Champion의 로컬 도구 왕복을 상호 비교해 필요한 부분을 자기 브랜치에서 결합. 이번 세션에서 다른 브랜치는 읽기만 함.
+
+### 반복하지 말아야 할 실패
+- GitHub Actions `success`를 실모델의 코드 채택 성공으로 혼동하지 말 것.
+- 오래된 실험 워커의 `BASE_SHA` 바이너리를 실행해 최신 코드를 검증했다고 주장하지 말 것.
+- `workspace_replace_range`의 부분 영수증만으로 인과적 품질 상승을 선언하지 말 것. 원본 SHA, 범위, 실제 readback, frozen quality 평가, 재빌드/계승은 서로 다른 단계다.
