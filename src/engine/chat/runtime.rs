@@ -1635,10 +1635,29 @@ async fn run_turn_body(
             counters.model_calls += 1;
             counters.iterations = round as u32 + 1;
         }
+        // A native-only instruction can leave a small OpenAI-compatible model
+        // explaining an edit instead of issuing it. After a witnessed edit
+        // checkpoint, offer the SAME executor tools via the textual protocol.
+        // This changes only the current model call, never the user's provider
+        // configuration or the executor's path/version/approval rules.
+        let mut round_provider=provider.clone();
+        if session["rsiRun"]==true && rsi_edit_only_announced
+            && provider.kind=="openai" && provider.tool_mode=="native"
+            && !round_tools.is_empty()
+            && round_tools.iter().any(|tool|matches!(tool_name(tool),
+                "workspace_replace"|"workspace_replace_range"))
+        {
+            round_provider.tool_mode="compat".to_string();
+            state.store.audit("rsi.native_to_text_edit_protocol",json!({
+                "sessionId":session_id,"executionId":execution_id,"round":round,
+                "tools":round_tools.iter().map(tool_name).collect::<Vec<_>>(),
+                "reason":"bounded_model_edit_stage_not_quality_claim"
+            }));
+        }
         let completion_result = stream_completion(
             state,
             &client,
-            &provider,
+            &round_provider,
             &wire_messages,
             &round_tools,
             request,
