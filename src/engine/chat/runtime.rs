@@ -4034,7 +4034,8 @@ async fn deterministic_tool(
             Err(error) => (json!({"error": error}), false),
         }
     } else {
-        (json!({"error":"Denied by the user"}), false)
+        (json!({"error":crate::engine::rsi_evolve::auto_write_denial_reason(
+            state,session_id,tool,arguments).unwrap_or("Denied by the user")}), false)
     };
     // checked_write finds the last observed version on the operation record,
     // not inside the tool result. Keep that contract identical to the normal
@@ -4477,7 +4478,8 @@ async fn dispatch_tool_call(
             "id": call.id,
             "error": "사용자가 실행을 거부했습니다.",
         }));
-        (json!({ "error": "Denied by the user" }), false)
+        (json!({"error":crate::engine::rsi_evolve::auto_write_denial_reason(
+            state,session_id,&call.name,&arguments).unwrap_or("Denied by the user")}), false)
     };
 
     {
