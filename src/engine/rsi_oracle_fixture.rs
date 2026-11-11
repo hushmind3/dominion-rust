@@ -214,7 +214,20 @@ fn planning_quality() {
             "1. 입력을 읽는다\n2. 결과를 저장한다\n3. 저장된 결과를 검증한다",
             3,
         ),
+        // The source repair campaign targets Korean action ordering. The
+        // frozen evaluator must exercise the target behavior, not unrelated
+        // planning cases alone. Vary nouns, verbs, connectors and negatives;
+        // a candidate tailored to one prompt phrase cannot pass them all.
         ("설정을 읽고 결과를 저장한 다음 검증해", 3),
+        ("설계를 읽고 결과를 저장한 다음 검증해", 3),
+        ("코드를 수정하고 나서 테스트를 실행해", 2),
+        ("자료를 검색하고 내용을 요약해", 2),
+        ("파일을 열고 항목을 정리한 다음 보고서를 내보내", 3),
+        ("사고를 보고하고 대책을 적용해", 2),
+        ("사고 예방책을 검토해", 1),
+        ("최고 품질을 유지해", 1),
+        ("보고서와 사고 기록을 검토해", 1),
+        ("고객의 최고 평가를 분석해", 1),
         ("1) inspect\n2) implement\n3) verify", 3),
         ("파일을 읽어", 1),
     ];
