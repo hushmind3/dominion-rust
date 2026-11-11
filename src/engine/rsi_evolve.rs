@@ -1923,6 +1923,33 @@ fn synthesize_indexed_path_repair(
             "oldPath":old,"targetPath":target,"changedReadNodeId":read_id}}))
 }
 
+/// A method is associated with an adopted source improvement only when its
+/// own successful write appears in the verified candidate's changed paths.
+/// A generation can succeed because some *other* model/tool edited the source;
+/// that event must not train an unrelated method as a successful descendant.
+/// This is effect attribution, not yet causal paired evaluation of the method.
+fn method_wrote_accepted_candidate(
+    state:&AppState,generation:&Value,receipt:&Value,operations:&[Value]
+)->bool {
+    if generation["accepted"]!=true {return false}
+    let Some(candidate)=generation["candidateId"].as_str()
+        .and_then(|id|state.store.get("rsi_candidate",id)) else{return false};
+    if candidate["status"]!="verified"
+        || candidate["evaluation"]["metrics"]["eligible"]!=true {return false}
+    let Some(paths)=candidate["paths"].as_array() else{return false};
+    let Some(operation_ids)=receipt["operationIds"].as_array() else{return false};
+    operations.iter().any(|op|
+        operation_ids.contains(&op["id"])
+        && op["origin"]=="procedure"
+        && op["procedureStrategyId"]==receipt["methodId"]
+        && op["procedureRevision"]==receipt["revision"]
+        && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_write"))
+        && crate::engine::procedure::operation_succeeded(op)
+        && op["result"]["written"]==true
+        && op["arguments"]["path"].as_str().is_some_and(|path|
+            paths.iter().any(|candidate_path|candidate_path.as_str()==Some(path))))
+}
+
 /// Cross-domain transfer is learned from an *adopted descendant*, not from
 /// the mere creation of an optimization proposal. The donor and target must
 /// belong to the same repository partition. This permits using a verified
@@ -1972,6 +1999,8 @@ fn synthesize_successful_dag_ablation(
         || receipt["result"]["verified"]!=true
         || receipt["result"]["followed"]!=true
         || receipt["result"]["status"]=="violated" {return None}
+    if generation["accepted"]==true && !method_wrote_accepted_candidate(
+        state,generation,receipt,operations) {return None}
     let job=state.store.get("job",generation["jobId"].as_str()?)?;
     let transfer=if generation["accepted"]==true {None}
         else {proven_read_ablation_donor(state,&job,method["domain"].as_str()?)};
@@ -2118,6 +2147,8 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             || result["violations"].as_array().is_some_and(|rows| !rows.is_empty()));
         let ok = !unknown && !violated && result["followed"] == true;
         let progress = generation["accepted"] == true || generation["newFindings"].as_u64().unwrap_or(0)>0;
+        let credited=ok && method_wrote_accepted_candidate(
+            state,generation,receipt,&operations);
         if ok {
             if let Some(mut variant)=synthesize_successful_dag_ablation(
                 state,method,receipt,&operations,generation) {
@@ -2128,7 +2159,7 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             }
         }
         method["status"] = json!(if violated {"suspended"} else if ok && progress {"executable"} else {"held"});
-        if ok && generation["accepted"] == true {
+        if credited {
             method["successfulApplications"] = json!(method["successfulApplications"].as_u64().unwrap_or(0)+1);
         }
         let application = json!({"jobId":generation["jobId"],"executionId":receipt["executionId"],
@@ -2137,7 +2168,10 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             "verificationVerdict":if violated {"violated"}else if ok {"passed"}else{"inconclusive"},
             "accepted":generation["accepted"],"newFindings":generation["newFindings"],
             "tokens":generation["tokens"],"elapsedMs":generation["elapsedMs"],
-            "reuse":method["status"],"gain":"observed_association_not_causal_proof"});
+            "reuse":method["status"],
+            "methodWroteAcceptedCandidate":credited,
+            "gain":if credited {"matched_adopted_source_effect_not_paired_causal_proof"}
+                else {"unattributed_observation_no_improvement_credit"}});
         if !method["applications"].is_array() {method["applications"]=json!([]);}
         method["applications"].as_array_mut().unwrap().push(application);
         state.store.put("experience", &record);
