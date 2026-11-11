@@ -71,13 +71,21 @@ fn rsi_checkpoint_stage(
     tool_calls: u64, read_calls: u64, has_write: bool,
     explicit_focus: bool, source_in_prompt: bool,
 ) -> Option<bool> {
+    rsi_checkpoint_stage_with_limit(tool_calls,read_calls,has_write,
+        explicit_focus,source_in_prompt,6)
+}
+
+/// Historical source/candidate receipts tune this *native harness* limit.
+/// The original fixed six-call checkpoint remains the cold-start policy.
+fn rsi_checkpoint_stage_with_limit(
+    tool_calls:u64, read_calls:u64, has_write:bool,
+    explicit_focus:bool, source_in_prompt:bool, exploration_limit:u64,
+) -> Option<bool> {
     if has_write {return None;}
-    // The first successful real source read is an action boundary for a
-    // concrete repair. Do not spend the rest of a paid model turn searching.
     if explicit_focus && (read_calls>0 || source_in_prompt) && tool_calls>=1 {
         return Some(true);
     }
-    rsi_should_checkpoint(tool_calls,has_write).then_some(false)
+    (tool_calls>=exploration_limit.clamp(2,12)).then_some(false)
 }
 
 fn rsi_initial_focused_tool(name:&str)->bool {
@@ -1154,8 +1162,9 @@ async fn run_turn_body(
             let read_calls=completed.iter().filter(|operation|matches!(
                 operation["tool"].as_str(),Some("workspace_read_range"|"workspace_read"))).count() as u64;
             let grounded=read_calls>0 || session["rsiFocusContextReady"]==true;
-            let stage=rsi_checkpoint_stage(tool_calls,read_calls,has_write,
-                session["rsiExplicitFocus"]==true,session["rsiFocusContextReady"]==true)
+            let stage=rsi_checkpoint_stage_with_limit(tool_calls,read_calls,has_write,
+                session["rsiExplicitFocus"]==true,session["rsiFocusContextReady"]==true,
+                session["rsiExecutionMethod"]["explorationCallLimit"].as_u64().unwrap_or(6))
                 .or_else(||(rsi_edit_retry && grounded && !has_write).then_some(true));
             if let Some(edit_only)=stage {
                 // A range edit needs the *actual* source SHA returned by a
@@ -6295,6 +6304,9 @@ mod harness_tool_selection_tests {
         assert_eq!(rsi_checkpoint_stage(1,0,false,true,false),None);
         assert_eq!(rsi_checkpoint_stage(1,1,false,false,false),None);
         assert_eq!(rsi_checkpoint_stage(6,0,false,false,false),Some(false));
+        assert_eq!(rsi_checkpoint_stage_with_limit(3,0,false,false,false,3),Some(false),
+            "A learned research method must affect the native runtime");
+        assert_eq!(rsi_checkpoint_stage_with_limit(3,0,false,false,false,6),None);
         assert_eq!(rsi_checkpoint_stage(3,3,true,true,true),None);
         assert!(rsi_checkpoint_tool("workspace_replace",true));
         assert!(rsi_checkpoint_tool("workspace_replace_range",true));
