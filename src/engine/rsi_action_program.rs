@@ -237,6 +237,9 @@ pub fn tool_allowed(name:&str,chosen:&str)->bool {
 /// Selection alone is not source improvement or a valid training reward.
 pub fn observed_effects(state:&AppState,session_id:&str)->Vec<Value> {
     let operations=state.store.all("execution_operation");
+    let focus=state.store.get("session",session_id)
+        .and_then(|session|session["rsiFocusFiles"].as_array().cloned())
+        .unwrap_or_default();
     let mut effects=Vec::new();
     for execution in state.store.all("execution").into_iter()
         .filter(|row|row["sessionId"].as_str()==Some(session_id)) {
@@ -253,7 +256,8 @@ pub fn observed_effects(state:&AppState,session_id:&str)->Vec<Value> {
                 "executionId":run_id,"chosenTool":tool,"afterOpSeq":after,
                 "selected":true,"performed":!matched.is_empty(),
                 "verifiedSourceWrite":matched.iter().any(|op|
-                    op["tool"].as_str().is_some_and(edit) && witnessed(op)),
+                    op["tool"].as_str().is_some_and(edit) && witnessed(op)
+                    && (focus.is_empty() || focus.contains(&op["arguments"]["path"]))),
                 "operationIds":matched.iter().map(|op|op["id"].clone()).collect::<Vec<_>>(),
                 "qualityGain":"not_inferred_from_tool_selection"}));
             if effects.len()>=64{return effects;}
@@ -293,6 +297,8 @@ pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
     let mut trial_gains=0u64;
     let mut control_gains=0u64;
     let mut trial_regressions=0u64;
+    let mut unattributed_adoptions=0u64;
+    let mut actually_executed=0u64;
     for row in rows {
         if row["actionProgramTrial"]["revision"]!=revision
             || row["generatorCommit"]!=source
@@ -306,9 +312,20 @@ pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
             && row["evaluation"]["metrics"]["regressions"].as_u64()==Some(0)
             && row["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)>0;
         let regression=row["evaluation"]["verdict"]=="regressed";
+        // A good patch written independently of the composed program cannot
+        // give that program a quality reward. Require a post-selection,
+        // verified source write from the selected tool on the focused file.
+        let executed=row["actionProgramEffects"].as_array().is_some_and(|effects|
+            effects.iter().any(|e|e["programRevision"]==revision
+                && e["performed"]==true));
+        let attributed_write=row["actionProgramEffects"].as_array().is_some_and(|effects|
+            effects.iter().any(|e|e["programRevision"]==revision
+                && e["performed"]==true && e["verifiedSourceWrite"]==true));
         if row["actionProgramTrial"]["arm"]=="candidate" {
             trial+=1;
-            trial_gains+=u64::from(gain);
+            actually_executed+=u64::from(executed);
+            unattributed_adoptions+=u64::from(gain && !attributed_write);
+            trial_gains+=u64::from(gain && attributed_write);
             trial_regressions+=u64::from(regression);
         } else if row["actionProgramTrial"]["arm"]=="baseline" {
             control+=1;
@@ -332,6 +349,8 @@ pub fn trial_plan(rows:&[Value],program:Value,source:&str,objective:&str,
         "comparison":{"candidateGenerations":trial,"baselineGenerations":control,
             "candidateHoldoutGains":trial_gains,"baselineHoldoutGains":control_gains,
             "candidateRegressions":trial_regressions,
+            "candidatePolicyActionsExecuted":actually_executed,
+            "adoptionsWithoutAttributableProgramWrite":unattributed_adoptions,
             "qualityProven":status=="candidate_supported_by_holdout",
             "causalQualityGain":"not_estimated_by_sequential_cohorts"}})
 }
@@ -384,6 +403,23 @@ mod tests {
         let evolved=evolve_controller(&[failure],baseline);
         assert_eq!(evolved["controller"]["checkpointAfter"],5);
         assert_eq!(evolved["controller"]["qualityProven"],false);
+    }
+    #[test]
+    fn independent_model_edit_does_not_promote_an_unexecuted_program(){
+        let program=json!({"sequence":["workspace_replace"],"revision":"r1"});
+        let mk=|id:&str,arm:&str|json!({"jobId":id,"generatorCommit":"head",
+            "objectiveId":"obj","generatorModel":"model","generatorProviderId":"provider",
+            "domain":"memory","actionProgramTrial":{"revision":"r1",
+                "arm":arm,"frozen":{"domain":"memory"}},
+            "accepted":arm=="candidate","actionProgramEffects":[],
+            "evaluation":{"metrics":{"eligible":true,
+                "regressions":0,"improvedHoldouts":2}}});
+        let rows=vec![mk("c1","candidate"),mk("b1","baseline"),
+            mk("c2","candidate"),mk("b2","baseline")];
+        let plan=trial_plan(&rows,program,"head","obj","model","provider","memory");
+        assert_eq!(plan["comparison"]["candidateHoldoutGains"],0);
+        assert_eq!(plan["comparison"]["adoptionsWithoutAttributableProgramWrite"],2);
+        assert_eq!(plan["comparison"]["qualityProven"],false);
     }
     #[test]
     fn policy_cannot_gain_quality_from_tool_calls_or_mismatched_source(){
