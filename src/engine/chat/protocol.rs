@@ -166,6 +166,42 @@ pub fn parse_text_tool_calls_known(
     (calls, cleaned.trim().to_string())
 }
 
+/// A small model may supply exact patch arguments without a native tool
+/// envelope. Accept only a standalone JSON object or JSON code fence with
+/// explicit source preconditions. The regular tool executor still performs
+/// revision/path checks and independent file readback.
+pub fn parse_rsi_unwrapped_edit(
+    content:&str, available:&std::collections::HashSet<String>,
+)->Option<(String,String)> {
+    let trimmed=content.trim();
+    let source=if let Some(inner)=trimmed.strip_prefix("```json")
+        .or_else(||trimmed.strip_prefix("```JSON")) {
+        inner.trim().strip_suffix("```")?.trim()
+    } else { trimmed };
+    if !source.starts_with('{') || !source.ends_with('}') {return None;}
+    let args:Value=serde_json::from_str(source).ok()?;
+    let path=args["path"].as_str().filter(|path|!path.is_empty())?;
+    if path.starts_with('/') || path.contains("..") {return None;}
+    if ["name","tool","tool_name","function","action"].iter()
+        .any(|key|args.get(*key).is_some()) {return None;}
+    if available.contains("workspace_replace_range") {
+        let sha=args["expectedSha256"].as_str()?;
+        if sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit())
+            && args["startLine"].as_u64().is_some_and(|line|line>0)
+            && args["endLine"].as_u64().is_some_and(|line|
+                line>=args["startLine"].as_u64().unwrap_or(u64::MAX))
+            && args["newText"].is_string() {
+            return Some(("workspace_replace_range".into(),args.to_string()));
+        }
+    }
+    if available.contains("workspace_replace")
+        && args["oldText"].as_str().is_some_and(|old|!old.is_empty())
+        && args["newText"].is_string() {
+        return Some(("workspace_replace".into(),args.to_string()));
+    }
+    None
+}
+
 fn json_objects(text: &str) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
