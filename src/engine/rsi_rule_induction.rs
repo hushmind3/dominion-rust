@@ -106,18 +106,36 @@ fn passes(s:Snapshot, pred:&Value)->bool {
 /// Only a trial controller is produced. To promote it, the independent
 /// tournament must observe actual descendant source patches and comparisons.
 pub fn induce(history:&[&Value])->Vec<Value> {
+    // Never allow the first historical worker's provider/model to hide
+    // evidence from a later coherent cohort. Search each homogeneous cohort
+    // independently, prioritizing the one containing the latest worker.
+    let mut cohorts=std::collections::BTreeMap::<String,Vec<&Value>>::new();
+    for row in history {
+        let mut key=Vec::new();
+        for field in ["objectiveId","knowledgePartition","generatorProviderId",
+            "generatorModel"] {
+            let Some(value)=row[field].as_str().filter(|s|!s.is_empty()) else {
+                key.clear();break;
+            };
+            key.push(value);
+        }
+        if key.len()==4 {cohorts.entry(json!(key).to_string()).or_default().push(*row);}
+    }
+    let mut grouped=cohorts.into_values().collect::<Vec<_>>();
+    grouped.sort_by(|a,b|b.len().cmp(&a.len()));
+    for group in grouped {
+        let rules=induce_cohort(&group);
+        if !rules.is_empty() {return rules;}
+    }
+    Vec::new()
+}
+fn induce_cohort(history:&[&Value])->Vec<Value> {
     let mut successes=Vec::<(String,Snapshot)>::new();
     let mut negatives=Vec::<Snapshot>::new();
     let mut seen=BTreeSet::new();
-    let mut scope=None::<String>;
     for row in history {
         let Some(job)=row["jobId"].as_str().filter(|s|!s.is_empty()) else {continue;};
         if !seen.insert(job.to_string()) {continue;}
-        let key=json!([row["objectiveId"],row["knowledgePartition"],
-            row["generatorProviderId"],row["generatorModel"]]).to_string();
-        if let Some(previous)=scope.as_ref() {
-            if previous!=&key {continue;}
-        }else{scope=Some(key);}
         let Some(ops)=row["toolTimeline"].as_array() else {continue;};
         if let Some(success)=accepted_edit(row,ops) {
             successes.push(success);
@@ -238,6 +256,19 @@ mod tests {
         let rows=[child("good-1",true,0,"workspace_replace_range"),
             child("good-2",true,0,"workspace_replace_range")];
         assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
+    }
+    #[test]
+    fn a_different_earlier_model_does_not_hide_an_independent_usable_cohort(){
+        let mut unrelated=child("other-model",false,1,"workspace_replace_range");
+        unrelated["generatorModel"]=json!("different");
+        let rows=[
+            unrelated,
+            child("good-1",true,0,"workspace_replace_range"),
+            child("bad-1",false,3,"workspace_replace_range"),
+            child("good-2",true,0,"workspace_replace_range"),
+            child("bad-2",false,4,"workspace_replace_range")
+        ];
+        assert_eq!(induce(&rows.iter().collect::<Vec<_>>()).len(),1);
     }
     #[test]
     fn learned_rule_must_have_been_executable_before_its_training_edit(){
