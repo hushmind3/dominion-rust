@@ -136,6 +136,33 @@ fn rsi_direct_source_repair(
     None
 }
 
+/// If an inherited, persisted RSI procedure already changed the focused
+/// source and its bytes were independently read back, hand the changed tree
+/// straight to the existing candidate/frozen paired evaluator. Avoid another
+/// model round: this is a verified write, NOT an adopted improvement.
+fn rsi_inherited_patch_for_evaluation(
+    session:&Value, methods:&[Value], operations:&[Value]
+)->Option<Value> {
+    operations.iter().find(|op| {
+        op["origin"]=="procedure"
+            && methods.iter().any(|method|
+                method["rsiMethodExperienceId"].is_string()
+                    && method["assistanceMode"]=="harness_assisted"
+                    && method["id"]==op["procedureStrategyId"]
+                    && method["revision"]==op["procedureRevision"])
+            && rsi_patch_ready_for_verification(
+                session, op["tool"].as_str().unwrap_or(""),
+                &op["arguments"], op)
+    }).map(|op|json!({
+        "methodId":op["procedureStrategyId"],
+        "methodRevision":op["procedureRevision"],
+        "operationId":op["id"],
+        "path":op["arguments"]["path"],
+        "verifiedWrite":true,
+        "independentQualityGain":Value::Null
+    }))
+}
+
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
 /// needs read, search and replace together to produce a grounded patch.
 fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
@@ -1050,6 +1077,25 @@ async fn run_turn_body(
         Vec::new()
     };
     messages.extend(harness_messages);
+
+    // A learned execution program can accomplish the real source edit before
+    // asking the model anything. Its verified write is enough to start the
+    // SAME native Git diff, compile and frozen A/B checks used for model edits.
+    // Postconditions and eventual adoption remain independently evaluated.
+    if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {
+        let operations=state.store.execution_operations(execution_id)?;
+        if let Some(proof)=rsi_inherited_patch_for_evaluation(
+            &session,&strategy_candidates,&operations
+        ) {
+            finished=true;
+            final_content="계승된 개선 절차가 실제 소스를 수정했습니다. 독립 후보 검증으로 넘깁니다.".into();
+            state.store.audit("rsi.inherited_patch_submitted_for_verification",json!({
+                "sessionId":session_id,"executionId":execution_id,
+                "evidence":proof,"additionalModelCalls":0,
+                "accepted":false
+            }));
+        }
+    }
 
     for round in 0..max_rounds {
         if finished { break; }
@@ -6372,6 +6418,49 @@ mod harness_tool_selection_tests {
             &json!({"written":true})),None);
         assert_eq!(rsi_direct_source_repair(
             &focused,"code_search",&args,&invalid),None);
+    }
+
+    #[test]
+    fn adopted_inherited_method_write_hands_off_without_model_or_fake_gain() {
+        let session=json!({"rsiRun":true,"rsiCampaignId":"camp",
+            "rsiExplicitFocus":true,"rsiFocusFiles":["src/engine/memory.rs"]});
+        let method=json!({"id":"learned-1","revision":"rev-1",
+            "assistanceMode":"harness_assisted",
+            "rsiMethodExperienceId":"experience-1"});
+        let successful=json!({"id":"op-1","origin":"procedure",
+            "procedureStrategyId":"learned-1","procedureRevision":"rev-1",
+            "tool":"workspace_replace","status":"completed",
+            "arguments":{"path":"src/engine/memory.rs"},
+            "result":{"written":true},"toolReceipt":{"verified":true}});
+        let proof=rsi_inherited_patch_for_evaluation(
+            &session,&[method.clone()],&[successful.clone()]).unwrap();
+        assert_eq!(proof["verifiedWrite"],true);
+        assert!(proof["independentQualityGain"].is_null());
+        assert_eq!(proof["operationId"],"op-1");
+        let mut wrong=successful.clone();
+        wrong["toolReceipt"]["verified"]=json!(false);
+        assert!(rsi_inherited_patch_for_evaluation(
+            &session,&[method.clone()],&[wrong]).is_none());
+        wrong=successful.clone();
+        wrong["procedureRevision"]=json!("different");
+        assert!(rsi_inherited_patch_for_evaluation(
+            &session,&[method.clone()],&[wrong]).is_none());
+        wrong=successful.clone();
+        wrong["origin"]=json!("model");
+        assert!(rsi_inherited_patch_for_evaluation(
+            &session,&[method.clone()],&[wrong]).is_none());
+        wrong=successful.clone();
+        wrong["arguments"]["path"]=json!("src/engine/context.rs");
+        assert!(rsi_inherited_patch_for_evaluation(
+            &session,&[method.clone()],&[wrong]).is_none());
+        wrong=successful.clone();
+        wrong["result"]["written"]=json!(false);
+        assert!(rsi_inherited_patch_for_evaluation(
+            &session,&[method.clone()],&[wrong]).is_none());
+        let mut unlearned=method.clone();
+        unlearned["rsiMethodExperienceId"]=Value::Null;
+        assert!(rsi_inherited_patch_for_evaluation(
+            &session,&[unlearned],&[successful]).is_none());
     }
 
     #[test]
