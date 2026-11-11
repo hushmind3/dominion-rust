@@ -3435,6 +3435,16 @@ async fn run_loop(
             }
         }
         let generation_accepted = generation["accepted"] == true;
+        // A real, independently adopted NATIVE source mutation can succeed
+        // even when a previous model turn exhausted its own output budget.
+        // Do not discard that measured descendant merely because the model
+        // ended badly. The coordinator's aggregate token/time budgets are
+        // enforced again before launching any later generation.
+        let stopped = if generation_accepted
+            && generation["nativeMutation"]["origin"]=="native_inductive_source_mutation"
+            && stopped==Some("token_budget") {
+            None
+        } else {stopped};
         let accepted_streak = if generation_accepted {
             record["acceptedStreak"].as_u64().unwrap_or(0) + 1
         } else {
