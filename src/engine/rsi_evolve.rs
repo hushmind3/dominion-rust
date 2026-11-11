@@ -1473,7 +1473,7 @@ fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value
         input["rsiObjective"].as_str().unwrap_or(""));
     // An observed-failure repair is an executable next-generation experiment.
     // Preserve the exact target and provenance rather than only a method ID.
-    let repair=methods.iter().find(|m|m["synthesis"]["kind"]=="stale_source_rebase");
+    let repair=methods.iter().find(|m|is_synthesized_source_repair(m));
     let repair_path=repair.and_then(|m|m["verification"]["nodes"].as_array())
         .and_then(|nodes|nodes.iter().find(|n|n["tool"]=="workspace_replace"))
         .and_then(|node|node["arguments"]["path"].as_str())
@@ -1538,6 +1538,14 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
     state.store.put("session", &session);
 }
 
+/// A repair discovered from a failed procedure is an executable program, not
+/// a suggested prompt. The candidate receives no improvement credit until
+/// its own future application passes the ordinary procedure evaluator.
+fn is_synthesized_source_repair(method:&Value)->bool {
+    matches!(method["synthesis"]["kind"].as_str(),
+        Some("stale_source_rebase"|"existing_file_to_versioned_edit"))
+}
+
 /// Synthesize a new executable procedure, not just an action ranking.
 /// A witnessed stale source edit gains a read node, a DAG dependency and a
 /// dynamically bound fresh hash; acceptance requires later real execution.
@@ -1556,15 +1564,26 @@ fn synthesize_stale_edit_repair(method:&Value, op:&Value)->Option<Value> {
     let node=nodes.iter().find(|n|n["id"]==node_id && n["tool"]=="workspace_replace"
         && n["arguments"]["path"]==path)?;
     if !node["arguments"]["newText"].is_string()
-        || node["arguments"]["oldText"].as_str().is_some_and(|s|!s.is_empty())
         || node["arguments"]["expectedSha256"].as_str()
             .is_some_and(|s|s.starts_with(char::from(36))) {return None}
-    let coordinate=|v:&Value|v.as_u64().or_else(||v.as_str()?.parse::<u64>().ok());
-    let start=coordinate(&node["arguments"]["startLine"])?;
-    let end=coordinate(&node["arguments"]["endLine"])?;
-    if start==0 || end<start || end-start>=120
-        || coordinate(&op["arguments"]["startLine"])?!=start
-        || coordinate(&op["arguments"]["endLine"])?!=end {return None}
+    let text_mode=node["arguments"]["oldText"].as_str()
+        .is_some_and(|s|!s.is_empty());
+    // A precise oldText edit can also fail because its whole-file hash is
+    // stale. Re-read a single line for the fresh hash while retaining
+    // exact-text uniqueness checks in the actual tool executor.
+    let (start,end)=if text_mode {
+        if node["arguments"]["oldText"]!=op["arguments"]["oldText"] {return None}
+        (1,1)
+    } else {
+        let coordinate=|v:&Value|v.as_u64()
+            .or_else(||v.as_str()?.parse::<u64>().ok());
+        let start=coordinate(&node["arguments"]["startLine"])?;
+        let end=coordinate(&node["arguments"]["endLine"])?;
+        if start==0 || end<start || end-start>=120
+            || coordinate(&op["arguments"]["startLine"])?!=start
+            || coordinate(&op["arguments"]["endLine"])?!=end {return None}
+        (start,end)
+    };
     let fingerprint=format!("{:x}",Sha256::digest(
         json!([method["revision"],node_id,"stale-rebase-v1"]).to_string().as_bytes()));
     let read_id=format!("source_rebase_{}",&fingerprint[..12]);
@@ -1595,6 +1614,77 @@ fn synthesize_stale_edit_repair(method:&Value, op:&Value)->Option<Value> {
             "newReadNodeId":read_id}}))
 }
 
+/// A failed attempt to overwrite an existing source file exposes a reusable
+/// execution-method transformation: create-only -> versioned replacement.
+/// Subsequent execution re-reads the source hash and observed line count.
+/// The ordinary 120-line limit still prevents oversized source overwrites.
+fn synthesize_existing_file_write_repair(method:&Value,op:&Value)->Option<Value> {
+    if method["assistanceMode"]!="harness_assisted"
+        || method["verification"]["type"]!="procedure"
+        || op["origin"]!="procedure" || op["tool"]!="workspace_write"
+        || op["status"]!="failed"
+        || op["procedureStrategyId"]!=method["id"]
+        || op["procedureRevision"]!=method["revision"] {return None}
+    let error=op["result"]["error"].as_str()
+        .or_else(||op["error"].as_str())?;
+    if !error.contains("workspace_write") || !error.contains("새 파일 생성 전용") {
+        return None;
+    }
+    let path=op["arguments"]["path"].as_str()?;
+    if !crate::engine::rsi::safe_path(path) {return None}
+    let node_id=op["procedureNodeId"].as_str()?;
+    let nodes=method["verification"]["nodes"].as_array()?;
+    if nodes.is_empty() || nodes.len()>=16 {return None}
+    let node=nodes.iter().find(|node|node["id"]==node_id
+        && node["tool"]=="workspace_write"
+        && node["arguments"]["path"]==path
+        && node["arguments"]["content"]==op["arguments"]["content"])?;
+    // The program interpreter limits any argument string to 4096 chars.
+    let content=node["arguments"]["content"].as_str()
+        .filter(|text|!text.is_empty() && text.chars().count()<=4096)?;
+    let fingerprint=format!("{:x}",Sha256::digest(
+        json!([method["revision"],node_id,"existing-file-v1"]).to_string().as_bytes()));
+    let read_id=format!("source_rebase_{}",&fingerprint[..12]);
+    if nodes.iter().any(|node|node["id"]==read_id){return None}
+    let mut program=method["verification"].clone();
+    program["nodes"].as_array_mut()?.insert(0,json!({
+        "id":read_id,"tool":"workspace_read_range",
+        "arguments":{"path":path,"startLine":1,"endLine":120}
+    }));
+    let changed=program["nodes"].as_array_mut()?.iter_mut()
+        .find(|node|node["id"]==node_id)?;
+    changed["tool"]=json!("workspace_replace");
+    changed["arguments"]=json!({
+        "path":path,"startLine":1,
+        "endLine":format!("{}{}.totalLines",char::from(36),read_id),
+        "expectedSha256":format!("{}{}.sourceSha256",char::from(36),read_id),
+        "newText":content
+    });
+    // Change the matching postcondition too; an unchanged tool_called check
+    // would make the reconstructed program impossible to satisfy.
+    for after in program["after"].as_array_mut()? {
+        if after["kind"]=="tool_called" && after["tool"]=="workspace_write"
+            && after["path"]==path {
+            after["tool"]=json!("workspace_replace");
+        }
+    }
+    if !program["edges"].is_array(){program["edges"]=json!([])}
+    program["edges"].as_array_mut()?.push(json!({"from":read_id,"to":node_id}));
+    let program=crate::engine::procedure::normalize(&program);
+    if program["type"]!="procedure" {return None}
+    let domain=method["domain"].as_str()?;
+    let revision=format!("{:x}",Sha256::digest(json!([domain,&program]).to_string().as_bytes()));
+    Some(json!({"id":format!("rsi-method-{revision}"),"revision":revision,
+        "name":format!("{} · versioned-edit",method["name"].as_str()
+            .unwrap_or("Recovered procedure").chars().take(70).collect::<String>()),
+        "domain":domain,"verification":program,"status":"candidate",
+        "assistanceMode":"harness_assisted","successfulApplications":0,
+        "synthesis":{"kind":"existing_file_to_versioned_edit",
+            "parentMethodId":method["id"],"parentRevision":method["revision"],
+            "failedOperationId":op["id"],"changedNodeId":node_id,
+            "newReadNodeId":read_id}}))
+}
+
 fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str) -> Vec<Value> {
     let receipts = state.store.get("session", session_id)
         .and_then(|s|s["rsiMethodExecutions"].as_array().cloned()).unwrap_or_default();
@@ -1608,7 +1698,8 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
         if method["applications"].as_array().is_some_and(|rows|rows.iter().any(|r|r["executionId"]==receipt["executionId"])) {continue;}
         for op in operations.iter().filter(|op|receipt["operationIds"].as_array()
             .is_some_and(|ids|ids.contains(&op["id"]))) {
-            if let Some(mut repair)=synthesize_stale_edit_repair(method,op) {
+            if let Some(mut repair)=synthesize_stale_edit_repair(method,op)
+                .or_else(||synthesize_existing_file_write_repair(method,op)) {
                 repair["sourceGenerationJobId"]=generation["jobId"].clone();
                 if !repairs.iter().any(|r|r["id"]==repair["id"]) {repairs.push(repair);}
             }
@@ -3284,7 +3375,7 @@ async fn run_loop(
         let pending_repair=session.and_then(|sid|context.state.store.get("session",sid))
             .and_then(|saved|saved["rsiMethodProposals"].as_array().cloned())
             .unwrap_or_default().into_iter().find(|method|
-                method["synthesis"]["kind"]=="stale_source_rebase"
+                is_synthesized_source_repair(method)
                 && crate::engine::procedure::applies(method,
                     input["rsiObjective"].as_str().unwrap_or(""),None,None));
         let preferred_domain=pending_repair.as_ref()
