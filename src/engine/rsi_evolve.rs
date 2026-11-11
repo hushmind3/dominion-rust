@@ -1464,6 +1464,8 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
             let result = crate::engine::procedure::evaluate(method, &operations, workspace);
             receipts.push(json!({"methodId":method["id"],"revision":method["revision"],
                 "experienceId":method["rsiMethodExperienceId"],"executionId":execution["id"],
+                "focusPath":method["rsiBoundFocusFile"],
+                "crossDomain":method["rsiTransferTrial"] == true,
                 "operationIds":used.iter().map(|op|op["id"].clone()).collect::<Vec<_>>(),
                 "result":result}));
         }
@@ -1511,7 +1513,7 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
         let application = json!({"jobId":generation["jobId"],"executionId":receipt["executionId"],
             "domain":generation["domain"],
             "crossDomain":generation["domain"]!=method["domain"],
-            "operationIds":receipt["operationIds"],
+            "operationIds":receipt["operationIds"],"focusPath":receipt["focusPath"],
             "postconditionsPassed":if !ok && !violated {Value::Null}else{json!(ok)},
             "verificationVerdict":if violated {"violated"}else if ok {"passed"}else{"inconclusive"},
             "accepted":generation["accepted"],"newFindings":generation["newFindings"],
