@@ -77,6 +77,27 @@ fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
     !is_room && !rsi_run
 }
 
+/// Recover an exact, currently advertised RSI tool when a compatible model
+/// accidentally appends its channel delimiter to a native function name.
+/// Never normalize an unadvertised tool: the edit-stage menu is an authority
+/// boundary, not merely a model hint.
+fn rsi_canonical_tool_name<'a>(name: &'a str, round_tools: &[Value]) -> Option<&'a str> {
+    let advertised = |candidate: &str| {
+        round_tools.iter().any(|definition| tool_name(definition) == candidate)
+    };
+    if advertised(name) {
+        return Some(name);
+    }
+    for suffix in ["<|channel|>commentary", "<|channel|>analysis"] {
+        if let Some(base) = name.strip_suffix(suffix) {
+            if advertised(base) {
+                return Some(base);
+            }
+        }
+    }
+    None
+}
+
 /// Only a real source observation without any attempted change/proposal
 /// warrants asking the RSI model once more to turn research into action.
 /// Research-only RSI chats must be free to finish after reading. The
@@ -2297,6 +2318,24 @@ async fn run_turn_body(
 
         let mut seen_ids = std::collections::HashSet::new();
         for call in completion.tool_calls.iter_mut() {
+            if session["rsiRun"] == true {
+                if let Some(canonical) =
+                    rsi_canonical_tool_name(&call.name, &round_tools).map(str::to_string)
+                {
+                    if canonical != call.name {
+                        state.store.audit(
+                            "rsi.tool_name_protocol_recovered",
+                            json!({
+                                "sessionId": session_id,
+                                "executionId": execution_id,
+                                "original": call.name,
+                                "canonical": canonical
+                            }),
+                        );
+                        call.name = canonical;
+                    }
+                }
+            }
             if call.id.trim().is_empty() || !seen_ids.insert(call.id.clone()) {
                 call.id = uuid::Uuid::new_v4().to_string();
                 seen_ids.insert(call.id.clone());
@@ -7493,6 +7532,35 @@ mod harness_tool_selection_tests {
         assert!(tool_discovery_applies(false, false));
         assert!(!tool_discovery_applies(true, false));
         assert!(!tool_discovery_applies(false, true), "RSI must keep its full allowed toolset");
+    }
+
+    #[test]
+    fn rsi_recovers_only_currently_advertised_native_tool_names() {
+        let edit_menu = vec![
+            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
+            json!({"type":"function","function":{"name":"workspace_read_range"}}),
+        ];
+        assert_eq!(
+            rsi_canonical_tool_name("workspace_replace_range<|channel|>analysis", &edit_menu),
+            Some("workspace_replace_range")
+        );
+        assert_eq!(
+            rsi_canonical_tool_name("workspace_read_range<|channel|>commentary", &edit_menu),
+            Some("workspace_read_range")
+        );
+        assert_eq!(
+            rsi_canonical_tool_name("workspace_replace_range", &edit_menu),
+            Some("workspace_replace_range")
+        );
+        for forbidden in [
+            "shell_exec<|channel|>analysis",
+            "workspace_write<|channel|>commentary",
+            "workspace_replace_range<|channel|>final",
+            "workspace_replace_range<|channel|>analysis extra",
+            "workspace_replace_range nonsense",
+        ] {
+            assert!(rsi_canonical_tool_name(forbidden, &edit_menu).is_none(), "{forbidden}");
+        }
     }
 
     #[test]
