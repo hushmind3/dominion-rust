@@ -1490,7 +1490,12 @@ fn selection_objective(input:&Value)->String {
     // Autonomous campaigns contain a generic system-written recipe with
     // words like "knowledge"/"experience". They are NOT owner constraints:
     // using them as a domain selector permanently biases free exploration.
-    let objective=if input["rsiAutonomous"]==true {""}
+    // A broad free-survey objective is not a constraint. A measured
+    // post-adoption goal, however, is an executable descendant assignment:
+    // dropping it would let the old domain-selection score override the
+    // independently measured improver -> transfer curriculum.
+    let objective=if input["rsiAutonomous"]==true
+        && input["rsiSourceScopeExpanded"]!=true {""}
         else {input["rsiObjective"].as_str().unwrap_or("")};
     // Engine-suggested focus files are observations, not owner constraints:
     // otherwise the first heuristic guess feeds back as a permanent objective.
@@ -2867,6 +2872,16 @@ async fn run_loop(
             child_input["rsiCostOpportunities"]=next["costOpportunities"].clone();
             child_input["rsiMetaTransferTarget"]=next["metaTransferTarget"].clone();
             child_input["rsiSourceScopeExpanded"]=json!(true);
+            child_input["rsiSelectedDomain"]=if next["metaTransferTarget"]==true {
+                json!("improver")
+            } else {
+                next["costOpportunities"].as_array().and_then(|costs|costs.first())
+                    .map(|row|row["domain"].clone())
+                    .or_else(||next["residuals"].as_array()
+                        .and_then(|rows|rows.first())
+                        .map(|row|row["domain"].clone()))
+                    .unwrap_or(Value::Null)
+            };
         }
         if let Some(id)=inherited_neutral_candidate(&context.state,&prior_history,&head) {
             child_input["rsiInheritedCandidateId"]=json!(id);
@@ -2933,8 +2948,7 @@ async fn run_loop(
         let trial=child_input["rsiTrialAlgorithmId"].as_str()
             .filter(|_|child_input["rsiAllowedTrialCampaigns"].is_array())
             .map(str::to_string);
-        let suggested=if expanded.is_some(){None}
-            else{child_input["rsiSelectedDomain"].as_str().map(str::to_string)};
+        let suggested=child_input["rsiSelectedDomain"].as_str().map(str::to_string);
         let (target_domain, target_selection, target_strategy)=select_generation_strategy(
             &context.state,&history,&target_objective,continuation,trial,suggested,&head);
         child_input["rsiTargetDomain"]=json!(target_domain);
