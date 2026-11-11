@@ -6802,7 +6802,8 @@ mod tests {
             assert_eq!(method["applications"].as_array().unwrap().len(),1);
             assert_eq!(method["applications"][0]["verificationVerdict"],verdict);
             assert_eq!(method["applications"][0]["postconditionsPassed"],postcondition);
-            assert_eq!(method["successfulApplications"],usize::from(verdict=="passed"));
+            assert_eq!(method["successfulApplications"],0,
+                "a passed procedure unrelated to a verified changed path receives no gain");
         }
         let _=std::fs::remove_dir_all(root);
     }
@@ -7184,9 +7185,14 @@ mod tests {
                     "path":path,"expectedSha256":sha},
                 "result":{"written":true,"replaced":true}});
             let receipt=json!({"executionId":"execution-1",
+                "methodId":"accepted-procedure","revision":"old-method-revision",
                 "operationIds":["op-read","op-edit"],
                 "result":{"verified":true,"followed":true,"status":"followed"}});
+            state.store.put("rsi_candidate",&json!({"id":"accepted-source",
+                "status":"verified","paths":[path],
+                "evaluation":{"metrics":{"eligible":true}}})).unwrap();
             let generation=json!({"jobId":"accepted-generation","accepted":true,
+                "candidateId":"accepted-source",
                 "domain":domain,"tokens":500,"elapsedMs":5000});
             let candidate=synthesize_successful_dag_ablation(
                 &state,&method,&receipt,&[read.clone(),edit.clone()],&generation).unwrap();
@@ -7282,9 +7288,12 @@ mod tests {
                 "executionId":"accepted-execution",
                 "operationIds":["completed-read","completed-edit"],
                 "result":{"verified":true,"followed":true,"status":"followed"}}]})).unwrap();
+        state.store.put("rsi_candidate",&json!({"id":"accepted-source",
+            "status":"verified","paths":["src/engine/memory.rs"],
+            "evaluation":{"metrics":{"eligible":true}}})).unwrap();
         let generation=json!({"jobId":"accepted-generation",
-            "domain":"memory","accepted":true,"newFindings":1,
-            "tokens":650,"elapsedMs":900});
+            "domain":"memory","accepted":true,"candidateId":"accepted-source",
+            "newFindings":1,"tokens":650,"elapsedMs":900});
         let first=record_method_feedback(&state,&generation,"accepted-session");
         assert_eq!(first.len(),1);
         let revised=state.store.get("session","accepted-session").unwrap();
