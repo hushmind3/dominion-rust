@@ -3879,6 +3879,31 @@ mod tests {
         JobContext::new(state.clone(), "campaign".into())
     }
     #[test]
+    fn verified_adoption_opens_a_new_source_goal_only_when_opted_in() {
+        let root=json!({"rsiExpandAfterGain":true,"rsiObjective":"fix one file"});
+        let history=vec![json!({
+            "accepted":true,"acceptedCommit":"a".repeat(40),
+            "evaluation":{"metrics":{"eligible":true,"measurements":[
+                {"id":"planning-quality","domain":"planning","metrics":[
+                    {"key":"quality","candidate":1.0,"improved":true}]},
+                {"id":"memory-quality","domain":"memory","metrics":[
+                    {"key":"quality","candidate":0.7,"improved":false}]}
+            ]}}
+        })];
+        let chosen=post_adoption_objective(&root,&history).unwrap();
+        assert!(chosen["objective"].as_str().unwrap().contains("memory-quality"));
+        assert!(!chosen["objective"].as_str().unwrap().contains("planning-quality"));
+        assert_eq!(chosen["residuals"].as_array().unwrap().len(),1);
+        assert!(chosen["prompt"].as_str().unwrap().contains(&"a".repeat(40)));
+        let mut disabled=root.clone();
+        disabled["rsiExpandAfterGain"]=json!(false);
+        assert!(post_adoption_objective(&disabled,&history).is_none());
+        let forged=vec![json!({"accepted":true,"acceptedCommit":"b".repeat(40),
+            "evaluation":{"metrics":{"eligible":false}}})];
+        assert!(post_adoption_objective(&root,&forged).is_none());
+    }
+
+    #[test]
     fn paired_behavioral_counterexamples_guide_descendants_without_forged_receipts(){
         let (state,root)=state();
         let a="a".repeat(64);
