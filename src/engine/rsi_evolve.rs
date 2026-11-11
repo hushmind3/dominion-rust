@@ -2891,9 +2891,11 @@ async fn run_loop(
             .unwrap_or_default();
         let method_actions=session.map(|session_id|context.state.store.all("execution")
             .into_iter().filter(|execution|execution["sessionId"]==session_id
-                && execution["rsiMethodDecision"].is_object())
+                && (execution["rsiMethodDecision"].is_object()
+                    || execution["rsiActionProgramDecision"].is_object()))
             .map(|execution|json!({"executionId":execution["id"],
-                "decision":execution["rsiMethodDecision"]}))
+                "decision":execution["rsiMethodDecision"],
+                "inducedProgramDecision":execution["rsiActionProgramDecision"]}))
             .collect::<Vec<_>>()).unwrap_or_default();
         let usage = session
             .map(|s| context.state.store.session_usage(s))
@@ -4687,6 +4689,38 @@ mod tests {
             "accepted":true,"pairedRevalidated":false,"candidateId":"paired-1",
             "improvementDirective":{"mode":"implement_research"}}),0);
         assert_eq!(unproven["status"],"reported_adoption_unverified");
+    }
+
+    #[test]
+    fn unrelated_episodes_compose_a_new_native_harness_method() {
+        let exploratory=json!({
+            "id":"research","newFindings":3,"accepted":false,
+            "actionTrace":[
+                {"tool":"code_search","executed":true},
+                {"tool":"workspace_read_range","executed":true}
+            ]
+        });
+        let implementation=json!({
+            "id":"candidate","accepted":false,
+            "attemptedCandidateId":"real-candidate",
+            "candidateCapture":{"checksPassed":true},
+            "actionTrace":[
+                {"tool":"workspace_replace","executed":false},
+                {"tool":"workspace_replace_range","executed":true}
+            ]
+        });
+        let plan=synthesize_action_program(&[exploratory.clone(),implementation.clone()]);
+        assert_eq!(plan["sequence"],
+            json!(["code_search","workspace_read_range","workspace_replace_range"]));
+        assert_eq!(plan["onFailure"][0]["onFailure"],"workspace_replace");
+        assert_eq!(plan["onFailure"][0]["tryTool"],"workspace_replace_range");
+        assert_eq!(plan["status"],"trial_unverified",
+            "Method synthesis does not claim a frozen quality gain");
+        let altered=synthesize_action_program(&[exploratory]);
+        assert_ne!(altered["revision"],plan["revision"],
+            "New execution observations must revise the harness algorithm");
+        let empty=synthesize_action_program(&[]);
+        assert_eq!(empty["sequence"],json!([]));
     }
 
     #[test]
