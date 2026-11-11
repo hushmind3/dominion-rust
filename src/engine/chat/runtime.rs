@@ -142,6 +142,48 @@ fn rsi_method_tool_allowed(name:&str, chosen:&str, learned:bool)->bool {
         || name==chosen
 }
 
+/// Execute the recombined, experience-induced tool sequence in the
+/// native harness, not as a suggestion embedded in a prompt. Failures can
+/// redirect to a different actual tool learned from earlier recoveries.
+fn rsi_action_program_next(
+    program:&Value, operations:&[Value], execution_id:&str,
+)->Option<(String,String)> {
+    let sequence=program["sequence"].as_array()?;
+    if sequence.is_empty(){return None;}
+    let mut actual=operations.iter()
+        .filter(|op|op["runId"].as_str()==Some(execution_id))
+        .collect::<Vec<_>>();
+    actual.sort_by_key(|op|op["opSeq"].as_u64().unwrap_or(u64::MAX));
+    if let Some(failed)=actual.iter().rev().find(|op|
+        op["status"]!="completed" || op["result"]["error"].is_string()) {
+        if let Some(rule)=program["onFailure"].as_array().into_iter().flatten()
+            .find(|rule|rule["onFailure"]==failed["tool"]) {
+            if let Some(tool)=rule["tryTool"].as_str() {
+                return Some((tool.to_string(),"learned_error_recovery".into()));
+            }
+        }
+    }
+    let mut position=0usize;
+    for operation in actual {
+        if operation["status"]!="completed" {continue;}
+        if sequence.get(position).is_some_and(|step|step==&operation["tool"]) {
+            position+=1;
+        }
+    }
+    sequence.get(position).and_then(Value::as_str)
+        .map(|name|(name.to_string(),"induced_cross_episode_sequence".into()))
+}
+
+/// Keep the requested tool callable together with the minimum observation
+/// path so a stale source hash can be refreshed. This is a native action
+/// policy: the provider sees a *different set of available functions*.
+fn rsi_action_program_tool_allowed(name:&str, selected:&str)->bool {
+    name==selected
+        || name=="workspace_read_range"
+        || (matches!(selected,"workspace_replace"|"workspace_replace_range")
+            && name=="code_search")
+}
+
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
 /// needs read, search and replace together to produce a grounded patch.
 fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
@@ -1201,6 +1243,27 @@ async fn run_turn_body(
                     }));
                 }
                 rsi_decision_checkpoint=true;
+            }
+            // An induced plan may combine the useful discovery path of one
+            // generation and a tested mutation from another. Apply only when
+            // its next tool is genuinely offered by this provider.
+            if let Some((chosen,reason))=rsi_action_program_next(
+                &session["rsiExecutionMethod"]["actionProgram"],&operations,execution_id) {
+                if round_tools.iter().any(|tool|tool_name(tool)==chosen) {
+                    round_tools.retain(|tool|
+                        rsi_action_program_tool_allowed(tool_name(tool),&chosen));
+                    let evidence=json!({
+                        "programRevision":session["rsiExecutionMethod"]["actionProgram"]["revision"],
+                        "chosenTool":chosen,"reason":reason,
+                        "actionCount":operations.len(),
+                        "source":"native_composed_harness_program"
+                    });
+                    if let Some(mut execution)=state.store.get("execution",execution_id) {
+                        execution["rsiActionProgramDecision"]=evidence.clone();
+                        state.store.put("execution",&execution);
+                    }
+                    state.store.audit("rsi.action_program_selected",evidence);
+                }
             }
             // Method learning changes the next tool decision at runtime,
             // independent of what the model says in its final message.
@@ -6330,6 +6393,33 @@ mod harness_tool_selection_tests {
         assert!(rsi_checkpoint_tool("workspace_replace_range",true));
         assert!(!rsi_checkpoint_tool("workspace_read_range",true));
         assert!(rsi_checkpoint_tool("workspace_read_range",false));
+    }
+
+    #[test]
+    fn composed_action_program_controls_search_edit_and_recovery() {
+        let plan=json!({"sequence":["code_search","workspace_read_range",
+            "workspace_replace_range"],
+            "onFailure":[{"onFailure":"workspace_replace",
+                "tryTool":"workspace_replace_range"}]});
+        let first=rsi_action_program_next(&plan,&[],"run");
+        assert_eq!(first,Some(("code_search".into(),
+            "induced_cross_episode_sequence".into())));
+        let searched=json!({"runId":"run","tool":"code_search","status":"completed",
+            "opSeq":1,"result":{"matches":[]}});
+        assert_eq!(rsi_action_program_next(&plan,&[searched.clone()],"run")
+            .unwrap().0,"workspace_read_range");
+        let read=json!({"runId":"run","tool":"workspace_read_range","status":"completed",
+            "opSeq":2,"result":{"content":"fn x(){}"}});
+        assert_eq!(rsi_action_program_next(&plan,&[searched,read],"run")
+            .unwrap().0,"workspace_replace_range");
+        let rejected=json!({"runId":"run","tool":"workspace_replace","status":"failed",
+            "opSeq":3,"result":{"error":"oldText mismatch"}});
+        assert_eq!(rsi_action_program_next(&plan,&[rejected],"run")
+            .unwrap().1,"learned_error_recovery");
+        assert!(rsi_action_program_tool_allowed("workspace_read_range",
+            "workspace_replace_range"));
+        assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range"));
+        assert!(rsi_action_program_next(&plan,&[],"unrelated").is_some());
     }
 
     #[test]
