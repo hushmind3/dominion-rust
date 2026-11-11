@@ -1720,8 +1720,11 @@ async fn run_turn_body(
                 .filter(|name|!name.is_empty())
                 .map(str::to_string)
                 .collect::<std::collections::HashSet<_>>();
-            if let Some((name,arguments))=super::protocol::parse_rsi_unwrapped_edit(
-                &completion.content,&allowed) {
+            let observed=state.store.all("execution_operation");
+            if let Some((name,arguments))=super::protocol::parse_rsi_unwrapped_edit_observed(
+                &completion.content,&allowed,|path|
+                    rsi_observed_source_hash(&observed,session_id,path)
+                        .map(|(_,hash)|hash)) {
                 state.store.audit("rsi.structured_patch_interpreted",json!({
                     "sessionId":session_id,"executionId":execution_id,
                     "tool":name,"round":round,
@@ -6887,6 +6890,17 @@ mod harness_tool_selection_tests {
             &json!({"path":"src/engine/memory.rs","startLine":1,"endLine":1,
                 "newText":"bad"}).to_string(),&allowed).is_none(),
             "No read source hash, no range write");
+        let unversioned=json!({"path":"src/engine/memory.rs",
+            "startLine":1,"endLine":1,"newText":"fn changed() {}"}).to_string();
+        let (tool,bound)=crate::engine::chat::protocol::parse_rsi_unwrapped_edit_observed(
+            &unversioned,&allowed,|path|
+                (path=="src/engine/memory.rs").then(||sha.clone())).unwrap();
+        assert_eq!(tool,"workspace_replace_range");
+        assert_eq!(serde_json::from_str::<Value>(&bound).unwrap()["expectedSha256"],sha);
+        assert!(crate::engine::chat::protocol::parse_rsi_unwrapped_edit_observed(
+            &unversioned,&allowed,|_|None).is_none());
+        assert!(crate::engine::chat::protocol::parse_rsi_unwrapped_edit_observed(
+            &unversioned,&allowed,|_|Some("bad".into())).is_none());
         assert!(crate::engine::chat::protocol::parse_rsi_unwrapped_edit(
             &json!({"path":"../escape.rs","oldText":"a","newText":"b"})
                 .to_string(),&allowed).is_none());
