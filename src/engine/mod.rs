@@ -36,6 +36,7 @@ pub mod rsi_edit_program;
 pub mod rsi_decision_rules;
 pub mod rsi_rule_tournament;
 pub mod rsi_rule_rewrite;
+pub mod rsi_rule_induction;
 pub mod rsi_scan;
 pub mod rsi_worktree;
 pub mod recovery;

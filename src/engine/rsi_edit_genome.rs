@@ -178,6 +178,33 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
     }
     let (best_genome,best_revision,best_score,proven)=best.expect("observed cohort");
 
+    // Cross-descendant counterexamples can teach a new *condition* rather
+    // than merely adjusting the last worker's threshold. This method is a
+    // new experimental controller, NOT an automatically promoted winner.
+    // Its action must still fire and produce a source improvement under the
+    // frozen paired evaluator before it earns any future positive payoff.
+    let new_guards=crate::engine::rsi_rule_induction::induce(&observed);
+    if !new_guards.is_empty() {
+        let mut challenger=best_genome.clone();
+        let mut composed=new_guards;
+        composed.extend(challenger.rules);
+        challenger.rules=crate::engine::rsi_decision_rules::normalize(&json!(composed));
+        let revision=challenger.revision();
+        if revision!=best_revision && !cohorts.contains_key(&revision) {
+            let mut trial=serialize(challenger,
+                "cross-descendant-counterexample-trial",
+                &best_revision,"induce_new_judgment_from_success_failure_contrast",
+                observed.len(),best_score,
+                observed.last().and_then(|r|r["jobId"].as_str()));
+            trial["contrastEvidence"]=json!({
+                "source":"independent_adopted_and_paired_rejected_descendants",
+                "status":"proposal_needs_actual_descendant_trial",
+                "comparedGenerations":observed.len(),
+            });
+            return trial;
+        }
+    }
+
     // Independently measured rival policies on the *same source/model/goal*
     // can override UCB exploration, but only after two distinct matched
     // contexts favor the challenger without a contradictory measured pair.
