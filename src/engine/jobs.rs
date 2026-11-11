@@ -534,6 +534,10 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             session["rsiObjective"]=input["rsiObjective"].clone();
             crate::engine::rsi_evolve::configure_method_session(&context.state, &input, &mut session);
             session["rsiCodeIndexId"]=input["rsiIndexId"].clone();
+            // The native RSI bootstrap reads rsiIndexId, not the UI alias
+            // rsiCodeIndexId. Leaving it unset silently skipped the indexed
+            // named-symbol locator and sent the model to unrelated test lines.
+            session["rsiIndexId"]=input["rsiIndexId"].clone();
             session["rsiSourceDir"]=input["rsiSourceDir"].clone();
             // The parent failed patch has already been restored by prepare().
             // Read the REAL compiler-failing portion of that restored source.
