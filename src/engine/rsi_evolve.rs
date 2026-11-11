@@ -3086,6 +3086,7 @@ async fn run_loop(
                 "written":operation["result"]["written"],
                 "replaced":operation["result"]["replaced"],
                 "staleVersion":operation["result"]["staleVersion"],
+                "verified":operation["toolReceipt"]["verified"],
                 "error":operation["result"]["error"]
             })).collect::<Vec<_>>();
         let actual_source_edits=edit_operations.iter().filter(|op|op["written"]==true).count();
@@ -3593,6 +3594,185 @@ fn improvement_directive(history:&[Value]) -> Value {
         "previousDiffBytes":last["diffBytes"]})
 }
 
+
+/*
+ * DOMINION's own meta-improvement policy. Sub2's symbolic recovery scoring
+ * and Sub4's observed edit-method transitions are combined here, rather than
+ * delegating the next policy choice to an LLM.
+ *
+ * A proposal or an attempted tool call has zero earned edit credit. Only
+ * persisted operations and later candidate evaluations teach the next policy.
+ */
+fn meta_recovery_context(row:&Value)->&'static str {
+    let verdict=row["evaluation"]["verdict"].as_str().unwrap_or("");
+    if row["accepted"]==true {return "adopted";}
+    if matches!(verdict,"regressed"|"build_failed") {return "failed_verifier";}
+    if row["candidateId"].is_string() {return "unadopted_candidate";}
+    if row["captureError"].as_str().is_some_and(|s|!s.is_empty())
+        && row["diffBytes"].as_u64().unwrap_or(0)>0 {return "capture_failed";}
+    if row["improvementActionObservation"]["status"]=="edit_not_applied"
+        || row["toolRejections"].as_array().is_some_and(|xs|!xs.is_empty())
+    {return "failed_edit";}
+    if row["newFindings"].as_u64().unwrap_or(0)>0 {return "research_only";}
+    "barren"
+}
+
+fn meta_action_alternatives(context:&str)->&'static [&'static str] {
+    match context {
+        "adopted"=>&["extend_verified_capability"],
+        "failed_verifier"=>&["repair_counterexample","revise_candidate","change_approach"],
+        "unadopted_candidate"=>&["revise_candidate","repair_counterexample","change_approach"],
+        "capture_failed"=>&["repair_candidate_capture","revise_candidate","change_approach"],
+        "failed_edit"=>&["repair_edit_execution","change_approach","implement_research"],
+        "research_only"=>&["implement_research","change_approach","repair_edit_execution"],
+        _=>&["change_approach","implement_research","repair_edit_execution"],
+    }
+}
+
+fn observed_meta_action_utility(row:&Value)->f64 {
+    let verified_writes=row["editOperations"].as_array().into_iter().flatten()
+        .filter(|op|op["status"]=="completed" && op["written"]==true
+            && op["verified"]==true).count();
+    let changed=verified_writes>0 || row["diffBytes"].as_u64().unwrap_or(0)>0;
+    let mut value=if row["accepted"]==true {6.0}
+        else if row["candidateId"].is_string() {1.8}
+        else if changed {0.75}
+        else if row["newFindings"].as_u64().unwrap_or(0)>0 {0.1}
+        else {-1.0};
+    if row["improvementActionObservation"]["status"]=="not_followed" {value-=0.8;}
+    if row["improvementActionObservation"]["status"]=="edit_not_applied" {value-=1.0;}
+    if matches!(row["evaluation"]["verdict"].as_str(),Some("regressed"|"build_failed")) {
+        value-=3.0;
+    }
+    value-(row["tokens"].as_u64().unwrap_or(0) as f64/60_000.0).min(1.0)
+}
+
+/// Extract an actually observed read -> edit result from the coordinator's
+/// execution receipts. A model name, generated text, or a tool-call proposal
+/// can never earn a positive transition.
+fn learned_edit_primitive(history:&[Value],domain:&str)->Value {
+    let options=["workspace_replace_range","workspace_replace"];
+    let mut ranked=Vec::<Value>::new();
+    for tool in options {
+        let mut ok=0u64;let mut failed=0u64;let mut adopted=0u64;
+        for generation in history.iter().filter(|row|row["domain"]==domain) {
+            for op in generation["editOperations"].as_array().into_iter().flatten()
+                .filter(|op|op["tool"].as_str()==Some(tool)) {
+                if op["status"]=="completed" && op["written"]==true && op["verified"]==true {
+                    ok+=1;
+                    if generation["accepted"]==true {adopted+=1;}
+                } else if op["status"]=="failed" || op["error"].is_string()
+                    || op["written"]==false {failed+=1;}
+            }
+        }
+        let attempts=ok+failed;
+        // Untried alternatives get one bounded exploration opportunity.
+        let score=(3.0*ok as f64 + 4.0*adopted as f64
+            -2.0*failed as f64)/(attempts as f64+2.0)
+            +0.35/(attempts as f64+1.0);
+        ranked.push(json!({"tool":tool,"verifiedWrites":ok,"failures":failed,
+            "acceptedGenerations":adopted,"attempts":attempts,"score":score}));
+    }
+    ranked.sort_by(|a,b|b["score"].as_f64().unwrap_or(0.0)
+        .total_cmp(&a["score"].as_f64().unwrap_or(0.0))
+        .then(a["tool"].as_str().cmp(&b["tool"].as_str())));
+    let evidence=ranked.iter().any(|row|row["attempts"].as_u64().unwrap_or(0)>0);
+    let selected=if evidence{ranked[0]["tool"].clone()}else{Value::Null};
+    json!({"selected":selected,"ranked":ranked,"evidenceObserved":evidence,
+        "selection":"observed_write_and_failure_not_model_claim"})
+}
+
+fn learned_improvement_directive(history:&[Value])->Value {
+    let mut decision=improvement_directive(history);
+    let Some(last)=history.last() else{return decision;};
+    let context=meta_recovery_context(last);
+    let choices=meta_action_alternatives(context);
+    let baseline=decision["mode"].as_str().unwrap_or("change_approach").to_string();
+    let edit=learned_edit_primitive(history,last["domain"].as_str().unwrap_or(""));
+    // Bind the source-tool policy even before action-formula training converges.
+    if !decision["policy"].is_object() {decision["policy"]=json!({});}
+    decision["policy"]["preferredEditTool"]=edit["selected"].clone();
+    decision["policy"]["editEvidence"]=edit["ranked"].clone();
+    if choices.len()<=1{return decision;}
+    let mut rewards=BTreeMap::<String,Vec<(f64,String)>>::new();
+    for window in history.windows(2) {
+        let prior=&window[0];let result=&window[1];
+        if prior["campaignId"]!=result["campaignId"]
+            || prior["attempt"].as_u64().and_then(|n|n.checked_add(1))
+                !=result["attempt"].as_u64()
+            || meta_recovery_context(prior)!=context {continue;}
+        let Some(action)=result["improvementDirective"]["mode"].as_str() else{continue;};
+        if !choices.contains(&action) {continue;}
+        let status=result["improvementActionObservation"]["status"].as_str().unwrap_or("");
+        if status=="research_only" && action!="implement_research" {continue;}
+        let id=result["id"].as_str().unwrap_or("").to_string();
+        rewards.entry(action.to_string()).or_default()
+            .push((observed_meta_action_utility(result),id));
+    }
+    let total:usize=rewards.values().map(Vec::len).sum();
+    if total<2 {
+        decision["policy"]["kind"]=json!("selfimprove.meta-action");
+        decision["policy"]["status"]=json!("collecting_executed_generations");
+        decision["policy"]["trainingTransitions"]=json!(total);
+        return decision;
+    }
+    let has_loss=rewards.values().flatten().any(|(v,_)|*v<0.0);
+    let has_gain=history.iter().any(|r|r["accepted"]==true);
+    let failure_weight=if has_loss {(0.15+total as f64*0.05).min(0.65)}else{0.0};
+    let adoption_weight=if has_gain {(0.2+total as f64*0.04).min(0.6)}else{0.0};
+    let exploration=(0.7/(1.0+total as f64/12.0)).clamp(0.2,0.7);
+    let mut program=format!("posterior + exploration * {exploration:.6}");
+    if has_loss {program.push_str(&format!(" - failureRate * {failure_weight:.6}"));}
+    if has_gain {program.push_str(&format!(" + verifiedAdoption * {adoption_weight:.6}"));}
+    let mut ranked=Vec::<(String,f64,usize)>::new();
+    let mut ids=Vec::<String>::new();
+    for action in choices {
+        let rows=rewards.get(*action).cloned().unwrap_or_default();
+        let n=rows.len();
+        let posterior=(rows.iter().map(|(v,_)|v).sum::<f64>()
+            +if *action==baseline {0.25}else{-0.20})/(n as f64+1.0);
+        let features=BTreeMap::from([
+            ("posterior".to_string(),posterior),
+            ("exploration".to_string(),((1.0+total as f64).ln()/(1.0+n as f64)).sqrt()),
+            ("failureRate".to_string(),if n==0{0.0}else{
+                rows.iter().filter(|(v,_)|*v<0.0).count() as f64/n as f64}),
+            ("verifiedAdoption".to_string(),if n==0{0.0}else{
+                rows.iter().filter(|(_,id)|history.iter().any(|g|
+                    g["id"].as_str()==Some(id.as_str()) && g["accepted"]==true))
+                    .count() as f64/n as f64}),
+        ]);
+        let score=crate::engine::algorithms::eval_expression(&program,&features)
+            .ok().filter(|n|n.is_finite()).unwrap_or(posterior);
+        ids.extend(rows.iter().map(|(_,id)|id.clone()));
+        ranked.push((action.to_string(),score,n));
+    }
+    ranked.sort_by(|a,b|b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    ids.sort();ids.dedup();
+    // A recent adopted improvement should not be replaced by an unmeasured
+    // alternative. Otherwise the best-scoring action is the next real trial.
+    let chosen=if history.iter().rev().take(2).any(|g|g["accepted"]==true) {
+        baseline.clone()
+    } else {ranked[0].0.clone()};
+    let revision=crate::engine::memory::stable_id(&[
+        context,&program,&json!(["meta-action-v1",&ranked,&ids,&edit]).to_string()]);
+    decision["mode"]=json!(chosen);
+    decision["policy"]=json!({
+        "kind":"selfimprove.meta-action",
+        "implementation":"experience_synthesized_action_and_edit_selection",
+        "revision":revision,"status":if chosen==baseline{
+            "evidence_based_retention"}else{"exploratory_policy_mutation"},
+        "scoreExpression":program,"context":context,
+        "trainingTransitions":total,
+        "trainingGenerationIds":ids.into_iter().rev().take(12).collect::<Vec<_>>(),
+        "rankedAlternatives":ranked.iter().map(|(action,score,n)|
+            json!({"action":action,"score":score,"samples":n})).collect::<Vec<_>>(),
+        "preferredEditTool":edit["selected"],
+        "editEvidence":edit["ranked"],
+        "causalImprovement":"unmeasured_until_next_generation_executes"
+    });
+    decision
+}
+
 fn generation_improvement_directive(input:&Value,history:&[Value])->Value{
     if history.is_empty() && input["rsiAutonomous"]==false
         && input["rsiFocusFiles"].as_array().is_some_and(|paths|!paths.is_empty())
@@ -3607,7 +3787,7 @@ fn generation_improvement_directive(input:&Value,history:&[Value])->Value{
                 "attemptedAgain":false});
         }
     }
-    improvement_directive(history)
+    learned_improvement_directive(history)
 }
 
 /// Preserve chronological ordering across new millisecond RFC3339 records
