@@ -93,6 +93,25 @@ fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
     )
 }
 
+/// A finished source write is the handoff to the independent paired
+/// evaluator. A model's claimed completion, or even a tool's successful
+/// return, is insufficient: the operation must carry an independent SHA-256
+/// readback matching the post-image bytes. Only one explicitly focused
+/// source target can trigger this early handoff.
+fn rsi_patch_ready_for_verification(
+    session:&Value,tool:&str,args:&Value,operation:&Value,
+)->bool {
+    session["rsiRun"]==true
+        && session["rsiExplicitFocus"]==true
+        && session["rsiCampaignId"].is_string()
+        && session["rsiFocusFiles"].as_array().is_some_and(|files|
+            files.len()==1 && files[0].as_str()==args["path"].as_str())
+        && tool=="workspace_replace"
+        && operation["status"]=="completed"
+        && operation["result"]["written"]==true
+        && operation["toolReceipt"]["verified"]==true
+}
+
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
 /// needs read, search and replace together to produce a grounded patch.
 fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
@@ -1755,6 +1774,7 @@ async fn run_turn_body(
         }
         let mut ordering_used = false;
         let mut ordering_ok = true;
+        let mut rsi_patch_written = false;
         for (call_index, call) in round_calls.iter().enumerate() {
             // A disconnected SSE client must not stop work already promised by
             // the model; explicit cancel and budgets remain the stop signals.
@@ -1990,6 +2010,17 @@ async fn run_turn_body(
             if !ok {
                 ordering_ok = false;
             }
+            if ok && state.store.get("execution_operation",
+                    &format!("{execution_id}:{round}:{call_index}:{}",call.id))
+                .is_some_and(|operation|rsi_patch_ready_for_verification(
+                    &session,&call.name,&arguments,&operation))
+            {
+                rsi_patch_written=true;
+                state.store.audit("rsi.patch_submitted_for_verification",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "tool":call.name,"callId":call.id,"path":arguments["path"]
+                }));
+            }
             crate::engine::algorithms::mark_signal(
                 state, execution_id, "tool.selection", ok,
             );
@@ -2085,6 +2116,13 @@ async fn run_turn_body(
             crate::engine::algorithms::mark_signal(
                 state, execution_id, "execution.ordering", ordering_ok,
             );
+        }
+        if rsi_patch_written {
+            // The worktree finisher, not another costly model round, captures
+            // this actual diff and runs compile plus frozen paired assessment.
+            final_content="실제 소스 변경을 검증했습니다. 독립 후보 검증으로 넘깁니다.".into();
+            finished=true;
+            break;
         }
 
         // Check acceptance after the tool round, not only when the model
