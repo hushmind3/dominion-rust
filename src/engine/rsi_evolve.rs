@@ -2019,6 +2019,20 @@ fn should_stop_no_progress(streak: u64, research: bool, changed: bool) -> bool {
     streak>=1 && (!research || !changed)
 }
 
+/// A failed attempt to turn real research into code deserves one bounded
+/// corrective generation. Without this exception no_progress terminates
+/// before the newly learned change_approach action can ever execute.
+/// The normal maxAttempts, token and time budgets remain authoritative.
+fn corrective_retry_allowed(history:&[Value], no_edit_streak:u64) -> bool {
+    if no_edit_streak>2 {return false;}
+    let Some(last)=history.last() else {return false;};
+    last["accepted"]!=true
+        && last["candidateId"].is_null()
+        && last["newFindings"].as_u64().unwrap_or(0)==0
+        && matches!(last["improvementDirective"]["mode"].as_str(),
+            Some("implement_research"|"repair_counterexample"|"revise_candidate"))
+}
+
 fn new_research_findings(state:&AppState,input:&Value,job_id:&str,hashes:&[Value],history:&[Value])->usize{
     let mut known=history.iter().flat_map(|g|g["knowledgeArtifactHashes"].as_array().into_iter().flatten()).filter_map(Value::as_str).map(str::to_string).collect::<BTreeSet<_>>();
     for experience in state.store.all("experience").into_iter().filter(|e|
@@ -2715,7 +2729,8 @@ async fn run_loop(
             }
             return Err(error.to_string());
         }
-        if no_edit && should_stop_no_progress(streak, research, changed) {
+        if no_edit && should_stop_no_progress(streak, research, changed)
+            && !corrective_retry_allowed(&decision_history,streak) {
             return Ok("no_progress".into());
         }
     }
@@ -3729,6 +3744,27 @@ mod tests {
         assert_eq!(invalidated[0]["path"],"src/alpha.rs",
             "Do not attribute failure to unrelated revised source state");
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_implementation_gets_one_real_corrective_generation_before_no_progress() {
+        let discovered=json!({"id":"g1","candidateId":null,
+            "newFindings":2,"accepted":false,
+            "improvementDirective":{"mode":"discover"}});
+        let ignored=json!({"id":"g2","candidateId":null,
+            "newFindings":0,"accepted":false,
+            "improvementDirective":{"mode":"implement_research"},
+            "improvementActionObservation":{"status":"not_followed"}});
+        assert!(should_stop_no_progress(2,false,false),
+            "The old logic would have ended the campaign");
+        assert!(corrective_retry_allowed(&[discovered,ignored.clone()],2),
+            "The corrective change_approach action must get a scheduled turn");
+        assert_eq!(improvement_directive(&[ignored.clone()])["mode"],"change_approach");
+        let failed_retry=json!({"id":"g3","candidateId":null,
+            "newFindings":0,"accepted":false,
+            "improvementDirective":{"mode":"change_approach"}});
+        assert!(!corrective_retry_allowed(&[ignored,failed_retry],3),
+            "Corrective retries must be bounded, not spin forever");
     }
 
     #[test]
