@@ -63,7 +63,7 @@ fn normalize_path(value: &str) -> String {
 pub fn resource_key(tool: &str, arguments: &Value) -> Option<String> {
     let path = arguments["path"].as_str();
     match tool {
-        "workspace_read" | "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_list" => {
+        "workspace_read" | "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_replace_function" | "workspace_list" => {
             path.map(|path| format!("workspace:{}", normalize_path(path)))
         }
         "file_read" | "file_write" | "file_list" => {
@@ -296,7 +296,7 @@ fn failure_layer(ok: bool, denied: bool, result: &Value, effectful: bool) -> Opt
 async fn read_back(workspace: &Path, tool: &str, arguments: &Value) -> Option<(String, u64)> {
     let path = arguments["path"].as_str()?;
     let path: PathBuf = match tool {
-        "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_read" | "workspace_read_range" => {
+        "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_replace_function" | "workspace_read" | "workspace_read_range" => {
             crate::engine::tools::resolve_workspace(workspace, path).ok()?
         }
         "file_write" | "file_read" => PathBuf::from(path),
@@ -353,7 +353,7 @@ pub async fn seal(
         "observed"
     };
 
-    if ok && matches!(tool, "workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write") {
+    if ok && matches!(tool, "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_replace_function" | "file_write") {
         let expected = expected_version(tool, arguments).or_else(|| {
             result["writtenSha256"].as_str()
                 .filter(|sha|sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit()))
