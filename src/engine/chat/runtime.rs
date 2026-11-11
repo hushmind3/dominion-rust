@@ -1460,11 +1460,14 @@ async fn run_turn_body(
             round_tools = trim_tool_definitions(round_tools, budget);
         }
         if !force_final && request.tools_enabled && request.tools_execution_enabled
-            && rsi_bootstrap_read_due(&session,&round_tools,round) {
-            // A weak local model cannot enter the edit stage without a
-            // witnessed source read. Offer the existing native tool once,
-            // with the same approval / evidence path as every other call.
-            round_tools.retain(|definition|tool_name(definition)=="workspace_read_range");
+            && rsi_bootstrap_read_due(&session,&tool_definitions,round) {
+            // A broad schema budget can truncate the read tool before a
+            // local model sees it. Select it from the original authorized
+            // catalog, then send ONLY this small schema on the first round.
+            // The real tool still uses the normal approval/evidence path.
+            round_tools=tool_definitions.iter().filter(|definition|
+                tool_name(definition)=="workspace_read_range")
+                .take(1).cloned().collect();
             messages.push(json!({"role":"system","content":format!(
                 "자기개선 시작: 먼저 workspace_read_range를 호출해 {}의 개선할 소스 구간을 읽으세요. 이 실행에서 실제 sourceSha256과 줄 번호를 확보한 뒤 수정을 작성하세요. 이미 주어진 파일 이외의 경로는 사용하지 마세요.",
                 session["rsiFocusFile"].as_str().unwrap_or(""))}));
