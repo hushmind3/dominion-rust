@@ -86,3 +86,22 @@
 2. 통과한 코드 A/B 실증을 운영 `rsi_candidate`와 동결 평가·채택·후손 재빌드까지 연결해 첫 **DOMINION 자율 완주** 증거를 만든다.
 3. 원래 41세대·채택 1회 기록에 새로 성공한 내부 캠페인만 추가해 정확한 성공률을 갱신한다.
 4. 후손 세대가 같은 능력을 재사용해 다른 문제에서 추가 성과를 내는지, 독립 holdout으로 검증한다.
+
+### 1차 실모델 캠페인의 종료 결과 — 2026-11-11 11시대(KST)
+- CI run: https://github.com/hushmind3/dominion-rust/actions/runs/42945129829 (**workflow SUCCESS는 실모델 RSI 채택 성공을 의미하지 않음**).
+- 진짜 원격 `openai-fast` 5회 호출·prompt 17,865 tokens·completion 2,274 tokens(합계 20,139).
+- 실제 도구 `code_search` 1회, `workspace_read_range` 1회. 코드 편집 0회, 후보 0건, accepted 0세대, holdout 향상 0.
+- 1세대에는 새 연구 1건을 저장했고, 2세대는 모델 호출 0회에서 `rsi_token_budget` 중단. `maxAttempts=2`, `tokenBudget=24000`.
+- 이 실패는 `benchmark/SUB3-FIRST-INTERNAL-RSI-ATTEMPT-2026-11-11.json`에 관측치·출처·실험 구분을 남김.
+- 원인 해소 구현:
+  - `b0bccc14` `src/api/rsi.rs`: 사용자가 파일과 결함을 직접 정한 작업은 연구만으로 종료하지 말고 실제 `workspace_replace` 호출을 시도하도록 변경.
+  - `a9f28318` `src/engine/rsi_evolve.rs`: 이전 세대에서 소스 연구가 저장되었으면 다음 세대에 **연구→실행** 전환 지시.
+  - `6e836dbb` `scripts/sub3-live-model-campaign.mjs`: 모델 작업 지시를 실제 편집에 맞게 구체화, 최대 3세대·90,000토큰·2,700초로 변경.
+  - `5b3dba23` CI 실모델 실험 상한 연장.
+- 위 수정으로 실행한 다음 워크플로: https://github.com/hushmind3/dominion-rust/actions/runs/42947169857 (조회 시 진행 중). 그 결과는 **별도 재검증 필요**.
+- `0c932596` 실제 대화 선택 경로와 `53dba6fa` 알고리즘 선택 커널의 GitHub Actions 전체 CI 성공이 확인되었다. 새 사용자 목표에서 다단계 분해를 실행하는 경로가 운영 코드에 연결되었지만 실제 사용자 모델 대화의 끝까지 성공한 건 추후 계측할 과제다.
+
+#### 다음 Sub3 시작점
+1. `42947169857`의 `sub3-real-model-attempt` 아티팩트에서 `candidateId`, `toolsUsed`, `acceptedCommit`, `improvedHoldouts`를 확인할 것. 0회라면 **다음 모델 도구 선택이 실제 편집까지 갔는가**를 원인으로 삼아 코드 수정할 것.
+2. 준비된 코드는 13개 고정 A/B에서 0.75→1.00 개선됨; 이를 실모델 자율 채택이라고 잘못 발표하지 말 것.
+3. 내부 실모델 채택이 실제로 나오면 **수정 바이너리 재빌드→같은 목표 다음 세대**와 다른 문제에서의 성능 향상까지 검증할 것.
