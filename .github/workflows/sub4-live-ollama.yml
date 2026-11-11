@@ -4,6 +4,10 @@ on:
     branches: [dominion-sub4]
     paths:
       - '.github/workflows/sub4-live-ollama.yml'
+      - 'src/engine/chat/provider.rs'
+      - 'src/engine/chat/runtime.rs'
+      - 'src/engine/rsi_evolve.rs'
+      - 'scripts/sub4-live-rsi.mjs'
   workflow_dispatch:
 permissions:
   contents: read
@@ -69,10 +73,48 @@ jobs:
           done
           curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
           node scripts/sub4-live-rsi.mjs run
+      - name: Preserve native tool operation trace and edit decision
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, sqlite3
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          db = root / "sub4-local-data" / "dominion.sqlite"
+          trace = {"source": str(db), "operations": [], "executions": [], "errors": []}
+          try:
+              if not db.exists(): raise FileNotFoundError(str(db))
+              con = sqlite3.connect(db)
+              for (raw,) in con.execute("SELECT data FROM records WHERE kind='execution_operation'"):
+                  op=json.loads(raw)
+                  if op.get("tool") not in ("code_search","workspace_read_range","workspace_replace","workspace_write","rsi_method_propose"):
+                      continue
+                  details=op.get("result") or {}
+                  trace["operations"].append({
+                      "tool":op.get("tool"),"status":op.get("status"),
+                      "runId":op.get("runId"),"sessionId":op.get("sessionId"),
+                      "arguments":{k:(str(v)[:180]) for k,v in (op.get("arguments") or {}).items()
+                          if k in ("path","query","startLine","endLine")},
+                      "error":str(op.get("error") or (details.get("error") if isinstance(details,dict) else "") or "")[:360]})
+              for (raw,) in con.execute("SELECT data FROM records WHERE kind='execution'"):
+                  ex=json.loads(raw)
+                  if ex.get("rsiActionRetry") is not None:
+                      trace["executions"].append({
+                          "id":ex.get("id"),"sessionId":ex.get("sessionId"),
+                          "rsiActionRetry":ex.get("rsiActionRetry")})
+          except Exception as err:
+              trace["errors"].append(str(err))
+          output=root / "sub4-local-trace.json"
+          output.write_text(json.dumps(trace,ensure_ascii=False,indent=2)+"\n")
+          print("SUB4_NATIVE_TOOL_TRACE="+json.dumps(trace,ensure_ascii=False)[:5000])
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: sub4-real-local-model-proof
           retention-days: 14
           if-no-files-found: ignore
-          path: benchmark/sub4-local-ollama-rsi-result.json
+          path: |
+            benchmark/sub4-local-ollama-rsi-result.json
+            ${{ runner.temp }}/sub4-local-trace.json
