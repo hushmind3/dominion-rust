@@ -1521,6 +1521,7 @@ fn synthesize_stale_edit_repair(method:&Value, operation:&Value)->Option<Value> 
         || method["verification"]["type"]!="procedure"
         || operation["origin"]!="procedure"
         || operation["tool"]!="workspace_replace"
+        || operation["status"]!="failed"
         || operation["result"]["staleVersion"]!=true
         || operation["procedureStrategyId"]!=method["id"]
         || operation["procedureRevision"]!=method["revision"] {
@@ -11993,7 +11994,8 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
         let used=receipt["operationIds"].as_array();
         for operation in operations.iter().filter(|op|
             used.is_some_and(|ids|ids.contains(&op["id"]))) {
-            if let Some(repair)=synthesize_stale_edit_repair(method,operation) {
+            if let Some(mut repair)=synthesize_stale_edit_repair(method,operation) {
+                repair["sourceGenerationJobId"]=generation["jobId"].clone();
                 if !synthesized.iter().any(|m|m["id"]==repair["id"]) {
                     synthesized.push(repair);
                 }
