@@ -7863,4 +7863,108 @@ mod tests {
         assert!(no_proof.is_none(),"forged raw report must not generate an improved policy");
         let _=std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn descendant_judgement_learns_only_after_independent_pair_receipt_revalidation() {
+        let (state, root) = state();
+        let base = "a".repeat(40);
+        let adopted_commit = "b".repeat(40);
+        let digest = "d".repeat(64);
+        let path = "src/engine/example.rs";
+        let plan = (0..8).map(|n| json!({
+            "id":format!("case-{n}"),"domain":"tools","holdout":n<3,"metrics":[]
+        })).collect::<Vec<_>>();
+        let measured = (0..8).map(|n| json!({
+            "id":format!("case-{n}"),
+            "baselinePass":n!=0,"candidatePass":true
+        })).collect::<Vec<_>>();
+        let metrics = crate::engine::rsi::evaluate_cases(
+            &plan,&measured,"harness").unwrap();
+        assert_eq!(metrics["eligible"],true);
+        let mut generations=Vec::new();
+        for (id, accepted, searches) in [
+            ("yes-1",true,0_u64),("no-1",false,3),
+            ("yes-2",true,0),("no-2",false,4)
+        ] {
+            let candidate_id=format!("contrast-{id}");
+            let evaluation_id=format!("paired-{id}");
+            if accepted {
+                state.store.put("rsi_candidate",&json!({
+                    "id":candidate_id,"status":"verified","target":"harness",
+                    "baseCommit":base,"cases":plan,"patchSha256":"p".repeat(64),
+                    "oracleVersion":"frozen-v1",
+                    "experimentAdoption":{"commit":adopted_commit},
+                    "evaluation":{"id":evaluation_id,"metrics":metrics,
+                        "verdict":metrics["verdict"],
+                        "source":"server_invoked_local_paired_git_worktrees",
+                        "evidenceSha256":"e".repeat(64)}
+                })).unwrap();
+                state.store.put("rsi_pair",&json!({
+                    "id":format!("rsi-pair-{evaluation_id}"),
+                    "evaluationId":evaluation_id,"candidateId":candidate_id,
+                    "runner":"local_gitrepo_not_os_sandbox",
+                    "evidenceSha256":"e".repeat(64),
+                    "report":{"baseCommit":base,"patchSha256":"p".repeat(64),
+                        "oracleVersion":"frozen-v1",
+                        "reportSha256":"e".repeat(64),
+                        "baselineBuildOk":true,"candidateBuildOk":true,
+                        "cases":measured},
+                    "metrics":metrics,"verdict":metrics["verdict"]
+                })).unwrap();
+            }
+            let mut timeline=vec![json!({
+                "runId":id,"opSeq":1,"tool":"workspace_read_range",
+                "status":"completed","path":path
+            })];
+            for offset in 0..searches {
+                timeline.push(json!({
+                    "runId":id,"opSeq":2+offset,"tool":"code_search",
+                    "status":"completed"
+                }));
+            }
+            timeline.push(json!({
+                "runId":id,"opSeq":2+searches,
+                "tool":"workspace_replace_range","status":"completed",
+                "path":path,"result":{"written":true,"postSha256":digest},
+                "toolReceipt":{"verified":true}
+            }));
+            generations.push(json!({
+                "jobId":id,"candidateId":candidate_id,
+                "objectiveId":"focus","knowledgePartition":"private",
+                "generatorProviderId":"provider","generatorModel":"model",
+                "domain":"tools","generatorCommit":base,
+                "acceptedCommit":if accepted{adopted_commit.as_str()}else{""},
+                "accepted":accepted,
+                "acceptedProof":{"status":if accepted{"verified"}else{"rejected"},
+                    "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                        "metrics":{"eligible":accepted}}},
+                "acceptedSourceHashes":{path:digest},
+                "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                    "metrics":{"eligible":accepted,
+                        "verdict":if accepted{"improved"}else{"inconclusive"}}},
+                "toolTimeline":timeline
+            }));
+        }
+        let verified=history_with_verified_payoffs(&state,&generations);
+        assert_eq!(verified[0]["evidenceVerified"],true);
+        assert_eq!(verified[2]["evidenceVerified"],true);
+        let learned=crate::engine::rsi_judgement::evolve(
+            &verified,"focus","tools");
+        assert_eq!(learned["operator"],
+            "contrastive_counterexample_guard_synthesis");
+        assert_eq!(learned["qualityProven"],false);
+        assert!(crate::engine::rsi_judgement::choose(
+            &learned,&verified[0]["toolTimeline"].as_array().unwrap()[..1],
+            1,true,false).is_some());
+        let mut changed=state.store.get("rsi_pair","rsi-pair-paired-yes-1").unwrap();
+        changed["report"]["cases"][0]["candidatePass"]=json!(false);
+        state.store.put("rsi_pair",&changed).unwrap();
+        let rejected=history_with_verified_payoffs(&state,&generations);
+        assert_eq!(rejected[0]["evidenceVerified"],false);
+        assert_ne!(crate::engine::rsi_judgement::evolve(
+            &rejected,"focus","tools")["operator"],
+            "contrastive_counterexample_guard_synthesis");
+        let _=std::fs::remove_dir_all(root);
+    }
+
 }
