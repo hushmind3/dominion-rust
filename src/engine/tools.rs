@@ -771,19 +771,29 @@ async fn replace_text(
     if old_text.is_empty() {
         return Err("oldText는 비어 있을 수 없습니다.".into());
     }
+    if old_text == new_text {
+        return Err("workspace_replace: oldText와 newText가 동일하여 소스 변경이 없습니다.".into());
+    }
     let text = tokio::fs::read_to_string(path)
         .await
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let occurrences = text.matches(old_text).count();
     if occurrences != 1 {
-        return Ok(json!({
-            "error": "oldText가 파일 안에서 정확히 한 번만 나타나야 합니다.",
-            "occurrences": occurrences,
-            "path": path.to_string_lossy(),
-        }));
+        return Err(format!(
+            "workspace_replace 실행 실패: oldText 출현 {occurrences}회 (정확히 1회 필요), 파일 {}. workspace_read_range로 실제 소스와 들여쓰기·줄바꿈을 다시 확인한 뒤 교정해 재호출하세요.",
+            path.display()
+        ));
     }
     let updated = text.replacen(old_text, new_text, 1);
     let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
+    // checked_write can return an error *inside* an Ok(Value) for a stale
+    // revision or a preflight refusal. Do not label that as a real edit.
+    if result["written"] != true {
+        return Err(format!(
+            "workspace_replace 실행 거부 (수정 0회): {}. 최신 파일을 읽고 인자를 고쳐 다시 시도하세요.",
+            result.to_string().chars().take(1400).collect::<String>()
+        ));
+    }
     result["replaced"] = json!(true);
     result["replacedChars"] = json!(old_text.chars().count());
     Ok(result)
@@ -1462,8 +1472,12 @@ mod tests {
         );
         let ambiguous = replace_text(&ctx, &path, "let", "const", None, "run")
             .await
-            .unwrap();
-        assert_eq!(ambiguous["occurrences"], 2, "{ambiguous}");
+            .unwrap_err();
+        assert!(ambiguous.contains("출현 2회"), "{ambiguous}");
+        let unchanged = replace_text(&ctx, &path, "new_value", "new_value", None, "run")
+            .await
+            .unwrap_err();
+        assert!(unchanged.contains("동일"), "{unchanged}");
         assert!(result["bytes"].as_u64().unwrap() > 0);
         let _ = std::fs::remove_dir_all(dir);
     }
