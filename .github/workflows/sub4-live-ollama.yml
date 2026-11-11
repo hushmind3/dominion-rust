@@ -1,0 +1,78 @@
+name: Sub4 actual local Ollama RSI attempt
+on:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - '.github/workflows/sub4-live-ollama.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  local-model-rsi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      SUB4_MODEL_KIND: ollama
+      SUB4_MODEL_NAME: qwen3:4b-instruct
+      SUB4_OLLAMA_URL: http://127.0.0.1:11434
+      SUB4_CAMPAIGN_SECONDS: '1500'
+      SUB4_RUN_DEADLINE_MS: '1600000'
+      DOMINION_PORT: '43179'
+      DOMINION_JOB_WORKERS: '1'
+      OLLAMA_CONTEXT_LENGTH: '16384'
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_KEEP_ALIVE: '45m'
+      SUB4_LIVE_REPORT: benchmark/sub4-local-ollama-rsi-result.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build actual DOMINION runner
+        run: |
+          node --check scripts/sub4-live-rsi.mjs
+          npm ci --prefix web
+          npm run build --prefix web
+          cargo build --release --locked --bin dominion-rust
+      - name: Start Ollama and fetch actual local inference model
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve > "$RUNNER_TEMP/sub4-ollama.log" 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -fsS "$SUB4_OLLAMA_URL/api/tags" >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          ollama pull "$SUB4_MODEL_NAME"
+          node scripts/sub4-live-rsi.mjs probe | tee "$RUNNER_TEMP/sub4-local-probe.txt"
+          grep -q 'SUB4_FREE_MODEL=available' "$RUNNER_TEMP/sub4-local-probe.txt"
+      - name: Real model issues actual tool calls in isolated RSI generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/sub4-local-source" "$GITHUB_SHA"
+          export DOMINION_DATA="$RUNNER_TEMP/sub4-local-data"
+          export DOMINION_WORKSPACE="$RUNNER_TEMP/sub4-local-source"
+          export DOMINION_SOURCE_WORKSPACE="$RUNNER_TEMP/sub4-local-source"
+          mkdir -p "$DOMINION_DATA"
+          ./target/release/dominion-rust > "$RUNNER_TEMP/sub4-local-engine.log" 2>&1 &
+          engine_pid=$!
+          trap 'kill "$engine_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 100); do
+            if curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health" >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
+          node scripts/sub4-live-rsi.mjs run
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sub4-real-local-model-proof
+          retention-days: 14
+          if-no-files-found: ignore
+          path: benchmark/sub4-local-ollama-rsi-result.json
