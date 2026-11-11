@@ -1185,7 +1185,12 @@ async fn run_turn_body(
             }
             // Method learning changes the next tool decision at runtime,
             // independent of what the model says in its final message.
-            if grounded && !has_write {
+            // A range edit requires the SHA produced by a real read.
+            // Existing prompt excerpts alone are not executable version
+            // receipts. Exact replacement remains available from context.
+            let method_has_read=read_calls>0
+                || session["rsiExecutionMethod"]["preferredTool"]=="workspace_replace";
+            if grounded && method_has_read && !has_write {
                 if let Some((chosen,corrected))=rsi_method_edit_choice(
                     &session["rsiExecutionMethod"],&operations,execution_id) {
                     if round_tools.iter().any(|row|tool_name(row)==chosen) {
