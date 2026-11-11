@@ -497,6 +497,19 @@ fn rsi_edit_repair_limit(input:&Value)->usize {
     input["rsiEditPolicy"]["repairLimit"].as_u64().unwrap_or(2).min(3) as usize
 }
 
+/// The descendant may run an independently evidenced native source operator
+/// before asking another model for speculative edits. This is ONLY available
+/// after an adopted ancestor caused a measured target/domain change. The
+/// original model-led generation, explicit owner edits and inherited neutral
+/// patches remain on the model-first path.
+fn rsi_native_preflight(input: &Value) -> bool {
+    input["rsiNativeInduction"]==true
+        && input["rsiSourceScopeExpanded"]==true
+        && input["rsiAutonomous"]==true
+        && input["rsiAutoFocus"]==true
+        && !input["rsiInheritedCandidateId"].is_string()
+}
+
 pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> {
     let input = job.get("input").cloned().unwrap_or_else(|| json!({}));
     let prompt = input
@@ -617,13 +630,51 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     // captures the real diff and verifier evidence before removing that copy.
     let mut scoped_state = context.state.clone();
     if let Some(worktree)=&rsi_workspace {scoped_state.config.workspace=worktree.path.clone();}
-    let mut message = run_quiet(&scoped_state, &request).await;
+    // An independently accepted ancestor already supplied an executable
+    // improvement procedure and measured next-domain target. Run that
+    // procedure FIRST, rather than letting a new model turn overwrite its
+    // clean worktree before it can be evaluated. All writes are isolated;
+    // compilation and paired holdouts are still required for adoption.
+    let preflight_native=if rsi_native_preflight(&input) {
+        if let Some(worktree)=&rsi_workspace {
+            match crate::engine::rsi_mutation::induce(
+                &context.state,&context.job_id,&input,
+                &worktree.source,&worktree.path
+            ) {
+                Ok(Some(receipt))=>{
+                    context.state.store.audit("rsi.native_descendant_preflight",
+                        json!({"jobId":context.job_id,
+                            "parentCommit":input["rsiGeneratorCommit"],
+                            "sourceRevision":input["rsiBaseCommit"],
+                            "operator":receipt["operator"],
+                            "path":receipt["path"],
+                            "qualityProven":false}));
+                    Some(receipt)
+                }
+                Ok(None)=>None,
+                Err(error)=>{
+                    context.state.store.audit("rsi.native_preflight_error",
+                        json!({"jobId":context.job_id,"error":error}));
+                    None
+                }
+            }
+        }else{None}
+    }else{None};
+    let mut message=if preflight_native.is_some(){
+        // A native source operator is not a model invocation, and must not
+        // be credited to the model in tool or token accounting.
+        Ok(None)
+    }else{
+        run_quiet(&scoped_state, &request).await
+    };
     let result = if let Some(worktree)=&rsi_workspace {
         // Native source induction is a genuine second candidate generator,
         // learned from the other RSI branch. It only runs when opted in and
         // the model left the ENTIRE detached worktree unchanged. It writes
         // actual Rust bytes, but is never misreported as a model tool write.
-        let native_mutation=if input["rsiNativeInduction"]==true {
+        let native_mutation=if preflight_native.is_some() {
+            preflight_native
+        }else if input["rsiNativeInduction"]==true {
             match crate::engine::rsi_mutation::induce(
                 &context.state,&context.job_id,&input,
                 &worktree.source,&worktree.path
@@ -1096,5 +1147,26 @@ mod tests {
         assert!(job["availableAt"].is_string());
         assert_eq!(job["lastError"], "model unavailable");
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod rsi_native_preflight_tests {
+    use super::*;
+    #[test]
+    fn descendants_run_measured_native_source_operator_before_model() {
+        let input=json!({"rsiNativeInduction":true,
+            "rsiSourceScopeExpanded":true,"rsiAutonomous":true,
+            "rsiAutoFocus":true,"rsiInheritedCandidateId":null});
+        assert!(rsi_native_preflight(&input));
+        for key in ["rsiNativeInduction","rsiSourceScopeExpanded",
+            "rsiAutonomous","rsiAutoFocus"] {
+            let mut blocked=input.clone();
+            blocked[key]=json!(false);
+            assert!(!rsi_native_preflight(&blocked));
+        }
+        let mut inherited=input;
+        inherited["rsiInheritedCandidateId"]=json!("neutral-patch");
+        assert!(!rsi_native_preflight(&inherited));
     }
 }
