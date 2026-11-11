@@ -988,9 +988,10 @@ pub fn bounded_focus_context(
     if indexed["hash"].as_str()? != digest(&bytes) { return None; }
     let content = String::from_utf8(bytes).ok()?;
     let size = content.chars().count();
+    let source_sha=indexed["hash"].as_str()?;
     if size <= WHOLE_FILE_CHARS {
         return Some(format!(
-            "\n### 대상 파일 전체: {path} ({size}자, 소스 해시 검증)\n원문의 정확한 oldText로 workspace_replace를 사용하세요.\n~~~\n{content}\n~~~\n"
+            "\n### 대상 파일 전체: {path} ({size}자, 소스 해시 검증)\nsourceSha256: {source_sha}\n원문의 정확한 oldText로 workspace_replace를 사용하거나, 120줄 이하의 실제 줄 범위에 startLine/endLine/newText/expectedSha256={source_sha}를 전달하세요.\n~~~\n{content}\n~~~\n"
         ));
     }
     let lines = content.lines().collect::<Vec<_>>();
@@ -1015,7 +1016,7 @@ pub fn bounded_focus_context(
     let terms=focus_terms(objective,domain);
     let ranked=rank_focus_spans(symbols,tests,&lines,&terms);
     let mut result = format!(
-        "\n### 대상 파일 발췌: {path} (전체 {size}자, 소스 해시 검증)\n전체 파일이 아닙니다. 정확히 일치하는 코드만 수정하고 누락된 부분은 workspace_read_range로 확인하세요.\n"
+        "\n### 대상 파일 발췌: {path} (전체 {size}자, 소스 해시 검증)\nsourceSha256: {source_sha}\n아래 '줄 N~M'은 이미 검증된 파일 줄 범위입니다. 120줄 이하의 실제 범위를 수정할 때 workspace_replace(path,startLine,endLine,newText,expectedSha256={source_sha})를 바로 사용하세요. 전체 파일이 아니며, 빠진 부분만 workspace_read_range로 확인하세요.\n"
     );
     let mut included = 0usize;
     for (_, line, symbol_end, name) in ranked {
