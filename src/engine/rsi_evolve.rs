@@ -1350,6 +1350,8 @@ fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective
             let transferable=!original_domain
                 && method["transferDomains"].as_array().is_some_and(|domains|
                     domains.iter().any(|item|item.as_str()==Some(domain)))
+                && !method["transferBlockedDomains"].as_array().is_some_and(|domains|
+                    domains.iter().any(|item|item.as_str()==Some(domain)))
                 // A generated suggestion cannot transfer itself. It must
                 // first work in its original domain and be accepted.
                 && method["status"]=="executable"
@@ -1450,7 +1452,22 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
             || result["violations"].as_array().is_some_and(|rows| !rows.is_empty()));
         let ok = !unknown && !violated && result["followed"] == true;
         let progress = generation["accepted"] == true || generation["newFindings"].as_u64().unwrap_or(0)>0;
-        method["status"] = json!(if violated {"suspended"} else if ok && progress {"executable"} else {"held"});
+        let target_domain=generation["domain"].as_str().unwrap_or("");
+        let cross_domain=!target_domain.is_empty() && method["domain"].as_str()!=Some(target_domain);
+        if cross_domain {
+            // A failed experiment in a *new* domain must not erase a capability
+            // already demonstrated in the original domain.
+            if !ok {
+                if !method["transferBlockedDomains"].is_array() {
+                    method["transferBlockedDomains"]=json!([]);
+                }
+                let blocked=method["transferBlockedDomains"].as_array_mut().unwrap();
+                let domain=json!(target_domain);
+                if !blocked.contains(&domain) {blocked.push(domain);}
+            }
+        } else {
+            method["status"] = json!(if violated {"suspended"} else if ok && progress {"executable"} else {"held"});
+        }
         if ok && generation["accepted"] == true {
             method["successfulApplications"] = json!(method["successfulApplications"].as_u64().unwrap_or(0)+1);
         }
@@ -4942,6 +4959,20 @@ mod tests {
         assert_eq!(transfer.len(),1);
         assert_eq!(transfer[0]["rsiTransferTrial"],true);
         assert!(applicable_methods(&state,&partition,"ui","search indexing").is_empty());
+        state.store.put("session",&json!({"id":"transfer-run",
+            "rsiMethodExecutions":[{"methodId":"learned-method","revision":"v1",
+                "experienceId":"research","executionId":"cross-domain-attempt",
+                "result":{"verified":true,"status":"violated","violations":["postcondition failed"]}}]}));
+        let feedback=record_method_feedback(&state,&json!({
+            "domain":"tools","accepted":false,"jobId":"trial-job",
+            "newFindings":0,"tokens":100,"elapsedMs":12}),"transfer-run");
+        assert_eq!(feedback.len(),1);
+        let original=state.store.get("experience","research").unwrap();
+        assert_eq!(original["executableMethods"][0]["status"],"executable",
+            "transfer failure must not invalidate original domain's working skill");
+        assert_eq!(original["executableMethods"][0]["transferBlockedDomains"],json!(["tools"]));
+        assert!(applicable_methods(&state,&partition,"tools","search indexing").is_empty());
+        assert_eq!(applicable_methods(&state,&partition,"memory","search indexing").len(),1);
         let mut unverified=method;
         unverified["status"]=json!("candidate");
         unverified["successfulApplications"]=json!(0);
