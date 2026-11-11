@@ -25,8 +25,8 @@ type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGen
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
 const workloads={
- short:{label:'짧게',maxAttempts:3,tokenBudget:60000,timeBudgetSeconds:900},
- normal:{label:'보통',maxAttempts:6,tokenBudget:180000,timeBudgetSeconds:1800},
+ short:{label:'짧게',maxAttempts:4,tokenBudget:60000,timeBudgetSeconds:900},
+ normal:{label:'보통',maxAttempts:8,tokenBudget:180000,timeBudgetSeconds:1800},
  long:{label:'넉넉히',maxAttempts:12,tokenBudget:600000,timeBudgetSeconds:3600},
 } as const
 type Workload=keyof typeof workloads
