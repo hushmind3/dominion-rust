@@ -1606,7 +1606,7 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         let bad=sample["operationalFailure"]==true && !good;
         for pair in sequence.windows(2) {
             let (Some(from),Some(to))=(pair[0].as_str(),pair[1].as_str()) else{continue};
-            if let Some(item)=transitions.iter_mut().find(|row:&mut Value|
+            if let Some(item)=transitions.iter_mut().find(|row|
                 row["from"]==from && row["to"]==to) {
                 if good {item["positive"]=json!(item["positive"].as_u64().unwrap_or(0)+weight);}
                 if bad {item["negative"]=json!(item["negative"].as_u64().unwrap_or(0)+1);}
