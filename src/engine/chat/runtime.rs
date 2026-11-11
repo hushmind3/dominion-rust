@@ -1465,10 +1465,22 @@ async fn run_turn_body(
             if let Some((selected,reason))=crate::engine::rsi_action_program::next_tool(
                 &session["rsiActionProgram"],&operations,execution_id) {
                 if round_tools.iter().any(|tool|tool_name(tool)==selected) {
+                    let prior_choice=state.store.get("execution",execution_id)
+                        .and_then(|entry|entry["rsiActionProgramChoices"]
+                            .as_array().cloned())
+                        .and_then(|choices|choices.into_iter()
+                            .find(|row|row["chosenTool"]==selected
+                                && row["programRevision"]==session["rsiActionProgram"]["revision"]));
+                    // Keep the first selected edit boundary throughout the
+                    // retries, so previous discovery reads do not exhaust it.
+                    let edit_stage_start=prior_choice.as_ref()
+                        .map(|choice|choice["afterOpSeq"].as_u64())
+                        .unwrap_or_else(||operations.iter()
+                            .filter_map(|op|op["opSeq"].as_u64()).max());
                     round_tools.retain(|tool|
                         crate::engine::rsi_action_program::tool_allowed_with_policy(
                             tool_name(tool),&selected,&operations,execution_id,
-                            &session["rsiActionProgram"]));
+                            &session["rsiActionProgram"],edit_stage_start));
                     let after=operations.iter().filter_map(|op|op["opSeq"].as_u64())
                         .max();
                     let previous=state.store.get("execution",execution_id)

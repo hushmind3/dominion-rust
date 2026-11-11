@@ -478,15 +478,23 @@ pub fn tool_allowed(name:&str,chosen:&str)->bool {
 pub fn tool_allowed_with_evidence(
     name:&str,chosen:&str,ops:&[Value],execution_id:&str,
 )->bool {
-    tool_allowed_with_read_limit(name,chosen,ops,execution_id,2)
+    tool_allowed_with_read_limit(name,chosen,ops,execution_id,2,None)
 }
 fn tool_allowed_with_read_limit(
     name:&str,chosen:&str,ops:&[Value],execution_id:&str,limit:u64,
+    edit_stage_start:Option<u64>,
 )->bool {
     if tool_allowed(name,chosen) {return true;}
     if name!="workspace_read_range" || !edit(chosen) {return false;}
     let mut reads=0u64;
-    for op in ops.iter().filter(|op|op["runId"].as_str()==Some(execution_id)) {
+    for op in ops.iter().filter(|op|
+        op["runId"].as_str()==Some(execution_id)) {
+        // Research reads before the actual edit choice cannot consume the
+        // edit program's bounded source-refresh budget.
+        if edit_stage_start.is_some_and(|start|
+            op["opSeq"].as_u64().is_some_and(|seq|seq<=start)) {
+            continue;
+        }
         if op["tool"].as_str().is_some_and(edit) {return false;}
         if op["tool"]=="workspace_read_range" {reads+=1;}
     }
@@ -496,9 +504,10 @@ fn tool_allowed_with_read_limit(
 /// The read limit is trial evidence, not permission to promote its policy.
 pub fn tool_allowed_with_policy(
     name:&str,chosen:&str,ops:&[Value],execution_id:&str,program:&Value,
+    edit_stage_start:Option<u64>,
 )->bool {
     let limit=program["controller"]["groundingReadLimit"].as_u64().unwrap_or(2);
-    tool_allowed_with_read_limit(name,chosen,ops,execution_id,limit)
+    tool_allowed_with_read_limit(name,chosen,ops,execution_id,limit,edit_stage_start)
 }
 
 /// Every chosen tool must be witnessed *after* the choice on the same execution.
@@ -1137,12 +1146,16 @@ mod tests {
             "tool":"workspace_read_range","status":"completed"}))
             .collect::<Vec<_>>();
         assert!(tool_allowed_with_policy("workspace_read_range",
-            "workspace_replace",&reads,"run",&evolved));
+            "workspace_replace",&reads,"run",&evolved,None));
         let mut exhausted=reads;
         exhausted.push(json!({"runId":"run","opSeq":2,
             "tool":"workspace_read_range","status":"completed"}));
         assert!(!tool_allowed_with_policy("workspace_read_range",
-            "workspace_replace",&exhausted,"run",&evolved));
+            "workspace_replace",&exhausted,"run",&evolved,None));
+        assert!(tool_allowed_with_policy("workspace_read_range",
+            "workspace_replace",&exhausted,"run",&evolved,Some(1)));
+        assert!(!tool_allowed_with_policy("workspace_read_range",
+            "workspace_replace",&exhausted,"run",&evolved,Some(0)));
     }
     #[test]
     fn policy_cannot_gain_quality_from_tool_calls_or_mismatched_source(){
