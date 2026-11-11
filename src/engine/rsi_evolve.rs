@@ -326,43 +326,70 @@ pub fn evaluate_search_algorithm(
     })
 }
 
+/// The source-improvement operation is already authorized by the owner
+/// when a continuous RSI campaign starts. A valid edit in its detached
+/// worktree must not wait for an interactive approval (the native child
+/// worker has no human approval UI). Conversely, invalid edits must return a
+/// concrete error to the model instead of consuming the 60s approval timeout.
+fn isolated_write_check(
+    state: &AppState, session_id: &str, tool: &str, args: &Value,
+) -> Result<(), &'static str> {
+    if !matches!(tool, "workspace_write" | "workspace_replace") {
+        return Err("tool_is_not_rsi_source_edit");
+    }
+    if !args["path"].as_str().is_some_and(crate::engine::rsi::safe_path) {
+        return Err("source_path_not_allowed: use a relative src/ or tests/ path");
+    }
+    let session=state.store.get("session",session_id)
+        .ok_or("source_edit_session_missing")?;
+    if session["rsiRun"]!=true {
+        return Err("source_edit_session_is_not_isolated_rsi");
+    }
+    let campaign_id=session["rsiCampaignId"].as_str()
+        .ok_or("source_edit_campaign_missing")?;
+    let parent=state.store.get("job",campaign_id)
+        .ok_or("source_edit_campaign_job_missing")?;
+    if parent["kind"]!="rsi_evolve"
+        || parent["status"]!="running"
+        || parent["cancelRequested"]==true
+        || parent["input"]["rsiNativeApproved"]!=true {
+        return Err("source_edit_campaign_not_active_or_not_approved");
+    }
+    let child_id=session["rsiGenerationJobId"].as_str()
+        .ok_or("source_edit_generation_missing")?;
+    let child=state.store.get("job",child_id)
+        .ok_or("source_edit_generation_job_missing")?;
+    if child["kind"]!="rsi_generation"
+        || child["input"]["rsiCampaignId"]!=campaign_id
+        || child["status"]!="running"
+        || child["cancelRequested"]==true {
+        return Err("source_edit_generation_not_active_or_not_owned");
+    }
+    if !child["rsiWorkspace"].as_str()
+        .is_some_and(|path|Path::new(path)==state.config.workspace) {
+        return Err("source_edit_worktree_mismatch");
+    }
+    Ok(())
+}
+
 pub fn auto_write_allowed(state: &AppState, session_id: &str, tool: &str, args: &Value) -> bool {
-    if !matches!(tool, "workspace_write" | "workspace_replace")
-        || !args["path"]
-            .as_str()
-            .is_some_and(crate::engine::rsi::safe_path)
-    {
-        return false;
+    isolated_write_check(state,session_id,tool,args).is_ok()
+}
+
+/// None means the normal interactive approval path applies. Some(reason)
+/// means an *already started*, isolated RSI generation tried an ineligible
+/// edit and must receive a repairable tool error rather than a fake user deny.
+pub fn auto_write_denial_reason(
+    state:&AppState,session_id:&str,tool:&str,args:&Value,
+)->Option<&'static str> {
+    if !matches!(tool,"workspace_write"|"workspace_replace") {
+        return None;
     }
-    let Some(session) = state.store.get("session", session_id) else {
-        return false;
-    };
-    let Some(id) = session["rsiCampaignId"].as_str() else {
-        return false;
-    };
-    let Some(parent) = state.store.get("job", id) else {
-        return false;
-    };
-    if parent["kind"] != "rsi_evolve"
-        || parent["status"] != "running"
-        || parent["cancelRequested"] == true
-        || parent["input"]["rsiNativeApproved"] != true
-    {
-        return false;
+    let session=state.store.get("session",session_id)?;
+    if session["rsiRun"]!=true || !session["rsiCampaignId"].is_string() {
+        return None;
     }
-    let Some(child) = session["rsiGenerationJobId"]
-        .as_str()
-        .and_then(|id| state.store.get("job", id))
-    else {
-        return false;
-    };
-    child["kind"] == "rsi_generation"
-        && child["input"]["rsiCampaignId"] == id
-        && child["status"] == "running"
-        && child["cancelRequested"] != true
-        && child["rsiWorkspace"]
-            .as_str()
-            .is_some_and(|path| Path::new(path) == state.config.workspace)
+    isolated_write_check(state,session_id,tool,args).err()
 }
 
 pub fn campaign_source(state: &AppState, input: &Value, source: &Path, base: &str) -> bool {
