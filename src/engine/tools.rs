@@ -973,12 +973,12 @@ async fn rsi_rust_scope_preview(
             "rsi_scope_rejected: required function {target}() disappeared; source NOT modified. Edit the exact target range, not its siblings."
         ));
     }
-    for (name, original_body) in before {
-        if name == *target {
+    for (name, original_body) in &before {
+        if name.as_str() == *target {
             continue;
         }
-        if after.iter().find(|(after_name, _)| after_name == &name)
-            .is_none_or(|(_, new_body)| *new_body != original_body) {
+        if after.iter().find(|(after_name, _)| after_name == name)
+            .is_none_or(|(_, new_body)| *new_body != *original_body) {
             return Err(format!(
                 "rsi_scope_rejected: objective targets {target}(), but edit changes or removes sibling {name}(); source NOT modified. Re-read and replace only the targeted function."
             ));
