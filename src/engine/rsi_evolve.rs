@@ -2335,6 +2335,28 @@ fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Begin a fresh autonomous campaign with the *actual* failures recorded in
+/// prior campaigns of the same repository and owner objective. This permits
+/// the first child to test a different algorithm, instead of paying for the
+/// same unproductive initial research on every restart.
+fn previous_autonomous_failures(state:&AppState,input:&Value,campaign_id:&str)->Vec<Value> {
+    if input["rsiAutonomous"]!=true {return Vec::new();}
+    let partition=research_scope(input).partition_key;
+    let objective_id=crate::engine::memory::stable_id(&[
+        input["rsiObjective"].as_str().unwrap_or("")
+    ]);
+    let mut history=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["campaignId"]!=campaign_id
+            && row["knowledgePartition"]==partition
+            && row["objectiveId"]==objective_id
+            && row["tokens"].as_u64().unwrap_or(0)>0
+            && row["accepted"]!=true)
+        .collect::<Vec<_>>();
+    history.sort_by(|a,b|a["createdAt"].as_str().cmp(&b["createdAt"].as_str()));
+    history.into_iter().rev().take(4).collect::<Vec<_>>()
+        .into_iter().rev().collect()
+}
+
 async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -2351,6 +2373,21 @@ async fn run_loop(
         .join("generator");
     std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
     let target = std::fs::canonicalize(target).map_err(|e| e.to_string())?;
+    if record["attempts"]==0 && record["history"].as_array().is_some_and(Vec::is_empty) {
+        let prior=previous_autonomous_failures(&context.state,input,&context.job_id);
+        let outcome=propose_autonomous_search_trial(
+            &context.state,&prior,&selection_objective(input),
+            &context.job_id,0,
+            input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty));
+        if outcome["status"]=="pending_trial" {
+            record["nextTrialAlgorithmId"]=outcome["candidateId"].clone();
+            record["autonomousWarmStart"]=json!({
+                "proposal":outcome,"sourceGenerations":prior.len(),
+                "note":"prior recorded failures are hypotheses, not proven gains"
+            });
+            save(context,record)?;
+        }
+    }
     let binary = target
         .join("release")
         .join(format!("dominion-rust{}", std::env::consts::EXE_SUFFIX));
@@ -3375,6 +3412,43 @@ mod tests {
             &state,&selection_objective(&input),&["campaign-autonomous".into()]);
         assert_eq!(selected.as_ref().map(|a|a["id"].clone()),Some(queued["candidateId"].clone()),
             "the child must discover the synthesized trial with the same scope and owner");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn new_autonomous_campaign_reuses_real_prior_failures_without_claiming_success() {
+        let (state,root)=state();
+        let input=json!({"rsiAutonomous":true,"rsiSourceDir":root,
+            "rsiObjective":"autonomous improvement","rsiFocusFiles":[]});
+        let scope=research_scope(&input).partition_key;
+        let objective=crate::engine::memory::stable_id(&["autonomous improvement"]);
+        for i in 0..3 {
+            state.store.put("rsi_generation",&json!({
+                "id":format!("prior-{i}"),"campaignId":"previous",
+                "knowledgePartition":scope,"objectiveId":objective,
+                "createdAt":format!("2026-11-11T00:0{i}:00Z"),
+                "accepted":false,"candidateId":null,"newFindings":i+1,
+                "tokens":4000,"focusFiles":["src/engine/memory.rs"]
+            }));
+        }
+        state.store.put("rsi_generation",&json!({
+            "id":"foreign","campaignId":"unrelated",
+            "knowledgePartition":"another-repository","objectiveId":objective,
+            "createdAt":"2026-11-11T00:04:00Z",
+            "accepted":false,"candidateId":null,"tokens":9000
+        }));
+        let failures=previous_autonomous_failures(&state,&input,"current");
+        assert_eq!(failures.len(),3);
+        assert_eq!(failures[0]["id"],"prior-0");
+        let synthesized=propose_autonomous_search_trial(
+            &state,&failures,&selection_objective(&input),"current",0,true);
+        assert_eq!(synthesized["status"],"pending_trial","{synthesized}");
+        assert_eq!(synthesized["hypothesisEvidence"]["class"],"escape_research_loop");
+        assert_eq!(state.store.get("algorithm",synthesized["candidateId"].as_str().unwrap())
+            .unwrap()["status"],"available","prior failures can only seed a fresh experiment");
+        let mut explicit=input.clone();
+        explicit["rsiAutonomous"]=json!(false);
+        assert!(previous_autonomous_failures(&state,&explicit,"current").is_empty());
         let _=std::fs::remove_dir_all(root);
     }
 
