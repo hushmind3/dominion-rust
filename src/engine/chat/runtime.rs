@@ -101,15 +101,30 @@ fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
 fn rsi_patch_ready_for_verification(
     session:&Value,tool:&str,args:&Value,operation:&Value,
 )->bool {
-    session["rsiRun"]==true
-        && session["rsiExplicitFocus"]==true
-        && session["rsiCampaignId"].is_string()
+    if session["rsiRun"]!=true
+        || !session["rsiCampaignId"].is_string()
+        || tool!="workspace_replace"
+        || operation["status"]!="completed"
+        || operation["result"]["written"]!=true
+        || operation["toolReceipt"]["verified"]!=true {
+        return false;
+    }
+    let Some(path)=args["path"].as_str()
+        .filter(|path|crate::engine::rsi::safe_path(path)) else {
+        return false;
+    };
+    // Both owner-targeted and autonomous indexed generations may have a
+    // fully verified source edit. An owner target is a strict single-file
+    // boundary; the autonomous search must prove its target was one of the
+    // indexed files chosen BEFORE the model ran.
+    if session["rsiExplicitFocus"]==true {
+        return session["rsiFocusFiles"].as_array().is_some_and(|files|
+            files.len()==1 && files[0].as_str()==Some(path));
+    }
+    session["rsiCodeIndexId"].as_str().is_some_and(|id|!id.is_empty())
+        && session["rsiFocusContextReady"]==true
         && session["rsiFocusFiles"].as_array().is_some_and(|files|
-            files.len()==1 && files[0].as_str()==args["path"].as_str())
-        && tool=="workspace_replace"
-        && operation["status"]=="completed"
-        && operation["result"]["written"]==true
-        && operation["toolReceipt"]["verified"]==true
+            files.iter().any(|file|file.as_str()==Some(path)))
 }
 
 /// Classify literal native source-tool failures that do not need another LLM
@@ -6411,6 +6426,25 @@ mod harness_tool_selection_tests {
         assert!(!rsi_patch_ready_for_verification(&session,"workspace_replace",
             &json!({"path":"src/engine/other.rs"}),&operation));
         assert!(!rsi_patch_ready_for_verification(&session,"workspace_read_range",&args,&operation));
+        let indexed=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiExplicitFocus":false,"rsiCodeIndexId":"indexed-revision",
+            "rsiFocusContextReady":true,
+            "rsiFocusFiles":["src/engine/context.rs","src/engine/memory.rs"]});
+        assert!(rsi_patch_ready_for_verification(
+            &indexed,"workspace_replace",&args,&operation),
+            "autonomous indexed source edits must not be lost to another model round");
+        let mut not_indexed=indexed.clone();
+        not_indexed["rsiCodeIndexId"]=Value::Null;
+        assert!(!rsi_patch_ready_for_verification(
+            &not_indexed,"workspace_replace",&args,&operation));
+        not_indexed=indexed.clone();
+        not_indexed["rsiFocusContextReady"]=json!(false);
+        assert!(!rsi_patch_ready_for_verification(
+            &not_indexed,"workspace_replace",&args,&operation));
+        not_indexed=indexed.clone();
+        not_indexed["rsiFocusFiles"]=json!(["src/engine/context.rs"]);
+        assert!(!rsi_patch_ready_for_verification(
+            &not_indexed,"workspace_replace",&args,&operation));
     }
 
     #[test]
