@@ -104,6 +104,19 @@ fn rsi_tool_advertised(name: &str, round_tools: &[Value]) -> bool {
     round_tools.iter().any(|definition| tool_name(definition) == name)
 }
 
+/// A focused single-target RSI run should hand a real, hash-receipted edit
+/// straight to the independent worktree verifier. The verifier, not the model's
+/// closing prose, decides whether the resulting patch compiles or improves.
+/// This avoids paying another full model context after source modification.
+fn rsi_patch_ready_for_verification(session: &Value, tool: &str, result: &Value, ok: bool) -> bool {
+    ok && session["rsiRun"] == true && session["rsiExplicitFocus"] == true
+        && session["rsiCampaignId"].is_string()
+        && matches!(tool, "workspace_replace_range" | "workspace_replace")
+        && result["written"] == true
+        && result["postSha256"].as_str().is_some_and(|sha|
+            sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// A small model may omit the hash or encode line numbers as strings. Recover
 /// only information already observed by a successful range read in THIS run,
 /// for the same file and covering the requested edit. Never infer newText,
@@ -1759,6 +1772,7 @@ async fn run_turn_body(
         }
         let mut ordering_used = false;
         let mut ordering_ok = true;
+        let mut rsi_patch_written = false;
         for (call_index, call) in round_calls.iter().enumerate() {
             // A disconnected SSE client must not stop work already promised by
             // the model; explicit cancel and budgets remain the stop signals.
@@ -2012,6 +2026,15 @@ async fn run_turn_body(
             if !ok {
                 ordering_ok = false;
             }
+            if rsi_patch_ready_for_verification(&session, &call.name, &result, ok) {
+                rsi_patch_written = true;
+                state.store.audit("rsi.patch_submitted_for_verification", json!({
+                    "sessionId": session_id, "executionId": execution_id,
+                    "tool": call.name, "callId": call.id,
+                    "path": arguments["path"],
+                    "postSha256": result["postSha256"],
+                }));
+            }
             crate::engine::algorithms::mark_signal(
                 state, execution_id, "tool.selection", ok,
             );
@@ -2107,6 +2130,13 @@ async fn run_turn_body(
             crate::engine::algorithms::mark_signal(
                 state, execution_id, "execution.ordering", ordering_ok,
             );
+        }
+        if rsi_patch_written {
+            // An observed edit is a candidate, not a proven improvement.
+            // rsi_worktree::finish captures the diff and runs the verifier.
+            final_content = "실제 소스 변경을 기록했습니다. 독립 빌드와 성능 비교는 실행 엔진이 수행합니다.".into();
+            finished = true;
+            break;
         }
 
         // Check acceptance after the tool round, not only when the model
@@ -6272,6 +6302,17 @@ mod harness_tool_selection_tests {
         assert!(rsi_tool_advertised("workspace_replace_range", &menu));
         assert!(!rsi_tool_advertised("workspace_read_range", &menu));
         assert!(!rsi_tool_advertised("workspace_read_range<|channel|>commentary", &menu));
+    }
+
+    #[test]
+    fn focused_rsi_routes_a_verified_edit_to_compilation_without_another_model_call() {
+        let focused = json!({"rsiRun":true,"rsiExplicitFocus":true,"rsiCampaignId":"c"});
+        let written = json!({"written":true,"postSha256":"a".repeat(64)});
+        assert!(rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &written, true));
+        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &written, false));
+        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_read_range", &written, true));
+        assert!(!rsi_patch_ready_for_verification(&json!({"rsiRun":true}), "workspace_replace_range", &written, true));
+        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &json!({"written":false}), true));
     }
 
     #[test]
