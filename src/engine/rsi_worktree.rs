@@ -279,6 +279,49 @@ async fn validate(worktree:&Worktree,patch:&str)->Vec<Value> {
     }
     checks
 }
+
+/// A failed model patch can be repaired immediately without paying for a
+/// second open-ended source search. Bind diagnostic feedback to the actual
+/// detached-worktree postimage and the patch hunk's observed line numbers.
+fn current_patch_readback(workspace:&Path,patch:&str)->Option<Value>{
+    let mut file=None::<String>;
+    let mut first_line=None::<usize>;
+    for line in patch.lines(){
+        if let Some(path)=line.strip_prefix("+++ b/"){
+            file=crate::engine::rsi::safe_path(path)
+                .then_some(path.to_string());
+            first_line=None;
+        }else if let Some(hunk)=line.strip_prefix("@@ -"){
+            if first_line.is_some(){continue;}
+            let Some(section)=hunk.split(" +").nth(1) else{continue;};
+            let from=section.split([',',' ']).next()
+                .and_then(|part|part.parse::<usize>().ok());
+            first_line=from;
+            if first_line.is_some()&&file.is_some(){break;}
+        }
+    }
+    let path=file?;
+    let bytes=std::fs::read(workspace.join(&path)).ok()?;
+    if bytes.len()>400_000{return None;}
+    let text=std::str::from_utf8(&bytes).ok()?;
+    let lines=text.lines().collect::<Vec<_>>();
+    if lines.is_empty(){return None;}
+    let target=first_line.unwrap_or(1).max(1).min(lines.len());
+    let start=target.saturating_sub(16).max(1);
+    let end=(target+35).min(lines.len());
+    let mut excerpt=String::new();
+    for (i,line) in lines.iter().enumerate().skip(start-1).take(end-start+1){
+        let numbered=format!("{}: {}\n",i+1,line);
+        if excerpt.len()+numbered.len()>8500{break;}
+        excerpt.push_str(&numbered);
+    }
+    Some(json!({"path":path,"startLine":start,"endLine":end,
+        "sourceSha256":format!("{:x}",Sha256::digest(&bytes)),
+        "numberedSource":excerpt,
+        "scope":"actual_detached_postimage_around_patch_hunk",
+        "qualityProven":false}))
+}
+
 pub async fn finish(
     context:&JobContext, job:&Value, worktree:&Worktree, model_result:Result<Option<Value>,String>,
     session_id:&str,
@@ -360,6 +403,8 @@ pub async fn finish(
         "unsafeAudit":unsafe_audit,
         "pairedComparisonComplete":false,"autoMerged":false,"autoDeployed":false,
         "modelError":model_error,"captureError":capture_error,
+        "sourceReadback":if all_checks_pass {Value::Null}
+            else {current_patch_readback(&worktree.path,&patch).unwrap_or(Value::Null)},
         "modelMessageId":model_result.ok().flatten().and_then(|m|m["id"].as_str().map(str::to_string)),
         "createdAt":chrono::Utc::now().to_rfc3339(),
     });
@@ -464,9 +509,15 @@ pub fn repair_feedback(result:&Value)->Option<String>{
             format!("{label}: {}",detail.chars().take(1100).collect::<String>())
         }).collect::<Vec<_>>();
     if failures.is_empty(){return None;}
+    let source=&result["rsi"]["sourceReadback"];
+    let grounded=if let (Some(path),Some(hash),Some(text))=(
+        source["path"].as_str(),source["sourceSha256"].as_str(),
+        source["numberedSource"].as_str()){
+        format!("\n\n실제 편집 후 소스 구간({path}, SHA256={hash}, 줄번호는 참고용):\n{text}\n이것은 검증된 현재 파일의 관측 내용입니다. 수정하려면 필요한 줄의 정확한 원문으로 workspace_replace를 호출하거나, 최신 파일 해시를 재조회한 뒤 workspace_replace_range를 호출하세요.")
+    }else{String::new()};
     Some(format!(
-        "이전 소스 변경 후 별도의 컴파일/타입 검사에서 오류가 발견됐습니다. 기존 변경을 읽고 실제 오류를 고쳐 다시 저장하세요. 검사 자체를 삭제하거나 우회하지 마세요. 수정 전과 무관한 파일은 건드리지 마세요. 테스트는 엔진이 다시 실행합니다.\n\n{}",
-        failures.join("\n\n")
+        "실제 모델 소스 변경 후 독립 컴파일/타입 검사에서 오류가 발생했습니다. 검색부터 반복하지 말고 다음 진단 위치를 직접 고쳐 다시 저장하세요. 검사 코드를 삭제하거나 우회하지 마세요. 다른 파일은 수정하지 마세요.\n\n{}{}",
+        failures.join("\n\n"),grounded
     ))
 }
 /// Apply a model-generated patch only after explicit owner review. A successful
@@ -807,6 +858,23 @@ pub async fn cleanup(worktree:&Worktree)->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_patch_readback_is_hash_bound_to_actual_changed_file_and_hunk(){
+        let root=std::env::temp_dir().join(format!("rsi-readback-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::write(root.join("src/engine/example.rs"),
+            "one\ntwo\nthree\nfour\nfive\n").unwrap();
+        let patch="diff --git a/src/engine/example.rs b/src/engine/example.rs\n--- a/src/engine/example.rs\n+++ b/src/engine/example.rs\n@@ -3,1 +3,1 @@\n-three\n+changed\n";
+        let read=current_patch_readback(&root,patch).unwrap();
+        assert_eq!(read["path"],"src/engine/example.rs");
+        assert!(read["numberedSource"].as_str().unwrap().contains("3: three"));
+        assert_eq!(read["sourceSha256"],format!("{:x}",Sha256::digest(
+            std::fs::read(root.join("src/engine/example.rs")).unwrap())));
+        assert!(current_patch_readback(&root,
+            "+++ b/../../secret\n@@ -1 +1 @@\n").is_none());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
     #[test]
     fn rsi_resolves_cargo_even_with_a_minimal_service_path() {
         let cargo = cargo_executable();
