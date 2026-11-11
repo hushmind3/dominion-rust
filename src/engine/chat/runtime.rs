@@ -229,9 +229,12 @@ fn rsi_induced_next_tool(
                     && outcome["negative"].as_u64().unwrap_or(0)
                         >=outcome["positive"].as_u64().unwrap_or(0)));
             let transferable=local_evidence || (yes>=2 && !contradicted_elsewhere);
-            (transferable && yes>no).then_some((yes-no,to.to_string()))
+            let kernel=&session["rsiInducedMethodPolicy"]["scoringKernel"]["rule"];
+            let score=crate::engine::rsi_evolve::method_rule_score(
+                yes.max(0) as u64,no.max(0) as u64,kernel);
+            (transferable && yes>no).then_some((score,to.to_string()))
         }).collect::<Vec<_>>();
-    ranked.sort_by(|a,b|b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    ranked.sort_by(|a,b|b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
     if let Some((_,tool))=ranked.into_iter().next(){return Some(tool);}
     // No transition has positive support in this domain. A real frozen
     // regression may still teach DOMINION to avoid a repeatedly failing edit
@@ -1356,6 +1359,7 @@ async fn run_turn_body(
                     "afterOpSeq":op_seq,"modelRound":round,
                     "domain":session["rsiDomain"],
                     "focusPath":session["rsiFocusFile"],
+                    "scoringKernel":session["rsiInducedMethodPolicy"]["scoringKernel"],
                     "claim":"experiment_not_verified_capability_gain"
                 });
                 record["rsiInducedMethodDecision"]=decision.clone();
