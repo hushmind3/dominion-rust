@@ -1558,6 +1558,22 @@ mod tests {
             .unwrap();
         assert_eq!(ambiguous["occurrences"], 2, "{ambiguous}");
         assert!(result["bytes"].as_u64().unwrap() > 0);
+        // A smaller model can update a numbered span without echoing the
+        // entire existing file. Every range write is version-pinned.
+        let frozen=format!("{:x}",Sha256::digest(std::fs::read(&path).unwrap()));
+        let changed=replace_line_span(&ctx,&path,
+            &json!({"startLine":2,"endLine":2,"expectedSha256":frozen}),
+            "let untouched = 7;","run").await.unwrap();
+        assert_eq!(changed["written"],true,"{changed}");
+        assert_eq!(changed["editMode"],"versioned_line_span");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),
+            "let new_value = 3;\nlet untouched = 7;\n");
+        let stale=replace_line_span(&ctx,&path,
+            &json!({"startLine":2,"endLine":2,"expectedSha256":frozen}),
+            "let untouched = 8;","run").await.unwrap();
+        assert_eq!(stale["staleVersion"],true,"{stale}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),
+            "let new_value = 3;\nlet untouched = 7;\n");
         let _ = std::fs::remove_dir_all(dir);
     }
 
