@@ -431,6 +431,27 @@ pub fn next_tool(program:&Value,ops:&[Value],execution_id:&str)->Option<(String,
             return None;
         }
     }
+    // A real oldText uniqueness failure is evidence that another exact-text
+    // attempt would repeat the same error. A freshly observed source hash
+    // makes the range editor a different executable repair method.
+    if let Some((index,_))=executed.iter().enumerate().rev()
+        .find(|(_,op)|op["tool"]=="workspace_replace"
+            && op["status"]=="failed"
+            && op["result"]["error"].as_str().is_some_and(|reason|
+                reason.contains("정확히 한 번") || reason.contains("exactly once"))) {
+        let tail=&executed[index+1..];
+        let already_repaired=tail.iter().any(|op|
+            op["tool"].as_str().is_some_and(edit) && witnessed(op));
+        if !already_repaired {
+            let refreshed=tail.iter().any(|op|op["tool"]=="workspace_read_range"
+                && witnessed(op)
+                && op["result"]["sourceSha256"].as_str().is_some_and(|sha|
+                    sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())));
+            return Some((if refreshed {"workspace_replace_range"}
+                else {"workspace_read_range"}.to_string(),
+                "observed_nonunique_oldtext_requires_versioned_range"));
+        }
+    }
     if let Some(last)=executed.last().filter(|row|
         row["status"]=="failed" || row["result"]["error"].is_string()) {
         if let Some(recovery)=program["onFailure"].as_array().into_iter().flatten()
@@ -568,7 +589,7 @@ pub fn seed_grounded_source_edit(mut program:Value,path:&str,sha:&str,
     if steps.is_empty(){steps.push(json!("workspace_read_range"));}
     let tool=if matches!(preferred,"workspace_replace"|"workspace_replace_range"){
         preferred
-    }else{"workspace_replace"};
+    }else{"workspace_replace_range"};
     steps.push(json!(tool));
     let checkpoint=2u64;
     if !program["onFailure"].is_array(){program["onFailure"]=json!([]);}
@@ -584,6 +605,7 @@ pub fn seed_grounded_source_edit(mut program:Value,path:&str,sha:&str,
     program["status"]=json!("grounded_source_execution_trial_unproven");
     program["qualityProven"]=json!(false);
     program["controller"]=json!({"checkpointAfter":checkpoint,
+        "groundingReadLimit":1,
         "mutation":"repair_read_only_cold_start",
         "parentRevision":old,"qualityProven":false});
     program["sourceGrounding"]=json!({"path":path,"sourceSha256":sha,
@@ -658,6 +680,60 @@ pub fn offspring_from_adoption(rows:&[Value],head:&str,objective:&str,domain:&st
         "offspringQualityProven":false
     });
     Some(offspring)
+}
+
+/// When the model's first independently accepted patch was produced on the
+/// baseline arm, learn the actual read→write procedure for the descendant.
+/// This never promotes that procedure: the next generation must independently
+/// execute, edit, and win its own frozen comparison before receiving credit.
+pub fn offspring_from_baseline_adoption(
+    rows:&[Value],head:&str,objective:&str,domain:&str,
+)->Option<Value>{
+    let parent=rows.iter().rev().find(|row|{
+        row["accepted"]==true
+            && row["acceptedCommit"]==head
+            && row["objectiveId"]==objective
+            && row["domain"]==domain
+            && row["acceptedProof"]["status"]=="verified"
+            && row["acceptedProof"]["evaluation"]["metrics"]["eligible"]==true
+            && row["acceptedProof"]["evaluation"]["metrics"]["regressions"]
+                .as_u64()==Some(0)
+            && row["acceptedProof"]["evaluation"]["metrics"]["improvedHoldouts"]
+                .as_u64().unwrap_or(0)>0
+            && row["actionTrace"].as_array().is_some_and(|trace|
+                trace.iter().any(|event|
+                    event["executed"]==true && event["sourceChanged"]==true
+                        && event["tool"].as_str().is_some_and(edit)))
+    })?;
+    let trace=parent["actionTrace"].as_array()?;
+    let changed=trace.iter().find(|event|
+        event["executed"]==true && event["sourceChanged"]==true
+            && event["tool"].as_str().is_some_and(edit))?;
+    let edit_tool=changed["tool"].as_str()?;
+    let observed_read=trace.iter().any(|event|
+        event["executed"]==true && event["tool"]=="workspace_read_range");
+    let mut steps=Vec::<String>::new();
+    if observed_read {steps.push("workspace_read_range".to_string());}
+    steps.push(edit_tool.to_string());
+    let revision=memory::stable_id(&[
+        "baseline-accepted-offspring-v1",&json!(steps).to_string(),
+        head,objective,domain]);
+    Some(json!({
+        "kind":"selfimprove.composed-tool-program",
+        "revision":revision,"sequence":steps,"onFailure":[],
+        "recoveryPaths":[],"qualityProven":false,
+        "controller":{"checkpointAfter":2,"groundingReadLimit":1,
+            "mutation":"reproduce_accepted_model_edit_procedure",
+            "qualityProven":false},
+        "status":"accepted_baseline_trace_descendant_trial_unproven",
+        "origin":"independent_accepted_model_source_write_not_program_promotion",
+        "lineage":{"depth":1,
+            "sourceParentCommit":parent["generatorCommit"],
+            "adoptedParentCommit":head,
+            "parentJobId":parent["jobId"],
+            "mutation":"recompose_witnessed_model_edit_as_executable_descendant",
+            "verifiedParentSourceGain":true,"offspringQualityProven":false}
+    }))
 }
 
 /// An experimentally rejected method must not be reselected under a new

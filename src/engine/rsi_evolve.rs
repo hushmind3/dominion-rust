@@ -3035,6 +3035,8 @@ async fn run_loop(
         // procedure rather than resurrecting the same losing strategy.
         let composed=crate::engine::rsi_action_program::offspring_from_adoption(
             &policy_training,&head,&objective_id,&target_domain)
+            .or_else(||crate::engine::rsi_action_program::offspring_from_baseline_adoption(
+                &policy_training,&head,&objective_id,&target_domain))
             .or_else(||crate::engine::rsi_action_program::pinned_program(
                 &policy_training,&head,&objective_id,model,provider,&target_domain))
             .or_else(||crate::engine::rsi_action_program::recompose_after_failed_cohort(
@@ -3113,7 +3115,7 @@ async fn run_loop(
                     let selected=crate::engine::rsi_action_program::seed_grounded_source_edit(
                         base,path,&source_sha,
                         child_input["rsiImprovementDirective"]["policy"]["preferredEditTool"]
-                            .as_str().unwrap_or("workspace_replace"));
+                            .as_str().unwrap_or("workspace_replace_range"));
                     if selected["revision"]!=child_input["rsiActionProgramTrial"]["revision"] {
                         let objective=crate::engine::memory::stable_id(&[
                             child_input["rsiObjective"].as_str().unwrap_or("")]);
