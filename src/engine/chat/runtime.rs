@@ -1295,6 +1295,18 @@ async fn run_turn_body(
                     && operation["status"].as_str() == Some("completed"))
                 .collect::<Vec<_>>();
             let has_write = completed.iter().any(rsi_verified_write_operation);
+            // A genuine versioned read can ground a targeted mutation even
+            // when the initial source excerpt was truncated for token budget.
+            let observed_versioned_read=completed.iter().any(|op|
+                op["tool"]=="workspace_read_range"
+                && op["result"]["sourceSha256"].as_str().is_some_and(|sha|
+                    sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())));
+            if observed_versioned_read && session["rsiSourceReadObserved"]!=true {
+                if let Some(mut recorded)=state.store.get("session",session_id) {
+                    recorded["rsiSourceReadObserved"]=json!(true);
+                    state.store.put("session",&recorded);
+                }
+            }
             let read_calls = completed.iter().filter(|operation| matches!(
                 operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read"))).count() as u64;
             let grounded = session["rsiFocusContextReady"] == true || read_calls > 0;
@@ -1423,6 +1435,66 @@ async fn run_turn_body(
                         state.store.put("execution",&execution);
                     }
                     state.store.audit("rsi.action_program_selected",receipt);
+                }
+            }
+        }
+        // Boolean judgement rules learned from actual tool receipts change
+        // the provider-visible menu. Separate post-choice receipts measure
+        // execution; choosing a rule never implies a quality improvement.
+        if session["rsiRun"]==true && !force_final
+            && session["rsiJudgementPolicy"]["rules"].as_array()
+                .is_some_and(|rules|!rules.is_empty()) {
+            let mut observed=state.store.all("execution_operation").into_iter()
+                .filter(|op|op["runId"].as_str()==Some(execution_id))
+                .collect::<Vec<_>>();
+            observed.sort_by_key(|op|op["opSeq"].as_u64().unwrap_or(u64::MAX));
+            let grounded=session["rsiFocusContextReady"]==true
+                || observed.iter().any(|op|
+                    op["tool"]=="workspace_read_range"
+                    && op["status"]=="completed"
+                    && op["result"]["sourceSha256"].as_str()
+                        .is_some_and(|hash|hash.len()==64));
+            let focused=session["rsiExplicitFocus"]==true
+                || session["rsiMetaFocusActive"]==true;
+            if let Some(decision)=crate::engine::rsi_judgement::choose(
+                &session["rsiJudgementPolicy"],&observed,
+                metrics.lock().unwrap().tool_calls as u64,focused,grounded) {
+                let chosen=decision["allow"].as_array().into_iter().flatten()
+                    .filter_map(Value::as_str).collect::<Vec<_>>();
+                let controlled=tool_definitions.iter().filter(|schema|
+                    chosen.contains(&tool_name(schema))).cloned()
+                    .collect::<Vec<_>>();
+                if !controlled.is_empty(){
+                    round_tools=controlled;
+                    let after=observed.iter()
+                        .filter_map(|op|op["opSeq"].as_u64()).max();
+                    let selected=tool_name(&round_tools[0]).to_string();
+                    let evidence=json!({"revision":decision["revision"],
+                        "ruleId":decision["ruleId"],"selectedTool":selected,
+                        "afterOpSeq":after,"round":round,
+                        "reason":"observed_boolean_predicate",
+                        "qualityGain":"not_inferred_from_tool_choice"});
+                    if let Some(mut execution)=state.store.get("execution",execution_id){
+                        if !execution["rsiJudgementChoices"].is_array(){
+                            execution["rsiJudgementChoices"]=json!([]);
+                        }
+                        if let Some(rows)=execution["rsiJudgementChoices"].as_array_mut(){
+                            if rows.len()<48 && !rows.iter().any(|x|
+                                x["ruleId"]==evidence["ruleId"]
+                                && x["selectedTool"]==evidence["selectedTool"]
+                                && x["afterOpSeq"]==evidence["afterOpSeq"]){
+                                rows.push(evidence.clone());
+                            }
+                        }
+                        execution["rsiJudgementCurrent"]=evidence.clone();
+                        state.store.put("execution",&execution);
+                    }
+                    state.store.audit("rsi.generated_judgement_selected",evidence);
+                    if chosen.iter().any(|name|matches!(*name,
+                        "workspace_replace"|"workspace_replace_range"|"workspace_write")){
+                        messages.push(json!({"role":"system","content":
+                            "관측된 실행 기록에서 생성한 판단 규칙이 편집 도구를 선택했습니다. 지정 소스를 실제로 수정하고, 원문과 SHA가 달라졌으면 최신 소스를 다시 읽어 복구한 후 실행 영수증을 남기세요."}));
+                    }
                 }
             }
         }

@@ -11,6 +11,7 @@ on:
       - 'src/engine/rsi_action_program.rs'
       - 'src/engine/rsi_repair_synthesis.rs'
       - 'src/engine/rsi_success_ablation.rs'
+      - 'src/engine/rsi_judgement.rs'
       - 'src/engine/jobs.rs'
   workflow_dispatch:
 

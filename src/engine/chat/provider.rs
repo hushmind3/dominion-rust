@@ -679,7 +679,8 @@ fn rsi_edit_requires_tool(session: &Value, tools: &[Value]) -> bool {
     // descendant can finish with prose instead of even trying a tool.
     session["rsiRun"] == true
         && (session["rsiExplicitFocus"] == true || session["rsiMetaFocusActive"] == true)
-        && session["rsiFocusContextReady"] == true
+        && (session["rsiFocusContextReady"] == true
+            || session["rsiSourceReadObserved"] == true)
         && !tools.is_empty() && tools.iter().all(|tool| matches!(
             tool["function"]["name"].as_str(),
             Some("workspace_replace" | "workspace_replace_range" | "workspace_write")
@@ -2002,6 +2003,8 @@ mod tests {
             json!({"function":{"name":"workspace_write"}})];
         assert!(rsi_edit_requires_tool(&focus,&edits));
         assert!(rsi_edit_requires_tool(&auto,&edits));
+        assert!(rsi_edit_requires_tool(&json!({"rsiRun":true,
+            "rsiMetaFocusActive":true,"rsiSourceReadObserved":true}),&edits));
         assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true,
             "rsiMetaFocusActive":true,"rsiFocusContextReady":false}),&edits));
         assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&edits));
