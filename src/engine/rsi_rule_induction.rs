@@ -10,7 +10,10 @@ use serde_json::{json,Value};
 use std::collections::BTreeSet;
 
 #[derive(Clone,Copy,Debug)]
-struct Snapshot { reads:u64, searches:u64, calls:u64 }
+struct Snapshot {
+    reads:u64, searches:u64, calls:u64,
+    read_before_search:bool, search_before_read:bool,
+}
 fn metric(snapshot:Snapshot,name:&str)->u64 {
     match name {
         "completed:workspace_read_range"=>snapshot.reads,
@@ -24,6 +27,8 @@ fn read_snapshot(ops:&[Value], stop:usize, run:&str)->Option<Snapshot> {
     let mut searches=0u64;
     let mut calls=0u64;
     let mut attempted_edit=false;
+    let (mut saw_read,mut saw_search)=(false,false);
+    let (mut read_before_search,mut search_before_read)=(false,false);
     for op in ops.iter().take(stop) {
         if op["runId"].as_str()!=Some(run) {continue;}
         calls+=1;
@@ -33,15 +38,24 @@ fn read_snapshot(ops:&[Value], stop:usize, run:&str)->Option<Snapshot> {
         }
         if op["status"]!="completed" {continue;}
         match op["tool"].as_str().unwrap_or("") {
-            "workspace_read_range"=>reads+=1,
-            "code_search"=>searches+=1,
+            "workspace_read_range"=>{
+                reads+=1;
+                search_before_read|=saw_search;
+                saw_read=true;
+            },
+            "code_search"=>{
+                searches+=1;
+                read_before_search|=saw_read;
+                saw_search=true;
+            },
             _=>{}
         }
     }
     // All induced rules require edit_attempts == 0: their training positives
     // must satisfy that condition when the learned action would fire.
     (reads>0 && !attempted_edit && calls<=48)
-        .then_some(Snapshot{reads,searches,calls})
+        .then_some(Snapshot{reads,searches,calls,
+            read_before_search,search_before_read})
 }
 
 fn accepted_edit(row:&Value, ops:&[Value])->Option<(String,Snapshot)> {
@@ -80,9 +94,23 @@ fn negative_snapshot(row:&Value,ops:&[Value])->Option<Snapshot> {
     // source edit, not the subsequent tool calls produced by a failed patch.
     for (index,op) in ops.iter().enumerate(){
         if !matches!(op["tool"].as_str(),
-            Some("workspace_replace_range"|"workspace_replace")) {continue;}
+            Some("workspace_replace_range"|"workspace_replace"))
+            || op["status"]!="completed" || op["result"]["written"]!=true
+            || op["toolReceipt"]["verified"]!=true {continue;}
+        let Some(path)=op["path"].as_str() else {continue;};
         if let Some(run)=op["runId"].as_str().filter(|s|!s.is_empty()) {
-            if let Some(snapshot)=read_snapshot(ops,index,run) {return Some(snapshot);}
+            // A rejected patch is a meaningful counterexample only after
+            // the same worker observed the exact file it later modified.
+            let prior_source=ops.iter().take(index).any(|read|
+                read["runId"].as_str()==Some(run)
+                    && read["status"]=="completed"
+                    && read["tool"]=="workspace_read_range"
+                    && read["path"].as_str()==Some(path));
+            if prior_source {
+                if let Some(snapshot)=read_snapshot(ops,index,run) {
+                    return Some(snapshot);
+                }
+            }
         }
     }
     None
@@ -93,6 +121,16 @@ fn predicate(metric:&str,cmp:&str,value:u64)->Value {
 }
 
 fn passes(s:Snapshot, pred:&Value)->bool {
+    // Use the existing executable Boolean grammar. Order distinguishes
+    // read->search from search->read when total tool counts are identical.
+    if let Some(events)=pred["sequence"].as_array() {
+        if events.len()!=2 {return false;}
+        return match (events[0]["tool"].as_str(),events[1]["tool"].as_str()) {
+            (Some("workspace_read_range"),Some("code_search"))=>s.read_before_search,
+            (Some("code_search"),Some("workspace_read_range"))=>s.search_before_read,
+            _=>false,
+        };
+    }
     let current=metric(s,pred["metric"].as_str().unwrap_or(""));
     let value=pred["value"].as_u64().unwrap_or(u64::MAX);
     match pred["cmp"].as_str().unwrap_or("") {
@@ -149,54 +187,53 @@ fn induce_cohort(history:&[&Value])->Vec<Value> {
         let positive=successes.iter().filter(|(name,_)|name==tool)
             .map(|(_,s)|*s).collect::<Vec<_>>();
         if positive.len()<2 {continue;}
-        // Enforce a fresh source observation and no previous edit attempt.
-        // Search all measured threshold/polarity combinations that cover
-        // every positive example; choose the one excluding most failures.
-        let mut best=None::<(usize,Value)>;
+        // Synthesize candidate predicates from measurements AND causal event
+        // order. One successful sample is never enough to establish a guard.
+        let mut proposals=Vec::new();
         for name in ["completed:workspace_read_range",
             "completed:code_search","tool_calls"] {
             let lo=positive.iter().map(|s|metric(*s,name)).min().unwrap_or(0);
             let hi=positive.iter().map(|s|metric(*s,name)).max().unwrap_or(0);
             for (cmp,value) in [("ge",lo),("lt",hi.saturating_add(1))] {
-                if value>48 || (name=="completed:workspace_read_range" && value==0) {continue;}
-                let pred=predicate(name,cmp,value);
-                if !positive.iter().all(|s|passes(*s,&pred)) {continue;}
-                let false_positives=negatives.iter().filter(|s|passes(**s,&pred)).count();
-                if best.as_ref().is_none_or(|(prior,_)|false_positives<*prior) {
-                    best=Some((false_positives,pred));
+                if value<=48 && !(name=="completed:workspace_read_range" && value==0) {
+                    proposals.push(predicate(name,cmp,value));
                 }
             }
         }
-        let Some((false_positive,first))=best else {continue;};
-        // The learned decision must discriminate at least one independently
-        // measured failure. Otherwise it merely duplicates the base policy.
-        if false_positive==negatives.len(){continue;}
-        let remaining=negatives.iter().copied().filter(|s|passes(*s,&first))
-            .collect::<Vec<_>>();
+        for (first,second) in [
+            ("workspace_read_range","code_search"),
+            ("code_search","workspace_read_range"),
+        ] {
+            proposals.push(json!({"sequence":[
+                {"tool":first,"status":"completed"},
+                {"tool":second,"status":"completed"},
+            ]}));
+        }
+        proposals.retain(|guard|positive.iter().all(|s|passes(*s,guard)));
+        // Counterexample-guided set cover: select the smallest pair of
+        // executable conditions that preserves ALL adopted positives while
+        // excluding ALL independently evaluated rejected candidates.
+        let mut ranked=proposals.iter().map(|guard|{
+            let leaked=negatives.iter().filter(|s|passes(**s,guard)).count();
+            (leaked,guard.to_string(),guard)
+        }).collect::<Vec<_>>();
+        ranked.sort_by(|a,b|a.0.cmp(&b.0).then_with(||a.1.cmp(&b.1)));
+        let Some((false_positive,_,first))=ranked.first() else {continue;};
+        if *false_positive==negatives.len(){continue;}
         let mut clauses=vec![
             predicate("completed:workspace_read_range","ge",1),
             predicate("edit_attempts","lt",1),
-            first,
+            (*first).clone(),
         ];
-        if !remaining.is_empty() {
-            let mut second=None::<(usize,Value)>;
-            for name in ["completed:workspace_read_range",
-                "completed:code_search","tool_calls"] {
-                let lo=positive.iter().map(|s|metric(*s,name)).min().unwrap_or(0);
-                let hi=positive.iter().map(|s|metric(*s,name)).max().unwrap_or(0);
-                for (cmp,value) in [("ge",lo),("lt",hi.saturating_add(1))] {
-                    if value>48 {continue;}
-                    let pred=predicate(name,cmp,value);
-                    if !positive.iter().all(|s|passes(*s,&pred)) {continue;}
-                    let leaked=remaining.iter().filter(|s|passes(**s,&pred)).count();
-                    if second.as_ref().is_none_or(|(prior,_)|leaked<*prior) {
-                        second=Some((leaked,pred));
-                    }
-                }
-            }
-            let Some((left,extra))=second else {continue;};
+        if *false_positive>0 {
+            let remaining=negatives.iter().copied().filter(|s|passes(*s,first))
+                .collect::<Vec<_>>();
+            let Some((left,_,extra))=ranked.iter().map(|(_,id,guard)|
+                (remaining.iter().filter(|s|passes(**s,guard)).count(),id,guard))
+                .min_by(|a,b|a.0.cmp(&b.0).then_with(||a.1.cmp(b.1)))
+                else {continue;};
             if left>0 {continue;}
-            clauses.push(extra);
+            clauses.push((*extra).clone());
         }
         result.push(json!({"guard":{"all":clauses},"allow":[tool],
             "sourceJobId":"contrasting_independent_descendant_executions",
@@ -282,6 +319,44 @@ mod tests {
                 "status":"failed"}));
         assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty(),
             "a rule requiring zero previous edits cannot learn from a retry");
+    }
+    #[test]
+    fn learns_temporal_decisions_when_count_only_rules_cannot_separate_trials(){
+        let mut rows=[
+            child("good-1",true,1,"workspace_replace_range"),
+            child("good-2",true,1,"workspace_replace_range"),
+            child("bad-1",false,1,"workspace_replace_range"),
+            child("bad-2",false,1,"workspace_replace_range"),
+        ];
+        // Both cohorts have exactly one read, one search and three calls.
+        // Only the ORDER of those real operations distinguishes outcomes.
+        for row in rows.iter_mut().skip(2) {
+            row["toolTimeline"].as_array_mut().unwrap().swap(0,1);
+        }
+        let rules=induce(&rows.iter().collect::<Vec<_>>());
+        assert_eq!(rules.len(),1);
+        assert!(rules[0]["guard"]["all"].as_array().unwrap().iter()
+            .any(|g|g["sequence"].is_array()));
+        let good=rows[0]["toolTimeline"].as_array().unwrap();
+        let bad=rows[2]["toolTimeline"].as_array().unwrap();
+        assert!(crate::engine::rsi_decision_rules::choose(
+            &json!({"rules":rules.clone()}),&good[..2],2,true,false).is_some());
+        assert!(crate::engine::rsi_decision_rules::choose(
+            &json!({"rules":rules}),&bad[..2],2,true,false).is_none());
+    }
+    #[test]
+    fn rejected_candidate_without_a_same_file_receipted_edit_cannot_train_rules(){
+        let mut rows=[
+            child("good-1",true,0,"workspace_replace_range"),
+            child("good-2",true,0,"workspace_replace_range"),
+            child("bad-1",false,3,"workspace_replace_range"),
+            child("bad-2",false,4,"workspace_replace_range"),
+        ];
+        rows[2]["toolTimeline"][0]["path"]=json!("unrelated.rs");
+        assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
+        rows[2]["toolTimeline"][0]["path"]=json!("src/engine/example.rs");
+        rows[2]["toolTimeline"][4]["toolReceipt"]["verified"]=json!(false);
+        assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
     }
     #[test]
     fn adoption_with_no_prior_matching_file_read_is_not_success_evidence(){
