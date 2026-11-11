@@ -6337,6 +6337,38 @@ mod harness_tool_selection_tests {
     }
 
     #[test]
+    fn focused_rsi_structural_errors_use_one_bounded_repair_read_not_a_second_model() {
+        let focused=json!({"rsiRun":true,"rsiExplicitFocus":true,
+            "rsiFocusFiles":["src/engine/memory.rs"]});
+        let args=json!({"path":"src/engine/memory.rs",
+            "startLine":120,"endLine":1,"newText":"fn fixed() {}"});
+        let invalid=json!({"error":"endLine은 startLine 이상이어야 합니다."});
+        assert_eq!(rsi_direct_source_repair(
+            &focused,"workspace_replace",&args,&invalid),Some("invalid_source_span"));
+        assert_eq!(rsi_direct_source_repair(
+            &focused,"workspace_replace",&args,
+            &json!({"error":"changed source","staleVersion":true})),
+            Some("source_revision_mismatch"));
+        assert_eq!(rsi_direct_source_repair(
+            &focused,"workspace_write",&args,
+            &json!({"error":"RSI의 workspace_write는 새 파일 생성 전용입니다."})),
+            Some("existing_file_write"));
+        let mut not_focused=focused.clone();
+        not_focused["rsiExplicitFocus"]=json!(false);
+        assert_eq!(rsi_direct_source_repair(
+            &not_focused,"workspace_replace",&args,&invalid),None);
+        let mut other_path=args.clone();
+        other_path["path"]=json!("src/engine/other.rs");
+        assert_eq!(rsi_direct_source_repair(
+            &focused,"workspace_replace",&other_path,&invalid),None);
+        assert_eq!(rsi_direct_source_repair(
+            &focused,"workspace_replace",&args,
+            &json!({"written":true})),None);
+        assert_eq!(rsi_direct_source_repair(
+            &focused,"code_search",&args,&invalid),None);
+    }
+
+    #[test]
     fn rsi_checkpoint_allows_an_edit_or_a_no_change_finish() {
         assert!(!rsi_should_checkpoint(5, false));
         assert!(rsi_should_checkpoint(6, false));
