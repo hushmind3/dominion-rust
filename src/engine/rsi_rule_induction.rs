@@ -223,7 +223,7 @@ fn induce_cohort(history:&[&Value])->Vec<Value> {
         let mut clauses=vec![
             predicate("completed:workspace_read_range","ge",1),
             predicate("edit_attempts","lt",1),
-            (*first).clone(),
+            (**first).clone(),
         ];
         if *false_positive>0 {
             let remaining=negatives.iter().copied().filter(|s|passes(*s,first))
@@ -233,7 +233,7 @@ fn induce_cohort(history:&[&Value])->Vec<Value> {
                 .min_by(|a,b|a.0.cmp(&b.0).then_with(||a.1.cmp(b.1)))
                 else {continue;};
             if left>0 {continue;}
-            clauses.push((*extra).clone());
+            clauses.push((**extra).clone());
         }
         result.push(json!({"guard":{"all":clauses},"allow":[tool],
             "sourceJobId":"contrasting_independent_descendant_executions",
