@@ -36,7 +36,7 @@ pub fn definitions() -> Vec<Value> {
         tool("workspace_read", "Read a UTF-8 file from the workspace", object(json!({"path": text("Relative file path")}), vec!["path"])),
         tool("workspace_read_range", "Read only a line range from a workspace file. Use the line numbers from the repository index instead of reading a large file end to end.", object(json!({"path": text("Relative file path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1, "description":"Inclusive end line; at most 400 lines are returned"})}), vec!["path","startLine"])),
         tool("code_search", "Search the persistent repository index for file paths, symbols and line numbers. Use this before reading a large file.", object(json!({"query": text("Function, type, path or keyword fragment"), "limit": json!({"type":"integer","minimum":1,"maximum":50})}), vec!["query"])),
-        tool("workspace_replace", "Replace one exact block in a workspace file without resending the whole file (approval required). oldText must occur exactly once.", object(json!({"path": text("Relative file path"), "oldText": text("Exact existing text to replace; must occur exactly once"), "newText": text("Replacement text"), "expectedSha256": text("Optional SHA-256 observed before editing")}), vec!["path","oldText","newText"])),
+        tool("workspace_replace", "Edit a small source range without rewriting the whole file (approval required). Either supply a unique oldText, or the startLine/endLine and expectedSha256 from workspace_read_range. For line mode, newText replaces those inclusive lines.", object(json!({"path": text("Relative file path"), "oldText": text("Option A: exact existing source text, occurring once"), "startLine":json!({"type":"integer","minimum":1,"description":"Option B: first line from workspace_read_range"}), "endLine":json!({"type":"integer","minimum":1,"description":"Option B: inclusive last line; max 120 lines"}), "newText": text("Replacement code text (do not include numbered line prefixes)"), "expectedSha256": text("Required in line mode: sourceSha256 from workspace_read_range; optional in oldText mode")}), vec!["path","newText"])),
         tool("workspace_write", "Write a UTF-8 file inside the workspace (approval required)", object(json!({"path": text("Relative file path"), "content": text("UTF-8 content")}), vec!["path", "content"])),
         tool("file_list", "List any folder on this computer using an absolute path", object(json!({"path": text("Absolute folder path")}), vec!["path"])),
         tool("file_read", "Read any UTF-8 text file using an absolute path", object(json!({"path": text("Absolute file path")}), vec!["path"])),
@@ -173,15 +173,13 @@ pub async fn execute(
         }
         "workspace_replace" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
-            replace_text(
-                ctx,
-                &path,
-                &required_arg(args, "oldText")?,
-                &required_arg(args, "newText")?,
-                args["expectedSha256"].as_str(),
-                run_id,
-            )
-            .await
+            let new_text=required_arg(args,"newText")?;
+            if let Some(old_text)=args["oldText"].as_str().filter(|text|!text.is_empty()) {
+                replace_text(ctx,&path,old_text,&new_text,
+                    args["expectedSha256"].as_str(),run_id).await
+            } else {
+                replace_line_span(ctx,&path,args,&new_text,run_id).await
+            }
         }
         "workspace_write" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
@@ -784,6 +782,66 @@ async fn replace_text(
     result["replaced"] = json!(result["written"] == true);
     if result["written"] == true {
         result["replacedChars"] = json!(old_text.chars().count());
+    }
+    Ok(result)
+}
+
+/// Source-range editing uses the same workspace_replace permission and audit
+/// path as exact-text replacement. The small model can provide the numbered
+/// source span rather than reconstructing 50KB of source or perfectly echoing
+/// a long oldText block. It must prove which file revision it observed.
+async fn replace_line_span(
+    ctx:&ToolContext<'_>, path:&Path, args:&Value, new_text:&str, run_id:&str,
+)->Result<Value,String> {
+    let start=args["startLine"].as_u64().filter(|n|*n>0)
+        .ok_or("workspace_replace에는 oldText 또는 startLine이 필요합니다.")?;
+    let end=args["endLine"].as_u64().filter(|n|*n>=start)
+        .ok_or("endLine은 startLine 이상이어야 합니다.")?;
+    if end-start>=120 {
+        return Err("한 번에 최대 120줄까지만 바꿀 수 있습니다.".into());
+    }
+    let expected=args["expectedSha256"].as_str()
+        .filter(|sha|sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
+        .ok_or("줄 범위 수정에는 workspace_read_range의 sourceSha256이 필요합니다.")?;
+    if new_text.len()>32*1024 {
+        return Err("줄 범위 새 코드는 최대 32KiB입니다.".into());
+    }
+    let source=tokio::fs::read_to_string(path).await
+        .map_err(|e|format!("{}: {e}",path.display()))?;
+    if source.len()>1_500_000 {
+        return Err("소스 파일이 1.5MB를 초과합니다.".into());
+    }
+    let observed=format!("{:x}",Sha256::digest(source.as_bytes()));
+    if !observed.eq_ignore_ascii_case(expected) {
+        return Ok(json!({
+            "error":"읽은 뒤 소스가 변경되었습니다. 같은 파일의 현재 범위를 다시 읽으세요.",
+            "staleVersion":true,"expectedSha256":expected,"observedSha256":observed
+        }));
+    }
+    // split_inclusive preserves the untouched prefix, suffix, and CRLF bytes.
+    let lines=source.split_inclusive('\n').collect::<Vec<_>>();
+    let first=start as usize;
+    let last=end as usize;
+    if first==0 || last>lines.len() {
+        return Ok(json!({"error":"읽은 범위가 파일의 현재 줄 수를 초과합니다.",
+            "startLine":start,"endLine":end,"totalLines":lines.len()}));
+    }
+    let mut inserted=new_text.to_string();
+    if !inserted.is_empty() && !inserted.ends_with('\n')
+        && lines[last-1].ends_with('\n') {
+        inserted.push('\n');
+    }
+    let updated=format!("{}{}{}",
+        lines[..first-1].concat(),inserted,lines[last..].concat());
+    if updated==source {
+        return Ok(json!({"error":"지정한 범위의 코드가 바뀌지 않았습니다.",
+            "noChange":true,"written":false}));
+    }
+    let mut result=checked_write(ctx,path,&updated,run_id,true,Some(expected)).await?;
+    result["replaced"]=json!(result["written"]==true);
+    if result["written"]==true {
+        result["replacedLines"]=json!(end-start+1);
+        result["editMode"]=json!("versioned_line_span");
     }
     Ok(result)
 }
