@@ -1559,6 +1559,41 @@ fn witnessed_method_trace(state:&AppState,session_id:&str,generation:&Value)->Ve
     }
     steps
 }
+/// A failed real model edit can teach a change of method even when no Git
+/// candidate was captured. Attribute failure only to a tool actually executed
+/// after reading the same source in the same turn, never to model narration.
+fn failed_edit_after_observation(state:&AppState,session_id:&str,generation:&Value)->Option<String>{
+    let target_run=generation["hypothesisMessageId"].as_str()
+        .and_then(|id|state.store.message(id))
+        .and_then(|message|message["metadata"]["executionId"].as_str().map(str::to_string));
+    if generation["hypothesisMessageId"].is_string() && target_run.is_none(){return None;}
+    let operations=state.store.all("execution_operation").into_iter()
+        .filter(|op|op["sessionId"].as_str()==Some(session_id)
+            && target_run.as_ref().is_none_or(|run|op["runId"].as_str()==Some(run)))
+        .collect::<Vec<_>>();
+    operations.iter().filter(|op|
+        op["status"]=="failed"
+            && op["origin"]=="model"
+            && op["effectState"]=="failed"
+            && op["result"]["error"].as_str().is_some_and(|error|!error.trim().is_empty())
+            && op["result"]["staleVersion"]!=true
+            && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_replace_range")))
+        .filter(|failure|{
+            let Some(path)=failure["arguments"]["path"].as_str() else {return false};
+            let Some(position)=failure["opSeq"].as_u64() else{return false};
+            operations.iter().any(|read|
+                read["runId"]==failure["runId"]
+                && read["status"]=="completed"
+                && read["tool"]=="workspace_read_range"
+                && read["arguments"]["path"].as_str()==Some(path)
+                && read["opSeq"].as_u64().is_some_and(|seq|seq<position)
+                && read["result"]["sourceSha256"].as_str().is_some_and(|sha|
+                    sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())))
+        })
+        .max_by_key(|failure|failure["opSeq"].as_u64().unwrap_or(0))
+        .and_then(|failure|failure["tool"].as_str().map(str::to_string))
+}
+
 fn measured_system_improvement(generation:&Value)->bool {
     let proof=&generation["acceptedProof"];
     let metrics=&generation["evaluation"]["metrics"];
@@ -1613,8 +1648,7 @@ fn induced_method_application_receipts(state:&AppState,session_id:&str)->Vec<Val
 }
 
 fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,session_id:&str)->Option<Value> {
-    let trace=witnessed_method_trace(state,session_id,generation);
-    if trace.len()<2 {return None;}
+    let mut trace=witnessed_method_trace(state,session_id,generation);
     let outcomes=generation["methodExecutions"].as_array();
     let procedural_pass=outcomes.is_some_and(|rows|rows.iter().any(|row|
         row["result"]["verified"]==true && row["result"]["followed"]==true
@@ -1636,11 +1670,23 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         && observed_edit
         && evaluated["source"]=="server_invoked_local_paired_git_worktrees"
         && matches!(paired_verdict,"regressed"|"build_failed");
-    // An ordinary successful model/tool call cannot teach this engine a
-    // successful method; postconditions or independently measured results
-    // must have witnessed an outcome. Paired regression overrides a local
-    // procedure pass, because passing steps is not improving DOMINION.
-    if !procedural_pass && !procedural_failure && !capability_gain && !paired_regression {
+    // Before a candidate exists, an observed failed source edit is still a
+    // method failure. Penalise only the actual read -> failed edit transition.
+    let failed_edit=if !procedural_pass && !procedural_failure
+        && !capability_gain && !paired_regression {
+        failed_edit_after_observation(state,session_id,generation)
+    }else{None};
+    if let Some(tool)=failed_edit.as_deref() {
+        if let Some(index)=trace.iter().rposition(|name|name=="workspace_read_range") {
+            trace.truncate(index+1);
+            trace.push(tool.to_string());
+        }
+    }
+    if trace.len()<2 {return None;}
+    // Model prose or an inconclusive experiment never becomes a learning
+    // outcome. A measured regression overrides a local procedure pass.
+    if !procedural_pass && !procedural_failure && !capability_gain
+        && !paired_regression && failed_edit.is_none() {
         return None;
     }
     let job_id=generation["jobId"].as_str().filter(|id|!id.is_empty())?;
@@ -1658,8 +1704,10 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         "sequence":trace,"appliedPolicy":generation["inducedMethodApplications"],
         "operationalPass":procedural_pass,
         "operationalFailure":procedural_failure,"pairedImprovement":capability_gain,
-        "pairedRegression":paired_regression,
-        "failureReason":if paired_regression{json!(paired_verdict)}else{Value::Null},
+        "pairedRegression":paired_regression,"toolFailure":failed_edit.is_some(),
+        "failureReason":if paired_regression{json!(paired_verdict)}
+            else{failed_edit.as_deref().map(|tool|json!(format!("tool_execution:{tool}")))
+                .unwrap_or(Value::Null)},
         "acceptedCommit":if capability_gain{generation["acceptedCommit"].clone()}else{Value::Null},
         "evaluationId":if capability_gain{generation["evaluation"]["id"].clone()}else{Value::Null}}));
     // Keep only recent evidence. Recompute the weights from retained evidence,
@@ -1671,7 +1719,8 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         let measured_gain=sample["pairedImprovement"]==true;
         let paired_loss=sample["pairedRegression"]==true;
         let good=!paired_loss && (sample["operationalPass"]==true || measured_gain);
-        let bad=paired_loss || (sample["operationalFailure"]==true && !good);
+        let bad=paired_loss || sample["toolFailure"]==true
+            || (sample["operationalFailure"]==true && !good);
         let reward=if measured_gain {3u64}else{1};
         let penalty=if paired_loss {2u64}else{1};
         let domain=sample["domain"].as_str().filter(|d|DOMAINS.contains(d));
