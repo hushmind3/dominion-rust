@@ -37,6 +37,9 @@ pub fn synthesize(rows:&[Value])->Value {
     let mut discovery=(i64::MIN,Vec::<String>::new());
     let mut mutation=(i64::MIN,Vec::<String>::new());
     let mut recoveries=BTreeMap::<String,BTreeMap<String,u64>>::new();
+    // Recovery programs, unlike the old one-hop fallback, can re-observe a
+    // stale source and then choose a witnessed mutation from another episode.
+    let mut recovery_chains=BTreeMap::<String,BTreeMap<String,(u64,u64)>>::new();
     let mut episodes=0u64;
     for row in rows {
         let trace=row["actionTrace"].as_array().into_iter().flatten()
@@ -52,6 +55,27 @@ pub fn synthesize(rows:&[Value])->Value {
                 *recoveries.entry(pair[0].0.clone()).or_default()
                     .entry(pair[1].0.clone()).or_insert(0)+=1;
             }
+        }
+        for (position,event) in trace.iter().enumerate() {
+            if !event.3 {continue;}
+            let mut path=Vec::<String>::new();
+            let mut changed=false;
+            for successor in trace.iter().skip(position+1).take(5) {
+                // Failed retries cannot be taught as successful recovery.
+                if successor.3 {break;}
+                if !successor.1 {continue;}
+                if path.last()!=Some(&successor.0) {
+                    path.push(successor.0.clone());
+                }
+                changed|=successor.2;
+                if path.len()>=3 || changed {break;}
+            }
+            if path.is_empty(){continue;}
+            let key=json!(path).to_string();
+            let count=recovery_chains.entry(event.0.clone()).or_default()
+                .entry(key).or_insert((0,0));
+            count.0+=1;
+            count.1+=u64::from(changed);
         }
         let mut prefix=Vec::new();
         let mut suffix=Vec::new();
@@ -83,10 +107,44 @@ pub fn synthesize(rows:&[Value])->Value {
             a.1.cmp(&b.1).then_with(||b.0.cmp(&a.0)))?;
         Some(json!({"onFailure":failed,"tryTool":next,"observedRecoveries":count}))
     }).collect::<Vec<_>>();
-    let revision=memory::stable_id(&[&json!([&sequence,&on_failure]).to_string()]);
+    // Compose the observed repair prefix with an independently witnessed edit
+    // when the failed generation recovered the source but did not write it.
+    let successful_edit=sequence.iter().filter_map(Value::as_str)
+        .find(|tool|edit(tool)).map(str::to_string);
+    let mut recovery_paths=Vec::<Value>::new();
+    for (failed,variants) in recovery_chains {
+        let mut ranked=variants.into_iter().filter_map(|(steps,(observations,writes))|{
+            let mut path=serde_json::from_str::<Vec<String>>(&steps).ok()?;
+            let mut cross_episode=false;
+            if !path.iter().any(|tool|edit(tool)) {
+                if let Some(edit_tool)=successful_edit.as_ref() {
+                    if path.len()<3 {
+                        path.push(edit_tool.clone());
+                        cross_episode=true;
+                    }
+                }
+            }
+            let score=(writes as i64)*20+(observations as i64)*3
+                -(path.len() as i64);
+            Some((score,observations,writes,cross_episode,path))
+        }).collect::<Vec<_>>();
+        ranked.sort_by(|a,b|b.0.cmp(&a.0)
+            .then(b.1.cmp(&a.1))
+            .then(a.4.cmp(&b.4)));
+        if let Some((_,observations,writes,cross_episode,steps))=ranked.first() {
+            recovery_paths.push(json!({"onFailure":failed,"steps":steps,
+                "witnessedRecoveries":observations,
+                "verifiedRecoveryWrites":writes,
+                "crossEpisodeCompletion":cross_episode,
+                "status":"trial_unverified"}));
+        }
+    }
+    let revision=memory::stable_id(&[
+        &json!([&sequence,&on_failure,&recovery_paths]).to_string()]);
     json!({"kind":"selfimprove.composed-tool-program","revision":revision,
         "status":if sequence.is_empty(){"no_witnessed_steps"}else{"trial_unproven"},
-        "sequence":sequence,"onFailure":on_failure,"origin":"cross_episode_witnessed_composition",
+        "sequence":sequence,"onFailure":on_failure,"recoveryPaths":recovery_paths,
+        "origin":"cross_episode_witnessed_composition",
         "evidence":{"episodes":episodes},"qualityProven":false})
 }
 
@@ -137,7 +195,8 @@ pub fn evolve_controller(rows:&[Value], mut program:Value)->Value {
         "shorten_unproductive_discovery"
     } else {"retain_observed_discovery_budget"};
     let revision=memory::stable_id(&[
-        &json!([&program["sequence"],&program["onFailure"],checkpoint]).to_string()]);
+        &json!([&program["sequence"],&program["onFailure"],
+            &program["recoveryPaths"],checkpoint]).to_string()]);
     let parent=program["revision"].clone();
     program["revision"]=json!(revision);
     program["controller"]=json!({"checkpointAfter":checkpoint,
@@ -185,7 +244,7 @@ pub fn evolve_stalled(rows:&[Value],mut plan:Value)->Value {
         "switch_failed_edit_primitive"
     };
     let revision=memory::stable_id(&[&json!([&seq,&plan["onFailure"],
-        plan["controller"]["checkpointAfter"]]).to_string()]);
+        &plan["recoveryPaths"],plan["controller"]["checkpointAfter"]]).to_string()]);
     if revision!=parent {
         plan["sequence"]=json!(seq);
         plan["revision"]=json!(revision);
@@ -206,6 +265,33 @@ pub fn next_tool(program:&Value,ops:&[Value],execution_id:&str)->Option<(String,
         .filter(|op|op["runId"].as_str()==Some(execution_id))
         .collect::<Vec<_>>();
     executed.sort_by_key(|op|op["opSeq"].as_u64().unwrap_or(u64::MAX));
+    // A failed edit can now create an ordered recovery state machine. Advance
+    // only when each chosen recovery step really succeeded in this run.
+    for (position,failure) in executed.iter().enumerate().rev() {
+        if failure["status"]!="failed" && !failure["result"]["error"].is_string() {
+            continue;
+        }
+        let Some(path)=program["recoveryPaths"].as_array().into_iter().flatten()
+            .find(|row|row["onFailure"]==failure["tool"]) else{continue;};
+        let Some(steps)=path["steps"].as_array() else{continue;};
+        let mut cursor=0usize;
+        for subsequent in executed.iter().skip(position+1) {
+            if cursor>=steps.len(){break;}
+            if subsequent["tool"]==steps[cursor] && witnessed(subsequent) {
+                cursor+=1;
+            }
+        }
+        if let Some(next)=steps.get(cursor).and_then(Value::as_str)
+            .filter(|name|tools::rsi_allowed(name)) {
+            return Some((next.to_string(),"learned_multi_step_recovery"));
+        }
+        // All the witnessed recovery steps were completed. A verified write
+        // ends the procedure; do not restart the failed original edit.
+        if cursor==steps.len() && steps.iter().any(|step|
+            step.as_str().is_some_and(edit)) {
+            return None;
+        }
+    }
     if let Some(last)=executed.last().filter(|row|
         row["status"]=="failed" || row["result"]["error"].is_string()) {
         if let Some(recovery)=program["onFailure"].as_array().into_iter().flatten()
@@ -312,7 +398,8 @@ pub fn offspring_from_adoption(rows:&[Value],head:&str,objective:&str,domain:&st
     };
     let revision=memory::stable_id(&[
         "offspring-program-v1",
-        &json!([&sequence,&offspring["onFailure"],next_checkpoint]).to_string()]);
+        &json!([&sequence,&offspring["onFailure"],&offspring["recoveryPaths"],
+            next_checkpoint]).to_string()]);
     if revision==old_revision {return None;}
     let prior_depth=offspring["lineage"]["depth"].as_u64().unwrap_or(0);
     offspring["revision"]=json!(revision);
@@ -384,7 +471,8 @@ pub fn recompose_after_failed_cohort(
         .as_u64().unwrap_or(6).saturating_sub(1).max(2);
     let revision=memory::stable_id(&[
         "recomposed-after-cohort-v1",
-        &json!([&sequence,&parent["onFailure"],checkpoint]).to_string()]);
+        &json!([&sequence,&parent["onFailure"],&parent["recoveryPaths"],
+            checkpoint]).to_string()]);
     if revision==old || seen.contains(&revision) {return None;}
     parent["sequence"]=json!(sequence);
     parent["revision"]=json!(revision);
@@ -553,6 +641,34 @@ mod tests {
         assert_eq!(plan["comparison"]["qualityProven"],false);
     }
 
+
+    #[test]
+    fn independently_witnessed_recovery_steps_become_a_multi_step_native_program(){
+        let row=json!({"jobId":"fault","actionTrace":[
+            {"tool":"workspace_replace","executed":false,"failure":true},
+            {"tool":"workspace_read_range","executed":true,"failure":false}
+        ],"newFindings":1});
+        let donor=json!({"jobId":"editor","actionTrace":[
+            {"tool":"workspace_replace_range","executed":true,
+                "sourceChanged":true,"failure":false}],"candidateId":"c"});
+        let program=synthesize(&[row,donor]);
+        assert_eq!(program["recoveryPaths"][0]["steps"],
+            json!(["workspace_read_range","workspace_replace_range"]));
+        assert_eq!(program["recoveryPaths"][0]["crossEpisodeCompletion"],true);
+        let failure=json!({"runId":"run","opSeq":1,"tool":"workspace_replace",
+            "status":"failed","result":{"error":"stale"}});
+        let next=next_tool(&program,&[failure.clone()],"run").unwrap();
+        assert_eq!(next.0,"workspace_read_range");
+        assert_eq!(next.1,"learned_multi_step_recovery");
+        let read=json!({"runId":"run","opSeq":2,"tool":"workspace_read_range",
+            "status":"completed","result":{"sourceSha256":"fresh"}});
+        assert_eq!(next_tool(&program,&[failure.clone(),read.clone()],"run").unwrap().0,
+            "workspace_replace_range");
+        let edit=json!({"runId":"run","opSeq":3,"tool":"workspace_replace_range",
+            "status":"completed","result":{"written":true},
+            "toolReceipt":{"verified":true}});
+        assert!(next_tool(&program,&[failure,read,edit],"run").is_none());
+    }
     #[test]
     fn real_adopted_parent_reproduces_a_changed_descendant_program(){
         let parent_program=json!({"revision":"parent-program",

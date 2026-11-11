@@ -91,7 +91,10 @@ fn rsi_checkpoint_stage_with_limit(
 /// excerpts are intentionally incomplete, so banning all reads would prevent edits.
 fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
     if edit_only {
-        return matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range");
+        // A learned recovery path must be able to refresh a stale file hash.
+        // Broad code_search is still closed; only exact versioned reads remain.
+        return matches!(name, "workspace_read_range" | "workspace_write"
+            | "workspace_replace" | "workspace_replace_range");
     }
     matches!(
         name,
