@@ -2674,6 +2674,7 @@ async fn run_loop(
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
             "editEvidence":current["result"]["rsi"]["editEvidence"],
+            "diffBytes":current["result"]["rsi"]["diffBytes"],
             "captureError":current["result"]["rsi"]["captureError"],
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         let proposed_candidate = verified_candidate_id(&current["result"]);
