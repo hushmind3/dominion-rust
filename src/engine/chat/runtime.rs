@@ -1581,35 +1581,49 @@ async fn run_turn_body(
                 }
             }
         }
-        let wire_messages = if session["rsiRun"]==true && !force_final {
+        let grounded_edit=if session["rsiRun"]==true && !force_final {
             let ops=state.store.all("execution_operation");
-            if let Some(grounded)=rsi_grounded_edit_messages(&session,session_id,&ops,&request.input) {
-                state.store.audit("rsi.native_edit_handoff",json!({
-                    "sessionId":session_id,"executionId":execution_id,"round":round,
-                    "originalInputTokens":super::room_context::input_estimate(&messages,&round_tools),
-                    "focusedInputTokens":super::room_context::input_estimate(&grounded,&round_tools),
-                    "source":"completed_workspace_read_range",
-                    "methodRevision":session["rsiExecutionMethod"]["revision"]
-                }));
-                grounded
-            } else {messages.clone()}
+            rsi_grounded_edit_messages(&session,session_id,&ops,&request.input)
+        }else{None};
+        // Some free/local models return empty text *and* zero tool calls even
+        // when the transport receives tool_choice=required. Do not replay the
+        // same broken native-tool request. After the first non-edit answer,
+        // ask that model for a standalone JSON edit without advertising native
+        // function schemas; the normal source-receipt binder will convert only
+        // a grounded, versioned edit into an ordinary workspace tool call.
+        let rsi_json_edit_fallback=rsi_edit_retry && grounded_edit.is_some();
+        let wire_tools=if rsi_json_edit_fallback {Vec::new()} else {round_tools.clone()};
+        let wire_messages=if let Some(mut grounded)=grounded_edit {
+            if rsi_json_edit_fallback {
+                grounded.push(json!({"role":"system","content":
+                    "NATIVE TOOL CALLS ARE UNAVAILABLE FOR THIS RETRY. Respond with ONLY ONE JSON object and no Markdown or prose: {\\"path\\":\\"src/engine/decompose.rs\\",\\"startLine\\":1,\\"endLine\\":1,\\"newText\\":\\"valid Rust replacement\\"}. Use the actual observed path/line numbers, not these example values. The engine independently resolves the observed source SHA and verifies the actual write. Do not output a plan."}));
+            }
+            state.store.audit("rsi.native_edit_handoff",json!({
+                "sessionId":session_id,"executionId":execution_id,"round":round,
+                "originalInputTokens":super::room_context::input_estimate(&messages,&round_tools),
+                "focusedInputTokens":super::room_context::input_estimate(&grounded,&wire_tools),
+                "source":"completed_workspace_read_range",
+                "protocol":if rsi_json_edit_fallback{"observed_json_edit"}else{"native_function_edit"},
+                "methodRevision":session["rsiExecutionMethod"]["revision"]
+            }));
+            grounded
         } else {messages.clone()};
         // Campaigns enforce the owner's cumulative budget below. The generic
         // standalone turn ceiling must not terminate a budgeted research run.
         if session["rsiRun"]==true && !session["rsiCampaignId"].is_string() {
-            let input=super::room_context::input_estimate(&wire_messages,&round_tools) as u64;
+            let input=super::room_context::input_estimate(&wire_messages,&wire_tools) as u64;
             let limit=rsi_output_allowance(total_tokens,input)?;
             provider.max_output_tokens=Some(provider.max_output_tokens.unwrap_or(8192).min(limit));
         }
         if is_room {
             if let Some(mut execution) = state.store.get("execution", execution_id) {
-                execution["inputContext"]["preparedInputTokensEstimate"] = json!(super::room_context::input_estimate(&wire_messages,&round_tools));
-                execution["inputContext"]["preProviderDigest"] = json!(crate::engine::memory::stable_id(&[&json!({"messages":wire_messages,"tools":round_tools}).to_string()]));
+                execution["inputContext"]["preparedInputTokensEstimate"] = json!(super::room_context::input_estimate(&wire_messages,&wire_tools));
+                execution["inputContext"]["preProviderDigest"] = json!(crate::engine::memory::stable_id(&[&json!({"messages":wire_messages,"tools":wire_tools}).to_string()]));
                 state.store.put("execution", &execution);
             }
         }
         if let Some(limit)=crate::engine::rsi_evolve::remaining_output_tokens(
-            state,session_id,super::room_context::input_estimate(&wire_messages,&round_tools) as u64,
+            state,session_id,super::room_context::input_estimate(&wire_messages,&wire_tools) as u64,
         )?{
             provider.max_output_tokens=Some(provider.max_output_tokens.unwrap_or(8192).min(limit));
         }
@@ -1623,7 +1637,7 @@ async fn run_turn_body(
             &client,
             &provider,
             &wire_messages,
-            &round_tools,
+            &wire_tools,
             request,
             session_id,
             tx,
