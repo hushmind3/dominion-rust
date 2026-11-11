@@ -3818,6 +3818,68 @@ mod tests {
         JobContext::new(state.clone(), "campaign".into())
     }
     #[test]
+    fn learned_recovery_policy_mutates_after_repeated_real_failures() {
+        let (state,root)=state();
+        let input=json!({"rsiObjective":"improve actual edit recovery",
+            "rsiSourceDir":root.join("source").to_string_lossy()});
+        let history=(1..=4).map(|n|json!({
+            "id":format!("g{n}"),"jobId":format!("job{n}"),
+            "campaignId":"c","attempt":n,
+            "createdAt":format!("2026-11-11T01:00:{n:02}Z"),
+            "accepted":false,"tokens":10000,
+            "actionObservation":{"status":"edit_failed","editToolCalls":1,
+                "appliedEditCalls":0,"sourceDiffBytes":0},
+            "actionDirective":{"mode":"repair_failed_edit"}
+        })).collect::<Vec<_>>();
+        let decision=evolved_execution_action(&state,&input,&history);
+        assert_eq!(decision["policy"]["kind"],"selfimprove.action");
+        assert_eq!(decision["policy"]["trainingTransitions"],3);
+        assert_eq!(decision["policy"]["previousDefault"],"repair_failed_edit");
+        assert_ne!(decision["mode"],"repair_failed_edit",
+            "repeating a failed source-edit repair should evolve the strategy: {decision}");
+        assert_eq!(decision["policy"]["status"],"exploratory_policy_mutation");
+        assert!(decision["policy"]["measuredGain"].is_null());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn learned_action_does_not_count_patches_as_adopted_capabilities() {
+        let (state,root)=state();
+        let input=json!({"rsiObjective":"evolve the harness",
+            "rsiSourceDir":root.join("src").to_string_lossy()});
+        let sample=json!({"accepted":false,"candidateId":Value::Null,
+            "actionObservation":{"status":"source_changed_unverified",
+                "sourceDiffBytes":250},"tokens":1200});
+        assert!(observed_action_value(&sample)<1.0);
+        let last=json!({"campaignId":"campaign","attempt":1,"id":"g1",
+            "accepted":true,"actionObservation":{"status":"candidate_created"}});
+        let decision=evolved_execution_action(&state,&input,&[last]);
+        assert_eq!(decision["mode"],"extend_verified_capability");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn learned_action_training_never_pairs_unrelated_campaigns() {
+        let (state,root)=state();
+        let input=json!({"rsiObjective":"isolate autonomous improvement",
+            "rsiSourceDir":root.join("src").to_string_lossy()});
+        let history=(0..4).map(|i|json!({
+            "id":format!("g{i}"),"jobId":format!("j{i}"),
+            "campaignId":format!("c{i}"),"attempt":1,
+            "createdAt":format!("2026-11-11T01:00:{i:02}Z"),
+            "accepted":false,"tokens":1000,
+            "actionObservation":{"status":"edit_failed","editToolCalls":1,
+                "appliedEditCalls":0},
+            "actionDirective":{"mode":"repair_failed_edit"}
+        })).collect::<Vec<_>>();
+        let selected=evolved_execution_action(&state,&input,&history);
+        assert_eq!(selected["mode"],"repair_failed_edit");
+        assert_eq!(selected["policy"]["status"],"insufficient_evidence");
+        assert_eq!(selected["policy"]["trainingTransitions"],0);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn failed_generation_yields_specific_next_edit_not_generic_research() {
         let (state,root)=state();
         state.store.put("rsi_run",&json!({
