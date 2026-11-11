@@ -551,7 +551,7 @@ fn rsi_no_edit_retry_needed(input:&Value, outcome:&Result<Value,String>)->bool {
             && result["rsi"]["captureError"]=="모델이 실제 소스 파일을 변경하지 않았습니다.")
             || (input["rsiRepairCandidateId"].is_string()
                 && result["rsi"]["captureError"]==
-                    "복원한 컴파일 실패 패치를 이번 세대에서 실제로 수정하지 않았습니다."))
+                    "복원한 개선 후보를 이번 세대에서 실제로 수정하지 않았습니다."))
         && result["rsi"]["modelError"].as_str().is_some_and(str::is_empty)
         && input["toolsEnabled"]!=false
         && input["toolsExecutionEnabled"]!=false
@@ -593,7 +593,12 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             .filter_map(Value::as_str).take(3).collect::<Vec<_>>().join(", ");
         let errors=restored["compilerErrors"].as_array().into_iter().flatten()
             .filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
-        format!("\n\n[실제 실패 패치 복구] 이전 모델의 실패한 소스 변경이 지금 별도 작업공간에 실제로 복원돼 있습니다. 새 파일이나 조사 계획을 만들지 말고, 복구된 파일 ({paths})을 workspace_read_range로 읽으세요. 아래 컴파일 오류를 해결하도록 파일을 직접 수정하세요. 기존 패치를 다시 적용할 필요가 없습니다. 고친 코드만 workspace_replace 또는 workspace_replace_range로 쓰세요. 컴파일과 독립 평가는 엔진이 진행합니다.\n{errors}")
+        if restored["repairKind"]=="quality_plateau" {
+            let metrics=&restored["qualityMetrics"];
+            format!("\n\n[독립 평가된 미달 후보 계승] 이전 모델이 만든 Rust 패치가 별도 작업공간 ({paths})에 실제로 복원돼 있습니다. 컴파일은 통과했지만 품질 이득이 검증 기준에 부족했습니다. 실제 영수증: {metrics}. 먼저 workspace_read_range로 복원된 파일의 최신 원문과 해시를 확인한 뒤 기존 구현의 누락 동작을 고쳐 workspace_replace_function 또는 workspace_replace_range로 변경하세요. 이전 코드를 처음부터 다시 만들거나 분석문만 출력하지 마세요. 새 후보의 동결 평가가 다시 실행됩니다.")
+        } else {
+            format!("\n\n[실제 컴파일 실패 패치 복구] 이전 모델의 실패한 소스 변경이 지금 별도 작업공간에 실제로 복원돼 있습니다. 새 파일이나 조사 계획을 만들지 말고, 복구된 파일 ({paths})을 workspace_read_range로 읽으세요. 아래 컴파일 오류를 해결하도록 파일을 직접 수정하세요. 기존 패치를 다시 적용할 필요가 없습니다. 고친 코드만 workspace_replace_function 또는 workspace_replace_range로 쓰세요. 컴파일과 독립 평가는 엔진이 진행합니다.\n{errors}")
+        }
     }).unwrap_or_default();
     // The dedicated source checkout is validated and detached before a model
     // call, never modified directly by the RSI execution.
@@ -614,7 +619,8 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             // all model and compiler-repair turns sharing this session.
             session["rsiGenerationTokenLimit"]=input["rsiGenerationTokenLimit"].clone();
             if restored.is_some() {
-                session["rsiCompilerRepair"]=json!(true);
+                session["rsiCompilerRepair"]=json!(restored.as_ref()
+                    .is_some_and(|row|row["repairKind"]=="compiler_failure"));
                 session["rsiRestoredCandidateId"]=input["rsiRepairCandidateId"].clone();
             }
             session["rsiObjective"]=input["rsiObjective"].clone();
@@ -912,7 +918,7 @@ mod tests {
         assert!(!rsi_no_edit_retry_needed(&base,&Ok(edited)));
         let inherited=json!({"rsi":{"diffBytes":500,"candidateId":null,
             "sourceClean":true,
-            "captureError":"복원한 컴파일 실패 패치를 이번 세대에서 실제로 수정하지 않았습니다.",
+            "captureError":"복원한 개선 후보를 이번 세대에서 실제로 수정하지 않았습니다.",
             "modelError":""}});
         let mut repair=base.clone();
         repair["rsiRepairCandidateId"]=json!("failed-candidate");
