@@ -2823,13 +2823,16 @@ async fn run_loop(
             "editEvidence":current["result"]["rsi"]["editEvidence"],
             "editPolicy":current["input"]["rsiEditPolicy"],
             "programStages":program_stages,
-            "toolTimeline":tool_timeline,
-            "ruleExecutions":rule_executions,
             "editMethodReward":Value::Null,
             "diffBytes":current["result"]["rsi"]["diffBytes"],
             "captureError":current["result"]["rsi"]["captureError"],
             "repairFailure":current["result"]["repairError"],
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
+        // Keep the generation JSON macro below Rust's recursive expansion
+        // ceiling and attach bounded evidence only after building the core
+        // generation receipt.
+        generation["toolTimeline"]=json!(tool_timeline);
+        generation["ruleExecutions"]=json!(rule_executions);
         let proposed_candidate = verified_candidate_id(&current["result"]);
         let previous_failed = proposed_candidate.and_then(|id|
             identical_failed_patch(&context.state,
