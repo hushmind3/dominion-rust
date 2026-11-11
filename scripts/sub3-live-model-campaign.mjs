@@ -101,6 +101,7 @@ if(mode==='probe'){
       generatorCommit:g.generatorCommit,domain:g.domain,searchStrategy:g.searchStrategy,
       error:g.error,toolsUsed:g.toolsUsed,newFindings:g.newFindings,
       editEvidence:g.editEvidence,diffBytes:g.diffBytes,captureError:g.captureError,
+      editPolicy:g.editPolicy,editMethodReward:g.editMethodReward,
       focusFiles:g.focusFiles,knowledgeId:g.knowledgeId,
       evaluation:g.evaluation?.metrics
     }));
@@ -126,6 +127,15 @@ if(mode==='probe'){
       && typeof g.acceptedCommit==='string' && g.acceptedCommit.length>0);
     trace.summary={
       modelCalls:trace.generationEvidence.reduce((sum,g)=>sum+(g.tokenUsage?.calls||0),0),
+      improvementMethodHistory:trace.generationEvidence.map(g=>({
+        attempt:g.attempt,
+        method:g.editPolicy?.method||null,
+        policyRevision:g.editPolicy?.revision||null,
+        selectedMethodReward:g.editMethodReward??null,
+        verifiedWrites:g.editEvidence?.verifiedWrites||0,
+        candidateCreated:!!g.candidateId,
+        independentlyAdopted:!!g.accepted
+      })),
       sourceEditCalls,rangeEditCalls,legacyEditCalls,verifiedWrites,unsuccessfulEdits,
       candidateCaptureFailures,candidateCount,acceptedGenerations:accepted.length,
       acceptedCommits:accepted.map(g=>g.acceptedCommit),
