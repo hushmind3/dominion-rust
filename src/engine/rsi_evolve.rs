@@ -1240,9 +1240,10 @@ fn grounded_next_experiment(state:&AppState,history:&[Value])->Option<String> {
             .filter(|check|check["passed"]==false)
             .take(2).map(|check|{
                 let label=check["label"].as_str().unwrap_or("검증");
-                let stderr=check["stderr"].as_str().or_else(||check["error"].as_str()).unwrap_or("");
-                format!("{label}: {}",stderr.chars().rev().take(1100)
-                    .collect::<String>().chars().rev().collect::<String>())
+                let detail=check["primaryDiagnostic"].as_str().filter(|s|!s.is_empty())
+                    .or_else(||check["stderr"].as_str())
+                    .or_else(||check["error"].as_str()).unwrap_or("");
+                format!("{label}: {}",detail.chars().take(1300).collect::<String>())
             }).collect::<Vec<_>>();
         details.extend(failed);
         if !details.is_empty() {
@@ -3767,7 +3768,9 @@ async fn run_loop(
                         .into_iter().flatten().filter(|check|check["passed"]!=true)
                         .take(2).map(|check|json!({
                             "label":check["label"],
-                            "diagnostic":check["stderr"].as_str()
+                            "diagnostic":check["primaryDiagnostic"].as_str()
+                                .filter(|s|!s.is_empty())
+                                .or_else(||check["stderr"].as_str())
                                 .or_else(||check["error"].as_str())
                                 .unwrap_or("").chars().take(1400).collect::<String>()
                         })).collect::<Vec<_>>();
