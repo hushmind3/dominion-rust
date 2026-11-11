@@ -3174,7 +3174,7 @@ fn generation_improvement_directive(input:&Value,history:&[Value])->Value{
     {
         let goal=input["rsiObjective"].as_str().unwrap_or("").to_lowercase();
         if ["fix","repair","modify","implement","patch","고쳐","고치","수정","구현","교정","개선"]
-            .iter().any(|verb|goal.contains(verb))
+            .iter().any(|verb|goal.contains(*verb))
         {
             return json!({"mode":"implement_research",
                 "sourceGenerationId":null,
