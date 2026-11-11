@@ -1610,9 +1610,13 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
         let revision=row["methodPolicyTrial"]["policyRevision"].as_str();
         row["inducedMethodApplications"].as_array().is_some_and(|receipts|
             receipts.iter().any(|receipt|
-                receipt["revision"].as_str()==revision
+                receipt["policyId"]==cohort["policy"]["id"]
+                    && receipt["revision"].as_str()==revision
+                    && receipt["domain"]==row["methodPolicyTrial"]["domain"]
                     && receipt["performed"]==true
-                    && receipt["verifiedSourceWrite"]==true))
+                    && receipt["verifiedSourceWrite"]==true
+                    && receipt["effectOperationIds"].as_array()
+                        .is_some_and(|ops|!ops.is_empty())))
     };
     let paired_regression=|row:&Value|{
         row["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
@@ -4447,8 +4451,10 @@ mod tests {
                 generation["acceptedProof"]=json!({"status":"verified",
                     "evaluation":evaluation});
                 generation["inducedMethodApplications"]=json!([{
-                    "revision":"first-revision","performed":true,
-                    "verifiedSourceWrite":true,"preferredTool":"workspace_replace_range"}]);
+                    "policyId":id,"revision":"first-revision","domain":"tools",
+                    "performed":true,"verifiedSourceWrite":true,
+                    "effectOperationIds":["real-op-4"],
+                    "preferredTool":"workspace_replace_range"}]);
                 // New evidence may have changed the live revision during the
                 // trial. Only the original frozen scorer can be promoted.
                 policy["revision"]=json!("unmeasured-new-revision");
@@ -4503,8 +4509,10 @@ mod tests {
             let mut generation=generation;
             if regression {
                 generation["inducedMethodApplications"]=json!([{
-                    "revision":"failed-revision","performed":true,
-                    "verifiedSourceWrite":true,"preferredTool":"workspace_replace_range"}]);
+                    "policyId":id,"revision":"failed-revision","domain":"tools",
+                    "performed":true,"verifiedSourceWrite":true,
+                    "effectOperationIds":[format!("failed-op-{n}")],
+                    "preferredTool":"workspace_replace_range"}]);
             }
             if n==3 {last=generation;} else {
                 state.store.put("rsi_generation",&generation).unwrap();
@@ -4558,8 +4566,9 @@ mod tests {
                 // The source improved, but the model never performed the
                 // tool preference induced by DOMINION's candidate policy.
                 generation["inducedMethodApplications"]=json!([{
-                    "revision":"suggested-but-ignored","performed":false,
-                    "verifiedSourceWrite":false}]);
+                    "policyId":id,"revision":"suggested-but-ignored",
+                    "domain":"tools","performed":false,
+                    "effectOperationIds":[],"verifiedSourceWrite":false}]);
                 last=generation;
             } else {
                 state.store.put("rsi_generation",&generation).unwrap();
