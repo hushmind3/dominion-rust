@@ -1,10 +1,7 @@
 name: Sub4 actual local Ollama RSI attempt
-# One owner-requested real-model validation of the latest completed engine.
+# Owner-requested campaigns have been launched; future runs are manual.
 on:
   workflow_dispatch:
-  push:
-    branches: [dominion-sub4]
-    paths: ['.github/workflows/sub4-live-ollama.yml']
 permissions:
   contents: read
 jobs:
