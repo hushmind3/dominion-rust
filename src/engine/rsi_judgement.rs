@@ -151,6 +151,24 @@ pub fn evolve(rows:&[Value],objective:&str,domain:&str)->Value{
         row["rsiJudgementTrial"]["policy"]["rules"].is_array());
     let parent=previous.map(|row|row["rsiJudgementTrial"]["policy"]["rules"].clone())
         .unwrap_or(json!([]));
+    // Transfer a measured contrast between accepted and rejected descendants
+    // into the actual executable runtime grammar. A two-sided cohort is
+    // required; the induced rule remains an unproven, isolated trial.
+    let contrasted=crate::engine::rsi_rule_induction::induce(
+        &same.iter().collect::<Vec<_>>());
+    if !contrasted.is_empty() {
+        let mut inherited=normalize(&parent);
+        let mut discovered=contrasted;
+        discovered.append(&mut inherited);
+        let normalized=normalize(&json!(discovered));
+        let revision=memory::stable_id(&[
+            "champion.contrastive-judgement.v1",&json!(normalized).to_string()]);
+        return json!({"kind":"selfimprove.generated-judgement-program",
+            "revision":revision,"rules":normalized,
+            "sourceJobId":"independent_adopted_vs_rejected_descendant_cohorts",
+            "qualityProven":false,"status":"requires_independent_real_execution",
+            "operator":"contrastive_counterexample_guard_synthesis"});
+    }
     let mut rules=normalize(&parent);
     let mut generated=None::<Value>;
     let mut evidence_job=Value::Null;
