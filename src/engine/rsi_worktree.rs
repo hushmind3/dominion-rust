@@ -995,9 +995,12 @@ mod tests {
             "rsi":{"sourceClean":true,"captureError":"","modelError":"",
                 "checks":[{"label":"unsafe_safety","passed":false,"error":"unsafe 블록에 SAFETY 근거가 없습니다."}]}});
         assert!(repair_feedback(&unsafe_failure).unwrap().contains("SAFETY"));
-        let mut no_retry=failing;
-        no_retry["rsi"]["modelError"]=json!("provider unavailable");
-        assert!(repair_feedback(&no_retry).is_none());
+        let mut late_transport_failure=failing;
+        late_transport_failure["rsi"]["modelError"]=json!("provider stream closed after edit");
+        assert!(repair_feedback(&late_transport_failure).is_some(),
+            "A compiler-rejected real patch must still be repairable after a late stream error");
+        assert_eq!(run_status(true,false,false,true,"stream closed",""),
+            ("needs_review","build_or_typecheck_failed"));
     }
     #[test]
     fn compiler_repair_rehydrates_current_source_from_ansi_rustc_location() {
