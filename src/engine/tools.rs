@@ -37,6 +37,7 @@ pub fn definitions() -> Vec<Value> {
         tool("workspace_read_range", "Read only a line range from a workspace file. Use the line numbers from the repository index instead of reading a large file end to end.", object(json!({"path": text("Relative file path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1, "description":"Inclusive end line; at most 400 lines are returned"})}), vec!["path","startLine"])),
         tool("code_search", "Search the persistent repository index for file paths, symbols and line numbers. Use this before reading a large file.", object(json!({"query": text("Function, type, path or keyword fragment"), "limit": json!({"type":"integer","minimum":1,"maximum":50})}), vec!["query"])),
         tool("workspace_replace_range", "Replace 1-120 previously read lines using sourceSha256 from workspace_read_range. Send only newText, not the old block. Abort if the file changed.", object(json!({"path": text("Relative source path"), "startLine":json!({"type":"integer","minimum":1}), "endLine":json!({"type":"integer","minimum":1}), "newText":text("Replacement source lines"), "expectedSha256":text("Required exact sourceSha256 from workspace_read_range")}), vec!["path","startLine","endLine","newText","expectedSha256"])),
+        tool("workspace_replace_function", "Replace one EXISTING top-level Rust function from a verified workspace_read_range SHA. Send a complete fn declaration plus body as newText; DOMINION finds exact boundaries and preserves all other functions. Prefer this for an explicitly named function goal.", object(json!({"path":text("Relative source .rs path"),"functionName":text("Existing top-level Rust function identifier"),"newText":text("Complete replacement function beginning with fn / pub fn"),"expectedSha256":text("Exact full-file sourceSha256 observed by workspace_read_range")}), vec!["path","functionName","newText","expectedSha256"])),
         tool("workspace_replace", "Replace one exact block in a workspace file without resending the whole file (approval required). oldText must occur exactly once.", object(json!({"path": text("Relative file path"), "oldText": text("Exact existing text to replace; must occur exactly once"), "newText": text("Replacement text"), "expectedSha256": text("Optional SHA-256 observed before editing")}), vec!["path","oldText","newText"])),
         tool("workspace_write", "Write a UTF-8 file inside the workspace (approval required)", object(json!({"path": text("Relative file path"), "content": text("UTF-8 content")}), vec!["path", "content"])),
         tool("file_list", "List any folder on this computer using an absolute path", object(json!({"path": text("Absolute folder path")}), vec!["path"])),
@@ -98,6 +99,7 @@ pub fn requires_approval(name: &str) -> bool {
         "workspace_write"
             | "workspace_replace"
             | "workspace_replace_range"
+            | "workspace_replace_function"
             | "file_write"
             | "shell_exec"
             | "terminal_exec"
@@ -107,7 +109,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose")
+    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"workspace_replace_function"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose")
 }
 
 pub async fn execute(
@@ -122,7 +124,7 @@ pub async fn execute(
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
     }
     if isolated_rsi && matches!(name,
-        "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_range") {
+        "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_replace_function") {
         let requested=args["path"].as_str().ok_or("경로가 필요합니다.")?;
         let canonical=resolve_workspace(ctx.workspace,requested)?;
         if crate::engine::rsi::hidden_rsi_oracle_path(
@@ -130,7 +132,7 @@ pub async fn execute(
             return Err("자기개선 모델은 동결 평가 오라클 원문에 접근할 수 없습니다.".into());
         }
     }
-    if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range") {
+    if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_replace_function") {
         let path=args["path"].as_str().unwrap_or("");
         if !crate::engine::rsi::safe_path(path) {
             return Err("자기개선은 허용된 소스코드 경로만 수정할 수 있습니다.".into());
@@ -214,6 +216,16 @@ pub async fn execute(
                 run_id,
             )
             .await
+        }
+        "workspace_replace_function" => {
+            let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
+            replace_source_function(
+                ctx, &path,
+                &required_arg(args, "functionName")?,
+                &required_arg(args, "newText")?,
+                &required_arg(args, "expectedSha256")?,
+                run_id,
+            ).await
         }
         "workspace_replace" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
@@ -985,6 +997,80 @@ async fn rsi_rust_scope_preview(
         }
     }
     Ok(())
+}
+
+/// Native function-scoped editor: the model writes the function, the engine
+/// computes replacement boundaries from original source. No line-number
+/// guesses, no copied neighboring code and no synthetic claims of a patch.
+///
+/// Restrict to observed top-level Rust functions. All mutations still pass the
+/// standard atomic source SHA check, syntax gate, and sibling scope gate.
+async fn replace_source_function(
+    ctx: &ToolContext<'_>, path: &Path,
+    function: &str, new_text: &str, expected_sha256: &str, run_id: &str,
+) -> Result<Value, String> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        return Err("workspace_replace_function requires a Rust .rs file".into());
+    }
+    if function.is_empty() || !function.chars().next().is_some_and(|c|
+        c.is_ascii_alphabetic() || c == '_')
+        || !function.chars().all(|c|c.is_ascii_alphanumeric() || c == '_') {
+        return Err("workspace_replace_function: invalid functionName".into());
+    }
+    if expected_sha256.len()!=64 || !expected_sha256.bytes().all(|b|b.is_ascii_hexdigit()) {
+        return Err("workspace_replace_function: a verified sourceSha256 is required".into());
+    }
+    if new_text.len()>16_000 || new_text.trim().is_empty() {
+        return Err("workspace_replace_function: newText must contain one reasonably sized function".into());
+    }
+    let replacement_functions=rsi_top_level_functions(new_text);
+    if replacement_functions.len()!=1 || replacement_functions[0].0!=function
+        || !new_text.trim_end().ends_with('}') {
+        return Err(format!(
+            "workspace_replace_function: newText must be exactly one complete top-level fn {function}(...), not partial body, multiple functions or surrounding lines"
+        ));
+    }
+    let original=tokio::fs::read_to_string(path).await
+        .map_err(|e|format!("{}: {e}",path.display()))?;
+    let expected=expected_sha256.to_ascii_lowercase();
+    let observed=format!("{:x}",Sha256::digest(original.as_bytes()));
+    if observed!=expected {
+        return Err("workspace_replace_function: file version changed; read again before editing".into());
+    }
+    let definitions=rsi_top_level_functions(&original);
+    let named=definitions.iter().filter(|(name,_)|name==function)
+        .collect::<Vec<_>>();
+    if named.len()!=1 {
+        return Err(format!(
+            "workspace_replace_function: expected one existing top-level {function}(), got {}",
+            named.len()
+        ));
+    }
+    let original_span=named[0].1;
+    // The scanner bounds an item at the next top-level function. Keep the
+    // inter-item suffix and next function's comments byte-identical.
+    let close=original_span.rfind("\n}\n")
+        .ok_or("workspace_replace_function: cannot safely identify the current function closing brace; use hash-checked range edit instead")?;
+    let suffix=&original_span[close+3..];
+    let updated=original.replacen(original_span,
+        &format!("{}\n{}",new_text.trim_end(),suffix),1);
+    if updated==original {
+        return Err("workspace_replace_function: replacement does not modify source".into());
+    }
+    let mut result=checked_write(ctx,path,&updated,run_id,true,Some(&expected)).await?;
+    if result["preflightSyntaxRejected"]==true || result["preflightScopeRejected"]==true {
+        return Ok(result);
+    }
+    if result["written"]!=true {
+        return Err(format!("workspace_replace_function: mutation declined: {result}"));
+    }
+    result["replacedFunction"]=json!(function);
+    result["writtenSha256"]=json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
+    if let Some(parse)=rsi_rust_parse_receipt(ctx,path).await {
+        result["syntaxValid"]=parse["valid"].clone();
+        result["syntaxCheck"]=parse;
+    }
+    Ok(result)
 }
 
 /// Read-only Rust parser immediately after a model-authored source
@@ -1845,6 +1931,39 @@ mod tests {
         assert_eq!(result["syntaxValid"], true, "{result}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), valid);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn function_editor_preserves_siblings_without_model_line_ranges() {
+        use crate::{config::Config, db::Store, vault::Vault};
+        let dir=std::env::temp_dir().join(format!("sub1-function-edit-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src/engine")).unwrap();
+        let path=dir.join("src/engine/example.rs");
+        let old="fn sibling() -> u32 {\n    5\n}\n\nfn target() -> u32 {\n    1\n}\n\nfn other() -> u32 {\n    7\n}\n";
+        let updated="fn target() -> u32 {\n    2\n}";
+        std::fs::write(&path,old).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),
+            workspace:dir.clone()};
+        let state=crate::state::AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
+        state.store.put("session",&json!({"id":"sub1-function","rsiRun":true,
+            "rsiExplicitFocus":true,"rsiObjective":"Improve target()"}));
+        let ctx=ToolContext{workspace:&dir,store:&state.store,state:&state,
+            session_id:"sub1-function",agent_id:None,tools_enabled:true,tools_execution_enabled:true};
+        let sha=format!("{:x}",Sha256::digest(old.as_bytes()));
+        let change=execute(&ctx,"workspace_replace_function",
+            &json!({"path":"src/engine/example.rs","functionName":"target",
+                "newText":updated,"expectedSha256":sha}),"run").await.unwrap();
+        assert_eq!(change["written"],true,"{change}");
+        assert_eq!(change["replacedFunction"],"target");
+        assert_eq!(change["syntaxValid"],true,"{change}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),
+            old.replace("fn target() -> u32 {\n    1\n}",updated));
+        let rejected=execute(&ctx,"workspace_replace_function",
+            &json!({"path":"src/engine/example.rs","functionName":"target",
+                "newText":updated,"expectedSha256":sha}),"run").await.unwrap_err();
+        assert!(rejected.contains("version changed"),"{rejected}");
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
