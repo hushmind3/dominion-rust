@@ -597,7 +597,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_missing_readback_is_applied_not_verified() {
+    async fn replacement_receipt_requires_independent_matching_postimage() {
+        let dir=std::env::temp_dir().join(format!("dominion-replace-effect-{}",uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let args=json!({"path":"src/example.rs","oldText":"old","newText":"new"});
+        tokio::fs::create_dir_all(dir.join("src")).await.unwrap();
+        tokio::fs::write(dir.join("src/example.rs"),"new").await.unwrap();
+        let effect=prepare("s","workspace_replace",&args,&[]);
+        assert_eq!(effect["resourceKey"],"workspace:src/example.rs");
+        let receipt=seal(&dir,"workspace_replace",&args,
+            &json!({"written":true,"postSha256":hash_text("new")}),
+            true,false,false,&effect).await;
+        assert_eq!(receipt["toolReceipt"]["verified"],true,"{receipt}");
+        let wrong=seal(&dir,"workspace_replace",&args,
+            &json!({"written":true,"postSha256":hash_text("not written")}),
+            true,false,false,&effect).await;
+        assert_eq!(wrong["toolReceipt"]["verified"],false,"{wrong}");
+        tokio::fs::remove_dir_all(&dir).await.unwrap();
+    }
+
+
         let dir = std::env::temp_dir().join(format!("dominion-effect-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let args = json!({"path":"missing/note.txt","content":"x"});
