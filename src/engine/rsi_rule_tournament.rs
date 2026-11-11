@@ -38,9 +38,9 @@ pub fn compare(rows:&[&Value],reward:fn(&Value)->f64)->Value {
     let mut contests=BTreeMap::<(String,String),(u64,u64,u64)>::new();
     for cohort in cohorts.values() {
         let policies=cohort.iter().collect::<Vec<_>>();
-        for (index,(left,lr)) in policies.iter().enumerate() {
-            for (right,rr) in policies.iter().skip(index+1) {
-                let entry=contests.entry(((*left).clone(),(*right).clone())).or_default();
+        for (index,&(left,lr)) in policies.iter().enumerate() {
+            for &(right,rr) in policies.iter().skip(index+1) {
+                let entry=contests.entry((left.to_string(),right.to_string())).or_default();
                 if *lr-*rr>0.25 {entry.0+=1;}
                 else if *rr-*lr>0.25 {entry.1+=1;}
                 else {entry.2+=1;}

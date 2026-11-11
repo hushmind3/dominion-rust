@@ -159,6 +159,28 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
         }
     }
     let (best_genome,best_revision,best_score,proven)=best.expect("observed cohort");
+
+    // Independently measured rival policies on the *same source/model/goal*
+    // can override UCB exploration, but only after two distinct matched
+    // contexts favor the challenger without a contradictory measured pair.
+    // This promotes a controller, never a source patch: source adoption still
+    // requires the existing frozen paired evaluator.
+    let contest=crate::engine::rsi_rule_tournament::compare(&observed,payoff);
+    if contest["promotion"]==true {
+        if let Some(winner)=contest["winnerRevision"].as_str() {
+            if let Some((genome,_,_,_))=cohorts.get(winner) {
+                let ancestor=observed.iter()
+                    .find(|row|Genome::from_policy(&row["editPolicy"]).revision()==winner)
+                    .and_then(|row|row["editPolicy"]["parentRevision"].as_str())
+                    .unwrap_or("");
+                let mut chosen=serialize(genome.clone(),"matched-evidence-controller",
+                    ancestor,"promote_independent_matched_controller",
+                    observed.len(),1.0,observed.last().and_then(|r|r["jobId"].as_str()));
+                chosen["competitionEvidence"]=contest;
+                return chosen;
+            }
+        }
+    }
     if proven>=2 && best_score>=0.9 {
         let last=observed.last().copied().expect("nonempty observations");
         // Exploitation is the default, yet a verified successful procedure
