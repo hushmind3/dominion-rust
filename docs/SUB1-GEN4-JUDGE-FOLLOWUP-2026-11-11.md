@@ -5,7 +5,7 @@
 - 심판 확정 기준: **34/100점, 5위** (Champion 39, Sub2 37, Sub3 36, Sub4 35). **실제 모델의 독립 성능 개선·채택까지 이어지기 전에는 40점 도달로 보고하지 않는다.**
 - 기준 시작 커밋 `def5fa71` → 검증 완료 코드 `d2d2847` → 최신 추가 수정 `c8a5113`.
 - CI `d2d2847`: https://github.com/hushmind3/dominion-rust/actions/runs/42945519698 **731개 Rust 테스트 통과(16+613+3+99), 실패 0**, 웹 타입 검사와 빌드 성공.
-- CI `c8a5113`: https://github.com/hushmind3/dominion-rust/actions/runs/42945892071 (작성 시 진행 중; 최신 커밋의 결과를 재확인할 것).
+- CI `c8a5113`: https://github.com/hushmind3/dominion-rust/actions/runs/42945892071 **성공**, Rust **731개(16+613+3+99) 전부 통과, 실패 0**, 웹 타입 검사·빌드 성공.
 
 ## 이번 세션 실제 개선
 ### 막힌 고리: 연구 뒤 실패를 건너뛰고 오래된 연구를 반복
