@@ -540,8 +540,14 @@ pub fn repair_target(result:&Value)->Option<(String,u64)> {
 /// calls for provider errors, missing diffs or checkout integrity failures.
 pub fn repair_feedback(result:&Value)->Option<String>{
     if result["status"]!="needs_review"
-        || result["rsi"]["sourceClean"]!=true
-        || !result["rsi"]["modelError"].as_str().unwrap_or("").is_empty(){
+        || result["rsi"]["sourceClean"]!=true {
+        return None;
+    }
+    // A model/provider error that occurred AFTER a verified source edit
+    // must not suppress the independently observed compiler diagnostics.
+    // Only retry such errors when the verifier actually found a broken patch.
+    if !result["rsi"]["modelError"].as_str().unwrap_or("").is_empty()
+        && result["reason"]!="build_or_typecheck_failed" {
         return None;
     }
     // A model tried to edit, yet left zero source bytes changed. Give it a
