@@ -2759,6 +2759,10 @@ async fn run_loop(
         // Workers read this durable table, not the coordinator's in-memory
         // history. Publish only after research, method feedback and trial
         // outcomes are complete so the next worker can actually continue.
+        // Store::get supplies createdAt at seconds resolution, obscuring
+        // which completion followed which within the same second.
+        generation["completedAt"]=json!(chrono::Utc::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis,true));
         context.state.store.put("rsi_generation", &generation)
             .ok_or("완성된 세대의 연구·실행 결과 저장 실패")?;
         record["history"]
@@ -3168,9 +3172,20 @@ fn improvement_history(state:&AppState,input:&Value,history:&[Value],campaign_id
             && row["knowledgePartition"]==partition
             && row["objectiveId"]==objective)
         .collect::<Vec<_>>();
-    previous.sort_by(|a,b|
-        b["createdAt"].as_str().cmp(&a["createdAt"].as_str())
-            .then_with(||b["id"].as_str().cmp(&a["id"].as_str())));
+    // Preserve the actual latest outcome across campaign boundaries.
+    // completedAt is high-resolution and survives Store::get, which replaces
+    // createdAt with the SQLite-created seconds-resolution timestamp.
+    previous.sort_by(|a,b| {
+        let timestamp=|row:&Value|row["completedAt"].as_str()
+            .or_else(||row["createdAt"].as_str()).unwrap_or("");
+        timestamp(b).cmp(timestamp(a))
+            .then_with(|| {
+                if a["campaignId"]==b["campaignId"] {
+                    b["attempt"].as_u64().cmp(&a["attempt"].as_u64())
+                } else {std::cmp::Ordering::Equal}
+            })
+            .then_with(||b["id"].as_str().cmp(&a["id"].as_str()))
+    });
     let Some(latest)=previous.first() else {return Vec::new();};
     // Never resurrect an old research directive after a newer implementation
     // was adopted, rejected, or evaluated as a candidate.
@@ -3862,7 +3877,7 @@ mod tests {
             "generatorCommit":"revision-one","knowledgePartition":partition,
             "objectiveId":objective,"newFindings":1,"knowledgeId":"found-source",
             "accepted":false,"candidateId":null,
-            "createdAt":"2026-11-11T00:01:00Z"
+            "completedAt":"2026-11-11T00:01:00.100Z"
         })).unwrap();
         let initial=improvement_history(&state,&input,&[],"new");
         assert_eq!(improvement_directive(&initial)["mode"],"implement_research");
@@ -3874,7 +3889,7 @@ mod tests {
             "improvementDirective":{"mode":"implement_research",
                 "sourceGenerationId":"discovered"},
             "improvementActionObservation":{"status":"not_followed"},
-            "createdAt":"2026-11-11T00:02:00Z"
+            "completedAt":"2026-11-11T00:02:00.200Z"
         })).unwrap();
         let inherited=improvement_history(&state,&input,&[],"new");
         assert_eq!(inherited.len(),1);
@@ -3903,12 +3918,12 @@ mod tests {
         state.store.put("rsi_generation",&json!({
             "id":"old","campaignId":"first","knowledgePartition":partition,
             "objectiveId":objective,"newFindings":1,"knowledgeId":"old-research",
-            "accepted":false,"candidateId":null,"createdAt":"2026-11-11T00:00:00Z"
+            "accepted":false,"candidateId":null,"completedAt":"2026-11-11T00:00:00.100Z"
         })).unwrap();
         state.store.put("rsi_generation",&json!({
             "id":"candidate","campaignId":"second","knowledgePartition":partition,
             "objectiveId":objective,"newFindings":0,"accepted":false,
-            "candidateId":"not-adopted","createdAt":"2026-11-11T00:01:00Z"
+            "candidateId":"not-adopted","completedAt":"2026-11-11T00:00:00.200Z"
         })).unwrap();
         assert!(improvement_history(&state,&input,&[],"third").is_empty(),
             "A newer evaluated candidate supersedes an older research-only episode");
