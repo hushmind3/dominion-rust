@@ -95,3 +95,32 @@
 2. `42954667541` 아티팩트의 `sub1-local-rsi.json`, `sub1-local-operations.json`, `sub1-engine.log`에서 네이티브 모델 호출 수, `rsi.action_checkpoint`의 `editOnly`, `workspace_replace` 시도/실패/성공, `candidateId`, `evaluation.metrics`와 채택 확인. **0회 편집이면 모델 도구 선택 단계의 실제 오류를 수정**; 독립 holdout 개선이라고 추정 금지.
 3. 실제 수정에 도달하면 동결 holdout의 개선·회귀를 독립 비교하고, 후보 채택 뒤 새 바이너리에서 다음 세대가 같은 개선 기술을 활용하는지 2·3세대까지 실행. 다른 도메인 전이도 반드시 실제 도구/품질 영수증으로 확인.
 4. 무료 제공자 지연으로 끝난 과거 `needs_review`를 정상 무편집 실패와 섞어 학습하지 않을 것. 모델이 편집할 수 있는 환경을 먼저 확보해 연구→실행→피드백의 루프를 완주할 것.
+
+
+## 5세대 Sub1 — 실제 Qwen 쓰기 도구 최초 도달과 시간 예산 병목 수정 (2026-11-11)
+
+### 현재 역할·담당 브랜치·기준
+- 역할: Sub1 독립 개발자. `dominion-sub1`에서만 구현·실험. Champion/Sub2~4/`main` 수정 없음.
+- 독립 심판 최신 공개 인계: `e59c643` 기준 70/100, 4위(구현 33, 완주 18, 자기개선 12, 일반화 7). 이 뒤 변경에 대한 신규 심판 점수는 미확정.
+- 추가 구현: `4dd9fba` → `236d32b` → `3ed1c77`. 최신 확인할 실험 커밋은 `3ed1c77f9b56bbb9d91e8089df40b71374aae0dd`.
+
+### 이번에 실제 완료한 코드 작업
+1. `4dd9fba` `src/engine/chat/runtime.rs`: 명시된 소스 편집 과제에서 검증된 코드 발췌가 이미 모델 입력에 있으면 첫 호출의 도구를 `workspace_read_range`, `workspace_replace`, `workspace_write`에 집중. 실제 근거가 없는 연구/자율 탐색은 검색 경로 보존. 회귀 검증 추가.
+2. `236d32b` `.github/workflows/sub1-local-ollama-rsi.yml`: 상기 런타임·작업 실행기·RSI 소스 변경 시 **실제 로컬 Qwen 캠페인**이 다시 실행되도록 트리거 연결. CI 성공과 실모델 RSI 성공은 별개로 기록.
+3. `3ed1c77` `src/engine/chat/runtime.rs`: 일반 대화 10분 제한을 보존하면서 **실제 RSI 캠페인 내부의 세대 채팅 실행은 14분**까지 허용. 기존 부모 `rsi_evolve.rs` 워커 상한 15분보다 짧게 유지해 결과 수집 시간을 확보. 외부 캠페인/사용자 취소·한도는 계속 적용. 회귀 테스트 추가.
+4. 같은 커밋 `scripts/sub1-local-ollama-rsi.mjs`: 실제 CPU Qwen 실험이 패치 생성→동결 A/B 평가까지 시간을 쓸 수 있도록 캠페인 1,200→2,100초, 독립 러너 관측 22→35분으로 확장.
+
+### 직접 확인한 실제 모델 성공과 실패
+- 수정 전 실제 로컬 Qwen3 4B/Ollama/Rust 캠페인: [Actions 42954667541](https://github.com/hushmind3/dominion-rust/actions/runs/42954667541), `37f5c50` 소스. 워크플로 자체 성공, **모델 호출 3회**.
+- SQLite `execution_operation` 실측: `code_search` completed 1, **`workspace_write` completed 1**, `workspace_read_range` completed 1. `rsi.action_checkpoint`가 `editOnly=true`로 실행됨. 과거 0회 쓰기 도구 호출이라는 병목에서 실제 전진.
+- **후보 0, verified 채택 0, `needs_review`**, 오류 `실행 시간 제한(10분)을 초과했습니다.`. `workspace_write` operation completed가 곧 변경 diff/유효 후보를 의미하지는 않음. 실제 파일의 diff와 write 도구 `result.written` 세부 확인은 남아 있음. 런타임이 종료되며 detached 후보 수집 단계에 도달하지 못한 점이 직접 수정 대상.
+- `37f5c50` 전체 CI [42954667598](https://github.com/hushmind3/dominion-rust/actions/runs/42954667598) 성공. `654eba82` CI [42954985071](https://github.com/hushmind3/dominion-rust/actions/runs/42954985071) 성공.
+- 최신 `3ed1c77` CI [42956630103](https://github.com/hushmind3/dominion-rust/actions/runs/42956630103) 및 로컬 모델 재실험 [42956630085](https://github.com/hushmind3/dominion-rust/actions/runs/42956630085)은 **실행 시작 확인, 결과 미확정**. 추가 `236d32b` 실험 [42956141806](https://github.com/hushmind3/dominion-rust/actions/runs/42956141806)도 별도 비교 대상.
+
+### 다음 최우선 과제 / 아직 미완성
+1. `42956630103` CI 실패 시 **실제 오류**를 즉시 수정; `42956630085`의 최종 SQLite 영수증, 모델 호출, 쓰기 도구 `result` 및 `candidateId` 확인. `workspace_write` 완료가 에러 응답인지 파일 변경인지 구분.
+2. 코드 diff가 생성됐다면 고정 planning-quality holdout의 **baseline 0.75 → candidate 1.0** 등 독립 수치가 실제로 증가했는지 paired receipt·회귀·eligible·채택을 검증. 아직 개선 수치를 실측 성공으로 주장하지 않음.
+3. 첫 유효 후보 채택→수정된 코드의 다음 실행기 재빌드→두 번째/세 번째 세대 계승과 다른 도메인 전이를 실모델로 증명.
+4. 연구만 수행하거나 모델 응답이 중단된 사례를 지능 성장으로 집계하지 말 것. `workspace_write` 호출, 실제 파일 diff, 독립 검사 통과, 채택과 다음 세대 계승을 구분할 것.
+
+참고: `src/engine/chat/runtime.rs`, `src/engine/chat/provider.rs`, `src/engine/jobs.rs`, `src/engine/rsi_evolve.rs`, `scripts/sub1-local-ollama-rsi.mjs`, `.github/workflows/sub1-local-ollama-rsi.yml`, `src/engine/rsi_oracle_fixture.rs`.
