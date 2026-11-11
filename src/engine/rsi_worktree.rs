@@ -998,7 +998,14 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
         .arg(candidate["baseCommit"].as_str().unwrap_or(""))
         .arg(&patch_file).arg(&plan_file).arg(&report_file)
         .env("PATH", path)
-        .env("RSI_BUILD_CACHE",std::fs::canonicalize(&state.config.data_dir).map_err(|e|e.to_string())?.join("rsi-paired-build").join(&context.job_id));
+        // Reuse only Cargo's compiled artifacts between sequential generations.
+        // Cargo fingerprints the exact source/dependencies and recompiles a
+        // changed candidate; baseline/candidate still have separate targets
+        // in rsi-measure.mjs and always execute every frozen test afresh.
+        // A per-job target directory previously forced two cold release builds
+        // for each descendant and could exhaust the live campaign budget.
+        .env("RSI_BUILD_CACHE",std::fs::canonicalize(&state.config.data_dir)
+            .map_err(|e|e.to_string())?.join("rsi-paired-build").join("shared-release-v1"));
     let outcome=crate::engine::rsi_evolve::command(context,command,Duration::from_secs(1200)).await?;
     if !outcome.status.success() {
         return Err(format!("독립 A/B 실험 실행 실패: {}",String::from_utf8_lossy(&outcome.stderr)
