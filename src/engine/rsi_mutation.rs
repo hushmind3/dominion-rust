@@ -233,18 +233,33 @@ fn hoist_invariant_query_domain(source: &str) -> Option<String> {
     Some(output)
 }
 
+/// Respect an explicitly chosen source. When autonomous source selection is
+/// enabled, the measured domain (rather than a stale search excerpt) selects
+/// an executable induction target. The worker can still use its normal model
+/// path if this known source shape no longer matches a mutation operator.
+fn inductive_target_path(input: &Value) -> Option<&str> {
+    let selected = input["rsiFocusFiles"].as_array()
+        .filter(|files| files.len()==1)
+        .and_then(|files|files[0].as_str());
+    if input["rsiAutoFocus"] != true {
+        return selected;
+    }
+    match input["rsiTargetDomain"].as_str() {
+        Some("memory") => Some("src/engine/room_state.rs"),
+        Some("improver") => Some("src/engine/rsi_evolve.rs"),
+        _ => selected,
+    }
+}
+
 /// One inductive change, isolated in the disposable git worktree. If the
 /// model or inherited descendant already changed bytes, do not mix authors.
 pub(crate) fn induce(
     state: &AppState, job_id: &str, input: &Value, source: &Path, isolated: &Path,
 ) -> Result<Option<Value>, String> {
     if input["rsiCampaignId"].as_str().is_none() { return Ok(None); }
-    let Some(files) = input["rsiFocusFiles"].as_array().filter(|v| v.len() == 1) else {
-        return Ok(None);
-    };
-    let Some(relative) = files[0].as_str().filter(|path| rsi::safe_path(path)) else {
-        return Ok(None);
-    };
+    let Some(relative) = inductive_target_path(input).filter(|path|
+        rsi::safe_path(path) && source.join(path).is_file() && isolated.join(path).is_file()
+    ) else { return Ok(None); };
     if input["rsiFailedPatchRecovery"]["candidateId"].is_string() { return Ok(None); }
     let original = fs::read_to_string(source.join(relative)).map_err(|e| e.to_string())?;
     let existing = fs::read_to_string(isolated.join(relative)).map_err(|e| e.to_string())?;
@@ -317,6 +332,21 @@ mod tests {
         assert!(second.contains("let asked_domain = fact_domain(query);"));
         assert!(hoist_invariant_query_terms(&second).is_none());
         assert!(hoist_invariant_query_domain(&second).is_none());
+    }
+
+    #[test]
+    fn autonomous_induction_follows_measured_domain_but_respects_owner_focus() {
+        let mut request = json!({"rsiAutoFocus":true,
+            "rsiTargetDomain":"memory","rsiFocusFiles":["src/engine/other.rs"]});
+        assert_eq!(inductive_target_path(&request),Some("src/engine/room_state.rs"));
+        request["rsiTargetDomain"]=json!("improver");
+        assert_eq!(inductive_target_path(&request),Some("src/engine/rsi_evolve.rs"));
+        request["rsiTargetDomain"]=json!("tools");
+        assert_eq!(inductive_target_path(&request),Some("src/engine/other.rs"));
+        request["rsiAutoFocus"]=json!(false);
+        assert_eq!(inductive_target_path(&request),Some("src/engine/other.rs"));
+        request["rsiFocusFiles"]=json!([]);
+        assert_eq!(inductive_target_path(&request),None);
     }
 
     #[test]
