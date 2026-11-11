@@ -125,7 +125,7 @@ if(mode==='probe'){
       editPolicy:g.editPolicy,programStages:g.programStages,
       compilerRepairReceipts:g.compilerRepairReceipts,
       scopeExpanded:g.scopeExpanded,residualEvidence:g.residualEvidence,
-      costOpportunities:g.costOpportunities,
+      costOpportunities:g.costOpportunities,metaTransferTarget:g.metaTransferTarget,
       ruleExecutions:g.ruleExecutions,toolTimeline:g.toolTimeline,
       acceptedSourceHashes:g.acceptedSourceHashes,
       competitionEvidence:g.editPolicy?.competitionEvidence,
@@ -199,6 +199,7 @@ if(mode==='probe'){
       acceptedCommits:accepted.map(g=>g.acceptedCommit),
       compilerAssistedGenerations:trace.generationEvidence.filter(g=>(g.compilerRepairReceipts||[]).length>0).length,
       postAdoptionScopeExpansions:trace.generationEvidence.filter(g=>g.scopeExpanded===true).length,
+      metaImproverTrials:trace.generationEvidence.filter(g=>g.metaTransferTarget===true).length,
       readOnlyGenerations:trace.generationEvidence.filter(g=>!g.candidateId
         && (g.editEvidence?.verifiedWrites||0)===0
         && countCalls(g,new Set(['code_search','workspace_read_range']))>0).length,
