@@ -2157,6 +2157,119 @@ fn new_research_findings(state:&AppState,input:&Value,job_id:&str,hashes:&[Value
     hashes.iter().filter(|hash|hash.as_str().is_some_and(|hash|!known.contains(hash))).count()
 }
 
+/// Source-independent record of what the engine really did. Preserve
+/// action order and failures: an aggregate tool-call count cannot identify
+/// recoveries, and a model saying it followed a procedure is not evidence.
+fn session_action_trace(state:&AppState,session_id:&str)->Vec<Value>{
+    let mut ops=state.store.all("execution_operation").into_iter()
+        .filter(|op|op["sessionId"].as_str()==Some(session_id)
+            && tools::rsi_allowed(op["tool"].as_str().unwrap_or("")))
+        .collect::<Vec<_>>();
+    crate::engine::procedure::sort_operations(&mut ops);
+    ops.into_iter().take(48).map(|op|{
+        let source_edit=matches!(op["tool"].as_str(),
+            Some("workspace_write"|"workspace_replace"|"workspace_replace_range"));
+        let verified=op["status"]=="completed"
+            && op["result"]["written"]==true
+            && op["toolReceipt"]["verified"]==true;
+        let executed=op["status"]=="completed"
+            && op["result"]["error"].is_null()
+            && (!source_edit || verified);
+        json!({
+            "tool":op["tool"],"executed":executed,"sourceChanged":verified,
+            "status":op["status"],
+            "error":op["result"]["error"].as_str()
+                .or_else(||op["error"].as_str()).unwrap_or("")
+                .chars().take(200).collect::<String>(),
+            "operationId":op["id"]
+        })
+    }).collect()
+}
+
+/// Compose a new, revisioned harness action program from different observed
+/// episodes. A researched prefix and a candidate-producing suffix can come
+/// from different generations: the result need not be a verbatim replay of
+/// any previous model's tool calls. This changes tool availability in the
+/// descendant's native runtime, not the language model's parameters.
+fn synthesize_action_program(rows:&[Value])->Value {
+    let mut best_discovery:(i64,Vec<String>)=(i64::MIN,Vec::new());
+    let mut best_mutation:(i64,Vec<String>)=(i64::MIN,Vec::new());
+    let mut recovery=BTreeMap::<String,BTreeMap<String,u64>>::new();
+    let mut episode_count=0u64;
+    for generation in rows {
+        let steps=generation["actionTrace"].as_array().into_iter()
+            .flatten().filter_map(|step|{
+                let name=step["tool"].as_str()?;
+                if !matches!(name,
+                    "code_search"|"workspace_read_range"|"web_search"|"http_fetch"|
+                    "rsi_method_propose"|"algorithm_propose"|
+                    "workspace_replace"|"workspace_replace_range"|"workspace_write") {
+                    return None;
+                }
+                Some((name.to_string(),step["executed"]==true))
+            }).collect::<Vec<_>>();
+        if steps.is_empty(){continue;}
+        episode_count+=1;
+        for pair in steps.windows(2) {
+            if !pair[0].1 && pair[1].1 && pair[0].0!=pair[1].0 {
+                *recovery.entry(pair[0].0.clone()).or_default()
+                    .entry(pair[1].0.clone()).or_insert(0)+=1;
+            }
+        }
+        let mut discovery=Vec::new();
+        let mut mutation=Vec::new();
+        let mut saw_mutation=false;
+        for (tool,ok) in steps {
+            if !ok {continue;}
+            let changes=matches!(tool.as_str(),
+                "workspace_replace"|"workspace_replace_range"|"workspace_write");
+            if changes {saw_mutation=true;}
+            let segment=if saw_mutation {&mut mutation}else{&mut discovery};
+            if segment.last()!=Some(&tool) && segment.len()<5 {segment.push(tool);}
+        }
+        let findings=generation["newFindings"].as_u64().unwrap_or(0);
+        let eligible=generation["candidateCapture"]["checksPassed"]==true;
+        let accepted=generation_is_verified(generation);
+        if !discovery.is_empty() {
+            let reward=if accepted {40}
+                else if eligible {18}
+                else if findings>0 {5+findings.min(4) as i64}
+                else {1};
+            if reward>best_discovery.0 {best_discovery=(reward,discovery);}
+        }
+        if !mutation.is_empty() {
+            let reward=if accepted {100}
+                else if eligible {32}
+                else if generation["attemptedCandidateId"].is_string(){12}
+                else {3};
+            if reward>best_mutation.0 {best_mutation=(reward,mutation);}
+        }
+    }
+    // Combine the strongest independent evidence. Avoid claiming a new
+    // quality gain: this is a *trial* algorithm until a later paired result.
+    let mut sequence=best_discovery.1;
+    for tool in best_mutation.1 {
+        if sequence.last()!=Some(&tool) && sequence.len()<8 {
+            sequence.push(tool);
+        }
+    }
+    let rules=recovery.into_iter().filter_map(|(failed,candidates)|{
+        let (next,observed)=candidates.into_iter()
+            .max_by(|a,b|a.1.cmp(&b.1).then_with(||b.0.cmp(&a.0)))?;
+        Some(json!({"onFailure":failed,"tryTool":next,"observedRecoveries":observed}))
+    }).collect::<Vec<_>>();
+    let evidence=json!({"episodes":episode_count,
+        "discoveryEvidence":best_discovery.0.max(0),
+        "mutationEvidence":best_mutation.0.max(0),
+        "recoveryRules":rules.len()});
+    let revision=crate::engine::memory::stable_id(&[
+        &json!([&sequence,&rules,&evidence]).to_string()]);
+    json!({"revision":revision,"kind":"rsi.induced_action_program",
+        "status":"trial_unverified","sequence":sequence,
+        "onFailure":rules,"evidence":evidence,
+        "origin":"cross_episode_composition"})
+}
+
 /// Induce a new *execution method*, not a new model weight or a replayed
 /// patch. Concrete edit receipts are training examples; independent paired
 /// evidence, when present, outweighs mere file writes. The result controls
@@ -2179,6 +2292,7 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         if !key.is_empty() {episodes.insert(key.to_string(),generation);}
     }
     let rows=revalidated_history(state,&episodes.into_values().collect::<Vec<_>>());
+    let action_program=synthesize_action_program(&rows);
     let mut exact=Arm::default();
     let mut range=Arm::default();
     let mut sources=BTreeSet::<String>::new();
@@ -2306,6 +2420,7 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         "ownerObjectiveId":objective,"knowledgePartition":partition,
         "preferredTool":preferred,"fallbackTool":fallback,
         "explorationCallLimit":exploration_limit,
+        "actionProgram":action_program,
         "reason":why,
         "status":if sources.len()>=2 && transfer_domains.len()>=2
             && (exact.accepted+range.accepted)>=2 {
@@ -2771,6 +2886,9 @@ async fn run_loop(
         let write_receipts = session
             .map(|s| session_write_receipts(&context.state, s))
             .unwrap_or_default();
+        let action_trace = session
+            .map(|s| session_action_trace(&context.state,s))
+            .unwrap_or_default();
         let method_actions=session.map(|session_id|context.state.store.all("execution")
             .into_iter().filter(|execution|execution["sessionId"]==session_id
                 && execution["rsiMethodDecision"].is_object())
@@ -2812,6 +2930,7 @@ async fn run_loop(
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
             "writeReceipts":write_receipts,
+            "actionTrace":action_trace,
             "executionMethod":current["input"]["rsiExecutionMethod"],
             "methodActions":method_actions,
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
