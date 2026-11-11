@@ -175,6 +175,37 @@ fn rsi_canonical_arguments(raw:&str)->Option<String>{
     object.is_object().then(||object.to_string())
 }
 
+/// Free/small models occasionally use a generic "workspace_wrapper" name
+/// while providing an otherwise exact edit function argument object. Recover
+/// ONLY a fully specified mutation for a tool advertised in this round.
+/// Never invent oldText/newText, infer an edit from prose, or bypass the
+/// workspace's own path and source-version checks.
+fn rsi_recover_exact_edit_wrapper(
+    name:&str,raw:&str,round_tools:&[Value],
+)->Option<(String,String)>{
+    if name!="workspace_wrapper"{return None;}
+    let parsed=serde_json::from_str::<Value>(&rsi_canonical_arguments(raw)?).ok()?;
+    let nested=parsed["arguments"].as_object()
+        .map(|_|&parsed["arguments"])
+        .or_else(||parsed["parameters"].as_object().map(|_|&parsed["parameters"]));
+    let args=nested.unwrap_or(&parsed);
+    let path=args["path"].as_str()?;
+    if !crate::engine::rsi::safe_path(path){return None;}
+    let old=args["oldText"].as_str();
+    let new=args["newText"].as_str().filter(|text|!text.is_empty())?;
+    let target=if old.is_some_and(|text|!text.is_empty()&&text!=new){
+        "workspace_replace"
+    }else if args["startLine"].as_u64().is_some_and(|n|n>0)
+        && args["endLine"].as_u64().is_some_and(|n|
+            n>=args["startLine"].as_u64().unwrap_or(u64::MAX)){
+        "workspace_replace_range"
+    }else{return None;};
+    if parsed["tool"].as_str().is_some_and(|declared|declared!=target)
+        || parsed["name"].as_str().is_some_and(|declared|declared!=target)
+        || !rsi_tool_advertised(target,round_tools){return None;}
+    Some((target.to_string(),args.to_string()))
+}
+
 /// "completed" is not synonymous with a source change: an unchanged
 /// replacement can legitimately return success. Only a verified readback of
 /// written bytes may advance the RSI source-edit checkpoint.
@@ -1958,6 +1989,16 @@ async fn run_turn_body(
                         call.arguments=arguments;
                     }
                 }
+                if let Some((edit_tool,edit_args))=
+                    rsi_recover_exact_edit_wrapper(&call.name,&call.arguments,&round_tools){
+                    state.store.audit("rsi.recovered_exact_edit_wrapper",json!({
+                        "executionId":execution_id,"originalTool":call.name,
+                        "advertisedTool":edit_tool,
+                        "claim":"existing_grounded_arguments_recovered_not_verified_write"
+                    }));
+                    call.name=edit_tool;
+                    call.arguments=edit_args;
+                }
                 if let Some(canonical)=rsi_canonical_tool_name(&call.name,&round_tools){
                     state.store.audit("rsi.recovered_malformed_tool_channel",json!({
                         "executionId":execution_id,
@@ -2142,9 +2183,11 @@ async fn run_turn_body(
                 return Err("실행이 중단되었습니다.".into());
             }
             if session["rsiRun"] == true && !rsi_tool_advertised(&call.name, &round_tools) {
+                let choices=round_tools.iter().map(tool_name)
+                    .filter(|name|!name.is_empty()).collect::<Vec<_>>().join(", ");
                 let error = format!(
-                    "이번 RSI 단계에서 '{}' 도구는 제공되지 않았습니다. 현재 허용된 편집 도구 중 하나를 사용하세요.",
-                    call.name
+                    "이번 RSI 단계에서 '{}' 도구는 제공되지 않았습니다. 실제 제공된 도구: [{}]. 지정된 도구 이름과 JSON 인자만 사용하세요.",
+                    call.name,choices
                 );
                 record_soft_tool_error(
                     state, tx, session_id, request, execution_id, &call.name, &call.id,
@@ -6772,6 +6815,31 @@ mod harness_tool_selection_tests {
         let _=std::fs::remove_dir_all(workspace);
     }
 
+
+    #[test]
+    fn only_exact_grounded_edit_wrappers_can_be_recovered(){
+        let replace=json!({"type":"function","function":{"name":"workspace_replace"}});
+        let range=json!({"type":"function","function":{"name":"workspace_replace_range"}});
+        let call=r#"{"tool":"workspace_replace","arguments":{"path":"src/engine/decompose.rs","oldText":"old","newText":"new"}}"#;
+        let result=rsi_recover_exact_edit_wrapper("workspace_wrapper",call,
+            &[replace.clone()]).unwrap();
+        assert_eq!(result.0,"workspace_replace");
+        assert_eq!(serde_json::from_str::<Value>(&result.1).unwrap()["oldText"],"old");
+        assert!(rsi_recover_exact_edit_wrapper("workspace_wrapper",call,
+            &[range.clone()]).is_none());
+        assert!(rsi_recover_exact_edit_wrapper("workspace_wrapper",
+            r#"{"tool":"workspace_replace","arguments":{"path":"../escape","oldText":"old","newText":"new"}}"#,
+            &[replace.clone()]).is_none());
+        assert!(rsi_recover_exact_edit_wrapper("workspace_wrapper",
+            r#"{"tool":"workspace_replace","arguments":{"path":"src/a.rs","newText":"guess"}}"#,
+            &[replace.clone()]).is_none());
+        assert!(rsi_recover_exact_edit_wrapper("workspace_wrapper",
+            r#"{"tool":"workspace_write","arguments":{"path":"src/a.rs","oldText":"old","newText":"new"}}"#,
+            &[replace.clone()]).is_none());
+        let line=r#"{"path":"src/engine/decompose.rs","startLine":5,"endLine":6,"newText":"repaired"}"#;
+        assert_eq!(rsi_recover_exact_edit_wrapper("workspace_wrapper",line,&[range])
+            .unwrap().0,"workspace_replace_range");
+    }
 
     #[test]
     fn evolved_edit_tool_changes_instructions_as_well_as_native_menu() {
