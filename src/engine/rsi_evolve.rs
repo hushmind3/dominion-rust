@@ -1703,8 +1703,8 @@ fn settle_method_policy_trial(state:&AppState,generation:&Value)->Value {
             policy["lastMethodTrial"]=json!({"cohortId":cohort_id,
                 "verdict":verdict,"causalProof":false});
             policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([
-                &policy["transitions"],&policy["evidence"],&policy["scoringKernel"],
-                cohort_id
+                &policy["transitions"],&policy["executionPrograms"],
+                &policy["evidence"],&policy["scoringKernel"],cohort_id
             ]).to_string().as_bytes())));
         }
         decision["nextPolicyRevision"]=policy["revision"].clone();
@@ -2007,6 +2007,69 @@ fn synthesize_method_scoring_kernel(evidence:&[Value])->Option<Value> {
             "baselineScore":baseline.0,"selectedScore":best_score}}))
 }
 
+/// Compose a new, executable source-work sequence from verified edges of
+/// DIFFERENT past generations. This is not a static list of model prompts:
+/// its steps become executable tool priorities in the native descendant.
+fn synthesize_method_execution_programs(evidence:&[Value])->Vec<Value> {
+    type Edges=BTreeMap<(String,String,String),(BTreeSet<String>,BTreeSet<String>)>;
+    let mut edges=Edges::new();
+    let allowed=["code_search","workspace_read_range",
+        "workspace_replace","workspace_replace_range","workspace_write"];
+    for sample in evidence {
+        let Some(domain)=sample["domain"].as_str().filter(|d|DOMAINS.contains(d)) else{continue};
+        let Some(job_id)=sample["jobId"].as_str().filter(|id|!id.is_empty()) else{continue};
+        let Some(outcome)=method_sample_outcome(sample) else{continue};
+        let Some(seq)=sample["sequence"].as_array() else{continue};
+        for pair in seq.windows(2) {
+            let (Some(from),Some(to))=(pair[0].as_str(),pair[1].as_str()) else{continue};
+            if !allowed.contains(&from) || !allowed.contains(&to) || from==to {continue;}
+            let row=edges.entry((domain.into(),from.into(),to.into())).or_default();
+            if outcome {row.0.insert(job_id.into());}else{row.1.insert(job_id.into());}
+        }
+    }
+    let mut programs=Vec::<Value>::new();
+    for domain in DOMAINS {
+        let first=edges.get(&(domain.to_string(),"code_search".into(),
+            "workspace_read_range".into()));
+        let Some((read_success,read_failure))=first else{continue};
+        if read_success.len()<=read_failure.len() {continue;}
+        for terminal in ["workspace_replace_range","workspace_replace","workspace_write"] {
+            let Some((edit_success,edit_failure))=edges.get(&(domain.to_string(),
+                "workspace_read_range".into(),terminal.into())) else{continue};
+            if edit_success.len()<=edit_failure.len(){continue;}
+            let sources=read_success.union(edit_success).cloned()
+                .collect::<BTreeSet<_>>();
+            // A single model run repeating its own path is not evidence of
+            // a new method. Require two distinct, independently witnessed
+            // runs so the evaluator can compose and compare a new program.
+            if sources.len()<2 {continue;}
+            let steps=json!(["code_search","workspace_read_range",terminal]);
+            let seen_whole=evidence.iter().any(|sample|{
+                sample["domain"].as_str()==Some(domain)
+                    && method_sample_outcome(sample)==Some(true)
+                    && sample["sequence"].as_array().is_some_and(|seq|
+                        seq.windows(3).any(|part|part==steps.as_array().unwrap()))
+            });
+            let id=format!("rsi-execution-program-{}",
+                crate::engine::memory::stable_id(&[domain,
+                    "code_search","workspace_read_range",terminal]));
+            let score=read_success.len().min(edit_success.len()) as i64*3
+                -(read_failure.len()+edit_failure.len()) as i64*2;
+            programs.push(json!({"id":id,"domain":domain,"steps":steps,
+                "score":score,"origin":"induced_verified_method_edges",
+                "composition":if seen_whole{"observed_then_generalized"}
+                    else{"stitched_across_generations"},
+                "sourceGenerationJobs":sources.into_iter().take(8).collect::<Vec<_>>(),
+                "status":"candidate_requires_descendant_execution",
+                "causalProof":false}));
+        }
+    }
+    programs.sort_by(|a,b|b["score"].as_i64().cmp(&a["score"].as_i64())
+        .then(a["id"].as_str().cmp(&b["id"].as_str())));
+    programs.truncate(6);
+    programs
+}
+
 fn induced_method_application_receipts(state:&AppState,session_id:&str)->Vec<Value> {
     let operations=state.store.all("execution_operation");
     let mut receipts=state.store.all("execution").into_iter()
@@ -2145,6 +2208,7 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
         .filter_map(|row|row["domain"].as_str()).collect::<BTreeSet<_>>();
     let cross_domain=quality_domains.len()>=2;
     policy["transitions"]=json!(transitions);
+    policy["executionPrograms"]=json!(synthesize_method_execution_programs(&evidence));
     policy["evidence"]=json!(evidence);
     // A negative matched trial changes the evaluator itself. Do not erase
     // that newborn candidate at the very next feedback write merely because
@@ -2160,7 +2224,7 @@ fn learn_method_transitions(state:&AppState,input:&Value,generation:&Value,sessi
     }
     policy["status"]=json!(if cross_domain{"cross_domain_observed"}else{"candidate"});
     policy["revision"]=json!(format!("{:x}",Sha256::digest(json!([&policy["transitions"],
-        &policy["evidence"],&policy["scoringKernel"]]).to_string().as_bytes())));
+        &policy["executionPrograms"],&policy["evidence"],&policy["scoringKernel"]]).to_string().as_bytes())));
     policy["causalImprovement"]="unmeasured_until_matched_policy_trials".into();
     policy["updatedAt"]=json!(chrono::Utc::now().to_rfc3339());
     let saved=state.store.put("rsi_method_policy",&policy)?;
@@ -4620,6 +4684,51 @@ mod tests {
         assert_eq!(decision["independentlyEvaluated"],false);
         assert_eq!(state.store.get("rsi_method_policy",&id).unwrap(),policy);
         drop(state);let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn composes_unseen_source_edit_program_from_two_independent_generations() {
+        let evidence=vec![
+            json!({"jobId":"one","domain":"tools","sequence":
+                ["code_search","workspace_read_range"],"operationalPass":true}),
+            json!({"jobId":"two","domain":"tools","sequence":
+                ["workspace_read_range","workspace_replace"],"pairedImprovement":true}),
+        ];
+        let programs=synthesize_method_execution_programs(&evidence);
+        assert_eq!(programs.len(),1);
+        assert_eq!(programs[0]["steps"],json!([
+            "code_search","workspace_read_range","workspace_replace"]));
+        assert_eq!(programs[0]["composition"],"stitched_across_generations");
+        assert_eq!(programs[0]["sourceGenerationJobs"],json!(["one","two"]));
+        assert_eq!(programs[0]["causalProof"],false);
+        let mut negative=evidence.clone();
+        negative.push(json!({"jobId":"three","domain":"tools",
+            "sequence":["workspace_read_range","workspace_replace"],
+            "pairedRegression":true}));
+        assert!(synthesize_method_execution_programs(&negative).is_empty(),
+            "one gain and one failure cannot produce a preferred edit method");
+    }
+
+    #[test]
+    fn execution_program_synthesis_never_uses_unknown_or_unwitnessed_sources() {
+        let rows=vec![
+            json!({"jobId":"run-a","domain":"tools","sequence":
+                ["code_search","workspace_read_range","workspace_replace_range"],
+                "operationalPass":true}),
+            json!({"jobId":"run-b","domain":"tools","sequence":
+                ["code_search","workspace_read_range","workspace_replace_range"],
+                "operationalPass":true}),
+            json!({"jobId":"unverified","domain":"tools","sequence":
+                ["workspace_read_range","workspace_write"]}),
+            json!({"jobId":"other-domain","domain":"memory","sequence":
+                ["workspace_read_range","workspace_write"],"pairedImprovement":true}),
+        ];
+        let programs=synthesize_method_execution_programs(&rows);
+        assert_eq!(programs.len(),1);
+        assert_eq!(programs[0]["composition"],"observed_then_generalized");
+        assert_eq!(programs[0]["steps"][2],"workspace_replace_range");
+        assert!(programs.iter().all(|p|p["domain"]=="tools"),
+            "mixing a different domain would silently invent a capability");
     }
 
     #[test]
