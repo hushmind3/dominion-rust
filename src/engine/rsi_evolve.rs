@@ -3851,7 +3851,7 @@ mod tests {
             "- 읽음: src/engine/component_{i}.rs 1-500\n"
         )).collect::<String>();
         let compact=format!("{base}\n\n{evidence}\n### 이전 세대가 확인한 소스 (압축)\n{short}");
-        let budget=crate::engine::chat::estimate_text_tokens(&compact)+300;
+        let budget=crate::engine::chat::estimate_text_tokens(&compact)+256;
         let record=json!({"limits":{"tokenBudget":budget},"tokens":0});
         let (prompt,plan)=fit_generation_context(&record,base,evidence,&reads,&source).unwrap();
         assert_eq!(plan["mode"],"compact_research");
