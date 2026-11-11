@@ -7,6 +7,8 @@ on:
       - 'src/engine/chat/provider.rs'
       - 'src/engine/chat/runtime.rs'
       - 'src/engine/rsi_evolve.rs'
+      - 'src/engine/effect.rs'
+      - 'src/engine/tools.rs'
       - 'scripts/sub4-live-rsi.mjs'
   workflow_dispatch:
 permissions:
@@ -17,7 +19,8 @@ jobs:
     timeout-minutes: 55
     env:
       SUB4_MODEL_KIND: ollama
-      SUB4_MODEL_NAME: qwen3:4b-instruct
+      SUB4_BASE_MODEL: qwen3:4b-instruct
+      SUB4_MODEL_NAME: sub4-qwen3-16k:latest
       SUB4_OLLAMA_URL: http://127.0.0.1:11434
       SUB4_CAMPAIGN_SECONDS: '1500'
       SUB4_RUN_DEADLINE_MS: '1600000'
@@ -52,7 +55,12 @@ jobs:
             if curl -fsS "$SUB4_OLLAMA_URL/api/tags" >/dev/null 2>&1; then break; fi
             sleep 1
           done
-          ollama pull "$SUB4_MODEL_NAME"
+          ollama pull "$SUB4_BASE_MODEL"
+          # OpenAI /v1/chat/completions has no num_ctx field; the model itself
+          # must carry the context length to avoid second-generation HTTP 400.
+          printf 'FROM %s\nPARAMETER num_ctx 16384\n' "$SUB4_BASE_MODEL" > "$RUNNER_TEMP/sub4.Modelfile"
+          ollama create "$SUB4_MODEL_NAME" -f "$RUNNER_TEMP/sub4.Modelfile"
+          ollama show --modelfile "$SUB4_MODEL_NAME" | grep -Eq 'PARAMETER[[:space:]]+num_ctx[[:space:]]+16384'
           node scripts/sub4-live-rsi.mjs probe | tee "$RUNNER_TEMP/sub4-local-probe.txt"
           grep -q 'SUB4_FREE_MODEL=available' "$RUNNER_TEMP/sub4-local-probe.txt"
       - name: Real model issues actual tool calls in isolated RSI generation
