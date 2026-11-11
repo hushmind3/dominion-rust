@@ -1459,18 +1459,49 @@ fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective
             methods.push(method);
         }
     }
+    // Verified adoption dominates. Before adoption, favor untried programs
+    // over repeatedly replaying a merely inconclusive method. Thus actual
+    // observations change the next generation's repair-selection algorithm.
     methods.sort_by(|a,b| b["successfulApplications"].as_u64().unwrap_or(0)
         .cmp(&a["successfulApplications"].as_u64().unwrap_or(0))
+        .then(a["applications"].as_array().map(Vec::len).unwrap_or(0)
+            .cmp(&b["applications"].as_array().map(Vec::len).unwrap_or(0)))
+        .then(repair_exploration_order(a).cmp(&repair_exploration_order(b)))
         .then(a["id"].as_str().cmp(&b["id"].as_str())));
     let mut ids = BTreeSet::new();
     methods.retain(|m| ids.insert(m["id"].as_str().unwrap_or("").to_string()));
-    methods.truncate(3);
+    methods.truncate(24);
     methods
 }
 
+fn repair_exploration_order(method:&Value)->u8 {
+    match method["synthesis"]["kind"].as_str() {
+        Some("stale_source_rebase")=>0,
+        Some("existing_file_to_versioned_edit")=>1,
+        Some("indexed_source_rebase")=>2,
+        _=>3,
+    }
+}
+
 fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
-    let methods = applicable_methods(state, &research_scope(input).partition_key, domain,
+    let candidates = applicable_methods(state, &research_scope(input).partition_key, domain,
         input["rsiObjective"].as_str().unwrap_or(""));
+    // Mutually exclusive variants must not edit the same file in one
+    // generation: otherwise there is no attributable A/B observation.
+    let mut occupied=BTreeSet::new();
+    let mut methods=Vec::new();
+    for method in candidates {
+        if is_synthesized_source_repair(&method) {
+            let path=method["verification"]["nodes"].as_array()
+                .and_then(|nodes|nodes.iter().find(|n|
+                    matches!(n["tool"].as_str(),Some("workspace_replace"|"workspace_write"))))
+                .and_then(|node|node["arguments"]["path"].as_str())
+                .unwrap_or("");
+            if path.is_empty() || !occupied.insert(path.to_string()) {continue}
+        }
+        methods.push(method);
+        if methods.len()>=3{break}
+    }
     // An observed-failure repair is an executable next-generation experiment.
     // Preserve the exact target and provenance rather than only a method ID.
     let repair=methods.iter().find(|m|is_synthesized_source_repair(m));
@@ -1543,7 +1574,7 @@ pub(crate) fn collect_method_executions(state: &AppState, session_id: &str, work
 /// its own future application passes the ordinary procedure evaluator.
 fn is_synthesized_source_repair(method:&Value)->bool {
     matches!(method["synthesis"]["kind"].as_str(),
-        Some("stale_source_rebase"|"existing_file_to_versioned_edit"))
+        Some("stale_source_rebase"|"indexed_source_rebase"|"existing_file_to_versioned_edit"))
 }
 
 /// Synthesize a new executable procedure, not just an action ranking.
@@ -1612,6 +1643,41 @@ fn synthesize_stale_edit_repair(method:&Value, op:&Value)->Option<Value> {
             "parentMethodId":method["id"],"parentRevision":method["revision"],
             "failedOperationId":op["id"],"changedNodeId":node_id,
             "newReadNodeId":read_id}}))
+}
+
+/// Competing repair operator for a stale *line-mode* edit. Instead of adding
+/// an extra read, permit the RSI runtime to recover the version from its
+/// freshly indexed source. This is allowed only for version-checked line mode:
+/// the tool itself refuses edits without an indexed SHA or on a mismatch.
+/// The cheaper method and read-rebase method are independently evaluated by
+/// their subsequent applications rather than both editing the same source.
+fn synthesize_indexed_edit_repair(method:&Value,op:&Value)->Option<Value> {
+    let _validated=synthesize_stale_edit_repair(method,op)?;
+    let node_id=op["procedureNodeId"].as_str()?;
+    let nodes=method["verification"]["nodes"].as_array()?;
+    let node=nodes.iter().find(|node|node["id"]==node_id)?;
+    if node["arguments"]["oldText"].as_str().is_some_and(|s|!s.is_empty()){
+        return None;
+    }
+    let mut program=method["verification"].clone();
+    let target=program["nodes"].as_array_mut()?.iter_mut()
+        .find(|node|node["id"]==node_id)?;
+    // A null hash in line mode is resolved exclusively against the bound
+    // repository index; there is no analogous safe fallback for oldText mode.
+    target["arguments"]["expectedSha256"]=Value::Null;
+    let program=crate::engine::procedure::normalize(&program);
+    if program["type"]!="procedure"{return None}
+    let domain=method["domain"].as_str()?;
+    let revision=format!("{:x}",Sha256::digest(
+        json!([domain,&program]).to_string().as_bytes()));
+    Some(json!({"id":format!("rsi-method-{revision}"),"revision":revision,
+        "name":format!("{} · indexed-rebase",method["name"].as_str()
+            .unwrap_or("Recovered procedure").chars().take(70).collect::<String>()),
+        "domain":domain,"verification":program,"status":"candidate",
+        "assistanceMode":"harness_assisted","successfulApplications":0,
+        "synthesis":{"kind":"indexed_source_rebase",
+            "parentMethodId":method["id"],"parentRevision":method["revision"],
+            "failedOperationId":op["id"],"changedNodeId":node_id}}))
 }
 
 /// A failed attempt to overwrite an existing source file exposes a reusable
@@ -1698,8 +1764,14 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
         if method["applications"].as_array().is_some_and(|rows|rows.iter().any(|r|r["executionId"]==receipt["executionId"])) {continue;}
         for op in operations.iter().filter(|op|receipt["operationIds"].as_array()
             .is_some_and(|ids|ids.contains(&op["id"]))) {
-            if let Some(mut repair)=synthesize_stale_edit_repair(method,op)
-                .or_else(||synthesize_existing_file_write_repair(method,op)) {
+            // A single witnessed failure can produce different *executable*
+            // repairs. They remain candidates until their real trials prove
+            // which method works; do not credit synthesis as improvement.
+            for mut repair in [
+                synthesize_stale_edit_repair(method,op),
+                synthesize_indexed_edit_repair(method,op),
+                synthesize_existing_file_write_repair(method,op)
+            ].into_iter().flatten() {
                 repair["sourceGenerationJobId"]=generation["jobId"].clone();
                 if !repairs.iter().any(|r|r["id"]==repair["id"]) {repairs.push(repair);}
             }
@@ -3394,7 +3466,7 @@ async fn run_loop(
             "knowledgeId": generation_knowledge,
             "headCommit": record["headCommit"],
             "trialAlgorithmId": record["nextTrialAlgorithmId"],
-            "methodRecoveryCandidateId":pending_repair.as_ref().map(|m|m["id"].clone()),
+            "methodRecoveryCandidateId":reuse["repairMethodId"],
             "methodRecoverySource":"observed_failed_procedure",
             "actionPolicy":decision_history.last().map(|g|g["actionPolicyOutcome"].clone()),
             "observed": {
