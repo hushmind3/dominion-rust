@@ -781,6 +781,10 @@ async fn replace_text(
         }));
     }
     let updated = text.replacen(old_text, new_text, 1);
+    if updated==text {
+        return Ok(json!({"error":"코드를 실제로 변경하지 않았습니다.",
+            "noChange":true,"written":false,"replaced":false}));
+    }
     let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
     // A blocked preflight returns Ok({error, preflightBlocked}) instead of
     // throwing. Do not label that result a completed replacement: the RSI
