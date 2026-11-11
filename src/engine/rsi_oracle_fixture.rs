@@ -261,6 +261,19 @@ fn planning_quality() {
         0.0
     };
     assert!(quality >= 0.5);
+    // These are factual observations from the frozen evaluator itself.
+    // They do not change the quality verdict and cannot be presented as
+    // unseen new generalization cases in descendant generations.
+    let observations=cases.iter().map(|(input,expected)|{
+        let result=decompose::decompose(
+            input,&json!({"implementation":"numbered-first",
+                "parameters":{"kernel":"numbered-first"}}));
+        json!({"input":input,"expectedSegments":expected,
+            "observedSegments":result["subtasks"].as_array().map(Vec::len).unwrap_or(0),
+            "steps":result["subtasks"].as_array().into_iter().flatten()
+                .filter_map(|item|item["text"].as_str()).collect::<Vec<_>>()})
+    }).collect::<Vec<_>>();
+    println!("DOMINION_RSI_BEHAVIOR {}",json!(observations));
     metric(quality, started, json!({"falseSplits":false_splits}));
 }
 
