@@ -187,6 +187,32 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
     if contest["promotion"]==true {
         if let Some(winner)=contest["winnerRevision"].as_str() {
             if let Some((genome,_,_,_))=cohorts.get(winner) {
+                let last=observed.last().copied().expect("observed cohort");
+                let last_revision=Genome::from_policy(&last["editPolicy"]).revision();
+                if last_revision==winner {
+                    // A verified winner is a stable fallback, not an eternal
+                    // hard-coded policy. Its next real failure (or a successful
+                    // opportunity for measured simplification) may create a
+                    // new challenger without automatically promoting it.
+                    let (challenger,_) = mutate(genome.clone(),last);
+                    let real_failure=last["accepted"]!=true
+                        && (last["editEvidence"]["attempts"].as_u64().unwrap_or(0)>0
+                            || last["ruleExecutions"].as_array()
+                                .is_some_and(|rows|!rows.is_empty()));
+                    let measured_success=last["accepted"]==true
+                        && last["evidenceVerified"]==true
+                        && (challenger.rules!=genome.rules
+                            || challenger.rewrite_program!=genome.rewrite_program);
+                    if (real_failure || measured_success)
+                        && challenger!=*genome && !cohorts.contains_key(&challenger.revision()) {
+                        let mut trial=serialize(challenger,
+                            "promoted-policy-descendant-trial",winner,
+                            "rechallenge_independently_promoted_controller",
+                            observed.len(),1.0,last["jobId"].as_str());
+                        trial["competitionEvidence"]=contest;
+                        return trial;
+                    }
+                }
                 let ancestor=observed.iter()
                     .find(|row|Genome::from_policy(&row["editPolicy"]).revision()==winner)
                     .and_then(|row|row["editPolicy"]["parentRevision"].as_str())
@@ -207,9 +233,15 @@ pub fn evolve(history: &[Value], payoff: fn(&Value) -> f64) -> Value {
         // detached worker receives this candidate controller.
         if last["accepted"]==true && last["evidenceVerified"]==true {
             let mut challenge=best_genome.clone();
-            challenge.rules=crate::engine::rsi_decision_rules::evolve(
+            challenge.rewrite_program=crate::engine::rsi_rule_rewrite::evolve(
+                &best_genome.rewrite_program,last);
+            let proposed=crate::engine::rsi_decision_rules::evolve(
                 &best_genome.rules,last);
-            if challenge.rules!=best_genome.rules && !cohorts.contains_key(&challenge.revision()) {
+            challenge.rules=crate::engine::rsi_rule_rewrite::apply(
+                &challenge.rewrite_program,&proposed);
+            if (challenge.rules!=best_genome.rules
+                || challenge.rewrite_program!=best_genome.rewrite_program)
+                && !cohorts.contains_key(&challenge.revision()) {
                 return serialize(challenge,"verified-success-compression-trial",
                     &best_revision,"compress_successful_source_edit_strategy",
                     observed.len(),best_score,last["jobId"].as_str());
@@ -467,6 +499,43 @@ mod tests {
             &child["rewriteProgram"].as_array().unwrap().clone(),&original);
         assert_eq!(rewrite[0]["allow"],json!(["workspace_replace"]));
         assert_eq!(child["improvementProven"],false);
+    }
+
+    #[test]
+    fn independently_promoted_policy_can_mutate_again_after_a_real_failure(){
+        let control=evolve(&[],reward);
+        let mut challenger=Genome::from_policy(&control);
+        challenger.checkpoint_after=4;
+        let winner=serialize(challenger,"challenger",&control["revision"].to_string(),
+            "trial",0,0.0,None);
+        let make=|job:&str,policy:Value,head:&str,success:bool|{
+            let mut item=row(job,policy);
+            item["generatorCommit"]=json!(head);
+            item["generatorModel"]=json!("model-1");
+            item["generatorProviderId"]=json!("provider-1");
+            item["objectiveId"]=json!("goal-1");
+            item["knowledgePartition"]=json!("partition-1");
+            item["candidateId"]=json!(format!("candidate-{job}"));
+            item["accepted"]=json!(success);
+            item["evidenceVerified"]=json!(success);
+            item["evaluation"]=json!({"source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"eligible":success}});
+            item
+        };
+        let mut rows=vec![
+            make("a-control",control.clone(),"sha-a",false),
+            make("a-winner",winner.clone(),"sha-a",true),
+            make("b-control",control,"sha-b",false),
+            make("b-winner",winner.clone(),"sha-b",true)
+        ];
+        let mut failed=row("winner-regression",winner.clone());
+        failed["editEvidence"]["attempts"]=json!(2);
+        rows.push(failed);
+        let next=evolve(&rows,reward);
+        assert_eq!(next["mutation"],"rechallenge_independently_promoted_controller");
+        assert_eq!(next["parentRevision"],winner["revision"]);
+        assert_ne!(next["revision"],winner["revision"]);
+        assert_eq!(next["improvementProven"],false);
     }
 
     #[test]
