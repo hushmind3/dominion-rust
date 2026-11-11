@@ -9,6 +9,22 @@ fn digest(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
+/// The writer has already authenticated every durable owner message.
+    /// Store that immutable provenance once, instead of re-querying the source
+    /// message table for each remembered fact at every subsequent recall.
+    /// Legacy facts retain the existing origin lookup for compatibility.
+fn materialize_verified_owner_provenance(source: &str) -> Option<String> {
+    let guard="|| message[\"metadata\"][\"origin\"].is_object()";
+    let creation="        \"status\": \"active\",\n    }));";
+    let original="        .filter(|(_, fact)| {\n            !fact[\"sourceMessageId\"]\n                .as_str()\n                .and_then(|id| state.store.message(id))\n                .is_some_and(|source| source[\"metadata\"][\"origin\"].is_object())\n        })";
+    let replacement="        .filter(|(_, fact)| {\n            // Ingestion already authenticated local owner records. Legacy\n            // entries without the flag still revalidate against the source.\n            fact[\"verifiedLocalOwner\"]==true || !fact[\"sourceMessageId\"]\n                .as_str()\n                .and_then(|id| state.store.message(id))\n                .is_some_and(|source| source[\"metadata\"][\"origin\"].is_object())\n        })";
+    if !source.contains(guard) || source.matches(creation).count()!=1
+        || source.matches(original).count()!=1 {return None;}
+    let with_fact=source.replacen(creation,
+        "        \"status\": \"active\",\n        \"verifiedLocalOwner\": true,\n    }));",1);
+    Some(with_fact.replacen(original,replacement,1))
+}
+
 /// Discover an iterator scoring function which repeatedly tokenizes an
 /// invariant query. Hoist its allocation once, preserving the original
 /// intersection, domain bonus, ordering, and tie-breaking expressions.
@@ -106,7 +122,9 @@ pub(crate) fn induce(
     let original = fs::read_to_string(source.join(relative)).map_err(|e| e.to_string())?;
     let existing = fs::read_to_string(isolated.join(relative)).map_err(|e| e.to_string())?;
     if original != existing { return Ok(None); }
-    let (operator,transformed)=if let Some(next)=hoist_invariant_query_terms(&existing) {
+    let (operator,transformed)=if let Some(next)=materialize_verified_owner_provenance(&existing) {
+        ("verified_owner_provenance_cache_v1",next)
+    }else if let Some(next)=hoist_invariant_query_terms(&existing) {
         ("loop_invariant_term_hoist_v1",next)
     }else if let Some(next)=hoist_invariant_query_domain(&existing) {
         ("loop_invariant_domain_hoist_v2",next)
@@ -143,6 +161,21 @@ pub(crate) fn induce(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn verified_owner_origin_cache_keeps_legacy_validation() {
+        let original=include_str!("room_state.rs");
+        let first=materialize_verified_owner_provenance(original)
+            .expect("authenticated owner provenance is a native optimization");
+        assert!(first.contains("\"verifiedLocalOwner\": true"));
+        assert!(first.contains("fact[\"verifiedLocalOwner\"]==true || !fact[\"sourceMessageId\"]"));
+        assert!(first.contains(".and_then(|id| state.store.message(id))"));
+        assert!(materialize_verified_owner_provenance(&first).is_none());
+        let second=hoist_invariant_query_terms(&first).expect("next code optimization");
+        let third=hoist_invariant_query_domain(&second).expect("third source generation");
+        assert_ne!(first,second);
+        assert_ne!(second,third);
+    }
+
     #[test]
     fn current_engine_has_two_distinct_source_generations() {
         let original=include_str!("room_state.rs");
