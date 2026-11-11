@@ -6140,10 +6140,10 @@ mod harness_tool_selection_tests {
         assert!(rsi_should_checkpoint(6, false));
         assert!(!rsi_should_checkpoint(6, true));
         for name in ["workspace_replace", "workspace_write", "workspace_read_range", "rsi_method_propose", "algorithm_propose"] {
-            assert!(rsi_checkpoint_tool(name), "{name} must stay available at the checkpoint");
+            assert!(rsi_checkpoint_tool(name,false), "{name} must stay available at the checkpoint");
         }
         for name in ["code_search", "shell_exec", "file_write", "web_search"] {
-            assert!(!rsi_checkpoint_tool(name), "{name} must not stay available");
+            assert!(!rsi_checkpoint_tool(name,false), "{name} must not stay available");
         }
         assert!(tool_discovery_applies(false, false));
         assert!(!tool_discovery_applies(true, false));
