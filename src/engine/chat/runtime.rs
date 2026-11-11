@@ -123,9 +123,9 @@ fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
 fn meta_edit_instruction(session:&Value)->&'static str {
     match session["rsiMetaPreferredTool"].as_str() {
         Some("workspace_replace") =>
-            "소스 조사 단계가 끝났습니다. 지금 workspace_replace를 실제 호출하세요. 정확한 path, 관측한 oldText, 변경할 newText를 전달하세요. 네이티브 도구 호출이 불가능한 모델이라면 {\"path\":\"...\",\"oldText\":\"...\",\"newText\":\"...\"} JSON 객체 하나만 출력해도 동일한 도구 실행기로 연결됩니다. 수정하지 않았다면 완료를 주장하지 마세요.",
+            "소스 조사 단계가 끝났습니다. 이 세대에서 선택된 편집 도구는 workspace_replace입니다. 지금 workspace_replace를 실제 호출하세요. 정확한 path, 관측한 oldText, 변경할 newText를 전달하세요. 네이티브 도구 호출이 불가능한 모델이라면 {\"path\":\"...\",\"oldText\":\"...\",\"newText\":\"...\"} JSON 객체 하나만 출력해도 동일한 도구 실행기로 연결됩니다. 수정하지 않았다면 완료를 주장하지 마세요.",
         Some("workspace_replace_range") =>
-            "소스 조사 단계가 끝났습니다. 지금 workspace_replace_range를 실제 호출하세요. 앞서 읽은 동일 파일의 path,startLine,endLine,sourceSha256을 expectedSha256으로 넣고 newText를 작성하세요. 네이티브 호출이 안 되면 같은 인자를 담은 단일 JSON 객체로 제출하세요. 수정하지 않았다면 완료를 주장하지 마세요.",
+            "소스 조사 단계가 끝났습니다. 이 세대에서 선택된 편집 도구는 workspace_replace_range입니다. 지금 workspace_replace_range를 실제 호출하세요. 앞서 읽은 동일 파일의 path,startLine,endLine,sourceSha256을 expectedSha256으로 넣고 newText를 작성하세요. 네이티브 호출이 안 되면 같은 인자를 담은 단일 JSON 객체로 제출하세요. 수정하지 않았다면 완료를 주장하지 마세요.",
         _ =>
             "소스 조사 단계는 종료되었습니다. workspace_read_range에서 받은 startLine/endLine/sourceSha256으로 workspace_replace_range를 호출하고, 정확한 oldText가 있으면 workspace_replace도 가능합니다. 수정 후 실제 영수증을 확인하세요.",
     }
