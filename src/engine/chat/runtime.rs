@@ -228,6 +228,38 @@ fn rsi_compiler_repair_tool(name:&str)->bool {
     matches!(name,"workspace_read_range"|"workspace_replace"|"workspace_replace_range")
 }
 
+/// A compile failure after an actual mutation invalidates older read receipts.
+/// Force one new observed source read in the SAME repair session before another
+/// edit. Earlier code checked read_calls==0 only for inherited patches, which
+/// incorrectly treated pre-edit reads as current for same-generation repairs.
+fn rsi_compiler_requires_current_read(session:&Value, operations:&[Value])->bool {
+    if session["rsiCompilerRepair"]!=true {return false;}
+    let confirmed_write=operations.iter().filter(|op|
+        op["status"]=="completed"
+        && matches!(op["tool"].as_str(),
+            Some("workspace_write"|"workspace_replace"|"workspace_replace_range"))
+        && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true)
+        .max_by(|a,b|a["finishedAt"].as_str().cmp(&b["finishedAt"].as_str())
+            .then(a["id"].as_str().cmp(&b["id"].as_str())));
+    let valid_read=|read:&&Value|{
+        read["status"]=="completed" && read["tool"]=="workspace_read_range"
+            && read["result"]["sourceSha256"].as_str().is_some_and(|sha|
+                sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
+    };
+    if let Some(write)=confirmed_write {
+        let path=write["result"]["path"].as_str()
+            .or_else(||write["arguments"]["path"].as_str());
+        let finished=write["finishedAt"].as_str().unwrap_or("");
+        if path.is_none() || finished.is_empty() {return true;}
+        !operations.iter().filter(valid_read).any(|read|
+            read["result"]["path"].as_str()==path
+                && read["finishedAt"].as_str().is_some_and(|at|at>finished))
+    } else {
+        session["rsiRestoredCandidateId"].is_string()
+            && !operations.iter().any(valid_read)
+    }
+}
+
 /// RSI needs a real write, not a completed tool call whose result says error.
 /// The isolated candidate verifier remains the authority for quality.
 fn rsi_confirmed_source_write(operations:&[Value], execution_id:&str)->bool {
@@ -1526,8 +1558,8 @@ async fn run_turn_body(
                 // the clean-parent prompt excerpt. Force one actual source
                 // observation before offering a second edit; otherwise the
                 // model patches obsolete text and repeats the same failure.
-                let requires_current_read=session["rsiRestoredCandidateId"].is_string()
-                    && read_calls==0;
+                let requires_current_read=
+                    rsi_compiler_requires_current_read(&session,&session_operations);
                 round_tools.retain(|definition|
                     if requires_current_read {
                         tool_name(definition)=="workspace_read_range"
@@ -6619,6 +6651,32 @@ mod outcome_tests {
 mod harness_tool_selection_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sub1_compile_repair_requires_read_after_the_actual_write() {
+        let repair=json!({"rsiCompilerRepair":true});
+        let write=json!({"id":"w1","tool":"workspace_replace_range",
+            "status":"completed","finishedAt":"2026-11-12T00:00:02Z",
+            "arguments":{"path":"src/engine/decompose.rs"},
+            "result":{"written":true,"path":"src/engine/decompose.rs"},
+            "toolReceipt":{"verified":true}});
+        let stale=json!({"id":"r1","tool":"workspace_read_range",
+            "status":"completed","finishedAt":"2026-11-12T00:00:01Z",
+            "result":{"path":"src/engine/decompose.rs","sourceSha256":"a".repeat(64)}});
+        let fresh=json!({"id":"r2","tool":"workspace_read_range",
+            "status":"completed","finishedAt":"2026-11-12T00:00:03Z",
+            "result":{"path":"src/engine/decompose.rs","sourceSha256":"b".repeat(64)}});
+        let wrong=json!({"id":"r3","tool":"workspace_read_range",
+            "status":"completed","finishedAt":"2026-11-12T00:00:04Z",
+            "result":{"path":"src/engine/other.rs","sourceSha256":"c".repeat(64)}});
+        assert!(rsi_compiler_requires_current_read(&repair,&[stale.clone(),write.clone()]));
+        assert!(rsi_compiler_requires_current_read(&repair,&[stale,write.clone(),wrong]));
+        assert!(!rsi_compiler_requires_current_read(&repair,&[write.clone(),fresh.clone()]));
+        assert!(!rsi_compiler_requires_current_read(&json!({"rsiCompilerRepair":false}),&[write.clone()]));
+        let inherited=json!({"rsiCompilerRepair":true,"rsiRestoredCandidateId":"candidate"});
+        assert!(rsi_compiler_requires_current_read(&inherited,&[]));
+        assert!(!rsi_compiler_requires_current_read(&inherited,&[fresh]));
+    }
 
     #[test]
     fn tool_discovery_selects_core_or_query_relevant_tools() {
