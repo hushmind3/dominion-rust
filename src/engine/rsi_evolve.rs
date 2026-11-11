@@ -1375,9 +1375,27 @@ fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective
     methods
 }
 
+/// The actual source files selected for a generation are part of its task.
+/// A domain-generic RSI objective alone cannot match a learned procedure that
+/// names a concrete file: that made valid learned methods silently disappear.
+fn method_application_context(input: &Value, domain: &str) -> String {
+    let mut context=input["rsiObjective"].as_str().unwrap_or("").to_string();
+    context.push('\n');
+    context.push_str(domain);
+    // Include the bounded, current focus from the index (or user) rather than
+    // inherited excerpts or arbitrary model claims. Procedure applicability
+    // still checks the requested domain and its declared conditions.
+    for path in input["rsiFocusFiles"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).filter(|path|crate::engine::rsi::safe_path(path)).take(12) {
+        context.push('\n');
+        context.push_str(path);
+    }
+    context
+}
+
 fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
     let methods = applicable_methods(state, &research_scope(input).partition_key, domain,
-        input["rsiObjective"].as_str().unwrap_or(""));
+        &method_application_context(input, domain));
     json!({"action":if methods.is_empty(){"research_only"}else{"execute_methods"},
         "methodIds":methods.iter().map(|m|m["id"].clone()).collect::<Vec<_>>()})
 }
@@ -1386,11 +1404,13 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     let domain = input["rsiDomain"].as_str().unwrap_or("");
     session["rsiResearchPartition"] = json!(research_scope(input).partition_key);
     session["rsiDomain"] = json!(domain);
+    session["rsiMethodContext"] = json!(method_application_context(input,domain));
     let mut decision = input["rsiDecisionInput"].clone();
     if !decision.is_object() {decision=json!({});}
-    if decision["nextDomain"] != domain || !decision["reuseDecision"].is_object() {
-        decision["reuseDecision"] = method_reuse_decision(state,input,domain);
-    }
+    // The parent predicted reuse BEFORE the descendant indexed and selected
+    // the current source files. Replan at the execution boundary; otherwise
+    // an old "research_only" decision vetoes a now-applicable learned method.
+    decision["reuseDecision"] = method_reuse_decision(state,input,domain);
     session["rsiDecisionInput"] = decision;
 }
 
@@ -1403,7 +1423,8 @@ pub(crate) fn method_strategies(state: &AppState, session: &Value) -> Vec<Value>
     let ids = session["rsiDecisionInput"]["reuseDecision"]["methodIds"].as_array().cloned().unwrap_or_default();
     let prior = state.store.all("execution_operation");
     applicable_methods(state, session["rsiResearchPartition"].as_str().unwrap_or(""),
-        session["rsiDomain"].as_str().unwrap_or(""), session["rsiObjective"].as_str().unwrap_or(""))
+        session["rsiDomain"].as_str().unwrap_or(""),
+        session["rsiMethodContext"].as_str().or_else(||session["rsiObjective"].as_str()).unwrap_or(""))
         .into_iter().filter(|m| ids.contains(&m["id"]) && !prior.iter().any(|op|
             op["sessionId"] == session["id"] && op["origin"] == "procedure"
                 && op["procedureStrategyId"] == m["id"]))
@@ -4942,6 +4963,44 @@ mod tests {
             "revision": format!("revision-{name}"),
             "parameters": {"expression": expression}
         })
+    }
+
+    #[test]
+    fn learned_method_replans_against_current_focus_instead_of_stale_parent_choice() {
+        let (state,root)=state();
+        let input=json!({"rsiSourceDir":root,"rsiDomain":"memory",
+            "rsiAutonomous":true,"rsiAutoFocus":true,
+            "rsiObjective":"Improve DOMINION autonomously",
+            "rsiFocusFiles":["src/engine/memory.rs"],
+            "rsiDecisionInput":{"nextDomain":"memory",
+                "reuseDecision":{"action":"research_only","methodIds":[]}}});
+        let partition=research_scope(&input).partition_key;
+        state.store.put("experience",&json!({"id":"source-knowledge","status":"active",
+            "partitionKey":partition,"executableMethods":[{
+                "id":"method-memory-file","revision":"v1","domain":"memory",
+                "status":"candidate","verification":{"type":"procedure",
+                    "appliesTo":{"requestContains":["src/engine/memory.rs"]},
+                    "nodes":[{"id":"inspect","tool":"code_search",
+                        "arguments":{"query":"memory"}}],
+                    "edges":[],"after":[{"kind":"tool_called","tool":"code_search"}]}
+            }]})).unwrap();
+        assert_eq!(method_reuse_decision(&state,&input,"memory")["action"],"execute_methods");
+        let mut session=json!({"id":"learned-replan","rsiObjective":"Improve DOMINION autonomously"});
+        configure_method_session(&state,&input,&mut session);
+        assert_eq!(session["rsiDecisionInput"]["reuseDecision"]["action"],"execute_methods");
+        assert_eq!(session["rsiDecisionInput"]["reuseDecision"]["methodIds"],
+            json!(["method-memory-file"]));
+        assert_eq!(applicable_methods(&state,&partition,"memory",
+            session["rsiMethodContext"].as_str().unwrap()).len(),1);
+        let mut changed=input;
+        changed["rsiFocusFiles"]=json!(["src/engine/tools.rs"]);
+        // Same domain, same owner objective, stale decision: the current
+        // selected source must win both when gaining and losing applicability.
+        configure_method_session(&state,&changed,&mut session);
+        assert_eq!(session["rsiDecisionInput"]["reuseDecision"]["action"],"research_only");
+        assert!(applicable_methods(&state,&partition,"memory",
+            session["rsiMethodContext"].as_str().unwrap()).is_empty());
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
