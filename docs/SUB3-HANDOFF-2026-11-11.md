@@ -271,3 +271,14 @@
 - 생성 정책은 **실제 실행 가능한 조합과 계승 경로**이지 품질 향상 증명이나 채택 성공이 아니다. 성공 수를 부풀리지 않고 `improvementProven:false`와 부모/세대/보상 기록을 분리한다.
 - 다음 작업: 신규 CI 오류 있으면 우선 교정 → 실제 실모델 `policyRevision` 변이와 `repairLimit` 실행 영수증 확인 → 동일 목표/동일 기반에서 기존 방법 vs 생성 방법의 소스 후보 완성률·paired 품질·토큰 비용을 비교 → 유효한 정책을 후손 바이너리에서 반복 개선할 것.
 - 타 브랜치/Champion에는 직접 변경하지 않았음. Sub3 branch만 수정함.
+
+## Sub3 후속 — 다중 후손 성공·실패 대비를 통한 판단 원리 귀납 (2026-11-11 저녁)
+
+- 시작 HEAD `94ff8c8905a3177d07ad2bebcf1e312fe16ca864` (독립 심판이 본 `f2f19eb4` 이후 타 세션 커밋 14개 포함). 담당 브랜치 `dominion-sub3`만 변경.
+- 새 `src/engine/rsi_rule_induction.rs`: 성공한 실제 소스 변경이 최종 채택 해시와 일치하고 독립 재검증된 경우만 성공 관측으로 사용. 반대 표본은 실제 candidate가 독립 paired 평가를 받았으나 미채택된 세대로 제한. 각 실행의 소스 조회→편집 직전 도구 상태를 추출한다.
+- 같은 목표/partition/provider/model에서 서로 다른 성공 세대 최소 2개와 실패 세대 최소 2개가 있을 때 `workspace_read_range`, `code_search`, 실행 횟수 조건을 탐색하여 성공 사례를 유지하면서 실패를 구분하는 Boolean 판단 규칙 후보를 생성. 한 실행의 미검증 편집·재시도 뒤에만 맞는 규칙, 다른 실행의 조회를 가져온 가짜 인과, 모델/공급자 혼합은 제외.
+- `src/engine/rsi_edit_genome.rs`의 실제 후손 정책 생성 함수 `evolve`에 연결. 기존 성공 컨트롤러와 새 규칙을 합성해 `cross-descendant-counterexample-trial`로 실행하며, `improvementProven=false`와 별도 `contrastEvidence.status=proposal_needs_actual_descendant_trial` 기록. 실험 후 실제 작업 및 independent paired 평가로 보상받는 기존 경로를 유지한다.
+- `src/engine/mod.rs` 등록. `scripts/sub3-live-model-campaign.mjs` 실모델 증거 출력에 귀납 실험 여부와 contrastEvidence 포함. 생성된 규칙이 실제 `rsi_decision_rules::choose`에서 실행 메뉴를 변경하도록 테스트 추가.
+- 테스트 코드는 독립 채택 2세대+실패 2세대 구분, 표본 부족, 다른 파일에서 가져온 조회 무효, 재시도 후 학습 불허, 다른 모델에서 온 표본 격리를 검사한다. **최신 신규 CI 성공 여부는 미확정**.
+- 시작 HEAD의 실모델 실행 `42992805776`은 확인 시점 소스개선 작업 진행 중(최신 신규 귀납 코드는 그 실행에 포함되지 않음). 수정 후 자동 트리거된 `42997033354`는 대기 중. 이것들을 자율 3세대 채택·실서비스 완주 증거로 기록하지 않는다.
+- 다음 핵심은 CI 오류가 나면 즉시 수정 → 실모델에서 편집·후보·독립 품질·채택 실측 → 채택된 자손에서 다시 판단 규칙을 귀납하고 2·3세대 반복. 테스트에서 2개 성공 샘플을 넣은 것은 실제 자율 개선 증명이 아니다.
