@@ -1530,6 +1530,41 @@ fn adopted_structural_descendant(method:&Value, methods:&[Value])->bool {
     parent || transferred
 }
 
+/// Learn the search-vs-exploitation coefficient from *method application
+/// receipts*, then rank alternative DAGs by an uncertainty-aware posterior.
+/// A large lifetime adoption count cannot hide recent repeated failed trials.
+/// This is an observational scheduler; it never labels an unpaired comparison
+/// as a causal improvement in model or system quality.
+fn method_selection_feedback(methods:&[Value])->(usize,f64) {
+    let attempts=methods.iter().map(|m|m["applications"].as_array()
+        .map(Vec::len).unwrap_or(0)).sum::<usize>();
+    let matched=methods.iter().map(|m|
+        m["successfulApplications"].as_u64().unwrap_or(0)
+            .min(m["applications"].as_array().map(Vec::len).unwrap_or(0) as u64))
+        .sum::<u64>() as f64;
+    let posterior=(matched+1.0)/(attempts as f64+2.0);
+    // When previous attempts rarely produced adopted source, explore more
+    // alternative programs. Once repeatedly effective, exploit more.
+    let exploration=0.20+0.25*(1.0-posterior);
+    (attempts,exploration)
+}
+
+fn method_observed_selection_score(method:&Value,attempts:usize,exploration:f64)->f64 {
+    let apps=method["applications"].as_array();
+    let n=apps.map(Vec::len).unwrap_or(0);
+    let adopted=method["successfulApplications"].as_u64().unwrap_or(0)
+        .min(n as u64) as f64;
+    let passed=apps.into_iter().flatten()
+        .filter(|entry|entry["postconditionsPassed"]==true).count() as f64;
+    // Non-adopted procedure success counts only as evidence of executability,
+    // never as a demonstrated quality gain.
+    let posterior=(adopted+0.15*(passed-adopted).max(0.0)+0.5)
+        /(n as f64+1.0);
+    let curiosity=exploration*
+        (((attempts as f64+2.0).ln()/(n as f64+1.0)).sqrt());
+    posterior+curiosity
+}
+
 fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
     let mut candidates = applicable_methods(state, &research_scope(input).partition_key, domain,
         input["rsiObjective"].as_str().unwrap_or(""));
@@ -1539,11 +1574,17 @@ fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value
     let adopted=candidates.iter().filter(|m|adopted_structural_descendant(m,&candidates))
         .filter_map(|m|m["id"].as_str().map(str::to_string))
         .collect::<BTreeSet<_>>();
+    let (observed_trials,exploration)=method_selection_feedback(&candidates);
     candidates.sort_by(|a,b|
         exploratory.contains(b["id"].as_str().unwrap_or(""))
             .cmp(&exploratory.contains(a["id"].as_str().unwrap_or("")))
         .then(adopted.contains(b["id"].as_str().unwrap_or(""))
-            .cmp(&adopted.contains(a["id"].as_str().unwrap_or("")))));
+            .cmp(&adopted.contains(a["id"].as_str().unwrap_or(""))))
+        .then_with(||{
+            let sa=method_observed_selection_score(a,observed_trials,exploration);
+            let sb=method_observed_selection_score(b,observed_trials,exploration);
+            sb.total_cmp(&sa)
+        }));
     // Mutually exclusive *writing methods* must never edit the same file
     // in one generation. This applies to inherited parent methods too, not
     // only newly synthesized candidates; otherwise a compact child may edit
@@ -1580,6 +1621,11 @@ fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value
             "parentRevision":m["synthesis"]["parentRevision"],
             "attemptedApplications":m["applications"].as_array().map(Vec::len).unwrap_or(0),
             "verifiedAdoptions":m["successfulApplications"].as_u64().unwrap_or(0),
+            "selectionPolicy":"observed_method_outcomes_posterior_v1",
+            "selectionPolicyTrials":observed_trials,
+            "explorationCoefficient":exploration,
+            "methodPosteriorUtility":method_observed_selection_score(
+                m,observed_trials,exploration),
             "selection":if exploratory.contains(m["id"].as_str().unwrap_or("")) {
                 "success_ablation_trial"
             } else if adopted.contains(m["id"].as_str().unwrap_or("")) {
