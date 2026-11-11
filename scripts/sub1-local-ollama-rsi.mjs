@@ -67,14 +67,23 @@ async function run(){
      tokenUsage:g.tokenUsage,focusFiles:g.focusFiles,
      improvementDirective:g.improvementDirective,
      improvementActionObservation:g.improvementActionObservation,
-     toolsUsed:g.toolsUsed||[],candidateId:g.candidateId||null,
+     toolsUsed:g.toolsUsed||[],writeReceipts:g.writeReceipts||[],
+     actionTrace:g.actionTrace||[],methodActions:g.methodActions||[],
+     executionMethod:g.executionMethod||null,
+     candidateId:g.candidateId||null,attemptedCandidateId:g.attemptedCandidateId||null,
      accepted:g.accepted===true,acceptedCommit:g.acceptedCommit||null,
      verdict:g.evaluation?.verdict||null,metrics:g.evaluation?.metrics||null,error:g.error||null}));
-  const edits=report.history.flatMap(g=>g.toolsUsed).filter(x=>["workspace_replace","workspace_write"].includes(x.tool));
+  const editTools=new Set(["workspace_replace","workspace_replace_range","workspace_write"]);
+  const edits=report.history.flatMap(g=>g.toolsUsed).filter(x=>editTools.has(x.tool));
+  const receipts=report.history.flatMap(g=>g.writeReceipts).filter(x=>editTools.has(x.tool));
   report.summary={
      modelCalls:report.history.reduce((n,g)=>n+(g.tokenUsage?.calls||0),0),
      sourceEditCalls:edits.reduce((n,x)=>n+(x.calls||0),0),
-     candidates:report.history.filter(g=>g.candidateId).length,
+     verifiedSourceWrites:receipts.filter(x=>x.written===true).length,
+     rejectedSourceWrites:receipts.filter(x=>x.written!==true).length,
+     candidates:report.history.filter(g=>g.candidateId||g.attemptedCandidateId).length,
+     learnedProgramExecutions:report.history.reduce((n,g)=>n+
+       g.methodActions.filter(x=>x.inducedProgramDecision).length,0),
      verifiedAcceptances:report.history.filter(g=>g.accepted&&g.verdict==="improved"
        &&g.metrics?.eligible===true&&Number(g.metrics?.improvedHoldouts)>0
        &&Number(g.metrics?.regressions)===0).length,
