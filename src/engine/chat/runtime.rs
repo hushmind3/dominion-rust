@@ -2011,8 +2011,13 @@ async fn run_turn_body(
                         "sessionId":session_id,"executionId":execution_id,
                         "round":round,"sourceRead":has_read
                     }));
-                    messages.push(json!({"role":"user","content":
-                        "앞선 답변은 코드 변경이 아닙니다. 기존 Rust 함수 1개가 목표라면 workspace_replace_function(path,functionName,newText: 완성된 함수 선언과 본문)을 우선 호출하세요. 함수 호출 형식을 생성하지 못하면 설명문 없이 {\"path\":\"src/...\",\"functionName\":\"목표함수명\",\"newText\":\"fn 목표함수명(...) {...}\"} JSON 객체만 출력하세요. 엔진이 읽어 둔 SHA를 바인딩하고 실제 쓰기를 검증합니다. 다른 소스 변경에는 workspace_replace 또는 workspace_replace_range를 사용하세요. 불가능하면 구체적 코드·도구 오류를 설명하세요."}));
+                    let retry_instruction=if session["rsiQualityRepair"]==true
+                        && !has_read {
+                        "이전 실모델의 품질 미달 후보가 격리 작업공간에 복원돼 있습니다. 현재 도구 메뉴에서 workspace_read_range(path,startLine,endLine)를 지금 호출하여 복원된 Rust 원문과 현재 sourceSha256을 확인하세요. 첫 단계는 읽기이며, 확인 후 다음 모델 호출에서 기존 함수를 수정할 수 있습니다. 설명이나 완료 선언을 출력하지 마세요."
+                    }else{
+                        "앞선 답변은 코드 변경이 아닙니다. 기존 Rust 함수 1개가 목표라면 workspace_replace_function(path,functionName,newText: 완성된 함수 선언과 본문)을 우선 호출하세요. 함수 호출 형식을 생성하지 못하면 설명문 없이 {\"path\":\"src/...\",\"functionName\":\"목표함수명\",\"newText\":\"fn 목표함수명(...) {...}\"} JSON 객체만 출력하세요. 엔진이 읽어 둔 SHA를 바인딩하고 실제 쓰기를 검증합니다. 다른 소스 변경에는 workspace_replace 또는 workspace_replace_range를 사용하세요. 불가능하면 구체적 코드·도구 오류를 설명하세요."
+                    };
+                    messages.push(json!({"role":"user","content":retry_instruction}));
                     continue;
                 }
             }
