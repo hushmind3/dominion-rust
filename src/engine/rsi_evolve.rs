@@ -364,10 +364,18 @@ fn learned_edit_method(state:&AppState,input:&Value,history:&[Value])->Value {
         let Some(job)=row["jobId"].as_str().filter(|id|!id.is_empty()) else {continue};
         if seen.insert(job.to_string()) {rows.push(row.clone());}
     }
-    // Persisted generations are returned newest-first; method synthesis must
-    // mutate the last *executed* generation, never an arbitrary DB row.
-    rows.sort_by(|left,right|left["createdAt"].as_str().unwrap_or("")
-        .cmp(right["createdAt"].as_str().unwrap_or("")));
+    // Store iteration is newest-first, while in-campaign history is oldest-
+    // first. Older generation rows did not record createdAt, so comparing
+    // empty timestamps fed the OLDEST (not latest) failure to the mutation
+    // operator after a restart. The persisted child job has a real queuedAt;
+    // use it as the historical fallback instead of insertion order.
+    rows.sort_by_cached_key(|row| {
+        row["createdAt"].as_str().map(str::to_string)
+            .or_else(||row["jobId"].as_str()
+                .and_then(|id|state.store.get("job",id))
+                .and_then(|job|job["queuedAt"].as_str().map(str::to_string)))
+            .unwrap_or_default()
+    });
     // Proved payoff requires the original candidate's independent paired
     // receipt, matching adopted commit and verified source lineage.
     let verified=history_with_verified_payoffs(state,&rows);
@@ -3194,6 +3202,9 @@ async fn run_loop(
         // Workers read this durable table, not the coordinator's in-memory
         // history. Publish only after research, method feedback and trial
         // outcomes are complete so the next worker can actually continue.
+        // A real completion timestamp is also necessary to evolve the method
+        // from the latest measured outcome across restarted campaigns.
+        generation["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
         context.state.store.put("rsi_generation", &generation)
             .ok_or("완성된 세대의 연구·실행 결과 저장 실패")?;
         record["history"]
