@@ -5140,6 +5140,53 @@ mod tests {
     }
 
     #[test]
+    fn invalid_compiled_candidates_improve_the_method_not_only_the_prompt() {
+        let original=json!({"revision":"compiler-policy",
+            "sequence":["code_search","workspace_replace"],
+            "onFailure":[],"recoveryPaths":[]});
+        let episode=|id:&str,kind:&str| {
+            let execution=format!("exec-{id}");
+            json!({"id":id,"jobId":id,
+                "executionMethod":{"actionProgram":original},
+                "methodActions":[{"executionId":execution,
+                    "inducedProgramDecision":{"programRevision":"compiler-policy",
+                        "chosenTool":"workspace_replace","actionCount":0}}],
+                "actionTrace":[{"runId":execution,"opSeq":1,
+                    "tool":"workspace_replace","status":"completed",
+                    "sourceChanged":true,"executed":true}],
+                "attemptedCandidateId":format!("candidate-{id}"),
+                "candidateCapture":{"checksPassed":kind!="compile"},
+                "evaluation":{"verdict":if kind=="regression" {"regressed"}else{"inconclusive"}},
+                "accepted":false})
+        };
+        let once=evolve_stalled_action_program(original.clone(),
+            &[episode("bad-1","compile")],"workspace_replace");
+        assert_eq!(once["revision"],original["revision"],
+            "One bad candidate is not enough to rewrite its execution algorithm");
+        let altered=evolve_stalled_action_program(original.clone(),
+            &[episode("bad-1","compile"),episode("bad-2","compile")],
+            "workspace_replace");
+        assert_eq!(altered["mutationOperator"],"repair_failed_compilation_method");
+        assert_eq!(altered["sequence"],json!([
+            "code_search","workspace_read_range","workspace_replace_range"]));
+        assert_eq!(altered["compileFailureEpisodes"],2);
+        assert_ne!(altered["revision"],original["revision"]);
+        let regression=evolve_stalled_action_program(original.clone(),
+            &[episode("holdout-1","regression"),episode("holdout-2","regression")],
+            "workspace_replace");
+        assert_eq!(regression["mutationOperator"],"repair_regressed_quality_method");
+        assert_eq!(regression["sequence"],json!(["code_search","workspace_replace_range"]));
+        assert_eq!(regression["qualityRegressionEpisodes"],2);
+        let phantom=episode("phantom","compile");
+        let mut phantom2=episode("phantom-2","compile");
+        phantom2["actionTrace"]=json!([]);
+        let no_credited_failure=evolve_stalled_action_program(original,
+            &[phantom,phantom2],"workspace_replace");
+        assert_eq!(no_credited_failure["revision"],"compiler-policy",
+            "A non-executed policy must not accumulate compile failure feedback");
+    }
+
+    #[test]
     fn independent_matched_source_program_trials_promote_only_measured_quality() {
         let root=json!({"revision":"root","sequence":["workspace_read_range",
             "workspace_replace"],"status":"trial_unverified"});
