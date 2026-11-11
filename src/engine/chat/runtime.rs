@@ -1252,7 +1252,7 @@ async fn run_turn_body(
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
             // Source is already present and versioned: start with actionable tools,
             // not another open-ended research cycle.
-            if session["rsiExplicitFocus"] == true
+            if (session["rsiExplicitFocus"] == true || session["rsiMetaFocusActive"] == true)
                 && session["rsiFocusContextReady"] == true && tool_calls == 0 {
                 round_tools.retain(|definition| matches!(tool_name(definition),
                     "workspace_read_range" | "workspace_replace" | "workspace_replace_range" | "workspace_write"));
@@ -1267,7 +1267,7 @@ async fn run_turn_body(
             let grounded = session["rsiFocusContextReady"] == true || read_calls > 0;
             let stage = rsi_checkpoint_stage(
                 tool_calls, read_calls, has_write,
-                session["rsiExplicitFocus"] == true,
+                session["rsiExplicitFocus"] == true || session["rsiMetaFocusActive"] == true,
                 session["rsiFocusContextReady"] == true,
             ).or_else(|| {
                 (rsi_edit_stage_requested && grounded && !has_write).then_some(true)
@@ -1277,6 +1277,29 @@ async fn run_turn_body(
                 // The old one-shot guard reopened code_search and all read
                 // tools after the first checkpoint, allowing read-only loops.
                 round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition), edit_only));
+                // Learned policy changes the actual model-visible tool menu,
+                // not just the action described in its prompt. A failed edit
+                // primitive may therefore be replaced by a different one in
+                // the next rebuilt DOMINION generation.
+                if edit_only && session["rsiMetaFocusActive"]==true {
+                    if let Some(preferred)=session["rsiMetaPreferredTool"].as_str()
+                        .filter(|name|matches!(*name,"workspace_replace"|"workspace_replace_range"))
+                    {
+                        if round_tools.iter().any(|tool|tool_name(tool)==preferred) {
+                            round_tools.retain(|tool|tool_name(tool)==preferred);
+                            if let Some(mut execution)=state.store.get("execution",execution_id) {
+                                execution["rsiMetaPolicySelection"]=json!({
+                                    "policyRevision":session["rsiMetaPolicyRevision"],
+                                    "preferredTool":preferred,"round":round,
+                                    "mode":"native_tool_menu_restriction",
+                                    "applied":true,
+                                    "claim":"tool_selected_not_quality_gain"
+                                });
+                                state.store.put("execution",&execution);
+                            }
+                        }
+                    }
+                }
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system",
                         "content":"소스 근거 확인 단계는 종료되었습니다. workspace_read_range에서 받은 startLine/endLine/sourceSha256으로 workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 호출하고 변경할 코드만 제출하세요. 정확한 oldText가 있는 경우 workspace_replace도 가능합니다. 새 파일은 workspace_write로 생성합니다. 검증된 변경 전에는 완료를 주장하지 마세요."
@@ -1452,7 +1475,8 @@ async fn run_turn_body(
             && request.tools_enabled
             && (provider.tool_mode != "native" || has_dsml_call
                 || rsi_textual_edit_fallback(session["rsiRun"] == true,
-                    session["rsiExplicitFocus"] == true, rsi_edit_only_announced))
+                    session["rsiExplicitFocus"] == true || session["rsiMetaFocusActive"] == true,
+                    rsi_edit_only_announced))
             && !force_final
         {
             let known = round_tools
@@ -1487,7 +1511,7 @@ async fn run_turn_body(
             // A focused RSI job is not finished by another explanation of
             // its code. Give the model one bounded corrective opportunity to
             // issue a real source edit; never fabricate a patch or verdict.
-            if session["rsiExplicitFocus"] == true
+            if (session["rsiExplicitFocus"] == true || session["rsiMetaFocusActive"] == true)
                 && !rsi_edit_retry && round + 1 < max_rounds {
                 let completed = state.store.all("execution_operation").into_iter()
                     .filter(|operation| operation["runId"].as_str() == Some(execution_id)
