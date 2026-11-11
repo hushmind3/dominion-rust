@@ -911,6 +911,12 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     Ok(json!({
         "candidateId":id,"candidateStatus":updated["status"],
         "verdict":verdict,"metrics":metrics,
+        // Descendant rule induction and matched policy tournaments consume
+        // the generation-level comparison receipt. Without this verified
+        // origin they silently discard every neutral/rejected counterexample,
+        // even though the candidate ledger was independently evaluated.
+        "source":updated["evaluation"]["source"],
+        "evaluationId":updated["evaluation"]["id"],
         "evidenceSha256":evidence_sha,
         "pairedCases":report["cases"].as_array().map(Vec::len).unwrap_or(0),
         "performanceImprovementClaimed":metrics["metricGains"].as_u64().unwrap_or(0)>0,
