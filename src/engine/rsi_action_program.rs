@@ -32,8 +32,112 @@ pub fn action_trace(state:&AppState,session_id:&str)->Vec<Value> {
     })).collect()
 }
 
+
+/// Meta-evaluator search. The rule that selects future improvement programs
+/// is itself evolved from completed *independent* source evaluations.
+/// Predictive concordance is not a claim that applying the rule caused gains.
+fn episode_prediction(row:&Value,rule:&Value)->f64 {
+    let writes=row["observedSourceEdits"].as_u64().unwrap_or(0).min(3) as f64;
+    let capture=f64::from(row["candidateId"].is_string());
+    let findings=row["newFindings"].as_u64().unwrap_or(0).min(5) as f64;
+    let failures=row["editOperations"].as_array().map(|ops|
+        ops.iter().filter(|op|op["status"]=="failed"
+            || op["error"].is_string()).count()).unwrap_or(0).min(5) as f64;
+    let cost=(row["tokens"].as_u64().unwrap_or(0).min(100_000) as f64)/10_000.0;
+    let weight=|name:&str|rule[name].as_f64().unwrap_or(0.0);
+    weight("written")*writes+weight("captured")*capture
+        +weight("findings")*findings-weight("failed")*failures
+        -weight("cost")*cost
+}
+
+fn observed_quality(row:&Value)->Option<bool>{
+    if row["jobId"].as_str().is_none_or(str::is_empty)
+        || row["evaluation"]["metrics"]["eligible"]!=true
+        || row["actionProgramTrial"]["arm"]!="candidate"
+        || !row["actionProgramEffects"].as_array().is_some_and(|effects|
+            effects.iter().any(|e|e["selected"]==true && e["performed"]==true)) {
+        return None;
+    }
+    Some(row["accepted"]==true
+        && row["evaluation"]["metrics"]["regressions"].as_u64()==Some(0)
+        && row["evaluation"]["metrics"]["improvedHoldouts"]
+            .as_u64().unwrap_or(0)>0)
+}
+
+/// Count correctly ordered independently evaluated better/worse episodes.
+fn predictive_pairs(rows:&[&Value],rule:&Value)->Option<(u64,u64)>{
+    let positives=rows.iter().filter(|row|observed_quality(row)==Some(true))
+        .collect::<Vec<_>>();
+    let negatives=rows.iter().filter(|row|observed_quality(row)==Some(false))
+        .collect::<Vec<_>>();
+    if positives.is_empty()||negatives.is_empty(){return None;}
+    let mut agreement=0;
+    let mut pairs=0;
+    for positive in &positives {
+        for negative in &negatives {
+            pairs+=1;
+            if episode_prediction(positive,rule)>episode_prediction(negative,rule) {
+                agreement+=1;
+            }
+        }
+    }
+    Some((agreement,pairs))
+}
+
+/// Search candidate evaluator formulas on older outcomes, then accept a
+/// change only when it predicts LATER unseen independent evaluations better
+/// than the frozen original formula. Do not fit the rule on its validation set.
+pub fn evolve_meta_evaluator(rows:&[Value])->Value{
+    let baseline=json!({"written":1.0,"captured":4.0,"findings":2.0,
+        "failed":1.0,"cost":0.5});
+    let observations=rows.iter().filter(|row|observed_quality(row).is_some())
+        .collect::<Vec<_>>();
+    let unmeasured=json!({"status":"insufficient_independent_outcomes",
+        "rule":baseline,"samples":observations.len(),"qualityProven":false});
+    if observations.len()<8 {return unmeasured;}
+    let split=(observations.len()*2/3).max(4);
+    let train=&observations[..split];
+    let validation=&observations[split..];
+    let Some(base_train)=predictive_pairs(train,&baseline) else{return unmeasured;};
+    let Some(base_validation)=predictive_pairs(validation,&baseline) else{return unmeasured;};
+    let mut best=baseline.clone();
+    let mut train_result=base_train;
+    // These are not hardcoded action-program choices. They are evaluator
+    // parameters explored over the measured outcome landscape.
+    for written in [2.0,4.0,8.0,16.0] {
+        for findings in [0.0,0.5,1.0,2.0] {
+            for failed in [1.0,3.0,6.0] {
+                let candidate=json!({"written":written,"captured":2.0,
+                    "findings":findings,"failed":failed,"cost":0.5});
+                let Some(score)=predictive_pairs(train,&candidate) else{continue;};
+                if score.0>train_result.0 {
+                    train_result=score;best=candidate;
+                }
+            }
+        }
+    }
+    let Some(later)=predictive_pairs(validation,&best) else{return unmeasured;};
+    if later.0<=base_validation.0 {
+        return json!({"status":"heldout_rule_not_better",
+            "rule":baseline,"samples":observations.len(),
+            "trainPairs":base_train.1,"validationPairs":later.1,
+            "baselineCorrect":base_validation.0,
+            "candidateCorrect":later.0,"qualityProven":false});
+    }
+    let revision=memory::stable_id(&[
+        "selfimprove.meta-evaluator-v1",&best.to_string()]);
+    json!({"status":"temporal_predictive_gain_not_causal",
+        "revision":revision,"rule":best,
+        "trainingExamples":train.len(),"validationExamples":validation.len(),
+        "trainingPairs":train_result.1,
+        "baselineCorrect":base_validation.0,"candidateCorrect":later.0,
+        "validationPairs":later.1,
+        "qualityProven":false,"appliesTo":"future_execution_program_synthesis"})
+}
+
 /// Compose discovery, mutation and recovery phases from distinct actual episodes.
 pub fn synthesize(rows:&[Value])->Value {
+    let evaluator=evolve_meta_evaluator(rows);
     let mut discovery=(i64::MIN,Vec::<String>::new());
     let mut mutation=(i64::MIN,Vec::<String>::new());
     let mut recoveries=BTreeMap::<String,BTreeMap<String,u64>>::new();
@@ -97,8 +201,15 @@ pub fn synthesize(rows:&[Value])->Value {
             && row["evaluation"]["metrics"]["eligible"]==true
             && row["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)>0;
         let eligible=row["candidateId"].is_string();
-        let reward=if proven {100} else if eligible {20}
+        let base=if proven {100} else if eligible {20}
             else if row["newFindings"].as_u64().unwrap_or(0)>0 {5} else {1};
+        // The meta-evaluator changes which witnessed episodes supply the
+        // next executable method. Independent quality still outranks heuristics.
+        let bonus=if evaluator["status"]=="temporal_predictive_gain_not_causal" {
+            episode_prediction(row,&evaluator["rule"]).round()
+                .clamp(-15.0,15.0) as i64
+        } else {0};
+        let reward=base+bonus;
         if !prefix.is_empty() && reward>discovery.0 {discovery=(reward,prefix);}
         if !suffix.is_empty() && reward>mutation.0 {mutation=(reward,suffix);}
     }
@@ -149,7 +260,8 @@ pub fn synthesize(rows:&[Value])->Value {
         "status":if sequence.is_empty(){"no_witnessed_steps"}else{"trial_unproven"},
         "sequence":sequence,"onFailure":on_failure,"recoveryPaths":recovery_paths,
         "origin":"cross_episode_witnessed_composition",
-        "evidence":{"episodes":episodes},"qualityProven":false})
+        "evidence":{"episodes":episodes},"metaEvaluator":evaluator,
+        "qualityProven":false})
 }
 
 
@@ -646,6 +758,42 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn evaluator_evolves_from_temporally_held_out_executed_evidence(){
+        let mut rows=Vec::new();
+        // Two cohorts of twelve independent evaluations, each containing
+        // source-write successes and research-heavy evaluated non-gains.
+        for i in 0..24 {
+            let positive=i%2==0;
+            rows.push(json!({"jobId":format!("job-{i}"),
+                "actionProgramTrial":{"arm":"candidate"},
+                "actionProgramEffects":[{"selected":true,"performed":true}],
+                "evaluation":{"metrics":{"eligible":true,"regressions":0,
+                    "improvedHoldouts":if positive{2}else{0}}},
+                "accepted":positive,"observedSourceEdits":if positive{1}else{0},
+                "candidateId":"candidate","newFindings":if positive{0}else{5},
+                "tokens":1000}));
+        }
+        let evolved=evolve_meta_evaluator(&rows);
+        assert_eq!(evolved["status"],"temporal_predictive_gain_not_causal");
+        assert!(evolved["candidateCorrect"].as_u64().unwrap()
+            >evolved["baselineCorrect"].as_u64().unwrap());
+        assert_eq!(evolved["qualityProven"],false);
+        let method=synthesize(&rows);
+        assert_eq!(method["metaEvaluator"]["revision"],evolved["revision"]);
+    }
+    #[test]
+    fn evaluator_refuses_unexecuted_or_self_claimed_success(){
+        let rows=(0..24).map(|i|json!({"jobId":format!("claim-{i}"),
+            "actionProgramTrial":{"arm":"candidate"},
+            "accepted":true,"evaluation":{"metrics":{"eligible":true,
+                "regressions":0,"improvedHoldouts":10}},
+            "actionProgramEffects":[{"selected":true,"performed":false}]}))
+            .collect::<Vec<_>>();
+        assert_eq!(evolve_meta_evaluator(&rows)["status"],
+            "insufficient_independent_outcomes");
+    }
     #[test]
     fn independently_witnessed_recovery_steps_become_a_multi_step_native_program(){
         let row=json!({"jobId":"fault","actionTrace":[
