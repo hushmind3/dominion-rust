@@ -6253,7 +6253,25 @@ mod harness_tool_selection_tests {
     }
 
     #[test]
-    fn rsi_checkpoint_allows_an_edit_or_a_no_change_finish() {
+    fn focused_rsi_verification_handoff_requires_real_verified_edit() {
+        let session=json!({"rsiRun":true,"rsiExplicitFocus":true,
+            "rsiCampaignId":"campaign","rsiFocusFiles":["src/engine/memory.rs"]});
+        let args=json!({"path":"src/engine/memory.rs"});
+        let operation=json!({"status":"completed","tool":"workspace_replace",
+            "result":{"written":true},"toolReceipt":{"verified":true}});
+        assert!(rsi_patch_ready_for_verification(&session,"workspace_replace",&args,&operation));
+        let mut unverified=operation.clone();
+        unverified["toolReceipt"]["verified"]=json!(false);
+        assert!(!rsi_patch_ready_for_verification(&session,"workspace_replace",&args,&unverified));
+        let mut no_edit=operation.clone();
+        no_edit["result"]["written"]=json!(false);
+        assert!(!rsi_patch_ready_for_verification(&session,"workspace_replace",&args,&no_edit));
+        assert!(!rsi_patch_ready_for_verification(&session,"workspace_replace",
+            &json!({"path":"src/engine/other.rs"}),&operation));
+        assert!(!rsi_patch_ready_for_verification(&session,"workspace_read_range",&args,&operation));
+    }
+
+
         assert!(!rsi_should_checkpoint(5, false));
         assert!(rsi_should_checkpoint(6, false));
         assert!(!rsi_should_checkpoint(6, true));
