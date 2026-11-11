@@ -934,8 +934,17 @@ async fn replace_observed_range(
     expected_sha256: &str,
     run_id: &str,
 ) -> Result<Value, String> {
+    // Small native tool models occasionally reverse startLine/endLine after
+    // observing the correct source. Normalize only a bounded pair of positive
+    // absolute line numbers. The original source SHA/CAS still gates the write.
+    let (start, end, reordered) = if start > end && end > 0
+        && start - end < 120 {
+        (end, start, true)
+    } else {
+        (start, end, false)
+    };
     if start == 0 || end < start || end.saturating_sub(start) >= 120 {
-        return Err("Source range must contain 1..120 lines in ascending order".into());
+        return Err("Source range must contain 1..120 valid lines".into());
     }
     if expected_sha256.len() != 64 || !expected_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("expectedSha256 must be the sourceSha256 from workspace_read_range".into());
@@ -978,6 +987,7 @@ async fn replace_observed_range(
     if result["written"] == true {
         result["replaced"] = json!(true);
         result["replacedLines"] = json!(end-start+1);
+        result["reorderedLineEndpoints"] = json!(reordered);
         result["postSha256"] = json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
         if let Some(parse)=rsi_rust_parse_receipt(ctx,path).await{
             result["syntaxValid"]=parse["valid"].clone();
@@ -1781,6 +1791,24 @@ mod tests {
         wrong["expectedSha256"]=json!(format!("{:x}",Sha256::digest(std::fs::read(&path).unwrap())));
         wrong["endLine"]=json!(999);
         assert!(execute(&ctx,"workspace_replace_range",&wrong,"range-run").await.is_err());
+        let current=std::fs::read_to_string(&path).unwrap();
+        let sha=format!("{:x}",Sha256::digest(current.as_bytes()));
+        let reversed=json!({"path":"src/example.rs","startLine":"3","endLine":"2",
+            "newText":"let value = 77;\\nlast();","expectedSha256":sha});
+        let fixed=execute(&ctx,"workspace_replace_range",&reversed,"range-run").await.unwrap();
+        assert_eq!(fixed["written"],true,"{fixed}");
+        assert_eq!(fixed["reorderedLineEndpoints"],true,"{fixed}");
+        assert_eq!(fixed["replacedLines"],2);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),
+            "first();\\nlet value = 77;\\nlast();\\n");
+        let mut oversized=reversed.clone();
+        oversized["startLine"]=json!(999);
+        oversized["endLine"]=json!(1);
+        assert!(execute(&ctx,"workspace_replace_range",&oversized,"range-run").await.is_err());
+        let mut stale_reversed=reversed;
+        stale_reversed["startLine"]=json!(3);
+        stale_reversed["endLine"]=json!(2);
+        assert_eq!(execute(&ctx,"workspace_replace_range",&stale_reversed,"range-run").await.unwrap()["staleVersion"],true);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
