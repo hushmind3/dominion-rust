@@ -163,6 +163,10 @@ fn rsi_inherited_patch_for_evaluation(
                 files.len()==1 && files[0].as_str()==Some(path)) {
             return None;
         }
+        // The executed node ID is part of the recorded tool provenance.
+        // It also permits methods whose target path was bound from a prior
+        // DAG node rather than hard-coded into the procedure definition.
+        let executed_node=op["procedureNodeId"].as_str()?;
         let method=methods.iter().find(|method| {
             method["rsiMethodExperienceId"].is_string()
                 && method["assistanceMode"]=="harness_assisted"
@@ -170,8 +174,8 @@ fn rsi_inherited_patch_for_evaluation(
                 && method["revision"]==op["procedureRevision"]
                 && method["verification"]["nodes"].as_array().is_some_and(|nodes|
                     nodes.iter().any(|node|
-                        node["tool"]=="workspace_replace"
-                            && node["arguments"]["path"]==path))
+                        node["id"]==executed_node
+                            && node["tool"]=="workspace_replace"))
         })?;
         Some(json!({
             "methodId":method["id"],
@@ -6452,6 +6456,7 @@ mod harness_tool_selection_tests {
                 "arguments":{"path":"src/engine/memory.rs"}}]}});
         let successful=json!({"id":"op-1","origin":"procedure",
             "procedureStrategyId":"learned-1","procedureRevision":"rev-1",
+            "procedureNodeId":"edit",
             "tool":"workspace_replace","status":"completed",
             "arguments":{"path":"src/engine/memory.rs"},
             "result":{"written":true},"toolReceipt":{"verified":true}});
@@ -6467,6 +6472,10 @@ mod harness_tool_selection_tests {
             &autonomous,&[method.clone()],&[successful.clone()]).is_some());
         let mut wrong=successful.clone();
         wrong["toolReceipt"]["verified"]=json!(false);
+        assert!(rsi_inherited_patch_for_evaluation(
+            &session,&[method.clone()],&[wrong]).is_none());
+        wrong=successful.clone();
+        wrong["procedureNodeId"]=json!("other-node");
         assert!(rsi_inherited_patch_for_evaluation(
             &session,&[method.clone()],&[wrong]).is_none());
         wrong=successful.clone();
