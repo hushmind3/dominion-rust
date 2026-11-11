@@ -2312,7 +2312,7 @@ fn complete_read_only_action_program(mut plan:Value, preferred:&str)->Value {
     let sequence=plan["sequence"].as_array().cloned().unwrap_or_default();
     let grounded=sequence.iter().any(|tool|
         tool=="workspace_read_range");
-    let mut editable=sequence.iter().any(|tool|
+    let editable=sequence.iter().any(|tool|
         matches!(tool.as_str(),
             Some("workspace_write"|"workspace_replace"|"workspace_replace_range")));
     if !grounded || editable || !matches!(preferred,"workspace_replace"|"workspace_replace_range") {
@@ -2321,8 +2321,6 @@ fn complete_read_only_action_program(mut plan:Value, preferred:&str)->Value {
     let mut next=sequence.clone();
     if next.len()>=8{return plan;}
     next.push(json!(preferred));
-    editable=true;
-    if !editable{return plan;}
     let original=plan["revision"].as_str().unwrap_or("").to_string();
     let revised=crate::engine::memory::stable_id(&[
         &json!([&next,&plan["onFailure"],&plan["recoveryPaths"]]).to_string()]);
@@ -2649,8 +2647,11 @@ fn select_evaluated_action_program(rows:&[Value],proposed:Value)->(Value,Value) 
 /// observed execution, not a claim that shortening improves holdout quality.
 /// The existing matched parent/child evaluator determines later promotion.
 fn compress_successful_action_program(mut program:Value, rows:&[Value])->Value {
-    // Never override a descendant currently being repaired after failures.
-    if program["mutatedFrom"].is_string(){return program;}
+    // Successful source-verified descendants may themselves be compressed.
+    // Only skip an already compressed revision, preventing no-op mutation loops.
+    if program["mutationOperator"]=="success_derived_discovery_ablation" {
+        return program;
+    }
     let Some(revision)=program["revision"].as_str().map(str::to_string) else{return program;};
     let mut sequence=program["sequence"].as_array().cloned().unwrap_or_default();
     let Some(search_position)=sequence.iter().position(|step|step=="code_search") else{return program;};
