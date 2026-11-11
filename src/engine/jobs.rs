@@ -551,8 +551,20 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 input["rsiFocusContextChars"].as_u64().unwrap_or(0) > 0
                 && input["rsiContextPlan"]["sourceExcerptDeferred"] != true);
             crate::engine::rsi_evolve::configure_method_session(&context.state, &input, &mut session);
-            session["rsiCodeIndexId"]=input["rsiIndexId"].clone();
-            session["rsiSourceDir"]=input["rsiSourceDir"].clone();
+            // A neutral candidate is restored only inside the detached worker.
+            // The coordinator index still describes the pristine parent tree.
+            // Re-index the ACTUAL inherited bytes before code_search, otherwise
+            // symbol locations and source ownership point to the wrong revision.
+            if input["rsiInheritedCandidateId"].is_string() {
+                let source=rsi_workspace.as_ref().expect("RSI worktree exists");
+                let indexed=crate::engine::code_index::refresh(
+                    &context.state,&source.path)?;
+                session["rsiCodeIndexId"]=indexed["id"].clone();
+                session["rsiSourceDir"]=indexed["sourceDir"].clone();
+            } else {
+                session["rsiCodeIndexId"]=input["rsiIndexId"].clone();
+                session["rsiSourceDir"]=input["rsiSourceDir"].clone();
+            }
             if let Some(id)=input["rsiCampaignId"].as_str(){
                 session["rsiCampaignId"]=json!(id);
                 session["rsiGenerationJobId"]=json!(context.job_id);
