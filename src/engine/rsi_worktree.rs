@@ -343,6 +343,28 @@ pub async fn finish(
         .await.map(|v|v.is_empty()).unwrap_or(false);
     let model_error=model_result.as_ref().err().cloned().unwrap_or_default();
     let all_checks_pass=!checks.is_empty()&&checks.iter().all(|item|item["passed"]==true);
+    // Preserve the *actual* writes and rejected edits from this generation.
+    // A model's tool call is not a source change. Preserve error text so the
+    // next built generator can repair the failed write instead of re-reading
+    // the entire source on every attempt. Do not store file contents here.
+    let edit_actions=context.state.store.all("execution_operation").into_iter()
+        .filter(|operation|operation["sessionId"].as_str()==Some(session_id)
+            && matches!(operation["tool"].as_str(),
+                Some("workspace_write"|"workspace_replace")))
+        .take(16)
+        .map(|operation|{
+            let error=operation["result"]["error"].as_str()
+                .or_else(||operation["error"].as_str()).unwrap_or("");
+            json!({
+                "id":operation["id"],"tool":operation["tool"],
+                "path":operation["arguments"]["path"],"status":operation["status"],
+                "written":operation["status"]=="completed"
+                    && operation["result"]["written"]==true,
+                "preflightBlocked":operation["result"]["preflightBlocked"]==true,
+                "staleVersion":operation["result"]["staleVersion"]==true,
+                "error":error.chars().take(500).collect::<String>()
+            })
+        }).collect::<Vec<_>>();
     let result=json!({
         "id":format!("rsi-run-{}",context.job_id),
         "jobId":context.job_id,"sessionId":session_id,
@@ -352,6 +374,7 @@ pub async fn finish(
         "unsafeAudit":unsafe_audit,
         "pairedComparisonComplete":false,"autoMerged":false,"autoDeployed":false,
         "modelError":model_error,"captureError":capture_error,
+        "editActions":edit_actions,
         "modelMessageId":model_result.ok().flatten().and_then(|m|m["id"].as_str().map(str::to_string)),
         "createdAt":chrono::Utc::now().to_rfc3339(),
     });
