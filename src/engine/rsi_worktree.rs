@@ -994,6 +994,28 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
         "createdAt":chrono::Utc::now().to_rfc3339()
     });
     state.store.put("rsi_pair",&receipt);
+    // Close the native operator's trial with the ACTUAL independent paired
+    // result. Rejected unchanged-source/operator combinations then cease to
+    // loop, while successful transformations become descendant lessons.
+    if candidate["origin"]=="native_inductive_source_mutation" {
+        if let Some(mut native)=candidate["rsiJobId"].as_str()
+            .and_then(|job|state.store.get("rsi_mutation",job))
+            .filter(|row|row["origin"]==candidate["origin"]
+                && row["afterSha256"]==candidate["nativeMutation"]["afterSha256"]) {
+            native["candidateId"]=json!(id);
+            native["evaluation"]=json!({
+                "verdict":verdict,"metrics":metrics,
+                "evidenceSha256":evidence_sha,
+                "source":"server_invoked_local_paired_git_worktrees",
+                "qualityProven":metrics["eligible"]==true && verdict=="improved"
+            });
+            native["qualityGain"]=json!(if verdict=="improved"{
+                metrics["metricGains"].as_u64().unwrap_or(0)
+                    +metrics["gains"].as_u64().unwrap_or(0)
+            }else{0});
+            state.store.put("rsi_mutation",&native);
+        }
+    }
     let origin_id=format!("rsi-run-{}",candidate["rsiJobId"].as_str().unwrap_or(""));
     if let Some(mut origin)=state.store.get("rsi_run",&origin_id) {
         origin["paired"]=json!({"verdict":verdict,"metrics":metrics,
