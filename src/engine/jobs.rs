@@ -632,7 +632,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 "status":prior["status"],"reason":prior["reason"]
             });
             context.state.store.put("rsi_iteration",&iteration);
-            attempts.push(iteration);
+            attempts.push(iteration.clone());
             let mut retry=request.clone();
             retry.input=feedback;
             message=run_quiet(&scoped_state,&retry).await;
