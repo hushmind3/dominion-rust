@@ -3161,10 +3161,6 @@ async fn run_loop(
             "contextPlan":current["input"]["rsiContextPlan"],
             "workerContextPlan":current["rsiWorkerContextPlan"],
             "improvementDirective":current["input"]["rsiImprovementDirective"],
-            "actionTrace":action_trace,
-            "actionProgram":current["input"]["rsiActionProgram"],
-            "actionProgramTrial":current["input"]["rsiActionProgramTrial"],
-            "actionProgramEffects":action_program_effects,
             "diffBytes":current["result"]["rsi"]["diffBytes"],
             "captureError":current["result"]["rsi"]["captureError"],
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
@@ -3180,6 +3176,11 @@ async fn run_loop(
             "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
             "researchFingerprint":research_fingerprint,
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
+        // Separate insertions avoid serde_json!'s recursive token expansion limit.
+        generation["actionTrace"]=json!(action_trace);
+        generation["actionProgram"]=current["input"]["rsiActionProgram"].clone();
+        generation["actionProgramTrial"]=current["input"]["rsiActionProgramTrial"].clone();
+        generation["actionProgramEffects"]=json!(action_program_effects);
         let candidate_id = verified_candidate_id(&current["result"]);
         let waiting_before = record["waitingMs"].as_u64().unwrap_or(0);
         if let Some(id) = candidate_id {
