@@ -7595,6 +7595,76 @@ mod tests {
     }
 
     #[test]
+    fn zero_patch_model_failure_learns_a_new_descendant_tool_program() {
+        let (state,root)=state();
+        let path="src/engine/memory.rs";
+        let objective="fix memory";
+        let session=json!({"id":"failed-model-session","rsiRun":true,
+            "rsiGenerationJobId":"failed-generation",
+            "rsiObjective":objective,"rsiFocusFiles":[path]});
+        let gen=json!({"jobId":"failed-generation","domain":"memory",
+            "accepted":false,"newFindings":0,"tokens":250,"elapsedMs":50});
+        let op=json!({"id":"failed-model-edit","origin":"model",
+            "sessionId":"failed-model-session","status":"completed",
+            "tool":"workspace_replace","arguments":{"path":path,
+                "startLine":3,"endLine":3,
+                "expectedSha256":"stale","newText":"fn improved() {}"},
+            "result":{"error":"읽은 뒤 소스가 변경되었습니다",
+                "staleVersion":true,"written":false}});
+        let repair=synthesize_failed_model_edit(&session,&op,&gen).unwrap();
+        assert_eq!(repair["synthesis"]["kind"],"failed_model_tool_rebase");
+        assert_eq!(repair["status"],"candidate");
+        assert_eq!(repair["successfulApplications"],0);
+        assert_ne!(repair["id"],Value::Null);
+        let mut results=std::collections::HashMap::new();
+        let (read_id,tool,args)=crate::engine::procedure::ready_intent(
+            &repair,&[],objective,&results).unwrap();
+        assert_eq!(tool,"workspace_read_range");
+        assert_eq!(args["path"],path);
+        assert_eq!(args["startLine"],3);
+        results.insert(read_id.clone(),json!({"sourceSha256":"fresh-current-sha"}));
+        let witnessed=json!({"origin":"procedure","status":"completed",
+            "procedureStrategyId":repair["id"],"procedureRevision":repair["revision"],
+            "procedureNodeId":read_id,"result":{"sourceSha256":"fresh-current-sha"}});
+        let (_,tool,args)=crate::engine::procedure::ready_intent(
+            &repair,&[witnessed],objective,&results).unwrap();
+        assert_eq!(tool,"workspace_replace");
+        assert_eq!(args["expectedSha256"],"fresh-current-sha");
+        assert_eq!(args["newText"],"fn improved() {}");
+        // No original method was ever proposed by the model. This cold-start
+        // repair is created from the raw failed tool receipt alone.
+        state.store.put("session",&session).unwrap();
+        state.store.put("execution_operation",&op).unwrap();
+        let feedback=record_method_feedback(&state,&gen,"failed-model-session");
+        assert!(feedback.is_empty(),
+            "there was no method execution, only an observed model failure");
+        let saved=state.store.get("session","failed-model-session").unwrap();
+        assert_eq!(saved["rsiMethodProposals"][0]["id"],repair["id"]);
+        let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
+            "rsiObjective":objective});
+        let experience=remember_research(
+            &state,&input,&gen,"failed-model-session").unwrap();
+        assert_eq!(state.store.get("experience",&experience).unwrap()
+            ["executableMethods"][0]["status"],"candidate");
+        let selected=method_reuse_decision(&state,&input,"memory");
+        assert_eq!(selected["repairMethodId"],repair["id"]);
+        assert_eq!(selected["repairTarget"],path);
+        assert_eq!(selected["repairSelectionEvidence"]["verifiedAdoptions"],0);
+        // A different session, missing stale evidence, or unbound path
+        // cannot manufacture a reusable procedure from model prose.
+        let mut bad=op.clone();
+        bad["result"]["staleVersion"]=json!(false);
+        assert!(synthesize_failed_model_edit(&session,&bad,&gen).is_none());
+        bad=op.clone();
+        bad["arguments"]["path"]=json!("src/engine/unobserved.rs");
+        assert!(synthesize_failed_model_edit(&session,&bad,&gen).is_none());
+        bad=op.clone();
+        bad["origin"]=json!("procedure");
+        assert!(synthesize_failed_model_edit(&session,&bad,&gen).is_none());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn failed_method_evolves_into_a_separate_inherited_candidate() {
         let (state,root)=state();
         let input=json!({"rsiSourceDir":root.join("source").to_string_lossy(),
