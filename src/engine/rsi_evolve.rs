@@ -4741,6 +4741,12 @@ async fn run_loop(
         });
         elapsed(record, started);
         save(context, record)?;
+        // Stop immediately when the frozen evaluator has proved a genuine
+        // descendant-generated, cross-domain recursive improvement chain.
+        // Continuing after completion would spend budget on unrelated rounds.
+        if record["capabilityDemonstrated"] == true && max_streak >= 3 {
+            return Ok("recursive_capability_demonstrated".into());
+        }
         if let Some(reason)=stopped {return Ok(reason.into());}
         if let Some(error)=generation_model_error(&current) {
             // A model connection can fail AFTER a real source mutation. If
