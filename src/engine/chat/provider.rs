@@ -606,9 +606,11 @@ pub(super) async fn stream_completion(
             }
             (result, exposed)
         };
-        // A two-minute answer is not a usable room participant. Remember it
-        // so the next round does not pay the same price again.
-        if candidate_started.elapsed() >= std::time::Duration::from_secs(60) {
+        // A slow *cloud* route can be skipped for later failover. Local models
+        // on CPU can legitimately exceed 60 s while performing a real tool
+        // call; quarantining their only route mid-turn prevents finishing the
+        // already-running task. Local concurrency and turn budgets still apply.
+        if !candidate.local && candidate_started.elapsed() >= std::time::Duration::from_secs(60) {
             crate::engine::gateway::mark_slow(&candidate.base_url, &candidate.model);
         }
         match result {
