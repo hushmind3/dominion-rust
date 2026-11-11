@@ -1620,9 +1620,11 @@ fn mutate_programs_after_trial(
             && p["status"]=="candidate_requires_descendant_execution"
             && p["domain"]==original["domain"]
             && p["steps"].as_array().is_some_and(|steps|
-                steps.len()==3 && original["steps"].as_array().is_some_and(|old|
-                    old.len()==3 && old[0]==steps[0] && old[1]==steps[1]
-                        && old[2]!=steps[2])))
+                (2..=3).contains(&steps.len())
+                    && original["steps"].as_array().is_some_and(|old|
+                        old.len()==steps.len()
+                        && old[..old.len()-1]==steps[..steps.len()-1]
+                        && old.last()!=steps.last())))
             .cloned().collect::<Vec<_>>();
         alternatives.sort_by(|a,b|b["score"].as_i64().cmp(&a["score"].as_i64())
             .then(a["id"].as_str().cmp(&b["id"].as_str())));
@@ -2154,6 +2156,24 @@ fn synthesize_method_execution_programs(evidence:&[Value])->Vec<Value> {
     }
     let mut programs=Vec::<Value>::new();
     for domain in DOMAINS {
+        // Successful edit procedures can shed an unnecessary search stage.
+        // Require successes from two different real generations. A shorter
+        // program is a new candidate, never an unmeasured improvement claim.
+        for terminal in ["workspace_replace_range","workspace_replace","workspace_write"] {
+            let Some((good,bad))=edges.get(&((*domain).into(),
+                "workspace_read_range".into(),terminal.into())) else{continue};
+            if good.len()<2 || good.len()<=bad.len(){continue;}
+            let steps=json!(["workspace_read_range",terminal]);
+            let id=format!("rsi-execution-program-{}",
+                crate::engine::memory::stable_id(&[*domain,"workspace_read_range",terminal]));
+            programs.push(json!({"id":id,"domain":domain,"steps":steps,
+                "score":good.len() as i64*3-bad.len() as i64*2,
+                "origin":"successful_procedure_shortening",
+                "composition":"remove_unnecessary_code_search",
+                "sourceGenerationJobs":good.iter().take(8).cloned().collect::<Vec<_>>(),
+                "status":"candidate_requires_descendant_execution",
+                "causalProof":false}));
+        }
         let first=edges.get(&(domain.to_string(),"code_search".into(),
             "workspace_read_range".into()));
         let Some((read_success,read_failure))=first else{continue};
@@ -4859,6 +4879,28 @@ mod tests {
     }
 
     #[test]
+    fn shortens_successful_source_edit_program_without_claiming_quality() {
+        let evidence=vec![
+            json!({"jobId":"a","domain":"memory","sequence":
+                ["code_search","workspace_read_range","workspace_replace"],
+                "pairedImprovement":true}),
+            json!({"jobId":"b","domain":"memory","sequence":
+                ["workspace_read_range","workspace_replace"],
+                "operationalPass":true}),
+            json!({"jobId":"other","domain":"tools","sequence":
+                ["workspace_read_range","workspace_write"],"operationalPass":true})
+        ];
+        let programs=synthesize_method_execution_programs(&evidence);
+        assert!(programs.iter().any(|p|
+            p["domain"]=="memory"
+                && p["steps"]==json!(["workspace_read_range","workspace_replace"])
+                && p["origin"]=="successful_procedure_shortening"
+                && p["causalProof"]==false));
+        assert!(!programs.iter().any(|p|p["domain"]=="tools"),
+            "a single successful tool use cannot support program shortening");
+    }
+
+    #[test]
     fn composes_unseen_source_edit_program_from_two_independent_generations() {
         let evidence=vec![
             json!({"jobId":"one","domain":"tools","sequence":
@@ -4896,9 +4938,14 @@ mod tests {
                 ["workspace_read_range","workspace_write"],"pairedImprovement":true}),
         ];
         let programs=synthesize_method_execution_programs(&rows);
-        assert_eq!(programs.len(),1);
-        assert_eq!(programs[0]["composition"],"observed_then_generalized");
-        assert_eq!(programs[0]["steps"][2],"workspace_replace_range");
+        assert_eq!(programs.len(),2,
+            "two witnessed positive edit attempts must also yield a shorter method");
+        assert!(programs.iter().any(|p|
+            p["composition"]=="observed_then_generalized"
+                && p["steps"][2]=="workspace_replace_range"));
+        assert!(programs.iter().any(|p|
+            p["origin"]=="successful_procedure_shortening"
+                && p["steps"]==json!(["workspace_read_range","workspace_replace_range"])));
         assert!(programs.iter().all(|p|p["domain"]=="tools"),
             "mixing a different domain would silently invent a capability");
     }
