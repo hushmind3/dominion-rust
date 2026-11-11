@@ -1153,10 +1153,14 @@ async fn run_turn_body(
                 .filter(|operation| operation["runId"].as_str() == Some(execution_id)
                     && operation["status"].as_str() == Some("completed"))
                 .collect::<Vec<_>>();
-            let has_write = completed.iter().any(|operation| matches!(
-                operation["tool"].as_str(),
-                Some("workspace_write" | "workspace_replace")
-            ));
+            // A returned tool envelope is not a source mutation. Count only
+            // a real write; otherwise a noChange/staleVersion response would
+            // reopen search instead of retaining the grounded repair menu.
+            let has_write = completed.iter().any(|operation|
+                matches!(operation["tool"].as_str(),
+                    Some("workspace_write" | "workspace_replace"))
+                && operation["result"]["written"]==true
+            );
             let read_calls = completed.iter().filter(|operation| matches!(
                 operation["tool"].as_str(),
                 Some("workspace_read" | "workspace_read_range")
@@ -1444,9 +1448,11 @@ async fn run_turn_body(
             ));
             let source_observed = has_successful_read
                 || session["rsiFocusContextReady"] == true;
-            let has_write = relevant_operations.iter().any(|operation| matches!(
-                operation["tool"].as_str(), Some("workspace_write" | "workspace_replace")
-            ));
+            let has_write = relevant_operations.iter().any(|operation|
+                matches!(operation["tool"].as_str(),
+                    Some("workspace_write" | "workspace_replace"))
+                && operation["result"]["written"]==true
+            );
             if !force_final && round + 1 < max_rounds && budget.can_execute_tool()
                 && rsi_should_retry_read_only(
                     focused_generation, source_observed, has_write, rsi_edit_retry_used
