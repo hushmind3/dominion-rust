@@ -2873,6 +2873,38 @@ async fn run_loop(
         // generation receipt.
         generation["toolTimeline"]=json!(tool_timeline);
         generation["ruleExecutions"]=json!(rule_executions);
+        // A successful native write can still produce uncompilable Rust.
+        // Keep the *real compiler diagnostic* and the pre-repair history
+        // separate from independently eligible improvements. This makes
+        // next-generation repair synthesis learn WHY a patch failed.
+        let check_diagnostics=current["result"]["rsi"]["checks"].as_array()
+            .into_iter().flatten().take(4).map(|check|json!({
+                "label":check["label"],"passed":check["passed"],
+                "exitCode":check["exitCode"],
+                "detail":check["stderr"].as_str()
+                    .or_else(||check["error"].as_str()).unwrap_or("")
+                    .chars().take(1600).collect::<String>()
+            })).collect::<Vec<_>>();
+        let prior_diagnostics=current["result"]["previousAttempts"].as_array()
+            .into_iter().flatten().take(3).map(|attempt|{
+                let first=attempt["result"]["checks"].as_array()
+                    .into_iter().flatten().find(|c|c["passed"]!=true);
+                json!({
+                    "attempt":attempt["attempt"],
+                    "checksPassed":attempt["result"]["checksPassed"],
+                    "error":first.and_then(|c|c["stderr"].as_str()
+                        .or_else(||c["error"].as_str()))
+                        .unwrap_or("").chars().take(1200).collect::<String>()
+                })
+            }).collect::<Vec<_>>();
+        generation["verification"]=json!({
+            "rawCandidateId":current["result"]["rsi"]["candidateId"],
+            "checksPassed":current["result"]["rsi"]["checksPassed"],
+            "reason":current["result"]["reason"],
+            "checks":check_diagnostics,
+            "repairAttempts":current["result"]["repairAttempts"],
+            "repairHistory":prior_diagnostics,
+        });
         let proposed_candidate = verified_candidate_id(&current["result"]);
         let previous_failed = proposed_candidate.and_then(|id|
             identical_failed_patch(&context.state,
