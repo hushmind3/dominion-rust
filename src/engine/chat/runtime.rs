@@ -311,14 +311,18 @@ fn rsi_program_next_in_session(
     rsi_action_program_next(program,&normalized,execution_id)
 }
 
-/// Keep the requested tool callable together with the minimum observation
-/// path so a stale source hash can be refreshed. This is a native action
-/// policy: the provider sees a *different set of available functions*.
-fn rsi_action_program_tool_allowed(name:&str, selected:&str)->bool {
-    name==selected
-        || name=="workspace_read_range"
-        || (matches!(selected,"workspace_replace"|"workspace_replace_range")
-            && name=="code_search")
+/// The execution program owns this round's next action. Reopening search
+/// after a verified read defeated learned read -> edit programs: small models
+/// repeatedly took the easier discovery tool instead of attempting a patch.
+/// Before the first real source read, keep only the minimum hash-observation
+/// path needed for an edit. A stale edit explicitly selects a fresh read via
+/// rsi_action_program_next; never advertise unrestricted search as fallback.
+fn rsi_action_program_tool_allowed(
+    name:&str,selected:&str,has_source_read:bool
+)->bool {
+    name==selected || (!has_source_read
+        && name=="workspace_read_range"
+        && matches!(selected,"workspace_replace"|"workspace_replace_range"))
 }
 
 /// Native RSI program decisions are executable restrictions, not simply
@@ -1414,7 +1418,7 @@ async fn run_turn_body(
                 if round_tools.iter().any(|tool|tool_name(tool)==chosen) {
                     action_program_applied=true;
                     round_tools.retain(|tool|
-                        rsi_action_program_tool_allowed(tool_name(tool),&chosen));
+                        rsi_action_program_tool_allowed(tool_name(tool),&chosen,read_calls>0));
                     let evidence=json!({
                         "programRevision":session["rsiExecutionMethod"]["actionProgram"]["revision"],
                         "chosenTool":chosen,"reason":reason,
@@ -6672,8 +6676,17 @@ mod harness_tool_selection_tests {
             .unwrap().1,"observed_source_precondition_recovery",
             "An actual stale oldText must refresh source before fallback");
         assert!(rsi_action_program_tool_allowed("workspace_read_range",
-            "workspace_replace_range"));
-        assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range"));
+            "workspace_replace_range",false),
+            "An edit without a read must still be able to obtain its source SHA");
+        assert!(!rsi_action_program_tool_allowed("workspace_read_range",
+            "workspace_replace_range",true),
+            "After a real read, only the learned edit is offered");
+        assert!(!rsi_action_program_tool_allowed("code_search",
+            "workspace_replace_range",true),
+            "Native policy must not restart discovery at the mutation step");
+        assert!(rsi_action_program_tool_allowed("workspace_replace_range",
+            "workspace_replace_range",true));
+        assert!(!rsi_action_program_tool_allowed("web_search","workspace_replace_range",false));
         assert!(rsi_action_program_next(&plan,&[],"unrelated").is_some());
     }
 
