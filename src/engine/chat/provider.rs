@@ -682,6 +682,18 @@ fn should_quarantine_slow_room_route(session:&Value,elapsed:std::time::Duration)
         && elapsed >= std::time::Duration::from_secs(60)
 }
 
+/// First-generation bootstrapping is a real tool action, not synthetic
+/// research evidence: the model must actually request the indexed file read
+/// before native range editing can be offered on the next round.
+fn rsi_source_read_requires_tool(session:&Value,tools:&[Value],observed_read:bool)->bool {
+    session["rsiRun"]==true
+        && session["rsiCampaignId"].is_string()
+        && session["rsiGenerationJobId"].is_string()
+        && session["rsiFocusFile"].as_str().is_some_and(crate::engine::rsi::safe_path)
+        && !observed_read && tools.len()==1
+        && tools[0]["function"]["name"]=="workspace_read_range"
+}
+
 /// A source-repair model that has actually read its current source may be
 /// asked for one concrete edit operation instead of another prose answer.
 fn rsi_edit_requires_tool(session:&Value,tools:&[Value],observed_read:bool)->bool {
@@ -820,15 +832,15 @@ async fn stream_completion_once_body(
     });
     if !compatible && !tools.is_empty() {
         body["tools"] = json!(tools);
-        let observed_read=if tools.len()==1
-            && matches!(tools[0]["function"]["name"].as_str(),Some("workspace_replace" | "workspace_replace_range")) {
-            state.store.all("execution_operation").iter().any(|op|
-                op["sessionId"]==session_id && op["status"]=="completed"
-                    && matches!(op["tool"].as_str(),
-                        Some("workspace_read_range" | "workspace_read")))
-        } else {false};
+        let focused=tools.len()==1 && matches!(tools[0]["function"]["name"].as_str(),
+            Some("workspace_read_range"|"workspace_replace"|"workspace_replace_range"));
+        let observed_read=focused && state.store.all("execution_operation").iter().any(|op|
+            op["sessionId"]==session_id && op["status"]=="completed"
+                && matches!(op["tool"].as_str(),
+                    Some("workspace_read_range" | "workspace_read")));
         if state.store.get("session",session_id).is_some_and(|session|
-            rsi_edit_requires_tool(&session,tools,observed_read)) {
+            rsi_edit_requires_tool(&session,tools,observed_read)
+                || rsi_source_read_requires_tool(&session,tools,observed_read)) {
             body["tool_choice"]=json!("required");
         }
     }
@@ -2241,6 +2253,23 @@ mod tests {
         assert_eq!(output, "대체 모델 정상 응답");
         server.abort();
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn targeted_rsi_source_bootstrap_requests_a_real_read_only_for_descendants() {
+        let native_read=vec![json!({"type":"function",
+            "function":{"name":"workspace_read_range"}})];
+        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"worker","rsiFocusFile":"src/engine/tools.rs"});
+        assert!(rsi_source_read_requires_tool(&session,&native_read,false));
+        assert!(!rsi_source_read_requires_tool(&session,&native_read,true));
+        assert!(!rsi_source_read_requires_tool(&json!({"rsiRun":true}),
+            &native_read,false));
+        assert!(!rsi_source_read_requires_tool(&session,
+            &[native_read[0].clone(),native_read[0].clone()],false));
+        assert!(!rsi_source_read_requires_tool(&session,
+            &[json!({"type":"function",
+                "function":{"name":"workspace_replace_range"}})],false));
     }
 
     #[test]
