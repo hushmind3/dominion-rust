@@ -120,3 +120,34 @@
 2. 실제 `qwen3:4b-instruct` 최신 run에서 `rsiActionRetry.reason=focused_source_observed`, `workspace_replace_range` operation, `actualWrites`, 실 git diff, `candidateId`, `acceptedCommit`를 함께 대조한다. 호출만 한 경우는 성과 0으로 기록한다.
 3. 파일 수정이 실제 발생하면 독립 frozen paired holdout, 수용, 재빌드 후 다음 세대의 다른 문제 개선을 수행한다. 후속 세대가 독립 품질 개선을 이루기 전에는 43점 기준을 유지한다.
 4. 타 Sub·Champion·main은 변경하지 않았다.
+
+
+## 2026-11-11 최신 심판 46점·3위 이후 — 실제 source-write 검증과 세대 실행 복구
+
+새 심판 기준 Sub4는 **46/100, 3위**(구현 24/30, 실제 RSI 4/40, 계승 12/20, 서비스 6/10). 특히 기존 강점은 `$rsiFocusPath` 방법 전이와 실패 기반 자손 교정이며, 핵심 미완료는 실모델이 학습된 방법으로 다른 분야의 독립 holdout 품질까지 개선하는 것이다.
+
+### 먼저 확인한 실제 모델 결과
+
+- Qwen 실모델 `42963802448`: 도구 검색/읽기만 진행하다 `연결 실패: error sending request`; 소스 수정 0, 채택 0.
+- Qwen `42964066897`: 실제 모델 호출 5회, 소스 수정 0, 채택 0. 2세대 요청이 **5,761토큰**인데 실제 Ollama가 **4,096토큰 컨텍스트**만 수용해 HTTP 400으로 중단됨. 워크플로의 `OLLAMA_CONTEXT_LENGTH=16384` 설정만으로는 OpenAI 호환 호출의 모델 컨텍스트가 보장되지 않았다.
+- Qwen `42964106396`: 선택된 `decompose.rs`를 읽고 `focused_source_observed` 실행 선택이 발생했지만, 10분 턴 제한을 초과해 수정 0, 채택 0. `rsiActionRetry` 로그는 있었으나 변경 영수증은 없었다.
+- GitHub Actions job `success`는 실모델 품질 향상이 아니라 실험/아티팩트 업로드 완료에 불과하다.
+
+### 실제 구현: `dominion-sub4` 전용
+
+1. `97b25b7` — `src/engine/effect.rs`: `workspace_replace`와 `workspace_replace_range`를 동일 소스 리소스에 매핑하고 실제 파일을 다시 읽어 `postSha256`과 대조. 모델의 성공 주장이나 완료 도구 호출을 검증 영수증으로 오인하지 않는다. 실제 readback 검증 유닛 테스트 추가.
+2. `586b37e` — `src/engine/tools.rs`: 실제 `checked_write` 성공 후에만 `postSha256` 기록. 글자만 교체했다고 기록되는 경우 방지.
+3. `3c87ba2` — `src/engine/chat/runtime.rs`: 정확히 선택된 대상 경로에 모델이 수정하고 `toolReceipt.verified`가 참인 경우 **추가 모델 호출 없이 `rsi_worktree::finish`의 실제 Git diff 후보 수집·검사로 이어지도록** 라운드 종료. 단순 편집 호출은 채택으로 간주하지 않음.
+4. `afc4975` — 실제 Qwen 실험은 `qwen3:4b-instruct`로부터 `PARAMETER num_ctx 16384`를 가진 별도의 `sub4-qwen3-16k:latest` 모델을 Modelfile로 생성. Ollama 공식 OpenAI 호환 경로의 설정 방식에 맞췄으며, 생성된 설정을 조회해 검증한다.
+5. `d8d7d28` — `scripts/sub4-live-rsi.mjs`: 실모델 제공자에 16K 컨텍스트를 선언하고 실제 `workspace_replace_range` 도구를 사용하도록 명시한 목표로 실험.
+6. `67f8012` — 4B CPU 실행에서 읽기→편집 결정이 진행되도록, 실제 RSI 자손 세대에 한정한 턴 제한을 840초로 확대하고 집중 소스 읽기 뒤 편집 결정을 조기에 요청. 일반 대화의 제한은 그대로 유지.
+7. `8854077` — 모델이 편집 인자에서 해시를 누락했을 때 **같은 실행에서 동일 대상 파일·포함된 범위를 실제로 읽은 결과**가 있다면 그 해시를 보충. 모델이 공급한 해시는 덮어쓰지 않고 새 코드를 임의로 생성하지 않는다.
+
+### 검증 수준과 다음 세션의 우선순위
+
+- 이 일괄 변경 직전의 최신 통합 CI `42964592996` 성공. 이후 변경의 전체 CI/실모델 결과는 작성 시 대기·진행 중이며 성공으로 기록할 수 없다.
+- 최신 패치 `8854077`의 CI: https://github.com/hushmind3/dominion-rust/actions/runs/42967958254
+- 최신 실모델 시도: https://github.com/hushmind3/dominion-rust/actions/runs/42967958256
+- **다음 최우선:** 실제 Qwen 실행에서 `workspace_replace_range` 실행 → `written:true` → `toolReceipt.verified:true` → `diffBytes>0` → `candidateId` → `checksPassed` → frozen paired holdout `eligible` 및 `acceptedCommit` 순서대로 증거를 확인한다.
+- 첫 독립 개선 채택이 생기면 `rsiInheritedImplementations`와 실제 다음 세대 바이너리에서 **다른 분야 적용/실패 교정/재채택**을 확인하고 세대 계보를 고정한다. 모델 없는 합성 테스트 성공을 교차 분야 실모델 개선으로 보고하지 않는다.
+- Champion, Sub1~3, main은 수정하지 않았다. Sub4 외부 수정 없음.
