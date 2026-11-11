@@ -203,6 +203,24 @@ if(mode==='probe'){
       metaImproverTrials:trace.generationEvidence.filter(g=>g.metaTransferTarget===true).length,
       nativeMutationCandidates:trace.generationEvidence.filter(g=>
         g.candidateId && g.candidateOrigin==='native_inductive_source_mutation').length,
+      // Native descendants use the adopted source to generate the next
+      // actual patch BEFORE model inference. Report their measured outcome
+      // separately; zero model calls is not a failed model attempt.
+      nativeDescendantTrials:trace.generationEvidence.filter((g,i)=>
+        i>0 && trace.generationEvidence.slice(0,i).some(p=>p.accepted===true)
+        && g.nativeMutation?.origin==='native_inductive_source_mutation').map(g=>({
+          attempt:g.attempt,operator:g.nativeMutation?.operator||null,
+          target:g.nativeMutation?.path||null,
+          modelCalls:g.tokenUsage?.calls||0,
+          pairedVerdict:g.verdict||null,
+          independentlyAdopted:g.accepted===true
+        })),
+      independentlyAdoptedMetaChanges:accepted.filter(g=>
+        (g.evaluation?.metaHoldoutGains||0)>0
+        && g.evaluation?.improvedHoldoutDomains?.includes('improver')).map(g=>({
+          attempt:g.attempt,commit:g.acceptedCommit,
+          verifiedMetaHoldoutGains:g.evaluation.metaHoldoutGains
+        })),
       independentlyAdoptedNativeMutations:accepted.filter(g=>
         g.candidateOrigin==='native_inductive_source_mutation').length,
       readOnlyGenerations:trace.generationEvidence.filter(g=>!g.candidateId
