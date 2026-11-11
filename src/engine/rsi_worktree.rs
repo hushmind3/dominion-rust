@@ -289,14 +289,38 @@ fn classify(patch:&str)->&'static str {
         "algorithm"
     } else {"harness"}
 }
+/// The last bytes of Cargo stderr usually contain only "could not compile".
+/// Keep the *first actual* compiler error and its source location separately
+/// so the next real model edit targets the failing file/line instead of the
+/// unrelated end of a long build log.
+fn primary_compiler_diagnostic(stderr:&str)->String {
+    let lines=stderr.lines().collect::<Vec<_>>();
+    let start=lines.iter().position(|line|{
+        let text=line.trim_start();
+        text.starts_with("error[E") || text.starts_with("error:")
+    });
+    let Some(start)=start else {
+        return stderr.chars().rev().take(1200)
+            .collect::<String>().chars().rev().collect()
+    };
+    lines.iter().skip(start).take(20)
+        .take_while(|line|!line.trim_start().starts_with("error: could not compile"))
+        .copied().collect::<Vec<_>>().join("\n")
+        .chars().take(2000).collect()
+}
 fn check_result(label:&str, result:Result<std::process::Output,String>)->Value {
     match result {
-        Ok(output)=>json!({
-            "label":label,"ran":true,"passed":output.status.success(),
-            "exitCode":output.status.code(),
-            "stdout":String::from_utf8_lossy(&output.stdout).chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>(),
-            "stderr":String::from_utf8_lossy(&output.stderr).chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>()
-        }),
+        Ok(output)=>{
+            let stderr=String::from_utf8_lossy(&output.stderr);
+            json!({
+                "label":label,"ran":true,"passed":output.status.success(),
+                "exitCode":output.status.code(),
+                "stdout":String::from_utf8_lossy(&output.stdout).chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>(),
+                "stderr":stderr.chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>(),
+                "primaryDiagnostic":if output.status.success() {String::new()}
+                    else {primary_compiler_diagnostic(&stderr)}
+            })
+        },
         Err(error)=>json!({"label":label,"ran":false,"passed":false,"error":error}),
     }
 }
@@ -306,7 +330,7 @@ async fn validate(worktree:&Worktree,patch:&str)->Vec<Value> {
     let web_change=patch.lines().any(|line|line.starts_with("diff --git a/web/"));
     if rust_change {
         let mut command=Command::new(cargo_executable());
-        command.current_dir(&worktree.path).args(["check","--all-targets"]);
+        command.current_dir(&worktree.path).args(["check","--all-targets","--color","never"]);
         checks.push(check_result("cargo check --all-targets",run(command,CHECK_LIMIT).await));
     }
     if web_change {
@@ -541,7 +565,10 @@ pub fn repair_feedback(result:&Value)->Option<String>{
     let failures=checks.iter().filter(|check|check["passed"]!=true)
         .map(|check|{
             let label=check["label"].as_str().unwrap_or("verification");
-            let detail=check["stderr"].as_str().or_else(||check["error"].as_str())
+            let detail=check["primaryDiagnostic"].as_str()
+                .filter(|value|!value.is_empty())
+                .or_else(||check["stderr"].as_str())
+                .or_else(||check["error"].as_str())
                 .unwrap_or("The verifier reported failure without further detail.");
             format!("{label}: {}",detail.chars().take(1100).collect::<String>())
         }).collect::<Vec<_>>();
