@@ -129,6 +129,63 @@ fn ground_observed_range_edit(mut args:Value, observations:&[Value])->Value {
     args
 }
 
+/// Accept a small model's complete JSON range edit as a NATIVE tool call
+/// only after the same run actually observed the target source lines. This
+/// is an adapter, not an automatic patch generator or a bypass of approvals.
+fn rsi_grounded_json_edit(
+    content:&str,session:&Value,operations:&[Value],execution_id:&str,
+    offered:&[Value],
+)->Option<Value> {
+    if !rsi_generation_has_action_target(session)
+        || offered.len()!=1 || tool_name(&offered[0])!="workspace_replace_range" {
+        return None;
+    }
+    let candidate=content.trim();
+    let body=if let Some(fenced)=candidate.strip_prefix("\`\`\`json") {
+        fenced.trim().strip_suffix("\`\`\`")?.trim()
+    } else if let Some(fenced)=candidate.strip_prefix("\`\`\`") {
+        fenced.trim().strip_suffix("\`\`\`")?.trim()
+    } else {candidate};
+    let mut parsed=serde_json::from_str::<Value>(body).ok()?;
+    // Some models return a full tool-call wrapper. Never accept a different
+    // tool name or a free-form text command as an executable edit.
+    if parsed["tool"].is_string() || parsed["arguments"].is_object() {
+        if parsed["tool"]!="workspace_replace_range" {return None;}
+        parsed=parsed["arguments"].clone();
+    }
+    let path=parsed["path"].as_str()?;
+    if parsed["path"]!=session["rsiFocusFile"]
+        || !crate::engine::rsi::safe_path(path) {return None;}
+    let count=|v:&Value|v.as_u64()
+        .or_else(||v.as_str().and_then(|s|s.parse::<u64>().ok()));
+    let (start,end)=(count(&parsed["startLine"])?,count(&parsed["endLine"])?);
+    if start==0 || end<start || end-start>=120 {return None;}
+    let text=parsed["newText"].as_str()?;
+    if text.len()>20_000 {return None;}
+    let relevant=operations.iter().filter(|op|
+        op["runId"].as_str()==Some(execution_id)
+            && op["status"]=="completed"
+            && op["tool"]=="workspace_read_range"
+            && op["arguments"]["path"]==parsed["path"])
+        .collect::<Vec<_>>();
+    let read=relevant.iter().rev().find(|op|
+        count(&op["result"]["startLine"]).is_some_and(|n|n<=start)
+        && count(&op["result"]["endLine"]).is_some_and(|n|n>=end)
+        && op["result"]["sourceSha256"].as_str().is_some_and(|sha|
+            sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())))?;
+    let digest=read["result"]["sourceSha256"].as_str()?;
+    if parsed["expectedSha256"].as_str().is_some_and(|sha|sha!=digest) {
+        return None;
+    }
+    parsed["startLine"]=json!(start);
+    parsed["endLine"]=json!(end);
+    parsed["expectedSha256"]=json!(digest);
+    // The native workspace_replace_range handler still determines whether
+    // this text actually edits the frozen source, and evaluates its receipt.
+    Some(json!({"path":path,"startLine":start,"endLine":end,
+        "newText":parsed["newText"],"expectedSha256":digest}))
+}
+
 fn rsi_patch_ready_for_evaluation(
     session: &Value, tool: &str, args: &Value, result: &Value, receipt: &Value,
 ) -> bool {
@@ -1515,6 +1572,9 @@ async fn run_turn_body(
             counters.model_calls += 1;
             counters.iterations = round as u32 + 1;
         }
+        let rsi_edit_response_expected=rsi_generation_has_action_target(&session)
+            && round_tools.len()==1
+            && tool_name(&round_tools[0])=="workspace_replace_range";
         let completion_result = stream_completion(
             state,
             &client,
@@ -1677,6 +1737,25 @@ async fn run_turn_body(
             }
         }
 
+        if completion.tool_calls.is_empty() && rsi_edit_response_expected
+            && request.tools_enabled && request.tools_execution_enabled && !force_final {
+            let ops=state.store.all("execution_operation");
+            if let Some(arguments)=rsi_grounded_json_edit(
+                &completion.content,&session,&ops,execution_id,&round_tools) {
+                completion.tool_calls.push(ToolCall {
+                    id:uuid::Uuid::new_v4().to_string(),
+                    name:"workspace_replace_range".into(),
+                    arguments:arguments.to_string(),
+                });
+                if let Some(mut execution)=state.store.get("execution",execution_id) {
+                    execution["rsiStructuredEditAdaptation"]=json!({
+                        "origin":"model_authored_grounded_json",
+                        "tool":"workspace_replace_range",
+                        "sourceReadRequired":true,"round":round});
+                    state.store.put("execution",&execution);
+                }
+            }
+        }
         if completion.tool_calls.is_empty() {
             // Actual live models have ended after reading source without
             // calling any edit tool. Keep the existing source in context and
@@ -6722,6 +6801,40 @@ mod harness_tool_selection_tests {
         assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",&args,&result,&false_receipt));
         assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",
             &args,&json!({"written":false,"postSha256":digest}),&receipt));
+    }
+
+    #[test]
+    fn small_model_json_edit_uses_exact_witnessed_read_and_not_new_authority() {
+        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
+            "rsiGenerationJobId":"worker",
+            "rsiFocusFile":"src/engine/tools.rs"});
+        let read=json!({"id":"read-1","runId":"run","status":"completed",
+            "tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/tools.rs"},
+            "result":{"startLine":20,"endLine":40,"sourceSha256":"a".repeat(64)}});
+        let menu=vec![json!({"type":"function",
+            "function":{"name":"workspace_replace_range"}})];
+        let draft=json!({"path":"src/engine/tools.rs",
+            "startLine":"24","endLine":27,"newText":"better();"}).to_string();
+        let grounded=rsi_grounded_json_edit(&draft,&session,&[read.clone()],"run",&menu)
+            .expect("the model's own patch may be adapted after a witnessed source read");
+        assert_eq!(grounded["startLine"],24);
+        assert_eq!(grounded["expectedSha256"],"a".repeat(64));
+        let fenced=format!("\`\`\`json\n{draft}\n\`\`\`");
+        assert_eq!(rsi_grounded_json_edit(&fenced,&session,&[read.clone()],"run",&menu),
+            Some(grounded.clone()));
+        assert!(rsi_grounded_json_edit(&draft,&session,&[read.clone()],"other",&menu).is_none());
+        assert!(rsi_grounded_json_edit(&json!({"path":"src/engine/other.rs",
+            "startLine":24,"endLine":27,"newText":"x"}).to_string(),
+            &session,&[read.clone()],"run",&menu).is_none());
+        assert!(rsi_grounded_json_edit(&json!({"path":"src/engine/tools.rs",
+            "startLine":41,"endLine":44,"newText":"x"}).to_string(),
+            &session,&[read.clone()],"run",&menu).is_none());
+        assert!(rsi_grounded_json_edit(&json!({"path":"src/engine/tools.rs",
+            "startLine":24,"endLine":27,"newText":"x",
+            "expectedSha256":"b".repeat(64)}).to_string(),
+            &session,&[read.clone()],"run",&menu).is_none());
+        assert!(rsi_grounded_json_edit("just change it",&session,&[read],"run",&menu).is_none());
     }
 
     #[test]
