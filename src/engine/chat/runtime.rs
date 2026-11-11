@@ -105,6 +105,25 @@ fn rsi_confirmed_source_write(operations:&[Value], execution_id:&str)->bool {
 }
 
 
+/// Turn experience into an actual harness decision. A prior failed
+/// mutation switches this generation to the alternative learned edit method;
+/// successful effects remain separate from the independent quality verdict.
+fn rsi_method_edit_choice(method:&Value, operations:&[Value], execution_id:&str)
+    -> Option<(String,bool)>
+{
+    let primary=method["preferredTool"].as_str()
+        .filter(|tool|matches!(*tool,"workspace_replace"|"workspace_replace_range"))?;
+    let fallback=method["fallbackTool"].as_str()
+        .filter(|tool|matches!(*tool,"workspace_replace"|"workspace_replace_range"))?;
+    let failed=operations.iter().any(|row|
+        row["runId"]==execution_id
+        && row["tool"]==primary
+        && (row["status"]=="failed"
+            || (row["status"]=="completed" && row["result"]["written"]!=true))
+    );
+    Some((if failed {fallback}else{primary}.to_string(),failed))
+}
+
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
 /// needs read, search and replace together to produce a grounded patch.
 fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
@@ -1125,10 +1144,12 @@ async fn run_turn_body(
                 round_tools.retain(|definition|
                     rsi_initial_focused_tool(tool_name(definition)));
             }
-            let completed=state.store.all("execution_operation").into_iter()
-                .filter(|operation|operation["runId"].as_str()==Some(execution_id)
-                    && operation["status"].as_str()==Some("completed"))
+            let operations=state.store.all("execution_operation").into_iter()
+                .filter(|operation|operation["runId"].as_str()==Some(execution_id))
                 .collect::<Vec<_>>();
+            let completed=operations.iter()
+                .filter(|operation|operation["status"].as_str()==Some("completed"))
+                .cloned().collect::<Vec<_>>();
             let has_write=rsi_confirmed_source_write(&completed,execution_id);
             let read_calls=completed.iter().filter(|operation|matches!(
                 operation["tool"].as_str(),Some("workspace_read_range"|"workspace_read"))).count() as u64;
@@ -1137,6 +1158,10 @@ async fn run_turn_body(
                 session["rsiExplicitFocus"]==true,session["rsiFocusContextReady"]==true)
                 .or_else(||(rsi_edit_retry && grounded && !has_write).then_some(true));
             if let Some(edit_only)=stage {
+                // A range edit needs the *actual* source SHA returned by a
+                // read tool. When only a prompt excerpt exists, keep the read
+                // tool in the menu instead of trapping the model in edit-only.
+                let edit_only=edit_only && read_calls>0;
                 // Repeat the menu restriction on every subsequent model round;
                 // a one-shot checkpoint silently reopened code_search.
                 round_tools.retain(|definition|
@@ -1157,6 +1182,34 @@ async fn run_turn_body(
                     }));
                 }
                 rsi_decision_checkpoint=true;
+            }
+            // Method learning changes the next tool decision at runtime,
+            // independent of what the model says in its final message.
+            if grounded && !has_write {
+                if let Some((chosen,corrected))=rsi_method_edit_choice(
+                    &session["rsiExecutionMethod"],&operations,execution_id) {
+                    if round_tools.iter().any(|row|tool_name(row)==chosen) {
+                        round_tools.sort_by_key(|definition|
+                            if tool_name(definition)==chosen {0usize}
+                            else if matches!(tool_name(definition),
+                                "workspace_replace"|"workspace_replace_range"|"workspace_write") {1}
+                            else {2});
+                        let receipt=json!({
+                            "methodId":session["rsiExecutionMethod"]["id"],
+                            "revision":session["rsiExecutionMethod"]["revision"],
+                            "preferredTool":session["rsiExecutionMethod"]["preferredTool"],
+                            "chosenTool":chosen,
+                            "correctedAfterFailure":corrected,
+                            "readCalls":read_calls,
+                            "source":"native_rsi_method_controller"
+                        });
+                        if let Some(mut execution)=state.store.get("execution",execution_id) {
+                            execution["rsiMethodDecision"]=receipt.clone();
+                            state.store.put("execution",&execution);
+                        }
+                        state.store.audit("rsi.method_controller_action",receipt);
+                    }
+                }
             }
         }
         let wire_messages = messages.clone();
@@ -6242,6 +6295,21 @@ mod harness_tool_selection_tests {
         assert!(rsi_checkpoint_tool("workspace_replace_range",true));
         assert!(!rsi_checkpoint_tool("workspace_read_range",true));
         assert!(rsi_checkpoint_tool("workspace_read_range",false));
+    }
+
+    #[test]
+    fn learned_method_controls_next_edit_and_counterexample_recovery() {
+        let method=json!({"preferredTool":"workspace_replace",
+            "fallbackTool":"workspace_replace_range"});
+        assert_eq!(rsi_method_edit_choice(&method,&[],"run"),
+            Some(("workspace_replace".into(),false)));
+        let unsuccessful=json!({"runId":"run","tool":"workspace_replace",
+            "status":"failed","result":{"error":"oldText mismatch"}});
+        assert_eq!(rsi_method_edit_choice(&method,&[unsuccessful.clone()],"run"),
+            Some(("workspace_replace_range".into(),true)));
+        assert_eq!(rsi_method_edit_choice(&method,&[unsuccessful],"other"),
+            Some(("workspace_replace".into(),false)));
+        assert!(rsi_method_edit_choice(&json!({}),&[],"run").is_none());
     }
 
     #[test]
