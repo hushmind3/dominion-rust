@@ -546,6 +546,12 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                         &repair["failures"],focus) {
                         session["rsiRepairFocusStartLine"]=json!(start);
                     }
+                    // The compact local edit context intentionally replaces
+                    // the lengthy original prompt. Preserve the real compiler
+                    // failure there, or the descendant blindly reimplements
+                    // the old objective instead of fixing its inherited patch.
+                    session["rsiRepairDiagnostics"]=repair["failures"].clone();
+                    session["rsiRepairParentCandidateId"]=repair["candidateId"].clone();
                 }
             }
             if let Some(id)=input["rsiCampaignId"].as_str(){
@@ -625,8 +631,18 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 if let Some(start)=crate::engine::rsi_worktree::repair_focus_start(
                     &prior["rsi"]["checks"],&focus) {
                     session["rsiRepairFocusStartLine"]=json!(start);
-                    context.state.store.put("session",&session);
                 }
+                session["rsiRepairDiagnostics"]=json!(
+                    prior["rsi"]["checks"].as_array().into_iter().flatten()
+                        .filter(|check|check["passed"]!=true)
+                        .take(3).map(|check|json!({
+                            "label":check["label"],
+                            "error":check["stderr"].as_str()
+                                .or_else(||check["error"].as_str())
+                                .unwrap_or("").chars().take(1400).collect::<String>()
+                        })).collect::<Vec<_>>());
+                session["rsiRepairParentCandidateId"]=prior["rsi"]["candidateId"].clone();
+                context.state.store.put("session",&session);
             }
             let mut retry=request.clone();
             retry.input=feedback;
