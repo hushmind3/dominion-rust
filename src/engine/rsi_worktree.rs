@@ -295,13 +295,26 @@ fn classify(patch:&str)->&'static str {
         "algorithm"
     } else {"harness"}
 }
+/// Retain the FIRST actionable compiler diagnostic as well as its final
+/// summary. Cargo often prints several thousand bytes after the first
+/// " --> path:line:column" location; tail-only truncation hid the source
+/// location from the model's actual compiler-repair turn.
+fn compiler_diagnostic_excerpt(value:&str)->String {
+    const HEAD:usize=2600;
+    const TAIL:usize=1800;
+    let total=value.chars().count();
+    if total<=HEAD+TAIL {return value.to_string();}
+    let beginning=value.chars().take(HEAD).collect::<String>();
+    let end=value.chars().skip(total-TAIL).collect::<String>();
+    format!("{beginning}\n[{} diagnostic characters omitted]\n{end}",total-HEAD-TAIL)
+}
 fn check_result(label:&str, result:Result<std::process::Output,String>)->Value {
     match result {
         Ok(output)=>json!({
             "label":label,"ran":true,"passed":output.status.success(),
             "exitCode":output.status.code(),
             "stdout":String::from_utf8_lossy(&output.stdout).chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>(),
-            "stderr":String::from_utf8_lossy(&output.stderr).chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>()
+            "stderr":compiler_diagnostic_excerpt(&String::from_utf8_lossy(&output.stderr))
         }),
         Err(error)=>json!({"label":label,"ran":false,"passed":false,"error":error}),
     }
@@ -1005,6 +1018,17 @@ mod tests {
             "A compiler-rejected real patch must still be repairable after a late stream error");
         assert_eq!(run_status(true,false,false,true,"stream closed",""),
             ("needs_review","build_or_typecheck_failed"));
+    }
+    #[test]
+    fn sub1_compiler_errors_keep_first_location_after_long_cargo_output() {
+        let raw=format!(
+            "error[E0308]: mismatched types\n --> src/engine/decompose.rs:44:9\n{}\nerror: could not compile",
+            "note: dependency warning\n".repeat(350));
+        let reduced=compiler_diagnostic_excerpt(&raw);
+        assert!(reduced.contains("src/engine/decompose.rs:44:9"));
+        assert!(reduced.contains("error: could not compile"));
+        assert!(reduced.len()<raw.len());
+        assert_eq!(compiler_diagnostic_excerpt("short compiler failure"),"short compiler failure");
     }
     #[test]
     fn compiler_repair_rehydrates_current_source_from_ansi_rustc_location() {
