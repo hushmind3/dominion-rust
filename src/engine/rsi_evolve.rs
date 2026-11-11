@@ -5698,6 +5698,61 @@ mod tests {
     }
 
     #[test]
+    fn real_unbuildable_source_edit_becomes_next_generation_repair_not_research_success() {
+        let row=json!({"attempt":1,"id":"first","domain":"tools",
+            "domainSelection":"algorithm_active","generatorCommit":"a".repeat(40),
+            "accepted":false,"candidateId":null,
+            "newFindings":2,"focusFiles":["src/engine/decompose.rs"],
+            "sourceIntegrity":{"diffBytes":2048,"sourceClean":true,
+                "evaluationStatus":"changed_source_failed_integrity",
+                "checksPassed":false,"failedChecks":[{"label":"cargo check --all-targets",
+                    "error":"error[E0308]: expected String, found &str"}]}});
+        let history=vec![row];
+        let repair=source_integrity_repair(&history)
+            .expect("actual changed source and compiler diagnostics are repair evidence");
+        assert_eq!(repair["focusPath"],"src/engine/decompose.rs");
+        assert!(source_integrity_repair_instruction(&repair).contains("E0308"));
+        assert!(research_continuation(&history).is_none(),
+            "a rejected compilation must not be relabelled as research progress");
+        let (state,root)=state();
+        let (domain,selection,_)=select_generation_strategy(&state,&history,
+            "improve source editor",Some("tools".into()),None,None,&"a".repeat(40));
+        assert_eq!(domain,"tools");
+        assert_eq!(selection,"source_integrity_repair");
+        assert!(source_integrity_repair(&[json!({"accepted":false,
+            "domainSelection":"source_integrity_repair",
+            "sourceIntegrity":history[0]["sourceIntegrity"],
+            "focusFiles":["src/engine/decompose.rs"],"domain":"tools",
+            "generatorCommit":"a".repeat(40)})]).is_none(),
+            "a repaired generation cannot trigger infinite identical repair");
+        drop(state);let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compiler_failures_revise_search_grammar_without_counterfeit_paired_regression() {
+        let samples=vec![
+            json!({"jobId":"different-a","domain":"tools",
+                "sourceIntegrityFailure":true,"operationalFailure":true,
+                "pairedRegression":false,"sequence":["workspace_read_range",
+                    "workspace_replace_range"]}),
+            json!({"jobId":"different-b","domain":"tools",
+                "sourceIntegrityFailure":true,"operationalFailure":true,
+                "pairedRegression":false,"sequence":["workspace_read_range",
+                    "workspace_replace_range"]})
+        ];
+        let policy=json!({"evidence":samples,"programMeasuredEvidence":[]});
+        let grammar=evolve_program_synthesis_grammar(&policy);
+        assert_eq!(grammar["genes"]["maxSteps"],5,
+            "two real build failures must modify the next generator topology");
+        assert_eq!(grammar["genes"]["witnessedSourceIntegrityFailures"],2);
+        assert_eq!(grammar["genes"]["measuredRegressions"],0,
+            "compiler errors are operational failures, not frozen paired regressions");
+        assert!(!synthesize_evolved_execution_programs(
+            policy["evidence"].as_array().unwrap(),&grammar).iter().any(|program|
+                program["causalProof"]==true));
+    }
+
+    #[test]
     fn repeated_quality_regressions_expand_the_next_generator_not_the_reward_claim() {
         let evidence=vec![
             json!({"jobId":"a","domain":"memory",
