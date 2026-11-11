@@ -118,13 +118,13 @@ if(mode==='probe'){
     });
     receipt.providerId=provider.id||'sub4-live-model';
     await post(host+'/api/dev/config',{sourceDir:process.env.DOMINION_SOURCE_WORKSPACE});
-    const goal='Fix one concrete user-visible planning error in src/engine/decompose.rs. split_markers currently misses Korean ordered actions such as 설계를 읽고 결과를 저장한 다음 검증해. Implement grammar-aware splitting of action suffix -고 and connectors 다음/나서, avoiding false noun splits (사고, 최고), while preserving meaningful step text. Inspect the exact source once using workspace_read_range, then CALL workspace_replace_range with observed startLine, endLine, sourceSha256 as expectedSha256, and improved newText. Do not send oldText or continue searching after the source is observed. Do not just discuss a solution. Then let DOMINION evaluate frozen held-out cases.';
+    const goal='Improve DOMINION planning quality by fixing src/engine/decompose.rs split_markers. The current parser misses the three ordered actions in "설정을 읽고 결과를 저장한 다음 검증해". Read the real function with workspace_read_range, then make the smallest COMPLETE Rust source edit with workspace_replace_range and the observed SHA. A split after the Korean verb ending 읽고 and before 다음 is needed; preserve ordinary words like 최고 or 사고. Submit compilable source code, not prose. The native engine will build, compare frozen holdouts, adopt useful changes and rebuild each descendant. If the first patch fails, repair its actual compiler diagnostic without abandoning the original change.';
     const started=await post(host+'/api/rsi/start',{
       confirmation:'START_RSI_EVOLUTION',mode:'continuous',
       providerId:receipt.providerId,model:selectedModel,
       selectionPolicy:'automatic',request:goal,
       focusFiles:['src/engine/decompose.rs'],
-      maxAttempts:2,tokenBudget:78000,
+      maxAttempts:4,tokenBudget:220000,
       timeBudgetSeconds:Number(process.env.SUB4_CAMPAIGN_SECONDS||1250)
     });
     if(typeof started.id!=='string'||!started.id)throw Error('campaign start returned no id');
