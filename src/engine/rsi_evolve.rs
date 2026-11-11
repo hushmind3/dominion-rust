@@ -2198,17 +2198,17 @@ fn synthesize_action_program(rows:&[Value])->Value {
     let mut best_discovery:(i64,Vec<String>)=(i64::MIN,Vec::new());
     let mut best_mutation:(i64,Vec<String>)=(i64::MIN,Vec::new());
     let mut recovery=BTreeMap::<String,BTreeMap<String,u64>>::new();
+    // Each path is a genuinely executed repair: failed tool -> successful
+    // observations -> receipt-verified source mutation. No prose-based credit.
+    let mut recovery_paths=BTreeMap::<String,BTreeMap<Vec<String>,(u64,u64)>>::new();
     let mut episode_count=0u64;
     for generation in rows {
         let steps=generation["actionTrace"].as_array().into_iter()
             .flatten().filter_map(|step|{
                 let name=step["tool"].as_str()?;
-                // The live RSI tool registry, not a copied subset,
-                // defines the executable search space. New harness tools
-                // become eligible for method synthesis without changing this
-                // learning algorithm.
                 if !tools::rsi_allowed(name) {return None;}
-                Some((name.to_string(),step["executed"]==true))
+                Some((name.to_string(),step["executed"]==true,
+                    step["sourceChanged"]==true))
             }).collect::<Vec<_>>();
         if steps.is_empty(){continue;}
         episode_count+=1;
@@ -2218,10 +2218,33 @@ fn synthesize_action_program(rows:&[Value])->Value {
                     .entry(pair[1].0.clone()).or_insert(0)+=1;
             }
         }
+        // Learn bounded, executable *multi-step* recovery programs. Training
+        // requires a real verified edit after the failure; a read-only run
+        // cannot become a successful repair. A failed intermediate step
+        // terminates this path instead of laundering it as success.
+        for (index,step) in steps.iter().enumerate() {
+            if step.1 {continue;}
+            let mut path=Vec::<String>::new();
+            for next in steps.iter().skip(index+1).take(3) {
+                if !next.1 || next.0==step.0 {break;}
+                if path.last()!=Some(&next.0) {path.push(next.0.clone());}
+                if next.2 && matches!(next.0.as_str(),
+                    "workspace_write"|"workspace_replace"|"workspace_replace_range") {
+                    let candidate=generation["candidateCapture"]["checksPassed"]==true;
+                    let paired=generation_is_verified(generation);
+                    let weight=if paired {8} else if candidate {3} else {1};
+                    let evidence=recovery_paths.entry(step.0.clone()).or_default()
+                        .entry(path).or_insert((0,0));
+                    evidence.0+=1;
+                    evidence.1+=weight;
+                    break;
+                }
+            }
+        }
         let mut discovery=Vec::new();
         let mut mutation=Vec::new();
         let mut saw_mutation=false;
-        for (tool,ok) in steps {
+        for (tool,ok,_) in steps {
             if !ok {continue;}
             let changes=matches!(tool.as_str(),
                 "workspace_replace"|"workspace_replace_range"|"workspace_write");
@@ -2247,8 +2270,6 @@ fn synthesize_action_program(rows:&[Value])->Value {
             if reward>best_mutation.0 {best_mutation=(reward,mutation);}
         }
     }
-    // Combine the strongest independent evidence. Avoid claiming a new
-    // quality gain: this is a *trial* algorithm until a later paired result.
     let mut sequence=best_discovery.1;
     for tool in best_mutation.1 {
         if sequence.last()!=Some(&tool) && sequence.len()<8 {
@@ -2260,21 +2281,26 @@ fn synthesize_action_program(rows:&[Value])->Value {
             .max_by(|a,b|a.1.cmp(&b.1).then_with(||b.0.cmp(&a.0)))?;
         Some(json!({"onFailure":failed,"tryTool":next,"observedRecoveries":observed}))
     }).collect::<Vec<_>>();
+    let paths=recovery_paths.into_iter().filter_map(|(failed,candidates)|{
+        let (steps,(observed,weighted))=candidates.into_iter()
+            .max_by(|a,b|a.1.1.cmp(&b.1.1)
+                .then_with(||a.1.0.cmp(&b.1.0))
+                .then_with(||b.0.cmp(&a.0)))?;
+        Some(json!({"onFailure":failed,"steps":steps,
+            "observedRecoveries":observed,"weightedEvidence":weighted}))
+    }).collect::<Vec<_>>();
     let evidence=json!({"episodes":episode_count,
         "discoveryEvidence":best_discovery.0.max(0),
         "mutationEvidence":best_mutation.0.max(0),
-        "recoveryRules":rules.len()});
-    // Keep strategy identity separate from rolling measurements. Otherwise
-    // every new episode creates a false policy "revision" even when the
-    // algorithm and tool sequence stayed identical.
+        "recoveryRules":rules.len(),"verifiedEditRecoveryPaths":paths.len()});
     let revision=crate::engine::memory::stable_id(&[
-        &json!([&sequence,&rules]).to_string()]);
+        &json!([&sequence,&rules,&paths]).to_string()]);
     let evidence_revision=crate::engine::memory::stable_id(&[&evidence.to_string()]);
     json!({"revision":revision,"evidenceRevision":evidence_revision,
         "kind":"rsi.induced_action_program",
         "status":"trial_unverified","sequence":sequence,
-        "onFailure":rules,"evidence":evidence,
-        "origin":"cross_episode_composition"})
+        "onFailure":rules,"recoveryPaths":paths,"evidence":evidence,
+        "origin":"cross_episode_composition_with_verified_edit_recovery"})
 }
 
 /// Evolve the method that evolves the harness: after multiple independent
@@ -2305,17 +2331,38 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
     }
     if stalled<2{return plan;}
     let mut sequence=plan["sequence"].as_array().cloned().unwrap_or_default();
-    // Transform the control algorithm itself. When a previous program spent
-    // generations on discovery, drop its first redundant investigation.
-    // If it never contained a mutation, append a previously learned edit
-    // operator; this is an executable procedure change, not a prompt change.
-    let transform=if sequence.len()>=2 {
-        sequence.remove(0);
-        "drop_unproductive_discovery"
-    } else if !sequence.iter().any(|step|matches!(step.as_str(),
-        Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))) {
+    // The highest-value mutation is to turn a research-only program into
+    // an implementation program. Dropping discovery while keeping *no edit*
+    // repeats the very failure we were supposed to learn from.
+    let has_edit=|sequence:&[Value]|sequence.iter().any(|step|matches!(
+        step.as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write")));
+    let transform=if !has_edit(&sequence) {
         sequence.push(json!(fallback));
         "append_source_mutation"
+    } else if let Some(repair)=plan["recoveryPaths"].as_array()
+        .into_iter().flatten().filter_map(|row|{
+            let steps=row["steps"].as_array()?.clone();
+            if steps.is_empty() || !has_edit(&steps) {return None;}
+            Some((row["weightedEvidence"].as_u64().unwrap_or(0),steps))
+        }).max_by(|a,b|a.0.cmp(&b.0)) {
+        // The next generation executes an observed successful repair recipe
+        // instead of reusing the repeatedly unproductive predecessor.
+        if repair.1!=sequence {
+            sequence=repair.1;
+            "promote_observed_recovery_path"
+        } else if sequence.len()>2 {
+            sequence.remove(0);
+            "drop_unproductive_discovery"
+        } else {
+            let next=if sequence.last().and_then(Value::as_str)
+                ==Some("workspace_replace") {"workspace_replace_range"}
+                else {"workspace_replace"};
+            sequence.push(json!(next));
+            "expand_edit_operator"
+        }
+    } else if sequence.len()>2 {
+        sequence.remove(0);
+        "drop_unproductive_discovery"
     } else {
         let other=if sequence.last().and_then(Value::as_str)
             ==Some("workspace_replace") {
@@ -2325,7 +2372,7 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
         "expand_edit_operator"
     };
     let revision=crate::engine::memory::stable_id(&[
-        &json!([&sequence,&plan["onFailure"]]).to_string()]);
+        &json!([&sequence,&plan["onFailure"],&plan["recoveryPaths"]]).to_string()]);
     if revision==parent {return plan;}
     plan["revision"]=json!(revision);
     plan["sequence"]=json!(sequence);
@@ -4775,8 +4822,8 @@ mod tests {
         let changed=evolve_stalled_action_program(original.clone(),
             &[failed("j1"),failed("j2")],"workspace_replace_range");
         assert_ne!(changed["revision"],revision);
-        assert_eq!(changed["mutationOperator"],"drop_unproductive_discovery");
-        assert_eq!(changed["sequence"],json!(["workspace_read_range"]));
+        assert_eq!(changed["mutationOperator"],"append_source_mutation");
+        assert_eq!(changed["sequence"],json!(["code_search","workspace_read_range","workspace_replace_range"]));
         assert_eq!(changed["failureEpisodes"],2);
         let duplicate=evolve_stalled_action_program(original,
             &[failed("j1"),failed("j1")],"workspace_replace_range");
@@ -4814,6 +4861,36 @@ mod tests {
             "New execution observations must revise the harness algorithm");
         let empty=synthesize_action_program(&[]);
         assert_eq!(empty["sequence"],json!([]));
+    }
+
+    #[test]
+    fn failed_edit_can_synthesize_a_multi_step_repair_from_real_receipts() {
+        let failed=json!({"id":"repair-episode","accepted":false,
+            "candidateCapture":{"checksPassed":true},
+            "actionTrace":[
+                {"tool":"workspace_replace","executed":false,"sourceChanged":false},
+                {"tool":"workspace_read_range","executed":true,"sourceChanged":false},
+                {"tool":"workspace_replace_range","executed":true,"sourceChanged":true}
+            ]});
+        let plan=synthesize_action_program(&[failed.clone()]);
+        assert_eq!(plan["recoveryPaths"][0]["onFailure"],"workspace_replace");
+        assert_eq!(plan["recoveryPaths"][0]["steps"],
+            json!(["workspace_read_range","workspace_replace_range"]));
+        assert_eq!(plan["recoveryPaths"][0]["weightedEvidence"],3);
+        let no_write=json!({"id":"read-only","actionTrace":[
+            {"tool":"workspace_replace","executed":false},
+            {"tool":"workspace_read_range","executed":true}]});
+        assert!(synthesize_action_program(&[no_write])["recoveryPaths"]
+            .as_array().unwrap().is_empty());
+        let stalled=|id:&str|json!({"id":id,"jobId":id,
+            "executionMethod":{"actionProgram":{"revision":plan["revision"]}},
+            "methodActions":[{"inducedProgramDecision":{"chosenTool":"code_search"}}],
+            "attemptedCandidateId":null,"writeReceipts":[]});
+        let improved=evolve_stalled_action_program(plan.clone(),
+            &[stalled("fail-a"),stalled("fail-b")],"workspace_replace");
+        assert_eq!(improved["mutationOperator"],"promote_observed_recovery_path");
+        assert_eq!(improved["sequence"],json!(["workspace_read_range","workspace_replace_range"]));
+        assert_ne!(improved["revision"],plan["revision"]);
     }
 
     #[test]
