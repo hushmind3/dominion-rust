@@ -3312,6 +3312,9 @@ async fn run_loop(
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         // Separate insertions avoid serde_json!'s recursive token expansion limit.
         generation["actionTrace"]=json!(action_trace);
+        generation["toolTimeline"]=json!(session.map(|id|
+            crate::engine::rsi_rule_induction::tool_timeline(&context.state,id))
+            .unwrap_or_default());
         generation["actionProgram"]=current["input"]["rsiActionProgram"].clone();
         generation["actionProgramTrial"]=current["input"]["rsiActionProgramTrial"].clone();
         generation["actionProgramEffects"]=json!(action_program_effects);
