@@ -185,7 +185,7 @@ pub fn parse_rsi_unwrapped_edit(
     if ["name","tool","tool_name","function","action"].iter()
         .any(|key|args.get(*key).is_some()) {return None;}
     if available.contains("workspace_replace_range") {
-        let sha=args["expectedSha256"].as_str()?;
+        let sha=args["expectedSha256"].as_str().unwrap_or("");
         if sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit())
             && args["startLine"].as_u64().is_some_and(|line|line>0)
             && args["endLine"].as_u64().is_some_and(|line|
