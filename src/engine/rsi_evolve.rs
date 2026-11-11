@@ -2801,6 +2801,152 @@ fn fit_worker_context(
     Err("rsi_token_budget: 목표와 검증된 핵심 문맥을 유지할 최소 입력 예산이 부족합니다.".into())
 }
 
+/// An opted-in broad RSI campaign must not keep optimizing a now-satisfied
+/// single-file fixture after a verified adoption. Choose the next challenge
+/// from REAL frozen paired measurements and rescan the descendant's source.
+/// Neither the new goal nor a quality gap counts as an adopted generation.
+fn post_adoption_objective(input: &Value, history: &[Value]) -> Option<Value> {
+    if input["rsiExpandAfterGain"] != true { return None; }
+    let accepted = history.iter().rev().find(|row|
+        row["accepted"] == true && row["evaluation"]["metrics"]["eligible"] == true)?;
+    let residuals = accepted["evaluation"]["metrics"]["measurements"].as_array()
+        .into_iter().flatten()
+        .filter_map(|case| {
+            let gaps = case["metrics"].as_array()?.iter()
+                .filter(|metric|metric["key"] == "quality"
+                    && metric["candidate"].as_f64().is_some_and(|value|value < 1.0)
+                    && metric["improved"] != true)
+                .map(|metric|json!({"metric":"quality",
+                    "observed":metric["candidate"],"ceiling":1.0}))
+                .collect::<Vec<_>>();
+            if gaps.is_empty() {return None;}
+            Some(json!({"caseId":case["id"],"domain":case["domain"],
+                "gaps":gaps}))
+        }).take(5).collect::<Vec<_>>();
+    // Most fixed-quality oracles saturate at 1.0 after the first gain.
+    // Rank real unoptimized cost measurements instead of blindly asking
+    // the descendant to improve an already-satisfied accuracy fixture.
+    let mut costs=Vec::<Value>::new();
+    for case in accepted["evaluation"]["metrics"]["measurements"]
+        .as_array().into_iter().flatten() {
+        let frozen=input["rsiFrozenCases"].as_array().into_iter().flatten()
+            .find(|row|row["id"]==case["id"]);
+        for metric in case["metrics"].as_array().into_iter().flatten() {
+            let key=metric["key"].as_str().unwrap_or("");
+            if metric["direction"]!="lower" || metric["improved"]==true {continue;}
+            let Some(observed)=metric["candidate"].as_f64()
+                .filter(|v|v.is_finite() && *v>0.0) else {continue;};
+            let Some(spec)=frozen.and_then(|row|row["metrics"].as_array())
+                .and_then(|metrics|metrics.iter().find(|row|row["key"]==key))
+                else {continue;};
+            let relative=spec["minRelativeGain"].as_f64().unwrap_or(0.05);
+            let absolute=spec["minAbsoluteGain"].as_f64().unwrap_or(0.0);
+            let needed=(observed*relative).max(absolute);
+            if needed<=0.0 {continue;}
+            costs.push(json!({"caseId":case["id"],"domain":case["domain"],
+                "metric":key,"observed":observed,
+                "requiredReduction":needed,"qualityGuard":"no_regression"}));
+        }
+    }
+    // Token/context reduction has a more stable, directly attributable
+    // counter than noisy wall-clock timing. Within a metric, prioritize
+    // the largest measured costs; the fixed evaluator still decides adoption.
+    costs.sort_by(|a,b| {
+        let rank=|row:&Value|if row["metric"]=="contextChars" {0}else{1};
+        rank(a).cmp(&rank(b)).then_with(||
+            b["observed"].as_f64().unwrap_or(0.0)
+                .total_cmp(&a["observed"].as_f64().unwrap_or(0.0)))
+    });
+    costs.truncate(5);
+    // An actually recursive demonstration needs an improved improver,
+    // followed by a new independently measured capability. A first gain in
+    // ordinary application logic does not satisfy this causal transfer.
+    // Use paired meta evidence only to select the next target, NEVER to
+    // count an unverified adoption or loosen the frozen evaluation.
+    let meta_seen=history.iter().rev().take_while(|row|row["accepted"]==true)
+        .any(|row|row["evaluation"]["metrics"]["eligible"]==true
+            && row["evaluation"]["metrics"]["metaHoldoutGains"]
+                .as_u64().unwrap_or(0)>0);
+    // Once the improver itself has a measured gain, prioritize a second
+    // domain with a known source transformation, if the native source
+    // generator was opted into the campaign. Its benefit is still entirely
+    // decided by the independent frozen evaluator.
+    if meta_seen && input["rsiNativeInduction"]==true {
+        costs.sort_by_key(|row| {
+            if row["domain"]=="memory" && row["metric"]=="elapsedMs" {0}
+            else if row["domain"]=="context" && row["metric"]=="contextChars" {1}
+            else {2}
+        });
+    }
+    let meta_cost=if meta_seen {None} else {
+        costs.iter().find(|row|row["domain"]=="improver")
+    };
+    let objective = if let Some(target)=meta_cost {
+        format!("먼저 개선기 자체의 탐색·선택 알고리즘을 더 효율적으로 발전시킨다. 독립 동결 기준의 메타 병목은 {} 이며 비용 감소 목표는 최소 {}이다. src/engine/rsi_evolve.rs 등 실제 개선기 소스의 반복 계산과 증거 처리 방식을 측정 가능한 새 실행 방식으로 수정한다. 독립 메타 holdout 승격 전에는 성과라고 보고하지 않는다. 이후에야 다른 능력으로 전이한다.",
+            json!(target),target["requiredReduction"])
+    } else if !residuals.is_empty() {
+        format!("동결 평가의 미해결 정확도 결함 {} 중 하나를 실제 구현으로 개선하고 이전 세대의 채택 성과를 유지한다.",
+            json!(residuals))
+    } else if let Some(target)=costs.first() {
+        format!("동결 A/B에서 다음 비용 병목을 계측했다: {}. 해당 도메인의 실제 소스를 개선하여 비용을 최소 {}만큼 줄이고 다른 품질·기능 회귀 없이 독립 재검증한다. 실패할 경우 다른 독립 지표를 탐색한다.",
+            json!(target),target["requiredReduction"])
+    } else {
+        "기존 채택을 유지하면서 동결된 정확도·비용 지표에서 실제 신규 개선 기회를 발견하고 실행한다. 포화된 품질의 반복 수정은 피한다.".to_string()
+    };
+    Some(json!({
+        "objective":objective,
+        "metaTransferTarget":meta_cost.is_some(),
+        "residuals":residuals,
+        "costOpportunities":costs,
+        "previousAcceptedCommit":accepted["acceptedCommit"],
+        "prompt":format!(
+            "DOMINION 연속 자기개선의 후손 세대입니다. 직전 채택 커밋은 {} 입니다. 이진 실행기와 작업 기준 코드는 이미 이 커밋에서 재빌드되었습니다. {} 현재 소스 인덱스로 다른 분야의 원인 파일을 찾고, 안전한 분리 작업공간에서 실제 동작/비용을 바꾸는 최소 구현을 작성하세요. 소스 조사로 끝내지 말고 검증 가능한 패치를 남기세요. 동일한 분해 버그의 재수정은 하지 마세요. 패치가 새로운 동결 평가 개선을 입증하기 전에는 성능 향상이라고 주장하지 마세요.",
+            accepted["acceptedCommit"].as_str().unwrap_or(""),
+            objective)
+    }))
+}
+
+fn measured_successor_domain(next:&Value)->Option<String>{
+    let domain=if next["metaTransferTarget"]==true {
+        Some("improver")
+    } else {
+        next["costOpportunities"].as_array().and_then(|rows|rows.first())
+            .and_then(|row|row["domain"].as_str())
+            .or_else(||next["residuals"].as_array().and_then(|rows|rows.first())
+                .and_then(|row|row["domain"].as_str()))
+    }?;
+    DOMAINS.contains(&domain).then(||domain.to_string())
+}
+
+/// Keep the descendant's own strategy revision, but target the new *measured*
+/// frozen gap rather than re-executing the already accepted source fixture.
+/// Active source/compiler repair always wins to avoid abandoning an unfinished
+/// candidate. Both coordinator and rebuilt worker use the identical rule.
+fn measured_successor_strategy(
+    input:&Value, planned:(String,&'static str,Value),
+)->(String,&'static str,Value) {
+    let (domain,selection,strategy)=planned;
+    if input["rsiSourceScopeExpanded"]!=true
+        || matches!(selection,"method_transfer_repair"|"source_integrity_repair") {
+        return (domain,selection,strategy);
+    }
+    let Some(measured)=input["rsiSelectedDomain"].as_str()
+        .filter(|name|DOMAINS.contains(name)) else {
+        return (domain,selection,strategy);
+    };
+    (measured.to_string(),"independently_measured_post_adoption_target",strategy)
+}
+
+/// Bounded automatic campaign: a genuinely new source task gets time to
+/// correct its first failed implementation, without weakening time/token or
+/// max-attempt limits. Ordinary focused requests retain their old stop rule.
+fn campaign_no_progress_retry(input:&Value,history:&[Value],
+    streak:u64,attempt:u64,max_attempts:u64)->bool {
+    if streak>=3 || attempt>=max_attempts {return false;}
+    if input["rsiExpandAfterGain"]==true {return true;}
+    input["rsiAutonomous"]==true && corrective_retry_allowed(history,streak)
+}
+
 fn should_stop_no_progress(streak: u64, research: bool, changed: bool) -> bool {
     streak>=1 && (!research || !changed)
 }
@@ -2934,6 +3080,10 @@ async fn run_loop(
         child_input["rsiBaseCommit"] = json!(head);
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
+        // A measured adoption is an opportunity for another task, not a
+        // reason to keep re-solving the now-satisfied historical fixture.
+        let adoption_history=record["history"].as_array().cloned().unwrap_or_default();
+        let expanded=post_adoption_objective(input,&adoption_history);
         let objective = input["rsiObjective"].as_str().unwrap_or("");
         let mut eligible_campaigns=vec![context.job_id.to_string()];
         if let Some(prior)=matching_prior_campaign(&context.state,input,record) {
@@ -2964,6 +3114,25 @@ async fn run_loop(
         } else {
             child_input["rsiSelectedDomain"] = Value::Null;
             child_input["rsiDecisionInput"] = Value::Null;
+        }
+        if let Some(next)=&expanded {
+            child_input["rsiFocusFiles"]=json!([]);
+            child_input["rsiAutonomous"]=json!(true);
+            child_input["rsiObjective"]=next["objective"].clone();
+            child_input["prompt"]=next["prompt"].clone();
+            child_input["rsiResidualEvidence"]=next["residuals"].clone();
+            child_input["rsiCostOpportunities"]=next["costOpportunities"].clone();
+            child_input["rsiMetaTransferTarget"]=next["metaTransferTarget"].clone();
+            child_input["rsiSourceScopeExpanded"]=json!(true);
+            if let Some(domain)=measured_successor_domain(next) {
+                child_input["rsiSelectedDomain"]=json!(domain);
+                child_input["rsiDecisionInput"]=json!({
+                    "basis":"independently_measured_post_adoption_target",
+                    "previousAcceptedCommit":next["previousAcceptedCommit"],
+                    "targetDomain":domain,
+                    "metaTransferTarget":next["metaTransferTarget"]
+                });
+            }
         }
         let current_index=crate::engine::code_index::refresh(&context.state,&lab)?;
         child_input["rsiIndexId"]=current_index["id"].clone();
@@ -3016,9 +3185,10 @@ async fn run_loop(
             .or_else(||adopted_source_continuation(&recorded_history,&head)
                 .and_then(|plan|plan["domain"].as_str().map(str::to_string)))
             .or_else(||research_continuation(&recorded_history));
-        let (target_domain,target_selection,target_strategy)=select_generation_strategy(
-            &context.state,&recorded_history,&target_objective,
-            follow_up,target_trial,None,&head);
+        let (target_domain,target_selection,target_strategy)=measured_successor_strategy(
+            &child_input, select_generation_strategy(
+                &context.state,&recorded_history,&target_objective,
+                follow_up,target_trial,None,&head));
         // Native program synthesis, controller mutation, and paired policy
         // assessment all use the same witnessed generation lineage.
         let objective_id=crate::engine::memory::stable_id(&[
@@ -3681,8 +3851,8 @@ async fn run_loop(
             && transfer_failure_repair(&decision_history).is_none() {
             // Sub1's corrective retry, bounded by evidence and attempt budget.
             // The next worker must CHANGE execution approach, not reread notes.
-            if !(input["rsiAutonomous"]==true
-                && corrective_retry_allowed(&decision_history,streak)) {
+            if !campaign_no_progress_retry(input,&decision_history,streak,
+                attempt,record["limits"]["maxAttempts"].as_u64().unwrap_or(0)) {
                 return Ok("no_progress".into());
             }
         }
@@ -4621,9 +4791,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // by the actual descendant binary. Explicit owner scope is enforced by
     // selection_objective() and eligible_domains() instead.
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
-    let (domain, domain_selection, strategy) =
-        select_generation_strategy(&state, &history, &objective, continuation, trial_id,
-            None, &commit);
+    let (domain, domain_selection, strategy) = measured_successor_strategy(
+        &job["input"], select_generation_strategy(&state, &history, &objective,
+            continuation, trial_id, None, &commit));
     // The rebuilt descendant makes its OWN newest meta-policy decision from
     // durable experience. The parent stores a provisional plan, not authority.
     if !history.is_empty() {
@@ -4747,6 +4917,44 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn adopted_measured_holdout_retargets_the_rebuilt_descendant() {
+        let input=json!({"rsiExpandAfterGain":true,"rsiNativeInduction":true,
+            "rsiFrozenCases":[
+                {"id":"meta-cost","domain":"improver","metrics":[{
+                    "key":"elapsedMs","direction":"lower",
+                    "minRelativeGain":0.2,"minAbsoluteGain":1.0}]}]});
+        let history=vec![json!({"jobId":"accepted-1","accepted":true,
+            "acceptedCommit":"a".repeat(40),
+            "evaluation":{"metrics":{"eligible":true,"metaHoldoutGains":0,
+                "measurements":[{"id":"meta-cost","domain":"improver",
+                    "metrics":[{"key":"elapsedMs","direction":"lower",
+                        "improved":false,"candidate":120.0}]}]}}})];
+        let goal=post_adoption_objective(&input,&history).unwrap();
+        assert_eq!(goal["metaTransferTarget"],true);
+        assert_eq!(measured_successor_domain(&goal).as_deref(),Some("improver"));
+        let trial=json!({"rsiSourceScopeExpanded":true,"rsiSelectedDomain":"improver"});
+        let measured=measured_successor_strategy(&trial,(
+            "tools".into(),"adopted_source_descendant",Value::Null));
+        assert_eq!(measured.0,"improver");
+        assert_eq!(measured.1,"independently_measured_post_adoption_target");
+        let repair=measured_successor_strategy(&trial,(
+            "tools".into(),"source_integrity_repair",Value::Null));
+        assert_eq!(repair.0,"tools");
+        let no_opt=json!({"rsiExpandAfterGain":false});
+        assert!(post_adoption_objective(&no_opt,&history).is_none());
+    }
+
+    #[test]
+    fn automatic_campaign_retries_are_bounded_not_claimed_as_adoptions(){
+        let opts=json!({"rsiExpandAfterGain":true});
+        assert!(campaign_no_progress_retry(&opts,&[],1,1,9));
+        assert!(campaign_no_progress_retry(&opts,&[],2,2,9));
+        assert!(!campaign_no_progress_retry(&opts,&[],3,3,9));
+        assert!(!campaign_no_progress_retry(&opts,&[],1,9,9));
+        assert!(!campaign_no_progress_retry(&json!({}),&[],1,1,9));
+    }
+
     #[test]
     fn compiler_failure_retargets_descendant_and_preserves_real_error(){
         let bad=json!({"id":"g1","jobId":"j1","generatorCommit":"abcdef",
