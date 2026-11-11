@@ -213,7 +213,9 @@ fn rsi_patch_ready_for_verification(
 /// A small model may omit the hash or encode line numbers as strings. Recover
 /// only information already observed by a successful range read in THIS run,
 /// for the same file and covering the requested edit. Never infer newText,
-/// overwrite a supplied digest, or bypass the final file hash check.
+/// overwrite a valid supplied digest, or bypass the final file hash check.
+/// A malformed "hash" from a small model is not a usable source-version proof:
+/// replace only that malformed value with the exact matching observed digest.
 fn rsi_ground_range_edit_args(mut args: Value, completed: &[Value]) -> Value {
     for field in ["startLine", "endLine"] {
         if let Some(raw) = args[field].as_str().map(str::to_string) {
@@ -224,7 +226,8 @@ fn rsi_ground_range_edit_args(mut args: Value, completed: &[Value]) -> Value {
             }
         }
     }
-    if args["expectedSha256"].as_str().is_some_and(|s| !s.is_empty()) {
+    if args["expectedSha256"].as_str().is_some_and(|s|
+        s.len()==64 && s.bytes().all(|byte|byte.is_ascii_hexdigit())) {
         return args;
     }
     let Some(path) = args["path"].as_str() else {return args;};
@@ -6698,6 +6701,14 @@ mod harness_tool_selection_tests {
         let existing = json!({"path":"src/engine/decompose.rs","startLine":12,"endLine":15,
             "newText":"fixed","expectedSha256":"f".repeat(64)});
         assert_eq!(rsi_ground_range_edit_args(existing, &reads)["expectedSha256"], "f".repeat(64));
+        let malformed=json!({"path":"src/engine/decompose.rs","startLine":12,"endLine":15,
+            "newText":"fixed","expectedSha256":"the hash from read"});
+        assert_eq!(rsi_ground_range_edit_args(malformed,&reads)["expectedSha256"],hash,
+            "only the exact witnessed source can repair an unusable hash");
+        let stale_valid=json!({"path":"src/engine/decompose.rs","startLine":12,"endLine":15,
+            "newText":"fixed","expectedSha256":"b".repeat(64)});
+        assert_eq!(rsi_ground_range_edit_args(stale_valid,&reads)["expectedSha256"],"b".repeat(64),
+            "never bypass a supplied syntactically valid source version");
         let failed = vec![json!({"status":"failed","opSeq":4,"tool":"workspace_read_range",
             "arguments":{"path":"src/engine/decompose.rs"},
             "result":{"startLine":10,"endLine":30,"sourceSha256":hash}})];
