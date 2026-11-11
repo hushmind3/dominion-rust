@@ -2138,7 +2138,8 @@ fn synthesize_failed_model_edit(
         || op["origin"]=="procedure"
         || op["tool"]!="workspace_replace"
         || !matches!(op["status"].as_str(),Some("completed"|"failed"))
-        || op["result"]["staleVersion"]!=true {return None}
+        || (op["result"]["staleVersion"]!=true
+            && op["result"]["preflightBlocked"]!=true) {return None}
     let path=op["arguments"]["path"].as_str()
         .filter(|path|crate::engine::rsi::safe_path(path))?;
     if !session["rsiFocusFiles"].as_array().is_some_and(|paths|
