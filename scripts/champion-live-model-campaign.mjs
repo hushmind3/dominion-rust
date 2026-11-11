@@ -42,8 +42,25 @@ if(mode==='probe'){
     }
     try{
       const chunks=[];for await(const piece of req)chunks.push(piece);
-      const upstreamResponse=await fetch(upstream,{method:'POST',headers:{'content-type':'application/json'},
-        body:Buffer.concat(chunks),signal:AbortSignal.timeout(240000)});
+      // Completion requests are side-effect-free until the Rust tool engine
+      // executes returned calls. A transient free-model gateway timeout can
+      // therefore be retried ONCE without replaying any source edits.
+      const body=Buffer.concat(chunks);
+      let upstreamResponse;
+      for(let attempt=0;attempt<2;attempt++){
+        try{
+          upstreamResponse=await fetch(upstream,{
+            method:'POST',headers:{'content-type':'application/json'},
+            body,signal:AbortSignal.timeout(120000)
+          });
+          if(upstreamResponse.status!==502 && upstreamResponse.status!==504)break;
+          if(attempt===1)break;
+          upstreamResponse.body?.cancel().catch(()=>{});
+        }catch(error){
+          if(attempt===1)throw error;
+          console.log('CHAMPION_PROXY_RETRY=transient_upstream_failure');
+        }
+      }
       const raw=await upstreamResponse.text();
       res.writeHead(upstreamResponse.status,{'content-type':'application/json'});
       res.end(raw);
@@ -72,16 +89,21 @@ if(mode==='probe'){
     const request={
       mode:'continuous',confirmation:'START_RSI_EVOLUTION',
       selectionPolicy:'automatic',providerId:'champion-free-proxy',model:'openai-fast',
-      request:'Fix a reproducible source decomposition bug in src/engine/decompose.rs. The Korean suffix -고 is split only if the preceding character occurs in a short hard-coded action-ending list. Consequently two real actions such as 파일을 만들고 결과를 기록해 and 파일을 지우고 다시 만들어 are not decomposed into separately executable steps. After reading the actual action_conjunction_at implementation, call workspace_replace with the exact observed oldText and newText to support commonly used action endings for 만들고, 지우고, 고치고 without breaking nouns such as 사고/최고. Preserve token coverage, original action text, existing markers and numbered list handling; verify what was really changed. Do not end at search or description alone, and if replace rejects an oldText, read the exact current block and retry. The native DOMINION evaluator will independently measure candidate vs baseline in frozen worktrees.',
-      focusFiles:['src/engine/decompose.rs'],preferredEditTool:'workspace_replace_range',maxAttempts:3,
-      tokenBudget:90000,timeBudgetSeconds:2100
+      // The anonymous model caps a response near 1500 output tokens. Low
+      // reasoning effort leaves room for an executable workspace_replace call.
+      reasoningEffort:'low',
+      request:"Fix real Korean multi-action decomposition behavior in src/engine/decompose.rs, not documentation or tests. First read split_markers() and nearby helpers with workspace_read_range and use CURRENT sourceSha256. Preserve existing markers, numbered input and original phrase order. Two behaviors are missing in the historical source: (1) standalone 다음 and 나서 split ordered steps; (2) -고 after an action verb followed by whitespace divides actions while preserving -고 on the preceding action (읽고/하고/쓰고, NOT nouns 사고/최고). Frozen evaluation expects three ordered steps for 설정을 읽고 결과를 저장한 다음 검증해. Prefer SMALL source-grounded workspace_replace or workspace_replace_range edits using exact original text. You may add a small helper and change the scanner separately; do not regenerate the entire function at once. If a tool rejects syntax, re-read current source and repair that exact failure. In a descendant the earlier compiler-passing neutral patch may already be restored: CORRECT its remaining missing behavior instead of restarting the old candidate. Do not edit tests, validators, or fixtures. Do not stop after planning, only adding a marker, or an identical write.",
+      // Reserve capacity for a genuine second-generation correction of a
+      // compiler-passing but zero-gain source candidate. No paid model.
+      focusFiles:['src/engine/decompose.rs'],expandAfterGain:true,nativeInduction:true,maxAttempts:9,
+      tokenBudget:520000,timeBudgetSeconds:6000
     };
     trace.submittedRequest={...request,request:request.request.slice(0,320)};
     const queued=await call('/api/rsi/start',request);
     trace.jobId=queued.id;
     if(typeof trace.jobId!=='string'||!trace.jobId)throw Error(`RSI did not return a job id: ${content(queued)}`);
     trace.phase='running';save(trace);
-    const deadline=Date.now()+42*60*1000;
+    const deadline=Date.now()+102*60*1000;
     let last=null;
     while(Date.now()<deadline){
       await new Promise(resolve=>setTimeout(resolve,10000));
@@ -97,15 +119,21 @@ if(mode==='probe'){
       improvedHoldouts:g.evaluation?.metrics?.improvedHoldouts,
       generatorCommit:g.generatorCommit,domain:g.domain,searchStrategy:g.searchStrategy,
       error:g.error,toolsUsed:g.toolsUsed,newFindings:g.newFindings,
-      observedSourceEdits:g.observedSourceEdits||0,
-      editOperations:(g.editOperations||[]).map(op=>({
-        tool:op.tool,path:op.path,status:op.status,written:op.written,
-        staleVersion:op.staleVersion,error:op.error
-      })),
-      toolRejections:g.toolRejections||[],
-      methodPolicyRevision:g.decisionInput?.reuseDecision?.policyRevision||null,
-      selectedMethodIds:g.decisionInput?.reuseDecision?.methodIds||[],
-      improvementActionObservation:g.improvementActionObservation,
+      editEvidence:g.editEvidence,diffBytes:g.diffBytes,captureError:g.captureError,
+      inheritedCandidateId:g.inheritedCandidateId,
+      inheritedPatchChanged:g.inheritedPatchChanged,
+      editPolicy:g.editPolicy,programStages:g.programStages,
+      compilerRepairReceipts:g.compilerRepairReceipts,
+      nativeMutation:g.nativeMutation,candidateOrigin:g.candidateOrigin,
+      scopeExpanded:g.scopeExpanded,residualEvidence:g.residualEvidence,
+      costOpportunities:g.costOpportunities,metaTransferTarget:g.metaTransferTarget,
+      ruleExecutions:g.ruleExecutions,toolTimeline:g.toolTimeline,
+      acceptedSourceHashes:g.acceptedSourceHashes,
+      competitionEvidence:g.editPolicy?.competitionEvidence,
+      contrastEvidence:g.editPolicy?.contrastEvidence,
+      verification:g.verification,
+      rewriteProgram:g.editPolicy?.rewriteProgram,
+      editMethodReward:g.editMethodReward,
       focusFiles:g.focusFiles,knowledgeId:g.knowledgeId,
       evaluation:g.evaluation?.metrics
     }));
@@ -118,26 +146,83 @@ if(mode==='probe'){
       .filter(tool=>names.has(tool.tool)).reduce((sum,tool)=>sum+(tool.calls||0),0);
     const sourceEditCalls=trace.generationEvidence.reduce((sum,g)=>
       sum+countCalls(g,editTools),0);
-    const verifiedSourceEdits=trace.generationEvidence.reduce((sum,g)=>
-      sum+(g.observedSourceEdits||0),0);
-    const editedGenerations=trace.generationEvidence.filter(g=>
-      (g.observedSourceEdits||0)>0).length;
+    const rangeEditCalls=trace.generationEvidence.reduce((sum,g)=>
+      sum+countCalls(g,new Set(['workspace_replace_range'])),0);
+    const legacyEditCalls=sourceEditCalls-rangeEditCalls;
+    const verifiedWrites=trace.generationEvidence.reduce((sum,g)=>sum+(g.editEvidence?.verifiedWrites||0),0);
+    const unsuccessfulEdits=trace.generationEvidence.reduce((sum,g)=>
+      sum+Math.max(0,(g.editEvidence?.attempts||0)-(g.editEvidence?.verifiedWrites||0)),0);
+    const candidateCaptureFailures=trace.generationEvidence.filter(g=>!g.candidateId
+      && (g.editEvidence?.verifiedWrites||0)>0).length;
     const candidateCount=trace.generationEvidence.filter(g=>g.candidateId).length;
     const accepted=trace.generationEvidence.filter(g=>g.accepted===true
       && typeof g.acceptedCommit==='string' && g.acceptedCommit.length>0);
     trace.summary={
       modelCalls:trace.generationEvidence.reduce((sum,g)=>sum+(g.tokenUsage?.calls||0),0),
-      sourceEditCalls,verifiedSourceEdits,editedGenerations,
-      methodPolicyRevisions:[...new Set(trace.generationEvidence
-        .map(g=>g.methodPolicyRevision).filter(Boolean))],
-      candidateCount,acceptedGenerations:accepted.length,
+      improvementMethodHistory:trace.generationEvidence.map(g=>({
+        attempt:g.attempt,
+        method:g.editPolicy?.method||null,
+        synthesizedRuleIds:(g.editPolicy?.rules||[]).map(rule=>rule.id),
+        contrastTrial:g.editPolicy?.mutation===
+          'induce_new_judgment_from_success_failure_contrast',
+        firedRuleIds:(g.ruleExecutions||[]).map(receipt=>receipt.ruleId),
+        policyRevision:g.editPolicy?.revision||null,
+        parentRevision:g.editPolicy?.parentRevision||null,
+        mutation:g.editPolicy?.mutation||null,
+        checkpointAfter:g.editPolicy?.checkpointAfter??null,
+        preferredTool:g.editPolicy?.preferredTool||null,
+        verifierRepairLimit:g.editPolicy?.repairLimit??null,
+        selectedMethodReward:g.editMethodReward??null,
+        verifiedWrites:g.editEvidence?.verifiedWrites||0,
+        candidateCreated:!!g.candidateId,
+        independentlyAdopted:!!g.accepted
+      })),
+      sourceEditCalls,rangeEditCalls,legacyEditCalls,verifiedWrites,unsuccessfulEdits,
+      candidateCaptureFailures,candidateCount,
+      inheritedCandidateGenerations:trace.generationEvidence.filter(g=>
+        typeof g.inheritedCandidateId==='string').length,
+      inheritedSourceCorrections:trace.generationEvidence.filter(g=>
+        typeof g.inheritedCandidateId==='string'
+        && g.inheritedPatchChanged===true
+        && (g.editEvidence?.verifiedWrites||0)>0).length,
+      inheritedSourceAdoptions:accepted.filter(g=>
+        typeof g.inheritedCandidateId==='string'
+        && g.inheritedPatchChanged===true).length,
+      rawRegisteredCandidates:trace.generationEvidence.filter(g=>
+        typeof g.verification?.rawCandidateId==='string').length,
+      compileRejectedGenerations:trace.generationEvidence.filter(g=>
+        g.diffBytes>0 && g.verification?.checksPassed===false).length,
+      firstCompilerDiagnostics:trace.generationEvidence.flatMap(g=>
+        (g.verification?.checks||[]).filter(c=>c.passed===false)
+          .map(c=>({attempt:g.attempt,label:c.label,
+            detail:(c.detail||'').slice(0,900)}))).slice(0,8),
+      acceptedGenerations:accepted.length,
       acceptedCommits:accepted.map(g=>g.acceptedCommit),
+      compilerAssistedGenerations:trace.generationEvidence.filter(g=>(g.compilerRepairReceipts||[]).length>0).length,
+      postAdoptionScopeExpansions:trace.generationEvidence.filter(g=>g.scopeExpanded===true).length,
+      metaImproverTrials:trace.generationEvidence.filter(g=>g.metaTransferTarget===true).length,
+      nativeMutationCandidates:trace.generationEvidence.filter(g=>
+        g.candidateId && g.candidateOrigin==='native_inductive_source_mutation').length,
+      independentlyAdoptedNativeMutations:accepted.filter(g=>
+        g.candidateOrigin==='native_inductive_source_mutation').length,
       readOnlyGenerations:trace.generationEvidence.filter(g=>!g.candidateId
+        && (g.editEvidence?.verifiedWrites||0)===0
         && countCalls(g,new Set(['code_search','workspace_read_range']))>0).length,
       independentlyVerifiedImprovement:accepted.some(g=>g.verdict==='improved'),
+      // Match the engine's actual policy reward: a generated controller
+      // cannot borrow credit from an edit it did not cause.
+      causallyAttributedRuleAdoptions:accepted.filter(g=>
+        (g.editPolicy?.rules||[]).length>0 && (g.editMethodReward||0)>=0.95
+        && (g.ruleExecutions||[]).length>0).length,
+      ruleComparisons:trace.generationEvidence.filter(g=>
+        g.competitionEvidence?.promotion===true).length,
       note:'CI completed does not imply an accepted model-generated RSI improvement'
     };
-    trace.actualCompletion=trace.summary.independentlyVerifiedImprovement;
+    const evolution=last.evolution||last.result?.evolution||{};
+    trace.summary.maxAcceptedStreak=evolution.maxAcceptedStreak||0;
+    trace.summary.capabilityDemonstrated=evolution.capabilityDemonstrated===true;
+    trace.actualCompletion=trace.summary.maxAcceptedStreak>=3
+      && trace.summary.capabilityDemonstrated;
     if(trace.phase==='campaign_timeout')trace.errors.push('campaign did not finish before runner deadline');
     save(trace);
     console.log(JSON.stringify({phase:trace.phase,status:trace.status,jobId:trace.jobId,

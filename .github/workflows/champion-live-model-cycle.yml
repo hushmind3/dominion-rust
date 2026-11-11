@@ -1,4 +1,4 @@
-name: Champion genuine-model autonomous source repair & RSI
+name: Champion real-model RSI cycle attempt
 
 on:
   push:
@@ -17,24 +17,27 @@ on:
       - 'src/engine/jobs.rs'
   workflow_dispatch:
 
-# Each source revision supersedes its predecessor; obsolete concurrent runs
-# consume Chrome/CPU resources and can cause unrelated E2E timeouts.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
+
+# Cancel an obsolete experimental harness when a new Champion revision lands.
+# A previous result cannot validate code that was added after its run started.
+concurrency:
+  group: dominion-champion-live-model-cycle
+  cancel-in-progress: true
 
 jobs:
   real-model:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 115
     env:
       DOMINION_PORT: '43173'
       DOMINION_JOB_WORKERS: '1'
       DOMINION_EXPERIMENT_SCHEDULER: '0'
       CHAMPION_LIVE_REPORT: benchmark/champion-live-campaign-result.json
+      # Build the latest RSI harness; only restore the historical target bug.
+      # The extended run lets a proven adopted child re-plan residual domains.
+      BASE_SHA: 1d94e1da1ed4f47243a793ab0625182f5a2c9656
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,6 +56,8 @@ jobs:
           fi
       - uses: dtolnay/rust-toolchain@stable
         if: steps.probe.outputs.reachable == 'true'
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
         if: steps.probe.outputs.reachable == 'true'
       - uses: actions/setup-node@v4
@@ -70,7 +75,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git worktree add --detach "$RUNNER_TEMP/champion-source" "$(git rev-parse HEAD)"
+          # The actual RSI generator is built from the campaign source commit.
+          # Running an old BASE_SHA here silently drops newer Champion harness fixes.
+          # Preserve the current engine, while restoring ONLY the historic
+          # decomposition bug in the detached experiment worktree.
+          git worktree add --detach "$RUNNER_TEMP/champion-source" "$GITHUB_SHA"
+          git show "$BASE_SHA:src/engine/decompose.rs" > "$RUNNER_TEMP/champion-source/src/engine/decompose.rs"
+          if git -C "$RUNNER_TEMP/champion-source" diff --quiet -- src/engine/decompose.rs; then
+            echo 'Historic decomposition bug was not restored; refusing a vacuous RSI trial' >&2
+            exit 1
+          fi
+          git -C "$RUNNER_TEMP/champion-source" add src/engine/decompose.rs
+          git -C "$RUNNER_TEMP/champion-source" -c user.name="DOMINION RSI fixture" -c user.email="rsi@localhost" -c commit.gpgsign=false commit -m "Experiment fixture: restore historical decomposition failure"
+          echo "CHAMPION_RUNTIME_HARNESS_COMMIT=$GITHUB_SHA"
+          echo "CHAMPION_EXPERIMENT_SOURCE_COMMIT=$(git -C "$RUNNER_TEMP/champion-source" rev-parse HEAD)"
           export DOMINION_DATA="$RUNNER_TEMP/champion-data"
           export DOMINION_WORKSPACE="$RUNNER_TEMP/champion-source"
           export DOMINION_SOURCE_WORKSPACE="$RUNNER_TEMP/champion-source"
@@ -87,10 +105,81 @@ jobs:
           curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
           node scripts/champion-live-model-campaign.mjs run
           cat "$CHAMPION_LIVE_REPORT"
+          # Count executed range edits AND rejected native proposals. A proposed
+          # tool call in an assistant message is not evidence of a file write.
+          # The detached runner contains only this public test task's model text.
+          python3 - <<'PY'
+          import json,os,sqlite3
+          db=os.path.join(os.environ["DOMINION_DATA"],"dominion.sqlite")
+          try:
+              conn=sqlite3.connect(db)
+              operations=[]
+              for (raw,) in conn.execute("SELECT data FROM records WHERE kind='execution_operation'"):
+                  try: row=json.loads(raw)
+                  except (ValueError,TypeError): continue
+                  if row.get("tool") in ("code_search","workspace_read_range","workspace_replace","workspace_replace_range","workspace_write"):
+                      details=row.get("result") or {}
+                      operations.append({"tool":row.get("tool"),"status":row.get("status"),
+                          "error":str(row.get("error") or (details.get("error") if isinstance(details,dict) else "") or "")[:250]})
+              checkpoints=[]
+              for event,detail in conn.execute("SELECT event,detail FROM audit WHERE event IN ('rsi.action_checkpoint','rsi.edit_retry','rsi.grounded_edit_menu_recovered')"):
+                  try: row=json.loads(detail)
+                  except (ValueError,TypeError): row={}
+                  checkpoints.append({"event":event,"toolCalls":row.get("toolCalls"),
+                      "editOnly":row.get("editOnly"),"readCalls":row.get("readCalls"),
+                      "sourceRead":row.get("sourceRead"),"sourceInPrompt":row.get("sourceInPrompt"),
+                       "programPhase":row.get("programPhase")})
+              tool_errors=[]
+              for event,detail in conn.execute("SELECT event,detail FROM audit WHERE event IN ('tool.soft_error','rsi.patch_submitted_for_verification') ORDER BY rowid"):
+                  try: row=json.loads(detail)
+                  except (ValueError,TypeError): row={}
+                  tool_errors.append({"event":event,"tool":row.get("tool"),"error":str(row.get("error") or "")[:250]})
+              assistant=[]
+              for role,content,tool_calls in conn.execute("SELECT role,content,tool_calls FROM messages ORDER BY rowid"):
+                  if role=="assistant":
+                      try: calls=json.loads(tool_calls) if tool_calls else []
+                      except ValueError: calls=[]
+                      shapes=[]
+                      for call in calls:
+                          if not isinstance(call,dict): continue
+                          fn=call.get("function") or {}
+                          raw=fn.get("arguments") or ""
+                          try:
+                              args=json.loads(raw)
+                              keys=list(args) if isinstance(args,dict) else []
+                              parse_error=""
+                          except (ValueError,TypeError) as exc:
+                              keys=[];parse_error=str(exc)[:100]
+                          shapes.append({"tool":fn.get("name"),"argumentBytes":len(raw),
+                              "argumentKeys":keys,"parseError":parse_error})
+                      assistant.append({"content":(content or "")[-400:],"calls":shapes})
+              edits={"workspace_write","workspace_replace","workspace_replace_range"}
+              summary={
+                  "executedEdits":sum(1 for op in operations if op["tool"] in edits and op["status"]=="completed"),
+                  "failedEdits":sum(1 for op in operations if op["tool"] in edits and op["status"]!="completed"),
+                  "softToolErrors":sum(1 for op in tool_errors if op["event"]=="tool.soft_error"),
+                  "verifiedEditReceipts":sum(1 for op in tool_errors if op["event"]=="rsi.patch_submitted_for_verification"),
+                   "groundedEditMenuRecoveries":sum(1 for point in checkpoints if point["event"]=="rsi.grounded_edit_menu_recovered"),
+              }
+              trace={"operations":operations[-30:],"checkpoints":checkpoints[-15:],
+                     "toolErrors":tool_errors[-30:],"lastAssistant":assistant[-12:],"summary":summary}
+              os.makedirs("benchmark",exist_ok=True)
+              with open("benchmark/champion-rsi-action-trace.json","w") as out:
+                  json.dump(trace,out,ensure_ascii=False,indent=2)
+              report=os.environ.get("CHAMPION_LIVE_REPORT")
+              if report and os.path.exists(report):
+                  with open(report) as source: campaign=json.load(source)
+                  campaign["executionTrace"]=summary
+                  with open(report,"w") as target: json.dump(campaign,target,ensure_ascii=False,indent=2)
+              print("CHAMPION_RSI_ACTION_TRACE="+json.dumps(trace,ensure_ascii=False))
+          except Exception as error:
+              print("CHAMPION_RSI_ACTION_TRACE_UNAVAILABLE="+str(error))
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: champion-real-model-attempt
           path: |
             benchmark/champion-live-campaign-result.json
+            benchmark/champion-rsi-action-trace.json
           if-no-files-found: ignore
