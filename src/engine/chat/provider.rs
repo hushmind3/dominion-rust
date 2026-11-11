@@ -674,7 +674,12 @@ fn compat_messages(messages: &[Value]) -> Vec<Value> {
 
 /// Demand an executable tool action only for an RSI edit-only model menu.
 fn rsi_edit_requires_tool(session: &Value, tools: &[Value]) -> bool {
-    session["rsiRun"] == true && session["rsiExplicitFocus"] == true
+    // Auto-selected, SHA-grounded RSI targets must have the same executable
+    // edit contract as owner-selected targets. Without this, an autonomous
+    // descendant can finish with prose instead of even trying a tool.
+    session["rsiRun"] == true
+        && (session["rsiExplicitFocus"] == true || session["rsiMetaFocusActive"] == true)
+        && session["rsiFocusContextReady"] == true
         && !tools.is_empty() && tools.iter().all(|tool| matches!(
             tool["function"]["name"].as_str(),
             Some("workspace_replace" | "workspace_replace_range" | "workspace_write")
@@ -1988,11 +1993,17 @@ mod tests {
 
     #[test]
     fn source_edit_only_menu_requires_action_without_forcing_research_to_write() {
-        let focus=json!({"rsiRun":true,"rsiExplicitFocus":true});
+        let focus=json!({"rsiRun":true,"rsiExplicitFocus":true,
+            "rsiFocusContextReady":true});
+        let auto=json!({"rsiRun":true,"rsiMetaFocusActive":true,
+            "rsiFocusContextReady":true});
         let edits=vec![json!({"function":{"name":"workspace_replace_range"}}),
             json!({"function":{"name":"workspace_replace"}}),
             json!({"function":{"name":"workspace_write"}})];
         assert!(rsi_edit_requires_tool(&focus,&edits));
+        assert!(rsi_edit_requires_tool(&auto,&edits));
+        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true,
+            "rsiMetaFocusActive":true,"rsiFocusContextReady":false}),&edits));
         assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&edits));
         assert!(!rsi_edit_requires_tool(&focus,&[json!({"function":{"name":"workspace_read_range"}})]));
     }
