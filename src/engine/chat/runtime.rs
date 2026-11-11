@@ -1420,7 +1420,7 @@ async fn run_turn_body(
                         induced_next.as_ref()));
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system","content":
-                        "이미 확인한 소스 원문으로 workspace_replace(oldText,newText) 또는 workspace_replace_range(startLine,endLine,newText,expectedSha256)를 호출해 실제 수정하세요. SHA와 줄 번호는 workspace_read_range 응답을 사용하세요. 이 단계에서는 실행 가능한 편집만 제시하세요."}));
+                        "이미 확인한 소스 원문으로 workspace_replace(oldText,newText) 또는 workspace_replace_range(startLine,endLine,newText,expectedSha256)를 호출해 실제 수정하세요. 줄 번호는 workspace_read_range 응답을 사용하세요. 64자리 SHA는 직접 복사하지 않아도 됩니다. 동일 파일을 실제로 읽었다면 엔진이 관찰된 해시를 자동 바인딩합니다. 이 단계에서는 실행 가능한 편집만 제시하세요."}));
                     rsi_edit_only_announced=true;
                 } else if !rsi_decision_checkpoint {
                     messages.push(json!({"role":"system","content":
@@ -1754,7 +1754,7 @@ async fn run_turn_body(
                         "round":round,"sourceRead":has_read
                     }));
                     messages.push(json!({"role":"user","content":
-                        "앞선 답변은 코드 변경이 아닙니다. workspace_replace 또는 파일 SHA와 줄 번호 기반 workspace_replace_range를 호출하세요. 모델이 함수 호출 형식을 생성하지 못한다면 설명문 없이 {\"path\":\"src/...\",\"startLine\":1,\"endLine\":1,\"newText\":\"...\",\"expectedSha256\":\"읽은 파일 SHA256\"} JSON 객체만 출력하세요. DOMINION이 검증된 도구 실행으로 변환합니다. 불가능하면 구체적인 코드·도구 오류를 설명하세요."}));
+                        "앞선 답변은 코드 변경이 아닙니다. workspace_replace 또는 파일 SHA와 줄 번호 기반 workspace_replace_range를 호출하세요. 모델이 함수 호출 형식을 생성하지 못한다면 설명문 없이 {\"path\":\"src/...\",\"startLine\":1,\"endLine\":1,\"newText\":\"...\"} JSON 객체만 출력하세요. DOMINION이 검증된 도구 실행으로 변환합니다. 불가능하면 구체적인 코드·도구 오류를 설명하세요."}));
                     continue;
                 }
             }
