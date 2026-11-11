@@ -40,6 +40,11 @@ async function run(){
     name:"Sub1 native Ollama source-repair trial",kind:"ollama",local:true,
     enabled:true,baseUrl:ollama,model,toolMode:"native",contextTokens:16384});
  report.providerId=provider.id;if(!report.providerId)throw Error("Provider not persisted");
+ // RSI runs against the explicitly configured detached Git checkout, never
+ // against the server binary's build folder or a missing default path.
+ const worktree=process.env.DOMINION_WORKSPACE;
+ if(!worktree)throw Error("Isolated DOMINION_WORKSPACE not configured");
+ await json(host+"/api/dev/config","POST",{sourceDir:worktree});
  // Match the public-run task so differences are in model execution, not a new benchmark.
  const request="Fix a reproducible behavior bug in src/engine/decompose.rs. split_markers() misses Korean action suffix -고 and connectives 다음/나서, causing 설계를 읽고 결과를 저장한 다음 검증해 to stay one step instead of three actions. Read the source excerpt, then actually call workspace_replace with the exact oldText and an implemented Rust change. Avoid splitting nouns like 사고/최고. Preserve subtask text and list handling. If a tool rejects an edit, read the error and correct the tool arguments. Continue to independent frozen baseline/candidate evaluation; reporting ideas without a source edit is not completion.";
  const started=await json(host+"/api/rsi/start","POST",{
