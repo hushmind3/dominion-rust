@@ -3374,6 +3374,14 @@ async fn run_loop(
                         .store
                         .get("rsi_candidate", id)
                         .ok_or("후보 소실")?;
+                    // Preserve the server-owned comparison provenance in the
+                    // generation record. The compact return from compare_at
+                    // only contains metrics; its source lives in the sealed
+                    // candidate evaluation and must never be model-authored.
+                    generation["evaluation"]["source"] =
+                        candidate["evaluation"]["source"].clone();
+                    generation["evaluation"]["evaluationId"] =
+                        candidate["evaluation"]["id"].clone();
                     let eligible = candidate["status"] == "verified"
                         && candidate["evaluation"]["metrics"]["eligible"] == true;
                     let winner = if eligible {
