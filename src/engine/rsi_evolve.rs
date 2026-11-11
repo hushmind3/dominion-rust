@@ -2909,8 +2909,17 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
             .sum::<u64>();
         if reads>0 && compiled_candidate {
             productive_reads.push(reads);
-        } else if reads>=3 && row["newFindings"].as_u64().unwrap_or(0)==0
-            && row["attemptedCandidateId"].is_null() {
+        } else if reads>0 && row["attemptedCandidateId"].is_null()
+            && (matches!(row["improvementDirective"]["mode"].as_str(),
+                Some("implement_research"|"revise_candidate"|"repair_counterexample"|"change_approach"))
+                || (reads>=3 && row["newFindings"].as_u64().unwrap_or(0)==0)) {
+            // A model that was explicitly supposed to WRITE source but spent
+            // tokens researching and produced zero candidates is a stalled
+            // implementation even when its research produced "new findings".
+            // Three live generations each read once, found something, yet
+            // never edited: the old >=3-reads/no-findings condition counted
+            // zero failures and never updated the next generation's policy.
+            // Read-only discovery phases remain excluded from this signal.
             stalled_reads+=1;
         }
         // Independently adopted source gains teach cross-domain transfer
