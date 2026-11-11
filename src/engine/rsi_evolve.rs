@@ -1327,6 +1327,16 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
                 text.push_str(&format!("- 검증에 실패한 이전 가설: {}\n",
                     hypothesis.chars().take(280).collect::<String>()));
             }
+            // The previous source bytes, not merely the name of a failed
+            // experiment, are required to mutate a failed implementation.
+            // Keep this bounded so short-context models can still edit.
+            if let Some(patch)=failure["candidateId"].as_str()
+                .and_then(|id|state.store.get("rsi_candidate",id))
+                .and_then(|candidate|candidate["patch"].as_str().map(str::to_string)) {
+                text.push_str("- 이전 모델이 실제 작성했지만 개선되지 않은 패치 (그대로 반복하지 말 것):\n");
+                text.push_str(&patch.chars().take(1200).collect::<String>());
+                text.push('\n');
+            }
             // A compiled candidate with no holdout gain is a failed behavioral
             // hypothesis. Preserve its actual neutral quality measurements:
             // the next model must address the unchanged task, not celebrate
