@@ -2652,7 +2652,8 @@ async fn run_loop(
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
-        child_input["rsiActionDirective"]=next_execution_action(&recorded_history);
+        child_input["rsiActionDirective"]=evolved_execution_action(
+            &context.state,&child_input,&recorded_history);
         let target_objective=selection_objective(&child_input);
         // Compute the same domain decision that the worker will use. Keep it
         // distinct from rsiSelectedDomain, which represents an explicit choice.
@@ -3696,7 +3697,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiDecisionInput"] = job["input"]["rsiDecisionInput"].clone();
     job["input"]["rsiDomainSelection"] = json!(domain_selection);
     job["input"]["rsiSearchStrategy"] = strategy;
-    let action=next_execution_action(&history);
+    let action=evolved_execution_action(&state,&job["input"],&history);
     job["rsiActionDirective"]=action.clone();
     job["input"]["rsiActionDirective"]=action.clone();
     let feedback = history
