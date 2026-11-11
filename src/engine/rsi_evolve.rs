@@ -1907,7 +1907,9 @@ fn proven_read_ablation_donor(
     let mut donors=state.store.all("experience").into_iter()
         .filter(|record|record["partitionKey"]==partition && record["status"]=="active")
         .flat_map(|record|record["executableMethods"].as_array().cloned().unwrap_or_default())
-        .filter(|method|method["synthesis"]["kind"]=="successful_read_ablation"
+        .filter(|method|matches!(method["synthesis"]["kind"].as_str(),
+            Some("successful_read_ablation"|"transferred_read_ablation"))
+            && method["synthesis"]["transferDepth"].as_u64().unwrap_or(0)<3
             && method["domain"].as_str().is_some_and(|d|d!=target_domain)
             && method["successfulApplications"].as_u64().unwrap_or(0)>0
             && method["status"]=="executable"
@@ -1919,7 +1921,8 @@ fn proven_read_ablation_donor(
         .then(a["id"].as_str().cmp(&b["id"].as_str())));
     donors.into_iter().next().map(|method|json!({
         "methodId":method["id"],"revision":method["revision"],
-        "domain":method["domain"],"adoptedApplications":method["successfulApplications"]
+        "domain":method["domain"],"adoptedApplications":method["successfulApplications"],
+        "transferDepth":method["synthesis"]["transferDepth"].as_u64().unwrap_or(0)
     }))
 }
 
@@ -2036,6 +2039,8 @@ fn synthesize_successful_dag_ablation(
             "synthesis":{
                 "kind":if transfer.is_some(){"transferred_read_ablation"}
                     else {"successful_read_ablation"},
+                "transferDepth":transfer.as_ref().map(|t|
+                    t["transferDepth"].as_u64().unwrap_or(0)+1).unwrap_or(0),
                 "transferDonor":transfer,
                 "parentMethodId":method["id"],"parentRevision":method["revision"],
                 "sourceExecutionId":receipt["executionId"],
