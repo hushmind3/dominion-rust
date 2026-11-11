@@ -2166,7 +2166,10 @@ fn session_action_trace(state:&AppState,session_id:&str)->Vec<Value>{
             && tools::rsi_allowed(op["tool"].as_str().unwrap_or("")))
         .collect::<Vec<_>>();
     crate::engine::procedure::sort_operations(&mut ops);
-    ops.into_iter().take(48).map(|op|{
+    // Preserve the most recent actions: candidate writes often happen after
+    // dozens of discovery calls, not at the beginning of the session.
+    if ops.len()>48 { ops=ops.split_off(ops.len()-48); }
+    ops.into_iter().map(|op|{
         let source_edit=matches!(op["tool"].as_str(),
             Some("workspace_write"|"workspace_replace"|"workspace_replace_range"));
         let verified=op["status"]=="completed"
@@ -2284,7 +2287,7 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
     let mut seen=BTreeSet::<String>::new();
     for row in rows {
         let method=&row["executionMethod"]["actionProgram"];
-        if method["revision"].as_str()!=Some(&parent) {continue;}
+        if method["revision"].as_str()!=Some(parent.as_str()) {continue;}
         let job=row["jobId"].as_str().or_else(||row["id"].as_str()).unwrap_or("");
         if job.is_empty() || !seen.insert(job.to_string()) {continue;}
         // A research-only generation with no actual policy action is not a
@@ -2314,7 +2317,8 @@ fn evolve_stalled_action_program(mut plan:Value,rows:&[Value],fallback:&str)->Va
         sequence.push(json!(fallback));
         "append_source_mutation"
     } else {
-        let other=if fallback=="workspace_replace" {
+        let other=if sequence.last().and_then(Value::as_str)
+            ==Some("workspace_replace") {
             "workspace_replace_range"
         } else {"workspace_replace"};
         sequence.push(json!(other));
