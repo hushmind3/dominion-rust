@@ -179,6 +179,55 @@ async fn git(dir:&Path, args:&[&str])->Result<String,String>{
 fn valid_sha(value:&str)->bool {
     value.len()==40 && value.bytes().all(|byte|byte.is_ascii_hexdigit())
 }
+/// Repair resumes the *same failed draft* inside a new detached worktree.
+///// Never copy a failed edit to the live source, and never treat it as accepted.
+async fn restore_failed_draft(
+    context:&JobContext,input:&Value,worktree:&Path,base:&str
+)->Result<(),String>{
+    let plan=&input["rsiSourceIntegrityRepair"];
+    if !plan.is_object(){return Ok(());}
+    let candidate_id=plan["candidateId"].as_str().ok_or("수리 대상 후보 ID 없음")?;
+    let source_job=plan["sourceGenerationJobId"].as_str()
+        .ok_or("수리 원본 실행 ID 없음")?;
+    let candidate=context.state.store.get("rsi_candidate",candidate_id)
+        .ok_or("수리 원본 패치가 저장되지 않았습니다.")?;
+    let original=context.state.store.get("rsi_run",&format!("rsi-run-{source_job}"))
+        .ok_or("이전 세대의 소스 검증 기록이 없습니다.")?;
+    let patch=candidate["patch"].as_str()
+        .filter(|patch|!patch.is_empty() && patch.len()<MAX_CAPTURE_BYTES)
+        .ok_or("유효한 수리 원본 패치가 없습니다.")?;
+    if plan["generatorCommit"]!=base
+        || candidate["baseCommit"]!=base
+        || candidate["rsiJobId"]!=source_job
+        || candidate["origin"]!="model_driven_detached_worktree"
+        || original["jobId"]!=source_job
+        || original["candidateId"]!=candidate_id
+        || original["diffSha256"]!=candidate["patchSha256"]
+        || original["checksPassed"]==true
+        || original["sourceClean"]!=true
+        || original["checks"].as_array().is_none_or(|checks|
+            !checks.iter().any(|check|check["passed"]!=true))
+        || digest(patch)!=candidate["patchSha256"].as_str().unwrap_or("")
+    {
+        return Err("원본 실패 패치의 출처·검증·커밋이 일치하지 않습니다.".into());
+    }
+    let file=std::env::temp_dir()
+        .join(format!("dominion-repair-{}.patch",uuid::Uuid::new_v4()));
+    std::fs::write(&file,patch).map_err(|e|e.to_string())?;
+    let patch_path=file.to_str().ok_or("수리 패치 경로 인코딩 오류")?;
+    let applied=async {
+        git(worktree,&["apply","--check",patch_path]).await?;
+        git(worktree,&["apply",patch_path]).await?;
+        Ok::<(),String>(())
+    }.await;
+    let _=std::fs::remove_file(&file);
+    applied?;
+    context.checkpoint(json!({"rsiRepairDraftRestored":true,
+        "rsiRepairSourceJobId":source_job,"rsiRepairCandidateId":candidate_id,
+        "rsiRepairPatchSha256":candidate["patchSha256"]}))?;
+    Ok(())
+}
+
 /// Only disposable RSI work branches are eligible for source application.
 /// The champion and main refs are intentionally never mutation targets.
 pub fn is_rsi_work_branch(branch:&str)->bool {
@@ -214,6 +263,13 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     let name=path.to_str().ok_or("분리 작업공간 경로를 읽을 수 없습니다.")?;
     // Detached Git worktree, not a new branch; the running server checkout stays pristine.
     git(&source,&["worktree","add","--detach",name,base]).await?;
+    // The prior generation's source is otherwise destroyed at cleanup. A
+    // repair must start with its actual failed patch, not a clean baseline
+    // accompanied only by compiler diagnostics.
+    if let Err(error)=restore_failed_draft(context,input,&path,base).await {
+        let _=git(&source,&["worktree","remove","--force",name]).await;
+        return Err(format!("차세대 실패 패치 복구 실패: {error}"));
+    }
     if let Err(error)=context.checkpoint(json!({
         "rsiWorkspace":name,"rsiBaseCommit":base,
         "rsiPhase":"model_editing","rsiIsolation":"detached_git_worktree_not_os_sandbox"
