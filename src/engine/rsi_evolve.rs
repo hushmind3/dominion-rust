@@ -1592,7 +1592,12 @@ fn mutate_programs_after_trial(
             || !matches!(row["evaluation"]["metrics"]["verdict"].as_str(),
                 Some("regressed"|"build_failed")) {continue;}
         for receipt in row["inducedMethodApplications"].as_array().into_iter().flatten() {
-            if receipt["performed"]!=true || receipt["verifiedSourceWrite"]!=true {continue;}
+            if receipt["performed"]!=true || receipt["verifiedSourceWrite"]!=true
+                || receipt["policyId"]!=frozen["id"]
+                || receipt["revision"]!=frozen["revision"]
+                || receipt["domain"]!=row["methodPolicyTrial"]["domain"] {
+                continue;
+            }
             let Some(id)=receipt["executionProgramId"].as_str() else{continue};
             if frozen["executionPrograms"].as_array().is_some_and(|programs|
                 programs.iter().any(|p|p["id"].as_str()==Some(id))) {
@@ -2132,7 +2137,7 @@ fn synthesize_method_execution_programs(evidence:&[Value])->Vec<Value> {
                             part.iter().eq(steps.as_array().unwrap().iter())))
             });
             let id=format!("rsi-execution-program-{}",
-                crate::engine::memory::stable_id(&[domain,
+                crate::engine::memory::stable_id(&[*domain,
                     "code_search","workspace_read_range",terminal]));
             let score=read_success.len().min(edit_success.len()) as i64*3
                 -(read_failure.len()+edit_failure.len()) as i64*2;
@@ -4788,14 +4793,16 @@ mod tests {
         let exact=json!({"id":"exact","domain":"tools","score":3,
             "steps":["code_search","workspace_read_range","workspace_replace"],
             "status":"candidate_requires_descendant_execution"});
-        let frozen=json!({"executionPrograms":[range,exact]});
+        let frozen=json!({"id":"method-policy","revision":"method-rev",
+            "executionPrograms":[range,exact]});
         let mut policy=frozen.clone();
-        let rows=vec![json!({"methodPolicyTrial":{"arm":"learned"},
+        let rows=vec![json!({"methodPolicyTrial":{"arm":"learned","domain":"tools"},
             "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
                 "metrics":{"verdict":"regressed"}},
             "inducedMethodApplications":[{
-                "executionProgramId":"range","performed":true,
-                "verifiedSourceWrite":true}]})];
+                "executionProgramId":"range","policyId":"method-policy",
+                "revision":"method-rev","domain":"tools",
+                "performed":true,"verifiedSourceWrite":true}]})];
         let changes=mutate_programs_after_trial(&mut policy,&frozen,&rows,"cohort-a");
         assert_eq!(changes.len(),1);
         assert_eq!(changes[0]["toProgramId"],"exact");
