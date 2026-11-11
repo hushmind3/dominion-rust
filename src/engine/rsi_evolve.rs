@@ -2837,6 +2837,13 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
             && row["attemptedCandidateId"].is_null() {
             stalled_reads+=1;
         }
+        // Independently adopted source gains teach cross-domain transfer
+        // even when the model needed both editing operators. Only the
+        // *tool-specific* effect attribution requires a single writer.
+        if generation_is_verified(row) {
+            if let Some(id)=row["objectiveId"].as_str() {sources.insert(id.to_string());}
+            if let Some(domain)=row["domain"].as_str() {transfer_domains.insert(domain.to_string());}
+        }
         // Attribute candidate quality to one editing arm only when exactly
         // one arm produced a confirmed mutation. Multi-tool attempts still
         // teach exploration without falsely proving either edit operator.
@@ -2844,11 +2851,7 @@ fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Va
         let name=working.iter().next().unwrap();
         let arm=if name=="workspace_replace" {&mut exact}else{&mut range};
         if compiled_candidate {arm.candidates+=1;}
-        if generation_is_verified(row) {
-            arm.accepted+=1;
-            if let Some(id)=row["objectiveId"].as_str() {sources.insert(id.to_string());}
-            if let Some(domain)=row["domain"].as_str() {transfer_domains.insert(domain.to_string());}
-        }
+        if generation_is_verified(row) {arm.accepted+=1;}
         arm.tokens=arm.tokens.saturating_add(row["tokens"].as_u64().unwrap_or(0));
     }
     // Comparable outcomes rank the method. File writes are only evidence
