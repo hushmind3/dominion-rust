@@ -580,6 +580,34 @@ mod tests {
         assert!(feedback["brierError"].as_f64().is_some_and(|e|e>0.0));
     }
     #[test]
+    fn demonstrated_bad_meta_calibration_reassigns_the_real_learning_source(){
+        let frontier=vec![
+            json!({"role":"memory","domain":"memory",
+                "path":"src/engine/memory.rs","sourceBytes":100}),
+            json!({"role":"improvement_methods","domain":"improver",
+                "path":"src/engine/rsi_principle_learning.rs",
+                "sourceSha256":"a".repeat(64),"sourceBytes":1500})
+        ];
+        let base=synthesize(&[],&frontier,&["memory","improver"],None,
+            &json!({}),&json!({}),&json!({"edges":[]}));
+        assert!(valid_policy(&base,0));
+        let ledger=json!({"sha256":"b".repeat(64),
+            "predictiveCalibration":{"needsLearnerSourceRevision":true,
+                "measuredCases":4,"meanBrierError":0.81}});
+        let revised=steer_learner_repair(base.clone(),&ledger,&frontier,
+            &["memory","improver"]);
+        assert_eq!(revised["selectionMode"],
+            "verified_calibration_driven_learner_rewrite");
+        assert_eq!(revised["target"]["path"],
+            "src/engine/rsi_principle_learning.rs");
+        assert_eq!(revised["principleLearningSha256"],ledger["sha256"]);
+        assert!(valid_policy(&revised,0));
+        let unchanged=steer_learner_repair(base.clone(),
+            &json!({"predictiveCalibration":{"needsLearnerSourceRevision":false}}),
+            &frontier,&["memory","improver"]);
+        assert_eq!(unchanged,base);
+    }
+    #[test]
     fn productive_descendant_evidence_changes_target_ranking() {
         let frontier=vec![
             json!({"role":"improvement_methods","domain":"improver",
