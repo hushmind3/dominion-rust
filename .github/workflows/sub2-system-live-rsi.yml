@@ -1,0 +1,157 @@
+name: Sub2 full-system descendant design RSI
+
+# Full-intelligence-stack recursive self-redesign through an actual model.
+# The rebuilt child selects source, domain and architecture, never the old
+# coordinator. Only independent frozen A/B evidence can adopt changed code.
+# Every model-authored design and real source patch is retained.
+
+on:
+  workflow_dispatch:
+  # One real-model probe when this workflow definition changes on Sub2.
+  # Ordinary code pushes continue to run only fast CI, not heavy inference.
+  push:
+    branches: [dominion-sub2]
+    paths:
+      - .github/workflows/sub2-system-live-rsi.yml
+      - scripts/sub2-system-live-rsi.mjs
+
+# Preserve each immutable full-system experiment and causal measurement.
+concurrency:
+  group: sub2-whole-system-live-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  native-live-rsi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      DOMINION_LIVE_MODEL: qwen3:4b-instruct
+      DOMINION_LIVE_BASE: http://127.0.0.1:44327
+      DOMINION_LIVE_OLLAMA: http://127.0.0.1:11434
+      DOMINION_LIVE_TIMEOUT_MS: '3060000'
+      OLLAMA_CONTEXT_LENGTH: '16384'
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_KEEP_ALIVE: '45m'
+      DOMINION_PORT: '44327'
+      DOMINION_JOB_WORKERS: '1'
+      DOMINION_SOURCE_WORKSPACE: ${{ github.workspace }}
+      DOMINION_EXPERIMENT_SCHEDULER: '0'
+      DOMINION_BACKUP_INTERVAL_SECS: '0'
+      DOMINION_RSI_REAL_MODEL: '1'
+    steps:
+      - name: Checkout exact Sub2 source and full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Validate live probe script and build the real native engine
+        run: |
+          # Every measurement must derive from this immutable GitHub Actions
+          # revision, not a moving branch or a stale generated worktree.
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          node --check scripts/sub2-system-live-rsi.mjs
+          cargo build --release --locked --bin dominion-rust
+
+      - name: Check source-derived descendants and compiler recovery before live inference
+        run: |
+          cargo test --release --locked --bin dominion-rust rsi_mutation::tests -- --nocapture
+          cargo test --release --locked --bin dominion-rust three_accepted_patches_do_not_prove_recursive_growth_without_meta_transfer -- --nocapture
+          cargo test --release --locked --bin dominion-rust rsi_compiler_repair::tests -- --nocapture
+          cargo test --release --locked --bin dominion-rust rsi::tests -- --nocapture
+
+      - name: Install actual local inference runtime
+        run: |
+          curl -fsSL https://ollama.com/install.sh -o "${RUNNER_TEMP}/ollama-install.sh"
+          sh "${RUNNER_TEMP}/ollama-install.sh"
+          ollama --version
+          # The installer auto-starts a systemd Ollama daemon with its default
+          # 4096-token context. Stop it: a second "ollama serve" would silently
+          # fail to bind and DOMINION's 16k model calls would receive HTTP 400.
+          sudo systemctl disable --now ollama
+          nohup ollama serve > "${RUNNER_TEMP}/ollama-live.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          if grep -Fq 'bind: address already in use' "${RUNNER_TEMP}/ollama-live.log"; then
+            echo "Ollama custom-context daemon failed to start" >&2
+            exit 1
+          fi
+          ollama pull "${DOMINION_LIVE_MODEL}"
+
+      - name: Boot isolated DOMINION engine at same checked-out revision
+        run: |
+          mkdir -p "${RUNNER_TEMP}/dominion-live"
+          echo "DOMINION_DATA=${RUNNER_TEMP}/dominion-live/data" >> "${GITHUB_ENV}"
+          echo "DOMINION_WORKSPACE=${RUNNER_TEMP}/dominion-live/workspace" >> "${GITHUB_ENV}"
+          echo "DOMINION_LIVE_REPORT=${RUNNER_TEMP}/dominion-live/live-rsi-receipt.json" >> "${GITHUB_ENV}"
+          mkdir -p "${RUNNER_TEMP}/dominion-live/data/rsi-build" "${RUNNER_TEMP}/dominion-live/workspace"
+          # Reuse the compiled dependencies from the exact checked-out source.
+          # The RSI coordinator still invokes cargo with its per-commit
+          # DOMINION_RSI_BUILD_COMMIT marker, rebuilding the changed engine
+          # itself for each accepted descendant instead of faking lineage.
+          ln -s "${GITHUB_WORKSPACE}/target" "${RUNNER_TEMP}/dominion-live/data/rsi-build/generator"
+          DOMINION_DATA="${RUNNER_TEMP}/dominion-live/data" \
+            DOMINION_WORKSPACE="${RUNNER_TEMP}/dominion-live/workspace" \
+            nohup ./target/release/dominion-rust > "${RUNNER_TEMP}/dominion-live/engine.log" 2>&1 &
+
+      - name: Execute actual model improvement and frozen native A/B
+        run: node scripts/sub2-system-live-rsi.mjs
+
+      - name: Show actual source-edit and frozen evaluation receipts
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, existsSync, appendFileSync } from 'node:fs';
+          const path = process.env.DOMINION_LIVE_REPORT;
+          if (!path || !existsSync(path)) {
+            console.log('No actual model receipt: native engine did not reach the RSI campaign.');
+            process.exit(0);
+          }
+          const receipt = JSON.parse(readFileSync(path, 'utf8'));
+          const lines = ['### Actual Sub2 whole-system design RSI evidence',
+            'Status: '+receipt.status+'; accepted generations: '+receipt.acceptedGenerations,
+            'Error: '+(receipt.error || 'none')];
+          for (const generation of receipt.history || []) {
+            lines.push('- Generation '+generation.attempt+
+              ': operator='+(generation.nativeMutation?.operator || 'model')+
+              '; actual new diff='+generation.novelSourceDiffBytes+
+              ' bytes; edits='+(generation.editActions || []).filter(x=>x.written).length+
+              '; compile='+generation.staticChecksPassed+
+              '; candidate='+(generation.candidateId || generation.unverifiedCandidateId || 'none')+
+              '; frozen A/B='+(generation.verdict || 'not measured')+
+              '; holdout gains='+(generation.improvedHoldouts ?? 'not measured')+
+              '; accepted='+generation.accepted);
+          }
+          console.log(lines.join('\n'));
+          if (process.env.GITHUB_STEP_SUMMARY)
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n')+'\n');
+          NODE
+
+      - name: Publish outcome and raw local-engine diagnostics, even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sub2-whole-system-rsi-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/dominion-live/live-rsi-receipt.json
+            ${{ runner.temp }}/dominion-live/data/rsi-paired/**/candidate.patch
+            ${{ runner.temp }}/dominion-live/data/rsi-paired/**/plan.json
+            ${{ runner.temp }}/dominion-live/data/rsi-paired/**/report.json
+            ${{ runner.temp }}/dominion-live/data/rsi-paired/**/report.json.evidence.txt
+            ${{ runner.temp }}/dominion-live/engine.log
+            ${{ runner.temp }}/ollama-live.log
