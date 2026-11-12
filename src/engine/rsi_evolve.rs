@@ -4977,6 +4977,10 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         // Model-authored successor stage can override a generic inherited
         // domain when the current source and observed failures support it.
         self_domain.or(inherited).or(explicit)
+    }else if automatic && agenda["recursiveLaboratory"].is_object() {
+        // A compiled scientific cycle must execute its own currently selected
+        // role/domain, not a predecessor's generic domain preference.
+        self_domain.or(inherited).or(explicit)
     }else if automatic && agenda["factorialExperiment"].is_object() {
         // The factorial phase is an actual intervention, not an inherited
         // unrelated domain preference; the runtime must execute its choice.
