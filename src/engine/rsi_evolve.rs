@@ -4527,9 +4527,16 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         crate::engine::rsi_reflexive::propose(
             &history,&frontier,commit,&allowed,&prior_meta["target"],&factorial)
     };
-    let meta_policy=crate::engine::rsi_meta_controller::steer_open_program(
+    let initial_policy=crate::engine::rsi_meta_controller::steer_open_program(
         crate::engine::rsi_meta_controller::steer_reflexive(
             prior_meta,&reflexive_program),&open_program);
+    let meta_policy=if input["rsiAutonomous"]==true && !explicit
+        && !paired_descendant_target(input)
+        && !open_program.is_object() && !reflexive_program.is_object()
+        && !matches!(mutual_program["phase"].as_str(),Some("complement"|"return")) {
+        crate::engine::rsi_meta_controller::steer_learner_repair(
+            initial_policy,&principle_learning,&frontier,&allowed)
+    }else{initial_policy};
     // If a reflexive source experiment has priority, do not also advertise
     // a conflicting speculative mutual-improvement stage to the worker.
     let mutual_program=if reflexive_program.is_object() || open_program.is_object() {
@@ -4635,6 +4642,10 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         if let Some(path)=open_program["target"]["path"].as_str() {
             focus=vec![path];
         }
+    }
+    if !explicit && meta_policy["selectionMode"]
+        =="verified_calibration_driven_learner_rewrite" {
+        focus=vec!["src/engine/rsi_principle_learning.rs"];
     }
     let directive=crate::engine::rsi_system::improvement_directive(&history);
     let comparative_mode=if peers["references"].as_array()
@@ -5202,7 +5213,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let meta_instructions=if job["input"]["rsiMetaPolicy"].is_object() {
             crate::engine::rsi_meta_controller::instruction(&job["input"]["rsiMetaPolicy"])
         }else{String::new()};
-        let coupled_instructions=if job["input"]["rsiOpenImprovementProgram"].is_object() {
+        let coupled_instructions=if job["input"]["rsiMetaPolicy"]["selectionMode"]
+            =="verified_calibration_driven_learner_rewrite" {
+            "META-LEARNER CALIBRATION FAILURE: independent held-out task outcomes show the current principle-ranking algorithm makes systematically poor predictions. Rewrite the actual Rust source src/engine/rsi_principle_learning.rs, including its learned features, case credit assignment, or prioritization. The new source is NOT proven better until the recompiled descendant makes better task-level predictions and independently improves another subsystem. Keep the frozen oracle outside the editable learner.".to_string()
+        }else if job["input"]["rsiOpenImprovementProgram"].is_object() {
             "OPEN PROGRAM SOURCE INTERVENTION: follow the attested current node and its model-authored mechanism. You may invent a successor graph, but implement actual source changes; unrelated co-design hypotheses are read-only context. Source adoption and a newly compiled descendant determine whether the new graph is inherited.".to_string()
         }else if job["input"]["rsiReflexiveProgram"].is_object() {
             "REFLEXIVE SOURCE INTERVENTION: focus on the one attested role/path.              Read other subsystems as context only. Build a model-authored source              redesign of the selected component, not an unrelated joint patch.              The next recompiled descendant will be assigned the complementary              subsystem only after independent source adoption.".to_string()
