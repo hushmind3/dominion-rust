@@ -5233,10 +5233,14 @@ fn compiled_system_generation_plan(
     // successor policy. Failure/research history still drives the evolved
     // search algorithm when no adopted model-designed successor exists.
     let inherited=crate::engine::rsi_system::inherited_domain(history);
+    // A measured design authored by the accepted predecessor is an
+    // executable successor decision, not merely a hint. Research continuation
+    // would otherwise override it before its descendant can test the transfer.
+    let continuation=if inherited.is_some(){None}else{research_continuation(history)};
     let selected=inherited.or_else(||input["rsiSelectedDomain"].as_str()
         .filter(|domain|DOMAINS.contains(domain)).map(str::to_string));
     let (domain,selection,strategy)=select_generation_strategy(
-        state,history,&objective,research_continuation(history),
+        state,history,&objective,continuation,
         None,selected,commit
     );
     let mut focus_input=input.clone();
