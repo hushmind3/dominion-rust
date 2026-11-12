@@ -31,9 +31,9 @@ type VerifyReport={campaignId:string;capabilityDemonstrated:boolean;verifiedStre
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
 const workloads={
- short:{label:'기본',maxAttempts:2,tokenBudget:180000,timeBudgetSeconds:3600},
- normal:{label:'확장',maxAttempts:4,tokenBudget:360000,timeBudgetSeconds:7200},
- long:{label:'넉넉히',maxAttempts:12,tokenBudget:600000,timeBudgetSeconds:3600},
+ short:{label:'기본',maxAttempts:2,tokenBudget:600000,timeBudgetSeconds:3600},
+ normal:{label:'확장',maxAttempts:4,tokenBudget:1200000,timeBudgetSeconds:7200},
+ long:{label:'넉넉히',maxAttempts:12,tokenBudget:2000000,timeBudgetSeconds:7200},
 } as const
 type Workload=keyof typeof workloads
 function preferences():{selection:'manual'|'automatic';workload:Workload;providerId:string;model:string}{
