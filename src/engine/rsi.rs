@@ -583,6 +583,7 @@ pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
             "regressions":metrics.as_ref().and_then(|metrics|metrics["regressions"].as_u64()),
             "improvedHoldoutDomains":metrics.as_ref().map(|metrics|metrics["improvedHoldoutDomains"].clone()),
             "metaHoldoutGains":metrics.as_ref().and_then(|metrics|metrics["metaHoldoutGains"].as_u64()),
+            "forecast":generation["forecast"].clone(),
             "reason":reason,
         }));
     }
