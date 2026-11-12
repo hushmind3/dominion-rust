@@ -168,6 +168,24 @@ fn rsi_complete_system_bundle(session:&Value,operations:&[Value])->bool {
         })))
 }
 
+/// Additional bundle-only handoff: a new intelligence module may be
+/// created by workspace_write, and a coupled target need not be among the
+/// three initial focus excerpts. It is eligible ONLY with an independently
+/// witnessed write and an explicit model-authored design path.
+fn rsi_verified_bundle_write(session:&Value,args:&Value,op:&Value)->bool {
+    let Some(targets)=session["rsiSystemDesign"]["targetFiles"].as_array()
+        .filter(|files|files.len()>1) else{return false;};
+    let Some(path)=args["path"].as_str()
+        .filter(|p|crate::engine::rsi::safe_path(p)) else{return false;};
+    session["rsiSystemEvolution"]==true
+        && targets.iter().any(|target|target.as_str()==Some(path))
+        && matches!(op["tool"].as_str(),
+            Some("workspace_replace"|"workspace_replace_function"|"workspace_write"))
+        && op["status"]=="completed"
+        && op["result"]["written"]==true
+        && op["toolReceipt"]["verified"]==true
+}
+
 /// Classify literal native source-tool failures that do not need another LLM
 /// planning call. A focused worker will get a bounded read opportunity on
 /// the next round. The original error and unsuccessful source write remain
@@ -2316,8 +2334,11 @@ async fn run_turn_body(
                 let observed=state.store.execution_operations(execution_id)?;
                 let ready=state.store.get("execution_operation",
                         &format!("{execution_id}:{round}:{call_index}:{}",call.id))
-                    .is_some_and(|operation|rsi_patch_ready_for_verification(
-                        &live_session,&call.name,&arguments,&operation));
+                    .is_some_and(|operation|
+                        rsi_patch_ready_for_verification(
+                            &live_session,&call.name,&arguments,&operation)
+                        || rsi_verified_bundle_write(
+                            &live_session,&arguments,&operation));
                 if ready && rsi_complete_system_bundle(&live_session,&observed) {
                     rsi_patch_written=true;
                 state.store.audit("rsi.patch_submitted_for_verification",json!({
@@ -2656,9 +2677,11 @@ async fn run_harness_nodes(
                 op["origin"]=="procedure"
                     && op["procedureStrategyId"]==strategy["id"]
                     && op["procedureRevision"]==strategy["revision"]
-                    && rsi_patch_ready_for_verification(&current_session,
+                    && (rsi_patch_ready_for_verification(&current_session,
                         op["tool"].as_str().unwrap_or(""),
-                        &op["arguments"],op));
+                        &op["arguments"],op)
+                        || rsi_verified_bundle_write(
+                            &current_session,&op["arguments"],op)));
             if verified && rsi_complete_system_bundle(&current_session,&executed) {
                 break;
             }
