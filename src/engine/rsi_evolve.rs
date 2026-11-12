@@ -4307,9 +4307,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .filter(|g| g["campaignId"] == campaign)
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
-    if job["input"]["rsiMetaEpisode"]==true {
-        bind_inherited_target(&mut job["input"],&Value::Null);
-    }
+    // Downstream A/B episodes exercise the normal generation path.
+    // An evaluator-specific input branch would be a shortcut the candidate
+    // could optimize instead of improving the actual agent runtime.
     let objective = selection_objective(&job["input"]);
     // System evolution is a search mode, not a measured holdout constraint.
     // Only a genuine paired target or live failed diagnosis may pin a domain.
