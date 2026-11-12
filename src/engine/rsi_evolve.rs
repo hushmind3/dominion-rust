@@ -3226,8 +3226,10 @@ async fn run_loop(
                 || plan["systemBlueprint"]["historyCount"].as_u64()!=Some(history.len() as u64)
                 || plan["systemBlueprint"]["architecture"].as_array()
                     .is_none_or(|items|items.is_empty() || items.len()>64)
-                || !plan["improvementDirective"].is_object() {
-                return Err("후손 시스템 자기모형·실패 학습·계보가 일치하지 않습니다.".into());
+                || !plan["improvementDirective"].is_object()
+                || plan["metaPolicy"]["source"]!="compiled_editable_meta_controller_v1"
+                || plan["metaPolicy"]["historyCount"].as_u64()!=Some(history.len() as u64) {
+                return Err("후손 시스템 자기모형·메타 개선기·계보가 일치하지 않습니다.".into());
             }
             // The invariant is the actual source, not an older generation's
             // fixed role taxonomy or copied architecture ranking.
@@ -3266,6 +3268,7 @@ async fn run_loop(
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
             child_input["rsiArchitectureFrontier"]=plan["architectureFrontier"].clone();
             child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
+            child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
             child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
             if !plan["archiveSelection"].is_null() {
                 let id=plan["archiveSelection"]["candidateId"].as_str()
@@ -3500,6 +3503,9 @@ async fn run_loop(
         generation["controllerPlan"]=current["input"]["rsiControllerPlan"].clone();
         generation["architectureFrontier"]=current["input"]["rsiArchitectureFrontier"].clone();
         generation["architectureTarget"]=current["input"]["rsiArchitectureTarget"].clone();
+        generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
+        generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
+        generation["compiledPlanExecuted"]=current["rsiCompiledPlanExecuted"].clone();
         generation["improvementDirective"]=current["input"]["rsiImprovementDirective"].clone();
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
         generation["improvementDirectiveVerified"]=current["rsiImprovementDirectiveVerified"].clone();
@@ -3674,6 +3680,11 @@ async fn run_loop(
         generation["knowledgeArtifactHashes"]=json!(hashes);
         generation["newFindings"]=json!(new_findings);
         generation["stopReason"]=json!(stopped);
+        if input["rsiSystemEvolution"]==true {
+            let observed=crate::engine::rsi_meta_controller::feedback(
+                &generation["metaPolicy"],&generation);
+            generation["metaLearning"]=observed;
+        }
         if candidate_id.is_none() && new_findings>0 && output.is_ok() && stopped.is_none()
             && current["result"]["rsi"]["modelError"].is_null() {
             generation["error"]=Value::Null;
@@ -4236,9 +4247,17 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let frontier=crate::engine::rsi_system::architecture_frontier(
         &state,&system_blueprint,&history,
         input["rsiIndexId"].as_str().unwrap_or(""),source_root);
-    let architecture_target=frontier.first().cloned().unwrap_or(Value::Null);
-    let owner_focus=input["rsiFocusFiles"].as_array()
-        .is_some_and(|files|!files.is_empty());
+    let meta_policy=crate::engine::rsi_meta_controller::synthesize(
+        &history,&frontier,DOMAINS,
+        crate::engine::rsi_system::inherited_domain(&history).as_deref());
+    let owner_focus=matches!(
+        input["rsiFocusSelection"]["source"].as_str(),
+        Some("owner_selected"|"user_selected"));
+    let architecture_target=if input["rsiAutonomous"]==true
+        && !owner_focus && !paired_descendant_target(input)
+        && meta_policy["target"].is_object() {
+        meta_policy["target"].clone()
+    }else{frontier.first().cloned().unwrap_or(Value::Null)};
     let paired=paired_descendant_target(input);
     let inherited=if input["rsiAutonomous"]==true {
         crate::engine::rsi_system::inherited_domain(&history)
@@ -4300,6 +4319,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "sourceTreeSha256":system_blueprint["sourceTreeSha256"],
         "architectureFrontier":frontier,
         "architectureTarget":architecture_target,
+        "metaPolicy":meta_policy,
         "decisionOwner":"rebuilt_descendant_binary",
         "improvementDirective":directive,
         "archiveSelection":archive,
@@ -4460,6 +4480,29 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     }else{
         learned_edit_method(&state,&job["input"],&history)
     };
+    if job["input"]["rsiSystemEvolution"]==true {
+        let frontier=job["input"]["rsiArchitectureFrontier"].as_array()
+            .ok_or("후손 메타 학습을 재구성할 구조 탐색 근거 없음")?;
+        let expected=crate::engine::rsi_meta_controller::synthesize(
+            &history,frontier,DOMAINS,
+            crate::engine::rsi_system::inherited_domain(&history).as_deref());
+        if job["input"]["rsiControllerPlan"]["metaPolicy"]!=expected
+            || job["input"]["rsiMetaPolicy"]!=expected {
+            return Err("후손의 메타 개선 정책이 계승된 실제 기록과 다릅니다.".into());
+        }
+        job["rsiMetaPolicyExecuted"]=json!({
+            "source":"running_compiled_descendant_binary",
+            "generatorCommit":commit,
+            "metaRevision":expected["revision"],
+            "forecast":expected["forecast"],
+            "selectedRole":expected["target"]["role"]
+        });
+        job["rsiCompiledPlanExecuted"]=json!({
+            "source":"running_compiled_descendant_binary",
+            "generatorCommit":commit,
+            "metaRevision":expected["revision"]
+        });
+    }
     descendant_method["selectedByGeneratorCommit"]=json!(commit);
     job["input"]["rsiEditPolicy"]=descendant_method.clone();
     job["rsiEditPolicyDecision"]=json!({
@@ -4523,6 +4566,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let owner=state.store.get("job",&campaign)
             .and_then(|parent|parent["input"]["rsiObjective"].as_str()
                 .map(str::to_string)).unwrap_or_default();
+        let meta_instruction=crate::engine::rsi_meta_controller::instruction(
+            &job["input"]["rsiMetaPolicy"]);
         let frontier_hint=if job["input"]["rsiFocusSelection"]["source"]=="rebuilt_descendant_controller"
             && job["input"]["rsiArchitectureTarget"].is_object() {
             let gap=&job["input"]["rsiArchitectureTarget"];
@@ -4530,9 +4575,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 gap["role"],gap["path"],gap["sourceSha256"],
                 gap["usageSignalIds"],gap["sourceAttempts"],gap["reason"])
         }else{String::new()};
-        format!("{}\n\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nOWNER OBJECTIVE: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
+        format!("{}\n\n{}\n\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nOWNER OBJECTIVE: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
             crate::engine::rsi_system::instruction(&blueprint,&owner),
-            frontier_hint,expected,owner,capsule(&observed,3500),
+            meta_instruction,frontier_hint,expected,owner,capsule(&observed,3500),
             capsule(&research,3500),capsule(&focus,6000))
     } else {job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
