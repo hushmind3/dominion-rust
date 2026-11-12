@@ -15,7 +15,6 @@ use std::{collections::{BTreeMap,BTreeSet},fs,
     sync::{Mutex,OnceLock},time::Duration};
 use tokio::process::{Child,Command};
 
-const PORT:u16=4321;
 fn file_sha(path:&Path)->Result<String,String>{
     let mut f=fs::File::open(path).map_err(|e|e.to_string())?;
     let mut hash=Sha256::new();
@@ -241,6 +240,24 @@ async fn activate(state:&AppState,id:&str,workspace:&Path,script:&Path,
         .map_err(|e|e.to_string())?;
     if !inside(&base,&models){return Err("기준 모델 경로가 관리 영역 밖입니다.".into());}
     let alias=format!("dominion-adapter-{id}");
+    // Reserve a free loopback port rather than overwriting the host's
+    // llama.cpp/MLX runtime or an unrelated local inference service.
+    let binding=std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e|e.to_string())?;
+    let port=binding.local_addr().map_err(|e|e.to_string())?.port();
+    drop(binding);
+    let old=state.store.get("rsi_adapter_active","selected");
+    if let Some(active)=old {
+        if let Some(previous)=active["providerId"].as_str(){
+            if let Some(mut provider)=state.store.get("provider",previous){
+                provider["enabled"]=json!(false);
+                let _=state.store.put("provider",&provider);
+            }
+        }
+        let mut stopped=active;
+        stopped["active"]=json!(false);
+        let _=state.store.put("rsi_adapter_active",&stopped);
+    }
     {
         let mut guard=server().lock().map_err(|_|"모델 실행기 잠금 오류")?;
         if let Some((_,old))=guard.as_mut(){let _=old.start_kill();}
@@ -248,7 +265,7 @@ async fn activate(state:&AppState,id:&str,workspace:&Path,script:&Path,
         let mut cmd=Command::new("python3");
         cmd.arg(script).args(["--mode","serve","--base"])
             .arg(base).arg("--adapter").arg(adapter)
-            .arg("--alias").arg(&alias).arg("--port").arg(PORT.to_string())
+            .arg("--alias").arg(&alias).arg("--port").arg(port.to_string())
             .current_dir(workspace)
             .env("HF_HUB_OFFLINE","1").env("TRANSFORMERS_OFFLINE","1")
             .stdout(Stdio::null()).stderr(Stdio::null());
@@ -258,7 +275,7 @@ async fn activate(state:&AppState,id:&str,workspace:&Path,script:&Path,
     let client=reqwest::Client::new();
     for _ in 0..90{
         tokio::time::sleep(Duration::from_millis(500)).await;
-        if let Ok(response)=client.get(format!("http://127.0.0.1:{PORT}/v1/models"))
+        if let Ok(response)=client.get(format!("http://127.0.0.1:{port}/v1/models"))
             .timeout(Duration::from_secs(2)).send().await{
             if response.status().is_success()&&response.json::<Value>().await
                 .is_ok_and(|j|j["data"].as_array().is_some_and(|items|
@@ -266,7 +283,7 @@ async fn activate(state:&AppState,id:&str,workspace:&Path,script:&Path,
                 let provider_id=format!("rsi-weights-{id}");
                 let saved=state.store.put("provider",&json!({
                     "id":provider_id,"name":"DOMINION Verified LoRA",
-                    "baseUrl":format!("http://127.0.0.1:{PORT}/v1"),
+                    "baseUrl":format!("http://127.0.0.1:{port}/v1"),
                     "kind":"openai","local":true,"enabled":true,
                     "toolMode":"compat","model":alias,
                     "contextTokens":4096,
@@ -275,6 +292,7 @@ async fn activate(state:&AppState,id:&str,workspace:&Path,script:&Path,
                 state.bus.record("provider",&saved);
                 let active=json!({"id":"selected","adapterId":id,
                     "providerId":provider_id,"model":alias,
+                    "baseUrl":format!("http://127.0.0.1:{port}/v1"),
                     "sha256":record["adapterSha256"],
                     "evaluationSha256":record["evaluationSha256"],
                     "source":"independently_adopted_live_model_weights_v1",
