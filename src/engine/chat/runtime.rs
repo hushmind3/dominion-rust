@@ -99,9 +99,9 @@ fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
 /// unavailable call instead of using the already indexed source snapshot.
 fn rsi_edit_checkpoint_guidance(read_available: bool) -> &'static str {
     if read_available {
-        "실제 소스 근거가 있습니다. 새 지능 구조를 rsi_system_plan에 기록하세요. Rust 함수 전체는 workspace_replace_function(path,functionName,newText,expectedSha256)으로, 작은 범위는 workspace_replace(startLine,endLine,newText,expectedSha256)로 수정하세요. 제공된 sourceSha256를 사용하세요. 설명만으로 개선은 증명되지 않습니다."
+        "실제 소스 근거가 있습니다. 새 지능 구조를 rsi_system_plan에 기록하세요. Rust 함수 전체는 workspace_replace_function(path,functionName,newText,expectedSha256)으로, 작은 범위는 workspace_replace(startLine,endLine,newText,expectedSha256)로 수정하세요. 제공된 sourceSha256를 사용하세요. 이전 소스와 불일치하면 workspace_read_range로 현재 줄을 다시 확인하고 expectedSha256를 갱신하세요. 설명만으로 개선은 증명되지 않습니다."
     } else {
-        "이번 라운드는 코드 재검색이 아닌 구현 단계입니다. 새 설계는 rsi_system_plan으로 등록하고, 이미 제공된 sourceSha256 근거를 사용해 workspace_replace 또는 workspace_replace_function을 실행하세요. 새 파일은 workspace_write로 생성하세요. 컴파일 및 독립 A/B 검증은 실행기가 담당합니다."
+        "이번 라운드는 코드 재검색이 아닌 구현 단계입니다. 새 설계는 rsi_system_plan으로 등록하고, 이미 제공된 sourceSha256 근거를 사용해 workspace_replace 또는 workspace_replace_function을 실행하세요. 새 파일은 workspace_write로 생성하세요. 이 단계에서 workspace_read_range는 제공되지 않습니다. 컴파일 및 독립 A/B 검증은 실행기가 담당합니다."
     }
 }
 
