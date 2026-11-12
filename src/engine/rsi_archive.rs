@@ -94,18 +94,113 @@ fn candidate_scores(state:&AppState,candidate:&Value,base:&str,plan:&[Value],ora
     Some((id.clone(),fitness(&metrics)?))
 }
 
+/// The old coordinator accepts an archive choice produced by the newly
+/// compiled descendant, but only if the ORIGINAL independent evaluator
+/// can replay the candidate. This decouples policy evolution from evidence
+/// authority: an evolved policy may rank parents differently, but cannot
+/// invent a candidate, a baseline, or a frozen oracle.
+pub(crate) fn validate_selected(
+    state:&AppState,selection:&Value,base:&str,cases:&Value
+)->Result<(),String>{
+    if selection.is_null(){return Ok(());}
+    if !selection.is_object(){return Err("후손 아카이브 선택 형식 오류".into());}
+    let plan=rsi::case_plan(cases)
+        .map_err(|e|format!("동결 평가 사례 오류: {e}"))?;
+    let oracle=format!("{:x}",Sha256::digest(
+        include_bytes!("rsi_oracle_fixture.rs")));
+    let id=selection["candidateId"].as_str()
+        .filter(|id|!id.is_empty()).ok_or("아카이브 후보 ID 없음")?;
+    if selection["baseCommit"]!=base
+        ||selection["oracleSha256"]!=oracle
+        ||selection["adopted"]!=false
+        ||selection["qualityProven"]!=false{
+        return Err("후손 선택이 원본 기준 커밋·평가 오라클에 묶이지 않았습니다.".into());
+    }
+    let candidate=state.store.get("rsi_candidate",id)
+        .ok_or("후손이 선택한 소스 후보가 없습니다.")?;
+    let Some((verified_id,_scores))=candidate_scores(state,&candidate,base,&plan,&oracle)
+        else{return Err("후손이 선택한 탐색 부모가 독립 평가 재검증을 통과하지 못했습니다.".into())};
+    if verified_id!=id ||selection["patchSha256"]!=candidate["patchSha256"]{
+        return Err("후손 탐색 부모의 후보 ID·패치 해시가 다릅니다.".into());
+    }
+    Ok(())
+}
+
 /// Every verified stepping stone is persisted under the exact evaluation
 /// identity (base commit + case plan + oracle). Later campaigns can therefore
 /// continue the same archive instead of rebuilding it from nothing.
-fn remember(state:&AppState,identity:&str,candidate:&Value) {
-    let _=state.store.put("rsi_archive",&json!({
+fn remember(state:&AppState,identity:&str,candidate:&Value)->bool {
+    state.store.put("rsi_archive",&json!({
         "id":format!("{identity}:{}",candidate["patchSha256"].as_str().unwrap_or("")),
         "identity":identity,
         "candidateId":candidate["id"],
         "patchSha256":candidate["patchSha256"],
         "caseCount":candidate["cases"].as_array().map(Vec::len),
         "createdAt":chrono::Utc::now().to_rfc3339(),
-    }));
+    })).is_some()
+}
+
+/// A neutral patch is a stepping stone, not an adopted improvement.
+/// Credit a search-parent *hypothesis* only when its model-driven child
+/// changed the inherited patch and the server independently verified and
+/// adopted its new source. Replaying the original paired receipt is
+/// mandatory. This is observational, not a causal ablation of the parent.
+fn verified_productive_offspring(
+    state:&AppState,g:&Value,base:&str,oracle:&str
+)->bool{
+    if g["accepted"]!=true ||g["pairedMeasured"]!=true
+        ||g["pairedRevalidated"]!=true ||g["inheritedPatchChanged"]!=true
+        ||g["candidateOrigin"]!="model_driven_detached_worktree"
+        ||g["generatorCommit"]!=base
+        ||g["archiveSelection"]["baseCommit"]!=base
+        ||g["archiveSelection"]["oracleSha256"]!=oracle
+        ||g["archiveSelection"]["candidateId"]!=g["inheritedCandidateId"]
+        ||g["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees" {
+        return false;
+    }
+    let Some(id)=g["candidateId"].as_str() else{return false};
+    let Some(candidate)=state.store.get("rsi_candidate",id) else{return false};
+    candidate["status"]=="verified"
+        &&candidate["baseCommit"]==base
+        &&candidate["origin"]=="model_driven_detached_worktree"
+        &&candidate["evaluation"]["metrics"]["eligible"]==true
+        &&candidate["evaluation"]["metrics"]==g["evaluation"]["metrics"]
+        &&candidate["evaluation"]["evidenceSha256"]==g["evaluation"]["evidenceSha256"]
+        &&candidate["experimentAdoption"]["commit"]==g["acceptedCommit"]
+        &&candidate["experimentAdoption"]["generatorCommit"]==base
+        &&candidate["experimentAdoption"]["productionDeployed"]==false
+        &&rsi::verified_pair_receipt(state,&candidate)
+}
+fn offspring_priority(attempts:usize,measured_wins:usize)->f64{
+    // Bayesian smoothing avoids treating 1/1 as conclusive. Every frontier
+    // candidate first receives up to two exploration attempts.
+    (measured_wins as f64+1.0)/(attempts as f64+2.0)
+        +0.12/(attempts as f64+1.0).sqrt()
+}
+
+/// Persist the last measured generation immediately, even if the campaign
+/// stops at its token/time/attempt budget before another select() call.
+/// A later campaign must be able to recover that final verified stepping
+/// stone without needing the old campaign's in-memory history.
+pub(crate) fn persist_completed(
+    state:&AppState,generation:&Value,base:&str,cases:&Value
+)->bool{
+    if generation["accepted"]==true
+        ||generation["verification"]["checksPassed"]!=true{
+        return false;
+    }
+    let Some(id)=generation["candidateId"].as_str() else{return false};
+    let Some(candidate)=state.store.get("rsi_candidate",id) else{return false};
+    if generation["evaluation"]["evidenceSha256"]!=candidate["evaluation"]["evidenceSha256"]{
+        return false;
+    }
+    let Ok(plan)=rsi::case_plan(cases) else{return false};
+    let oracle=format!("{:x}",Sha256::digest(
+        include_bytes!("rsi_oracle_fixture.rs")));
+    if candidate_scores(state,&candidate,base,&plan,&oracle).is_none(){
+        return false;
+    }
+    remember(state,&plan_identity(base,&plan,&oracle),&candidate)
 }
 
 /// Only completed, independently evaluated candidates enter the archive. The
@@ -139,46 +234,102 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
             continue;
         };
         if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
-        remember(state,&identity,&candidate);
-        entries.push((id, candidate["patchSha256"].clone(), scores));
+        let persisted=remember(state,&identity,&candidate);
+        entries.push((id, candidate["patchSha256"].clone(), scores,persisted));
     }
     for record in state.store.all("rsi_archive") {
         if record["identity"].as_str()!=Some(identity.as_str()) {continue;}
         let Some(candidate)=record["candidateId"].as_str()
             .and_then(|id|state.store.get("rsi_candidate",id)) else {continue};
-        if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
+        // A persisted pointer is not trusted just because its candidate
+        // happens to be independently valid. Verify the exact candidate
+        // patch and archive identity before giving it search-parent credit.
+        let Some(patch)=candidate["patchSha256"].as_str() else {continue};
+        if record["patchSha256"]!=patch
+            ||record["id"]!=format!("{identity}:{patch}")
+            ||record["caseCount"].as_u64()!=Some(plan.len() as u64) {
+            continue;
+        }
         let Some((id,scores))=candidate_scores(state,&candidate,base,&plan,&oracle) else {continue};
-        entries.push((id,candidate["patchSha256"].clone(),scores));
+        if !seen.insert(patch.to_string()) {continue;}
+        entries.push((id,candidate["patchSha256"].clone(),scores,true));
     }
     let frontier = entries
         .iter()
         .filter(|entry| !entries.iter().any(|other| dominates(&other.2, &entry.2)))
         .collect::<Vec<_>>();
-    // DGM's offspring penalty explores alternative stepping stones instead
-    // of endlessly repairing the last neutral patch. Child attempts are
-    // counted across every campaign so a restarted archive keeps its credit.
-    let children = |id: &str| {
-        let mut jobs=BTreeSet::new();
-        for generation in history.iter().chain(state.store.all("rsi_generation").iter()) {
-            if generation["inheritedCandidateId"].as_str()==Some(id) {
-                if let Some(job)=generation["jobId"].as_str() {jobs.insert(job.to_string());}
+    // Count durable descendant attempts across campaigns. A worker may
+    // crash after its job was recorded but before its generation receipt
+    // exists. Such attempts must not vanish on restart and cause repeated
+    // selection of a failed stepping stone. The two records share one jobId.
+    let mut child_jobs=BTreeMap::<String,BTreeSet<String>>::new();
+    for generation in history.iter().chain(state.store.all("rsi_generation").iter()) {
+        if let (Some(parent),Some(job))=(
+            generation["inheritedCandidateId"].as_str(),
+            generation["jobId"].as_str()) {
+            if !job.is_empty() {
+                child_jobs.entry(parent.to_string()).or_default().insert(job.to_string());
             }
         }
-        jobs.len()
-    };
-    let selected = frontier.iter().min_by(|left, right| {
-        children(&left.0)
-            .cmp(&children(&right.0))
-            .then_with(|| left.0.cmp(&right.0))
+    }
+    for job in state.store.all("job") {
+        if job["kind"]!="rsi_generation" || job["input"]["rsiBaseCommit"]!=base
+            || job["input"]["rsiArchiveSelection"]["baseCommit"]!=base
+            || job["input"]["rsiArchiveSelection"]["oracleSha256"]!=oracle {
+            continue;
+        }
+        if let (Some(id),Some(job_id))=(
+            job["input"]["rsiInheritedCandidateId"].as_str(),
+            job["id"].as_str()){
+            if !job_id.is_empty()
+                && job["input"]["rsiArchiveSelection"]["candidateId"]==id{
+                child_jobs.entry(id.to_string()).or_default().insert(job_id.to_string());
+            }
+        }
+    }
+    let children=|id:&str|child_jobs.get(id).map_or(0,BTreeSet::len);
+    // Measured offspring productivity survives a campaign reset as well:
+    // historical unverified outcomes NEVER turn a neutral parent into
+    // an adopted improvement. This signal only ranks which parent to try.
+    let mut productive=BTreeMap::<String,BTreeSet<String>>::new();
+    let persisted_generations=state.store.all("rsi_generation");
+    for g in history.iter().chain(persisted_generations.iter()){
+        let Some(parent)=g["inheritedCandidateId"].as_str() else{continue};
+        if !child_jobs.contains_key(parent)
+            ||!verified_productive_offspring(state,g,base,&oracle){
+            continue;
+        }
+        if let Some(job)=g["jobId"].as_str(){
+            productive.entry(parent.to_string()).or_default().insert(job.to_string());
+        }
+    }
+    let wins=|id:&str|productive.get(id).map_or(0,BTreeSet::len);
+    let selected = frontier.iter().min_by(|left,right|{
+        let la=children(&left.0);
+        let ra=children(&right.0);
+        // Explore all verified non-dominated stepping stones before
+        // exploiting a parent with real downstream source adoptions.
+        if la<2 || ra<2 {
+            la.cmp(&ra).then_with(||left.0.cmp(&right.0))
+        }else{
+            offspring_priority(ra,wins(&right.0))
+                .total_cmp(&offspring_priority(la,wins(&left.0)))
+                .then_with(||la.cmp(&ra))
+                .then_with(||left.0.cmp(&right.0))
+        }
     });
     selected
         .map(|entry| {
             json!({
                 "candidateId":entry.0,"patchSha256":entry.1,
-                "policy":"paired-pareto-stepping-stones-v2","baseCommit":base,
+                "policy":"verified-offspring-pareto-stepping-stones-v3","baseCommit":base,
                 "oracleSha256":oracle,"archiveSize":entries.len(),"frontierSize":frontier.len(),
                 "descendantAttempts":children(&entry.0),
-                "persisted":true,"adopted":false,"qualityProven":false,
+                "independentlyAdoptedDescendants":wins(&entry.0),
+                "observedOffspringPriority":offspring_priority(
+                    children(&entry.0),wins(&entry.0)),
+                "offspringCausedByParentProven":false,
+                "persisted":entry.3,"adopted":false,"qualityProven":false,
             })
         })
         .unwrap_or(Value::Null)
@@ -275,6 +426,72 @@ mod tests {
     }
 
     #[test]
+    fn last_measured_generation_persists_without_a_following_select() {
+        let (state,root)=state();
+        let base="a".repeat(40);
+        let generation=insert(&state,"last-campaign-result",[0.53,0.52]);
+        // The campaign exits immediately after this neutral evaluation.
+        assert!(persist_completed(&state,&generation,&base,&plan()));
+        assert!(!persist_completed(&state,&generation,&"c".repeat(40),&plan()));
+        drop(state);
+        let config=Config{port:0,data_dir:root.clone(),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let restarted=AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let recovered=select(&restarted,&[],&base,&plan());
+        assert_eq!(recovered["candidateId"],generation["candidateId"]);
+        assert_eq!(recovered["persisted"],true);
+        drop(restarted);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persisted_archive_survives_store_reopen_and_counts_unfinished_child_job() {
+        let (state, root) = state();
+        let base="a".repeat(40);
+        let generation=insert(&state,"restart-child",[0.53,0.51]);
+        let selected=select(&state,&[generation],&base,&plan());
+        let id=selected["candidateId"].as_str().unwrap().to_string();
+        assert_eq!(selected["descendantAttempts"],0);
+        // This durable child was created before an interrupted worker
+        // could produce a finished rsi_generation entry.
+        state.store.put("job",&json!({
+            "id":"interrupted-descendant-1",
+            "kind":"rsi_generation","status":"running",
+            "input":{
+                "rsiBaseCommit":base,
+                "rsiInheritedCandidateId":id,
+                "rsiArchiveSelection":selected
+            }
+        })).unwrap();
+        // A superficially matching job with the wrong oracle is never
+        // charged to this frozen comparison identity.
+        state.store.put("job",&json!({
+            "id":"unrelated-child",
+            "kind":"rsi_generation","status":"completed",
+            "input":{
+                "rsiBaseCommit":base,
+                "rsiInheritedCandidateId":id,
+                "rsiArchiveSelection":{"baseCommit":base,
+                    "candidateId":id,"oracleSha256":"wrong-oracle"}
+            }
+        })).unwrap();
+        drop(state);
+        let config=Config{port:0,data_dir:root.clone(),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let resumed=AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let restored=select(&resumed,&[],&base,&plan());
+        assert_eq!(restored["candidateId"],id);
+        assert_eq!(restored["descendantAttempts"],1);
+        assert_eq!(restored["persisted"],true);
+        drop(resumed);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn archived_stepping_stone_survives_into_a_later_campaign() {
         let (state, root) = state();
         let generation = insert(&state, "persisted", [0.54, 0.51]);
@@ -288,6 +505,68 @@ mod tests {
         // A different evaluation identity must never reuse that entry.
         assert!(select(&state, &[], &"c".repeat(40), &plan()).is_null());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_parent_priority_requires_real_adopted_offspring() {
+        assert!(offspring_priority(6,4)>offspring_priority(6,0));
+        assert!(offspring_priority(4,2)>offspring_priority(4,0));
+        assert!(offspring_priority(6,0)<offspring_priority(1,0));
+        let fake=json!({"accepted":true,"pairedMeasured":true,
+            "pairedRevalidated":true,"inheritedPatchChanged":true,
+            "candidateOrigin":"native_inductive_source_mutation",
+            "generatorCommit":"a".repeat(40),
+            "inheritedCandidateId":"fake","candidateId":"fake",
+            "archiveSelection":{"baseCommit":"a".repeat(40),
+                "oracleSha256":"b".repeat(64),"candidateId":"fake"}});
+        let (state,root)=state();
+        assert!(!verified_productive_offspring(
+            &state,&fake,&"a".repeat(40),&"b".repeat(64)));
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compiled_descendant_archive_selection_requires_replayed_original_oracle() {
+        let (state,root)=state();
+        let base="a".repeat(40);
+        let g=insert(&state,"descendant-choice",[0.53,0.52]);
+        let parent=select(&state,&[g],&base,&plan());
+        assert!(validate_selected(&state,&parent,&base,&plan()).is_ok());
+        let mut changed=parent.clone();
+        changed["patchSha256"]=json!("f".repeat(64));
+        assert!(validate_selected(&state,&changed,&base,&plan()).is_err());
+        changed=parent.clone();
+        changed["oracleSha256"]=json!("e".repeat(64));
+        assert!(validate_selected(&state,&changed,&base,&plan()).is_err());
+        changed=parent.clone();
+        changed["adopted"]=json!(true);
+        assert!(validate_selected(&state,&changed,&base,&plan()).is_err());
+        assert!(validate_selected(&state,&parent,&"b".repeat(40),&plan()).is_err());
+        assert!(validate_selected(&state,&Value::Null,&base,&plan()).is_ok());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn archive_record_requires_exact_stored_patch_and_identity() {
+        let (state,root)=state();
+        let base="a".repeat(40);
+        let generation=insert(&state,"immutable-record",[0.53,0.52]);
+        let original=select(&state,&[generation],&base,&plan());
+        let key=format!("{}:{}",
+            plan_identity(&base,&rsi::case_plan(&plan()).unwrap(),
+                &format!("{:x}",Sha256::digest(include_bytes!("rsi_oracle_fixture.rs")))),
+            original["patchSha256"].as_str().unwrap());
+        let record=state.store.get("rsi_archive",&key).unwrap();
+        let mut forged=record.clone();
+        forged["patchSha256"]=json!("c".repeat(64));
+        state.store.put("rsi_archive",&forged).unwrap();
+        assert!(select(&state,&[],&base,&plan()).is_null(),
+            "An archived pointer with a changed patch hash is ineligible");
+        state.store.put("rsi_archive",&record).unwrap();
+        let restored=select(&state,&[],&base,&plan());
+        assert_eq!(restored["candidateId"],original["candidateId"]);
+        assert_eq!(restored["persisted"],true);
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]

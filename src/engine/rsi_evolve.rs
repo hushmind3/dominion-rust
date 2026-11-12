@@ -3140,10 +3140,18 @@ async fn run_loop(
                     "DOMINION 실제 소스 자기개선입니다. 현재 실행 버전에서 관측한 개발 진단: {diagnosis}\n실패 원인을 소스에서 찾아 실제 코드를 수정하세요. 예문을 하드코딩하거나 평가기·테스트·진단 코드를 수정하지 마세요. 확인 평가는 별도로 동결되어 있습니다. workspace_read_range로 해당 구현과 해시를 확인한 뒤 workspace_replace_range로 근거 있는 최소 변경을 작성하세요. 빌드와 독립 비교는 실행기가 수행합니다."));
             }
         }
-        let archive = crate::engine::rsi_archive::select(
-            &context.state, &prior_history, &head, &child_input["rsiFrozenCases"]);
-        child_input["rsiInheritedCandidateId"]=archive["candidateId"].clone();
-        child_input["rsiArchiveSelection"]=archive;
+        // Whole-system RSI delegates parent selection to the just-rebuilt
+        // descendant. A resident coordinator must not preselect a parent using
+        // its old Rust policy. Ordinary campaigns keep their existing path.
+        if input["rsiSystemEvolution"]!=true {
+            let archive=crate::engine::rsi_archive::select(
+                &context.state,&prior_history,&head,&child_input["rsiFrozenCases"]);
+            child_input["rsiInheritedCandidateId"]=archive["candidateId"].clone();
+            child_input["rsiArchiveSelection"]=archive;
+        }else{
+            child_input["rsiInheritedCandidateId"]=Value::Null;
+            child_input["rsiArchiveSelection"]=Value::Null;
+        }
         let objective = input["rsiObjective"].as_str().unwrap_or("");
         let mut allowed_campaigns = vec![context.job_id.to_string()];
         if let Some(prior)=matching_prior_campaign(&context.state,input,record) {
@@ -3496,17 +3504,12 @@ async fn run_loop(
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
             child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
-            if !plan["archiveSelection"].is_null() {
-                let id=plan["archiveSelection"]["candidateId"].as_str()
-                    .ok_or("후손 보관소 후보 ID가 없습니다.")?;
-                let candidate=context.state.store.get("rsi_candidate",id)
-                    .ok_or("후손 보관소 후보가 현재 기록에 없습니다.")?;
-                if candidate["patchSha256"]!=plan["archiveSelection"]["patchSha256"]
-                    || candidate["baseCommit"]!=head
-                    || candidate["pairedComparisonComplete"]!=true {
-                    return Err("후손 보관소 선택의 실제 패치·출처가 맞지 않습니다.".into());
-                }
-            }
+            // The descendant is free to evolve its archive ranking, but
+            // neither a copied pointer nor a plausible patch hash can bypass
+            // the old evaluator's original paired receipt and frozen oracle.
+            crate::engine::rsi_archive::validate_selected(
+                &context.state,&plan["archiveSelection"],
+                &head,&child_input["rsiFrozenCases"])?;
             child_input["rsiInheritedCandidateId"]=plan["archiveSelection"]["candidateId"].clone();
             child_input["rsiArchiveSelection"]=plan["archiveSelection"].clone();
             child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
@@ -4149,6 +4152,12 @@ async fn run_loop(
         // outcomes are complete so the next worker can actually continue.
         // A real completion timestamp is also necessary to evolve the method
         // from the latest measured outcome across restarted campaigns.
+        // Persist the neutral stepping stone even when this is the final
+        // generation and no later select() occurs. A rejected/invalid patch
+        // earns no archive credit, and storage failure is explicit.
+        generation["neutralArchivePersisted"]=json!(
+            crate::engine::rsi_archive::persist_completed(
+                &context.state,&generation,&head,&input["rsiFrozenCases"]));
         generation["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
         context.state.store.put("rsi_generation", &generation)
             .ok_or("완성된 세대의 연구·실행 결과 저장 실패")?;
@@ -4986,6 +4995,16 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .map(str::to_string);
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
     if job["input"]["rsiSystemEvolution"]==true {
+        // Recheck immediately before execution: the chosen neutral source
+        // parent must still refer to the compiled child's exact plan and
+        // the immutable original A/B evaluator's evidence.
+        let archive=&job["input"]["rsiArchiveSelection"];
+        if *archive!=job["input"]["rsiControllerPlan"]["archiveSelection"]
+            || job["input"]["rsiInheritedCandidateId"]!=archive["candidateId"] {
+            return Err("후손 보관소 계획과 실행 작업의 상속 후보가 다릅니다.".into());
+        }
+        crate::engine::rsi_archive::validate_selected(
+            &state,archive,&commit,&job["input"]["rsiFrozenCases"])?;
         let policy=crate::engine::rsi_model_lineage::plan(
             &state,&history,&job["input"],&commit)?;
         if job["input"]["rsiModelEvolutionPlan"]!=policy
