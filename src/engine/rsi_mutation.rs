@@ -397,7 +397,8 @@ pub(crate) fn induce(
                     && candidate["nativeMutation"]["beforeSha256"]==before
                     && candidate["nativeMutation"]["afterSha256"]==trial["afterSha256"]
                     && candidate["nativeMutation"]["operator"]==operator
-                    && crate::engine::rsi::replayed_pair_metrics(state,&candidate).is_some()));
+                    && (crate::engine::rsi::verify_paired_receipt(state,&candidate).is_ok()
+                        || crate::engine::rsi::verify_revisable_quality_receipt(state,&candidate).is_ok())));
     let Some((operator,transformed))=choose_transformation(&existing,measured) else {return Ok(None);};
     let receipt = json!({
         "id": job_id, "operator": operator, "sourceDir": repository,

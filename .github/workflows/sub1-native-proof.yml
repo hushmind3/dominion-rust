@@ -1,0 +1,75 @@
+name: Sub1 independently verified native RSI lineage
+
+on:
+  push:
+    branches: [dominion-sub1]
+    paths:
+      - '.github/workflows/sub1-native-proof.yml'
+      - 'scripts/sub1-native-proof.mjs'
+      - 'src/engine/rsi_mutation.rs'
+      - 'src/engine/rsi_evolve.rs'
+      - 'src/engine/rsi_worktree.rs'
+      - 'src/engine/jobs.rs'
+      - 'src/api/rsi.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sub1-native-proof-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  native-lineage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 115
+    env:
+      DOMINION_PORT: '43173'
+      DOMINION_JOB_WORKERS: '1'
+      DOMINION_EXPERIMENT_SCHEDULER: '0'
+      SUB1_NATIVE_REPORT: benchmark/sub1-native-proof-result.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build original current Sub1 binary
+        run: |
+          node --check scripts/sub1-native-proof.mjs
+          npm ci --prefix web
+          npm run build --prefix web
+          cargo build --release --locked --bin dominion-rust
+      - name: Execute native-generated source improvements with frozen paired holdouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/sub1-native-source" "$GITHUB_SHA"
+          export DOMINION_SOURCE_WORKSPACE="$RUNNER_TEMP/sub1-native-source"
+          export DOMINION_WORKSPACE="$DOMINION_SOURCE_WORKSPACE"
+          export DOMINION_DATA="$RUNNER_TEMP/sub1-native-data"
+          mkdir -p "$DOMINION_DATA"
+          ./target/release/dominion-rust > "$RUNNER_TEMP/sub1-native-engine.log" 2>&1 &
+          engine_pid=$!
+          trap 'kill "$engine_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 90); do
+            if curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health" > /dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
+          node scripts/sub1-native-proof.mjs
+      - name: Upload real source and independent holdout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sub1-native-rsi-independent-proof
+          path: |
+            benchmark/sub1-native-proof-result.json
+            ${{ runner.temp }}/sub1-native-engine.log
+          if-no-files-found: warn
