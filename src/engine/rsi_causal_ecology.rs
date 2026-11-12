@@ -265,7 +265,7 @@ mod tests{
         let second=role("tools","src/engine/tools.rs");
         let pair=json!({"source":"compiled_descendant_reciprocal_evolution_v1",
             "primary":first,"partner":second});
-        let old=design(&[],&[first.clone(),second.clone()],&pair,"a");
+        let old=design(&[],&[first.clone(),second.clone()],&pair,&"a".repeat(40));
         assert_eq!(old["phase"],"isolate_left");
         let mut parent=generation("child",&["src/engine/memory.rs"]);
         parent["accepted"]=json!(true);
@@ -274,8 +274,8 @@ mod tests{
         parent["selfControllerVerified"]=json!(true);
         parent["evaluation"]["metrics"]["eligible"]=json!(true);
         parent["systemAgenda"]["factorialExperiment"]=old;
-        parent["systemDesign"]["generatorCommit"]=json!("a");
-        parent["generatorCommit"]=json!("a");
+        parent["systemDesign"]["generatorCommit"]=json!("a".repeat(40));
+        parent["generatorCommit"]=json!("a".repeat(40));
         // Recompiled roles can now have different source revisions.
         let mut next_memory=first;
         next_memory["sourceSha256"]=json!("e".repeat(64));
@@ -302,7 +302,7 @@ mod tests{
         let frontier=vec![a.clone(),b.clone()];
         let pair=json!({"source":"compiled_descendant_reciprocal_evolution_v1",
             "primary":a,"partner":b});
-        let mut previous=design(&[],&frontier,&pair,"parent");
+        let mut previous=design(&[],&frontier,&pair,&"a".repeat(40));
         for (index,(paths,expected)) in [
             (vec!["src/engine/memory.rs"],"isolate_right"),
             (vec!["src/engine/tools.rs"],"probe_joint"),
