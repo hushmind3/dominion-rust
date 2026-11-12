@@ -3305,6 +3305,18 @@ async fn run_loop(
             crate::engine::rsi_system::validate_plan_evidence(
                 &context.state,&lab,&head,
                 child_input["rsiIndexId"].as_str().unwrap_or(""),&plan)?;
+            crate::engine::rsi_symbiosis::validate_curriculum(
+                &plan["symbioticCurriculum"],&plan["architectureTarget"],
+                plan["architectureFrontier"].as_array()
+                    .ok_or("후손 상호개선 계획의 소스 그래프가 없습니다.")?)?;
+            if plan["successorStage"].is_object()
+                && (plan["successorStage"]["source"]!=
+                    "rebound_verified_model_successor_program_v1"
+                    || plan["successorStage"]["path"]!=plan["architectureTarget"]["path"]
+                    || plan["successorStage"]["sourceSha256"]!=
+                        plan["architectureTarget"]["sourceSha256"]) {
+                return Err("후손 개선 프로그램이 현재 설계 소스와 불일치합니다.".into());
+            }
             let profile=crate::engine::rsi_meta_controller::comparison_profile(&child_input);
             crate::engine::rsi_meta_controller::validate_peer_lineages(
                 &context.state,&plan["peerLineages"],profile.as_deref(),&context.job_id)?;
@@ -3341,6 +3353,8 @@ async fn run_loop(
             child_input["rsiArchitectureFrontier"]=plan["architectureFrontier"].clone();
             child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
+            child_input["rsiSymbioticCurriculum"]=plan["symbioticCurriculum"].clone();
+            child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
             child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
@@ -3579,6 +3593,9 @@ async fn run_loop(
         generation["architectureFrontier"]=current["input"]["rsiArchitectureFrontier"].clone();
         generation["architectureTarget"]=current["input"]["rsiArchitectureTarget"].clone();
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
+        generation["symbioticCurriculum"]=current["input"]["rsiSymbioticCurriculum"].clone();
+        generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
+        generation["successorStageExecuted"]=current["rsiSuccessorStageExecuted"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
         generation["compiledPlanExecuted"]=current["rsiCompiledPlanExecuted"].clone();
         generation["inheritedMetaProgram"]=current["input"]["rsiInheritedMetaProgram"].clone();
@@ -4656,12 +4673,48 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &state,&job["input"]["rsiPeerLineages"],profile.as_deref(),&campaign)?;
         let frontier=job["input"]["rsiArchitectureFrontier"].as_array()
             .ok_or("후손 메타 학습을 재구성할 구조 탐색 근거 없음")?;
-        let expected=crate::engine::rsi_meta_controller::synthesize(
+        let base=crate::engine::rsi_meta_controller::synthesize(
             &history,frontier,DOMAINS,
             crate::engine::rsi_system::inherited_domain(&history).as_deref());
-        if job["input"]["rsiControllerPlan"]["metaPolicy"]!=expected
-            || job["input"]["rsiMetaPolicy"]!=expected {
-            return Err("후손의 메타 개선 정책이 계승된 실제 기록과 다릅니다.".into());
+        let transferred=crate::engine::rsi_meta_controller::integrate_peer_evidence(
+            base,&job["input"]["rsiPeerLineages"]);
+        let reciprocal=crate::engine::rsi_symbiosis::transition_graph(&history);
+        let adapted=crate::engine::rsi_symbiosis::apply_reciprocal_feedback(
+            transferred,&reciprocal);
+        let owner_focus=matches!(
+            job["input"]["rsiFocusSelection"]["source"].as_str(),
+            Some("owner_selected"|"user_selected"));
+        let suggested=if job["input"]["rsiAutonomous"]==true && !owner_focus
+            && !paired_descendant_target(&job["input"]) {
+            crate::engine::rsi_system::inherited_stage(&state,&history,frontier)
+        }else{Value::Null};
+        let expected=crate::engine::rsi_meta_controller::apply_successor_stage(
+            adapted,&suggested);
+        let expected_stage=if suggested.is_object()
+            && expected["successorStage"]==suggested{suggested}
+            else{Value::Null};
+        if job["input"]["rsiSuccessorStage"]!=expected_stage
+            || job["input"]["rsiControllerPlan"]["successorStage"]!=expected_stage
+            || job["input"]["rsiControllerPlan"]["metaPolicy"]!=expected
+            || job["input"]["rsiMetaPolicy"]!=expected
+            || job["input"]["rsiControllerPlan"]["symbioticCurriculum"]!=
+                job["input"]["rsiSymbioticCurriculum"] {
+            return Err("후손의 상호개선·재귀 단계·메타 방법이 계승된 실제 기록과 다릅니다.".into());
+        }
+        crate::engine::rsi_symbiosis::validate_curriculum(
+            &job["input"]["rsiSymbioticCurriculum"],
+            &job["input"]["rsiArchitectureTarget"],frontier)?;
+        if expected_stage.is_object(){
+            job["rsiSuccessorStageExecuted"]=json!({
+                "source":"running_compiled_descendant_binary",
+                "generatorCommit":commit,
+                "designId":expected_stage["designId"],
+                "stageIndex":expected_stage["stageIndex"],
+                "role":expected_stage["role"],
+                "path":expected_stage["path"],
+                "sourceSha256":expected_stage["sourceSha256"],
+                "qualityProven":false
+            });
         }
         job["rsiMetaPolicyExecuted"]=json!({
             "source":"running_compiled_descendant_binary",
@@ -4755,6 +4808,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 .map(str::to_string)).unwrap_or_default();
         let meta_instruction=crate::engine::rsi_meta_controller::instruction(
             &job["input"]["rsiMetaPolicy"]);
+        let reciprocal_method=crate::engine::rsi_symbiosis::instruction(
+            &job["input"]["rsiSymbioticCurriculum"]);
+        let inherited_stage=if job["input"]["rsiSuccessorStage"].is_object(){
+            format!("MODEL-WRITTEN NEXT DESCENDANT DEVELOPMENT METHOD: {}. The source hash and stage index were rebound by the currently rebuilt child; the expected outcome remains an unmeasured hypothesis.",
+                job["input"]["rsiSuccessorStage"])
+        }else{String::new()};
         let inherited_method=if job["input"]["rsiInheritedMetaProgram"].is_object(){
             format!("NEXT-GENERATION EXECUTABLE EDIT METHOD (inherited, still an unproven trial): {}. The runtime tool router uses this program, and observed stage receipts—not this text—establish execution.",
                 job["input"]["rsiInheritedMetaProgram"])
@@ -4770,9 +4829,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 gap["role"],gap["path"],gap["sourceSha256"],
                 gap["usageSignalIds"],gap["sourceAttempts"],gap["reason"])
         }else{String::new()};
-        format!("{}\n\n{}\n\n{}\n\n{}\n\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nOWNER OBJECTIVE: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
+        format!("{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nOWNER OBJECTIVE: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
             crate::engine::rsi_system::instruction(&blueprint,&owner),
-            meta_instruction,inherited_method,peer_context,frontier_hint,expected,owner,capsule(&observed,3500),
+            meta_instruction,reciprocal_method,inherited_stage,inherited_method,
+            peer_context,frontier_hint,expected,owner,capsule(&observed,3500),
             capsule(&research,3500),capsule(&focus,6000))
     } else {job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
