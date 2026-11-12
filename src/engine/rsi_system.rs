@@ -1191,6 +1191,22 @@ pub(crate) fn propose(
             }
         }
     }
+    // The child's actual WHOLE-DOMINION growth target is an executable
+    // source commitment. It is never satisfied by changing a planner,
+    // declaring a capability, selecting a provider, or training an unrelated
+    // local adapter. The target intelligence implementation must be changed.
+    let whole=&child["input"]["rsiSystemAgenda"]["wholeDominionGrowth"];
+    if whole["source"]=="descendant_whole_dominion_growth_v1"{
+        let path=whole["target"]["path"].as_str()
+            .ok_or("차세대 도미니언의 지능 개선 소스가 없습니다.")?;
+        let role=whole["target"]["role"].as_str()
+            .ok_or("차세대 도미니언의 실제 지능 역할이 없습니다.")?;
+        if !target_set.contains(path)
+            || !component_files[role].as_array().is_some_and(|files|
+                files.iter().any(|file|file==path)) {
+            return Err("도미니언 자신의 미해결 지능을 개선하려면 선택한 실제 구현 소스를 수정해야 합니다.".into());
+        }
+    }
     let next_files=body["nextTargetFiles"].as_array()
         .cloned().unwrap_or_default();
     if next_files.len()>3 || next_files.iter().any(|file|file.as_str()
