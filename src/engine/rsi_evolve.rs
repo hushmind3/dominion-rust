@@ -4195,7 +4195,7 @@ mod system_evolution_handoff_tests {
         let explicit=json!({"rsiSystemEvolution":true,"rsiAutonomous":false,
             "rsiObjective":"Improve memory","rsiSelectedDomain":"memory"});
         assert_eq!(system_evolution_target_hint(&explicit,1),None,
-            "the owner\'s explicit goal must outrank default improver seed");
+            "owner-defined objectives must outrank the default improver seed");
         let measured=json!({"rsiSystemEvolution":true,"rsiSourceScopeExpanded":true,
             "rsiSelectedDomain":"context",
             "rsiDecisionInput":{"basis":"independently_measured_post_adoption_target",
