@@ -11,34 +11,31 @@ name: Sub2 full-system descendant design RSI
 
 on:
   workflow_dispatch:
-  # One real-model probe when this workflow definition changes on Sub2.
-  # Ordinary code pushes continue to run only fast CI, not heavy inference.
+  # Experiment with a capable hosted model using the ephemeral Actions token.
+  # Other source changes still use the normal CI rather than implicit replays.
   push:
     branches: [dominion-sub2]
     paths:
       - .github/workflows/sub2-system-live-rsi.yml
-      - scripts/sub2-system-live-rsi.mjs
+      - scripts/sub2-github-models-rsi.mjs
 
 # Preserve each immutable full-system experiment and causal measurement.
 concurrency:
-  group: sub2-whole-system-live-${{ github.run_id }}
+  group: sub2-system-live-${{ github.run_id }}
   cancel-in-progress: false
 
 permissions:
   contents: read
+  models: read
 
 jobs:
   native-live-rsi:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      DOMINION_LIVE_MODEL: qwen3:4b-instruct
+      DOMINION_LIVE_MODEL: openai/gpt-4.1
       DOMINION_LIVE_BASE: http://127.0.0.1:44327
-      DOMINION_LIVE_OLLAMA: http://127.0.0.1:11434
       DOMINION_LIVE_TIMEOUT_MS: '3060000'
-      OLLAMA_CONTEXT_LENGTH: '16384'
-      OLLAMA_NUM_PARALLEL: '1'
-      OLLAMA_KEEP_ALIVE: '45m'
       DOMINION_PORT: '44327'
       DOMINION_JOB_WORKERS: '1'
       DOMINION_SOURCE_WORKSPACE: ${{ github.workspace }}
@@ -64,7 +61,7 @@ jobs:
           # Every measurement must derive from this immutable GitHub Actions
           # revision, not a moving branch or a stale generated worktree.
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-          node --check scripts/sub2-system-live-rsi.mjs
+          node --check scripts/sub2-github-models-rsi.mjs
           cargo build --release --locked --bin dominion-rust
 
       - name: Check source-derived descendants and compiler recovery before live inference
@@ -75,27 +72,6 @@ jobs:
           cargo test --release --locked --bin dominion-rust rsi::tests -- --nocapture
           cargo test --release --locked --bin dominion-rust architecture_frontier_rejects_unverified_adoption_and_uses_real_index -- --nocapture
           cargo test --release --locked --bin dominion-rust compiled_descendant_plans_from_its_actual_whole_source_graph -- --nocapture
-
-      - name: Install actual local inference runtime
-        run: |
-          curl -fsSL https://ollama.com/install.sh -o "${RUNNER_TEMP}/ollama-install.sh"
-          sh "${RUNNER_TEMP}/ollama-install.sh"
-          ollama --version
-          # The installer auto-starts a systemd Ollama daemon with its default
-          # 4096-token context. Stop it: a second "ollama serve" would silently
-          # fail to bind and DOMINION's 16k model calls would receive HTTP 400.
-          sudo systemctl disable --now ollama
-          nohup ollama serve > "${RUNNER_TEMP}/ollama-live.log" 2>&1 &
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then break; fi
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
-          if grep -Fq 'bind: address already in use' "${RUNNER_TEMP}/ollama-live.log"; then
-            echo "Ollama custom-context daemon failed to start" >&2
-            exit 1
-          fi
-          ollama pull "${DOMINION_LIVE_MODEL}"
 
       - name: Boot isolated DOMINION engine at same checked-out revision
         run: |
@@ -113,8 +89,10 @@ jobs:
             DOMINION_WORKSPACE="${RUNNER_TEMP}/dominion-live/workspace" \
             nohup ./target/release/dominion-rust > "${RUNNER_TEMP}/dominion-live/engine.log" 2>&1 &
 
-      - name: Execute actual model improvement and frozen native A/B
-        run: node scripts/sub2-system-live-rsi.mjs
+      - name: Execute high-capability hosted model redesign and independent native A/B
+        env:
+          DOMINION_GITHUB_MODELS_TOKEN: ${{ github.token }}
+        run: node scripts/sub2-github-models-rsi.mjs
 
       - name: Show actual source-edit and frozen evaluation receipts
         if: always()
@@ -150,7 +128,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sub2-whole-system-rsi-${{ github.run_id }}
+          name: sub2-github-models-system-rsi-${{ github.run_id }}
           if-no-files-found: warn
           retention-days: 14
           path: |
@@ -160,4 +138,3 @@ jobs:
             ${{ runner.temp }}/dominion-live/data/rsi-paired/**/report.json
             ${{ runner.temp }}/dominion-live/data/rsi-paired/**/report.json.evidence.txt
             ${{ runner.temp }}/dominion-live/engine.log
-            ${{ runner.temp }}/ollama-live.log
