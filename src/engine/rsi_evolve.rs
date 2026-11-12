@@ -3699,6 +3699,7 @@ async fn run_loop(
         generation["improvementAlgebraPlan"]=current["input"]["rsiImprovementAlgebra"].clone();
         generation["methodGeneralization"]=current["input"]["rsiMethodGeneralization"].clone();
         generation["modelEvolutionPlan"]=current["input"]["rsiModelEvolutionPlan"].clone();
+        generation["modelEvolutionPlanExecuted"]=current["rsiModelEvolutionPlanExecuted"].clone();
         generation["modelSelectionActual"]=json!({
             "providerId":current["input"]["providerId"],
             "model":current["input"]["model"],
@@ -3817,6 +3818,14 @@ async fn run_loop(
                         .store
                         .get("rsi_candidate", id)
                         .ok_or("후보 소실")?;
+                    // This bit records ACTUAL independent pair evaluation,
+                    // including rejected candidates. A self-reported patch
+                    // result or only a successful compile must not train
+                    // the next generation's model selection policy.
+                    generation["pairedMeasured"]=json!(
+                        candidate["evaluation"]["source"]==
+                            "server_invoked_local_paired_git_worktrees"
+                        && candidate["evaluation"]["metrics"].is_object());
                     let eligible = candidate["status"] == "verified"
                         && candidate["evaluation"]["metrics"]["eligible"] == true;
                     let winner = if eligible {
