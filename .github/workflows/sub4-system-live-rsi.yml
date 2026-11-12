@@ -61,6 +61,8 @@ jobs:
           node --check scripts/sub4-live-rsi.mjs
           cargo test --release --locked --bin dominion-rust new_descendant_discovers_unmodified_core_modules_from_real_index -- --nocapture
           cargo test --release --locked --bin dominion-rust compiled_descendant_plan_cannot_be_overruled_by_parent_policy -- --nocapture
+          cargo test --release --locked --bin dominion-rust bounded_focus_prefers_relevant_spans_without_full_file_retransmission -- --nocapture
+          cargo test --release --locked --bin dominion-rust rejected_or_research_only_generations_do_not_erase_verified_design -- --nocapture
           cargo build --release --locked --bin dominion-rust
       - name: Install an actual coding model with 16k context
         if: env.SUB4_MODEL_KIND == 'ollama'
