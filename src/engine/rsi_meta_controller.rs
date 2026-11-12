@@ -95,6 +95,9 @@ pub(crate) fn synthesize(
     inherited_domain:Option<&str>
 )->Value{
     let calibration=confidence_adjustment(history);
+    // The editable meta-controller consumes observed cross-role continuity.
+    // This changes the next target, not merely the successor's commentary.
+    let mutual=crate::engine::rsi_mutual_evolution::graph(history,frontier);
     let mut ranked=Vec::<(Value,f64)>::new();
     let trials=history.len() as f64;
     for target in frontier.iter().filter(|row|
@@ -168,7 +171,11 @@ pub(crate) fn synthesize(
         // UCB-style uncertainty, Bayesian shrinkage, and descendant
         // productivity provide a bounded, auditable choice. A failed edit is
         // evidence about execution feasibility, not proof the design is bad.
-        let score=0.55*probability+0.48*epistemic*calibration
+        let incoming=mutual["edges"].as_array().into_iter().flatten()
+            .filter(|edge|edge["to"]==role)
+            .filter_map(|edge|edge["priority"].as_i64()).max().unwrap_or(0);
+        let transfer_bonus=0.20*((incoming as f64)/100.0).clamp(-0.5,1.5);
+        let score=transfer_bonus+0.55*probability+0.48*epistemic*calibration
             +0.14*((trials+2.0).ln()/(attempts as f64+1.0)).sqrt()
             +coverage+inherited_bonus+0.14*clade
             -0.12*penalty-0.07*stall-0.035*cost
@@ -178,7 +185,8 @@ pub(crate) fn synthesize(
         ranked.push((json!({
             "target":target,"role":role,"domain":target["domain"],
             "sourceSha256":target["sourceSha256"],
-            "score":score,"predictedAdoptionProbability":probability,
+            "score":score,"mutualTransferPriority":incoming,
+            "predictedAdoptionProbability":probability,
             "uncertainty":epistemic*calibration,"attempts":attempts,
             "verifiedModelAdoptions":adopted,"regressions":regressions,
             "editsWithoutCandidate":fruitless,
@@ -213,6 +221,8 @@ pub(crate) fn synthesize(
         }
     }
     let target=winner["target"].clone();
+    let mutual_next=mutual["edges"].as_array().into_iter().flatten()
+        .find(|edge|edge["to"]==target["role"]).cloned().unwrap_or(Value::Null);
     let reference=history.iter().rev().filter(|g|independent_adoption(g))
         .take(2).map(|g|json!({
             "generationJobId":g["jobId"],"acceptedCommit":g["acceptedCommit"],
@@ -273,7 +283,7 @@ pub(crate) fn synthesize(
         "qualityProven":false
     });
     let serialized=json!([target,alternatives,reference,counterexamples,mode,
-        inherited_domain,history.len(),control]);
+        inherited_domain,history.len(),control,&mutual, &mutual_next]);
     let revision=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&serialized).unwrap_or_default()));
     json!({
@@ -282,6 +292,8 @@ pub(crate) fn synthesize(
         "mode":mode,"target":target,"selectionEvidence":winner,
         "alternatives":alternatives,
         "controlPolicy":control,
+        "mutualDevelopmentGraph":mutual,
+        "nextMutualRedesign":mutual_next,
         "taskOutcomeForecast":winner["outcomeForecast"],
         "forecastDrift":forecast_drift,
         "metaRepairChosen":repair_predictor
@@ -446,12 +458,16 @@ pub(crate) fn instruction(policy:&Value)->String {
         Selection mode={}; chosen intelligence subsystem={} domain={} source={} hash={}. \
         Estimated adoption chance={} uncertainty={}; this is an unproven forecast.\n\
         Predicted downstream outcomes={} and proposed executable control policy={}.\n\
+        Next mutually developing subsystem link={} (observed succession, NOT causal proof).\n\
         If mode=repair_own_prediction_mechanism, redesign the editable prediction/search rule ITSELF using observed prediction errors, not the benchmark scorer. Before editing call rsi_system_plan with expectedOutcomes probabilities (candidateCaptured, adoption, metaImprovement, regression), then let independent assessment calibrate this proposal.\n\
         Compare MULTIPLE independent earlier experiments, not one trajectory. \
         Valid successes and their descendant productivity:\n{}\n\
         Counterexamples to avoid repeating:\n{}\n\
         Author the novel executable redesign yourself, including new modules or \
-        multi-component changes. You may also edit src/engine/rsi_meta_controller.rs, \
+        multi-component changes. Explain how one changed subsystem could \
+        improve the ability of ANOTHER subsystem to make subsequent changes. \
+        For a coupled change, use component=system, components, componentFiles \
+        and successorStages so the rebuilt child can carry out the next link. You may also edit src/engine/rsi_meta_controller.rs, \
         src/engine/rsi_system.rs and the task/memory/learning/tool harness, so \
         the next compiled child changes HOW it designs improvements. \
         Explain a counterfactual or failure mode for your proposal and predict \
@@ -461,7 +477,8 @@ pub(crate) fn instruction(policy:&Value)->String {
         policy["revision"],policy["mode"],target["role"],target["domain"],
         target["path"],target["sourceSha256"],
         policy["forecast"]["acceptanceProbability"],policy["forecast"]["uncertainty"],
-        policy["taskOutcomeForecast"],policy["controlPolicy"],refs,failures
+        policy["taskOutcomeForecast"],policy["controlPolicy"],
+        policy["nextMutualRedesign"],refs,failures
     )
 }
 
