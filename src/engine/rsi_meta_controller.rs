@@ -218,6 +218,32 @@ pub(crate) fn synthesize(
     plan["revision"]=json!(revision);
     plan
 }
+/// Slow-timescale feedback is allowed to change WHAT the next compiled
+/// system improves, including revisiting a prior capability after a new
+/// complementary one is independently adopted. The algorithm lives here,
+/// in the same source that the descendant can rewrite.
+pub(crate) fn steer_reciprocal(mut policy:Value,program:&Value)->Value {
+    if !matches!(program["phase"].as_str(),Some("complement"|"return")){
+        return policy;
+    }
+    let Some(target)=policy["alternatives"].as_array().into_iter().flatten()
+        .find(|candidate|candidate["target"]["path"]==program["target"]["path"]
+            && candidate["target"]["role"]==program["target"]["role"]
+            && candidate["target"]["sourceSha256"]==program["target"]["sourceSha256"])
+        .cloned() else{return policy};
+    policy["target"]=target["target"].clone();
+    policy["prediction"]=target.clone();
+    policy["forecast"]["probability"]=target["predictedAcceptance"].clone();
+    policy["forecast"]["uncertainty"]=target["uncertainty"].clone();
+    policy["selectionMode"]=json!("reciprocal_descendant_capability_transfer");
+    policy["mutualProgramRevision"]=program["revision"].clone();
+    policy["mutualProgramPhase"]=program["phase"].clone();
+    let mut unsigned=policy.clone();
+    if let Some(map)=unsigned.as_object_mut(){map.remove("revision");}
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&unsigned).unwrap_or_default())));
+    policy
+}
 pub(crate) fn valid_policy(policy:&Value,history_count:usize)->bool {
     // The parent may enforce a content hash, but never re-run or override
     // the descendant's compiled search ranking. Hash binds the exact
