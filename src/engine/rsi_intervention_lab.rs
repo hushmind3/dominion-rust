@@ -157,6 +157,46 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
     evidence
 }
 
+/// Different source revisions must never be pooled as one factorial result.
+/// Transfer older independently measured interactions only as discounted
+/// suggestions for NEW experiments after a source rewrite.
+fn prior_interaction_hints(history:&[Value],a:&Value,b:&Value)->Value{
+    let (Some(left),Some(right))=(a["role"].as_str(),b["role"].as_str())
+        else{return json!([])};
+    let mut hints=Vec::new();
+    for g in history.iter().rev(){
+        let old=&g["factorialExperiment"]["selected"];
+        let e=&old["evidence"];
+        if g["factorialLearning"]["originalPairedReceiptReplayed"]!=true
+            || e["completeFrozenCaseBlocks"].as_u64().unwrap_or(0)<2
+            || e["observationalOnly"]!=true {continue;}
+        let direct=old["a"]["role"]==left && old["b"]["role"]==right;
+        let reverse=old["a"]["role"]==right && old["b"]["role"]==left;
+        if !direct&&!reverse{continue;}
+        let Some(effect)=e["meanInteractionContrast"].as_f64()
+            .filter(|x|x.is_finite()&&x.abs()<=2.0) else{continue};
+        let sources_same=if direct {
+            old["a"]["sourceSha256"]==a["sourceSha256"]
+                && old["b"]["sourceSha256"]==b["sourceSha256"]
+        }else {
+            old["a"]["sourceSha256"]==b["sourceSha256"]
+                && old["b"]["sourceSha256"]==a["sourceSha256"]
+        };
+        hints.push(json!({
+            "source":"discounted_prior_source_interaction_v1",
+            "earlierGeneratorCommit":g["generatorCommit"],
+            "earlierProfileSha256":g["comparisonProfileSha256"],
+            "sourceSha256Unchanged":sources_same,
+            "observedInteractionContrast":effect,
+            "relevanceWeight":if sources_same{0.5}else{0.12},
+            "qualityProvenForCurrentRevision":false,
+            "causalityProven":false
+        }));
+        if hints.len()>=3{break;}
+    }
+    json!(hints)
+}
+
 /// A general pair search over an open descendant source graph. Missing
 /// counterfactuals have information value, not fake reward. The compiled
 /// descendant controls this design and can rewrite this file next generation.
@@ -226,11 +266,18 @@ pub(crate) fn design(history:&[Value],frontier:&[Value],meta:&Value,
         let informative=trial.iter().filter(|n|**n>0).count() as f64;
         let balanced=1.0/(1.0+trial[arm] as f64);
         let coverage=evidence["completeFrozenCaseBlocks"].as_u64().unwrap_or(0);
+        let hints=prior_interaction_hints(history,&a,&b);
+        let transferred=hints.as_array().into_iter().flatten()
+            .filter_map(|row|Some(
+                row["observedInteractionContrast"].as_f64()?
+                *row["relevanceWeight"].as_f64()?))
+            .map(f64::abs).fold(0.0f64,f64::max).min(0.5);
         let confidence=coverage as f64/(coverage as f64+4.0);
         let synergy=confidence*interaction.abs().min(1.0);
         let score=0.7*informative+0.45*balanced*exploration
             +0.20*(coverage.min(8) as f64/8.0)
             +0.35*synergy*interaction_priority
+            +0.16*transferred
             +if mode=="counterexample_repair" && interaction<0.0 {
                 0.24
             }else if mode=="synergy_search" && interaction>0.0{
@@ -247,6 +294,7 @@ pub(crate) fn design(history:&[Value],frontier:&[Value],meta:&Value,
             "evidence":evidence,
             "expectedInformationGainPriority":score,
             "observedInteractionWeight":confidence,
+            "crossRevisionHypotheses":hints,
             "hypothesis":"joint_delta_minus_isolated_effects",
             "qualityProven":false,"causalityProven":false
         })));
