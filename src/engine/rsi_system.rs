@@ -12,7 +12,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
     ("improvement_methods",&["src/engine/rsi_open_program.rs","src/engine/rsi_principle_lab.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_recursive_discovery.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
-    ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/llm.rs","src/engine/router.rs","src/engine/gateway.rs"]),
+    ("models",&["src/engine/rsi_model_ecology.rs","src/engine/models.rs","src/engine/cli_model.rs","src/engine/llm.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
