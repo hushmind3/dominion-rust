@@ -137,6 +137,9 @@ impl Store {
                  detail TEXT NOT NULL,
                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
+             CREATE INDEX IF NOT EXISTS idx_audit_model_usage_session
+                 ON audit(json_extract(detail,'$.sessionId'))
+                 WHERE event='model.usage';
              CREATE TABLE IF NOT EXISTS secrets(
                  name TEXT PRIMARY KEY,
                  value TEXT NOT NULL,
@@ -1030,6 +1033,57 @@ impl Store {
         }
     }
 
+    /// The RSI verifier requires the *entire* model-usage record for its
+    /// exact generation session. recent_audit() deliberately caps global
+    /// observability at 500 and must never be used as attribution evidence.
+    /// This query is complete over the durable audit table, and errors fail
+    /// closed instead of silently removing earlier competing model calls.
+    pub fn model_usage_for_session_since(
+        &self, session_id: &str, after_rowid: i64,
+    ) -> Result<Vec<Value>, String> {
+        if session_id.is_empty() || after_rowid < 0 {
+            return Err("model usage session or start audit cursor invalid".into());
+        }
+        let conn = self.conn.lock().map_err(|e|e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT rowid, id, detail, created_at FROM audit
+             WHERE event='model.usage'
+               AND json_extract(detail,'$.sessionId')=?1
+               AND rowid>?2
+             ORDER BY rowid ASC"
+        ).map_err(|e|e.to_string())?;
+        let rows = stmt.query_map(params![session_id,after_rowid], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        }).map_err(|e|e.to_string())?;
+        let mut out=Vec::new();
+        for row in rows {
+            let (rowid,id,detail,time)=row.map_err(|e|e.to_string())?;
+            let parsed=serde_json::from_str::<Value>(&detail)
+                .map_err(|e|format!("invalid persisted model usage audit: {e}"))?;
+            if !parsed.is_object() {
+                return Err("model usage audit detail is not an object".into());
+            }
+            out.push(json!({
+                "rowid":rowid,"id":id,"event":"model.usage",
+                "detail":parsed,"createdAt":time
+            }));
+        }
+        Ok(out)
+    }
+
+    /// A monotonic SQLite audit cursor bounds the generation's real model
+    /// turn even when an owner later reuses the same session.
+    pub fn audit_rowid_cursor(&self) -> Result<i64, String> {
+        let conn=self.conn.lock().map_err(|e|e.to_string())?;
+        conn.query_row("SELECT COALESCE(MAX(rowid),0) FROM audit",[],|row|
+            row.get::<_,i64>(0)).map_err(|e|e.to_string())
+    }
+
     pub fn recent_audit(&self, limit: usize) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn
@@ -1172,6 +1226,46 @@ mod tests {
         assert!(released >= 2, "released {released}");
         assert!(store.active_lease("session:s").is_none());
         assert!(store.acquire_lease("session:s", "owner-c", 60_000).is_some());
+    }
+
+    #[test]
+    fn session_model_usage_outlives_global_500_row_audit_window() {
+        let store=Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.audit("model.usage",json!({
+            "sessionId":"generation-session","providerId":"competing",
+            "model":"alternative","purpose":"chat","totalTokens":7
+        }));
+        let cursor=store.audit_rowid_cursor().unwrap();
+        store.audit("model.usage",json!({
+            "sessionId":"generation-session","providerId":"selected",
+            "model":"primary","purpose":"chat","totalTokens":17
+        }));
+        store.audit("model.usage",json!({
+            "sessionId":"generation-session","providerId":"competing",
+            "model":"alternative","purpose":"chat","totalTokens":13
+        }));
+        store.audit("model.usage",json!({
+            "sessionId":"another-session","providerId":"other",
+            "model":"other","purpose":"chat","totalTokens":31
+        }));
+        for i in 0..715 {
+            store.audit("tool.call",json!({"index":i}));
+        }
+        assert!(store.recent_audit(800).iter().all(|row|
+            row["event"]!="model.usage"));
+        let calls=store.model_usage_for_session_since("generation-session",cursor)
+            .unwrap();
+        assert_eq!(calls.len(),2);
+        assert_eq!(calls[0]["detail"]["providerId"],"selected");
+        assert_eq!(calls[1]["detail"]["providerId"],"competing");
+        assert_eq!(calls[0]["detail"]["totalTokens"],17);
+        assert_eq!(calls[1]["detail"]["totalTokens"],13);
+        assert!(calls[0]["rowid"].as_i64().unwrap()<calls[1]["rowid"].as_i64().unwrap());
+        assert_eq!(store.model_usage_for_session_since("generation-session",0).unwrap().len(),3);
+        assert_eq!(store.model_usage_for_session_since("another-session",cursor).unwrap().len(),1);
+        assert_eq!(store.model_usage_for_session_since("none",cursor).unwrap().len(),0);
+        assert!(store.model_usage_for_session_since("",cursor).is_err());
+        assert!(store.model_usage_for_session_since("generation-session",-1).is_err());
     }
 
     #[test]
