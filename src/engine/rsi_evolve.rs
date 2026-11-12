@@ -1585,6 +1585,21 @@ fn focus_domain_hint(path:&str)->&'static str {
     else { "tools" }
 }
 
+#[cfg(test)]
+mod model_domain_learning_tests {
+    use super::*;
+    #[test]
+    fn actual_model_runtime_sources_are_separate_from_improver_sources(){
+        assert!(DOMAINS.contains(&"models"));
+        assert_eq!(focus_domain_hint("src/engine/models.rs"),"models");
+        assert_eq!(focus_domain_hint("src/engine/router.rs"),"models");
+        assert_eq!(focus_domain_hint("src/engine/rsi_improvement_algebra.rs"),
+            "improver");
+        assert!(objective_matches("models","모델 추론·라우팅을 학습 개선"));
+        assert!(!objective_matches("improver","모델 추론·라우팅을 학습 개선"));
+    }
+}
+
 /// The objective used for capability selection. Focus files are appended as
 /// capability words so the selected domain follows the user's actual target.
 fn selection_objective(input:&Value)->String {
