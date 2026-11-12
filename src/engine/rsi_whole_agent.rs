@@ -47,6 +47,86 @@ fn mapped_role(domain:&str)->&str{
         other=>other
     }
 }
+
+/// Independently measured source edits may expose negative transfer: a change
+/// to one subsystem makes another subsystem's previously passing holdout fail.
+/// Never infer a causal edge from a multi-file change, an unmatched comparison
+/// profile, a model narrative, or duplicate cases from one candidate.
+/// These are source-grounded *intervention hypotheses*, not demonstrated causes.
+/// The next compiled agent can rewrite this selection algorithm itself.
+fn cross_component_interference(
+    history:&[Value],sources:&BTreeMap<String,Value>
+)->Vec<Value>{
+    let mut cohorts=BTreeMap::<(String,String,String),std::collections::BTreeSet<String>>::new();
+    for g in history.iter().filter(|g|assessed(g)){
+        if g["candidateOrigin"]!="model_driven_detached_worktree"
+            ||g["systemDesign"]["source"]!="model_authored_system_design"
+            ||g["systemDesign"]["generatorCommit"]!=g["generatorCommit"]
+            ||g["systemDesign"]["generationJobId"]!=g["jobId"]{
+            continue;
+        }
+        let Some(candidate)=g["candidateId"].as_str().filter(|s|!s.is_empty()) else{continue};
+        let Some(job)=g["jobId"].as_str().filter(|s|!s.is_empty()) else{continue};
+        let Some(profile)=g["comparisonProfileSha256"].as_str().filter(|s|
+            s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit())) else{continue};
+        let Some(changed)=g["changedSourcePaths"].as_array().filter(|rows|rows.len()==1)
+            .and_then(|rows|rows[0].as_str())
+            .filter(|path|crate::engine::rsi::safe_path(path)) else{continue};
+        // The edited path must be the actual source anchor for exactly one
+        // currently represented intelligence role, with a matching authored
+        // component-to-file mapping. Otherwise attribution is ambiguous.
+        let mut source_roles=sources.iter().filter(|(role,source)|
+            source["path"]==changed
+                &&g["systemDesign"]["componentFiles"][role.as_str()]
+                    .as_array().is_some_and(|files|files.iter().any(|f|f==changed)));
+        let Some((source_role,_))=source_roles.next()else{continue};
+        let source_role=source_role.clone();
+        if source_roles.next().is_some(){continue;}
+        let mut affected=std::collections::BTreeSet::new();
+        for case in g["evaluation"]["metrics"]["holdoutEvidence"]
+            .as_array().into_iter().flatten(){
+            if !case["id"].as_str().is_some_and(|id|!id.is_empty()){continue;}
+            let Some(domain)=case["domain"].as_str() else{continue};
+            let target_role=mapped_role(domain);
+            if target_role==source_role || !sources.contains_key(target_role){
+                continue;
+            }
+            if case["baselinePass"]==true
+                && (case["candidatePass"]==false
+                    ||case["metricRegressions"].as_u64().unwrap_or(0)>0){
+                affected.insert(target_role.to_string());
+            }
+        }
+        for victim in affected{
+            cohorts.entry((profile.to_string(),source_role.clone(),victim))
+                .or_default().insert(format!("{job}:{candidate}"));
+        }
+    }
+    let mut rows=cohorts.into_iter().filter_map(|((profile,from,to),trials)|{
+        let source=sources.get(&from)?;
+        let victim=sources.get(&to)?;
+        Some(json!({
+            "sourceRole":from,"victimRole":to,
+            "source":source,"victim":victim,
+            "comparisonProfileSha256":profile,
+            "independentCounterexamples":trials.len(),
+            "requiredIndependentCounterexamples":2,
+            "isolatedSourceChange":true,
+            "sameFrozenComparisonProfile":true,
+            "causalAttributionProven":false,
+            "candidateInterferenceNotInheritedRegression":true
+        }))
+    }).collect::<Vec<_>>();
+    rows.sort_by(|a,b|
+        b["independentCounterexamples"].as_u64()
+            .cmp(&a["independentCounterexamples"].as_u64())
+        .then_with(||a["sourceRole"].as_str().cmp(&b["sourceRole"].as_str()))
+        .then_with(||a["victimRole"].as_str().cmp(&b["victimRole"].as_str()))
+        .then_with(||a["comparisonProfileSha256"].as_str()
+            .cmp(&b["comparisonProfileSha256"].as_str())));
+    rows.truncate(16);
+    rows
+}
 #[derive(Default)]
 struct Observed{
     tested:u64,
@@ -144,7 +224,19 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
     ranked.sort_by(|a,b|b.0.total_cmp(&a.0)
         .then_with(||b.1.cmp(&a.1))
         .then_with(||a.2["role"].as_str().cmp(&b.2["role"].as_str())));
-    let best=ranked.first().map(|row|row.2.clone()).unwrap_or(Value::Null);
+    let mut best=ranked.first().map(|row|row.2.clone()).unwrap_or(Value::Null);
+    let interference=cross_component_interference(history,&sources);
+    // Two independent, same-profile, single-source counterexamples are
+    // sufficient to prioritize a *new paired experiment*, never adoption.
+    // Pair the damaged capability with the source suspected of interfering.
+    let paired_risk=interference.iter().find(|row|
+        row["independentCounterexamples"].as_u64().unwrap_or(0)>=2);
+    if let Some(pair)=paired_risk{
+        best=json!({"role":pair["victimRole"],"target":pair["victim"],
+            "measuredHoldouts":0,"unresolvedBehavior":0,
+            "observedRegressions":0,"acceptedImprovements":0});
+    }
+    let selected_interference=paired_risk.cloned().unwrap_or(Value::Null);
     // If independent experiments repeatedly fail on a real capability,
     // the next DOMINION must invent a different improvement MECHANISM and
     // rewrite the stalled capability at the same time. More retries of the
@@ -154,7 +246,9 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
     let meta=if stalled && best["role"]!="improvement_methods" {
         sources.get("improvement_methods").cloned().unwrap_or(Value::Null)
     }else{Value::Null};
-    let phase=if stalled && meta.is_object(){
+    let phase=if paired_risk.is_some(){
+        "investigate_repeated_cross_component_negative_transfer"
+    }else if stalled && meta.is_object(){
         "invent_better_improvement_method_for_failed_intelligence"
     }else if best["unresolvedBehavior"].as_u64().unwrap_or(0)>0
         ||best["observedRegressions"].as_u64().unwrap_or(0)>0{
@@ -165,7 +259,12 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
     let mut focus=if best["target"].is_object(){
         vec![best["target"].clone()]
     }else{Vec::new()};
-    if meta.is_object()&&meta["path"]!=best["target"]["path"]{
+    if let Some(pair)=paired_risk{
+        if pair["source"].is_object()
+            &&pair["source"]["path"]!=best["target"]["path"]{
+            focus.push(pair["source"].clone());
+        }
+    }else if meta.is_object()&&meta["path"]!=best["target"]["path"]{
         focus.push(meta.clone());
     }
     let mut ledger=json!({
@@ -179,6 +278,9 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
         "failedMethodReinventionRequired":stalled,
         "capabilityLedger":ranked.into_iter().map(|row|row.2)
             .take(32).collect::<Vec<_>>(),
+        "crossComponentInterference":interference,
+        "selectedInterferenceExperiment":selected_interference,
+        "interferenceCausalityProven":false,
         "nextGenerationMustRewriteIntelligence":true,
         "newMethodMayRewriteThisPolicy":true,
         "externalOracleUnchanged":true,
@@ -232,7 +334,7 @@ pub(crate) fn instruction(p:&Value)->String{
         Actual successor growth plan: {} revision={}. \
         Edit the ACTUAL intelligence source role={} path={}. \
         Frozen behavioral deficits and cases are observable in the source-grounded \
-        capability ledger={}. Your task is to make the next recompiled DOMINION \
+        capability ledger={}. Source-grounded cross-component counterfactual={} (unproven). Your task is to make the next recompiled DOMINION \
         BETTER at solving real work AND at improving its next descendants. \
         If the cause is a failed improvement method, rewrite that method too, \
         and test both with independent heldout tasks. A patch that is adopted \
@@ -241,7 +343,8 @@ pub(crate) fn instruction(p:&Value)->String{
         cannot solve the weakness. Never substitute an API model ranking or \
         LoRA training for complete-agent self-improvement.",
         p["phase"],p["revision"],
-        p["target"]["role"],p["target"]["path"],p["capabilityLedger"])
+        p["target"]["role"],p["target"]["path"],p["capabilityLedger"],
+        p["selectedInterferenceExperiment"])
 }
 #[cfg(test)]
 mod tests{
@@ -297,6 +400,72 @@ mod tests{
         assert_eq!(p["focus"][0]["role"],"memory");
         assert_eq!(p["focus"][1]["role"],"improvement_methods");
         assert!(valid(&p,&frontier,"c",3));
+    }
+
+    fn interference_trial(name:&str,profile:&str,verified:bool)->Value{
+        let mut g=evaluation("tools",true,false);
+        g["jobId"]=json!(format!("job-{name}"));
+        g["candidateId"]=json!(format!("candidate-{name}"));
+        g["candidateOrigin"]=json!("model_driven_detached_worktree");
+        g["comparisonProfileSha256"]=json!(profile);
+        g["pairedRevalidated"]=json!(verified);
+        g["changedSourcePaths"]=json!(["src/engine/memory.rs"]);
+        g["systemDesign"]=json!({
+            "source":"model_authored_system_design",
+            "generationJobId":g["jobId"],
+            "generatorCommit":g["generatorCommit"],
+            "componentFiles":{
+                "memory":["src/engine/memory.rs"],
+                "tools":["src/engine/tools.rs"]
+            },
+            "targetFiles":["src/engine/memory.rs"]
+        });
+        g
+    }
+    #[test]
+    fn repeated_measured_negative_transfer_makes_next_child_edit_both_sources(){
+        let frontier=vec![
+            role("memory","src/engine/memory.rs"),
+            role("tools","src/engine/tools.rs"),
+            role("improvement_methods","src/engine/rsi_whole_agent.rs")];
+        let profile="c".repeat(64);
+        let history=vec![
+            interference_trial("first",&profile,true),
+            interference_trial("second",&profile,true)];
+        let result=plan(&history,&frontier,"d");
+        assert_eq!(result["phase"],
+            "investigate_repeated_cross_component_negative_transfer");
+        assert_eq!(result["target"]["role"],"tools");
+        assert_eq!(result["focus"][0]["role"],"tools");
+        assert_eq!(result["focus"][1]["role"],"memory");
+        assert_eq!(result["selectedInterferenceExperiment"]["independentCounterexamples"],2);
+        assert_eq!(result["interferenceCausalityProven"],false);
+        assert!(valid(&result,&frontier,"d",2));
+        let mut agenda=json!({"frontier":frontier,"target":Value::Null,
+            "focus":[],"inheritedStage":null});
+        apply(&mut agenda,&result);
+        assert_eq!(agenda["focus"][1]["role"],"memory");
+    }
+    #[test]
+    fn missing_receipts_different_cohorts_and_multifile_edits_cannot_invent_an_edge(){
+        let frontier=vec![role("memory","src/engine/memory.rs"),
+            role("tools","src/engine/tools.rs")];
+        let a="c".repeat(64);
+        let b="d".repeat(64);
+        let different=vec![
+            interference_trial("one",&a,true),
+            interference_trial("two",&b,true)];
+        let first=plan(&different,&frontier,"d");
+        assert!(first["selectedInterferenceExperiment"].is_null());
+        let mut multi=interference_trial("three",&a,true);
+        multi["changedSourcePaths"]=json!([
+            "src/engine/memory.rs","src/engine/tools.rs"]);
+        let mut forgery=interference_trial("four",&a,false);
+        forgery["evaluation"]["evidenceSha256"]=Value::Null;
+        let result=plan(&[different[0].clone(),multi,forgery],&frontier,"d");
+        assert!(result["selectedInterferenceExperiment"].is_null());
+        assert_ne!(result["phase"],
+            "investigate_repeated_cross_component_negative_transfer");
     }
     #[test]
     fn unverified_fake_gain_does_not_change_whole_agent_ability_ledger(){
