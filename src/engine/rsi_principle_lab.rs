@@ -12,7 +12,7 @@ use std::collections::{BTreeMap,BTreeSet};
 // including genuine child-invented modules; only the self-improver role is
 // excluded from the *task*-side of a causal A<->meta experiment.
 fn task_role(role:&str)->bool {
-    !role.is_empty() && role.len()<=96 && role!="system"
+    !role.is_empty() && role.len()<=64 && role!="system"
         && role!="improvement_methods"
         && role.bytes().all(|b|b.is_ascii_alphanumeric()
             || b==b'_'||b==b'-')
@@ -430,7 +430,7 @@ pub(crate) fn established_transfer(history: &[Value]) -> bool {
             }
             let cross_role = child["systemDesign"]["componentFiles"].as_object()
                 .is_some_and(|roles|roles.keys().any(|other|
-                    task_role(other) && other!=source_role
+                    task_role(other) && other.as_str()!=source_role
                     && role_adopted(child,other)))
                 || child["systemDesign"]["component"].as_str()
                     .is_some_and(|other|task_role(other)
