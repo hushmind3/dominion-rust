@@ -32,15 +32,20 @@ fn observed_domain(name:&str)->&str {
 }
 fn independent_use<'a>(state:&AppState,g:&'a Value,rule:&Value)
     ->Option<(Value,Value,&'a str)> {
-    let id=rule["id"].as_str().filter(|s|hash_ok(s,64))?;
+    let family=crate::engine::rsi_improvement_algebra::method_family_id(rule)?;
     let generation=g["generatorCommit"].as_str().filter(|s|hash_ok(s,40))?;
     let plan=&g["improvementAlgebraPlan"];
     if g["compiledPlanExecuted"]["source"]!="running_compiled_descendant_binary"
         || g["compiledPlanExecuted"]["generatorCommit"]!=generation
         || plan["source"]!="compiled_model_authored_improvement_algebra_v1"
         || plan["generatorCommit"]!=generation
-        || plan["selected"]["ruleId"]!=id
-        || plan["selected"]["rule"]["id"]!=id
+        // A rewrite earns a NEW evidence ID but may preserve the same
+        // source-bound semantic method family. Otherwise the learner can
+        // never compare one version of an improvement method to another.
+        || plan["selected"]["ruleId"]!=plan["selected"]["rule"]["id"]
+        || !plan["selected"]["ruleId"].as_str().is_some_and(|s|hash_ok(s,64))
+        || crate::engine::rsi_improvement_algebra::method_family_id(
+            &plan["selected"]["rule"]).as_deref()!=Some(family.as_str())
         || g["controllerPlan"]["improvementAlgebra"]["sha256"]!=plan["sha256"]
         || !plan["sha256"].as_str().is_some_and(|s|hash_ok(s,64)) {
         return None;
@@ -253,6 +258,8 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
         let transferable=(mean*(0.7+0.3*coverage)*support).clamp(-1.0,1.0);
         rows.push(json!({
             "ruleId":id,"methodRole":edited_role,
+            "methodFamilyId":crate::engine::rsi_improvement_algebra::
+                method_family_id(rule),
             "independentReplayedTrials":trials.len(),
             "adoptedDescendantTrials":adopted,
             "frozenHoldoutCases":measured,
@@ -512,6 +519,26 @@ mod tests {
         assert_eq!(evolved["selected"]["ruleId"],strong);
         assert_eq!(evolved["selected"]["target"]["path"],"src/engine/models.rs");
         assert_eq!(evolved["selected"]["qualityProven"],Value::Null);
+    }
+    #[test]
+    fn source_revision_family_matches_without_reusing_a_rule_evidence_id(){
+        let a=json!({"id":"a".repeat(64),"name":"tool_repair",
+            "premises":["memory"],"products":["tools"],
+            "methodRole":"scientific_method",
+            "method":{"path":"src/engine/rsi_improvement_algebra.rs",
+                "sourceSha256":"a".repeat(64)}});
+        let mut b=a.clone();
+        b["id"]=json!("b".repeat(64));
+        b["method"]["sourceSha256"]=json!("b".repeat(64));
+        assert_ne!(a["id"],b["id"]);
+        assert_eq!(
+            crate::engine::rsi_improvement_algebra::method_family_id(&a),
+            crate::engine::rsi_improvement_algebra::method_family_id(&b));
+        let mut altered=b.clone();
+        altered["products"]=json!(["learning"]);
+        assert_ne!(
+            crate::engine::rsi_improvement_algebra::method_family_id(&a),
+            crate::engine::rsi_improvement_algebra::method_family_id(&altered));
     }
     #[test]
     fn independently_measured_model_failure_beats_unmeasured_meta_rule(){
