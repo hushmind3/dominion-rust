@@ -14,7 +14,7 @@ const CHECK_LIMIT: Duration = Duration::from_secs(360);
 /// never main or a competing agent's branch. Legacy experiments are supported
 /// only when their source provenance is bound to that exact checkout.
 pub(crate) fn rsi_work_branch(branch: &str) -> bool {
-    matches!(branch, "dominion-champion" | "dominion-sub" | "dominion-sub3")
+    matches!(branch, "dominion-champion" | "dominion-sub")
 }
 
 /// Legacy experiments did not record a source branch. They may only be
@@ -244,12 +244,9 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     let campaign=crate::engine::rsi_evolve::campaign_source(&context.state,input,&source,base);
     if !campaign {
         let actual_branch=git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?;
-        if !rsi_work_branch(actual_branch.trim()) {
-            return Err("원본 소스가 허용된 RSI 작업 브랜치가 아닙니다.".into());
-        }
-        if input["rsiSourceBranch"].as_str()
-            .is_some_and(|recorded| !recorded.is_empty() && recorded!=actual_branch.trim()) {
-            return Err("작업 대기 중 소스 브랜치가 바뀌었습니다. 새 브랜치에서 다시 시작하세요.".into());
+        if !owns_application_branch(
+            actual_branch.trim(),input["rsiSourceBranch"].as_str()) {
+            return Err("원본 RSI 브랜치와 실험 시작 시 기록된 원본 브랜치가 일치하지 않습니다.".into());
         }
     }
     if git(&source,&["rev-parse","HEAD"]).await?.trim()!=base {
@@ -1171,7 +1168,8 @@ mod tests {
         assert!(valid_sha("1234567890abcdef1234567890abcdef12345678"));
         assert!(!valid_sha("bad"));
         assert!(rsi_work_branch("dominion-champion"));
-        assert!(rsi_work_branch("dominion-sub3"));
+        assert!(!rsi_work_branch("dominion-sub3"),
+            "another agent's branch is not a champion-owned checkout");
         assert!(rsi_work_branch("dominion-sub"));
         assert!(owns_application_branch("dominion-champion",Some("dominion-champion")));
         assert!(!owns_application_branch("dominion-champion",Some("dominion-sub3")));
@@ -1181,13 +1179,13 @@ mod tests {
             "new champion experiments require an exact recorded source branch");
         assert!(!owns_application_branch("dominion-champion",Some("")),
             "missing campaign provenance cannot authorize a source write");
-        assert!(owns_application_branch("dominion-sub3",Some("dominion-sub3")));
+        assert!(!owns_application_branch("dominion-sub3",Some("dominion-sub3")));
         assert!(!owns_application_branch("dominion-sub3",Some("dominion-sub2")));
         assert!(!owns_application_branch("dominion-sub3",None));
         assert!(!owns_application_branch("dominion-sub3",Some("")));
         assert!(owns_application_branch("dominion-sub",None));
         assert!(!owns_application_branch("main",Some("main")));
-        for forbidden in ["main","dominion-sub1","dominion-sub2","dominion-sub4","dominion-sub3-other","dominion-champion-other"] {
+        for forbidden in ["main","dominion-sub1","dominion-sub2","dominion-sub3","dominion-sub4","dominion-sub3-other","dominion-champion-other"] {
             assert!(!rsi_work_branch(forbidden), "다른 브랜치에 적용하면 안 됩니다: {forbidden}");
         }
     }
