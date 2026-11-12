@@ -486,6 +486,79 @@ mod tests {
         assert_eq!(handoff(&history)["executedProgramRewrites"],0);
     }
     #[test]
+    fn quality_learned_from_measured_task_cases_overrules_alphabetic_branch_order(){
+        let mut program=authored();
+        // Both branches are legal after adoption. A bad mechanism has the
+        // alphabetically first ID, but independently measured quality favors
+        // the other arm. No static A->B->A selector can fake that feedback.
+        program["edges"]=json!([
+            {"from":"invent","to":"new_algorithm","when":"adopted"},
+            {"from":"invent","to":"rewrite_program","when":"adopted"}
+        ]);
+        program["nodes"][1]["mechanism"]=json!("stagnant procedure without gains");
+        program["nodes"][2]["mechanism"]=json!("repair executable source with measured feedback");
+        let mut unsigned=program.clone();
+        unsigned.as_object_mut().unwrap().remove("revision");
+        program["revision"]=json!(sha(&unsigned));
+        let f=frontier();
+        let zero="0".repeat(40);let one="1".repeat(40);let two="2".repeat(40);
+        let creator=parent("creator",&one,&zero,program.clone(),Value::Null);
+        let first_plan=synthesize(&[creator.clone()],&f,
+            &["memory","improver"],&one);
+        let mut runner=parent("runner",&two,&one,Value::Null,first_plan.clone());
+        runner["metaPolicy"]=json!({
+            "selectionMode":"authored_open_improvement_program",
+            "revision":"m","openImprovementRevision":first_plan["revision"],
+            "target":first_plan["target"]
+        });
+        runner["compiledPlanExecuted"]=json!({
+            "source":"running_compiled_descendant_binary",
+            "generatorCommit":one,"metaRevision":"m",
+            "openImprovementRevision":first_plan["revision"]
+        });
+        let measured=|id:&str,mechanism:&str,after:bool|{
+            let role=if mechanism.starts_with("stagnant"){"new_role"}
+                else{"improvement_methods"};
+            let path=if role=="new_role"{"src/engine/new_role.rs"}
+                else{"src/engine/rsi_program_graph.rs"};
+            json!({
+                "id":id,"candidateId":format!("measured-{id}"),
+                "generatorCommit":zero,
+                "evaluationProfileSha256":"c".repeat(64),
+                "pairedMeasured":true,"accepted":false,
+                "changedSourcePaths":[path],
+                "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                    "metrics":{"verdict":"measured",
+                        "measurements":[{"id":"holdout-case","domain":"tools",
+                            "holdout":true,"baselinePass":false,"candidatePass":after}]}},
+                "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
+                    "generatorCommit":zero,"metaRevision":"m",
+                    "openImprovementRevision":"r"},
+                "metaPolicy":{"revision":"m","selectionMode":"authored_open_improvement_program",
+                    "target":{"path":path,"role":role},
+                    "openImprovementRevision":"r"},
+                "openImprovementProgram":{
+                    "source":"compiled_descendant_open_improvement_program_v1",
+                    "revision":"r","target":{"path":path,"role":role},
+                    "node":{"mechanism":mechanism}}
+            })
+        };
+        // Two independent trials each: one repair strategy works and the
+        // competing low-ranked mechanism yields neutral outcomes.
+        let prior=vec![
+            measured("bad-a","stagnant procedure without gains",false),
+            measured("bad-b","stagnant procedure without gains",false),
+            measured("good-a","repair executable source with measured feedback",true),
+            measured("good-b","repair executable source with measured feedback",true),
+            creator,runner];
+        let next=synthesize(&prior,&f,&["memory","improver"],&two);
+        assert_eq!(next["nodeId"],"rewrite_program",
+            "verified task quality must select the stronger evidence-backed method");
+        assert_eq!(next["principleLearningSha256"],
+            crate::engine::rsi_principle_learning::study(&prior)["sha256"]);
+        assert!(valid(&next,&prior,&f,&two));
+    }
+    #[test]
     fn no_independent_adoption_never_mints_a_next_generation_program(){
         let mut first=parent("first",&"1".repeat(40),&"0".repeat(40),
             authored(),Value::Null);
