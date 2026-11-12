@@ -76,6 +76,24 @@ pub fn definitions() -> Vec<Value> {
                     "integrationPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8}
                 },"required":["role","domain","purpose","sourcePaths","integrationPaths"],
                     "additionalProperties":false}}),
+            "openProgram":json!({"type":"object",
+                "description":"Optional original model-authored RECURSIVE improvement graph: entry node plus arbitrary role/domain/path/objective/mechanism nodes and directed outcome-labelled edges. A verified accepted source redesign makes this graph runnable by the NEXT rebuilt descendant; later generations may completely replace its nodes, edges and algorithm, including edits to rsi_program_graph.rs. No fixed A->B->A schedule is required.",
+                "properties":{
+                    "entry":{"type":"string"},
+                    "nodes":{"type":"array","minItems":1,"maxItems":24,
+                        "items":{"type":"object","properties":{
+                            "id":{"type":"string"},"role":{"type":"string"},
+                            "domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
+                            "path":{"type":"string"},"objective":{"type":"string"},
+                            "mechanism":{"type":"string"}
+                        },"required":["id","role","domain","path","objective","mechanism"],
+                        "additionalProperties":false}},
+                    "edges":{"type":"array","maxItems":64,
+                        "items":{"type":"object","properties":{
+                            "from":{"type":"string"},"to":{"type":"string"},
+                            "when":{"type":"string","enum":["adopted","improved","neutral","regressed"]}
+                        },"required":["from","to","when"],"additionalProperties":false}}
+                },"required":["entry","nodes","edges"],"additionalProperties":false}),
             "successorStages":json!({"type":"array","maxItems":8,
                 "description":"Up to eight model-designed next-generation improvement stages. A rebuilt descendant independently rebinds stage source hashes and may change the program based on verified outcomes.",
                 "items":{"type":"object","properties":{
