@@ -7,6 +7,21 @@ use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::collections::BTreeSet;
 
+/// Failed design attempts are still useful learning evidence, even when no
+/// candidate was adopted. Keep proposed roles separate from verified credit.
+fn declared_design_roles(g:&Value)->Vec<String>{
+    let design=&g["systemDesign"];
+    if design["source"]!="model_authored_system_design"
+        || design["generatorCommit"]!=g["generatorCommit"]
+        || design["generationJobId"]!=g["jobId"] {return Vec::new();}
+    let names=if design["component"]=="system"{
+        design["components"].as_array().cloned().unwrap_or_default()
+    }else{vec![design["component"].clone()]};
+    names.iter().filter_map(Value::as_str)
+        .filter(|name|matches!(*name,"algorithms"|"harness"|"memory"|
+            "learning"|"tools"|"improvement_methods"|"model_architecture"|"frontend"))
+        .map(str::to_string).collect()
+}
 fn model_design_roles(g:&Value)->Vec<String>{
     let design=&g["systemDesign"];
     if design["source"]!="model_authored_system_design"
@@ -44,7 +59,7 @@ fn independent_adoption(g:&Value)->bool{
                         sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())))))
 }
 fn role_touched(g:&Value,role:&str)->bool{
-    model_design_roles(g).iter().any(|name|name==role)
+    declared_design_roles(g).iter().any(|name|name==role)
         || g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
             && g["metaPolicy"]["target"]["role"]==role
 }
@@ -152,9 +167,9 @@ pub(crate) fn synthesize(
             "productiveDescendants":next_generation_productivity(history,g)
         })).collect::<Vec<_>>();
     let counterexamples=history.iter().rev().filter(|g|
-        g["accepted"]!=true && !model_design_roles(g).is_empty())
+        g["accepted"]!=true && !declared_design_roles(g).is_empty())
         .take(3).map(|g|json!({
-            "generationJobId":g["jobId"],"roles":model_design_roles(g),
+            "generationJobId":g["jobId"],"roles":declared_design_roles(g),
             "failureKind":failure_kind(g),
             "sourceTarget":g["systemDesign"]["targetFiles"],
             "hypothesis":g["systemDesign"]["hypothesis"].as_str().unwrap_or("")

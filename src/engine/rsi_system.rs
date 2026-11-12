@@ -34,7 +34,7 @@ fn last_verified_system_design(history: &[Value]) -> Option<&Value> {
             && design["generatorCommit"] == generation["generatorCommit"]
             && design["generationJobId"] == generation["jobId"]
             && design["targetFiles"].as_array().is_some_and(|paths| {
-                paths.iter().all(|entry| entry.as_str().is_some_and(|path| {
+                !paths.is_empty() && paths.iter().all(|entry| entry.as_str().is_some_and(|path| {
                     generation["acceptedSourceHashes"][path].as_str()
                         .is_some_and(|hash| hash.len() == 64
                             && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
@@ -126,7 +126,11 @@ pub(crate) fn architecture_frontier(
             .filter_map(Value::as_str) {
             *attempts.entry(path.to_string()).or_default()+=1;
         }
-        if generation["accepted"]!=true || generation["pairedRevalidated"]!=true {
+        if generation["accepted"]!=true || generation["pairedRevalidated"]!=true
+            || generation["candidateOrigin"]!="model_driven_detached_worktree"
+            || generation["systemDesign"]["source"]!="model_authored_system_design"
+            || generation["systemDesign"]["generatorCommit"]!=generation["generatorCommit"]
+            || generation["systemDesign"]["generationJobId"]!=generation["jobId"] {
             continue;
         }
         let Some(candidate)=generation["candidateId"].as_str()
@@ -143,8 +147,14 @@ pub(crate) fn architecture_frontier(
                     && hash.bytes().all(|b|b.is_ascii_hexdigit())) else{continue};
             for component in blueprint["architecture"].as_array().into_iter().flatten(){
                 let Some(role)=component["role"].as_str() else{continue};
-                if component["representativeSources"].as_array().into_iter().flatten()
-                    .any(|item|item["path"]==path) {
+                let mapped=generation["systemDesign"]["componentFiles"][role]
+                    .as_array().is_some_and(|files|
+                        files.iter().any(|file|file.as_str()==Some(path)));
+                let legacy_single=generation["systemDesign"]["component"]==role
+                    && generation["systemDesign"]["componentFiles"].is_null();
+                if (mapped || legacy_single)
+                    && component["representativeSources"].as_array().into_iter().flatten()
+                        .any(|item|item["path"]==path) {
                     // The SHA is an independently adopted source receipt.
                     // Subsequent changes to this module do not erase
                     // independently verified historical coverage.
