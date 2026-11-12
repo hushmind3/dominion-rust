@@ -4193,6 +4193,7 @@ async fn run_loop(
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
+        generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
         generation["metaControlPolicy"]=current["input"]["rsiMetaActionPolicy"].clone();
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["comparisonProfileSha256"]=json!(
@@ -5527,6 +5528,21 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &state,&blueprint,&history,
             job["input"]["rsiIndexId"].as_str().unwrap_or(""),
             Path::new(job["input"]["rsiSourceDir"].as_str().unwrap_or("")));
+        // Recompute the meta policy FROM THIS COMPILED CHILD, against the
+        // actual indexed source and durable lineage. Planner JSON alone is
+        // never authority to change the worker's tool and edit behavior.
+        let inherited=crate::engine::rsi_system::inherited_domain(&history);
+        let expected_meta=crate::engine::rsi_meta_controller::synthesize(
+            &history,&frontier,DOMAINS,inherited.as_deref());
+        let expected_target=if expected_meta["target"].is_object(){
+            expected_meta["target"].clone()
+        }else{frontier.first().cloned().unwrap_or(Value::Null)};
+        let expected_peers=crate::engine::rsi_meta_controller::peer_lineages(
+            &state,campaign,&job["input"],expected_target["role"].as_str());
+        crate::engine::rsi_meta_controller::validate_peer_lineages(
+            &state,&plan["peerLineages"],
+            crate::engine::rsi_meta_controller::comparison_profile(&job["input"]).as_deref(),
+            campaign)?;
         let domain=plan["domain"].as_str().filter(|v|DOMAINS.contains(v))
             .ok_or("후손이 계획한 개선 분야가 유효하지 않습니다.")?;
         let selection=match plan["selection"].as_str() {
@@ -5541,7 +5557,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || plan["historyCount"].as_u64()!=Some(history.len() as u64)
             || plan["systemBlueprint"]!=blueprint
             || plan["architectureFrontier"]!=json!(frontier)
-            || plan["architectureTarget"]!=frontier.first().cloned().unwrap_or(Value::Null)
+            || plan["metaPolicy"]!=expected_meta
+            || plan["metaActionPolicy"]!=expected_meta["controlPolicy"]
+            || plan["peerLineages"]!=expected_peers
+            || plan["architectureTarget"]!=expected_target
+            || job["input"]["rsiMetaPolicy"]!=plan["metaPolicy"]
+            || job["input"]["rsiMetaActionPolicy"]!=plan["metaActionPolicy"]
+            || job["input"]["rsiPeerLineages"]!=plan["peerLineages"]
             || plan["successorStage"]!=crate::engine::rsi_system::inherited_stage(
                 &history,&frontier).unwrap_or(Value::Null)
             || job["input"]["rsiSuccessorStage"]!=plan["successorStage"]
@@ -5555,12 +5577,17 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }
         job["rsiSystemBlueprintVerified"]=json!(true);
         job["rsiImprovementDirectiveVerified"]=json!(true);
+        job["rsiMetaPolicyExecuted"]=json!(true);
         state.store.audit("rsi.descendant_system_runtime",json!({
             "jobId":job_id,"generatorCommit":commit,
             "source":"rebuilt_child_verified_against_current_source_graph",
             "sourceTreeSha256":blueprint["sourceTreeSha256"],
             "architectureComponents":blueprint["architecture"].as_array().map(Vec::len).unwrap_or(0),
-            "decision":directive["mode"]
+            "decision":directive["mode"],
+            "metaPolicyRevision":expected_meta["revision"],
+            "metaSource":expected_meta["metaMechanismSource"],
+            "metaActionPolicy":expected_meta["controlPolicy"],
+            "forecast":expected_meta["taskOutcomeForecast"]
         }));
         (domain.to_string(),selection,strategy)
     } else {
@@ -5633,6 +5660,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &json!({"labDir":job["input"]["rsiSourceDir"]}),&job["input"]);
         let research=job["input"]["rsiPromptResearch"].as_str().unwrap_or("")
             .chars().take(1100).collect::<String>();
+        let meta_instruction=crate::engine::rsi_meta_controller::instruction(
+            &job["input"]["rsiMetaPolicy"]);
+        let peer_instruction=crate::engine::rsi_meta_controller::peer_instruction(
+            &job["input"]["rsiPeerLineages"]);
         let target=job["input"]["rsiDescendantPlan"]["architectureTarget"].clone();
         let inherited_step=job["input"]["rsiSuccessorStage"].clone();
         let inherited_task=if let Some(objective)=inherited_step["objective"].as_str(){
@@ -5649,8 +5680,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "qualityProven":false
         }));
         format!("{}\n\nNEXT SOURCE-EDIT ACTION: {}\n\nREAL PREDECESSOR RESULTS:\n{}\n\nTARGET COMPONENT IN MY COMPILED PLAN: {}\n\nCURRENT SOURCE WITH REAL LINE NUMBERS AND sourceSha256:\n{}\n\nPRIOR RESEARCH (not current source):\n{}\n\nYou have the current source now. Start with rsi_system_plan and perform a concrete workspace_replace or workspace_replace_function on the indicated file. Do not loop over code_search or workspace_read_range when the source excerpt is sufficient.",
-            crate::engine::rsi_system::instruction(
+            format!("{}\n\n{}\n{}",crate::engine::rsi_system::instruction(
                 &job["input"]["rsiSystemBlueprint"],&objective),
+                meta_instruction,peer_instruction),
             job["input"]["rsiImprovementDirective"],feedback,target,
             current_source,format!("{research}{inherited_task}"))
     }else{
