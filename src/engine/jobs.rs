@@ -628,6 +628,10 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         if let Some(mut session)=context.state.store.get("session",&session_id) {
             session["rsiRun"]=json!(true);
             session["rsiSystemEvolution"]=input["rsiSystemEvolution"].clone();
+            // The current compiled descendant chose this executable,
+            // receipt-derived tool/edit/repair policy; runtime and verifier
+            // must use the exact selected revision.
+            session["rsiEditPolicy"]=input["rsiEditPolicy"].clone();
             // Accepted predecessor intent is carried to the actual runtime
             // session; the tool gateway and edit scheduler consume it.
             session["rsiSuccessorStage"]=input["rsiSuccessorStage"].clone();
@@ -763,7 +767,10 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     let result = if let Some(worktree)=&rsi_workspace {
         // At most 2 model repair calls after a grounded verifier failure.
         // All attempts share the same detached worktree and model selection.
-        const MAX_REPAIRS:usize=2;
+        let max_repairs=if input["rsiSystemEvolution"]==true {
+            input["rsiEditPolicy"]["repairLimit"].as_u64()
+                .unwrap_or(2).min(3) as usize
+        }else{2};
         let mut attempts=Vec::<Value>::new();
         let mut no_edit_retried=false;
         let mut failed_edit_retried=false;
@@ -772,7 +779,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             context,&prepared_job,worktree,message,&session_id
         ).await;
         let mut compiler_repairs=Vec::<Value>::new();
-        for revision in 0..=MAX_REPAIRS {
+        for revision in 0..=max_repairs {
             // Bring the compiler's machine-applicable suggestions into the
             // same detached worktree BEFORE another expensive model call.
             // Never treat rustc repair as proof of better source behavior.
@@ -805,7 +812,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                         json!({"jobId":context.job_id,"error":error})),
                 }
             }
-            if revision==MAX_REPAIRS {break;}
+            if revision==max_repairs {break;}
             let Some(prior)=finished.as_ref().ok() else {break;};
             let compiler_feedback=crate::engine::rsi_worktree::repair_feedback(prior);
             let session=context.state.store.get("session",&session_id)
@@ -872,7 +879,8 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 && result["rsi"]["diffBytes"].as_u64().unwrap_or(0)==0
                 && result["rsi"]["sourceClean"]==true);
         if input["rsiSystemEvolution"]!=true && model_failed_to_edit
-            && input["rsiFailedPatchRecovery"]["candidateId"].is_null() {
+            && input["rsiFailedPatchRecovery"]["candidateId"].is_null()
+            && input["rsiInheritedCandidateId"].is_null() {
             match crate::engine::rsi_mutation::induce(
                 &context.state,&context.job_id,&input,&worktree.source,&worktree.path
             ) {
