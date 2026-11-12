@@ -976,6 +976,12 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }
     }
     let limits = limits(&input["limits"])?;
+    if input["rsiAllowModelEvolution"]==true {
+        // Fail before cloning a worktree or paying for a model call if the
+        // owner-approved model comparison pool cannot actually run.
+        crate::engine::rsi_model_lineage::plan(
+            &context.state,&[],input,base)?;
+    }
     let parent = context.state.config.data_dir.join("rsi-labs");
     std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
     let parent = std::fs::canonicalize(parent).map_err(|e| e.to_string())?;
