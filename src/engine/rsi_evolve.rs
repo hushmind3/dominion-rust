@@ -3033,6 +3033,9 @@ async fn run_loop(
             crate::engine::rsi_system::validate_plan_evidence(
                 &context.state,&lab,&plan,
                 child_input["rsiIndexId"].as_str().unwrap_or(""))?;
+            crate::engine::rsi_model_ecology::validate(
+                &context.state,&plan["modelPolicy"],input,
+                plan["domain"].as_str().unwrap_or(""),&head)?;
             crate::engine::rsi_lineage_transfer::validate(
                 &context.state,&plan["peerLineages"],&context.job_id,
                 &child_input,child_input["rsiIndexId"].as_str().unwrap_or(""))?;
@@ -3053,6 +3056,14 @@ async fn run_loop(
             child_input["rsiSymbioticCurriculum"]=plan["symbioticCurriculum"].clone();
             child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
             child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
+            child_input["rsiModelEcologyPolicy"]=plan["modelPolicy"].clone();
+            if plan["modelPolicy"]["active"]==true {
+                child_input["providerId"]=plan["modelPolicy"]["selected"]["providerId"].clone();
+                child_input["model"]=plan["modelPolicy"]["selected"]["model"].clone();
+                // LoRA evaluated against its base model cannot silently
+                // replace an actual external API model actor.
+                child_input["rsiSelectedAdapter"]=Value::Null;
+            }
             child_input["rsiDescendantPlan"]=plan.clone();
             record["nextGenerationPlan"]=plan.clone();
             descendant_plan=plan;
@@ -3347,6 +3358,8 @@ async fn run_loop(
             .extend(generation_details.as_object().expect("generation details object").clone());
         generation["requestedModel"]=input["model"].clone();
         generation["adaptedModelActuallyUsed"]=current["rsiAdapterInferenceExecuted"].clone();
+        generation["modelEcologyPolicy"]=current["input"]["rsiModelEcologyPolicy"].clone();
+        generation["modelEcologyExecuted"]=current["rsiModelEcologyExecuted"].clone();
         generation["sourceModelSelection"]=current["input"]["rsiSelectedAdapter"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
@@ -4310,6 +4323,8 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     }else{inherited.clone()};
     let (domain,selection,strategy)=select_generation_strategy(
         &state,&history,&objective,None,None,selected,revision);
+    let model_policy=crate::engine::rsi_model_ecology::plan(
+        &state,&history,&parent["input"],&domain,revision);
     let mut focus=parent["input"].clone();
     focus["rsiTargetDomain"]=json!(domain);
     focus["rsiIndexId"]=campaign["planIndexId"].clone();
@@ -4401,6 +4416,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         "rankedFiles":ranked,"systemBlueprint":blueprint,
         "architectureFrontier":frontier,
         "architectureTarget":architecture_target,
+        "modelPolicy":model_policy,
         "metaPolicy":meta,
         "peerLineages":peers,"comparativeMode":comparative_mode,
         "successorStage":stage,"editPolicy":descendant_policy,
@@ -4551,6 +4567,20 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         "jobId":job_id,"generatorCommit":commit,"method":descendant_method,
     }));
     if compiled_plan.is_some() {
+        let policy=&job["input"]["rsiModelEcologyPolicy"];
+        if policy.is_object() {
+            crate::engine::rsi_model_ecology::validate(
+                &state,policy,
+                &state.store.get("job",campaign)
+                    .ok_or("원본 자동 개선 작업 없음")?["input"],
+                &domain,&commit)?;
+            if policy["active"]==true {
+                if job["input"]["providerId"]!=policy["selected"]["providerId"]
+                    ||job["input"]["model"]!=policy["selected"]["model"] {
+                    return Err("후손 실행 모델과 컴파일된 모델 정책이 다릅니다.".into());
+                }
+            }
+        }
         job["rsiCompiledPlanExecuted"]=json!({
             "source":"running_compiled_descendant_binary",
             "generatorCommit":commit,
@@ -4602,6 +4632,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiMetaPolicy"]);
         let principle_directive=crate::engine::rsi_principle_learning::instruction(
             &job["input"]["rsiMetaPolicy"]);
+        let actor_directive=crate::engine::rsi_model_ecology::instruction(
+            &job["input"]["rsiModelEcologyPolicy"]);
         let peer_context=crate::engine::rsi_lineage_transfer::instruction(
             &job["input"]["rsiPeerLineages"]);
         let mutual_context=crate::engine::rsi_symbiosis::instruction(
@@ -4615,7 +4647,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 stage["path"],stage["sourceSha256"],stage["learningPolicy"],
                 stage["toolPolicy"],stage["executionPolicy"])
         }else{String::new()};
-        format!("{directive}\n{meta_directive}\n{recursive_directive}\n{principle_directive}\n{peer_context}\n{mutual_context}\n{factorial_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+        format!("{directive}\n{meta_directive}\n{recursive_directive}\n{principle_directive}\n{actor_directive}\n{peer_context}\n{mutual_context}\n{factorial_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
         &system_prompt, &domain, &capability,
@@ -4654,6 +4686,16 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         state.store.put("job",&job).ok_or("채택 모델 추론 경로 저장 실패")?;
     }
     let result = jobs::run_prompt(&context, &job).await;
+    // Count actual provider-specific inference calls made by this
+    // descendant, not the model's declaration or the plan's intent.
+    if job["input"]["rsiModelEcologyPolicy"]["active"]==true {
+        let finished=state.store.get("job",job_id)
+            .ok_or("후손 모델 실제 호출 기록을 읽지 못했습니다.")?;
+        let receipt=crate::engine::rsi_model_ecology::executed(&state,&finished);
+        let mut updated=finished;
+        updated["rsiModelEcologyExecuted"]=receipt;
+        state.store.put("job",&updated).ok_or("후손 모델 호출 증거 저장 실패")?;
+    }
     // A running HTTP server is not proof that the source-writing agent
     // actually invoked its weights. Attribute only provider-specific,
     // session-specific recorded inference calls after the turn ends.

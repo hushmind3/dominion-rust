@@ -373,6 +373,14 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         // Data must additionally be staged in the separately approved
         // training area and independently hashed before any weight update.
         "rsiAllowLocalAdapterTraining": continuous && body["allowLocalAdapterTraining"] == true,
+        // Automatic model/harness evolution is a distinct choice from
+        // opt-in LoRA weight training and does not alter API model weights.
+        "rsiModelEvolution": continuous && body["selectionPolicy"] == "automatic"
+            && body["modelEvolution"] == true,
+        "rsiModelProviderAllowlist":body["modelProviderAllowlist"]
+            .as_array().map(|items|items.iter().filter_map(Value::as_str)
+                .filter(|id|!id.is_empty() &&id.len()<=128)
+                .take(16).collect::<Vec<_>>()).unwrap_or_default(),
         // Only explicitly opted-in automatic campaigns may broaden the
         // source search after independent adoption of the original goal.
         "rsiExpandAfterGain": continuous && body["expandAfterGain"] == true
