@@ -53,7 +53,9 @@ async function main(){
     contextTokens:16384
   });
   if(!provider.id)throw Error('Provider registration did not persist');
-  const request='DOMINION 자기개선기가 기존 코드를 개선하여 3세대 독립 검증과 후손 계승을 달성한다. 1세대는 기억 영역의 실제 호출 비용을 줄인다. 다음 세대는 개선기 자체의 탐색 알고리즘을 더 효율적으로 발전시킨다. 마지막에는 개선된 후손이 기억 영역으로 새 능력을 전이한다. 모든 세대의 실제 코드 변경·성능·커밋·바이너리를 독립 검증하고 실패는 개선으로 보고하지 않는다.';
+  // Reuse the exact objective of the previously independently
+  // measured three-generation native source improvement sequence.
+  const request="DOMINION 자기개선기가 실제로 더 나은 알고리즘을 만들고 기억 능력으로 전이하여 독립 검증된 3세대 연속 채택을 달성하세요. 첫 세대는 src/engine/room_state.rs의 저장된 주인 사실을 반복 검증하는 비용을 줄이는 실행 가능한 소스 변형을 찾으세요. 다음 세대에는 src/engine/rsi_evolve.rs의 자기개선 후보 선택을 위한 반복 통계 순회와 중복 영역 판별을 줄이는 새 계산 원리를 생성하세요. 후속 세대는 실제로 재빌드된 개선기가 다시 src/engine/room_state.rs의 동일 질문 반복 분석 또는 저장된 사실의 불변 특징 재계산을 최적화하세요. 선택은 각 세대가 기존 실행 결과와 실제 코드의 구조를 근거로 하며 다른 능력 영역으로의 전이는 동결된 독립 평가 개선과 무회귀가 입증될 때만 인정하세요. 모든 세대에서 소스 변경, 독립 A/B 측정, 채택 커밋, 새로운 개선기 바이너리를 실제로 기록하세요. 특정 소스 형태가 사라졌다면 더 나은 대안을 생성하고 검증하며 효과 없는 시도를 개선으로 보고하지 마세요.";
   const job=await call('/api/rsi/start','POST',{
     mode:'continuous',confirmation:'START_RSI_EVOLUTION',
     providerId:provider.id,model:'native-unused',selectionPolicy:'automatic',
