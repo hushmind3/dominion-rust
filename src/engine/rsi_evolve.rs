@@ -3026,6 +3026,8 @@ async fn run_loop(
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
             child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
+            child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
+            child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
             record["nextGenerationPlan"]=plan.clone();
             descendant_plan=plan;
@@ -3321,6 +3323,10 @@ async fn run_loop(
         generation["compiledPlanExecuted"]=current["rsiCompiledPlanExecuted"].clone();
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
+        generation["comparisonProfileSha256"]=json!(
+            crate::engine::rsi_lineage_transfer::profile(&current["input"]));
+        generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
+        generation["comparativeMode"]=current["input"]["rsiComparativeMode"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
@@ -3820,6 +3826,8 @@ fn compiled_system_target(
         || plan["attempt"].as_u64() != Some(history_len as u64 + 1)
         || plan["systemBlueprint"] != input["rsiSystemBlueprint"]
         || plan["metaPolicy"] != input["rsiMetaPolicy"]
+        || plan["peerLineages"] != input["rsiPeerLineages"]
+        || plan["comparativeMode"] != input["rsiComparativeMode"]
         || plan["systemBlueprint"]["generatorCommit"] != commit
         || input["rsiTargetPlan"] != expected
         || input["rsiTargetDomain"] != domain
@@ -4132,6 +4140,17 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
             ranked.truncate(3);
         }
     }
+    let mut peer_input=parent["input"].clone();
+    peer_input["rsiIndexId"]=campaign["planIndexId"].clone();
+    let peers=crate::engine::rsi_lineage_transfer::peers(
+        &state,campaign_id,&peer_input,
+        campaign["planIndexId"].as_str().unwrap_or(""),
+        architecture_target["role"].as_str());
+    let comparative_mode=if peers["references"].as_array().is_some_and(|v|!v.is_empty()){
+        "cross_lineage_design"
+    }else if meta["counterexamples"].as_array().is_some_and(|v|v.len()>=2){
+        "multi_trajectory_design"
+    }else{"local_redesign"};
     let plan=json!({
         "source":"compiled_descendant_system_plan_v1",
         "generatorCommit":revision,"campaignId":campaign_id,
@@ -4142,6 +4161,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         "architectureFrontier":frontier,
         "architectureTarget":architecture_target,
         "metaPolicy":meta,
+        "peerLineages":peers,"comparativeMode":comparative_mode,
         "sourceTreeSha256":blueprint["sourceTree"]["sourceTreeSha256"],
         "decisionOwner":"rebuilt_compiled_descendant"
     });
@@ -4201,6 +4221,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
     let compiled_plan=compiled_system_target(&job,&commit,history.len())?;
     if compiled_plan.is_some() {
+        crate::engine::rsi_lineage_transfer::validate(
+            &state,&job["input"]["rsiPeerLineages"],
+            job["input"]["rsiCampaignId"].as_str().unwrap_or(""),
+            &job["input"],job["input"]["rsiIndexId"].as_str().unwrap_or(""))?;
         let refreshed_history=crate::engine::rsi_system::revalidated_history(&state,&history);
         let root=Path::new(job["input"]["rsiSourceDir"].as_str()
             .ok_or("후손 소스가 없습니다.")?);
@@ -4324,7 +4348,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }else{String::new()};
         let meta_directive=crate::engine::rsi_meta_controller::instruction(
             &job["input"]["rsiMetaPolicy"]);
-        format!("{directive}\n{meta_directive}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+        let peer_context=crate::engine::rsi_lineage_transfer::instruction(
+            &job["input"]["rsiPeerLineages"]);
+        format!("{directive}\n{meta_directive}\n{peer_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
         &system_prompt, &domain, &capability,
