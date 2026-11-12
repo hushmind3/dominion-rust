@@ -118,6 +118,11 @@ pub fn definitions() -> Vec<Value> {
                 "maxRetries":{"type":"integer","minimum":0,"maximum":8}
             },"required":["role","domain","path","objective"]}})
         }),vec!["component","hypothesis","design","targetFiles","nextDomain"])),
+        tool("rsi_model_adapter", "Real local language-model parameter learning in owner-approved RSI campaigns. Stages: check approved train/hidden holdout manifest; train LoRA weights; independently assess blind baseline-vs-adapter predictions in two capability domains; activate ONLY independently adopted weights through a real local OpenAI-compatible inference provider. Requires explicit owner training approval and separate deployment approval. No quality is inferred from training alone.", object(json!({
+            "mode":json!({"type":"string","enum":["check","train","assess","activate"],
+                "description":"Training/independent evaluation/deployment lifecycle stage"}),
+            "manifestName":text("Owner-approved manifest filename located in protected rsi-training-approved data directory; NOT an editable source path")
+        }),vec!["mode","manifestName"])),
         tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({
             "name":text("Reusable method name"),
             "description":text("Principle, source and limits of the method"),
@@ -163,11 +168,12 @@ pub fn requires_approval(name: &str) -> bool {
             | "terminal_exec"
             | "github_api"
             | "browser_control"
+            | "rsi_model_adapter"
     )
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"workspace_replace_function"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose"|"rsi_system_plan")
+    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"workspace_replace_function"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose"|"rsi_system_plan"|"rsi_model_adapter")
 }
 
 pub async fn execute(
@@ -449,6 +455,8 @@ pub async fn execute(
         }
         "rsi_method_propose" => crate::engine::rsi_evolve::propose_method(ctx.state, ctx.session_id, args),
         "rsi_system_plan" => crate::engine::rsi_system::propose(ctx.state, ctx.session_id, args),
+        "rsi_model_adapter" => crate::engine::rsi_weight_cycle::tool(
+            ctx.state,ctx.session_id,ctx.workspace,args).await,
         "algorithm_propose" => {
             let session = ctx
                 .store
