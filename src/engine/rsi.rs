@@ -620,7 +620,7 @@ mod tests {
                 "oracleVersion":"frozen-v1","cases":plan,
                 "experimentAdoption":{"commit":revisions[i+1]},
                 "evaluation":{"id":evaluation_id,"source":"server_invoked_local_paired_git_worktrees",
-                    "evidenceSha256":"a".repeat(64),"reportSha256":"a".repeat(64),
+                    "evidenceSha256":"a".repeat(64),
                     "verdict":"improved","metrics":metrics}}));
             state.store.put("rsi_pair",&json!({"id":format!("rsi-pair-{id}"),
                 "candidateId":id,"evidenceSha256":"a".repeat(64),
