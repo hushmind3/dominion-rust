@@ -5781,6 +5781,11 @@ fn compiled_system_generation_plan(
         return Err("컴파일된 후손 계획의 revision 또는 시스템 모드가 올바르지 않습니다.".into());
     }
     let root=Path::new(input["rsiSourceDir"].as_str().unwrap_or(""));
+    // Derive the entire compiled successor plan from replayed immutable
+    // experimental observations, not stored success/failure labels.
+    let audited_history=crate::engine::rsi_system::revalidated_method_history(
+        state,history);
+    let history=audited_history.as_slice();
     let blueprint=crate::engine::rsi_system::blueprint(root,commit,history);
     if blueprint["sourceTreeSha256"].as_str().is_none_or(|s|s.len()!=64)
         || blueprint["architecture"].as_array().is_none_or(|a|a.len()<7||a.len()>64) {
@@ -5801,13 +5806,11 @@ fn compiled_system_generation_plan(
     // Its learned prediction dynamics select the NEXT architecture target.
     let explicit_focus=input["rsiAutoFocus"]!=true
         && input["rsiFocusFiles"].as_array().is_some_and(|files|!files.is_empty());
-    // Verify BOTH successful and failed A/B records before they update the
-    // compiled descendant's method selector, probability forecasts or
-    // negative-transfer policy. Model-written history labels are not proof.
-    let measured_method_history=crate::engine::rsi_system::revalidated_method_history(
-        state,history);
+    // Source-grounded coverage, inherited design, prequential forecasts,
+    // transferable methods and the next recursive plan share the same
+    // independently revalidated history snapshot.
     let baseline_meta=crate::engine::rsi_meta_controller::synthesize(
-        &measured_method_history,&frontier,DOMAINS,inherited.as_deref());
+        history,&frontier,DOMAINS,inherited.as_deref());
     // Portable method hypotheses require verified peer receipts and at
     // least one identical indexed source. Only the COMPILED child can
     // re-rank its own target; the frozen resident validates the raw receipts.
@@ -5817,7 +5820,7 @@ fn compiled_system_generation_plan(
         state,input["rsiCampaignId"].as_str().unwrap_or(""),input,None);
     let meta=if explicit_focus{baseline_meta}else{
         crate::engine::rsi_meta_controller::evolve_from_peer_methods(
-            baseline_meta,&peers,&measured_method_history)
+            baseline_meta,&peers,history)
     };
     // Learned laws are compiled into this actual successor, not a prompt-only
     // retrospective. A task-intelligence bottleneck can supersede another
