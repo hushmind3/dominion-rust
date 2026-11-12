@@ -1277,7 +1277,9 @@ fn selection_objective(input:&Value)->String {
     // learning aliases. Treating it as an owner constraint collapses every
     // autonomous campaign onto learning. Only an explicit user objective may
     // narrow the eligible domains.
-    let objective=if input["rsiAutonomous"]==true {
+    let objective=if input["rsiAutonomous"]==true
+        || (input["rsiSystemEvolution"]==true
+            && input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty)) {
         ""
     } else {
         input["rsiObjective"].as_str().unwrap_or("")
@@ -3379,6 +3381,15 @@ async fn run_loop(
         child_input["rsiBaseCommit"] = json!(head);
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
+        // Whole-system evolution uses a real model-authored redesign in the
+        // new compiled worker, not a predefined native optimizer.
+        if input["rsiSystemEvolution"]==true {
+            child_input["rsiNativeInduction"]=json!(false);
+            if input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
+                child_input["rsiFocusFiles"]=json!([]);
+                child_input["rsiAutoFocus"]=json!(true);
+            }
+        }
         let objective = input["rsiObjective"].as_str().unwrap_or("");
         let trial_algorithm = record["nextTrialAlgorithmId"]
             .as_str()
@@ -3535,6 +3546,17 @@ async fn run_loop(
             (domain,selection.to_string(),strategy,None)
         };
         child_input["rsiTargetDomain"]=json!(target_domain);
+        if input["rsiSystemEvolution"]==true && native_planning {
+            let model=&record["nextGenerationPlan"]["systemBlueprint"];
+            if model["source"]!="compiled_descendant_system_blueprint_v1"
+                || model["generatorCommit"]!=head
+                || model["historyCount"].as_u64()!=Some(record["history"].as_array()
+                    .map(Vec::len).unwrap_or(0) as u64)
+                || model["architecture"].as_array().is_none_or(|a|a.len()!=7) {
+                return Err("후손 전체 시스템 자기모형의 revision·계보 검증 실패".into());
+            }
+            child_input["rsiSystemBlueprint"]=model.clone();
+        }
         // The actual new generator's domain is known now. Incorporate
         // independently measured cross-objective examples only within this
         // selected domain; unverified events stay objective-local.
@@ -3788,6 +3810,8 @@ async fn run_loop(
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
             "nativePlan":current["input"]["rsiNativePlan"],
+            "systemBlueprint":current["input"]["rsiSystemBlueprint"],
+            "systemEvolution":current["input"]["rsiSystemEvolution"],
             "improvementDirective":current["input"]["rsiImprovementDirective"],
             "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
             "boundaryResult":current["rsiBoundaryResult"],
@@ -4788,6 +4812,11 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         Vec::new()
     };
     let target_plan=generation_target_plan(&domain,selection,&strategy,binary_commit);
+    let system_blueprint=if source_input["rsiSystemEvolution"]==true {
+        let root=campaign["labDir"].as_str()
+            .ok_or("후손 시스템 소스가 없습니다.")?;
+        crate::engine::rsi_system::blueprint(Path::new(root),binary_commit,&history)
+    }else{Value::Null};
     Ok(json!({
         "source":"compiled_generator_plan_v1",
         "generatorCommit":binary_commit,
@@ -4798,6 +4827,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "domain":domain,"selection":selection,"strategy":strategy,
         "targetPlan":target_plan,
         "improvementDirective":generation_improvement_directive(source_input,&action_history),
+        "systemBlueprint":system_blueprint,
         "rankedFiles":ranked
     }))
 }
@@ -4990,12 +5020,29 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiDecisionInput"] = job["input"]["rsiDecisionInput"].clone();
     job["input"]["rsiDomainSelection"] = json!(domain_selection);
     job["input"]["rsiSearchStrategy"] = strategy;
+    // Rebuild the entire architecture view in the actual descendant process;
+    // a stale parent-side manifest cannot override the new revision.
+    if job["input"]["rsiSystemEvolution"]==true {
+        let source=job["input"]["rsiSourceDir"].as_str()
+            .ok_or("후손 시스템의 실제 소스 경로가 없습니다.")?;
+        let model=crate::engine::rsi_system::blueprint(Path::new(source),&commit,&history);
+        if model!=job["input"]["rsiSystemBlueprint"] {
+            return Err("후손의 실행 코드·시스템 자기모형·독립 계보가 불일치합니다.".into());
+        }
+        job["rsiSystemBlueprintVerified"]=json!(true);
+    }
     let focus = job["input"]["rsiFocusFiles"].as_array().into_iter().flatten()
         .filter_map(Value::as_str).take(8).collect::<Vec<_>>().join(", ");
     let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
     let available=job["input"]["rsiRemainingCampaignTokens"].as_u64();
+    let system_prompt=if job["input"]["rsiSystemEvolution"]==true {
+        let goal=job["input"]["rsiObjective"].as_str().unwrap_or("");
+        let instruction=crate::engine::rsi_system::instruction(
+            &job["input"]["rsiSystemBlueprint"],goal);
+        format!("{instruction}\n\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+    }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let (prompt,fit)=fit_worker_generation_context(
-        job["input"]["prompt"].as_str().unwrap_or(""),
+        &system_prompt,
         &domain,&capability,&history,&directive,available)?;
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);

@@ -371,6 +371,10 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
+        // A paid model descendant designs across all its own subsystems.
+        // Opt-in legacy native induction retains its separate bounded protocol.
+        "rsiSystemEvolution": continuous && body["nativeInduction"] != true
+            && body["evolutionTarget"] != "product",
         "rsiNativeInduction": continuous && body["nativeInduction"]==true
             && body["selectionPolicy"]=="automatic",
         "rsiExpandAfterGain": continuous && body["expandAfterGain"]==true
