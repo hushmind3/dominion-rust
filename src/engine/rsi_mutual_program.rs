@@ -13,6 +13,9 @@ fn sha(value:&Value)->String {
 }
 fn adopted_source(g:&Value)->bool {
     g["accepted"]==true && g["pairedRevalidated"]==true
+        && g["candidateId"].as_str().is_some()
+        && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+        && g["compiledPlanExecuted"]["generatorCommit"]==g["generatorCommit"]
         && g["evaluation"]["metrics"]["eligible"]==true
         && g["acceptedCommit"].as_str().is_some_and(|v|
             v.len()==40 && v.bytes().all(|b|b.is_ascii_hexdigit()))
@@ -140,7 +143,7 @@ pub(crate) fn propose(history:&[Value],frontier:&[Value],commit:&str,
         let partner=if prior["phase"]=="seed"{prior["partner"].clone()}
             else{prior["target"].clone()};
         Some((phase,match_row.clone(),origin,partner,
-            prior["rootGenerationId"].as_str()
+            prior["rootGenerationId"].as_str().filter(|v|!v.is_empty())
                 .or_else(||g["id"].as_str()).unwrap_or("").to_owned()))
     });
     let (phase,target,origin,partner,root_id)=if let Some(next)=continuation {
@@ -250,6 +253,9 @@ mod tests {
         assert_eq!(first["phase"],"seed");
         assert!(valid_program(&first,&frontier,"a",0,&transfer_graph(&[])));
         let accepted=json!({"id":"g1","generatorCommit":"a","acceptedCommit":"b",
+            "candidateId":"candidate1",
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
+                "generatorCommit":"a"},
             "jobId":"job1","accepted":true,"pairedRevalidated":true,
             "evaluation":{"metrics":{"eligible":true}},
             "systemDesign":{"source":"model_authored_system_design",
@@ -263,6 +269,7 @@ mod tests {
         accepted["generatorCommit"]=json!("a".repeat(40));
         accepted["acceptedCommit"]=json!("b".repeat(40));
         accepted["systemDesign"]["generatorCommit"]=json!("a".repeat(40));
+        accepted["compiledPlanExecuted"]["generatorCommit"]=json!("a".repeat(40));
         let one=propose(&[accepted.clone()],&frontier,&"b".repeat(40),&a,
             &json!({"edges":[]}),&["context","memory"]);
         assert_eq!(one["phase"],"complement");
@@ -278,6 +285,7 @@ mod tests {
         child["acceptedCommit"]=json!("c".repeat(40));
         child["jobId"]=json!("job3");
         child["systemDesign"]["generatorCommit"]=json!("b".repeat(40));
+        child["compiledPlanExecuted"]["generatorCommit"]=json!("b".repeat(40));
         child["systemDesign"]["generationJobId"]=json!("job3");
         child["systemDesign"]["component"]=json!("memory");
         child["systemDesign"]["targetFiles"]=json!(["src/engine/memory.rs"]);
