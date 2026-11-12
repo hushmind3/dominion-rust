@@ -90,16 +90,56 @@ fn evidence(history:&[Value],left:&str,right:&str)->(Value,[usize;3]){
     report["sha256"]=json!(sha(&report));
     (report,counts)
 }
+/// Inherit the next experimental arm from an independently adopted SOURCE
+/// mutation compiled as the current descendant. A failed attempt does not
+/// advance the cursor. The actual candidate diff must match the prior arm.
+fn inherited_curriculum(history:&[Value],frontier:&[Value],commit:&str)
+    ->Option<(Value,Value,usize,Value)>{
+    let ancestor=history.iter().rev().find(|g|
+        g["accepted"]==true && g["acceptedCommit"]==commit
+            && g["pairedRevalidated"]==true
+            && g["selfControllerVerified"]==true
+            && g["evaluation"]["metrics"]["eligible"]==true
+            && g["candidateOrigin"]=="model_driven_detached_worktree")?;
+    let program=&ancestor["systemAgenda"]["factorialExperiment"];
+    if program["source"]!="compiled_evolvable_causal_ecology_v1"
+        || program["generatorCommit"]!=ancestor["generatorCommit"]
+        || program["evaluationOwner"]=="model_self_report" {return None;}
+    let a=program["left"]["role"].as_str()?;
+    let b=program["right"]["role"].as_str()?;
+    let required=match program["phase"].as_str()?{
+        "isolate_left"=>0,"isolate_right"=>1,"probe_joint"=>2,_=>return None
+    };
+    if observed_arm(ancestor,a,b)!=Some(required){return None;}
+    let next=(required+1).min(3);
+    let rebind=|row:&Value|frontier.iter().find(|current|
+        current["role"]==row["role"] && current["path"]==row["path"]
+            && live(current)).cloned();
+    let left=rebind(&program["left"])?;
+    let right=rebind(&program["right"])?;
+    if left["role"]==right["role"]{return None;}
+    let root=if program["lineageRoot"].is_string(){
+        program["lineageRoot"].clone()
+    }else{ancestor["jobId"].clone()};
+    Some((left,right,next,root))
+}
+
 pub(crate) fn design(history:&[Value],frontier:&[Value],pair:&Value,commit:&str)->Value{
-    let a=&pair["primary"];let b=&pair["partner"];
-    if pair["source"]!="compiled_descendant_reciprocal_evolution_v1"
-        || !live(a)||!live(b)||a["role"]==b["role"]
-        || a["path"]==b["path"]||!frontier.contains(a)||!frontier.contains(b){
-        return Value::Null;
-    }
+    let inherited=inherited_curriculum(history,frontier,commit);
+    let (a,b,forced_arm,lineage_root)=if let Some((a,b,next,root))=inherited{
+        (a,b,Some(next),root)
+    }else{
+        let a=&pair["primary"];let b=&pair["partner"];
+        if pair["source"]!="compiled_descendant_reciprocal_evolution_v1"
+            || !live(a)||!live(b)||a["role"]==b["role"]
+            || a["path"]==b["path"]||!frontier.contains(a)||!frontier.contains(b){
+            return Value::Null;
+        }
+        (a.clone(),b.clone(),None,Value::Null)
+    };
     let (observations,counts)=evidence(history,
         a["role"].as_str().unwrap_or(""),b["role"].as_str().unwrap_or(""));
-    let missing=counts.iter().position(|v|*v==0);
+    let missing=forced_arm.or_else(||counts.iter().position(|v|*v==0));
     let phase=match missing{
         Some(0)=>"isolate_left",Some(1)=>"isolate_right",
         Some(2)=>"probe_joint",_=>"invent_new_interaction"
@@ -112,6 +152,8 @@ pub(crate) fn design(history:&[Value],frontier:&[Value],pair:&Value,commit:&str)
         "generatorCommit":commit,"historyCount":history.len(),
         "left":a,"right":b,"target":target,
         "focus":focus,"phase":phase,
+        "lineageRoot":lineage_root,
+        "descendantContinuation":forced_arm.is_some(),
         "observations":observations,"externalEvaluatorUnchanged":true,
         "selfRewriteAllowed":true,"causalityProven":false,"qualityProven":false
     });
@@ -194,6 +236,36 @@ mod tests{
             "frontier":frontier,"focus":[pair["primary"]]});
         apply(&mut agenda,&final_plan);
         assert_eq!(agenda["focus"].as_array().unwrap().len(),2);
+    }
+    #[test]
+    fn adopted_descendant_advances_to_complement_and_rebinds_source_hash(){
+        let first=role("memory","src/engine/memory.rs");
+        let second=role("tools","src/engine/tools.rs");
+        let pair=json!({"source":"compiled_descendant_reciprocal_evolution_v1",
+            "primary":first,"partner":second});
+        let old=design(&[],&[first.clone(),second.clone()],&pair,"a");
+        assert_eq!(old["phase"],"isolate_left");
+        let mut parent=generation("child",&["src/engine/memory.rs"]);
+        parent["accepted"]=json!(true);
+        parent["acceptedCommit"]=json!("b".repeat(40));
+        parent["candidateOrigin"]=json!("model_driven_detached_worktree");
+        parent["selfControllerVerified"]=json!(true);
+        parent["evaluation"]["metrics"]["eligible"]=json!(true);
+        parent["systemAgenda"]["factorialExperiment"]=old;
+        parent["systemDesign"]["generatorCommit"]=json!("a");
+        parent["generatorCommit"]=json!("a");
+        // Recompiled roles can now have different source revisions.
+        let mut next_memory=first;
+        next_memory["sourceSha256"]=json!("e".repeat(64));
+        let frontier=vec![next_memory,second];
+        let next=design(&[parent.clone()],&frontier,&Value::Null,
+            &"b".repeat(40));
+        assert_eq!(next["phase"],"isolate_right");
+        assert_eq!(next["target"]["role"],"tools");
+        assert_eq!(next["descendantContinuation"],true);
+        let mut invalid=parent;
+        invalid["pairedRevalidated"]=json!(false);
+        assert!(inherited_curriculum(&[invalid],&frontier,&"b".repeat(40)).is_none());
     }
     #[test]
     fn claimed_roles_without_changed_sources_never_count(){
