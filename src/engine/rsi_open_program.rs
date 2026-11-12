@@ -128,6 +128,7 @@ fn authored_valid(program: &Value) -> bool {
     for n in nodes {
         if !symbol(&n["id"])
             || !symbol(&n["role"])
+            || n["role"].as_str().is_none_or(|r|r.len()>64 || r=="system")
             || n["domain"].as_str().is_none_or(|s|
                 !crate::engine::rsi_evolve::DOMAINS.contains(&s))
             || n["path"].as_str().is_none_or(|s|
