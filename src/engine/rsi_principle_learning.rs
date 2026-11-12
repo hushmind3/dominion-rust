@@ -27,6 +27,7 @@ fn independent_pair(g:&Value)->bool {
     (g["pairedMeasured"]==true||g["pairedRevalidated"]==true)
         && g["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
         && g["evaluation"]["metrics"]["measurements"].is_array()
+        && g["evaluation"]["metrics"]["verdict"].as_str().is_some()
         && g["candidateId"].as_str().is_some_and(|s|!s.is_empty())
         && g["generatorCommit"].as_str().is_some_and(|s|s.len()==40)
         && sha_ok(&g["evaluationProfileSha256"])
@@ -314,13 +315,15 @@ mod tests {
         let mut hashes=serde_json::Map::new();
         hashes.insert(source.into(),json!("b".repeat(64)));
         let generator="a".repeat(40);
+        let mut assignments=serde_json::Map::new();
+        assignments.insert(target_role.into(),json!([source]));
         json!({
             "id":id,"jobId":format!("job-{id}"),"candidateId":format!("candidate-{id}"),
             "generatorCommit":generator,"acceptedCommit":if accepted{json!("c".repeat(40))}else{Value::Null},
             "accepted":accepted,"pairedMeasured":true,"pairedRevalidated":accepted,
             "evaluationProfileSha256":"d".repeat(64),
             "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
-                "metrics":{"eligible":accepted,
+                "metrics":{"eligible":accepted,"verdict":"paired_measured",
                     "measurements":[{"id":"case-a","domain":"memory","holdout":true,
                         "baselinePass":before,"candidatePass":after}]}},
             "changedSourcePaths":[source],
@@ -336,7 +339,8 @@ mod tests {
                 "node":{"mechanism":mechanism}},
             "systemDesign":{"source":"model_authored_system_design",
                 "generatorCommit":generator,"generationJobId":format!("job-{id}"),
-                "components":[target_role],"componentFiles":{target_role:[source]},
+                "components":[target_role],
+                "componentFiles":Value::Object(assignments),
                 "targetFiles":[source]}
         })
     }
@@ -352,6 +356,42 @@ mod tests {
         let no=estimate(&ledger,&json!({"mechanism":"repeated no-op search"}));
         assert!(yes["estimatedPriority"].as_f64()>no["estimatedPriority"].as_f64());
         assert_eq!(ledger["principles"].as_array().unwrap().len(),2);
+    }
+    #[test]
+    fn a_different_child_method_can_credit_cross_role_task_improvement(){
+        let parent=trial("parent","adapt retrieval by observing independent task failures",
+            "src/engine/memory.rs","memory",false,true,true);
+        let mut child=trial("child","child uses a different improvement program",
+            "src/engine/models.rs","models",false,true,true);
+        child["generatorCommit"]=parent["acceptedCommit"].clone();
+        child["acceptedCommit"]=json!("e".repeat(40));
+        child["compiledPlanExecuted"]["generatorCommit"]=child["generatorCommit"].clone();
+        child["systemDesign"]["generatorCommit"]=child["generatorCommit"].clone();
+        child["systemDesign"]["components"]=json!(["models"]);
+        child["openImprovementProgram"]=Value::Null;
+        child["metaPolicy"]=json!({"revision":"m"});
+        child["evaluation"]["metrics"]["measurements"][0]["domain"]=json!("learning");
+        let history=vec![parent,child];
+        let report=study(&history);
+        let row=&report["principles"][0];
+        assert_eq!(row["mechanism"],
+            "adapt retrieval by observing independent task failures");
+        assert_eq!(row["nextGenerationCases"],1);
+        assert_eq!(row["nextGenerationImprovements"],1);
+        assert_eq!(row["descendantRoles"][0],"models");
+        let mut altered=history;
+        altered[1]["pairedRevalidated"]=json!(false);
+        altered[1]["pairedMeasured"]=json!(false);
+        assert_eq!(study(&altered)["principles"][0]["nextGenerationImprovements"],0);
+    }
+    #[test]
+    fn accepted_source_without_quality_gain_is_not_a_learned_positive_example(){
+        let g=trial("neutral","source edit without task improvement",
+            "src/engine/learning.rs","learning",false,false,true);
+        let row=study(&[g])["principles"][0].clone();
+        assert_eq!(row["improvedCases"],0);
+        assert_eq!(row["independentSourceAdoptions"],1);
+        assert_eq!(row["posteriorCaseGain"].as_f64(),Some(1.0/3.0));
     }
     #[test]
     fn model_prose_without_independent_paired_evidence_never_trains_principle(){
