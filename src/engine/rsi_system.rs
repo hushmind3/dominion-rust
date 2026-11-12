@@ -883,8 +883,8 @@ pub(crate) fn inherited_stage(history:&[Value],frontier:&[Value])->Option<Value>
             .count() as i64;
         // Failure contrast is policy, not a hardcoded target. Altering this
         // weight in the next source revision alters its own improvement plan.
-        let score=if learning=="retry_failed"{2*failed}
-            else{-3*failed}+2*reproduced;
+        let score=(if learning=="retry_failed"{2*failed}else{-3*failed})
+            +2*reproduced;
         scored.push((score,index,json!({
             "source":"inherited_model_authored_improvement_program_v1",
             "role":role,"domain":domain,"path":path,
@@ -1172,6 +1172,44 @@ mod integration_contract_tests {
         let config=Config{port:0,data_dir:root.join("data"),web_dir:root.join("web"),workspace:root.clone()};
         let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
         (state,root)
+    }
+    #[test]
+    fn adopted_successor_program_survives_failures_and_rebinds_new_source() {
+        let original=json!({
+            "id":"generation-1","jobId":"worker-1",
+            "generatorCommit":"a".repeat(40),"acceptedCommit":"b".repeat(40),
+            "candidateId":"rsi-model-patch","accepted":true,
+            "evaluation":{"metrics":{"eligible":true}},
+            "acceptedSourceHashes":{"src/engine/rsi_meta_controller.rs":"c".repeat(64)},
+            "systemDesign":{
+                "id":"model-program","source":"model_authored_system_design",
+                "generatorCommit":"a".repeat(40),"generationJobId":"worker-1",
+                "targetFiles":["src/engine/rsi_meta_controller.rs"],
+                "successorStages":[{
+                    "role":"improvement_methods","domain":"improver",
+                    "path":"src/engine/rsi_meta_controller.rs",
+                    "objective":"Improve the meta-controller's choice of new source policies",
+                    "learningPolicy":"retry_failed","toolPolicy":"patch_only",
+                    "executionPolicy":"grounded_edit"}]
+            }
+        });
+        let current_source=json!({
+            "role":"improvement_methods","domain":"improver",
+            "path":"src/engine/rsi_meta_controller.rs",
+            "sourceSha256":"d".repeat(64)
+        });
+        let history=vec![original,json!({"id":"generation-2",
+            "accepted":false,"focusFiles":["src/engine/rsi_meta_controller.rs"],
+            "error":"compiler rejected first patch"})];
+        let selected=inherited_stage(&history,&[current_source]).unwrap();
+        assert_eq!(selected["source"],"inherited_model_authored_improvement_program_v1");
+        assert_eq!(selected["sourceSha256"],"d".repeat(64),
+            "programs must bind to the new version, not the old source");
+        assert_eq!(selected["failuresSinceAdoption"],1);
+        assert_eq!(selected["toolPolicy"],"patch_only");
+        assert_eq!(selected["qualityProven"],false);
+        assert!(inherited_stage(&history,&[]).is_none(),
+            "stale or absent source modules cannot run an inherited program");
     }
     #[test]
     fn source_portfolio_exposes_new_meta_mechanisms_to_descendants() {
