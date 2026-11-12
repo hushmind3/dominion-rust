@@ -85,11 +85,11 @@ fn rsi_checkpoint_stage(tool_calls: u64, read_calls: u64, has_write: bool) -> Op
 /// already available, the only valid next actions are source edits.
 fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
     if edit_only {
-        return matches!(name, "workspace_write" | "workspace_replace");
+        return matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_function" | "rsi_system_plan" | "rsi_method_propose");
     }
     matches!(
         name,
-        "workspace_read_range" | "workspace_write" | "workspace_replace" | "rsi_method_propose" | "algorithm_propose"
+        "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_function" | "rsi_system_plan" | "rsi_method_propose" | "algorithm_propose"
     )
 }
 
@@ -115,7 +115,7 @@ fn rsi_patch_ready_for_verification(
 )->bool {
     if session["rsiRun"]!=true
         || !session["rsiCampaignId"].is_string()
-        || tool!="workspace_replace"
+        || !matches!(tool,"workspace_replace"|"workspace_replace_function")
         || operation["status"]!="completed"
         || operation["result"]["written"]!=true
         || operation["toolReceipt"]["verified"]!=true {
@@ -159,7 +159,7 @@ fn rsi_direct_source_repair(
     if tool=="workspace_write" && error.contains("새 파일 생성 전용") {
         return Some("existing_file_write");
     }
-    if tool!="workspace_replace" {return None}
+    if !matches!(tool,"workspace_replace"|"workspace_replace_function") {return None}
     if error.contains("endLine") || error.contains("startLine")
         || error.contains("120줄") {return Some("invalid_source_span")}
     if result["staleVersion"]==true || result["preflightBlocked"]==true
@@ -781,6 +781,14 @@ async fn run_turn_body(
     }
     if session["rsiRun"]==true {
         tool_definitions.retain(|definition| tools::rsi_allowed(tool_name(definition)));
+        if session["rsiSystemEvolution"]==true {
+            // Native 4B inference should spend tokens designing source,
+            // not repeatedly parsing a giant unrelated tool catalog.
+            tool_definitions.retain(|definition|matches!(tool_name(definition),
+                "code_search"|"workspace_read_range"|"workspace_replace"
+                |"workspace_replace_function"|"workspace_write"
+                |"rsi_system_plan"|"rsi_method_propose"));
+        }
     }
     let compiled = if is_room {
         let source = source_message_id.or(reply_to.as_deref()).ok_or("응답할 원문이 없습니다.")?;
@@ -1325,7 +1333,7 @@ async fn run_turn_body(
             // reopen search instead of retaining the grounded repair menu.
             let has_write = completed.iter().any(|operation|
                 matches!(operation["tool"].as_str(),
-                    Some("workspace_write" | "workspace_replace"))
+                    Some("workspace_write" | "workspace_replace" | "workspace_replace_function"))
                 && operation["result"]["written"]==true
             );
             let read_calls = completed.iter().filter(|operation| matches!(
@@ -1658,7 +1666,7 @@ async fn run_turn_body(
                 || session["rsiFocusContextReady"] == true;
             let has_write = relevant_operations.iter().any(|operation|
                 matches!(operation["tool"].as_str(),
-                    Some("workspace_write" | "workspace_replace"))
+                    Some("workspace_write" | "workspace_replace" | "workspace_replace_function"))
                 && operation["result"]["written"]==true
             );
             if !force_final && round + 1 < max_rounds && budget.can_execute_tool()
