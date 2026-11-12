@@ -926,19 +926,52 @@ pub(crate) fn revalidated_history(
 )->Vec<Value>{
     history.iter().map(|generation|{
         let mut checked=generation.clone();
-        let valid= if generation["accepted"]==true {
-            generation["candidateId"].as_str()
-                .and_then(|id|state.store.get("rsi_candidate",id))
-                .is_some_and(|candidate|{
-                    candidate["status"]=="verified"
-                        && candidate["evaluation"]["metrics"]["eligible"]==true
-                        && candidate["experimentAdoption"]["commit"]==generation["acceptedCommit"]
-                        && candidate["experimentAdoption"]["generatorCommit"]==generation["generatorCommit"]
-                        && candidate["experimentAdoption"]["productionDeployed"]==false
-                        && crate::engine::rsi::verified_pair_receipt(state,&candidate)
-                })
+        // Revalidate the frozen raw paired receipt for BOTH accepted and
+        // rejected candidates. Rejected attempts carry useful prequential
+        // negative labels; their mutable history flags are not evidence.
+        let candidate=generation["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id));
+        let measured=candidate.as_ref().is_some_and(|candidate|{
+            candidate["pairedComparisonComplete"]==true
+                && candidate["id"]==generation["candidateId"]
+                && candidate["baseCommit"]==generation["generatorCommit"]
+                && candidate["evaluation"]["source"]
+                    =="server_invoked_local_paired_git_worktrees"
+                && candidate["evaluation"]["evidenceSha256"]
+                    ==generation["evaluation"]["evidenceSha256"]
+                && candidate["evaluation"]["metrics"]
+                    ==generation["evaluation"]["metrics"]
+                && candidate["evaluation"]["verdict"]
+                    ==generation["evaluation"]["verdict"]
+                && crate::engine::rsi::replayed_pair_metrics(state,candidate)
+                    .is_some_and(|metrics|metrics==candidate["evaluation"]["metrics"])
+        });
+        checked["pairedMeasured"]=json!(measured);
+        if measured {
+            // The actual changed paths originate in the persisted evaluated
+            // candidate, not model-written generation JSON.
+            if let Some(candidate)=&candidate {
+                checked["changedSourcePaths"]=candidate["paths"].clone();
+            }
+        }
+        let valid=if generation["accepted"]==true {
+            measured && candidate.as_ref().is_some_and(|candidate|{
+                candidate["status"]=="verified"
+                    && candidate["evaluation"]["metrics"]["eligible"]==true
+                    && candidate["experimentAdoption"]["commit"]==generation["acceptedCommit"]
+                    && candidate["experimentAdoption"]["generatorCommit"]==generation["generatorCommit"]
+                    && candidate["experimentAdoption"]["productionDeployed"]==false
+            })
         }else{false};
         checked["pairedRevalidated"]=json!(valid);
+        // Rewrite recorded prediction labels from the still-present original
+        // paired receipt and executed plan on every history load. A stale or
+        // hand-edited Brier label cannot change the next compiled planner.
+        if generation["metaLearning"]["source"]
+            =="source_bound_prequential_feedback_v1"{
+            checked["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
+                &checked["metaPolicy"],&checked);
+        }
         checked
     }).collect()
 }
@@ -1028,6 +1061,41 @@ pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prequential_history_replays_rejected_receipts_instead_of_trusting_flags(){
+        let root=std::env::temp_dir().join(format!("rsi-preq-replay-{}",uuid::Uuid::new_v4()));
+        let config=crate::config::Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.join("workspace")};
+        let state=crate::state::AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()));
+        let predicted=json!({
+            "source":"compiled_editable_meta_controller_v1",
+            "revision":"a".repeat(64),
+            "target":{"role":"memory","domain":"memory",
+                "path":"src/engine/memory.rs",
+                "sourceSha256":"b".repeat(64)},
+            "forecast":{"acceptanceProbability":0.8}});
+        let row=json!({"jobId":"fake","generatorCommit":"c".repeat(40),
+            "candidateId":"nonexistent","candidateOrigin":"model_driven_detached_worktree",
+            "pairedMeasured":true,"pairedRevalidated":true,"accepted":false,
+            "metaPolicy":predicted,"descendantPlan":{
+                "metaPolicy":predicted,"architectureTarget":predicted["target"],
+                "generatorCommit":"c".repeat(40)},
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "verdict":"unchanged","evidenceSha256":"d".repeat(64),
+                "metrics":{"eligible":false}},
+            "metaLearning":{"source":"source_bound_prequential_feedback_v1",
+                "nextPolicyCanTrainFromObservation":true,"brierError":0.0,
+                "actualTargetAdoption":true}});
+        let checked=revalidated_history(&state,&[row]);
+        assert_eq!(checked[0]["pairedMeasured"],false);
+        assert_eq!(checked[0]["pairedRevalidated"],false);
+        assert_eq!(checked[0]["metaLearning"]["independentlyMeasured"],false);
+        assert!(checked[0]["metaLearning"]["brierError"].is_null());
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn system_self_model_tracks_real_source_revision_and_covers_all_capabilities() {
         let root=std::env::temp_dir().join(format!("rsi-system-{}",uuid::Uuid::new_v4()));
