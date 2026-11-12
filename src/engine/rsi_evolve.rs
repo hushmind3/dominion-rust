@@ -5351,6 +5351,8 @@ fn compiled_system_generation_plan(
     // descendant interprets it against its own newly built source graph and
     // silently drops stages whose path/role/hash is no longer current.
     let successor_stage=crate::engine::rsi_system::inherited_stage(history,&frontier)
+        .or_else(||crate::engine::rsi_mutual_evolution::inherited_programme_stage(
+            history,&frontier))
         .or_else(||crate::engine::rsi_mutual_evolution::reciprocal_return(
             history,&frontier))
         .unwrap_or(Value::Null);

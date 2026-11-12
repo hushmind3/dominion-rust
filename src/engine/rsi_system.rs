@@ -479,7 +479,11 @@ pub(crate) fn validate_plan_evidence(
     }
     let stage=&plan["successorStage"];
     if stage.is_object(){
-        if !bound(stage) || !history.iter().any(|g|
+        if !bound(stage)
+            || (stage["programmeStageIndex"].is_number()
+                && !crate::engine::rsi_mutual_evolution::valid_programme_lineage(
+                    history,stage))
+            || !history.iter().any(|g|
             g["accepted"]==true && g["pairedRevalidated"]==true
             && g["systemDesign"]["id"]==stage["sourceDesignId"]
             && g["acceptedCommit"]==stage["predecessorCommit"]
