@@ -271,10 +271,27 @@ pub(crate) fn propose(
         if !crate::engine::rsi::safe_path(path)||!unique.insert(path.to_string()){
             return Err("중복 또는 허용되지 않은 소스 경로입니다.".into());
         }
-        let file=fs::canonicalize(root.join(path))
-            .map_err(|_|"설계 대상이 실제 소스에 없습니다.".to_string())?;
-        if !file.starts_with(&root)||!file.is_file(){
-            return Err("외부 파일은 설계 범위가 아닙니다.".into());
+        let candidate=root.join(path);
+        if fs::symlink_metadata(&candidate).is_ok() {
+            let file=fs::canonicalize(&candidate)
+                .map_err(|_|"설계 대상 소스를 정규화할 수 없습니다.".to_string())?;
+            if !file.starts_with(&root)||!file.is_file(){
+                return Err("외부 파일은 설계 범위가 아닙니다.".into());
+            }
+        } else {
+            // An architectural redesign can introduce a new module; requiring
+            // every planned path to exist made genuine new architectures
+            // impossible. Only a source file in an existing workspace
+            // directory may be proposed, never an out-of-root symlink target.
+            let parent=candidate.parent().ok_or("신규 소스의 상위 폴더가 없습니다.")?;
+            let parent=fs::canonicalize(parent)
+                .map_err(|_|"신규 소스의 상위 폴더가 없습니다.".to_string())?;
+            let source_extension=candidate.extension().and_then(|ext|ext.to_str())
+                .is_some_and(|ext|matches!(ext,
+                    "rs"|"ts"|"tsx"|"js"|"mjs"|"json"|"toml"|"yml"|"yaml"));
+            if !parent.starts_with(&root) || !parent.is_dir() || !source_extension {
+                return Err("신규 설계 대상은 작업공간 내부의 실제 소스 경로여야 합니다.".into());
+            }
         }
     }
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
@@ -389,6 +406,13 @@ mod tests {
         assert_eq!(proposed["proposal"]["qualityProven"],false);
         assert_eq!(proposed["proposal"]["generatorCommit"],"revision-a");
         assert_eq!(state.store.get("session","session").unwrap()["rsiSystemDesign"]["nextDomain"],"learning");
+        let mut new_module=request.clone();
+        new_module["targetFiles"]=json!(["src/engine/new_evolution_policy.rs"]);
+        assert!(propose(&state,"session",&new_module).is_ok(),
+            "A successor must be able to design and create a new source module");
+        let mut escaped=request.clone();
+        escaped["targetFiles"]=json!(["src/engine/unknown_dir/new_policy.rs"]);
+        assert!(propose(&state,"session",&escaped).is_err());
         let mut bad=request.clone();
         bad["targetFiles"]=json!(["src/engine/../escape.rs"]);
         assert!(propose(&state,"session",&bad).is_err());
