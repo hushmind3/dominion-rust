@@ -83,7 +83,11 @@ fn source_role(path:&str)->&'static str {
         || matches!(name,"models.rs"|"cli_model.rs"|"router.rs"|"gateway.rs") {
         return "models";
     }
-    if name.starts_with("rsi_") || matches!(name,"rsi.rs"|"algorithm_eval.rs"|"policy_patch.rs") {
+    // Heuristic discovery for unregistered modules; accepted model-authored
+    // roles still override this fallback through their own source evidence.
+    if name.starts_with("rsi_") || name.contains("meta_")
+        || name.contains("_meta") || name.contains("improver")
+        || matches!(name,"rsi.rs"|"algorithm_eval.rs"|"policy_patch.rs") {
         return "improvement_methods";
     }
     if path.contains("/chat/") || matches!(name,"chat.rs"|"jobs.rs"|"decompose.rs") {
