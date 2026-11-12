@@ -4,6 +4,10 @@ name: Sub2 full-system descendant design RSI
 # The rebuilt child selects source, domain and architecture, never the old
 # coordinator. Only independent frozen A/B evidence can adopt changed code.
 # Every model-authored design and real source patch is retained.
+# 2026-11-12 full-stack frontier verification: the rebuilt descendant
+# inventories the actual seven-system source graph, prioritizes previously
+# unmodified intelligence components, and controls next-generation source
+# focus. Independent frozen evaluation alone controls code adoption.
 
 on:
   workflow_dispatch:
@@ -69,6 +73,8 @@ jobs:
           cargo test --release --locked --bin dominion-rust three_accepted_patches_do_not_prove_recursive_growth_without_meta_transfer -- --nocapture
           cargo test --release --locked --bin dominion-rust rsi_compiler_repair::tests -- --nocapture
           cargo test --release --locked --bin dominion-rust rsi::tests -- --nocapture
+          cargo test --release --locked --bin dominion-rust architecture_frontier_rejects_unverified_adoption_and_uses_real_index -- --nocapture
+          cargo test --release --locked --bin dominion-rust compiled_descendant_plans_from_its_actual_whole_source_graph -- --nocapture
 
       - name: Install actual local inference runtime
         run: |
