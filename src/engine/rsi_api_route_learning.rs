@@ -68,6 +68,7 @@ fn attested(g:&Value)->bool {
         && name(&g["requestedModel"]).is_some()
         && g["apiRouteSessionId"].as_str().is_some_and(|s|!s.is_empty())
         && g["jobId"].as_str().is_some_and(|s|!s.is_empty())
+        && g["apiRouteSessionExclusive"]==true
         && g["apiRouteUsage"]["matchedExactProviderModelSession"]==true
         && g["apiRouteUsage"]["calls"].as_u64().unwrap_or(0)>0
         && g["apiRouteUsage"]["totalTokens"].as_u64().unwrap_or(0)>0
@@ -101,6 +102,12 @@ pub(crate) fn verify_replay(state:&AppState,history:&[Value])->bool {
             || state.store.api_route_usage(session,provider,model)!=g["apiRouteUsage"] {
             return false;
         }
+        // A tool/research side call through another model makes route credit
+        // ambiguous; one worker session must have exactly one executed route.
+        let Ok(used_routes)=state.store.session_model_routes(session) else{return false};
+        if used_routes.len()!=1
+            || used_routes[0]["providerId"]!=provider
+            || used_routes[0]["model"]!=model {return false;}
         if !measured(g){continue;}
         let Some(id)=g["candidateId"].as_str() else{return false};
         let Some(candidate)=state.store.get("rsi_candidate",id) else{return false};
@@ -410,6 +417,7 @@ mod tests {
             "generatorCommit":"a".repeat(40),
             "jobId":format!("worker-{id}"),
             "apiRouteSessionId":format!("session-{id}"),
+            "apiRouteSessionExclusive":true,
             "evaluationProfileSha256":"e".repeat(64),
             "pairedMeasured":true,"pairedRevalidated":true,"accepted":true,
             "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
@@ -513,6 +521,12 @@ mod tests {
         let result=learn(&[a.clone(),a],&routes());
         assert_eq!(result["routes"][0]["verifiedApiWorkerCalls"],1);
         assert_eq!(result["routes"][0]["independentlyMeasuredCases"],1);
+    }
+    #[test]
+    fn mixed_route_session_cannot_earn_model_credit() {
+        let mut g=episode("mixed","api-b",false,true);
+        g["apiRouteSessionExclusive"]=json!(false);
+        assert_eq!(learn(&[g],&routes())["routes"][1]["independentlyMeasuredCases"],0);
     }
     #[test]
     fn unauditable_session_cannot_earn_api_route_rewards() {
