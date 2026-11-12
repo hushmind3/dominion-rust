@@ -221,7 +221,10 @@ fn rsi_target_function_window(
 fn rsi_grounded_edit_messages(
     session:&Value,session_id:&str,operations:&[Value],repair_input:&str
 )->Option<Vec<Value>> {
-    if session["rsiRun"]!=true || session["rsiExplicitFocus"]!=true {return None;}
+    if session["rsiRun"]!=true
+        || (session["rsiExplicitFocus"]!=true && session["rsiSystemEvolution"]!=true){
+        return None;
+    }
     if operations.iter().any(|op|op["sessionId"].as_str()==Some(session_id)
         && matches!(op["tool"].as_str(),
             Some("workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"))
@@ -1029,6 +1032,14 @@ async fn run_turn_body(
     }
     if session["rsiRun"]==true {
         tool_definitions.retain(|definition| tools::rsi_allowed(tool_name(definition)));
+        if session["rsiSystemEvolution"]==true {
+            // Preserve only executable design, read and write tools within
+            // the provider context window of an autonomous system worker.
+            tool_definitions.retain(|definition|matches!(tool_name(definition),
+                "code_search"|"workspace_read_range"|"workspace_replace"
+                |"workspace_replace_range"|"workspace_replace_function"
+                |"workspace_write"|"rsi_system_plan"|"rsi_method_propose"));
+        }
     }
     let compiled = if is_room {
         let source = source_message_id.or(reply_to.as_deref()).ok_or("응답할 원문이 없습니다.")?;
@@ -1548,7 +1559,7 @@ async fn run_turn_body(
             // the prompt needs direct read/replace options from round zero.
             // General autonomous search and an excerpt-deferred task retain
             // unrestricted discovery instead of blindly requiring a write.
-            if session["rsiExplicitFocus"]==true
+            if (session["rsiExplicitFocus"]==true || session["rsiSystemEvolution"]==true)
                 && session["rsiFocusContextReady"]==true && tool_calls==0 {
                 round_tools.retain(|definition|
                     rsi_initial_focused_tool(tool_name(definition)));
@@ -1577,7 +1588,8 @@ async fn run_turn_body(
                 operation["tool"].as_str(),Some("workspace_read_range"|"workspace_read"))).count() as u64;
             let grounded=read_calls>0 || session["rsiFocusContextReady"]==true;
             let stage=rsi_checkpoint_stage_with_limit(tool_calls,read_calls,has_write,
-                session["rsiExplicitFocus"]==true,session["rsiFocusContextReady"]==true,
+                session["rsiExplicitFocus"]==true || session["rsiSystemEvolution"]==true,
+                session["rsiFocusContextReady"]==true,
                 session["rsiExecutionMethod"]["explorationCallLimit"].as_u64().unwrap_or(6))
                 .or_else(||(rsi_edit_retry && grounded && !has_write).then_some(true));
             if let Some(edit_only)=stage {
@@ -1593,7 +1605,7 @@ async fn run_turn_body(
                         induced_next.as_ref()));
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system","content":
-                        "확인한 소스에서 특정 fn만 수정한다면 workspace_replace_function(path,functionName,newText: 완전한 fn 코드)을 우선 호출하세요. 그 외에는 workspace_replace(oldText,newText) 또는 workspace_replace_range(startLine,endLine,newText,expectedSha256)를 호출해 실제 수정하세요. 줄 번호는 workspace_read_range 응답을 사용하세요. 64자리 SHA는 직접 복사하지 않아도 됩니다. 동일 파일을 실제로 읽었다면 엔진이 관찰된 해시를 자동 바인딩합니다. 이 단계에서는 실행 가능한 편집만 제시하세요."}));
+                        "실제 Rust 소스를 변경하세요. 모델이 작성한 완성된 함수는 workspace_replace_function(path,functionName,newText)으로, 작은 줄 범위는 workspace_replace(startLine,endLine,newText,expectedSha256)로 수정하세요. endLine이 누락됐어도 정확히 한 개의 완전한 fn이면 엔진이 기존 소스의 유일한 함수를 찾아 수정합니다. 모호한 다중 줄 수정은 거절됩니다. 읽은 sourceSha256은 엔진이 검증합니다. 설계 제안만 하고 끝내지 마세요."}));
                     rsi_edit_only_announced=true;
                 } else if !rsi_decision_checkpoint {
                     messages.push(json!({"role":"system","content":
@@ -1611,7 +1623,8 @@ async fn run_turn_body(
             // Historical methods were measured before function-scoped edits
             // existed. Permit one version-grounded trial rather than hiding the
             // new operator behind an unrelated old edit preference.
-            let untried_function=session["rsiExplicitFocus"]==true && read_calls>0
+            let untried_function=(session["rsiExplicitFocus"]==true
+                || session["rsiSystemEvolution"]==true) && read_calls>0
                 && !has_write
                 && session["rsiExecutionMethod"]["evidence"]["workspace_replace_function"]["attempts"]
                     .as_u64().unwrap_or(0)==0;
@@ -1940,7 +1953,8 @@ async fn run_turn_body(
         if completion.tool_calls.is_empty()
             && request.tools_enabled
             && (provider.tool_mode != "native" || has_dsml_call
-                || (session["rsiExplicitFocus"]==true && rsi_edit_only_announced))
+                || ((session["rsiExplicitFocus"]==true
+                     || session["rsiSystemEvolution"]==true) && rsi_edit_only_announced))
             && !force_final
         {
             let known = round_tools
@@ -2003,7 +2017,8 @@ async fn run_turn_body(
             // A final prose explanation after a successful source read is not
             // a completed explicit code repair. Give the same model one
             // bounded continuation using the real source already in context.
-            if session["rsiExplicitFocus"]==true && !rsi_edit_retry
+            if (session["rsiExplicitFocus"]==true || session["rsiSystemEvolution"]==true)
+                && !rsi_edit_retry
                 && round+1<max_rounds {
                 let completed=state.store.all("execution_operation").into_iter()
                     .filter(|operation|operation["runId"].as_str()==Some(execution_id)
