@@ -359,9 +359,57 @@ fn synthesize_edit_method(history:&[Value])->Value {
     crate::engine::rsi_edit_genome::evolve(history,edit_method_reward)
 }
 
+/// A cross-domain *tool-stage* program has no target-specific paths or
+/// source bytes. Transfer only observed executable edit stages, not a donor's
+/// frozen task, rules, patch, or claims of improvement in a new objective.
+/// The donor must have an actually executed edit policy and an independently
+/// replayed, adopted candidate. The target receives an UNPROVEN method trial.
+fn cross_domain_stage_donor(
+    state:&AppState,partition:&str,objective:&str,target_domain:&str
+)->Option<Value>{
+    let candidates=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["knowledgePartition"]==partition
+            && row["objectiveId"].as_str().is_some_and(|id|id!=objective)
+            && row["domain"].as_str().is_some_and(|d|d!=target_domain)
+            && row["candidateOrigin"]=="model_driven_detached_worktree"
+            && row["editPolicy"]["program"].as_array()
+                .is_some_and(|steps|!steps.is_empty()))
+        .take(256).collect::<Vec<_>>();
+    let verified=history_with_verified_payoffs(state,&candidates);
+    let mut proven=verified.iter().filter(|row|
+        row["evidenceVerified"]==true
+            && row["accepted"]==true
+            && edit_method_reward(row)>=0.95)
+        .collect::<Vec<_>>();
+    proven.sort_by(|a,b|
+        b["verifiedHoldoutGains"].as_u64().unwrap_or(0)
+            .cmp(&a["verifiedHoldoutGains"].as_u64().unwrap_or(0))
+            .then_with(||b["createdAt"].as_str().cmp(&a["createdAt"].as_str()))
+            .then_with(||a["jobId"].as_str().cmp(&b["jobId"].as_str())));
+    let donor=proven.first()?;
+    let steps=crate::engine::rsi_edit_program::normalize(&donor["editPolicy"]["program"]);
+    let signature=format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([
+            donor["editPolicy"]["revision"],steps,donor["acceptedCommit"]
+        ])).ok()?));
+    Some(json!({
+        "source":"independently_adopted_other_domain_tool_stages_v1",
+        "program":steps,"donorRevision":donor["editPolicy"]["revision"],
+        "donorJobId":donor["jobId"],"donorDomain":donor["domain"],
+        "donorObjectiveId":donor["objectiveId"],
+        "donorAcceptedCommit":donor["acceptedCommit"],
+        "donorCandidateId":donor["candidateId"],
+        "donorVerifiedHoldoutGains":donor["verifiedHoldoutGains"],
+        "signature":signature,
+        "sourcePartition":partition,
+        "measuredTransferBenefit":false,
+        "requiresTargetGenerationIndependentEvaluation":true
+    }))
+}
+
 /// Learn across completed generations and follow-up campaigns for the same
-/// source partition and exact objective. A different repository, task or
-/// merely proposed action cannot influence this job's improvement policy.
+/// source partition and exact objective. Cross-objective methods enter only
+/// as explicit unproven transfer trials, never positive target evidence.
 fn learned_edit_method(state:&AppState,input:&Value,history:&[Value])->Value {
     let objective=crate::engine::memory::stable_id(&[target_focus_objective(input)]);
     let partition=research_scope(input).partition_key;
@@ -391,6 +439,27 @@ fn learned_edit_method(state:&AppState,input:&Value,history:&[Value])->Value {
     // receipt, matching adopted commit and verified source lineage.
     let verified=history_with_verified_payoffs(state,&rows);
     let mut policy=synthesize_edit_method(&verified);
+    // Source-bound, cross-domain transfer: only the generic executed STAGES
+    // cross objectives, not a potentially stale role-specific search rule.
+    // If the target already has accepted method payoffs, its own learned
+    // policy takes precedence over a borrowed experimental method.
+    if input["rsiSystemEvolution"]==true
+        && !verified.iter().any(|row|edit_method_reward(row)>=0.95) {
+        let domain=input["rsiTargetDomain"].as_str().unwrap_or("");
+        if let Some(donor)=cross_domain_stage_donor(state,&partition,&objective,domain){
+            let parent_revision=policy["revision"].clone();
+            policy["program"]=donor["program"].clone();
+            policy["method"]=json!("cross_domain_executable_meta_method_trial");
+            policy["parentGenomeRevision"]=parent_revision.clone();
+            policy["crossDomainTransfer"]=donor.clone();
+            policy["revision"]=json!(format!("{:x}",Sha256::digest(
+                serde_json::to_vec(&json!([
+                    parent_revision,donor["signature"],policy["program"],domain
+                ])).unwrap_or_default())));
+            policy["improvementProven"]=json!(false);
+            policy["transferMeasuredForThisDomain"]=json!(false);
+        }
+    }
     policy["objectiveId"]=json!(objective);
     policy["knowledgePartition"]=json!(partition);
     policy
@@ -3514,6 +3583,7 @@ async fn run_loop(
         generation["compiledPlanExecuted"]=current["rsiCompiledPlanExecuted"].clone();
         generation["inheritedMetaProgram"]=current["input"]["rsiInheritedMetaProgram"].clone();
         generation["inheritedMetaProgramBound"]=current["rsiInheritedMetaProgramBound"].clone();
+        generation["crossDomainMetaMethodTransfer"]=current["input"]["rsiEditPolicy"]["crossDomainTransfer"].clone();
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["comparativeMode"]=current["input"]["rsiComparativeMode"].clone();
         generation["comparisonProfileSha256"]=json!(
