@@ -68,10 +68,10 @@ fn task_measurement(g: &Value) -> (u64, u64, u64) {
     }
     (wins, losses, cases)
 }
-fn immediate_child<'a>(history: &'a [Value], parent: &Value) -> Option<&'a Value> {
-    let head = parent["acceptedCommit"].as_str()?;
-    history.iter().find(|g| g["generatorCommit"].as_str() == Some(head)
-        && g["jobId"] != parent["jobId"])
+fn immediate_children<'a>(history: &'a [Value], parent: &Value) -> Vec<&'a Value> {
+    let Some(head) = parent["acceptedCommit"].as_str() else { return Vec::new(); };
+    history.iter().filter(|g| g["generatorCommit"].as_str() == Some(head)
+        && g["jobId"] != parent["jobId"]).collect()
 }
 fn principle(g: &Value) -> Option<&Value> {
     let p = &g["systemDesign"]["improvementPrinciple"];
@@ -120,9 +120,11 @@ pub(crate) fn validate_authored(
             files.iter().any(|v| v.as_str() == Some(method_path))) {
         return Err("원리 학습은 서로 다른 지능 소스와 개선기 소스를 같은 실제 결합 설계에서 수정해야 합니다.".into());
     }
+    let identity=revision(&json!([name,role,mechanism]));
     Ok(json!({
         "source": "model_authored_improvement_principle_v1",
-        "name": name, "taskRole": role, "methodRole": "improvement_methods",
+        "id": identity, "name": name, "taskRole": role,
+        "methodRole": "improvement_methods",
         "taskFile": task_path, "methodFile": method_path,
         "failureMode": failure_mode, "mechanism": mechanism,
         "counterfactual": counterfactual,
@@ -158,12 +160,14 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
         // empirical archive. Ignoring rejected theories would manufacture
         // a perfect prior and teach nothing about discovery failure.
         if let Some(p) = principle(g) {
-            family.entry(p["name"].as_str().unwrap_or("").to_owned())
-                .or_default().push(g);
+            let family_id=p["id"].as_str().map(str::to_owned)
+                .unwrap_or_else(||revision(&json!([
+                    p["name"],p["taskRole"],p["mechanism"]])));
+            family.entry(family_id).or_default().push(g);
         }
     }
     let mut principles = Vec::<Value>::new();
-    for (name, sources) in family {
+    for (identity, sources) in family {
         let mut task_wins = 0;
         let mut task_losses = 0;
         let mut holdout_cases = 0;
@@ -189,19 +193,22 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
                 accepted_pairs += 1;
             }
             if adopted(g) {
-                if let Some(child) = immediate_child(history, g) {
-                descendants += 1;
-                if adopted(child) {
-                    productive += 1;
-                    if child["systemDesign"]["nextDomain"] !=
-                        g["systemDesign"]["nextDomain"] {
-                        cross_domain += 1;
+                // Multiple failed children may be tried against the SAME
+                // accepted parent before one succeeds. Learn ALL observed
+                // attempts, not only the first failure.
+                for child in immediate_children(history, g) {
+                    descendants += 1;
+                    if adopted(child) {
+                        productive += 1;
+                        if child["systemDesign"]["nextDomain"] !=
+                            g["systemDesign"]["nextDomain"] {
+                            cross_domain += 1;
+                        }
+                        if child["systemDesign"]["improvementPrinciple"]["id"]
+                            == g["systemDesign"]["improvementPrinciple"]["id"] {
+                            consecutive += 1;
+                        }
                     }
-                    if child["systemDesign"]["improvementPrinciple"]["name"]
-                        == g["systemDesign"]["improvementPrinciple"]["name"] {
-                        consecutive += 1;
-                    }
-                }
                 }
             }
             if let Some(predicted) = g["systemDesign"]["expectedOutcomes"]["adoption"].as_f64() {
@@ -216,7 +223,7 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
             / ((task_wins + task_losses) as f64 + 2.0);
         let p = &sources[sources.len() - 1]["systemDesign"]["improvementPrinciple"];
         principles.push(json!({
-            "name": name, "taskRole": p["taskRole"],
+            "id": identity, "name": p["name"], "taskRole": p["taskRole"],
             "mechanism": p["mechanism"], "counterfactual": p["counterfactual"],
             "learningSignal": p["learningSignal"],
             "observedModelAuthoredTrials": assessed,
@@ -340,7 +347,8 @@ pub(crate) fn observation(g: &Value) -> Value {
     let (wins, losses, cases) = task_measurement(g);
     json!({
         "source": "empirical_principle_observation_v1",
-        "name": p["name"], "modelAuthoredPrinciple": principle(g).is_some(),
+        "id": p["id"], "name": p["name"],
+        "modelAuthoredPrinciple": principle(g).is_some(),
         "taskRole": task_role,
         "taskAndMethodSourcesIndependentlyAdopted":
             role_adopted(g, task_role) && role_adopted(g, "improvement_methods"),
