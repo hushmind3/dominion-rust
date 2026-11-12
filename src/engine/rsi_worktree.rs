@@ -10,10 +10,10 @@ use tokio::process::Command;
 const GIT_LIMIT: Duration = Duration::from_secs(30);
 const CHECK_LIMIT: Duration = Duration::from_secs(360);
 
-/// A branch must be an explicitly owned RSI work checkout, never main or a
-/// sibling competitor's source. Preserve the legacy dominion-sub checkout.
+/// The canonical main checkout and owned RSI work checkouts may evolve.
+/// Application still requires exact recorded branch and commit provenance.
 pub(crate) fn rsi_work_branch(branch: &str) -> bool {
-    matches!(branch, "dominion-sub" | "dominion-sub3")
+    matches!(branch, "main" | "dominion-sub" | "dominion-sub3")
 }
 
 /// Legacy experiments did not record a source branch. They may only be
@@ -34,6 +34,13 @@ fn first_existing(paths: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
     paths.into_iter().find(|path| path.is_file())
 }
 
+fn tool_home()->Option<PathBuf>{
+    std::env::var_os(if cfg!(windows){"USERPROFILE"}else{"HOME"}).map(PathBuf::from)
+}
+fn path_tool(name:&str)->Option<PathBuf>{
+    std::env::var_os("PATH").and_then(|paths|first_existing(std::env::split_paths(&paths).map(|p|p.join(name))))
+}
+
 pub(super) fn cargo_executable() -> PathBuf {
     if let Some(explicit) = std::env::var_os("DOMINION_CARGO") {
         let path = PathBuf::from(explicit);
@@ -41,17 +48,17 @@ pub(super) fn cargo_executable() -> PathBuf {
             return path;
         }
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = tool_home();
     let mut candidates = Vec::new();
     if let Some(home) = &home {
-        candidates.push(home.join(".cargo/bin/cargo"));
+        candidates.push(home.join(format!(".cargo/bin/cargo{}",std::env::consts::EXE_SUFFIX)));
     }
     candidates.extend([
         PathBuf::from("/opt/homebrew/bin/cargo"),
         PathBuf::from("/usr/local/bin/cargo"),
         PathBuf::from("/usr/bin/cargo"),
     ]);
-    first_existing(candidates).unwrap_or_else(|| PathBuf::from("cargo"))
+    path_tool(if cfg!(windows){"cargo.exe"}else{"cargo"}).or_else(||first_existing(candidates)).unwrap_or_else(|| PathBuf::from("cargo"))
 }
 
 pub(super) fn node_executable() -> PathBuf {
@@ -61,7 +68,7 @@ pub(super) fn node_executable() -> PathBuf {
             return path;
         }
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = tool_home();
     let mut candidates = Vec::new();
     if let Some(home) = &home {
         candidates.push(home.join(".volta/bin/node"));
@@ -77,7 +84,7 @@ pub(super) fn node_executable() -> PathBuf {
         PathBuf::from("/usr/local/bin/node"),
         PathBuf::from("/usr/bin/node"),
     ]);
-    first_existing(candidates).unwrap_or_else(|| PathBuf::from("node"))
+    path_tool(if cfg!(windows){"node.exe"}else{"node"}).or_else(||first_existing(candidates)).unwrap_or_else(|| PathBuf::from("node"))
 }
 
 pub(super) fn npm_executable() -> PathBuf {
@@ -87,7 +94,7 @@ pub(super) fn npm_executable() -> PathBuf {
             return path;
         }
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = tool_home();
     let mut candidates = Vec::new();
     if let Some(home) = &home {
         candidates.push(home.join(".volta/bin/npm"));
@@ -104,7 +111,7 @@ pub(super) fn npm_executable() -> PathBuf {
         PathBuf::from("/usr/local/bin/npm"),
         PathBuf::from("/usr/bin/npm"),
     ]);
-    first_existing(candidates).unwrap_or_else(|| PathBuf::from("npm"))
+    path_tool(if cfg!(windows){"npm.cmd"}else{"npm"}).or_else(||first_existing(candidates)).unwrap_or_else(|| PathBuf::from(if cfg!(windows){"npm.cmd"}else{"npm"}))
 }
 // tools::run_command retains at most 80_004 bytes of stdout. Reject anything
 // near that boundary rather than hashing/approving a silently truncated diff.
@@ -745,6 +752,9 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
         || status["dirty"]!=0 || status["commit"]!=candidate["baseCommit"] {
         return Err("원본 작업 브랜치가 기준과 다르거나 수정 중이므로 적용하지 않았습니다.".into());
     }
+    if status["branch"]=="main" && !verified {
+        return Err("메인에는 독립 비교에서 검증된 후보만 반영합니다.".into());
+    }
     let recorded_branch=state.store.get("job",&job_id)
         .and_then(|job|job["input"]["rsiSourceBranch"].as_str().map(str::to_string));
     if !status["branch"].as_str().is_some_and(|branch|
@@ -791,8 +801,8 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
     Ok(saved)
 }
 
-/// Publish the selected experimental lineage to the test branch. The main
-/// branch is never a target. Every commit is checked against its measured
+/// Publish the selected experimental lineage to its recorded source branch.
+/// Every commit is checked against its measured
 /// patch using a private Git index before the source checkout can move.
 pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expected:&str)->Result<Value,String>{
     if !state.begin_session("rsi-source-application") {return Err("검증된 버전을 적용 중입니다.".into());}
@@ -923,13 +933,13 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     let plan_file=output_dir.join("plan.json");
     let report_file=output_dir.join("report.json");
     std::fs::write(&patch_file,patch).map_err(|e|e.to_string())?;
-    let runner=output_dir.join("rsi-lab.sh");
-    std::fs::write(&runner,include_str!("../../scripts/rsi-lab.sh")).map_err(|e|e.to_string())?;
+    let runner=output_dir.join("rsi-lab.mjs");
+    std::fs::write(&runner,include_str!("../../scripts/rsi-lab.mjs")).map_err(|e|e.to_string())?;
     std::fs::write(output_dir.join("rsi-measure.mjs"),include_str!("../../scripts/rsi-measure.mjs")).map_err(|e|e.to_string())?;
     let meta_required=candidate["cases"].as_array().is_some_and(|cases|
-        cases.iter().any(|case|case["id"]=="meta-downstream-editing"));
+        cases.iter().any(crate::engine::rsi_meta::is_case));
     let static_cases=candidate["cases"].as_array().into_iter().flatten()
-        .filter(|case|case["id"]!="meta-downstream-editing").cloned().collect::<Vec<_>>();
+        .filter(|case|!crate::engine::rsi_meta::is_case(case)).cloned().collect::<Vec<_>>();
     let mut plan=json!({"oracleVersion":candidate["oracleVersion"],"cases":static_cases});
     if candidate["cases"].as_array().into_iter().flatten().any(|c|c["filter"].as_str().is_some_and(|f|f.starts_with("rsi_frozen_oracle::"))){
         let oracle=include_str!("rsi_oracle_fixture.rs");
@@ -950,7 +960,7 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     }
     path_parts.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
     let path = std::env::join_paths(path_parts).map_err(|e|e.to_string())?;
-    let mut command=Command::new("bash");
+    let mut command=Command::new(node_executable());
     command.current_dir(&source).arg(&runner)
         .arg(candidate["baseCommit"].as_str().unwrap_or(""))
         .arg(&patch_file).arg(&plan_file).arg(&report_file)
@@ -981,7 +991,15 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     if meta_required {
         context.checkpoint(json!({"rsiPhase":"meta_evaluating"}))?;
         meta_receipt=crate::engine::rsi_meta::evaluate(context,&candidate,source,&output_dir).await?;
-        report["cases"].as_array_mut().ok_or("측정 사례 없음")?.push(meta_receipt["measurement"].clone());
+        let expected=candidate["cases"].as_array().into_iter().flatten().filter(|case|
+            crate::engine::rsi_meta::is_case(case)).map(|case|case["id"].clone()).collect::<Vec<_>>();
+        let measured=if expected==vec![json!("meta-downstream-editing")] {
+            vec![meta_receipt["measurement"].clone()]
+        }else{meta_receipt["measurements"].as_array().cloned().ok_or("분야별 후속 평가가 없습니다.")?};
+        if measured.len()!=expected.len() || measured.iter().any(|row|!expected.contains(&row["id"])) {
+            return Err("동결한 분야별 후속 평가 계획과 측정이 다릅니다.".into());
+        }
+        report["cases"].as_array_mut().ok_or("측정 사례 없음")?.extend(measured);
         report["metaEvaluation"]=meta_receipt.clone();
         let mut combined=evidence;
         combined.extend_from_slice(b"\nDOMINION_INDEPENDENT_DOWNSTREAM_EPISODES\n");
@@ -1176,8 +1194,11 @@ mod tests {
         assert!(!owns_application_branch("dominion-sub3",None));
         assert!(!owns_application_branch("dominion-sub3",Some("")));
         assert!(owns_application_branch("dominion-sub",None));
-        assert!(!owns_application_branch("main",Some("main")));
-        for forbidden in ["main","dominion-champion","dominion-sub1","dominion-sub2","dominion-sub4","dominion-sub3-other"] {
+        assert!(owns_application_branch("main",Some("main")));
+        assert!(!owns_application_branch("main",None));
+        assert!(!owns_application_branch("main",Some("dominion-sub3")));
+        assert!(!owns_application_branch("dominion-sub3",Some("main")));
+        for forbidden in ["dominion-champion","dominion-sub1","dominion-sub2","dominion-sub4","dominion-sub3-other"] {
             assert!(!rsi_work_branch(forbidden), "다른 브랜치에 적용하면 안 됩니다: {forbidden}");
         }
     }

@@ -22,7 +22,7 @@ fn sha(value: &str) -> bool {
 }
 
 pub(crate) fn safe_path(path: &str) -> bool {
-    !matches!(path, "src/engine/rsi_meta.rs" | "src/engine/rsi_oracle_fixture.rs")
+    !matches!(path, "src/engine/rsi_meta.rs" | "src/engine/rsi_oracle_fixture.rs" | "src/engine/rsi_profile.rs")
         && !path.contains('\\')
         && !path.starts_with('/')
         && !path.split('/').any(|part|part.is_empty() || part.starts_with('.'))

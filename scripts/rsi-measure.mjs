@@ -26,7 +26,7 @@ for(const label of ['baseline','candidate']){
  if(oracle){
   fs.appendFileSync(path.join(dir,'src/main.rs'),`\n#[cfg(test)]\n#[path=${JSON.stringify(plan.oracleFixture)}]\nmod rsi_frozen_oracle;\n`);
  }
- const built=run('cargo',['test','--release','--all-targets','--no-run','--message-format=json'],dir);
+ const built=run(process.env.DOMINION_CARGO||'cargo',['test','--release','--all-targets','--no-run','--message-format=json'],dir);
  const binaries=built.stdout.split('\n').flatMap(line=>{
   try{const v=JSON.parse(line);return v.reason==='compiler-artifact'&&v.profile?.test&&v.executable?[v.executable]:[]}catch{return []}
  });

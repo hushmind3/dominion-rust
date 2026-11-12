@@ -59,6 +59,15 @@ pub fn definitions() -> Vec<Value> {
         tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
+        tool("rsi_system_plan", "Propose a causal redesign of the active agent's algorithms, harness, memory, learning, tools or improvement method. Requires actual source changes and independent verification.", object(json!({
+            "component":text("Existing or newly invented subsystem role, or system for a coupled multi-component redesign"),
+            "components":json!({"type":"array","items":{"type":"string"},"minItems":2,"maxItems":32,"uniqueItems":true}),
+            "componentFiles":json!({"type":"object","description":"For component=system, map every component to its nonempty targetFiles subset; cover all declared files","additionalProperties":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24}}),
+            "hypothesis":text("Observed limitation, causal reason and falsifiable outcome"),
+            "design":text("New executable architecture or algorithm to implement"),
+            "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24,"uniqueItems":true}),
+            "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS})
+        }),vec!["component","hypothesis","design","targetFiles","nextDomain"])),
         tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({
             "name":text("Reusable method name"),
             "description":text("Principle, source and limits of the method"),
@@ -107,7 +116,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose")
+    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose"|"rsi_system_plan")
 }
 
 pub async fn execute(
@@ -321,6 +330,7 @@ pub async fn execute(
             Ok(json!({ "proposed": true, "skill": record }))
         }
         "rsi_method_propose" => crate::engine::rsi_evolve::propose_method(ctx.state, ctx.session_id, args),
+        "rsi_system_plan" => crate::engine::rsi_system::propose(ctx.state, ctx.session_id, args),
         "algorithm_propose" => {
             let session = ctx
                 .store

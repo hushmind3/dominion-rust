@@ -1,0 +1,50 @@
+{
+  "id": "default",
+  "name": "범용 에이전트 기본 평가",
+  "requiredComponents": [
+    "algorithms",
+    "harness",
+    "memory",
+    "learning",
+    "tools",
+    "improvement_methods"
+  ],
+  "tasks": [
+    {
+      "domain": "tools",
+      "file": "src/engine/decompose.rs",
+      "request": "Improve Korean multi-action task decomposition in src/engine/decompose.rs without hardcoding example sentences. Inspect actual source and implement a grounded patch that preserves numbered lists and single noun requests.",
+      "oracle": "rsi_frozen_oracle::planning_quality",
+      "metric": "quality",
+      "guard": "engine::decompose::tests::numbered_first_prefers_an_explicit_list",
+      "id": "tools"
+    },
+    {
+      "domain": "memory",
+      "file": "src/engine/memory.rs",
+      "request": "Improve ranked memory retrieval in src/engine/memory.rs across mixed Korean and English facts with distractors. Keep top-answer accuracy and existing owner provenance, reduce measurable retrieval cost where possible. Inspect current source and implement a real change.",
+      "oracle": "rsi_frozen_oracle::memory_ranking",
+      "metric": "elapsedMs",
+      "guard": "rsi_frozen_oracle::long_owner_recall",
+      "id": "memory"
+    },
+    {
+      "domain": "context",
+      "file": "src/engine/chat/room_context.rs",
+      "request": "Improve group-chat context construction efficiency without losing the owner instructions, participant personas, earlier assistant turns or memory facts. Inspect actual context-harness source and implement a verifiable code change.",
+      "oracle": "rsi_frozen_oracle::group_chat_context_efficiency",
+      "metric": "contextChars",
+      "guard": "rsi_frozen_oracle::long_owner_recall",
+      "id": "context"
+    },
+    {
+      "domain": "improver",
+      "file": "src/engine/rsi_evolve.rs",
+      "request": "Improve the source-improvement domain exploration algorithm in src/engine/rsi_evolve.rs without hardcoding a fixed answer sequence. Reduce actual search cost while preserving history-dependent exploration decisions and validated evidence.",
+      "oracle": "rsi_frozen_oracle::improvement_search",
+      "metric": "elapsedMs",
+      "guard": "engine::rsi::tests::only_a_deployed_improver_can_seed_the_next_generation",
+      "id": "improver"
+    }
+  ]
+}

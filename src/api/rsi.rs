@@ -29,8 +29,13 @@ fn apply_capability(state: &AppState, record: &mut Value) {
     let max = measured_max.max(record["maxAcceptedStreak"].as_u64().unwrap_or(0));
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
-    record["capabilityDemonstrated"] = json!(max>=3
-        && engine::campaign_capability_proven(state,record));
+    if record["systemEvolution"]==true {
+        let history=record["history"].as_array().cloned().unwrap_or_default();
+        record["systemEvidence"]=crate::engine::rsi_system::handoff_evidence(state,&history);
+        record["capabilityDemonstrated"]=record["systemEvidence"]["demonstrated"].clone();
+    }else{
+        record["capabilityDemonstrated"] = json!(max>=3 && engine::campaign_capability_proven(state,record));
+    }
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
@@ -53,6 +58,45 @@ async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
     Ok(source)
 }
 
+pub async fn report_issue(State(state):State<AppState>,Json(body):Json<Value>)->Response {
+    let issue=if let Some(id)=body["signalId"].as_str() {
+        let report=crate::engine::rsi_scan::report(&state);
+        let Some(signal)=report["signals"].as_array().and_then(|rows|rows.iter().find(|row|row["id"]==id)) else {
+            return error("문제 기록을 다시 불러온 뒤 시도하세요.".into());
+        };
+        let mut issue=signal.clone();
+        issue["id"]=json!(format!("issue-{}",signal["evidenceFingerprint"].as_str().unwrap_or(id)));
+        issue
+    }else{
+        let Some(description)=body["description"].as_str().map(str::trim).filter(|s|(5..=2000).contains(&s.len())) else {
+            return error("문제 설명은 5~2000자로 입력하세요.".into());
+        };
+        let Some(session)=body["sessionId"].as_str().and_then(|id|state.store.get("session",id)) else {
+            return error("문제가 발생한 대화 기록이 없습니다.".into());
+        };
+        json!({"kind":"user_report","title":"사용 중 발견한 문제","detail":description,
+            "suggestedRequest":"이 대화에서 발생한 문제를 실제 기록과 현재 구현으로 진단한다. 설정·외부 서비스 원인과 코드 결함을 구분하고, 코드 결함이면 수정 후 독립 검증한다.",
+            "evidence":[{"sessionId":session["id"],"reportedProblem":description}]})
+    };
+    let mut issue=issue;issue["status"]=json!("open");
+    match state.store.put("improvement_issue",&issue) {
+        Some(saved)=>Json(saved).into_response(),None=>error("문제 기록 저장 실패".into())
+    }
+}
+
+pub async fn issue(State(state):State<AppState>,Path(id):Path<String>)->Response {
+    match state.store.get("improvement_issue",&id) {
+        Some(issue)=>Json(issue).into_response(),None=>error("저장된 문제를 찾지 못했습니다.".into())
+    }
+}
+
+pub async fn evaluation_profiles(State(state):State<AppState>)->Response {
+    match configured_source(&state).await {
+        Ok(root)=>Json(crate::engine::rsi_profile::catalogue(&root)).into_response(),
+        Err(message)=>error(message),
+    }
+}
+
 pub async fn list(State(state): State<AppState>) -> Json<Value> {
     Json(json!({"version":"rsi-v2","candidates":engine::list(&state),
         "campaigns":state.store.all("rsi_campaign").into_iter().take(20).collect::<Vec<_>>(),
@@ -61,7 +105,10 @@ pub async fn list(State(state): State<AppState>) -> Json<Value> {
 
 pub async fn signals(State(state): State<AppState>) -> Json<Value> {
     let report = crate::engine::rsi_scan::report(&state);
+    let idle=!state.store.all("job").iter().any(|j|matches!(j["status"].as_str(),Some("running"|"queued")))
+        && !state.store.all("execution").iter().any(|e|e["status"]=="running");
     Json(json!({
+        "recommendationReady":idle,
         "signals": report["signals"],
         "checks": report["checks"],
         "checked": report["checked"],
@@ -141,6 +188,21 @@ pub async fn apply_campaign(State(state):State<AppState>,Path(id):Path<String>,J
     }
 }
 
+fn is_rsi_evaluation_episode(job:&Value)->bool {
+    job["rsiEvaluationEpisode"]==true || job["input"]["rsiMetaEpisode"]==true
+}
+
+#[cfg(test)]
+mod rsi_evaluation_classification_tests {
+    use super::*;
+    #[test]
+    fn evaluator_marker_is_not_part_of_the_agent_input() {
+        assert!(is_rsi_evaluation_episode(&json!({"rsiEvaluationEpisode":true,"input":{}})));
+        assert!(is_rsi_evaluation_episode(&json!({"input":{"rsiMetaEpisode":true}})));
+        assert!(!is_rsi_evaluation_episode(&json!({"input":{"rsiSystemEvolution":true}})));
+    }
+}
+
 fn campaign_view(state: &AppState, job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let mut record=state.store.get("rsi_campaign",id)
@@ -150,6 +212,8 @@ fn campaign_view(state: &AppState, job: &Value) -> Value {
         record[field]=job["input"][key].clone();
     }
     record["selectedVersionRunning"]=json!(record["headCommit"].as_str()==option_env!("DOMINION_BUILD_COMMIT"));
+    record["evaluationProfile"]=crate::engine::rsi_profile::summary(&crate::engine::rsi_profile::from_input(&job["input"]).unwrap_or(Value::Null));
+    record["systemEvolution"]=job["input"]["rsiSystemEvolution"].clone();
     apply_capability(state, &mut record);
     let children=state.store.all("job").into_iter().filter(|j|
         j["kind"]=="rsi_generation" && j["input"]["rsiCampaignId"].as_str()==Some(id)).collect::<Vec<_>>();
@@ -166,17 +230,17 @@ fn campaign_view(state: &AppState, job: &Value) -> Value {
         && op["origin"]=="model" && op["status"]=="completed"
         && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true
         && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))).count();
-    let proposal_sessions=children.iter().filter(|j|j["input"]["rsiMetaEpisode"]!=true)
+    let proposal_sessions=children.iter().filter(|j|!is_rsi_evaluation_episode(j))
         .filter_map(|j|j["sessionId"].as_str()).collect::<std::collections::HashSet<_>>();
     let system_writes=state.store.all("execution_operation").iter().filter(|op|
         op["sessionId"].as_str().is_some_and(|id|proposal_sessions.contains(id))
         && op["origin"]=="model" && op["status"]=="completed"
         && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true).count();
     record["systemSourceWrites"]=json!(system_writes);
-    record["evaluationEpisodes"]=json!(children.iter().filter(|j|j["input"]["rsiMetaEpisode"]==true).count());
+    record["evaluationEpisodes"]=json!(children.iter().filter(|j|is_rsi_evaluation_episode(j)).count());
     let candidates=state.store.all("rsi_candidate").iter().filter(|c|
         c["experimentCampaignId"].as_str()==Some(id) && c["rsiJobId"].as_str()
-            .and_then(|id|state.store.get("job",id)).is_some_and(|j|j["input"]["rsiMetaEpisode"]!=true)).count();
+            .and_then(|id|state.store.get("job",id)).is_some_and(|j|!is_rsi_evaluation_episode(&j))).count();
     let mut reused=0usize;
     for session in &sessions {
         reused+=state.store.get("session",session).and_then(|s|s["rsiKnowledgeReuse"].as_array().cloned())
@@ -218,7 +282,14 @@ pub async fn verify(State(state):State<AppState>,Path(id):Path<String>)->Respons
     let Some(campaign)=state.store.get("rsi_campaign",&id) else {
         return error("캠페인 기록을 찾을 수 없습니다.".into());
     };
-    Json(engine::capability_audit(&state,&campaign)).into_response()
+    let mut report=engine::capability_audit(&state,&campaign);
+    if campaign["systemEvolution"]==true || state.store.get("job",&id)
+        .is_some_and(|job|job["input"]["rsiSystemEvolution"]==true) {
+        let history=campaign["history"].as_array().cloned().unwrap_or_default();
+        report["systemEvidence"]=crate::engine::rsi_system::handoff_evidence(&state,&history);
+        report["capabilityDemonstrated"]=report["systemEvidence"]["demonstrated"].clone();
+    }
+    Json(report).into_response()
 }
 
 pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
@@ -279,7 +350,7 @@ fn continued_request(state:&AppState,mut body:Value)->Result<Value,String>{
     if !matches!(previous["status"].as_str(),Some("completed"|"cancelled"|"failed"|"needs_review")) {
         return Err("이전 작업이 끝난 뒤 이어서 진행할 수 있습니다.".into());
     }
-    for (field,key) in [("request","rsiObjective"),("focusFiles","rsiFocusFiles"),("providerId","providerId"),("model","model")] {
+    for (field,key) in [("request","rsiObjective"),("focusFiles","rsiFocusFiles"),("providerId","providerId"),("model","model"),("issueId","rsiIssueId")] {
         if body[field].is_null() || body[field].as_str()==Some("") {body[field]=previous["input"][key].clone();}
     }
     Ok(body)
@@ -288,6 +359,9 @@ fn continued_request(state:&AppState,mut body:Value)->Result<Value,String>{
 pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     if crate::engine::dev::installation_running() {return error("버전 반영이 끝난 뒤 발전 작업을 시작하세요.".into());}
     let body=match continued_request(&state,body){Ok(body)=>body,Err(message)=>return error(message)};
+    let observed_issue=if let Some(id)=body["issueId"].as_str() {
+        match state.store.get("improvement_issue",id) {Some(issue)=>issue,None=>return error("문제 기록을 찾지 못했습니다.".into())}
+    }else{Value::Null};
     let continuous=body["mode"]=="continuous";
     let _start_guard=if continuous{
         if !state.begin_session("rsi-evolution-start"){return error("개선 시작을 처리 중입니다.".into());}
@@ -419,6 +493,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiSourceBranch": status["branch"],
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
+        "rsiIssueId":observed_issue["id"],"rsiIssueEvidence":observed_issue,
         "rsiAutonomous": autonomous,
         "rsiLocalOnly":body["localOnly"]==true,
         "rsiSystemEvolution": continuous && body["evolutionTarget"] != "product" && body["nativeInduction"] != true,
@@ -480,7 +555,23 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     }
     let mut cases=input["rsiFrozenCases"].as_array().cloned().unwrap_or_default();
     cases.extend(crate::engine::rsi_worktree::metric_cases());
-    if input["rsiSystemEvolution"]==true {cases.push(crate::engine::rsi_meta::case());}
+    if input["rsiSystemEvolution"]==true {
+        let requested=body["evaluationProfileId"].as_str().unwrap_or("default");
+        let previous=body["continueFrom"].as_str().and_then(|id|state.store.get("job",id))
+            .map(|job|job["input"]["rsiEvaluationProfile"].clone()).filter(|v|!v.is_null());
+        let profile=if let Some(previous)=previous {
+            if previous["id"]!=requested {return error("평가 프로필을 바꾸려면 새 작업으로 시작하세요.".into());}
+            match crate::engine::rsi_profile::from_input(&json!({"rsiEvaluationProfile":previous})) {
+                Ok(profile)=>profile,Err(message)=>return error(message)
+            }
+        }else{
+            match crate::engine::rsi_profile::load(std::path::Path::new(&source_dir),requested) {
+                Ok(profile)=>profile,Err(message)=>return error(message)
+            }
+        };
+        cases.extend(crate::engine::rsi_meta::cases_for(&profile));
+        input["rsiEvaluationProfile"]=profile;
+    }
     input["rsiFrozenCases"]=json!(cases);
     match crate::engine::jobs::enqueue(&state, if continuous{"rsi_evolve"}else{"prompt"}, input) {
         Some(job) => (StatusCode::ACCEPTED, Json(job)).into_response(),
@@ -517,7 +608,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn natural_language_start_queues_selected_model_only_on_clean_sub_branch() {
+    async fn problem_handoff_preserves_context_without_starting_a_model() {
+        let root=std::env::temp_dir().join(format!("rsi-issue-{}",uuid::Uuid::new_v4()));
+        let config=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
+        state.store.put("session",&json!({"id":"affected-chat","title":"Actual user task"}));
+        let response=report_issue(State(state.clone()),Json(json!({"sessionId":"affected-chat","description":"The tool did not perform the requested action"}))).await;
+        assert_eq!(response.status(),StatusCode::OK);
+        let issues=state.store.all("improvement_issue");assert_eq!(issues.len(),1);
+        assert_eq!(issues[0]["evidence"][0]["sessionId"],"affected-chat");
+        assert_eq!(state.store.count("job"),0,"opening a repair request must never spend model tokens");
+        state.store.put("job",&json!({"id":"prior-issue-run","kind":"rsi_evolve","status":"failed","input":{
+            "rsiObjective":"redesign the action planner","rsiIssueId":issues[0]["id"],"providerId":"old","model":"small"}}));
+        let resumed=continued_request(&state,json!({"continueFrom":"prior-issue-run","providerId":"new","model":"larger"})).unwrap();
+        assert_eq!(resumed["issueId"],issues[0]["id"]);
+        assert_eq!(resumed["providerId"],"new");assert_eq!(resumed["model"],"larger");
+        assert_eq!(resumed["request"],"redesign the action planner");
+        let rejected=report_issue(State(state),Json(json!({"sessionId":"missing","description":"Unbound failure report"}))).await;
+        assert_eq!(rejected.status(),StatusCode::BAD_REQUEST);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn natural_language_start_queues_selected_model_on_clean_main() {
         let root = std::env::temp_dir().join(format!("dominion-rsi-start-{}", uuid::Uuid::new_v4()));
         let checkout = root.join("checkout");
         let data = root.join("data");
@@ -526,7 +639,7 @@ mod tests {
         std::fs::write(checkout.join("Cargo.toml"), "[package]\nname = \"dominion\"\nversion = \"0.1.0\"\n").unwrap();
         std::fs::write(checkout.join("src/engine/rsi.rs"), "// source\n").unwrap();
         git(&checkout, &["init", "-q"]);
-        git(&checkout, &["checkout", "-b", "dominion-sub3"]);
+        git(&checkout, &["checkout", "-B", "main"]);
         git(&checkout, &["add", "."]);
         git(&checkout, &["-c", "user.email=ci@example.com", "-c", "user.name=CI", "commit", "-qm", "fixture"]);
         let cfg = Config { port:0, data_dir:data.clone(), web_dir:data.join("web"), workspace:data.clone() };
@@ -543,7 +656,7 @@ mod tests {
         assert_eq!(jobs[0]["input"]["providerId"], "test-provider");
         assert_eq!(jobs[0]["input"]["model"], "sample-model");
         assert_eq!(jobs[0]["input"]["rsiSourceDir"], checkout.canonicalize().unwrap().to_str().unwrap());
-        assert_eq!(jobs[0]["input"]["rsiSourceBranch"], "dominion-sub3");
+        assert_eq!(jobs[0]["input"]["rsiSourceBranch"], "main");
         assert!(jobs[0]["input"]["rsiBaseCommit"].as_str().is_some_and(|v|v.len()==40));
         let cases=jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap();
         assert_eq!(cases.len(),14);

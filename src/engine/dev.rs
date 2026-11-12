@@ -325,7 +325,7 @@ pub(super) fn toolchain_path() -> Option<std::ffi::OsString> {
         PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/usr/local/bin"),
     ];
-    if let Some(home)=std::env::var_os("HOME").map(PathBuf::from) {
+    if let Some(home)=std::env::var_os(if cfg!(windows){"USERPROFILE"}else{"HOME"}).map(PathBuf::from) {
         paths.insert(0,home.join(".cargo/bin"));
         paths.insert(0,home.join(".local/bin"));
         paths.insert(0,home.join(".bun/bin"));
@@ -465,7 +465,7 @@ pub fn start_job(state: AppState, kind: &str, input: Value) -> Option<Value> {
 /// Reuse the existing installation job for a verified test-branch lineage.
 /// No fetch, main merge, model call or extra research generation is involved.
 pub fn start_rsi_install(state:AppState,campaign:&str,commit:&str)->Result<Value,String>{
-    live_source_root(&state)?;
+    source_dir(&state).filter(|dir|dir.join("Cargo.toml").is_file()).ok_or("DOMINION 소스 폴더를 연결하세요.")?;
     if state.config.port!=4317 {return Err("이 버튼은 4317 작업 브랜치 서버에서 사용하세요.".into());}
     if UPDATING.swap(true,Ordering::AcqRel) {return Err("버전 적용을 진행 중입니다.".into());}
     match start_job(state,"rsi_apply",json!({"campaignId":campaign,"commit":commit})) {
@@ -496,13 +496,19 @@ fn installation_has_active_work(state:&AppState)->bool {
 }
 
 async fn install_rsi_source(state:&AppState,input:&Value)->Result<(Vec<String>,Value),(Vec<String>,String)>{
-    let dir=live_source_root(state).map_err(|e|(vec![],e))?;
     if installation_has_active_work(state) {
         return Err((vec![],"실행 중인 대화나 작업이 끝난 뒤 적용하세요.".into()));
     }
     let id=input["campaignId"].as_str().ok_or_else(||(vec![],"개선 작업 없음".into()))?;
     let commit=input["commit"].as_str().ok_or_else(||(vec![],"선택 버전 없음".into()))?;
     let application=crate::engine::rsi_worktree::apply_campaign_to_sub(state,id,commit).await.map_err(|e|(vec![],e))?;
+    // Source promotion is portable. Replacing a live packaged/Windows
+    // executable requires its platform updater rather than macOS launchd.
+    let dir=match live_source_root(state) {
+        Ok(dir)=>dir,
+        Err(_)=>return Ok((vec!["독립 검증된 소스를 원본 브랜치에 반영했습니다. 현재 실행 파일은 재빌드·재시작 후 바뀝니다.".into()],
+            json!({"sourceApplied":true,"sourceCommit":commit,"application":application,"requiresRebuild":true,"restartRequired":false}))),
+    };
     let staged=state.config.data_dir.join("rsi-web").join(uuid::Uuid::new_v4().to_string());
     let build_target=state.config.data_dir.join("rsi-build").join("generator");
     let mut logs=vec![format!("검증된 계보를 {}에 반영했습니다. 실행 중인 서버는 빌드가 끝날 때까지 유지합니다.",

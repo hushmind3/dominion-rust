@@ -592,6 +592,9 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         if let Some(mut session)=context.state.store.get("session",&session_id) {
             session["rsiRun"]=json!(true);
             session["rsiSystemEvolution"]=input["rsiSystemEvolution"].clone();
+            session["rsiLocalOnly"]=input["rsiLocalOnly"].clone();
+            session["rsiApprovedProviderId"]=input["providerId"].clone();
+            session["rsiApprovedModel"]=input["model"].clone();
             session["rsiEpisodeTokenLimit"]=input["rsiEpisodeTokenLimit"].clone();
             session["rsiObjective"]=input["rsiObjective"].clone();
             session["rsiFocusFiles"]=input["rsiFocusFiles"].clone();

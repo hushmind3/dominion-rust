@@ -33,6 +33,7 @@ pub mod rsi_archive;
 pub mod rsi_metrics;
 pub mod rsi_meta;
 pub mod rsi_evolve;
+pub mod rsi_system;
 pub mod rsi_edit_genome;
 pub mod rsi_edit_program;
 pub mod rsi_decision_rules;
@@ -282,3 +283,5 @@ mod outcome_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 }
+
+pub mod rsi_profile;

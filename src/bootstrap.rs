@@ -14,6 +14,10 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
         println!("{}",engine::rsi_evolve::diagnose_capabilities());
         return Ok(());
     }
+    if args.first().map(String::as_str)==Some("--rsi-plan-generation") {
+        return engine::rsi_evolve::plan_generation_from_file(
+            args.get(1).ok_or("다음 세대 계획 파일이 필요합니다.")?);
+    }
     if args.first().map(String::as_str)==Some("--rsi-worker-job") {
         return engine::rsi_evolve::worker(args.get(1).ok_or("세대 작업 ID가 필요합니다.")?).await;
     }
