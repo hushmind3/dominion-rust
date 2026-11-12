@@ -232,10 +232,24 @@ pub(crate) fn propose(
         if !crate::engine::rsi::safe_path(path)||!unique.insert(path.to_string()){
             return Err("중복 또는 허용되지 않은 소스 경로입니다.".into());
         }
-        let file=fs::canonicalize(root.join(path))
-            .map_err(|_|"설계 대상이 실제 소스에 없습니다.".to_string())?;
-        if !file.starts_with(&root)||!file.is_file(){
-            return Err("외부 파일은 설계 범위가 아닙니다.".into());
+        let proposed=root.join(path);
+        if proposed.exists() {
+            let file=fs::canonicalize(&proposed)
+                .map_err(|_|"설계 대상 경로를 확인할 수 없습니다.".to_string())?;
+            if !file.starts_with(&root)||!file.is_file(){
+                return Err("외부 파일은 설계 범위가 아닙니다.".into());
+            }
+        } else {
+            // A new intelligence architecture may create additional modules.
+            // Resolve the existing parent to exclude symlink escapes.
+            let parent=proposed.parent()
+                .and_then(|dir|fs::canonicalize(dir).ok())
+                .ok_or("새 파일을 만들 실제 소스 폴더가 없습니다.")?;
+            if !parent.starts_with(&root)
+                || !matches!(proposed.extension().and_then(|ext|ext.to_str()),
+                    Some("rs"|"ts"|"tsx"|"js"|"jsx")) {
+                return Err("새 모듈은 현재 저장소의 소스 폴더 아래에 작성해야 합니다.".into());
+            }
         }
     }
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
@@ -340,6 +354,10 @@ mod tests {
         assert_eq!(proposed["proposal"]["qualityProven"],false);
         assert_eq!(proposed["proposal"]["generatorCommit"],"revision-a");
         assert_eq!(state.store.get("session","session").unwrap()["rsiSystemDesign"]["nextDomain"],"learning");
+        let mut new_module=request.clone();
+        new_module["targetFiles"]=json!(["src/engine/new_agent_method.rs"]);
+        assert!(propose(&state,"session",&new_module).is_ok(),
+            "a successor may design a new source module");
         let mut bad=request.clone();
         bad["targetFiles"]=json!(["src/engine/../escape.rs"]);
         assert!(propose(&state,"session",&bad).is_err());
