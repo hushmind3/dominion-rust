@@ -363,6 +363,13 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
+        // Sub3's proven native induction path is explicitly opted into
+        // continuous automatic campaigns. Each source edit still needs its
+        // own frozen independent paired evaluation and adopted lineage.
+        "rsiNativeInduction": continuous && body["nativeInduction"]==true
+            && body["selectionPolicy"]=="automatic",
+        "rsiStopAfterProof": continuous && body["stopAfterProof"]==true
+            && body["selectionPolicy"]=="automatic",
         "rsiIndexId": index_meta["id"],
         "rsiIndexFingerprint": index_meta["fingerprint"],
         "rsiIndexFiles": index_meta["files"],
