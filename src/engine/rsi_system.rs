@@ -228,6 +228,42 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn model_can_propose_design_only_in_its_own_active_system_generation() {
+        let root=std::env::temp_dir().join(format!("rsi-system-proposal-{}",uuid::Uuid::new_v4()));
+        let workspace=root.join("work");
+        fs::create_dir_all(workspace.join("src/engine")).unwrap();
+        fs::write(workspace.join("src/engine/algorithms.rs"),"pub fn base() {}").unwrap();
+        let config=crate::config::Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:workspace.clone()};
+        let state=crate::state::AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()));
+        state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve",
+            "status":"running","input":{"rsiNativeApproved":true}})).unwrap();
+        state.store.put("job",&json!({"id":"descendant","kind":"rsi_generation",
+            "status":"running","input":{"rsiCampaignId":"campaign",
+                "rsiSystemEvolution":true,"rsiGeneratorCommit":"revision-a"}})).unwrap();
+        state.store.put("session",&json!({"id":"session","rsiRun":true,
+            "rsiCampaignId":"campaign","rsiGenerationJobId":"descendant"})).unwrap();
+        let request=json!({"component":"algorithms","nextDomain":"learning",
+            "hypothesis":"The compiled planner has no causal source revision feedback.",
+            "design":"Introduce an inherited source-specific planning policy with evidence checks.",
+            "targetFiles":["src/engine/algorithms.rs"]});
+        let proposed=propose(&state,"session",&request).unwrap();
+        assert_eq!(proposed["proposal"]["status"],"proposed");
+        assert_eq!(proposed["proposal"]["qualityProven"],false);
+        assert_eq!(proposed["proposal"]["generatorCommit"],"revision-a");
+        assert_eq!(state.store.get("session","session").unwrap()["rsiSystemDesign"]["nextDomain"],"learning");
+        let mut bad=request.clone();
+        bad["targetFiles"]=json!(["src/engine/../escape.rs"]);
+        assert!(propose(&state,"session",&bad).is_err());
+        let mut disabled=state.store.get("job","descendant").unwrap();
+        disabled["input"]["rsiSystemEvolution"]=json!(false);
+        state.store.put("job",&disabled).unwrap();
+        assert!(propose(&state,"session",&request).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn only_adopted_model_design_can_control_a_new_compiled_descendant() {
         let base=json!({"generatorCommit":"parent","jobId":"worker",
             "acceptedCommit":"child","candidateOrigin":"model_driven_detached_worktree",
