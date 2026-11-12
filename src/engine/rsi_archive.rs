@@ -248,6 +248,21 @@ pub(crate) fn validate_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_patch_in_two_branches_has_disjoint_persistent_archive_identity() {
+        let plan=vec![json!({"id":"case1","domain":"memory","holdout":true,
+            "filter":"engine::memory::test_case","metrics":[]})];
+        let oracle="f".repeat(64);
+        let base="a".repeat(40);
+        let first=scoped_identity(&base,&plan,&oracle,Some("dominion-sub1"));
+        let second=scoped_identity(&base,&plan,&oracle,Some("dominion-sub2"));
+        let legacy=scoped_identity(&base,&plan,&oracle,None);
+        assert_ne!(first,second);
+        assert_ne!(first,legacy);
+        assert_ne!(second,legacy);
+        assert_eq!(legacy,plan_identity(&base,&plan,&oracle));
+    }
     use crate::{config::Config, db::Store, vault::Vault};
 
     fn state() -> (AppState, std::path::PathBuf) {
