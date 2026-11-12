@@ -1151,6 +1151,46 @@ pub(crate) fn propose(
             }
         }
     }
+    // The compiled child made an EVIDENCE-LEARNED capability selection.
+    // A proposal that ignores its actual target, or merely claims a new
+    // improvement principle without rewriting its method, cannot inherit.
+    let principle_execution=&child["input"]["rsiSystemAgenda"]["principleCurriculum"];
+    if principle_execution["source"]==
+        "compiled_adaptive_improvement_principle_curriculum_v1"{
+        let target_path=principle_execution["target"]["path"].as_str()
+            .ok_or("학습된 지능 개선 대상 소스가 없습니다.")?;
+        let target_role=principle_execution["target"]["role"].as_str()
+            .ok_or("학습된 지능 구성요소가 없습니다.")?;
+        if !target_set.contains(target_path)
+            || !component_files[target_role].as_array().is_some_and(|rows|
+                rows.iter().any(|p|p==target_path)){
+            return Err("학습한 지능 개선 대상이 실제 수정 소스 설계에 반영되지 않았습니다.".into());
+        }
+        if let (Some(method_path),Some(method_role))=(
+            principle_execution["methodSource"]["path"].as_str(),
+            principle_execution["methodSource"]["role"].as_str()){
+            if method_path!=target_path
+                && (!target_set.contains(method_path)
+                    || !component_files[method_role].as_array()
+                        .is_some_and(|rows|rows.iter().any(|p|p==method_path))
+                    || !principles.iter().any(|p|
+                        p["methodRole"]==method_role
+                            && p["methodSourcePaths"].as_array()
+                                .is_some_and(|rows|rows.iter()
+                                    .any(|path|path==method_path)))){
+                return Err("새 개선 원리를 실행할 소스 수정과 원리 선언이 일치하지 않습니다.".into());
+            }
+        }
+        if principle_execution["phase"]=="synthesize_new_improvement_principle" {
+            let required=principle_execution["compositionHypothesis"]["composedFrom"]
+                .as_array().ok_or("합성할 선행 개선 원리가 없습니다.")?;
+            if required.len()<2 || !principles.iter().any(|p|
+                p["composedFrom"].as_array().is_some_and(|rows|
+                    required.iter().all(|name|rows.contains(name)))){
+                return Err("실행할 합성 원리가 후손의 실제 원리 설계에 반영되지 않았습니다.".into());
+            }
+        }
+    }
     let next_files=body["nextTargetFiles"].as_array()
         .cloned().unwrap_or_default();
     if next_files.len()>3 || next_files.iter().any(|file|file.as_str()
