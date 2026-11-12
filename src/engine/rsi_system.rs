@@ -314,6 +314,15 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
             }
         }
     }
+    // Independently adopted, runtime-integrated NEW intelligence modules
+    // join the same architecture frontier as inherited built-in components.
+    // This preserves the new subsystem as a future self-redesign TARGET.
+    for component in crate::engine::rsi_open_topology::source_components(root,history) {
+        if !components.iter().any(|old|old["role"]==component["role"])
+            && components.len()<64 {
+            components.push(component);
+        }
+    }
     let evidence=history.iter().rev().take(8).map(|generation|json!({
         "generatorCommit":generation["generatorCommit"],
         "acceptedCommit":generation["acceptedCommit"],
@@ -556,6 +565,52 @@ pub(crate) fn propose(
     if paths.iter().filter_map(Value::as_str).any(|path|!assigned.contains(path)) {
         return Err("모든 targetFiles를 구성요소에 연결하세요.".into());
     }
+    // A newly invented subsystem is not merely a renamed design role:
+    // require its OWN implementation paths and distinct executable runtime
+    // integration paths within the same model-authored and edited proposal.
+    let mut new_components=Vec::new();
+    if let Some(proposals)=body["newComponents"].as_array(){
+        if component!="system" || proposals.len()>8 {
+            return Err("새 지능 구성요소는 최대 8개인 전체 시스템 설계에서만 생성합니다.".into());
+        }
+        let mut seen=BTreeSet::new();
+        for proposal in proposals {
+            let role=proposal["role"].as_str()
+                .filter(|r|crate::engine::rsi_open_topology::valid_role(r)
+                    && assignments.contains_key(*r)
+                    && !COMPONENTS.iter().any(|(original,_)|original==r))
+                .ok_or("새 지능 구성요소가 유효한 신규 역할이 아닙니다.")?;
+            if !seen.insert(role){return Err("중복 신규 지능 역할입니다.".into());}
+            let domain=proposal["domain"].as_str()
+                .filter(|d|crate::engine::rsi_evolve::DOMAINS.contains(d))
+                .ok_or("신규 지능의 발전 영역이 유효하지 않습니다.")?;
+            let purpose=proposal["purpose"].as_str()
+                .filter(|p|(30..=1200).contains(&p.len()))
+                .ok_or("새 지능이 해결할 능력과 실행 목적을 설명해야 합니다.")?;
+            let sources=proposal["sourcePaths"].as_array()
+                .filter(|xs|!xs.is_empty()&&xs.len()<=4)
+                .ok_or("신규 지능은 실제 구현 소스 경로가 필요합니다.")?;
+            let wires=proposal["integrationPaths"].as_array()
+                .filter(|xs|!xs.is_empty()&&xs.len()<=4)
+                .ok_or("신규 지능을 실행기에 연결할 별도 경로가 필요합니다.")?;
+            if !sources.iter().all(|p|p.as_str().is_some_and(|path|
+                crate::engine::rsi::safe_path(path)
+                && assignments[role].as_array().is_some_and(|xs|
+                    xs.iter().any(|x|x==path)))) {
+                return Err("새 지능 소스가 해당 구성요소에 배정되지 않았습니다.".into());
+            }
+            if !wires.iter().all(|p|p.as_str().is_some_and(|path|
+                crate::engine::rsi::safe_path(path)
+                && paths.iter().any(|x|x==path)
+                && !sources.iter().any(|s|s==path))) {
+                return Err("신규 지능의 실행 연결 파일이 소스 설계에 포함되지 않았습니다.".into());
+            }
+            new_components.push(json!({"role":role,"domain":domain,
+                "purpose":purpose,"sourcePaths":sources,
+                "integrationPaths":wires,
+                "qualityProven":false}));
+        }
+    }
     // Model-authored hypotheses are not causal evidence until an adopted
     // source change and a separately observed compiled descendant support them.
     let mut interaction_edges=Vec::new();
@@ -653,7 +708,8 @@ pub(crate) fn propose(
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
         commit,component,components,assignments,next,hypothesis,design,paths,
-        action_program,method_hypothesis,interaction_edges,successor_stages
+        action_program,method_hypothesis,interaction_edges,successor_stages,
+        new_components
     ]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
@@ -664,6 +720,7 @@ pub(crate) fn propose(
         "design":design,"targetFiles":paths,
         "actionProgram":action_program,"methodHypothesis":method_hypothesis,
         "interactionEdges":interaction_edges,"successorStages":successor_stages,
+        "newComponents":new_components,
         "qualityProven":false,"adopted":false
     });
     session["rsiSystemDesign"]=proposal.clone();
