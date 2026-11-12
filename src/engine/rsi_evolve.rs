@@ -5963,7 +5963,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         return Err(error.into());
     }
     job["rsiModelRouteExecuted"]=json!(
-        job["input"]["rsiModelRoute"]["selected"]["providerId"]
+        job["input"]["rsiModelRoute"]["source"]
+            =="compiled_descendant_evidence_model_ecology_v1"
+        && job["input"]["rsiModelRoute"]["selected"].is_object()
+        && job["input"]["providerId"].as_str().is_some_and(|s|!s.is_empty())
+        && job["input"]["model"].as_str().is_some_and(|s|!s.is_empty())
+        && job["input"]["rsiModelRoute"]["selected"]["providerId"]
             ==job["input"]["providerId"]
         && job["input"]["rsiModelRoute"]["selected"]["model"]
             ==job["input"]["model"]);
