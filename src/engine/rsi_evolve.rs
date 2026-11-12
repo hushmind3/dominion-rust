@@ -3627,6 +3627,8 @@ async fn run_loop(
             "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"]});
+        let evaluation_profile_sha=
+            crate::engine::rsi_profile::from_input(input)?["sha256"].clone();
         let generation_details = json!({
             "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
             "boundaryResult":current["rsiBoundaryResult"],
@@ -3637,8 +3639,7 @@ async fn run_loop(
             // A missing explicit profile still runs the DEFAULT frozen
             // evaluator. Record the actual frozen profile digest, not a
             // null user-input field, or measured learning silently vanishes.
-            "evaluationProfileSha256":
-                crate::engine::rsi_profile::from_input(input)?["sha256"],
+            "evaluationProfileSha256":evaluation_profile_sha,
             "architectureTarget":current["input"]["rsiArchitectureTarget"],
             "systemBlueprint":current["input"]["rsiSystemBlueprint"],
             "improvementDirective":current["input"]["rsiImprovementDirective"],
