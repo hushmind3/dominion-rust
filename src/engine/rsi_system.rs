@@ -265,14 +265,11 @@ pub(crate) fn architecture_frontier(
         }
     }
     let mut frontier=Vec::<Value>::new();
-    // The independent whole-system completion gate requires SIX core
-    // intelligence roles. Frontend is a seventh, optional application role;
-    // do not spend the scarce first generations there while a core is missing.
-    let complete_core=["algorithms","harness","memory","learning","tools",
-        "improvement_methods"].iter().all(|role|verified_roles.contains(*role));
+    // Keep the frontier open even when no component has been adopted yet.
+    // The editable meta-controller decides priorities; this source scanner
+    // must not forbid an intelligence role or a newly invented module.
     for component in blueprint["architecture"].as_array().into_iter().flatten() {
         let Some(role)=component["role"].as_str() else {continue;};
-        if role=="frontend" && !complete_core {continue;}
         let Some(domain)=architecture_role_domain(role).or_else(||
             component["domain"].as_str().filter(|d|
                 crate::engine::rsi_evolve::DOMAINS.contains(d))) else {continue;};
@@ -579,11 +576,13 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         actual code edits for your next descendant. Do not treat a prewritten \
         source mutation or a single benchmark speedup as system evolution.\n\
         Inspect real source and identify a causal limitation in the current \
-        agent's algorithm, harness, memory, learning, tools or improvement \
-        method. Propose a genuinely new executable design, inspect source \
-        hashes with code_search/workspace_read_range and WRITE the required \
-        cross-module Rust changes with workspace_replace_function (complete Rust function), workspace_replace (line mode or exact oldText), workspace_write. \
-        Before editing call rsi_system_plan(component, nextDomain, hypothesis, design, targetFiles). For a coupled redesign of algorithm, harness, memory, learning, tools, and improvement methods, use component=system and explicitly assign each file to one role with components and componentFiles. Then WRITE ALL the named source files: partially implemented designs receive no credit. New roles and source modules are allowed. Optionally author successorStages [{role,domain,path,objective,learningPolicy,toolPolicy,executionPolicy}]: the accepted descendant will apply observed-failure task ranking, source-edit focus and restricted tool access from these fields; only after your source is independently adopted will the NEW compiled descendant read its own code and attempt those next tasks. A design and a saved stage alone earn zero. At least one adopted generation must INVENT an executable method with rsi_method_propose and a later compiled descendant must EXECUTE it with verified postconditions. \
+        algorithms, harness, memory, learning, tools, model architectures, \
+        Python learning modules or the meta-improver itself. Propose a new \
+        executable cross-domain design and inspect exact source revisions. \
+        You may change Rust, TypeScript and Python source; for Rust functions \
+        use workspace_replace_function, for any language use workspace_replace \
+        (line mode or exact oldText), and create new modules with workspace_write. \
+        Before editing call rsi_system_plan(component, nextDomain, hypothesis, design, targetFiles). For a coupled redesign of algorithm, harness, memory, models, learning, tools and improvement methods, use component=system and explicitly assign each file to one role with components and componentFiles. Explain a source-grounded dependency from one subsystem's change to another subsystem's NEXT improvement capacity, and set successorStages to test that continuation. Then WRITE ALL the named source files: partially implemented designs receive no credit. New roles and source modules are allowed. Optionally author successorStages [{role,domain,path,objective,learningPolicy,toolPolicy,executionPolicy}]: the accepted descendant will apply observed-failure task ranking, source-edit focus and restricted tool access from these fields; only after your source is independently adopted will the NEW compiled descendant read its own code and attempt those next tasks. A design and a saved stage alone earn zero. At least one adopted generation must INVENT an executable method with rsi_method_propose and a later compiled descendant must EXECUTE it with verified postconditions. \
         Predict source-candidate creation, independent adoption, meta improvement and regressions with expectedOutcomes in rsi_system_plan BEFORE editing. The independent evaluator later calibrates this forecast and your descendant learns from its errors. Improve the intelligence control loop, not only a benchmark number. \
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
@@ -988,12 +987,13 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
         chain+=1;
         prior_commit=accepted.to_string();
         prior_binary=binary.to_string();
-        // Scope is the intelligence-bearing software stack, not the UI.
-        // Six physically edited roles must all be represented by adopted code.
+        // The whole intelligence stack includes the model adapter/training
+        // architecture, not only the harness and improver. A novel optional
+        // role may be introduced without pretending it replaces a core one.
         if chain>=3 && independently_planned>=2
             && witnessed_inherited_method
             && ["algorithms","harness","memory","learning","tools",
-                "improvement_methods"].iter().all(|role|covered.contains(*role)) {
+                "models","improvement_methods"].iter().all(|role|covered.contains(*role)) {
             return true;
         }
     }
