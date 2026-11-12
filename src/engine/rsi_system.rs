@@ -750,17 +750,61 @@ pub(crate) fn propose(
     if paths.iter().filter_map(Value::as_str).any(|path|!assigned.contains(path)) {
         return Err("모든 targetFiles를 구성요소에 연결하세요.".into());
     }
+    // The next source revision can inherit a model-written multi-step
+    // improvement procedure, including its learning and tool-use policies.
+    // It is activated only after this generation's REAL source patch passes
+    // independent validation and the new compiled binary rebinds its hashes.
+    let mut successor_stages=Vec::new();
+    let mut stage_names=BTreeSet::new();
+    if let Some(rows)=body["successorStages"].as_array() {
+        if rows.len()>8 {return Err("후속 개선 프로그램은 최대 8단계입니다.".into());}
+        for row in rows {
+            let role=row["role"].as_str().filter(|r|valid_role(r))
+                .ok_or("후속 프로그램 역할 이름 오류")?;
+            let domain=row["domain"].as_str().filter(|d|
+                crate::engine::rsi_evolve::DOMAINS.contains(d))
+                .ok_or("후속 프로그램 분야 오류")?;
+            let path=row["path"].as_str().filter(|p|crate::engine::rsi::safe_path(p))
+                .ok_or("후속 프로그램 소스 경로 오류")?;
+            let objective=row["objective"].as_str().filter(|o|
+                (25..=1200).contains(&o.chars().count()))
+                .ok_or("후속 프로그램 실행 목표 길이 오류")?;
+            if !stage_names.insert((role.to_string(),path.to_string())) {
+                return Err("중복된 후속 개선 단계".into());
+            }
+            let source=root.join(path);
+            if source.exists() {
+                let canonical=fs::canonicalize(&source).map_err(|e|e.to_string())?;
+                if !canonical.starts_with(&root)||!canonical.is_file() {
+                    return Err("후속 개선 프로그램의 파일이 저장소 밖입니다.".into());
+                }
+            }else if !paths.iter().any(|p|p.as_str()==Some(path)) {
+                return Err("새 모듈의 후속 개선은 이번 설계 targetFiles에 포함해야 합니다.".into());
+            }
+            let learning=row["learningPolicy"].as_str().unwrap_or("avoid_failed");
+            let tools=row["toolPolicy"].as_str().unwrap_or("allow_new_modules");
+            let execution=row["executionPolicy"].as_str().unwrap_or("explore_then_edit");
+            if !matches!(learning,"avoid_failed"|"retry_failed")
+                || !matches!(tools,"patch_only"|"allow_new_modules")
+                || !matches!(execution,"grounded_edit"|"explore_then_edit") {
+                return Err("후속 프로그램의 학습·도구·실행 정책 오류".into());
+            }
+            successor_stages.push(json!({"role":role,"domain":domain,
+                "path":path,"objective":objective,"learningPolicy":learning,
+                "toolPolicy":tools,"executionPolicy":execution}));
+        }
+    }
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,components,assignments,next,hypothesis,design,paths]).to_string().as_bytes()));
+        commit,component,components,assignments,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
         "campaignId":campaign_id,"generationJobId":child_id,
         "generatorCommit":commit,"component":component,"components":components,"componentFiles":assignments,
         "nextDomain":next,"hypothesis":hypothesis,
-        "design":design,"targetFiles":paths,
+        "design":design,"targetFiles":paths,"successorStages":successor_stages,
         "qualityProven":false,"adopted":false
     });
     session["rsiSystemDesign"]=proposal.clone();
@@ -791,6 +835,62 @@ pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
             || attempt["newFindings"].as_u64().unwrap_or(0)>0)
         .take(2).count();
     (exhausted<2).then(||domain.to_string())
+}
+
+/// Rebind an independently adopted model-authored improvement PROGRAM to
+/// current source bytes. This is executable *planning policy*, not a prompt
+/// about the last task. The new binary may rewrite this selector, use a new
+/// search formula or replace the whole program in its next accepted revision.
+pub(crate) fn inherited_stage(history:&[Value],frontier:&[Value])->Option<Value> {
+    let (accepted_index,parent)=history.iter().enumerate().rev()
+        .find(|(_,g)|adopted_design(g).is_some())?;
+    let design=adopted_design(parent)?;
+    let stages=design["successorStages"].as_array()?;
+    let mut scored=Vec::<(i64,usize,Value)>::new();
+    for (index,stage) in stages.iter().enumerate() {
+        let (Some(role),Some(domain),Some(path))=(
+            stage["role"].as_str(),stage["domain"].as_str(),stage["path"].as_str()
+        )else{continue};
+        if !valid_role(role)||!crate::engine::rsi::safe_path(path)
+            || !crate::engine::rsi_evolve::DOMAINS.contains(&domain){continue;}
+        let Some(source)=frontier.iter().find(|entry|
+            entry["role"]==role && entry["domain"]==domain && entry["path"]==path)
+        else{continue};
+        let learning=stage["learningPolicy"].as_str().unwrap_or("avoid_failed");
+        let tools=stage["toolPolicy"].as_str().unwrap_or("allow_new_modules");
+        let execution=stage["executionPolicy"].as_str().unwrap_or("explore_then_edit");
+        if !matches!(learning,"avoid_failed"|"retry_failed")
+            || !matches!(tools,"patch_only"|"allow_new_modules")
+            || !matches!(execution,"grounded_edit"|"explore_then_edit"){continue;}
+        let failed=history[accepted_index+1..].iter()
+            .filter(|g|g["accepted"]!=true
+                && g["focusFiles"].as_array().is_some_and(|f|
+                    f.iter().any(|p|p.as_str()==Some(path))))
+            .count() as i64;
+        let reproduced=history[accepted_index+1..].iter()
+            .filter(|g|g["accepted"]==true
+                && g["evaluation"]["metrics"]["eligible"]==true
+                && g["focusFiles"].as_array().is_some_and(|f|
+                    f.iter().any(|p|p.as_str()==Some(path))))
+            .count() as i64;
+        // Failure contrast is policy, not a hardcoded target. Altering this
+        // weight in the next source revision alters its own improvement plan.
+        let score=if learning=="retry_failed"{2*failed}
+            else{-3*failed}+2*reproduced;
+        scored.push((score,index,json!({
+            "source":"inherited_model_authored_improvement_program_v1",
+            "role":role,"domain":domain,"path":path,
+            "sourceSha256":source["sourceSha256"],
+            "objective":stage["objective"],"stageIndex":index,
+            "sourceDesignId":design["id"],"parentAcceptedCommit":parent["acceptedCommit"],
+            "learningPolicy":learning,"toolPolicy":tools,
+            "executionPolicy":execution,"failuresSinceAdoption":failed,
+            "reproductiveAdoptions":reproduced,
+            "qualityProven":false
+        })));
+    }
+    scored.sort_by(|a,b|b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.into_iter().next().map(|(_,_,v)|v)
 }
 
 /// Whole-system handoff evidence is separate from a source patch's score.
