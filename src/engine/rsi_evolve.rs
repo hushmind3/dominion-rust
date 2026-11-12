@@ -3255,6 +3255,17 @@ fn generator_target_dir(data_dir:&Path, campaign_id:&str) -> PathBuf {
     data_dir.join("rsi-build").join("generator").join(format!("campaign-{safe_id}"))
 }
 
+/// Once a clean native hypothesis has been independently measured and
+/// rejected as a plateau, exploring a *different* native operator is more
+/// useful than restoring the identical patch for a model that was never used.
+/// The receipt gate in the caller still has to validate the measured plateau.
+fn native_plateau_prefers_next_operator(input:&Value,candidate:&Value)->bool {
+    input["rsiNativeInduction"]==true
+        && input["selectionPolicy"]=="automatic"
+        && candidate["origin"]=="native_inductive_source_mutation"
+        && candidate["status"]=="inconclusive"
+}
+
 /// Choose a verified next domain from accepted native source mutations.
 /// The choice is an execution target, never a substitute for paired quality.
 fn native_descendant_target(input:&Value,history:&[Value])->Option<&'static str> {
@@ -3562,7 +3573,16 @@ async fn run_loop(
                                         &context.state,&candidate).is_ok();
                                 compiler_failure || plateau
                             });
-                        if transferable {
+                        // A verified neutral native source patch already
+                        // consumed one operator. Do not restore it into a
+                        // dirty worktree: that prevents the next native
+                        // hypothesis from being attempted at all.
+                        let native_alternative=transferable
+                            && context.state.store.get("rsi_candidate",id)
+                                .is_some_and(|candidate|
+                                    native_plateau_prefers_next_operator(
+                                        &child_input,&candidate));
+                        if transferable && !native_alternative {
                             child_input["rsiRepairCandidateId"]=json!(id);
                             child_input["rsiRepairParentJobId"]=last["jobId"].clone();
                         }
@@ -7999,6 +8019,23 @@ mod tests {
             active_before["id"]
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn independently_measured_native_plateau_can_try_another_operator() {
+        let input=json!({"rsiNativeInduction":true,"selectionPolicy":"automatic"});
+        let neutral=json!({"origin":"native_inductive_source_mutation",
+            "status":"inconclusive"});
+        assert!(native_plateau_prefers_next_operator(&input,&neutral));
+        let model=json!({"origin":"model_driven_detached_worktree",
+            "status":"inconclusive"});
+        assert!(!native_plateau_prefers_next_operator(&input,&model));
+        let failed=json!({"origin":"native_inductive_source_mutation",
+            "status":"proposed"});
+        assert!(!native_plateau_prefers_next_operator(&input,&failed));
+        let mut explicit=input.clone();
+        explicit["selectionPolicy"]=json!("manual");
+        assert!(!native_plateau_prefers_next_operator(&explicit,&neutral));
     }
 
     #[test]
