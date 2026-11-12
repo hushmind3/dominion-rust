@@ -632,6 +632,12 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         You can rewrite the source of rsi_meta_controller.rs itself to \
         improve that selection and its prediction calibration. A changed \
         improvement procedure must be executed and evaluated in its successor.\n\
+        Learn from independently paired held-out TASK QUALITY and the actual\n\
+        improvement ability of later recompiled descendants, not merely\n\
+        acceptance counts. Rewrite rsi_principle_learning.rs when its own\n\
+        evidence model, reward assignment or generalization logic is weak.\n\
+        Improvement targets include models.rs/model runtime, memory, learning\n\
+        and tools: use actual source edits and compare task behavior.\n\
         If assigned a concrete downstream coding task: solve THAT task with \
         your current improved intelligence. Do not substitute unrelated agent \
         redesign for the requested patch. The downstream result measures \
@@ -1021,6 +1027,12 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
     let reciprocal=crate::engine::rsi_mutual_program::completed_cycles(history);
     let reflexive=crate::engine::rsi_reflexive::completed(history);
     let open_programs=crate::engine::rsi_program_graph::handoff(history);
+    let principle_learning=crate::engine::rsi_principle_learning::study(history);
+    let principle_rows=principle_learning["principles"].as_array().cloned().unwrap_or_default();
+    let improved_task_cases=principle_rows.iter()
+        .map(|r|r["improvedCases"].as_u64().unwrap_or(0)).sum::<u64>();
+    let improved_descendant_cases=principle_rows.iter()
+        .map(|r|r["nextGenerationImprovements"].as_u64().unwrap_or(0)).sum::<u64>();
     let experiment_methods=crate::engine::rsi_reflexive::completed_method_cycles(history);
     let transfer=crate::engine::rsi_mutual_program::transfer_graph(history);
     let edges=interaction["edges"].as_array().cloned().unwrap_or_default();
@@ -1056,6 +1068,11 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
         "openImprovementLineageSha256":open_programs["sha256"],
         "openImprovementSourceEvidence":open_programs["steps"],
         "openImprovementProgramRewrites":open_programs["rewrites"],
+        "learnedImprovementPrincipleCount":principle_rows.len(),
+        "learnedPrincipleLedgerSha256":principle_learning["sha256"],
+        "independentlyImprovedTaskCases":improved_task_cases,
+        "independentlyImprovedDescendantCases":improved_descendant_cases,
+        "learnedPrincipleModels":principle_rows,
         "crossSubsystemAttribution":"independent_paired_observation_not_isolated_causal_proof",
         "demonstrated":chain>=3 && handoffs>=2 && missing.is_empty() && method_transfer && meta_gain,
         "coverageMeaning":"independently adopted source roles; performance is measured separately by downstream tasks"})
