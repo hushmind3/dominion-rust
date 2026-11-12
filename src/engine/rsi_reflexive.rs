@@ -309,18 +309,22 @@ mod tests {
     }
     fn accepted(id:&str,commit:&str,generator:&str,role:&str,path:&str,
         plan:Value)->Value{
+        let mut hashes=serde_json::Map::new();
+        hashes.insert(path.to_string(),json!("c".repeat(64)));
+        let mut role_files=serde_json::Map::new();
+        role_files.insert(role.to_string(),json!([path]));
         json!({"id":id,"jobId":format!("job-{id}"),"candidateId":format!("cand-{id}"),
             "generatorCommit":generator,"acceptedCommit":commit,
             "accepted":true,"pairedRevalidated":true,
             "evaluation":{"metrics":{"eligible":true}},
             "changedSourcePaths":[path],
-            "acceptedSourceHashes":{path:"c".repeat(64)},
+            "acceptedSourceHashes":Value::Object(hashes),
             "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
                 "generatorCommit":generator,"metaRevision":"d".repeat(64)},
             "metaPolicy":{"revision":"d".repeat(64)},
             "systemDesign":{"source":"model_authored_system_design",
                 "generatorCommit":generator,"generationJobId":format!("job-{id}"),
-                "components":[role],"componentFiles":{role:[path]},
+                "components":[role],"componentFiles":Value::Object(role_files),
                 "targetFiles":[path]},
             "reflexiveProgram":plan})
     }
