@@ -3646,6 +3646,21 @@ async fn run_loop(
         let usage = session
             .map(|s| context.state.store.session_usage(s))
             .unwrap_or(Value::Null);
+        let selected_provider=current["input"]["providerId"].as_str().unwrap_or("");
+        let selected_model=current["input"]["model"].as_str().unwrap_or("");
+        let api_route_usage=session.map(|id|context.state.store.api_route_usage(
+            id,selected_provider,selected_model)).unwrap_or(Value::Null);
+        let observed_routes=session.and_then(|id|
+            context.state.store.session_model_routes(id).ok());
+        let api_route_exclusive=observed_routes.as_ref().is_some_and(|routes|
+            routes.len()==1 && routes[0]["providerId"]==selected_provider
+                && routes[0]["model"]==selected_model);
+        let api_route_verified=api_route_exclusive
+            && api_route_usage["matchedExactProviderModelSession"]==true
+            && current["result"]["rsi"]["modelRouteVerified"]==true
+            && current["result"]["rsi"]["modelSessionId"].as_str()==session
+            && current["result"]["rsi"]["actualModelRoute"]["providerId"]==selected_provider
+            && current["result"]["rsi"]["actualModelRoute"]["model"]==selected_model;
         let tokens = usage["totalTokens"].as_u64().unwrap_or(0);
         record["tokensEstimated"] = json!(
             record["tokensEstimated"] == true || usage["estimatedCalls"].as_u64().unwrap_or(0) > 0
@@ -3718,6 +3733,12 @@ async fn run_loop(
             "ownerOrigin":current["input"]["rsiModelOrigin"],
             "generationJobId":child_id
         });
+        generation["requestedProviderId"]=json!(selected_provider);
+        generation["requestedModel"]=json!(selected_model);
+        generation["apiRouteSessionId"]=json!(session);
+        generation["apiRouteUsage"]=api_route_usage;
+        generation["apiRouteSessionExclusive"]=json!(api_route_exclusive);
+        generation["apiRouteExecutionVerified"]=json!(api_route_verified);
         // Only compare holdout records from identical frozen case/profile
         // definitions and the same actual compiled generator commit.
         let frozen_profile=json!([
