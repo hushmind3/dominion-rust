@@ -71,6 +71,9 @@ fn source_role(path:&str)->&'static str {
         || name.starts_with("training")||name.starts_with("trainable")
         || matches!(name,"models.rs"|"llm.rs"|"cli_model.rs"|"router.rs"
             |"gateway.rs"|"model_architecture.py"){return "models";}
+    // The executable model router is a core inference-intelligence
+    // component even though it is also part of the RSI control loop.
+    if name=="rsi_model_ecology.rs"{return "models";}
     if name.starts_with("rsi_") || name=="rsi.rs"
         || lower.contains("/self_improv")||lower.contains("/evolution"){
         return "improvement_methods";
