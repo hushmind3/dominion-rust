@@ -221,7 +221,8 @@ fn score(history: &[Value], program: &Value, n: &Value) -> f64 {
             // whether the newly built child can improve another subsystem.
             // Learn clade productivity only from a different compiled binary
             // and its own independently adopted, source-bound experiment.
-            if let Some(head)=g["acceptedCommit"].as_str() {
+            if let Some(head)=g["acceptedCommit"].as_str().filter(|_| 
+                g["generatorBinarySha256"].as_str().is_some_and(|h|!h.is_empty())) {
                 for child in history.iter().filter(|child|
                     child["generatorCommit"].as_str()==Some(head)
                     && child["generatorBinarySha256"].as_str().is_some_and(|h|
@@ -231,7 +232,8 @@ fn score(history: &[Value], program: &Value, n: &Value) -> f64 {
                     observed_children+=1.0;
                     let different_role=child["systemDesign"]["components"]
                         .as_array().is_some_and(|roles|roles.iter().any(|role|
-                            role!=&n["role"] && role!="improvement_methods"))
+                            role!=&n["role"]
+                            && role.as_str()!=Some("improvement_methods")))
                         || child["systemDesign"]["component"].as_str()
                             .is_some_and(|role|role!=n["role"].as_str().unwrap_or(""));
                     if different_role && actual_source_role(child)
