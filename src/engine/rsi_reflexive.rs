@@ -75,7 +75,7 @@ fn capability_change(g:&Value)->bool {
 /// The software, not an old coordinator, selects a frontier target grounded
 /// in current source bytes and previous INDEPENDENTLY adopted revisions.
 pub(crate) fn propose(history:&[Value],frontier:&[Value],commit:&str,
-    allowed:&[&str],regular:&Value)->Value {
+    allowed:&[&str],regular:&Value,experiment:&Value)->Value {
     let parent=history.iter().rev().find(|g|
         rsi_mutual_program::adopted_source(g)
             && g["acceptedCommit"]==commit);
@@ -85,6 +85,7 @@ pub(crate) fn propose(history:&[Value],frontier:&[Value],commit:&str,
     let mut meta_origin=Value::Null;
     let mut changed_role=Value::Null;
     let mut inherited=false;
+    let mut experiment_sha=Value::Null;
     let selected:Option<Value>=if let Some(p)=parent {
         let last=&p["reflexiveProgram"];
         if last["phase"]=="seed"
@@ -140,6 +141,59 @@ pub(crate) fn propose(history:&[Value],frontier:&[Value],commit:&str,
             }else {
                 seed(frontier,allowed).cloned()
             }
+        }else if last["phase"]=="return"
+            && last["generatorCommit"]==p["generatorCommit"]
+            && stage_executed(p)
+            && last["target"]["path"].as_str().is_some_and(|path|
+                meta_source(path) && actual_source(p,path))
+            && completed(history)["loops"].as_array().is_some_and(|loops|
+                loops.iter().any(|row|row["returnGenerationId"]==p["id"]))
+        {
+            // The former three-generation loop now redesigns the actual
+            // compiled A/B experiment generator as its next capability.
+            let revised=current(frontier,"src/engine/rsi_factorial.rs",allowed).cloned();
+            if revised.is_some() {
+                phase="redesign_experiment";inherited=true;
+                root=last["rootGenerationId"].clone();
+                ancestor=p["acceptedCommit"].clone();
+                meta_origin=last["originMetaPath"].clone();
+                changed_role=last["transferredRole"].clone();
+            }
+            revised.or_else(||seed(frontier,allowed).cloned())
+        }else if last["phase"]=="redesign_experiment"
+            && last["generatorCommit"]==p["generatorCommit"]
+            && stage_executed(p)
+            && last["target"]["path"]=="src/engine/rsi_factorial.rs"
+            && actual_source(p,"src/engine/rsi_factorial.rs")
+        {
+            // A recompiled experiment method must supply a CURRENT,
+            // source-anchored missing isolation. An arbitrary old edit
+            // target cannot masquerade as execution of the revised method.
+            let selected=&experiment["selected"];
+            let candidate=&selected["target"];
+            let method_executable=experiment["source"]
+                =="compiled_factorial_ablation_curriculum_v1"
+                && experiment["generatorCommit"]==commit
+                && experiment["historyCount"].as_u64()==Some(history.len() as u64)
+                && matches!(selected["phase"].as_str(),
+                    Some("isolate_left"|"isolate_right"))
+                && experiment["sha256"].as_str().is_some_and(|h|
+                    h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit()))
+                && candidate["role"]!="improvement_methods";
+            let target=if method_executable {
+                candidate["path"].as_str().and_then(|path|
+                    current(frontier,path,allowed))
+                    .filter(|row|*row==candidate).cloned()
+            }else{None};
+            if target.is_some() {
+                phase="execute_revised_experiment";inherited=true;
+                root=last["rootGenerationId"].clone();
+                ancestor=p["acceptedCommit"].clone();
+                meta_origin=last["originMetaPath"].clone();
+                changed_role=last["transferredRole"].clone();
+                experiment_sha=experiment["sha256"].clone();
+            }
+            target.or_else(||seed(frontier,allowed).cloned())
         }else {
             seed(frontier,allowed).cloned()
         }
@@ -169,10 +223,13 @@ pub(crate) fn propose(history:&[Value],frontier:&[Value],commit:&str,
         "phase":phase,"target":target,
         "rootGenerationId":root,"parentAcceptedCommit":ancestor,
         "originMetaPath":meta_origin,"transferredRole":changed_role,
+        "experimentPlanSha256":experiment_sha,
         "inheritedFromVerifiedParent":inherited,
         "next":match phase {
             "seed"=>"transfer_to_distinct_subsystem",
             "transfer"=>"return_to_meta_improver",
+            "return"=>"redesign_factorial_experiment",
+            "redesign_experiment"=>"execute_recompiled_factorial_experiment",
             _=>"seed_new_meta_method"
         },
         "editableSource":"src/engine/rsi_reflexive.rs",
@@ -247,6 +304,31 @@ pub(crate) fn valid(plan:&Value,history:&[Value],frontier:&[Value],
                 && plan["originMetaPath"]==first["reflexiveProgram"]["target"]["path"]
                 && target["path"]==plan["originMetaPath"]
         },
+        Some("redesign_experiment")=>{
+            parent["reflexiveProgram"]["phase"]=="return"
+                && stage_executed(parent)
+                && parent["reflexiveProgram"]["target"]["path"].as_str()
+                    .is_some_and(|p|meta_source(p)&&actual_source(parent,p))
+                && completed(history)["loops"].as_array().is_some_and(|loops|
+                    loops.iter().any(|row|row["returnGenerationId"]==parent["id"]))
+                && plan["rootGenerationId"]
+                    ==parent["reflexiveProgram"]["rootGenerationId"]
+                && target["role"]=="improvement_methods"
+                && path=="src/engine/rsi_factorial.rs"
+                && plan["experimentPlanSha256"].is_null()
+        },
+        Some("execute_revised_experiment")=>{
+            parent["reflexiveProgram"]["phase"]=="redesign_experiment"
+                && stage_executed(parent)
+                && parent["reflexiveProgram"]["target"]["path"]
+                    =="src/engine/rsi_factorial.rs"
+                && actual_source(parent,"src/engine/rsi_factorial.rs")
+                && plan["rootGenerationId"]
+                    ==parent["reflexiveProgram"]["rootGenerationId"]
+                && target["role"]!="improvement_methods"
+                && plan["experimentPlanSha256"].as_str().is_some_and(|h|
+                    h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit()))
+        },
         _=>false
     }
 }
@@ -312,6 +394,9 @@ pub(crate) fn instruction(plan:&Value)->String {
          seed: edit real Rust meta-improvement strategy. \
          transfer: the rebuilt descendant uses that strategy to change a DIFFERENT intelligence subsystem. \
          return: the capability-modified descendant changes the meta strategy AGAIN. \
+         redesign_experiment: edit executable factorial experiment selection SOURCE. \
+         execute_revised_experiment: use the RECOMPILED factorial selector to \
+         identify and implement its isolated intervention, not a canned target. \
          Change real current source; preserve frozen paired evaluation and exact SHA lineage. \
          Your editable curriculum is src/engine/rsi_reflexive.rs. \
          A planned stage is not a verified improvement.",
