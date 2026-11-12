@@ -3707,6 +3707,44 @@ async fn run_loop(
                 }
             }
         }
+        // Cross-campaign restart-durable Pareto stepping stones from main.
+        // The archive replays unchanged oracle, baseline and original pair.
+        // A neutral patch can seed the next worktree only when its own repair
+        // restorer rechecks the original source and paired evidence.
+        let frozen_cases=if child_input["rsiFrozenCases"].as_array().is_some(){
+            child_input["rsiFrozenCases"].clone()
+        }else{json!(crate::engine::rsi_worktree::metric_cases())};
+        let archive=crate::engine::rsi_archive::select(
+            &context.state,
+            record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+            &head,&frozen_cases);
+        child_input["rsiArchiveSelection"]=archive.clone();
+        if child_input["rsiRepairCandidateId"].is_null()
+            && child_input["rsiNativeInduction"]!=true
+            && archive["candidateId"].is_string(){
+            if let Some(id)=archive["candidateId"].as_str(){
+                if let Some(candidate)=context.state.store.get("rsi_candidate",id){
+                    if candidate["baseCommit"]==head
+                        &&candidate["status"]=="inconclusive"
+                        &&crate::engine::rsi::verify_revisable_quality_receipt(
+                            &context.state,&candidate).is_ok(){
+                        if let Some(parent)=candidate["rsiJobId"].as_str(){
+                            let run=context.state.store.get("rsi_run",
+                                &format!("rsi-run-{parent}"));
+                            if run.is_some_and(|row|
+                                row["candidateId"]==id
+                                &&row["checksPassed"]==true
+                                &&row["baseCommit"]==head) {
+                                child_input["rsiRepairCandidateId"]=json!(id);
+                                child_input["rsiRepairParentJobId"]=json!(parent);
+                                child_input["rsiInheritedCandidateId"]=json!(id);
+                                child_input["rsiArchiveRestored"]=json!(true);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         child_input["rsiTargetPlan"]=generation_target_plan(
             &target_domain,&target_selection,&target_strategy,&head);
         child_input["rsiNativePlan"]=if native_planning {
@@ -3920,6 +3958,8 @@ async fn run_loop(
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         // Keep serde_json's macro recursion bounded while preserving
         // native provenance as first-class generation evidence.
+        generation["archiveSelection"]=current["input"]["rsiArchiveSelection"].clone();
+        generation["inheritedCandidateId"]=current["input"]["rsiInheritedCandidateId"].clone();
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["systemAgenda"]=current["input"]["rsiSystemAgenda"].clone();
         generation["recursiveLaboratory"]=current["input"]["rsiRecursiveLaboratory"].clone();
