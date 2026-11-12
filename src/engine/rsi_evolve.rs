@@ -4193,6 +4193,13 @@ mod paired_descendant_target_tests {
 fn system_evolution_target_hint(input:&Value, attempt:u64)->Option<String> {
     if paired_descendant_target(input) {
         input["rsiSelectedDomain"].as_str().map(str::to_string)
+    } else if input["rsiAutonomous"]!=true && input["rsiAutoFocus"]==false
+        && input["rsiFocusFiles"].as_array().is_some_and(|rows|!rows.is_empty()) {
+        // A real user-specified source task is an immutable task constraint
+        // regardless of whether it comes from an interactive UI or a
+        // downstream A/B. The compiled planner still selects its algorithms.
+        input["rsiSelectedDomain"].as_str()
+            .filter(|domain|DOMAINS.contains(domain)).map(str::to_string)
     } else if attempt==1 && input["rsiAutonomous"]==true {
         Some("improver".into())
     } else {None}
@@ -4235,16 +4242,28 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         .and_then(|id|state.store.get("algorithm",id))
         .or_else(||crate::engine::algorithms::active(&state,"selfimprove.search"));
     let ranked=choose_focus_files(&state,&source_input,&history,policy.as_ref());
-    let focus=ranked.iter().filter_map(|row|row["path"].as_str())
-        .filter(|p|crate::engine::rsi::safe_path(p))
-        .take(8).collect::<Vec<_>>();
-    let source=input["rsiSourceDir"].as_str()
+    let explicit_paths=input["rsiFocusFiles"].as_array()
+        .filter(|paths|input["rsiAutonomous"]!=true
+            && input["rsiAutoFocus"]==false && !paths.is_empty());
+    let focus=if let Some(paths)=explicit_paths {
+        paths.iter().filter_map(Value::as_str)
+            .filter(|path|crate::engine::rsi::safe_path(path))
+            .take(8).collect::<Vec<_>>()
+    }else{
+        ranked.iter().filter_map(|row|row["path"].as_str())
+            .filter(|path|crate::engine::rsi::safe_path(path))
+            .take(8).collect::<Vec<_>>()
+    };
+    let source=input["rsiGeneratorSourceDir"].as_str()
+        .or_else(||input["rsiSourceDir"].as_str())
         .ok_or("후손 시스템 소스 위치가 없습니다.")?;
     let system_blueprint=crate::engine::rsi_system::blueprint(
         Path::new(source),commit,&history);
     let directive=crate::engine::rsi_system::improvement_directive(&history);
-    let archive=crate::engine::rsi_archive::select(
-        &state,&history,commit,&input["rsiFrozenCases"]);
+    let archive=if input["rsiAutonomous"]==true && input["rsiAutoFocus"]==true {
+        crate::engine::rsi_archive::select(
+            &state,&history,commit,&input["rsiFrozenCases"])
+    }else{Value::Null};
     let edit_policy=learned_edit_method(&state,input,&history);
     println!("{}",json!({
         "source":"compiled_descendant_system_controller_v2",
@@ -4271,6 +4290,11 @@ mod system_evolution_handoff_tests {
             "rsiObjective":"Improve memory","rsiSelectedDomain":"memory"});
         assert_eq!(system_evolution_target_hint(&explicit,1),None,
             "owner-defined objectives must outrank the default improver seed");
+        let focused=json!({"rsiSystemEvolution":true,"rsiAutonomous":false,
+            "rsiAutoFocus":false,"rsiFocusFiles":["src/engine/memory.rs"],
+            "rsiSelectedDomain":"memory"});
+        assert_eq!(system_evolution_target_hint(&focused,1),Some("memory".into()),
+            "a successor planner must honor assigned source tasks as well");
         let measured=json!({"rsiSystemEvolution":true,"rsiSourceScopeExpanded":true,
             "rsiSelectedDomain":"context",
             "rsiDecisionInput":{"basis":"independently_measured_post_adoption_target",
