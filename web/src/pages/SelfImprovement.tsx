@@ -21,7 +21,9 @@ type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGen
  history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:RsiTrialProof;targetReplan?:RsiReplanProof;focusSelection?:RsiTargetSelection;autonomousSearchProposal?:{
  status?:string;candidateId?:string;origin?:string;
  hypothesisEvidence?:{class?:string;wastedGenerations?:number;repeatedFiles?:number;previousRejectedPolicies?:number}
-};tokenUsage?:{promptTokens?:number;completionTokens?:number;calls?:number;estimatedCalls?:number}}[]}
+};generatorProviderId?:string;generatorModel?:string;
+ modelRoute?:{selected?:{providerId?:string;model?:string};selectionMode?:string;sourceGenerationQualityPromoted?:boolean};
+ tokenUsage?:{promptTokens?:number;completionTokens?:number;calls?:number;estimatedCalls?:number}}[]}
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
 const workloads={
@@ -30,11 +32,14 @@ const workloads={
  long:{label:'넉넉히',maxAttempts:12,tokenBudget:600000,timeBudgetSeconds:3600},
 } as const
 type Workload=keyof typeof workloads
-function preferences():{selection:'manual'|'automatic';workload:Workload;providerId:string;model:string}{
+function preferences():{selection:'manual'|'automatic';workload:Workload;providerId:string;model:string;
+ systemEvolution:boolean;adaptiveModelSelection:boolean}{
  try{const saved=JSON.parse(localStorage.getItem(PREFERENCES)||'null');return {
   selection:saved?.selection==='automatic'?'automatic':'manual',
-  workload:saved?.workload in workloads?saved.workload:'short',providerId:saved?.providerId||'',model:saved?.model||''}}
- catch{return {selection:'manual',workload:'short',providerId:'',model:''}}
+  workload:saved?.workload in workloads?saved.workload:'short',providerId:saved?.providerId||'',model:saved?.model||'',
+  systemEvolution:saved?.systemEvolution===true,adaptiveModelSelection:saved?.adaptiveModelSelection===true}}
+ catch{return {selection:'manual',workload:'short',providerId:'',model:'',
+  systemEvolution:false,adaptiveModelSelection:false}}
 }
 const stops:Record<string,string>={attempt_limit:'선택한 작업량을 마쳤습니다. 같은 목표로 이어갈 수 있습니다.',
  token_budget:'설정한 사용량에 도달했습니다. 연구와 선택 버전은 보존했습니다.',
@@ -87,6 +92,8 @@ export function SelfImprovementPage(){
  const enabled=enabledAll
  const [providerId,setProviderId]=useState(()=>preferences().providerId),[model,setModel]=useState(()=>preferences().model)
  const [workload,setWorkload]=useState<Workload>(()=>preferences().workload)
+ const [systemEvolution,setSystemEvolution]=useState(()=>preferences().systemEvolution)
+ const [adaptiveModelSelection,setAdaptiveModelSelection]=useState(()=>preferences().adaptiveModelSelection)
  const [modelChanged,setModelChanged]=useState(false)
  const budget=workloads[workload]
  const [request,setRequest]=useState(''),[selection,setSelection]=useState<'manual'|'automatic'>(()=>preferences().selection)
@@ -95,7 +102,9 @@ export function SelfImprovementPage(){
  const [jobId,setJobId]=useState(()=>{try{return localStorage.getItem(SAVED)||''}catch{return ''}})
  const [campaign,setCampaign]=useState<Campaign|null>(null)
  const [install,setInstall]=useState<InstallJob|null>(null)
- useEffect(()=>{try{localStorage.setItem(PREFERENCES,JSON.stringify({selection,workload,providerId,model}))}catch{}},[selection,workload,providerId,model])
+ useEffect(()=>{try{localStorage.setItem(PREFERENCES,JSON.stringify({
+  selection,workload,providerId,model,systemEvolution,adaptiveModelSelection
+ }))}catch{}},[selection,workload,providerId,model,systemEvolution,adaptiveModelSelection])
  useEffect(()=>{
   if(enabled.length&&!enabled.some(provider=>provider.id===providerId)){
    setProviderId(enabled[0].id);setModel(enabled[0].model||'')
@@ -147,7 +156,9 @@ export function SelfImprovementPage(){
   try{
    const job=await post<{id:string;status:string}>('/api/rsi/start',{
     providerId,model,...(continuing&&campaign?{continueFrom:campaign.id}:{request}),mode:'continuous',confirmation:'START_RSI_EVOLUTION',
-    selectionPolicy:selection,maxAttempts:budget.maxAttempts,tokenBudget:budget.tokenBudget,timeBudgetSeconds:budget.timeBudgetSeconds
+    selectionPolicy:selection,maxAttempts:budget.maxAttempts,tokenBudget:budget.tokenBudget,timeBudgetSeconds:budget.timeBudgetSeconds,
+    systemEvolution:selection==='automatic'&&systemEvolution,
+    adaptiveModelSelection:selection==='automatic'&&systemEvolution&&adaptiveModelSelection
    })
    setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setInstall(null);setModelChanged(false);setSettingsOpen(false)
    try{localStorage.setItem(SAVED,job.id)}catch{}
@@ -193,6 +204,19 @@ export function SelfImprovementPage(){
      disabled={working||busy} onClick={()=>setSelection(option.id)} className={'rounded-xl border p-3 text-left disabled:opacity-60 '+(selection===option.id?'border-[#C96442] bg-[#F9EDE6]':'border-[#E7E0D5] bg-white')}>
      <strong className="text-[13px]">{option.label}</strong><span className="mt-1 block text-[11px] text-[#7C7469]">{option.detail}</span></button>)}
    </div></div>
+   <div className="mt-4 rounded-xl border border-[#E7E0D5] p-4">
+    <label className="flex cursor-pointer items-start gap-3 text-[13px]">
+     <input type="checkbox" checked={systemEvolution} onChange={e=>setSystemEvolution(e.target.checked)}
+      disabled={working||busy||selection!=='automatic'} className="mt-1"/>
+     <span><strong>전체 지능과 개선 방법 함께 발전시키기</strong><span className="mt-1 block text-[11px] text-[#7C7469]">모델·기억·학습·도구·하네스와 개선 알고리즘의 실제 소스를 실험합니다. 자동 선택 모드에서 실행됩니다.</span></span>
+    </label>
+    <label className="mt-4 flex cursor-pointer items-start gap-3 text-[13px]">
+     <input type="checkbox" checked={adaptiveModelSelection}
+      onChange={e=>setAdaptiveModelSelection(e.target.checked)}
+      disabled={working||busy||selection!=='automatic'||!systemEvolution} className="mt-1"/>
+     <span><strong>연결된 모델들도 실측 비교해 다음 후손에 적용</strong><span className="mt-1 block text-[11px] text-[#7C7469]">연결·활성화된 API 및 로컬 모델을 실제 코드 생성에 사용하고 독립 평가로 다음 세대 모델을 고릅니다. 다른 서비스에 유료 호출이 발생할 수 있으며 설정한 토큰 한도를 공유합니다. API 모델 가중치를 수정하는 기능은 아닙니다.</span></span>
+    </label>
+   </div>
    <div className="mt-5"><FormField label="중점적으로 나아졌으면 하는 점 (선택)"><TextArea rows={2} value={request} onChange={e=>setRequest(e.target.value)} disabled={working||busy} placeholder="예: 기억을 더 잘하고, 같은 일을 적은 비용으로 해 줘. 비워 두어도 됩니다."/></FormField></div>
    <div className="mt-5"><FormField label="한 번에 진행할 작업량"><SelectInput value={workload} disabled={working||busy||installing} onChange={e=>setWorkload(e.target.value as Workload)}>{Object.entries(workloads).map(([key,value])=><option key={key} value={key}>{value.label} · 최대 {value.maxAttempts}단계 · {(value.tokenBudget/10000).toLocaleString()}만 토큰 · {value.timeBudgetSeconds/60}분</option>)}</SelectInput></FormField></div>
    <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-[11px] leading-5 text-[#8A8176]">연구만 한 단계도 다음 구현으로 이어집니다. 중단해도 지식은 남습니다.</p><Button variant="primary" onClick={()=>void start()} disabled={busy||working||installing||!providerId||!model.trim()}><Play size={15}/>발전 시작</Button></div>
@@ -213,6 +237,7 @@ export function SelfImprovementPage(){
    {campaign.history&&campaign.history.length>0&&<details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[#7C7469]">지난 비교 결과</summary><div className="mt-2 grid gap-2">
     {campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-3">
      <p>{item.attempt}번째 · {item.accepted?'검증 버전 선택':(item.newFindings||0)>0?'연구 보존':item.error?'개선 효과 확인 못함':'새로운 진전 없음'}{item.domainSelection==='algorithm_trial'?' · 전략 시험':item.domainSelection==='research_continuation'?' · 연구 계속':''}{item.trialOutcome?.verdict?' · 시험 '+item.trialOutcome.verdict:''}</p>
+     {item.modelRoute?.selected&&<p className="mt-1 text-[11px] text-[#5C544A]">실제 추론 모델: {item.generatorProviderId||item.modelRoute.selected.providerId} / {item.generatorModel||item.modelRoute.selected.model} · {item.modelRoute.sourceGenerationQualityPromoted?'동일 조건 실측 근거로 선택':'탐색·전이 평가 중'}</p>}
      {item.tokenUsage&&<p className="mt-1 text-[11px] text-[#7C7469]">입력 {(item.tokenUsage.promptTokens||0).toLocaleString()} · 출력 {(item.tokenUsage.completionTokens||0).toLocaleString()} 토큰{item.tokenUsage.estimatedCalls?' · 추정 '+item.tokenUsage.estimatedCalls+'회':''}</p>}
      {item.autonomousSearchProposal?.status==='pending_trial'&&<p className="mt-1 text-[11px] text-[#655D51]">
       자율 탐색식 생성 · {item.autonomousSearchProposal.hypothesisEvidence?.class==='avoid_regressions'?'회귀 원인 회피':'무성과 탐색 탈출'}
