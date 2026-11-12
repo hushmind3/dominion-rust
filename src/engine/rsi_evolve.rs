@@ -3932,6 +3932,13 @@ async fn run_loop(
                     .is_none_or(|architecture|architecture.len()!=7)
                 || plan["systemBlueprint"]["generatorCommit"]!=head
                 || plan["sourceTreeSha256"]!=plan["systemBlueprint"]["sourceTreeSha256"]
+                || plan["architectureFrontier"]!=
+                    crate::engine::rsi_system::architecture_frontier(
+                        &context.state,&plan["systemBlueprint"],&recorded_history,
+                        child_input["rsiIndexId"].as_str().unwrap_or(""))
+                || plan["architectureTarget"]!=plan["architectureFrontier"]
+                    .as_array().and_then(|rows|rows.first()).cloned()
+                    .unwrap_or(Value::Null)
                 || focus.len()>3 || focus.iter().any(|row|row.as_str()
                     .is_none_or(|p|!crate::engine::rsi::safe_path(p)
                         || !lab.join(p).is_file()
@@ -5239,19 +5246,50 @@ fn compiled_system_generation_plan(
     // successor policy. Failure/research history still drives the evolved
     // search algorithm when no adopted model-designed successor exists.
     let inherited=crate::engine::rsi_system::inherited_domain(history);
-    // A measured design authored by the accepted predecessor is an
-    // executable successor decision, not merely a hint. Research continuation
-    // would otherwise override it before its descendant can test the transfer.
-    let continuation=if inherited.is_some(){None}else{research_continuation(history)};
-    let selected=inherited.or_else(||input["rsiSelectedDomain"].as_str()
-        .filter(|domain|DOMAINS.contains(domain)).map(str::to_string));
+    // The compiled descendant searches its own source graph for whole-system
+    // coverage gaps, independently of the coordinator's historical ranking.
+    // A predecessor's verified design remains authoritative for its child.
+    // An uncovered module is a search opportunity, NEVER a demonstrated gain.
+    let frontier=crate::engine::rsi_system::architecture_frontier(
+        state,&blueprint,history,input["rsiIndexId"].as_str().unwrap_or(""));
+    let architecture_target=frontier.first().cloned().unwrap_or(Value::Null);
+    let architecture_domain=architecture_target["domain"].as_str()
+        .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
+    let continuation=if inherited.is_some()||architecture_domain.is_some(){
+        None
+    }else{research_continuation(history)};
+    let selected=inherited.clone().or(architecture_domain).or_else(||
+        input["rsiSelectedDomain"].as_str()
+            .filter(|domain|DOMAINS.contains(domain)).map(str::to_string));
     let (domain,selection,strategy)=select_generation_strategy(
         state,history,&objective,continuation,
         None,selected,commit
     );
     let mut focus_input=input.clone();
     focus_input["rsiTargetDomain"]=json!(domain);
-    let ranked=choose_focus_files(state,&focus_input,history,None);
+    let mut ranked=choose_focus_files(state,&focus_input,history,None);
+    // Keep the indexed source evidence and SHA attached to the actual
+    // descendant-selected target. An inherited model design can change the
+    // domain, in which case use that domain's indexed focus instead.
+    let preferred=if inherited.is_none()
+        && architecture_target["domain"]==domain {
+        architecture_target["path"].as_str()
+    }else{None};
+    if let Some(path)=preferred {
+        if root.join(path).is_file() {
+            ranked.retain(|row|row["path"]!=path);
+            let mut prioritised=json!({
+                "path":path,"sourceHash":architecture_target["sourceSha256"],
+                "source":"compiled_architecture_frontier",
+                "role":architecture_target["role"],
+                "domain":domain,"unmodified":architecture_target["verifiedRoleImproved"]==false
+            });
+            // Keep exact current-file index binding, so stale source graph
+            // choices never become model-authorized write targets.
+            prioritised["sourceIndexId"]=input["rsiIndexId"].clone();
+            ranked.insert(0,prioritised);
+        }
+    }
     let paths=ranked.iter().filter_map(|row|row["path"].as_str())
         .filter(|path|crate::engine::rsi::safe_path(path)
             && root.join(path).is_file())
@@ -5271,6 +5309,8 @@ fn compiled_system_generation_plan(
         "focusFiles":paths,
         "ranked":ranked,
         "systemBlueprint":blueprint,
+        "architectureFrontier":frontier,
+        "architectureTarget":architecture_target,
         "improvementDirective":directive,
         "decisionOwner":"rebuilt_descendant_binary",
         "frozenAuthority":"resident_independent_evaluator"
@@ -5378,6 +5418,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             Path::new(job["input"]["rsiSourceDir"].as_str()
                 .ok_or("후손 시스템 소스 없음")?),&commit,&history);
         let directive=crate::engine::rsi_system::improvement_directive(&history);
+        let frontier=crate::engine::rsi_system::architecture_frontier(
+            &state,&blueprint,&history,
+            job["input"]["rsiIndexId"].as_str().unwrap_or(""));
         let domain=plan["domain"].as_str().filter(|v|DOMAINS.contains(v))
             .ok_or("후손이 계획한 개선 분야가 유효하지 않습니다.")?;
         let selection=match plan["selection"].as_str() {
@@ -5391,6 +5434,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || plan["generatorCommit"]!=commit
             || plan["historyCount"].as_u64()!=Some(history.len() as u64)
             || plan["systemBlueprint"]!=blueprint
+            || plan["architectureFrontier"]!=json!(frontier)
+            || plan["architectureTarget"]!=frontier.first().cloned().unwrap_or(Value::Null)
             || job["input"]["rsiSystemBlueprint"]!=blueprint
             || job["input"]["rsiImprovementDirective"]!=directive
             || plan["improvementDirective"]!=directive
