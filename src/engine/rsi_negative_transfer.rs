@@ -204,6 +204,76 @@ mod tests {
             "a changed frozen profile may not inflate the original cohort");
     }
     #[test]
+    fn original_paired_receipts_select_two_real_intelligence_sources(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let root=std::env::temp_dir().join(
+            format!("rsi-negative-transfer-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg=Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(cfg.clone(),
+            Store::open(&cfg.db_path()).unwrap(),
+            Vault::open(&cfg.key_path()));
+        let source="src/engine/models.rs";
+        let frontier=vec![
+            json!({"role":"models","path":source,"domain":"models",
+                "sourceSha256":"a".repeat(64)}),
+            json!({"role":"memory","path":"src/engine/memory.rs",
+                "domain":"memory","sourceSha256":"b".repeat(64)})];
+        let head="c".repeat(40);
+        let profile="d".repeat(64);
+        let cases=(0..8).map(|i|json!({"id":format!("case-{i}"),
+            "domain":"memory","holdout":i<4,"metrics":[]}))
+            .collect::<Vec<_>>();
+        let mut history=Vec::new();
+        for trial in 0..2 {
+            let id=format!("negative-candidate-{trial}");
+            let raw=(0..8).map(|i|json!({"id":format!("case-{i}"),
+                "baselinePass":true,
+                "candidatePass":i!=trial,"metrics":{}}))
+                .collect::<Vec<_>>();
+            let metrics=rsi::evaluate_cases(&cases,&raw,"models").unwrap();
+            assert_eq!(metrics["verdict"],"regressed");
+            let receipt=format!("{:0>64}",trial+1);
+            let patch=format!("{:0>64}",trial+5);
+            state.store.put("rsi_candidate",&json!({
+                "id":id,"baseCommit":head,"target":"models",
+                "patchSha256":patch,"oracleVersion":"rsi-worktree-v2",
+                "cases":cases,"paths":[source],
+                "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                    "metrics":metrics,"verdict":"regressed",
+                    "evidenceSha256":receipt}
+            })).unwrap();
+            state.store.put("rsi_pair",&json!({
+                "id":format!("rsi-pair-{id}"),"candidateId":id,
+                "runner":"local_gitrepo_not_os_sandbox",
+                "evidenceSha256":receipt,
+                "metrics":metrics,"verdict":"regressed",
+                "report":{"reportSha256":receipt,"baseCommit":head,
+                    "patchSha256":patch,"oracleVersion":"rsi-worktree-v2",
+                    "baselineBuildOk":true,"candidateBuildOk":true,
+                    "cases":raw}
+            })).unwrap();
+            history.push(json!({"candidateId":id,"generatorCommit":head,
+                "evaluationProfileSha256":profile,"pairedMeasured":true,
+                "changedSourcePaths":[source],"evaluation":{"metrics":metrics}}));
+        }
+        let result=plan(&state,&history,&frontier,&head);
+        assert_eq!(result["selected"]["sourceRole"],"models");
+        assert_eq!(result["selected"]["victimRole"],"memory");
+        assert_eq!(result["selected"]["independentCandidateCounterexamples"],2);
+        assert_eq!(result["selected"]["distinctDamagedHoldoutCases"],2);
+        assert!(valid(&result,&frontier,&head,2));
+        // One untrusted self-reported damaged case cannot unlock a new
+        // two-source edit objective; only the replayed original pair does.
+        history[1]["evaluation"]["metrics"]["measurements"][0]["candidatePass"]
+            =json!(true);
+        let forged=plan(&state,&history,&frontier,&head);
+        assert!(forged["selected"].is_null());
+        assert!(valid(&forged,&frontier,&head,2));
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[test]
     fn negative_transfer_requires_a_previously_passing_holdout(){
         assert!(!regressed(&json!({"holdout":true,"baselinePass":false,
             "candidatePass":false})));
