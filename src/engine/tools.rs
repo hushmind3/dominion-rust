@@ -70,8 +70,9 @@ pub fn definitions() -> Vec<Value> {
                 "items":{"type":"object","properties":{
                     "role":{"type":"string"},"domain":{"type":"string"},
                     "purpose":{"type":"string"},
-                    "sourcePaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8}
-                },"required":["role","domain","purpose","sourcePaths"]}}),
+                    "sourcePaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4},
+                    "integrationPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4}
+                },"required":["role","domain","purpose","sourcePaths","integrationPaths"]}}),
             "componentFiles":json!({"type":"object","description":"REQUIRED when component=system: map each selected role to one or more paths from targetFiles that actually implement that role. All declared roles need source evidence.","additionalProperties":{"type":"array","minItems":1,"items":{"type":"string"}}}),
             "interactionEdges":json!({"type":"array","description":"Directed causal hypotheses for whole-system co-evolution: fromRole code makes toRole better at improving the system, with specific fromPath/toPath, mechanism and observable successor behavior.","maxItems":12,"items":{"type":"object","properties":{
                 "fromRole":{"type":"string"},"toRole":{"type":"string"},

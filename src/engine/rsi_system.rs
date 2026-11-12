@@ -494,7 +494,9 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. For a coupled redesign of several subsystems set component=system and specify 2-7 actual components in components, with up to 24 verified source paths; you can change algorithm, harness, memory, learning, tools and improvement methods together. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
         rsi_method_propose; mere registration is not evidence of execution. \
         You may INVENT intelligence roles via newComponents with role, \
-        domain, purpose, sourcePaths. They become new editable descendant \
+        domain, purpose, sourcePaths and integrationPaths that wire your new \
+        source into the executable agent. Dead modules are not new intelligence. \
+        They become new editable descendant \
         components only after independently adopted source-level improvements. \
         For a coupled redesign list interactionEdges defining fromRole, toRole, \
         fromPath, toPath, mechanism and observable NEXT-GENERATION effect. \
@@ -567,7 +569,7 @@ pub(crate) fn propose(
                 .filter(|t|(25..=1200).contains(&t.chars().count()))
                 .ok_or("새 지능 모듈의 개선 기능과 목적이 필요합니다.")?;
             let sources=row["sourcePaths"].as_array()
-                .filter(|v|!v.is_empty()&&v.len()<=8)
+                .filter(|v|!v.is_empty()&&v.len()<=4)
                 .ok_or("새 지능 구성요소에는 실제 소스 경로가 필요합니다.")?;
             if !sources.iter().all(|item|item.as_str().is_some_and(|path|
                 crate::engine::rsi::safe_path(path)
@@ -575,8 +577,19 @@ pub(crate) fn propose(
                     files.iter().any(|f|f==path)))){
                 return Err("새 구성요소의 소스는 반드시 실제 변경 대상이어야 합니다.".into());
             }
+            let integrations=row["integrationPaths"].as_array()
+                .filter(|v|!v.is_empty()&&v.len()<=4)
+                .ok_or("새 지능 구성요소를 실행하는 연결 소스 integrationPaths가 필요합니다.")?;
+            if !integrations.iter().all(|item|item.as_str().is_some_and(|path|
+                crate::engine::rsi::safe_path(path)
+                && !sources.iter().any(|source|source==path)
+                && body["targetFiles"].as_array().is_some_and(|files|
+                    files.iter().any(|f|f==path)))){
+                return Err("새 지능 모듈과 실행 하네스의 실제 변경 파일이 모두 필요합니다.".into());
+            }
             new_components.push(json!({"role":role,"domain":domain,
-                "purpose":purpose,"sourcePaths":sources,"qualityProven":false}));
+                "purpose":purpose,"sourcePaths":sources,
+                "integrationPaths":integrations,"qualityProven":false}));
         }
     }
     let component=body["component"].as_str()

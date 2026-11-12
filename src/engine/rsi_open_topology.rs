@@ -53,7 +53,7 @@ pub(crate) fn inherited_roles(history:&[Value])->Vec<Value> {
                 else{continue};
             if !source_claims(g,role){continue;}
             let Some(files)=proposal["sourcePaths"].as_array()
-                .filter(|files|!files.is_empty()&&files.len()<=8)
+                .filter(|files|!files.is_empty()&&files.len()<=4)
                 else{continue};
             if !files.iter().all(|file|file.as_str().is_some_and(|path|
                 crate::engine::rsi::safe_path(path)
@@ -62,9 +62,22 @@ pub(crate) fn inherited_roles(history:&[Value])->Vec<Value> {
                 && g["acceptedSourceHashes"][path].as_str().is_some_and(hash_valid))) {
                 continue;
             }
+            // An invented module that is never wired into executable agent
+            // source is a dead file, not an intelligence capability.
+            let Some(wires)=proposal["integrationPaths"].as_array()
+                .filter(|w|!w.is_empty()&&w.len()<=4) else{continue};
+            if !wires.iter().all(|wire|wire.as_str().is_some_and(|path|
+                crate::engine::rsi::safe_path(path)
+                && !files.iter().any(|f|f==path)
+                && g["systemDesign"]["targetFiles"].as_array()
+                    .is_some_and(|all|all.iter().any(|p|p==path))
+                && g["acceptedSourceHashes"][path].as_str().is_some_and(hash_valid))) {
+                continue;
+            }
             roles.insert(role.to_string(),json!({
                 "role":role,"domain":domain,"purpose":proposal["purpose"],
                 "sourcePaths":files,
+                "integrationPaths":wires,
                 "bornAtCommit":g["acceptedCommit"],
                 "bornByModelGeneration":g["jobId"],
                 "source":"independently_adopted_new_intelligence_component_v1",
@@ -72,7 +85,7 @@ pub(crate) fn inherited_roles(history:&[Value])->Vec<Value> {
             }));
         }
     }
-    roles.into_values().take(24).collect()
+    roles.into_values().take(20).collect()
 }
 
 /// The newly compiled agent discovers current descendants of every admitted
@@ -81,7 +94,7 @@ pub(crate) fn source_components(root:&Path,history:&[Value])->Vec<Value> {
     let Ok(root)=fs::canonicalize(root) else{return Vec::new()};
     inherited_roles(history).into_iter().filter_map(|role|{
         let mut sources=Vec::new();
-        for entry in role["sourcePaths"].as_array().into_iter().flatten().take(8) {
+        for entry in role["sourcePaths"].as_array().into_iter().flatten().take(4) {
             let path=entry.as_str()?;
             let file=fs::canonicalize(root.join(path)).ok()?;
             if !file.starts_with(&root)||!file.is_file(){return None;}
