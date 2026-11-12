@@ -45,7 +45,7 @@ fn measured_role(domain:&str)->&str{
 }
 fn paired_observation(g:&Value)->bool{
     // Do not label a model's self-reported feedback as cross-role influence.
-    g["pairedRevalidated"]==true
+    g["pairedMeasured"]==true
         && g["candidateId"].as_str().is_some()
         && g["evaluation"]["metrics"]["measurements"].is_array()
         && g["evaluation"]["metrics"]["verdict"].as_str().is_some()
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn cross_role_observations_are_not_automatic_single_component_causality(){
         let paired=json!({"id":"adopted","generatorCommit":"a".repeat(40),
-            "pairedRevalidated":true,"candidateId":"c","accepted":true,
+            "pairedMeasured":true,"pairedRevalidated":true,"candidateId":"c","accepted":true,
             "systemDesign":{"component":"harness"},
             "evaluation":{"metrics":{"verdict":"improved","measurements":[
                 {"domain":"memory","holdout":true,"baselinePass":false,"candidatePass":true,"metrics":[]},
