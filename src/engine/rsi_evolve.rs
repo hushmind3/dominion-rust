@@ -3585,6 +3585,8 @@ async fn run_loop(
             child_input["rsiPeerLineages"]=peers.clone();
             child_input["rsiMetaMethodHypothesis"]=
                 record["nextGenerationPlan"]["metaMethodHypothesis"].clone();
+            child_input["rsiCrossLineageHypothesis"]=
+                record["nextGenerationPlan"]["crossLineageHypothesis"].clone();
             child_input["rsiSelectedDomain"]=json!(target_domain);
             child_input["rsiDecisionInput"]=json!({
                 "source":"compiled_descendant_self_controller_v1",
@@ -3871,6 +3873,8 @@ async fn run_loop(
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
         generation["metaMethodHypothesis"]=current["input"]["rsiMetaMethodHypothesis"].clone();
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
+        generation["crossLineageHypothesis"]=
+            current["input"]["rsiCrossLineageHypothesis"].clone();
         generation["comparisonProfileSha256"]=json!(
             crate::engine::rsi_meta_controller::comparison_profile(&current["input"]));
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
@@ -4905,6 +4909,10 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         crate::engine::rsi_meta_controller::next_method_hypothesis(
             &meta_policy,&history)
     }else{Value::Null};
+    let hybrid=if system_mode {
+        crate::engine::rsi_meta_controller::compositional_hypothesis(
+            &peers,&meta_policy)
+    }else{Value::Null};
     let self_domain=if automatic {
         agenda["target"]["domain"].as_str()
             .filter(|domain|DOMAINS.contains(domain)).map(str::to_string)
@@ -4963,6 +4971,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "systemBlueprint":model,"systemAgenda":agenda,
         "metaPolicy":meta_policy,"peerLineages":peers,
         "metaMethodHypothesis":method_hypothesis,
+        "crossLineageHypothesis":hybrid,
         "rankedFiles":ranked
     }))
 }
@@ -5231,6 +5240,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let profile=crate::engine::rsi_meta_controller::comparison_profile(&job["input"]);
         crate::engine::rsi_meta_controller::validate_peer_lineages(
             &state,&job["input"]["rsiPeerLineages"],profile.as_deref(),campaign)?;
+        let expected_hybrid=crate::engine::rsi_meta_controller::compositional_hypothesis(
+            &job["input"]["rsiPeerLineages"],&expected_meta);
+        if job["input"]["rsiCrossLineageHypothesis"]!=expected_hybrid {
+            return Err("후손의 교차 계보 개선 설계와 독립 증거가 일치하지 않습니다.".into());
+        }
         job["rsiMetaPolicyExecuted"]=json!({
             "source":"running_compiled_descendant_binary",
             "generatorCommit":commit,
@@ -5260,6 +5274,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let meta=crate::engine::rsi_meta_controller::instruction(
             &job["input"]["rsiMetaPolicy"]);
         let hypothesis=&job["input"]["rsiMetaMethodHypothesis"];
+        let hybrid=&job["input"]["rsiCrossLineageHypothesis"];
         let cross_lineage=job["input"]["rsiPeerLineages"]["references"].as_array()
             .into_iter().flatten().take(3).map(|row|format!(
                 "other lineage roles={} hypothesis={} priorDesign={}",
@@ -5269,7 +5284,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
                 job["rsiInheritedMetaMethod"]["sequence"])
         }else{String::new()};
-        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}            {method}\n\n{}",
+        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
             job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let (prompt,fit)=fit_worker_generation_context(
