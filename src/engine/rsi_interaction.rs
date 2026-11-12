@@ -45,7 +45,7 @@ fn measured_role(domain:&str)->&str{
 }
 fn paired_observation(g:&Value)->bool{
     // Do not label a model's self-reported feedback as cross-role influence.
-    g["pairedMeasured"]==true
+    (g["pairedMeasured"]==true || g["pairedRevalidated"]==true)
         && g["candidateId"].as_str().is_some()
         && g["evaluation"]["metrics"]["measurements"].is_array()
         && g["evaluation"]["metrics"]["verdict"].as_str().is_some()
