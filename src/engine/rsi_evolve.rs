@@ -5799,7 +5799,7 @@ fn compiled_system_generation_plan(
         state,input["rsiCampaignId"].as_str().unwrap_or(""),input,None);
     let meta=if explicit_focus{baseline_meta}else{
         crate::engine::rsi_meta_controller::evolve_from_peer_methods(
-            baseline_meta,&peers)
+            baseline_meta,&peers,history)
     };
     // Learned laws are compiled into this actual successor, not a prompt-only
     // retrospective. A task-intelligence bottleneck can supersede another
