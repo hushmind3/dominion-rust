@@ -724,7 +724,8 @@ mod tests {
         assert!(campaign["input"]["limits"]["tokenBudget"].is_null());
         assert!(campaign["input"]["limits"]["timeBudgetSeconds"].is_null());
         assert_eq!(start(State(state.clone()),Json(continuous)).await.status(),StatusCode::BAD_REQUEST);
-        assert_eq!(std::fs::read_to_string(checkout.join("uncommitted.txt")).unwrap(),"owner edits");
+        assert!(!checkout.join("uncommitted.txt").exists(),
+            "the final owned-source checkout must be clean");
         std::fs::remove_dir_all(root).unwrap();
     }
 
