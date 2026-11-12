@@ -4069,6 +4069,26 @@ async fn run_loop(
             save(context,record)?;
             bind_action_to_source(&context.state,&mut child_input,&recorded_history);
         }
+        // Real API/local model selection is a source-backed compiled policy.
+        // The owner's baseline remains the default unless explicit opt-in
+        // opens a configured model pool. Each actual child receives the
+        // selected provider/model, not just a prompt-side recommendation.
+        child_input["rsiOriginalProviderId"]=input["providerId"].clone();
+        child_input["rsiOriginalModel"]=input["model"].clone();
+        let model_domain=child_input["rsiTargetDomain"].as_str()
+            .unwrap_or(target_domain.as_str());
+        let model_objective=crate::engine::memory::stable_id(&[
+            child_input["rsiObjective"].as_str().unwrap_or("")
+        ]);
+        let model_route=crate::engine::rsi_model_ecology::choose(
+            &context.state,&child_input,&recorded_history,&head,
+            model_domain,&model_objective);
+        if model_route["selected"].is_object(){
+            child_input["providerId"]=model_route["selected"]["providerId"].clone();
+            child_input["model"]=model_route["selected"]["model"].clone();
+        }
+        child_input["rsiModelRoute"]=model_route.clone();
+        record["nextModelRoute"]=model_route.clone();
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
@@ -4196,7 +4216,7 @@ async fn run_loop(
                 "calls":usage["calls"],"estimatedCalls":usage["estimatedCalls"]},
             "sourceContextChars":current["input"]["rsiFocusContextChars"],
             "totalPromptChars":current["input"]["rsiPromptContextChars"],
-            "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
+            "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":current["input"]["model"],"generatorProviderId":current["input"]["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
             "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
@@ -4224,6 +4244,12 @@ async fn run_loop(
         // not the coordinator's intention or an assistant message.
         let action_session=session.and_then(|sid|context.state.store.get("session",sid))
             .unwrap_or(Value::Null);
+        // Preserve the ACTUAL model used by this compiled descendant for
+        // independent model-route learning. The campaign input is only a
+        // baseline and must not impersonate a dynamically selected provider.
+        generation["modelRoute"]=current["input"]["rsiModelRoute"].clone();
+        generation["originalModel"]=current["input"]["rsiOriginalModel"].clone();
+        generation["originalProviderId"]=current["input"]["rsiOriginalProviderId"].clone();
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
@@ -5922,6 +5948,25 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         state.store.put("job",&job).ok_or("차세대 재계획 실패 기록 손실")?;
         return Err(error);
     }
+    // The next model call must use a receipt that this rebuilt descendant
+    // can independently reproduce from the SAME frozen task lineage.
+    let expected_objective=crate::engine::memory::stable_id(&[
+        job["input"]["rsiObjective"].as_str().unwrap_or("")
+    ]);
+    if !crate::engine::rsi_model_ecology::valid_receipt(
+        &state,&job["input"],&history,&commit,&domain,
+        &expected_objective) {
+        let error="실제 모델 호출 경로와 후손의 학습된 모델 선택 증거가 일치하지 않습니다.";
+        job["status"]=json!("failed");
+        job["error"]=json!(error);
+        state.store.put("job",&job).ok_or("모델 선택 검증 기록 손실")?;
+        return Err(error.into());
+    }
+    job["rsiModelRouteExecuted"]=json!(
+        job["input"]["rsiModelRoute"]["selected"]["providerId"]
+            ==job["input"]["providerId"]
+        && job["input"]["rsiModelRoute"]["selected"]["model"]
+            ==job["input"]["model"]);
     job["rsiDomain"] = json!(domain);
     job["rsiDomainSelection"] = json!(domain_selection);
     job["rsiSearchStrategy"] = strategy.clone();
@@ -5969,6 +6014,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             .chars().take(1100).collect::<String>();
         let meta_instruction=crate::engine::rsi_meta_controller::instruction(
             &job["input"]["rsiMetaPolicy"]);
+        let model_route_instruction=if job["rsiModelRouteExecuted"]==true {
+            format!("MODEL ECOLOGY EXECUTED: actualProvider={} actualModel={}                 selectedMode={} independentSameSourceEvidence={}                 externalAPIWeightsModified=false. This model was selected for                 REAL inference in this generation. A successful source patch                 does NOT demonstrate that its foundation-model weights improved.                 You may redesign the router in src/engine/rsi_model_ecology.rs                 and compare NEW configured models in later equal-profile trials.",
+                job["input"]["providerId"],job["input"]["model"],
+                job["input"]["rsiModelRoute"]["selectionMode"],
+                job["input"]["rsiModelRoute"]["selectedEvidence"])
+        }else{String::new()};
         let peer_instruction=crate::engine::rsi_meta_controller::peer_instruction(
             &job["input"]["rsiPeerLineages"]);
         let mutual_instruction=if job["input"]["rsiFactorialCurriculum"]
@@ -6012,7 +6063,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "qualityProven":false
         }));
         format!("{}\n\nNEXT SOURCE-EDIT ACTION: {}\n\nREAL PREDECESSOR RESULTS:\n{}\n\nTARGET COMPONENT IN MY COMPILED PLAN: {}\n\nCURRENT SOURCE WITH REAL LINE NUMBERS AND sourceSha256:\n{}\n\nPRIOR RESEARCH (not current source):\n{}\n\nYou have the current source now. Start with rsi_system_plan and perform a concrete workspace_replace or workspace_replace_function on the indicated file. Do not loop over code_search or workspace_read_range when the source excerpt is sufficient.",
-            format!("{}\n\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",crate::engine::rsi_system::instruction(
+            format!("{}\n\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",crate::engine::rsi_system::instruction(
                 &job["input"]["rsiSystemBlueprint"],&objective),
                 meta_instruction,peer_instruction,
                 if job["input"]["rsiRecursiveScienceActive"]==true
@@ -6026,7 +6077,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                     String::new()
                 }else{factorial_instruction},
                 topology_instruction,discovery_instruction,
-                principle_instruction,open_program_instruction),
+                principle_instruction,open_program_instruction,model_route_instruction),
             job["input"]["rsiImprovementDirective"],feedback,target,
             current_source,format!("{research}{inherited_task}"))
     }else{
