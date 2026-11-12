@@ -578,6 +578,66 @@ mod tests {
         assert!(plan.is_null());
     }
     #[test]
+    fn adopted_experiment_rewrite_is_actually_executed_by_next_compiled_generation(){
+        let mut f=frontier();
+        f.push(json!({"role":"tools","domain":"tools",
+            "path":"src/engine/tools.rs","sourceSha256":"c".repeat(64),
+            "sourceAttempts":0}));
+        let allowed=&["improver","memory","tools"];
+        let zero="0".repeat(40);
+        let one="1".repeat(40);
+        let two="2".repeat(40);
+        let three="3".repeat(40);
+        let four="4".repeat(40);
+        let five="5".repeat(40);
+        let p0=propose(&[],&f,&zero,allowed,&Value::Null,&Value::Null);
+        let a=accepted("meta-seed",&one,&zero,
+            "improvement_methods","src/engine/rsi_meta_controller.rs",p0);
+        let p1=propose(&[a.clone()],&f,&one,allowed,&Value::Null,&Value::Null);
+        let b=accepted("capability",&two,&one,"memory","src/engine/memory.rs",p1);
+        let p2=propose(&[a.clone(),b.clone()],&f,&two,allowed,
+            &Value::Null,&Value::Null);
+        let c=accepted("meta-return",&three,&two,
+            "improvement_methods","src/engine/rsi_meta_controller.rs",p2);
+        let ancestors=vec![a.clone(),b.clone(),c.clone()];
+        assert_eq!(completed(&ancestors)["completedLoops"],1);
+        let p3=propose(&ancestors,&f,&three,allowed,&Value::Null,&Value::Null);
+        assert_eq!(p3["phase"],"redesign_experiment");
+        assert!(valid(&p3,&ancestors,&f,&three));
+        let d=accepted("experiment-redesign",&four,&three,
+            "improvement_methods","src/engine/rsi_factorial.rs",p3);
+        // A real frozen-case joint intervention provides the newly compiled
+        // factorial method with an observed missing isolated arm.
+        let joint=json!({"id":"joint-record","candidateId":"joint-candidate",
+            "generatorCommit":four,"evaluationProfileSha256":"e".repeat(64),
+            "pairedMeasured":true,"accepted":false,
+            "changedSourcePaths":["src/engine/memory.rs","src/engine/tools.rs"],
+            "evaluation":{"metrics":{"verdict":"measured_non_adoption",
+                "measurements":[{"id":"holdout-1","holdout":true,
+                    "baselinePass":false,"candidatePass":true}]}}});
+        let mut history=vec![a,b,c,d,joint];
+        let graph=json!({"sha256":"f".repeat(64),"edges":[]});
+        let experiment=crate::engine::rsi_factorial::design(
+            &history,&f,&graph,allowed,&four);
+        assert_eq!(experiment["selected"]["phase"],"isolate_left");
+        assert_eq!(experiment["selected"]["target"]["role"],"memory");
+        let p4=propose(&history,&f,&four,allowed,&Value::Null,&experiment);
+        assert_eq!(p4["phase"],"execute_revised_experiment");
+        assert_eq!(p4["experimentPlanSha256"],experiment["sha256"]);
+        assert!(valid(&p4,&history,&f,&four));
+        let mut e=accepted("experiment-executed",&five,&four,
+            "memory","src/engine/memory.rs",p4);
+        e["factorialExperiment"]=experiment.clone();
+        e["compiledPlanExecuted"]["factorialSha256"]=experiment["sha256"].clone();
+        e["metaPolicy"]["revisedExperimentPlanSha256"]=experiment["sha256"].clone();
+        history.push(e.clone());
+        assert_eq!(completed_method_cycles(&history)["completedMethodCycles"],1);
+        let last=history.len()-1;
+        history[last]["compiledPlanExecuted"]["factorialSha256"]=json!("0".repeat(64));
+        assert_eq!(completed_method_cycles(&history)["completedMethodCycles"],0,
+            "a source patch with an unexecuted revision cannot close the method loop");
+    }
+    #[test]
     fn source_rebound_or_false_parent_commit_is_rejected(){
         let f=frontier();
         let p=propose(&[],&f,&"0".repeat(40),&["improver","memory"],&Value::Null,&Value::Null);
