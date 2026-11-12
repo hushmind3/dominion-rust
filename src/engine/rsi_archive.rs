@@ -108,6 +108,44 @@ fn remember(state:&AppState,identity:&str,candidate:&Value)->bool {
     })).is_some()
 }
 
+/// A neutral patch is a stepping stone, not an adopted improvement.
+/// Credit a search-parent *hypothesis* only when its model-driven child
+/// changed the inherited patch and the server independently verified and
+/// adopted its new source. Replaying the original paired receipt is
+/// mandatory. This is observational, not a causal ablation of the parent.
+fn verified_productive_offspring(
+    state:&AppState,g:&Value,base:&str,oracle:&str
+)->bool{
+    if g["accepted"]!=true ||g["pairedMeasured"]!=true
+        ||g["pairedRevalidated"]!=true ||g["inheritedPatchChanged"]!=true
+        ||g["candidateOrigin"]!="model_driven_detached_worktree"
+        ||g["generatorCommit"]!=base
+        ||g["archiveSelection"]["baseCommit"]!=base
+        ||g["archiveSelection"]["oracleSha256"]!=oracle
+        ||g["archiveSelection"]["candidateId"]!=g["inheritedCandidateId"]
+        ||g["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees" {
+        return false;
+    }
+    let Some(id)=g["candidateId"].as_str() else{return false};
+    let Some(candidate)=state.store.get("rsi_candidate",id) else{return false};
+    candidate["status"]=="verified"
+        &&candidate["baseCommit"]==base
+        &&candidate["origin"]=="model_driven_detached_worktree"
+        &&candidate["evaluation"]["metrics"]["eligible"]==true
+        &&candidate["evaluation"]["metrics"]==g["evaluation"]["metrics"]
+        &&candidate["evaluation"]["evidenceSha256"]==g["evaluation"]["evidenceSha256"]
+        &&candidate["experimentAdoption"]["commit"]==g["acceptedCommit"]
+        &&candidate["experimentAdoption"]["generatorCommit"]==base
+        &&candidate["experimentAdoption"]["productionDeployed"]==false
+        &&rsi::verified_pair_receipt(state,&candidate)
+}
+fn offspring_priority(attempts:usize,measured_wins:usize)->f64{
+    // Bayesian smoothing avoids treating 1/1 as conclusive. Every frontier
+    // candidate first receives up to two exploration attempts.
+    (measured_wins as f64+1.0)/(attempts as f64+2.0)
+        +0.12/(attempts as f64+1.0).sqrt()
+}
+
 /// Only completed, independently evaluated candidates enter the archive. The
 /// live campaign and the persisted archive share the verification gate; a
 /// same-patch alias or an unverified claim cannot consume exploration credit.
@@ -193,18 +231,47 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
         }
     }
     let children=|id:&str|child_jobs.get(id).map_or(0,BTreeSet::len);
-    let selected = frontier.iter().min_by(|left, right| {
-        children(&left.0)
-            .cmp(&children(&right.0))
-            .then_with(|| left.0.cmp(&right.0))
+    // Measured offspring productivity survives a campaign reset as well:
+    // historical unverified outcomes NEVER turn a neutral parent into
+    // an adopted improvement. This signal only ranks which parent to try.
+    let mut productive=BTreeMap::<String,BTreeSet<String>>::new();
+    let persisted_generations=state.store.all("rsi_generation");
+    for g in history.iter().chain(persisted_generations.iter()){
+        let Some(parent)=g["inheritedCandidateId"].as_str() else{continue};
+        if !child_jobs.contains_key(parent)
+            ||!verified_productive_offspring(state,g,base,&oracle){
+            continue;
+        }
+        if let Some(job)=g["jobId"].as_str(){
+            productive.entry(parent.to_string()).or_default().insert(job.to_string());
+        }
+    }
+    let wins=|id:&str|productive.get(id).map_or(0,BTreeSet::len);
+    let selected = frontier.iter().min_by(|left,right|{
+        let la=children(&left.0);
+        let ra=children(&right.0);
+        // Explore all verified non-dominated stepping stones before
+        // exploiting a parent with real downstream source adoptions.
+        if la<2 || ra<2 {
+            la.cmp(&ra).then_with(||left.0.cmp(&right.0))
+        }else{
+            offspring_priority(ra,wins(&right.0))
+                .total_cmp(&offspring_priority(la,wins(&left.0)))
+                .then_with(||la.cmp(&ra))
+                .then_with(||left.0.cmp(&right.0))
+        }
     });
     selected
         .map(|entry| {
             json!({
                 "candidateId":entry.0,"patchSha256":entry.1,
-                "policy":"paired-pareto-stepping-stones-v2","baseCommit":base,
+                "policy":"verified-offspring-pareto-stepping-stones-v3","baseCommit":base,
                 "oracleSha256":oracle,"archiveSize":entries.len(),"frontierSize":frontier.len(),
                 "descendantAttempts":children(&entry.0),
+                "independentlyAdoptedDescendants":wins(&entry.0),
+                "observedOffspringPriority":offspring_priority(
+                    children(&entry.0),wins(&entry.0)),
+                "offspringCausedByParentProven":false,
                 "persisted":entry.3,"adopted":false,"qualityProven":false,
             })
         })
@@ -360,6 +427,24 @@ mod tests {
         // A different evaluation identity must never reuse that entry.
         assert!(select(&state, &[], &"c".repeat(40), &plan()).is_null());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_parent_priority_requires_real_adopted_offspring() {
+        assert!(offspring_priority(6,4)>offspring_priority(6,0));
+        assert!(offspring_priority(4,2)>offspring_priority(4,0));
+        assert!(offspring_priority(6,0)<offspring_priority(1,0));
+        let fake=json!({"accepted":true,"pairedMeasured":true,
+            "pairedRevalidated":true,"inheritedPatchChanged":true,
+            "candidateOrigin":"native_inductive_source_mutation",
+            "generatorCommit":"a".repeat(40),
+            "inheritedCandidateId":"fake","candidateId":"fake",
+            "archiveSelection":{"baseCommit":"a".repeat(40),
+                "oracleSha256":"b".repeat(64),"candidateId":"fake"}});
+        let (state,root)=state();
+        assert!(!verified_productive_offspring(
+            &state,&fake,&"a".repeat(40),&"b".repeat(64)));
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
