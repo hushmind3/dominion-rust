@@ -559,7 +559,9 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 && input["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty()));
             session["rsiFocusContextReady"]=json!(
                 input["rsiFocusContextChars"].as_u64().unwrap_or(0) > 0
-                && input["rsiContextPlan"]["sourceExcerptDeferred"] != true);
+                && input["rsiContextPlan"]["sourceExcerptDeferred"] != true
+                && (input["rsiSystemEvolution"]!=true
+                    || input["rsiFocusGrounded"]==true));
             crate::engine::rsi_evolve::configure_method_session(&context.state, &input, &mut session);
             // A neutral candidate is restored only inside the detached worker.
             // The coordinator index still describes the pristine parent tree.
