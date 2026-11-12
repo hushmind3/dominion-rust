@@ -168,7 +168,7 @@ pub(crate) fn inherited_stage(
     // outcomes. Repeating a failed source target incurs a cost; a different
     // model-proposed stage may win next, without the resident coordinator
     // inventing the next strategy or claiming a quality gain.
-    stages.iter().filter_map(|stage|{
+    stages.iter().enumerate().filter_map(|(stage_index,stage)|{
         let role=stage["role"].as_str()?;
         let domain=stage["domain"].as_str()?;
         let path=stage["path"].as_str()?;
@@ -191,17 +191,21 @@ pub(crate) fn inherited_stage(
         }
         let rank=if learning=="retry_failed" {-(failures as i64)}
             else {failures as i64};
-        Some((rank,json!({"role":role,"domain":domain,"path":path,
+        Some((stage_index,rank,json!({"role":role,"domain":domain,"path":path,
             "sourceSha256":actual["sourceSha256"],
             "objective":stage["objective"],
             "sourceDesignId":design["id"],
             "predecessorCommit":prior["acceptedCommit"],
+            "programmeOriginDesignId":design["id"],
+            "programmeOriginCommit":prior["acceptedCommit"],
+            "programmeStageIndex":stage_index,
             "failedAttemptsSinceAdoption":failures,
             "learningPolicy":learning,
             "toolPolicy":tools,
             "executionPolicy":execution,
             "qualityProven":false})))
-    }).min_by_key(|(rank,_)|*rank).map(|(_,stage)|stage)
+    }).min_by_key(|(order,rank,_)|(*order,*rank))
+        .map(|(_,_,stage)|stage)
 }
 
 /// DGM/AlphaEvolve-style architecture frontier, evaluated by the descendant
