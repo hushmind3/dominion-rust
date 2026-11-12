@@ -11,25 +11,39 @@ use sha2::{Digest,Sha256};
 use std::collections::{BTreeMap,BTreeSet};
 
 fn actual_roles(g:&Value,frontier:&[Value])->Vec<String>{
+    // Measure the modules that REALLY changed, not the roles written in a
+    // proposed design or a broad requested focus list. This distinction is
+    // essential for both negative trials and multi-module interventions.
+    let changes=g["changedSourcePaths"].as_array().cloned().unwrap_or_default();
+    let changed=changes.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>();
+    if changed.is_empty(){return Vec::new();}
     let design=&g["systemDesign"];
-    let mut roles=design["components"].as_array().into_iter().flatten()
-        .filter_map(Value::as_str).filter(|v|!v.is_empty()&&v.len()<=64)
-        .map(str::to_string).collect::<Vec<_>>();
-    if roles.is_empty(){
-        if let Some(role)=design["component"].as_str().filter(|s|*s!="system"){
-            roles.push(role.to_string());
-        }
-    }
-    // Native edits and agents without a submitted systemDesign are first-
-    // class evidence: infer touched roles from actual target file paths.
-    if roles.is_empty(){
-        for path in g["focusFiles"].as_array().into_iter().flatten().filter_map(Value::as_str){
-            for entry in frontier.iter().filter(|e|e["path"]==path){
-                if let Some(role)=entry["role"].as_str(){roles.push(role.into());}
+    let authentic=design["source"]=="model_authored_system_design"
+        && design["generatorCommit"]==g["generatorCommit"]
+        && design["generationJobId"]==g["jobId"];
+    let mut roles=BTreeSet::new();
+    if authentic {
+        let declared=design["components"].as_array().cloned()
+            .unwrap_or_else(||vec![design["component"].clone()]);
+        for role in declared.iter().filter_map(Value::as_str)
+            .filter(|role|*role!="system"&&!role.is_empty()&&role.len()<=64){
+            let assigned=design["componentFiles"][role].as_array()
+                .or_else(||(declared.len()==1)
+                    .then(||design["targetFiles"].as_array()).flatten());
+            if assigned.is_some_and(|rows|rows.iter().any(|row|
+                row.as_str().is_some_and(|p|changed.contains(p)))){
+                roles.insert(role.to_owned());
             }
         }
     }
-    roles.sort();roles.dedup();roles.truncate(16);roles
+    // Native transformations or plans without a classified design still
+    // deserve evidence. Attribute them by ACTUAL changed files only.
+    for path in changed {
+        for entry in frontier.iter().filter(|entry|entry["path"]==path){
+            if let Some(role)=entry["role"].as_str(){roles.insert(role.to_owned());}
+        }
+    }
+    roles.into_iter().take(16).collect()
 }
 fn measured_role(domain:&str)->&str{
     match domain{
@@ -249,13 +263,21 @@ mod tests {
     fn cross_role_observations_are_not_automatic_single_component_causality(){
         let paired=json!({"id":"adopted","generatorCommit":"a".repeat(40),
             "pairedMeasured":true,"pairedRevalidated":true,"candidateId":"c","accepted":true,
-            "systemDesign":{"component":"harness"},
+            "jobId":"job1","changedSourcePaths":["src/engine/jobs.rs"],
+            "systemDesign":{"source":"model_authored_system_design",
+                "generatorCommit":"a".repeat(40),"generationJobId":"job1",
+                "component":"harness","targetFiles":["src/engine/jobs.rs"]},
             "evaluation":{"metrics":{"verdict":"improved","measurements":[
                 {"domain":"memory","holdout":true,"baselinePass":false,"candidatePass":true,"metrics":[]},
                 {"domain":"tools","holdout":true,"baselinePass":true,"candidatePass":true,
                     "metrics":[{"key":"quality","improved":true,"regressed":false}]}
             ]}}});
         let graph=influence_graph(&[paired.clone()],&[]);
+        let mut no_actual_patch=paired.clone();
+        no_actual_patch["changedSourcePaths"]=json!([]);
+        assert!(influence_graph(&[no_actual_patch],&[])["edges"]
+            .as_array().unwrap().is_empty(),
+            "declared intent without a changed source is never causal evidence");
         assert!(valid_graph(&graph));
         assert_eq!(graph["edges"].as_array().unwrap().len(),2);
         assert!(graph["edges"].as_array().unwrap().iter().any(|row|
@@ -264,6 +286,9 @@ mod tests {
         let mut joint=paired;
         joint["systemDesign"]["components"]=json!(["harness","learning"]);
         joint["systemDesign"]["component"]=Value::Null;
+        joint["changedSourcePaths"]=json!(["src/engine/jobs.rs","src/engine/learning.rs"]);
+        joint["systemDesign"]["componentFiles"]=json!({
+            "harness":["src/engine/jobs.rs"],"learning":["src/engine/learning.rs"]});
         let graph=influence_graph(&[joint],&[]);
         assert!(graph["edges"].as_array().unwrap().iter().all(|row|
             row["causalityProven"]==false && row["isolatedObservations"]==0));
