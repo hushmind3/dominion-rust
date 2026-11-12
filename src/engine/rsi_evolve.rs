@@ -3292,8 +3292,10 @@ async fn run_loop(
                 return Err("후손의 상호 지능 개선 인과 가설·복합 설계가 일치하지 않습니다.".into());
             }
             if plan["principleLearning"].is_object()
-                && !crate::engine::rsi_principle_learning::valid(
-                    &plan["principleLearning"],&history) {
+                && (!crate::engine::rsi_principle_learning::valid(
+                    &plan["principleLearning"],&history)
+                    || plan["metaPolicy"]["principleLearningSha256"]
+                        !=plan["principleLearning"]["sha256"]) {
                 return Err("후손의 개선 원리 학습 증거가 독립 평가 이력과 다릅니다.".into());
             }
             if plan["openImprovementProgram"].is_object()
@@ -4740,8 +4742,10 @@ fn validated_descendant_controller(
                 &plan["mutualProgram"],frontier,commit,history.len(),
                 &plan["mutualProgram"]["transferGraph"]))
         || (plan["principleLearning"].is_object()
-            && !crate::engine::rsi_principle_learning::valid(
-                &plan["principleLearning"],history))
+            && (!crate::engine::rsi_principle_learning::valid(
+                &plan["principleLearning"],history)
+                || plan["metaPolicy"]["principleLearningSha256"]
+                    !=plan["principleLearning"]["sha256"]))
         || (plan["openImprovementProgram"].is_object()
             && plan["architectureFrontier"].as_array().is_none_or(|frontier|
                 !crate::engine::rsi_program_graph::valid(
@@ -5095,8 +5099,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             return Err("실제 후손 작업기의 복합 지능 설계 출처가 변경됐습니다.".into());
         }
         if pinned && job["input"]["rsiPrincipleLearning"].is_object()
-            && !crate::engine::rsi_principle_learning::valid(
-                &job["input"]["rsiPrincipleLearning"],&history) {
+            && (!crate::engine::rsi_principle_learning::valid(
+                &job["input"]["rsiPrincipleLearning"],&history)
+                || job["input"]["rsiMetaPolicy"]["principleLearningSha256"]
+                    !=job["input"]["rsiPrincipleLearning"]["sha256"]) {
             return Err("재컴파일된 후손의 개선 원리 학습 기록이 변경됐습니다.".into());
         }
         if pinned && job["input"]["rsiOpenImprovementProgram"].is_object()
