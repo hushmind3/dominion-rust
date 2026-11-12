@@ -168,7 +168,6 @@ pub fn requires_approval(name: &str) -> bool {
             | "terminal_exec"
             | "github_api"
             | "browser_control"
-            | "rsi_model_adapter"
     )
 }
 
