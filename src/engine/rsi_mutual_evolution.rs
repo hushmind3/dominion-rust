@@ -51,7 +51,7 @@ pub(crate) fn graph(history:&[Value],frontier:&[Value])->Value{
     let roles=frontier.iter().filter_map(|row|row["role"].as_str())
         .filter(|role|!role.is_empty()&&role.len()<=64)
         .map(str::to_string).collect::<BTreeSet<_>>();
-    let recent=history.iter().rev().take(96).copied().collect::<Vec<_>>();
+    let recent=history.iter().rev().take(96).collect::<Vec<_>>();
     let mut attempts=BTreeMap::<String,u64>::new();
     let mut proven=BTreeMap::<String,u64>::new();
     let mut evidence=BTreeMap::<(String,String),EdgeEvidence>::new();
