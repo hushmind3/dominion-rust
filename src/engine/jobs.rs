@@ -637,7 +637,10 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                     .is_some_and(|row|row["repairKind"]=="quality_plateau"));
             }
             session["rsiObjective"]=input["rsiObjective"].clone();
-            session["rsiExplicitFocus"]=json!(rsi_focused_edit_goal(&input));
+            // Whole-system generation must edit coupled task/meta modules.
+            // A source-specific ancestor scope may not freeze sibling edits.
+            session["rsiExplicitFocus"]=json!(input["rsiSystemEvolution"]!=true
+                && rsi_focused_edit_goal(&input));
             session["rsiFocusContextReady"]=json!(
                 restored.is_none()
                 && input["rsiFocusContextChars"].as_u64().unwrap_or(0)>0

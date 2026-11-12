@@ -3388,6 +3388,10 @@ async fn run_loop(
             if input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
                 child_input["rsiFocusFiles"]=json!([]);
                 child_input["rsiAutoFocus"]=json!(true);
+                // The worker and its compiled planner must interpret an
+                // autonomous system redesign consistently, even after the
+                // controller chooses concrete source targets.
+                child_input["rsiAutonomous"]=json!(true);
             }
         }
         let objective = input["rsiObjective"].as_str().unwrap_or("");
@@ -3842,7 +3846,10 @@ async fn run_loop(
         // native provenance as first-class generation evidence.
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["systemAgenda"]=current["input"]["rsiSystemAgenda"].clone();
+        generation["controllerPlan"]=current["input"]["rsiNativePlan"]["systemAgenda"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
+        generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
+        generation["selfControllerVerified"]=current["rsiSelfControllerVerified"].clone();
         generation["inheritedMetaMethod"]=current["rsiInheritedMetaMethod"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
