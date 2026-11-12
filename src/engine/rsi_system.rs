@@ -141,6 +141,62 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
         components.push(json!({"role":role,"domain":role_domain(role),
             "representativeSources":inventory}));
     }
+    // Descendant-invented intelligence components must have real, adopted
+    // source code AND an adopted runtime connection. Role birth is not a
+    // label: a source module that is never called by the agent is not a
+    // reusable intelligence subsystem.
+    for generation in history {
+        let Some(design)=accepted_model_design(generation) else{continue};
+        for invented in design["newComponents"].as_array().into_iter().flatten() {
+            let Some(role)=invented["role"].as_str().filter(|r|valid_role(r))
+                else{continue};
+            if components.iter().any(|item|item["role"]==role) || components.len()>=64 {
+                continue;
+            }
+            let Some(domain)=invented["domain"].as_str().filter(|d|
+                crate::engine::rsi_evolve::DOMAINS.contains(d)) else{continue};
+            let Some(source_paths)=invented["sourcePaths"].as_array()
+                .filter(|p|!p.is_empty() && p.len()<=4) else{continue};
+            let Some(wires)=invented["integrationPaths"].as_array()
+                .filter(|p|!p.is_empty() && p.len()<=4) else{continue};
+            let target_files=design["targetFiles"].as_array();
+            let valid_source=|path:&str|{
+                target_files.is_some_and(|rows|rows.iter().any(|p|p==path))
+                    && generation["acceptedSourceHashes"][path].as_str().is_some_and(|sha|
+                        sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
+                    && intelligence_editable_path(path)
+            };
+            let explicit_mapping=design["componentFiles"][role].as_array();
+            if source_paths.iter().any(|file|file.as_str().is_none_or(|path|
+                !valid_source(path) || !explicit_mapping.is_some_and(|rows|
+                    rows.iter().any(|item|item==path))))
+                || wires.iter().any(|wire|wire.as_str().is_none_or(|path|
+                    !valid_source(path) || source_paths.iter().any(|p|p==path))) {
+                continue;
+            }
+            // Rebind to the current descendant's ACTUAL bytes. Later
+            // accepted rewrites must not erase a previously born subsystem
+            // just because its original introduction hash is now obsolete.
+            let entries=source_paths.iter().filter_map(|item|{
+                let path=item.as_str()?;
+                let root=canonical_root.as_ref()?;
+                let file=fs::canonicalize(root.join(path)).ok()?;
+                if !file.starts_with(root)||!file.is_file(){return None;}
+                let bytes=fs::read(file).ok()?;
+                Some(json!({"path":path,
+                    "sha256":format!("{:x}",Sha256::digest(&bytes)),
+                    "bytes":bytes.len()}))
+            }).collect::<Vec<_>>();
+            if entries.len()!=source_paths.len(){continue;}
+            components.push(json!({"role":role,"domain":domain,
+                "representativeSources":entries,
+                "birthCommit":generation["acceptedCommit"],
+                "integrationPaths":wires,
+                "purpose":invented["purpose"],
+                "origin":"accepted_compiled_descendant_wired_intelligence_v1",
+                "roleQualityProven":false}));
+        }
+    }
     // New accepted modules and novel architectural roles must remain visible.
     // A fixed seven-role topology would prevent self-redesign of the topology.
     for generation in history {
@@ -156,7 +212,16 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
                 if !real.starts_with(base)||!real.is_file(){return None;}
                 let bytes=fs::read(real).ok()?;
                 let hash=format!("{:x}",Sha256::digest(&bytes));
-                if generation["acceptedSourceHashes"][path]!=hash{return None;}
+                // Original role mapping must have been part of the independently
+                // adopted source patch. Current hashes belong to this NEW
+                // descendant's worktree, not to its historical creator.
+                if !design["targetFiles"].as_array().is_some_and(|rows|
+                    rows.iter().any(|item|item==path))
+                    || !generation["acceptedSourceHashes"][path].as_str()
+                        .is_some_and(|sha|sha.len()==64
+                            && sha.bytes().all(|b|b.is_ascii_hexdigit())) {
+                    return None;
+                }
                 Some(json!({"path":path,"sha256":hash,"bytes":bytes.len()}))
             }).collect::<Vec<_>>();
             if !entries.is_empty() && components.len()<64 {
@@ -744,6 +809,12 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
         evaluator alone decides adoption; do not edit the evaluator. \
+        You may INVENT new intelligence components with newComponents: each \ 
+        must include role, domain, purpose, sourcePaths AND changed \ 
+        integrationPaths that actually call or register that code. Propose \ 
+        interactionEdges with fromRole, toRole, fromPath, toPath, mechanism \ 
+        and observable for verifiable mutual improvement. These inventions \ 
+        become inheritable roles only after independent source adoption. \ 
         The accepted source will be compiled as your successor, which must \
         design and execute the subsequent change.\n\
         Source architecture (representatives; the full repository is searchable):\n{}\n\
@@ -879,6 +950,63 @@ pub(crate) fn propose(
             return Err("개선 프로그램은 실제 소스 관찰 후 소스 편집을 수행해야 합니다.".into());
         }
     }
+    // An invented intelligence role is admissible only with a changed
+    // implementation AND a separately changed runtime integration point.
+    let births=body["newComponents"].as_array().cloned().unwrap_or_default();
+    if births.len()>8 {return Err("새 지능 구성요소는 한 세대에 최대 8개입니다.".into());}
+    let mut birth_names=BTreeSet::new();
+    for item in &births {
+        let role=item["role"].as_str().filter(|r|valid_role(r) && *r!="system")
+            .ok_or("새 지능 구성요소 이름 오류")?;
+        if !birth_names.insert(role.to_string()) || !roles.iter().any(|r|r==role){
+            return Err("새 구성요소는 유일하며 실제 설계 역할에 포함돼야 합니다.".into());
+        }
+        if !item["domain"].as_str().is_some_and(|d|
+            crate::engine::rsi_evolve::DOMAINS.contains(&d)){
+            return Err("새 지능 구성요소의 기능 도메인 오류".into());
+        }
+        let paths=item["sourcePaths"].as_array()
+            .filter(|p|!p.is_empty()&&p.len()<=4)
+            .ok_or("새 구성요소의 구현 소스가 필요합니다.")?;
+        let wired=item["integrationPaths"].as_array()
+            .filter(|p|!p.is_empty()&&p.len()<=4)
+            .ok_or("새 구성요소의 실제 런타임 연결 소스가 필요합니다.")?;
+        let mapped=component_files[role].as_array()
+            .ok_or("새 구성요소의 소스 역할 매핑이 없습니다.")?;
+        if paths.iter().any(|f|f.as_str().is_none_or(|path|
+                !target_set.contains(path)||!mapped.iter().any(|m|m==path)))
+            || wired.iter().any(|w|w.as_str().is_none_or(|path|
+                !target_set.contains(path)||paths.iter().any(|p|p==path))){
+            return Err("새 구성요소와 런타임 연결은 변경 파일로 명시돼야 합니다.".into());
+        }
+        if !item["purpose"].as_str().is_some_and(|p|
+            p.trim().len()>=15 && p.len()<=1000){
+            return Err("새 지능 구성요소의 실질적인 기능 설명이 필요합니다.".into());
+        }
+    }
+    let edges=body["interactionEdges"].as_array().cloned().unwrap_or_default();
+    if edges.len()>12{return Err("상호개선 관계는 최대 12개입니다.".into());}
+    for edge in &edges{
+        let from=edge["fromRole"].as_str().filter(|role|
+            roles.iter().any(|r|r==role)).ok_or("상호개선 출발 역할 오류")?;
+        let to=edge["toRole"].as_str().filter(|role|
+            roles.iter().any(|r|r==role) && *role!=from)
+            .ok_or("상호개선 대상 역할 오류")?;
+        for (key,role) in [("fromPath",from),("toPath",to)]{
+            let path=edge[key].as_str().filter(|p|target_set.contains(*p))
+                .ok_or("상호개선은 실제 변경 소스를 연결해야 합니다.")?;
+            if !component_files[role].as_array().is_some_and(|a|
+                a.iter().any(|p|p==path)){
+                return Err("상호개선 소스의 구성요소 소유 관계 오류".into());
+            }
+        }
+        if !edge["mechanism"].as_str().is_some_and(|s|
+            s.len()>=20&&s.len()<=1200)
+            || !edge["observable"].as_str().is_some_and(|s|
+                s.len()>=10&&s.len()<=1000){
+            return Err("상호개선 관계의 메커니즘과 관찰 가능한 결과가 필요합니다.".into());
+        }
+    }
     let next_files=body["nextTargetFiles"].as_array()
         .cloned().unwrap_or_default();
     if next_files.len()>3 || next_files.iter().any(|file|file.as_str()
@@ -926,7 +1054,8 @@ pub(crate) fn propose(
         .ok_or("후손 소스 버전이 없습니다.")?;
     let revision=format!("{:x}",Sha256::digest(json!([
         generator,component,&roles,domain,hypothesis,design,targets,
-        &component_files,&body["actionProgram"],&stages,&next_files,method_hypothesis
+        &component_files,&body["actionProgram"],&stages,&next_files,method_hypothesis,
+        &births,&edges
     ]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),
@@ -939,6 +1068,7 @@ pub(crate) fn propose(
         "methodHypothesis":method_hypothesis,
         "actionProgram":body["actionProgram"],
         "successorStages":stages,
+        "newComponents":births,"interactionEdges":edges,
         "observedSources":observed,
         "qualityProven":false,"adopted":false
     });
