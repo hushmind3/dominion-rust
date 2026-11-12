@@ -3090,7 +3090,8 @@ async fn run_loop(
             // its original improver file. The rebuilt descendant selects
             // subsequent targets; the coordinator only preserves measured
             // post-adoption constraints and the owner's explicit file choice.
-            let first_system_generation=!prior_history.iter().any(|row|row["accepted"]==true);
+            let first_system_generation=attempt==1
+                && !prior_history.iter().any(|row|row["accepted"]==true);
             let owner_focus=input["rsiFocusFiles"].as_array()
                 .is_some_and(|paths|!paths.is_empty());
             let evidence=if first_system_generation {
@@ -4124,6 +4125,9 @@ mod paired_descendant_target_tests {
         let mut speculative=evidence;
         speculative["rsiDecisionInput"]["basis"]=json!("parent_next_decision");
         assert!(!paired_descendant_target(&speculative));
+        let only_system=json!({"rsiSystemEvolution":true,"rsiSelectedDomain":"improver"});
+        assert!(!paired_descendant_target(&only_system),
+            "system mode cannot masquerade as independently measured target");
     }
 }
 
@@ -4232,7 +4236,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         bind_inherited_target(&mut job["input"],&Value::Null);
     }
     let objective = selection_objective(&job["input"]);
-    let paired_target=paired_descendant_target(&job["input"]) || job["input"]["rsiSystemEvolution"]==true || job["input"]["rsiDiagnostic"]["failed"].as_u64().unwrap_or(0)>0;
+    // System evolution is a search mode, not a measured holdout constraint.
+    // Only a genuine paired target or live failed diagnosis may pin a domain.
+    let paired_target=paired_descendant_target(&job["input"])
+        || job["input"]["rsiDiagnostic"]["failed"].as_u64().unwrap_or(0)>0;
     let latest=history.iter().max_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let continuation = latest.filter(|_|!paired_target)
         .filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)
