@@ -100,7 +100,7 @@ pub fn definitions() -> Vec<Value> {
                 "description":"Model-authored source-bound learning principle: change both one task-intelligence component AND the editable method that discovers its improvements, with independent next-generation predictions",
                 "properties": {
                     "name":{"type":"string"},
-                    "taskRole":{"type":"string","enum":["models","learning","memory","tools","harness","algorithms"]},
+                    "taskRole":{"type":"string","description":"Any actual source-backed intelligence role discovered or invented by this descendant; not the improvement_methods role"},
                     "taskFile":{"type":"string"},
                     "methodFile":{"type":"string"},
                     "failureMode":{"type":"string"},
