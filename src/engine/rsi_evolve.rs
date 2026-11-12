@@ -4010,6 +4010,17 @@ async fn run_loop(
                 &context.job_id)?;
             let domain=plan["domain"].as_str().filter(|d|DOMAINS.contains(d))
                 .ok_or("후손이 유효하지 않은 개선 분야를 계획했습니다.")?;
+            // The supervisor validates endpoint ownership, pinned frozen
+            // suite and revision digest, NEVER recomputes an old selector's
+            // ranking law. New descendants may evolve that learning law.
+            let original_objective=crate::engine::memory::stable_id(&[
+                child_input["rsiObjective"].as_str().unwrap_or("")
+            ]);
+            if !crate::engine::rsi_model_ecology::valid_facts(
+                &context.state,&child_input,&plan["modelRoute"],&head,
+                domain,&original_objective){
+                return Err("후손의 모델 선택이 승인된 제공자·평가 계보와 일치하지 않습니다.".into());
+            }
             let focus=plan["focusFiles"].as_array()
                 .ok_or("후손의 소스 계획이 없습니다.")?;
             if plan["source"].as_str().is_none_or(str::is_empty)
@@ -4057,6 +4068,11 @@ async fn run_loop(
             child_input["rsiPrincipleProgramme"]=plan["principleProgramme"].clone();
             child_input["rsiPrincipleActive"]=plan["principleActive"].clone();
             child_input["rsiOpenProgramPlan"]=plan["openProgramPlan"].clone();
+            child_input["rsiModelRoute"]=plan["modelRoute"].clone();
+            if plan["modelRoute"]["selected"].is_object(){
+                child_input["providerId"]=plan["modelRoute"]["selected"]["providerId"].clone();
+                child_input["model"]=plan["modelRoute"]["selected"]["model"].clone();
+            }
             child_input["rsiDescendantPlan"]=plan.clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             record["nextGenerationPlan"]=plan.clone();
@@ -4075,20 +4091,10 @@ async fn run_loop(
         // selected provider/model, not just a prompt-side recommendation.
         child_input["rsiOriginalProviderId"]=input["providerId"].clone();
         child_input["rsiOriginalModel"]=input["model"].clone();
-        let model_domain=child_input["rsiTargetDomain"].as_str()
-            .unwrap_or(target_domain.as_str());
-        let model_objective=crate::engine::memory::stable_id(&[
-            child_input["rsiObjective"].as_str().unwrap_or("")
-        ]);
-        let model_route=crate::engine::rsi_model_ecology::choose(
-            &context.state,&child_input,&recorded_history,&head,
-            model_domain,&model_objective);
-        if model_route["selected"].is_object(){
-            child_input["providerId"]=model_route["selected"]["providerId"].clone();
-            child_input["model"]=model_route["selected"]["model"].clone();
-        }
-        child_input["rsiModelRoute"]=model_route.clone();
-        record["nextModelRoute"]=model_route.clone();
+        // The actual selection was emitted and source-bound by the rebuilt
+        // child's compiled planner. An old resident supervisor may not
+        // substitute its own model-ranking equation.
+        record["nextModelRoute"]=child_input["rsiModelRoute"].clone();
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
@@ -5710,6 +5716,14 @@ fn compiled_system_generation_plan(
         }
     }
     let directive=crate::engine::rsi_system::improvement_directive(history);
+    // The NEWLY COMPILED child, not the old campaign supervisor, learns
+    // which real configured API/local model will author this generation.
+    // Updating this source or rsi_model_ecology.rs changes future routing.
+    let model_route=crate::engine::rsi_model_ecology::choose(
+        state,input,history,commit,&domain,
+        &crate::engine::memory::stable_id(&[
+            input["rsiObjective"].as_str().unwrap_or("")
+        ]));
     Ok(json!({
         "source":"compiled_descendant_system_controller_v3",
         "generatorCommit":commit,
@@ -5736,6 +5750,7 @@ fn compiled_system_generation_plan(
         "principleProgramme":principle,
         "principleActive":principle_active,
         "openProgramPlan":open_program,
+        "modelRoute":model_route,
         "successorStage":successor_stage,
         "improvementDirective":directive,
         "decisionOwner":"rebuilt_descendant_binary",
@@ -5871,6 +5886,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || job["input"]["rsiPrincipleProgramme"]!=plan["principleProgramme"]
             || job["input"]["rsiPrincipleActive"]!=plan["principleActive"]
             || job["input"]["rsiOpenProgramPlan"]!=plan["openProgramPlan"]
+            || job["input"]["rsiModelRoute"]!=plan["modelRoute"]
             || job["input"]["rsiSuccessorStage"]!=plan["successorStage"]
             || job["input"]["rsiSystemBlueprint"]!=plan["systemBlueprint"]
             || job["input"]["rsiImprovementDirective"]!=plan["improvementDirective"]
