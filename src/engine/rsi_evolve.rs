@@ -3151,6 +3151,8 @@ async fn run_loop(
             .map_or(Value::Null, |tokens| json!(tokens));
         // Account only for source context that was ACTUALLY delivered.
         child_input["rsiFocusContextChars"] = json!(if defer_focus {0} else {focus.chars().count()});
+        child_input["rsiFocusGrounded"] = json!(!defer_focus
+            && focus.contains("sourceSha256: ") && focus.contains("~~~"));
         child_input["rsiPromptContextChars"] = json!(child_input["prompt"]
             .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
         let child = context
@@ -3879,6 +3881,8 @@ fn reconcile_descendant_target(
     job["input"]["rsiPromptContextChars"]=json!(prompt.chars().count());
     job["input"]["rsiFocusContextChars"]=json!(
         if source_deferred {0}else{focus.chars().count()});
+    job["input"]["rsiFocusGrounded"]=json!(!source_deferred
+        && focus.contains("sourceSha256: ") && focus.contains("~~~"));
     job["input"]["rsiContextPlan"]=json!({
         "mode":mode,"sourceExcerptDeferred":source_deferred && !focus.is_empty(),
         "researchReadLedgerDeferred":research_deferred && !research.is_empty(),
