@@ -4199,8 +4199,17 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let proposed_factorial=crate::engine::rsi_intervention_lab::design(
         &history,&frontier,&inherited_meta,&initial_symbiosis,
         &permitted,revision,profile.as_deref(),&inherited_experiment_method);
+    // An active single-source experiment must not starve open-ended
+    // inventions. Continue measured sibling interventions on this EXACT
+    // source revision; otherwise allocate every third task to experiments.
+    // A model-authored adopted experimental method can change this balance.
+    let measured_siblings=proposed_factorial["selected"]["evidence"]
+        ["candidateCount"].as_u64().unwrap_or(0);
+    let method_promoted=inherited_experiment_method["source"]
+        =="model_authored_causal_experiment_policy_v1";
     let factorial_active=auto && stage.is_null()
-        && proposed_factorial["selected"].is_object();
+        && proposed_factorial["selected"].is_object()
+        && (measured_siblings>0 || history.len()%3==1 || method_promoted);
     // An explicit owner objective or a previously adopted successor program
     // must NOT inherit file-write restrictions from an unused experiment.
     // Null means no actual factorial intervention was scheduled.

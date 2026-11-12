@@ -490,7 +490,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         method. Propose a genuinely new executable design, inspect source \
         hashes with code_search/workspace_read_range and WRITE the required \
         cross-module Rust changes with workspace_replace_range/function/write. \
-        Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. For a coupled redesign of several subsystems set component=system and specify 2-7 actual components in components, with up to 24 verified source paths; you can change algorithm, harness, memory, learning, tools and improvement methods together. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
+        Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. For a coupled redesign of several subsystems set component=system and specify 2-24 actual or invented roles in components, with up to 24 source-grounded paths; you can change algorithm, harness, memory, learning, tools and improvement methods together. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
         rsi_method_propose; mere registration is not evidence of execution. \
         You may INVENT intelligence roles via newComponents with role, \
         domain, purpose, sourcePaths and integrationPaths that wire your new \
