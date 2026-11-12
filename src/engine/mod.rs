@@ -38,6 +38,7 @@ pub mod rsi_mutual_evolution;
 pub mod rsi_causal_curriculum;
 pub mod rsi_open_topology;
 pub mod rsi_recursive_discovery;
+pub mod rsi_principle_lab;
 pub mod rsi_scan;
 pub mod rsi_worktree;
 pub mod rsi_compiler_repair;
