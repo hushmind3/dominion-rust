@@ -113,7 +113,7 @@ impl Route {
             "ground" => matches!(name,"workspace_read_range"|"code_search"),
             "contrast" => matches!(name,"code_search"|"workspace_read_range"),
             "reground" | "focus_ground" => name=="workspace_read_range",
-            "edit" => matches!(name,"workspace_replace_range"|"workspace_replace"|"workspace_write"),
+            "edit" => matches!(name,"workspace_replace_range"|"workspace_replace"|"workspace_replace_function"|"workspace_write"),
             _ => true,
         }
     }
@@ -144,7 +144,7 @@ pub fn route(policy: &Value, operations: &[Value], calls: u64,
             successful_search=true;
             if successful_read || source_in_prompt {post_ground_search=true;}
         }
-        if matches!(name,"workspace_replace_range"|"workspace_replace") {
+        if matches!(name,"workspace_replace_range"|"workspace_replace"|"workspace_replace_function") {
             if completed && operation["result"]["written"]==true
                 && operation["toolReceipt"]["verified"]==true {
                 verified_write=true;
