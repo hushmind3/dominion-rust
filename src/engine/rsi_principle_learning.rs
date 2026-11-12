@@ -155,6 +155,49 @@ fn cases(g:&Value)->Vec<(String,String,i8)> {
             Some((domain.to_owned(),id.to_owned(),change))
         }).collect()
 }
+/// Calibrate the *selection algorithm itself*. Only forecasts that were
+/// chosen BEFORE independent case evaluation enter this error signal.
+/// Model-authored confidence or source-adoption alone earns no credit.
+fn predictive_calibration(history:&[Value])->Value {
+    let mut results=Vec::<(f64,Value)>::new();
+    let mut seen=BTreeSet::new();
+    for g in history {
+        if !independent_trial(g){continue;}
+        let plan=&g["openImprovementProgram"];
+        let Some(predicted)=plan["principleSelectionEvidence"]["caseQualityPosterior"]
+            .as_f64().filter(|p|p.is_finite()&&(0.0..=1.0).contains(p))
+            else{continue};
+        if !sha_ok(&plan["principleLearningSha256"])
+            || g["principleLearning"]["sha256"]!=plan["principleLearningSha256"] {
+            continue;
+        }
+        let Some(candidate)=g["candidateId"].as_str() else{continue};
+        for (domain,id,delta) in cases(g) {
+            if !seen.insert((candidate.to_owned(),domain.clone(),id.clone())){continue;}
+            let reward=if delta>0{1.0}else{0.0};
+            let error=(predicted-reward).powi(2);
+            results.push((error,json!({
+                "generationId":g["id"],"candidateId":candidate,"domain":domain,
+                "caseId":id,"forecast":predicted,"caseImproved":delta>0,
+                "brierError":error,"source":"precommitted_compiled_principle_estimate"
+            })));
+        }
+    }
+    let trials=results.len();
+    let mean=if trials>0 {
+        results.iter().map(|x|x.0).sum::<f64>()/trials as f64
+    }else{0.0};
+    results.sort_by(|a,b|b.0.total_cmp(&a.0));
+    json!({
+        "source":"independent_case_level_meta_predictor_calibration_v1",
+        "measuredCases":trials,"meanBrierError":mean,
+        "highErrorCases":results.into_iter().take(6).map(|v|v.1).collect::<Vec<_>>(),
+        "needsLearnerSourceRevision":trials>=3 && mean>0.28,
+        "recommendsEditableSource":"src/engine/rsi_principle_learning.rs",
+        "fixedOracleUnchanged":true,
+        "qualityImprovedByRevision":false
+    })
+}
 #[derive(Default)]
 struct Aggregate {
     attempts:u64,
@@ -262,6 +305,7 @@ pub(crate) fn study(history:&[Value])->Value {
         "effectSource":"frozen_holdout_case_level_and_rebuilt_descendant",
         "sourceAdoptionIsNotTaskGain":true,
         "crossRoleEffectIsObservational":true,
+        "predictiveCalibration":predictive_calibration(history),
         "modelWeightsTrained":false,
         "editableLearningSource":"src/engine/rsi_principle_learning.rs",
         "qualityProvenForNewProgram":false
@@ -316,6 +360,7 @@ pub(crate) fn instruction(ledger:&Value)->String {
         eb["estimatedPriority"].as_f64().unwrap_or(0.0)
             .total_cmp(&ea["estimatedPriority"].as_f64().unwrap_or(0.0))
     });
+    let calibration=&ledger["predictiveCalibration"];
     let top=rows.iter().take(5).map(|row|format!(
         "mechanism={} measured={} gains={} regressions={} next-generation cases={} next-generation improvements={} across-domains={}",
         row["mechanism"],row["measuredCases"],row["improvedCases"],
@@ -326,6 +371,8 @@ pub(crate) fn instruction(ledger:&Value)->String {
         "VERIFIED PRINCIPLE LEARNING (ledger={}):\n{}\n\
          These are independently evaluated task effects and observational \
          successor effects, not proof of a universal causal law. \
+         Predictor calibration: {} cases; mean Brier error={}; \
+         propose source-level revision of learner={}. \
          Diagnose which MECHANISM fails to transfer, and invent a new, \
          falsifiable improvement rule by rewriting the learning algorithm, \
          model architecture/training source, memory, harness or tool logic. \
@@ -333,7 +380,8 @@ pub(crate) fn instruction(ledger:&Value)->String {
          Reuse good mechanisms across domains only when case-level evidence \
          supports transfer. Do not optimize raw patch-count or self-reported \
          acceptance. This learner's source can itself be redesigned.",
-        ledger["sha256"],top)
+        ledger["sha256"],top,calibration["measuredCases"],
+        calibration["meanBrierError"],calibration["needsLearnerSourceRevision"])
 }
 #[cfg(test)]
 mod tests {
