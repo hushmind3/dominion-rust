@@ -4,7 +4,7 @@
 use super::{jobs::JobContext, rsi_evolve::command, rsi_worktree};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
+use std::{collections::BTreeSet, path::{Path, PathBuf}, time::{Duration, Instant}};
 use tokio::process::Command;
 
 pub fn case() -> Value {
@@ -142,9 +142,38 @@ async fn build(context:&JobContext, source:&Path, target:&Path) -> Result<PathBu
     Ok(binary)
 }
 
+/// The paired improver comparison has two arms for every task. Reserve the
+/// maximum equally before starting either arm: an affordable half-comparison
+/// is not evidence of improved intelligence, and should not burn paid tokens.
+fn fair_meta_episode_limit(remaining:Option<u64>)->Result<u64,String>{
+    let per=remaining.map(|tokens|
+        tokens.saturating_sub(8_000)/(2*META_TASK_COUNT) as u64
+    ).unwrap_or(24_000).min(24_000);
+    if per<4_000 {
+        return Err("후속 지능 A/B에 필요한 전체 동등 예산이 부족합니다. 비용을 쓰기 전에 평가를 중단했습니다.".into());
+    }
+    Ok(per)
+}
+
+fn remaining_meta_tokens(context:&JobContext)->Option<u64>{
+    let budget=context.state.store.get("rsi_campaign",&context.job_id)?
+        ["limits"]["tokenBudget"].as_u64()?;
+    let sessions=context.state.store.all("job").into_iter()
+        .filter(|job|job["kind"]=="rsi_generation"
+            && job["input"]["rsiCampaignId"]==context.job_id)
+        .filter_map(|job|job["sessionId"].as_str().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let used=sessions.iter().map(|id|
+        context.state.store.session_usage(id)["totalTokens"]
+            .as_u64().unwrap_or(0)
+    ).fold(0u64,u64::saturating_add);
+    Some(budget.saturating_sub(used))
+}
+
 async fn episode(context:&JobContext, binary:&Path, generator_commit:&str,
     generator_source:&Path, source:&Path, source_commit:&str,
-    outer_input:&Value, task:usize, arm:&str, root:&Path) -> Result<Value,String> {
+    outer_input:&Value, task:usize, arm:&str, root:&Path,
+    token_limit:u64) -> Result<Value,String> {
     let task_spec=meta_task(task).ok_or("등록되지 않은 후속 평가 과제")?;
     let request=task_spec.request;
     let index=super::code_index::refresh(&context.state,source)?;
@@ -166,7 +195,7 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str,
         "rsiTargetPlan":{"domain":task_spec.domain,"selection":"algorithm_active","strategy":strategy,"generatorCommit":generator_commit},
         "rsiFrozenCases":rsi_worktree::metric_cases(),"rsiNativeInduction":false,
         "rsiLocalOnly":outer_input["rsiLocalOnly"],
-        "rsiEpisodeTokenLimit":24000,"rsiRemainingCampaignTokens":24000,
+        "rsiEpisodeTokenLimit":token_limit,"rsiRemainingCampaignTokens":token_limit,
         "toolsEnabled":true,"toolsExecutionEnabled":true,"autoLearning":false});
     // A downstream task exercises the ACTUAL compiled generator's intelligent
     // controller, not a featureless worker shim. Baseline and candidate work
@@ -216,7 +245,7 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str,
             "compiled_system_controller"
         } else {"regular_worker"},
         "providerId":outer_input["providerId"],"model":outer_input["model"],
-        "tokenLimit":24000,"timeLimitSeconds":240,"usage":usage,"elapsedMs":started.elapsed().as_millis() as u64,
+        "tokenLimit":token_limit,"timeLimitSeconds":240,"usage":usage,"elapsedMs":started.elapsed().as_millis() as u64,
         "workerOk":outcome.as_ref().is_ok_and(|o|o.status.success()),"quality":0.0,"actualModelRoutes":routes,
         "sourceWrites":child["result"]["rsi"]["editEvidence"],"candidateId":child["result"]["rsi"]["candidateId"],
         "actualFocus":child["input"]["rsiFocusFiles"],"error":child["error"]});
@@ -276,6 +305,9 @@ pub async fn evaluate(context:&JobContext, candidate:&Value, source:&Path, outpu
         let saved=output.join(format!("baseline{}",std::env::consts::EXE_SUFFIX));
         std::fs::copy(&baseline,&saved).map_err(|e|e.to_string())?;
         let upgraded=build(context,&variant,&target).await?;
+        // Count ALL actually charged sessions, including earlier failed
+        // generations. Both arms receive one immutable allowance.
+        let token_limit=fair_meta_episode_limit(remaining_meta_tokens(context))?;
         let mut rows=Vec::new();
         for task in 0..META_TASK_COUNT {
             // Balance ordering, run sequentially, use the same fixed model and
@@ -285,7 +317,7 @@ pub async fn evaluate(context:&JobContext, candidate:&Value, source:&Path, outpu
                 let revision=if arm=="baseline"{base}else{&commit};
                 let generator_source=if arm=="baseline"{source}else{&variant};
                 rows.push(episode(context,binary,revision,generator_source,source,base,
-                    &outer["input"],task,arm,output).await?);
+                    &outer["input"],task,arm,output,token_limit).await?);
             }
         }
         if rows.iter().any(|row|row["usage"]["calls"].as_u64().unwrap_or(0)==0) {
@@ -299,7 +331,9 @@ pub async fn evaluate(context:&JobContext, candidate:&Value, source:&Path, outpu
         let receipt=json!({"version":1,"campaignId":context.job_id,"candidateId":candidate["id"],
             "baselineGeneratorCommit":base,"candidateGeneratorCommit":commit,"subjectCommit":base,
             "providerId":outer["input"]["providerId"],"model":outer["input"]["model"],
-            "tasks":META_TASK_COUNT,"domains":["tools","memory","context","improver"],"episodes":rows,"measurement":measured,
+            "tasks":META_TASK_COUNT,"domains":["tools","memory","context","improver"],
+            "perEpisodeTokenLimit":token_limit,"pairedEpisodeCount":2*META_TASK_COUNT,
+            "episodes":rows,"measurement":measured,
             "limitation":"Four separate held-out coding domains with matched model budgets; this tests downstream capability, not unbounded recursive intelligence."});
         std::fs::write(output.join("meta-receipt.json"),serde_json::to_vec_pretty(&receipt).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         Ok(receipt)
@@ -313,6 +347,13 @@ pub async fn evaluate(context:&JobContext, candidate:&Value, source:&Path, outpu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pair_budget_is_split_before_any_billable_model_episode() {
+        assert_eq!(fair_meta_episode_limit(None).unwrap(),24_000);
+        assert_eq!(fair_meta_episode_limit(Some(400_000)).unwrap(),24_000);
+        assert_eq!(fair_meta_episode_limit(Some(104_000)).unwrap(),12_000);
+        assert!(fair_meta_episode_limit(Some(39_999)).is_err());
+    }
     #[test]
     fn meta_plan_requires_an_actual_downstream_quality_gain() {
         let spec=case();
