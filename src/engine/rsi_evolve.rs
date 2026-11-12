@@ -4162,6 +4162,11 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     }else if meta["counterexamples"].as_array().is_some_and(|v|v.len()>=2){
         "multi_trajectory_design"
     }else{"local_redesign"};
+    if stage["source"]=="rebound_verified_model_successor_program_v1"
+        && ranked.first().is_some_and(|row|
+            row["path"]==stage["path"] && row["sourceHash"]==stage["sourceSha256"]){
+        ranked.truncate(1);
+    }
     let mut descendant_policy=learned_edit_method(&state,&focus,&history);
     if stage["source"]=="rebound_verified_model_successor_program_v1" {
         if stage["executionPolicy"]=="grounded_edit" {

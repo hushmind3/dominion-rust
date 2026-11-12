@@ -590,10 +590,22 @@ pub(crate) fn inherited_stage(history:&[Value],frontier:&[Value])->Value {
     };
     if stages.is_empty(){return Value::Null;}
     let design_id=&parent["systemDesign"]["id"];
-    let attempts=history.iter().filter(|g|
+    let mut attempts=0usize;
+    // A retry_failed program keeps a failed stage active until a later real
+    // success. An avoid_failed stage advances after one failed attempt.
+    // Every decision is based on persisted child execution receipts.
+    for executed in history.iter().filter(|g|
         g["successorStage"]["designId"]==*design_id
-            && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
-    ).count();
+            && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"){
+        if executed["successorStage"]["stageIndex"].as_u64()!=Some(attempts as u64){
+            continue;
+        }
+        let successful=executed["accepted"]==true
+            && executed["pairedRevalidated"]==true;
+        if successful || executed["successorStage"]["learningPolicy"]!="retry_failed"{
+            attempts+=1;
+        }
+    }
     let Some(stage)=stages.get(attempts) else{return Value::Null};
     let Some(path)=stage["path"].as_str().filter(|p|crate::engine::rsi::safe_path(p))
         else{return Value::Null};

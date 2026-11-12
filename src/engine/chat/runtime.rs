@@ -79,6 +79,14 @@ fn rsi_checkpoint_stage(
 
 /// Stop broad discovery but allow exact missing ranges to be read. Bounded
 /// excerpts are intentionally incomplete, so banning all reads would prevent edits.
+fn rsi_successor_tool_allowed(stage:&Value,name:&str)->bool {
+    // The program was authored by an independently adopted predecessor and
+    // rebound to the current child's source hash; tool-policy constraints
+    // affect both native function calling and textual tool-call fallback.
+    !(stage["source"]=="rebound_verified_model_successor_program_v1"
+        && stage["toolPolicy"]=="patch_only" && name=="workspace_write")
+}
+
 fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
     if edit_only {
         return matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range" | "rsi_system_plan" | "rsi_method_propose");
@@ -749,7 +757,9 @@ async fn run_turn_body(
         tool_definitions = select_tool_definitions(tool_definitions, &request.input, &discovery);
     }
     if session["rsiRun"]==true {
-        tool_definitions.retain(|definition| tools::rsi_allowed(tool_name(definition)));
+        tool_definitions.retain(|definition|
+            tools::rsi_allowed(tool_name(definition))
+            && rsi_successor_tool_allowed(&session["rsiSuccessorStage"],tool_name(definition)));
     }
     let compiled = if is_room {
         let source = source_message_id.or(reply_to.as_deref()).ok_or("응답할 원문이 없습니다.")?;
@@ -2069,7 +2079,10 @@ async fn run_turn_body(
             {
                 return Err("실행이 중단되었습니다.".into());
             }
-            if session["rsiRun"] == true && !rsi_tool_advertised(&call.name, &round_tools) {
+            if session["rsiRun"] == true && (
+                !rsi_tool_advertised(&call.name, &round_tools)
+                || !rsi_successor_tool_allowed(&session["rsiSuccessorStage"],&call.name)
+            ) {
                 let error = format!(
                     "이번 RSI 단계에서 '{}' 도구는 제공되지 않았습니다. 현재 허용된 편집 도구 중 하나를 사용하세요.",
                     call.name
