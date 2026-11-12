@@ -4390,7 +4390,12 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let inherited=if input["rsiAutonomous"]==true {
         crate::engine::rsi_system::inherited_domain(&history)
     }else{None};
-    let allowed=candidate_domains(&objective);
+    // A whole-system autonomous descendant may revisit ANY intelligence
+    // component; keyword matching in the old fixed objective is not a cage.
+    let allowed=if input["rsiSystemEvolution"]==true
+        && input["rsiAutonomous"]==true && !explicit {
+        DOMAINS.to_vec()
+    }else{candidate_domains(&objective)};
     let lineage=crate::engine::rsi_system::lineage_capsule(&history);
     let influence=crate::engine::rsi_interaction::influence_graph(&history,&frontier);
     let profile=crate::engine::rsi_profile::from_input(input)?;
@@ -4399,8 +4404,12 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         input["rsiIndexId"].as_str().unwrap_or(""),None);
     // Crucial: the *compiled descendant*, rather than the resident server,
     // scores possible meta-improvement targets and proposes its next experiment.
-    let meta_policy=crate::engine::rsi_meta_controller::synthesize(
+    let unsteered=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,&allowed,inherited.as_deref(),&lineage,&peers,&influence);
+    let mutual_program=crate::engine::rsi_mutual_program::propose(
+        &history,&frontier,commit,&unsteered["target"],&influence,&allowed);
+    let meta_policy=crate::engine::rsi_meta_controller::steer_reciprocal(
+        unsteered,&mutual_program);
     let architecture_target=if explicit || paired_descendant_target(input) {
         Value::Null
     }else if meta_policy["target"].is_object() {
@@ -4489,6 +4498,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "peerLineages":peers,"comparativeMode":comparative_mode,
         "metaPolicy":meta_policy,"successorStage":successor_stage,
         "interactionGraph":influence,"coDesignPortfolio":co_design,
+        "mutualProgram":mutual_program,
         "archiveSelection":archive,
         "editPolicy":edit_policy
     }));
