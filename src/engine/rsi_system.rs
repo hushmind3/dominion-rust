@@ -374,13 +374,26 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
             .into_iter().flatten() {
             let observed=execution["result"]["verified"]==true
                 && execution["result"]["followed"]==true
-                && execution["result"]["status"]=="passed"
+                && execution["result"]["status"]=="followed"
                 && execution["operationIds"].as_array()
                     .is_some_and(|actions|!actions.is_empty());
             if observed {
                 if let (Some(id),Some(revision))=(
                     execution["methodId"].as_str(),execution["revision"].as_str()) {
-                    if proposed_model_methods.contains(&(id.to_string(),revision.to_string())) {
+                    if proposed_model_methods.contains(&(id.to_string(),revision.to_string()))
+                        // The existing method execution scorer binds a
+                        // procedure's actual source-write operation SHA to
+                        // the independently adopted candidate. Read that
+                        // witnessed causal receipt, not a model's report.
+                        && state.store.all("experience").iter().any(|record|
+                            record["executableMethods"].as_array().is_some_and(|methods|
+                                methods.iter().any(|method|
+                                    method["id"]==id && method["revision"]==revision
+                                    && method["applications"].as_array().is_some_and(|apps|
+                                        apps.iter().any(|episode|
+                                            episode["jobId"]==generation["jobId"]
+                                            && episode["methodWroteAcceptedCandidate"]==true
+                                            && episode["verificationVerdict"]=="passed")))) {
                         witnessed_inherited_method=true;
                     }
                 }
