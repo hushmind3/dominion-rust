@@ -471,6 +471,11 @@ fn reset_steered_task_prior(policy:&mut Value) {
     policy["forecast"]["taskCaseGainProbability"]=json!(0.5);
     policy["forecast"]["taskEvidenceCases"]=json!(0);
     policy["forecast"]["taskPredictionSource"]=json!("unmeasured_steered_target_prior");
+    policy["taskQualityPrior"]=json!({
+        "source":"unmeasured_steered_target_prior",
+        "observedCases":0,"observedGains":0,"observedRegressions":0,
+        "probability":0.5,"notAcceptanceProbability":true
+    });
 }
 /// Slow-timescale feedback is allowed to change WHAT the next compiled
 /// system improves, including revisiting a prior capability after a new
@@ -914,6 +919,22 @@ mod tests {
         history[0]["pairedMeasured"]=json!(false);
         let insufficient=quality_forecast_calibration(&history);
         assert_eq!(insufficient["needsPredictorSourceRevision"],false);
+        let mut correlated=history[1].clone();
+        correlated["evaluation"]["metrics"]["measurements"]=json!([
+            {"id":"one","domain":"memory","holdout":true,
+                "baselinePass":false,"candidatePass":false},
+            {"id":"two","domain":"memory","holdout":true,
+                "baselinePass":false,"candidatePass":false},
+            {"id":"three","domain":"memory","holdout":true,
+                "baselinePass":false,"candidatePass":false},
+            {"id":"four","domain":"memory","holdout":true,
+                "baselinePass":false,"candidatePass":false}
+        ]);
+        let same_candidate=quality_forecast_calibration(&[correlated]);
+        assert_eq!(same_candidate["observations"],4);
+        assert_eq!(same_candidate["measuredCandidates"],1);
+        assert_eq!(same_candidate["needsPredictorSourceRevision"],false,
+            "four cases from one patch are not four independent policy failures");
     }
     #[test]
     fn failed_unmeasured_edits_do_not_train_fake_success_rates() {
