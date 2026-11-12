@@ -25,6 +25,11 @@ fn scope(g:&Value)->Option<String>{
 }
 fn real_model_call(g:&Value)->bool {
     g["tokenUsage"]["calls"].as_u64().is_some_and(|n|n>0)
+        && g["modelAttributionConsistent"]==true
+        && g["modelAttribution"]["verifiedHomogeneous"]==true
+        && g["modelAttribution"]["providerId"]==g["generatorProviderId"]
+        && g["modelAttribution"]["model"]==g["generatorModel"]
+        && g["modelAttribution"]["calls"]==g["tokenUsage"]["calls"]
         && g["generatorProviderId"].as_str().is_some_and(|s|!s.is_empty()
             && s!="dominion-native")
         && g["generatorModel"].as_str().is_some_and(|s|!s.is_empty())
@@ -230,6 +235,9 @@ mod tests{
             "objectiveId":"objective","knowledgePartition":"partition",
             "comparisonProfileSha256":"oracle-a","domain":"learning",
             "tokenUsage":{"calls":1},"candidateId":id,
+            "modelAttributionConsistent":true,
+            "modelAttribution":{"verifiedHomogeneous":true,
+                "providerId":"provider","model":"model","calls":1},
             "candidateOrigin":"model_driven_detached_worktree",
             "nativeMutation":null,"accepted":true,"pairedRevalidated":true,
             "evidenceVerified":true,
@@ -290,6 +298,12 @@ mod tests{
         assert_eq!(compare_by(&h,"oracle-a","learning",&verified)["selectionEligible"],false);
         h=fixture();
         h[7]["generatorBinarySha256"]=json!("a".repeat(64));
+        assert_eq!(compare_by(&h,"oracle-a","learning",&verified)["selectionEligible"],false);
+        h=fixture();
+        h[7]["modelAttributionConsistent"]=json!(false);
+        assert_eq!(compare_by(&h,"oracle-a","learning",&verified)["selectionEligible"],false);
+        h=fixture();
+        h[7]["modelAttribution"]["model"]=json!("wrong_model");
         assert_eq!(compare_by(&h,"oracle-a","learning",&verified)["selectionEligible"],false);
     }
     #[test]
