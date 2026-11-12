@@ -1033,6 +1033,9 @@ pub(crate) fn policy_requests_source_edit(input:&Value)->bool {
     matches!(input["rsiActionDirective"]["mode"].as_str(),
         Some("repair_failed_edit"|"repair_failed_case"|"revise_candidate"|
              "complete_candidate"|"implement_research"|"change_approach"))
+        || (input["rsiSystemEvolution"]==true
+            && input["rsiSuccessorStage"]["executionPolicy"]=="grounded_edit"
+            && input["rsiSuccessorStage"]["path"]==input["rsiFocusFiles"][0])
         || pending_method_recovery_domain(input).is_some()
             && input["rsiDecisionInput"]["reuseDecision"]["repairTarget"]
                 == input["rsiFocusFiles"][0]
@@ -1060,8 +1063,18 @@ fn bind_action_to_source(
     let learned_action=matches!(input["rsiActionDirective"]["mode"].as_str(),
         Some("repair_failed_edit"|"repair_failed_case"|"revise_candidate"|
              "complete_candidate"|"implement_research"|"change_approach"));
-    if !learned_action && !method_repair {return false}
     let Some(index_id)=input["rsiIndexId"].as_str() else {return false};
+    // Predecessor policy cannot bypass fresh code indexing: it is activated
+    // only for an actual source and the indexed SHA chosen by this descendant.
+    let stage_path=if input["rsiSystemEvolution"]==true
+        && input["rsiSuccessorStage"]["executionPolicy"]=="grounded_edit" {
+        input["rsiSuccessorStage"]["path"].as_str()
+            .filter(|path|crate::engine::rsi::safe_path(path)
+                && crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                    .as_deref()==input["rsiSuccessorStage"]["sourceSha256"].as_str())
+            .map(str::to_string)
+    }else{None};
+    if !learned_action && !method_repair && stage_path.is_none() {return false}
     let first=input["rsiFocusFiles"].as_array().into_iter().flatten()
         .filter_map(Value::as_str)
         .find(|path|crate::engine::rsi::safe_path(path)
@@ -1082,8 +1095,8 @@ fn bind_action_to_source(
                 && crate::engine::code_index::indexed_source_hash(state,index_id,path).is_some())
             .map(str::to_string)
     } else {None};
-    let Some(target)=repair_path.clone().or(failed_path.clone()).or(first)
-        else {return false};
+    let Some(target)=repair_path.clone().or(stage_path.clone())
+        .or(failed_path.clone()).or(first) else {return false};
     let Some(hash)=crate::engine::code_index::indexed_source_hash(state,index_id,&target)
         else {return false};
     input["rsiFocusFiles"]=json!([target]);
@@ -1091,7 +1104,10 @@ fn bind_action_to_source(
         input["rsiFocusSelection"]=json!({});
     }
     input["rsiFocusSelection"]["executionSource"]=json!(
-        if repair_path.is_some() {"learned_executable_method"}else{"learned_action_policy"});
+        if repair_path.is_some() {"learned_executable_method"}
+        else if stage_path.as_deref()==Some(target.as_str()) {
+            "inherited_descendant_execution_policy"
+        }else{"learned_action_policy"});
     input["rsiFocusSelection"]["executionTarget"]=json!(target);
     input["rsiFocusSelection"]["executionSourceHash"]=json!(hash);
     input["rsiFocusSelection"]["actionPolicyRevision"]=
@@ -4210,10 +4226,13 @@ async fn run_loop(
                             && model_design["source"]=="model_authored_system_design"
                             && model_design["generatorCommit"]==head
                             && model_design["generationJobId"]==child_id
-                            && model_design["targetFiles"].as_array().is_some_and(|files|
-                                files.iter().filter_map(Value::as_str).any(|path|
-                                    candidate["paths"].as_array().is_some_and(|changed|
-                                        changed.iter().any(|item|item.as_str()==Some(path)))))
+                            // A bundle must change EVERY declared file, with
+                            // disjoint ownership. One partial diff cannot
+                            // adopt a six-component architecture proposal.
+                            && crate::engine::rsi_system::design_implemented(
+                                model_design,
+                                candidate["paths"].as_array().map(Vec::as_slice)
+                                    .unwrap_or(&[]))
                             && generation["systemBlueprintVerified"]==true);
                     let eligible = candidate["status"] == "verified"
                         && candidate["evaluation"]["metrics"]["eligible"] == true

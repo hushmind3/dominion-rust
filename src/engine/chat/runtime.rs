@@ -832,6 +832,10 @@ async fn run_turn_body(
                 "code_search"|"workspace_read_range"|"workspace_replace"
                 |"workspace_replace_function"|"workspace_write"
                 |"rsi_system_plan"|"rsi_method_propose"));
+            if session["rsiSuccessorStage"]["toolPolicy"]=="patch_only" {
+                tool_definitions.retain(|definition|
+                    tool_name(definition)!="workspace_write");
+            }
         }
     }
     let compiled = if is_room {

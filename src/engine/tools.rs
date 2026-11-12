@@ -78,7 +78,14 @@ pub fn definitions() -> Vec<Value> {
                 "description":"Executable planning intentions for the NEXT compiled descendant. Each stage is rebound to fresh indexed source; no stage receives improvement credit before actual editing.",
                 "items":{"type":"object","properties":{
                     "role":{"type":"string"},"domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
-                    "path":{"type":"string"},"objective":{"type":"string"}},
+                    "path":{"type":"string"},"objective":{"type":"string"},
+                    "learningPolicy":{"type":"string","enum":["avoid_failed","retry_failed"],
+                        "description":"Rank successor stages by fewer failures, or revisit difficult observed failures"},
+                    "toolPolicy":{"type":"string","enum":["patch_only","allow_new_modules"],
+                        "description":"Restrict inherited descendant tool gateway to existing source patches, or permit new modules"},
+                    "executionPolicy":{"type":"string","enum":["grounded_edit","explore_then_edit"],
+                        "description":"Bind the inherited source to the native edit checkpoint, or retain exploration"}
+                    },
                     "required":["role","domain","path","objective"],"additionalProperties":false}})
         }), vec!["component","nextDomain","hypothesis","design","targetFiles"])),
         tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({
@@ -142,6 +149,15 @@ pub async fn execute(
         .is_some_and(|s|s["rsiRun"]==true);
     if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
+    }
+    // A policy inherited from an ADOPTED predecessor is enforced by the
+    // tool gateway, not just by hiding a schema in the next model turn.
+    // Only the isolated successor session may inherit this restriction.
+    if isolated_rsi && name=="workspace_write"
+        && ctx.store.get("session",ctx.session_id).is_some_and(|session|
+            session["rsiSystemEvolution"]==true
+            && session["rsiSuccessorStage"]["toolPolicy"]=="patch_only") {
+        return Err("계승된 후손 도구 정책(patch_only)은 신규 파일 생성을 허용하지 않습니다.".into());
     }
     if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_function") {
         let path=args["path"].as_str().unwrap_or("");

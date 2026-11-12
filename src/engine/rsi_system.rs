@@ -91,7 +91,7 @@ fn design_role_files<'a>(design:&'a Value,role:&str)->Option<&'a Vec<Value>> {
 /// A bundle is implemented only if every declared file is in the independently
 /// measured source diff, with an unchanged design-to-role mapping. No
 /// automatic "model says succeeded" or inferred coverage is accepted.
-fn design_implemented(design:&Value,changed:&[Value])->bool {
+pub(crate) fn design_implemented(design:&Value,changed:&[Value])->bool {
     let Some(targets)=design["targetFiles"].as_array().filter(|files|!files.is_empty())
         else{return false;};
     let roles=design_roles(design);
@@ -149,14 +149,29 @@ pub(crate) fn inherited_stage(
             g["accepted"]!=true && g["focusFiles"].as_array()
                 .is_some_and(|files|files.iter().any(|f|f.as_str()==Some(path))))
             .count();
-        Some((failures,json!({"role":role,"domain":domain,"path":path,
+        // This is an inherited *control policy*: recorded failures change
+        // the next task, rather than merely appearing in the model prompt.
+        let learning=stage["learningPolicy"].as_str().unwrap_or("avoid_failed");
+        let tools=stage["toolPolicy"].as_str().unwrap_or("allow_new_modules");
+        let execution=stage["executionPolicy"].as_str().unwrap_or("explore_then_edit");
+        if !matches!(learning,"avoid_failed"|"retry_failed")
+            || !matches!(tools,"patch_only"|"allow_new_modules")
+            || !matches!(execution,"grounded_edit"|"explore_then_edit") {
+            return None;
+        }
+        let rank=if learning=="retry_failed" {-(failures as i64)}
+            else {failures as i64};
+        Some((rank,json!({"role":role,"domain":domain,"path":path,
             "sourceSha256":actual["sourceSha256"],
             "objective":stage["objective"],
             "sourceDesignId":design["id"],
             "predecessorCommit":prior["acceptedCommit"],
             "failedAttemptsSinceAdoption":failures,
+            "learningPolicy":learning,
+            "toolPolicy":tools,
+            "executionPolicy":execution,
             "qualityProven":false})))
-    }).min_by_key(|(failures,_)|*failures).map(|(_,stage)|stage)
+    }).min_by_key(|(rank,_)|*rank).map(|(_,stage)|stage)
 }
 
 /// DGM/AlphaEvolve-style architecture frontier, evaluated by the descendant
@@ -412,7 +427,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         method. Propose a genuinely new executable design, inspect source \
         hashes with code_search/workspace_read_range and WRITE the required \
         cross-module Rust changes with workspace_replace_function (complete Rust function), workspace_replace (line mode or exact oldText), workspace_write. \
-        Before editing call rsi_system_plan(component, nextDomain, hypothesis, design, targetFiles). For a coupled redesign of algorithm, harness, memory, learning, tools, and improvement methods, use component=system and explicitly assign each file to one role with components and componentFiles. Then WRITE ALL the named source files: partially implemented designs receive no credit. New roles and source modules are allowed. Optionally author successorStages [{role,domain,path,objective}]: only after your source is independently adopted will the NEW compiled descendant read its own code and attempt those next tasks. A design and a saved stage alone earn zero. At least one adopted generation must INVENT an executable method with rsi_method_propose and a later compiled descendant must EXECUTE it with verified postconditions. \
+        Before editing call rsi_system_plan(component, nextDomain, hypothesis, design, targetFiles). For a coupled redesign of algorithm, harness, memory, learning, tools, and improvement methods, use component=system and explicitly assign each file to one role with components and componentFiles. Then WRITE ALL the named source files: partially implemented designs receive no credit. New roles and source modules are allowed. Optionally author successorStages [{role,domain,path,objective,learningPolicy,toolPolicy,executionPolicy}]: the accepted descendant will apply observed-failure task ranking, source-edit focus and restricted tool access from these fields; only after your source is independently adopted will the NEW compiled descendant read its own code and attempt those next tasks. A design and a saved stage alone earn zero. At least one adopted generation must INVENT an executable method with rsi_method_propose and a later compiled descendant must EXECUTE it with verified postconditions. \
         Improve the intelligence control loop, not only a benchmark number. \
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
@@ -598,8 +613,18 @@ pub(crate) fn propose(
                     return Err("후손 단계는 현재 시스템 소스에 속해야 합니다.".into());
                 }
             }
+            let learning=row["learningPolicy"].as_str().unwrap_or("avoid_failed");
+            let tools=row["toolPolicy"].as_str().unwrap_or("allow_new_modules");
+            let execution=row["executionPolicy"].as_str().unwrap_or("explore_then_edit");
+            if !matches!(learning,"avoid_failed"|"retry_failed")
+                || !matches!(tools,"patch_only"|"allow_new_modules")
+                || !matches!(execution,"grounded_edit"|"explore_then_edit") {
+                return Err("후손 정책은 허용된 학습·도구·실행 모드만 지정할 수 있습니다.".into());
+            }
             stages.push(json!({"role":role,"domain":domain,"path":path,
-                "objective":objective,"qualityProven":false}));
+                "objective":objective,"learningPolicy":learning,
+                "toolPolicy":tools,"executionPolicy":execution,
+                "qualityProven":false}));
         }
     }
     let commit=child["input"]["rsiGeneratorCommit"].as_str()

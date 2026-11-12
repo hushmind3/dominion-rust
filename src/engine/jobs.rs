@@ -613,6 +613,9 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         if let Some(mut session)=context.state.store.get("session",&session_id) {
             session["rsiRun"]=json!(true);
             session["rsiSystemEvolution"]=input["rsiSystemEvolution"].clone();
+            // Accepted predecessor intent is carried to the actual runtime
+            // session; the tool gateway and edit scheduler consume it.
+            session["rsiSuccessorStage"]=input["rsiSuccessorStage"].clone();
             session["rsiObjective"]=input["rsiObjective"].clone();
             session["rsiRecoveredPatch"]=recovered.clone();
             // A user-selected source file is an execution target even in a
