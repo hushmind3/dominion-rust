@@ -4296,6 +4296,56 @@ async fn run_loop(
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
         generation["systemDesign"]=action_session["rsiSystemDesign"].clone();
+        // The rule-induction trainer sees ONLY actual tool operations,
+        // including failed calls, in their original run's causal order.
+        // This prevents model prose and tool-menu suggestions from becoming
+        // success examples. No source content or hidden holdout is copied.
+        let mut trace=session.map(|sid|context.state.store.all("execution_operation")
+            .into_iter().filter(|op|op["sessionId"]==sid)
+            .collect::<Vec<_>>()).unwrap_or_default();
+        trace.sort_by(|a,b|a["runId"].as_str().cmp(&b["runId"].as_str())
+            .then_with(||a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64())));
+        trace.truncate(128);
+        let timeline=trace.iter().map(|op|json!({
+            "id":op["id"],"runId":op["runId"],"opSeq":op["opSeq"],
+            "tool":op["tool"],"status":op["status"],
+            "path":op["arguments"]["path"],
+            "result":op["result"],"toolReceipt":op["toolReceipt"]
+        })).collect::<Vec<_>>();
+        let edit_attempts=trace.iter().filter(|op|
+            matches!(op["tool"].as_str(),
+                Some("workspace_replace"|"workspace_replace_function"
+                    |"workspace_replace_range"|"workspace_write"))).count();
+        let verified_writes=trace.iter().filter(|op|
+            op["status"]=="completed" && op["result"]["written"]==true
+            && op["toolReceipt"]["verified"]==true).count();
+        let failed_ops=trace.iter().filter(|op|op["status"]!="completed"
+            || (matches!(op["tool"].as_str(),
+                Some("workspace_replace"|"workspace_replace_function"
+                    |"workspace_replace_range"|"workspace_write"))
+                && op["result"]["written"]!=true))
+            .take(8).map(|op|format!("{}: {}",
+                op["tool"].as_str().unwrap_or("unknown"),
+                op["error"].as_str()
+                    .or_else(||op["result"]["error"].as_str())
+                    .unwrap_or("no_verified_write")))
+            .collect::<Vec<_>>();
+        generation["toolTimeline"]=json!(timeline);
+        generation["editEvidence"]=json!({
+            "attempts":edit_attempts,"verifiedWrites":verified_writes,
+            "recentFailures":failed_ops,
+            "source":"actual_execution_operation_store"
+        });
+        generation["programStages"]=json!(session.map(|sid|
+            context.state.store.all("rsi_program_phase").into_iter()
+                .filter(|event|event["sessionId"]==sid
+                    && event["generationJobId"]==child_id)
+                .take(48).collect::<Vec<_>>()).unwrap_or_default());
+        generation["ruleExecutions"]=json!(session.map(|sid|
+            context.state.store.all("rsi_rule_execution").into_iter()
+                .filter(|event|event["sessionId"]==sid
+                    && event["generationJobId"]==child_id)
+                .take(48).collect::<Vec<_>>()).unwrap_or_default());
         generation["actionExecution"]=json!({
             "focusApplied":action_session["rsiPolicyFocus"]==true,
             "editCheckpointReached":action_session["rsiPolicyCheckpointReached"]==true,
@@ -4666,6 +4716,13 @@ async fn run_loop(
         });
         // The descendant's forecast was frozen before editing. Real assessed
         // outcomes now update task-level error available to its successor.
+        generation["evidenceVerified"]=json!(
+            generation["accepted"]==true
+            && generation["pairedRevalidated"]==true
+            && generation["evaluation"]["metrics"]["eligible"]==true
+            && generation["candidateOrigin"]=="model_driven_detached_worktree"
+            && generation["acceptedSourceHashes"].as_object()
+                .is_some_and(|m|!m.is_empty()));
         generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
             &generation["metaPolicy"],&generation);
         // The immediate quality receipt and the future descendant's
