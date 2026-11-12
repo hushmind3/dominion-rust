@@ -38,7 +38,14 @@ pub fn definitions() -> Vec<Value> {
         tool("code_search", "Search the persistent repository index for file paths, symbols and line numbers. Use this before reading a large file.", object(json!({"query": text("Function, type, path or keyword fragment"), "limit": json!({"type":"integer","minimum":1,"maximum":50})}), vec!["query"])),
         tool("workspace_replace_range", "Replace 1-120 previously read lines using sourceSha256 from workspace_read_range. Send only newText, not the old block. Abort if the file changed.", object(json!({"path": text("Relative source path"), "startLine":json!({"type":"integer","minimum":1}), "endLine":json!({"type":"integer","minimum":1}), "newText":text("Replacement source lines"), "expectedSha256":text("Required exact sourceSha256 from workspace_read_range")}), vec!["path","startLine","endLine","newText","expectedSha256"])),
         tool("workspace_replace_function", "Replace one EXISTING top-level Rust function from a verified workspace_read_range SHA. Send a complete fn declaration plus body as newText; DOMINION finds exact boundaries and preserves all other functions. Prefer this for an explicitly named function goal.", object(json!({"path":text("Relative source .rs path"),"functionName":text("Existing top-level Rust function identifier"),"newText":text("Complete replacement function beginning with fn / pub fn"),"expectedSha256":text("Exact full-file sourceSha256 observed by workspace_read_range")}), vec!["path","functionName","newText","expectedSha256"])),
-        tool("workspace_replace", "Replace one exact block in a workspace file without resending the whole file (approval required). oldText must occur exactly once.", object(json!({"path": text("Relative file path"), "oldText": text("Exact existing text to replace; must occur exactly once"), "newText": text("Replacement text"), "expectedSha256": text("Optional SHA-256 observed before editing")}), vec!["path","oldText","newText"])),
+        tool("workspace_replace", "Edit source by unique oldText or by a verified startLine/endLine pair. In isolated RSI only, a complete single Rust function with a missing endLine may recover its own exact function target. Edits always require a pinned source SHA and independent write verification.", object(json!({
+            "path":text("Relative source file path"),
+            "oldText":text("Option A: exact source substring, occurring once"),
+            "startLine":json!({"type":"integer","minimum":1,"description":"Option B: observed absolute source line"}),
+            "endLine":json!({"type":"integer","minimum":1,"description":"Option B: observed inclusive last line, max 120 lines"}),
+            "newText":text("Replacement source code, not numbered lines"),
+            "expectedSha256":text("Observed full sourceSha256; isolated RSI may use its pinned code index")
+        }), vec!["path","newText"])),
         tool("workspace_write", "Write a UTF-8 file inside the workspace (approval required)", object(json!({"path": text("Relative file path"), "content": text("UTF-8 content")}), vec!["path", "content"])),
         tool("file_list", "List any folder on this computer using an absolute path", object(json!({"path": text("Absolute folder path")}), vec!["path"])),
         tool("file_read", "Read any UTF-8 text file using an absolute path", object(json!({"path": text("Absolute file path")}), vec!["path"])),
@@ -235,16 +242,49 @@ pub async fn execute(
             ).await
         }
         "workspace_replace" => {
-            let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
-            replace_text(
-                ctx,
-                &path,
-                &required_arg(args, "oldText")?,
-                &required_arg(args, "newText")?,
-                args["expectedSha256"].as_str(),
-                run_id,
-            )
-            .await
+            let path=resolve_workspace(ctx.workspace,&required_arg(args,"path")?)?;
+            let new_text=required_arg(args,"newText")?;
+            if let Some(old)=args["oldText"].as_str().filter(|old|!old.is_empty()){
+                replace_text(ctx,&path,old,&new_text,
+                    args["expectedSha256"].as_str(),run_id).await
+            }else if isolated_rsi {
+                // The model must select the modified bytes. Recover malformed
+                // edit coordinates only when its authored Rust unambiguously
+                // identifies one existing function or one explicit source line.
+                let indexed=rsi_pinned_source_sha(ctx,&path,args);
+                let expected=args["expectedSha256"].as_str()
+                    .or(indexed.as_deref())
+                    .ok_or("sourceSha256가 없습니다. 해당 소스를 읽고 다시 수정하세요.")?;
+                let intent=rsi_unambiguous_edit_intent(args,&new_text);
+                match intent {
+                    Some(RsiEditIntent::CompleteFunction(name))=>{
+                        let mut receipt=replace_source_function(
+                            ctx,&path,&name,&new_text,expected,run_id).await?;
+                        receipt["editContractRecovered"]=json!("model_authored_complete_function");
+                        receipt["sourceHashRecoveredFromIndex"]=json!(indexed.is_some());
+                        Ok(receipt)
+                    }
+                    Some(RsiEditIntent::SingleLine(line))=>{
+                        let mut receipt=replace_source_lines(
+                            ctx,&path,line,line,&new_text,expected,run_id).await?;
+                        receipt["editContractRecovered"]=json!("explicit_single_line");
+                        Ok(receipt)
+                    }
+                    None=>{
+                        let start=rsi_line_number(args,"startLine")
+                            .filter(|n|*n>0)
+                            .ok_or("oldText 또는 유효한 startLine이 필요합니다.")?;
+                        let end=rsi_line_number(args,"endLine")
+                            .filter(|n|*n>0)
+                            .ok_or("endLine이 없거나 유효하지 않습니다. 정확한 줄 번호 또는 완성된 Rust 함수를 제공하세요.")?;
+                        let (start,end)=(start.min(end),start.max(end));
+                        replace_source_lines(ctx,&path,start,end,
+                            &new_text,expected,run_id).await
+                    }
+                }
+            }else{
+                Err("일반 편집은 정확히 일치하는 oldText가 필요합니다.".into())
+            }
         }
         "workspace_write" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
@@ -821,6 +861,47 @@ fn search_code_index(
 /// Native small-model edit: the verified full-file hash binds a concise
 /// line replacement to exactly the source observed by workspace_read_range.
 /// checked_write repeats the hash comparison under its file mutation lock.
+#[derive(Debug,PartialEq,Eq)]
+enum RsiEditIntent {
+    CompleteFunction(String),
+    SingleLine(u64),
+}
+
+fn rsi_line_number(args:&Value,key:&str)->Option<u64>{
+    args[key].as_u64().or_else(||args[key].as_str()?.parse::<u64>().ok())
+}
+
+/// A model that authored one complete Rust function should not lose an
+/// otherwise valid source modification because it omitted endLine. There
+/// is no guess about which part of the file is changed: the existing unique
+/// top-level function is resolved by the same version-checked editor.
+fn rsi_unambiguous_edit_intent(args:&Value,new_text:&str)->Option<RsiEditIntent>{
+    if rsi_line_number(args,"endLine").is_some_and(|end|end>0){
+        return None;
+    }
+    if new_text.len()<=16_000 && new_text.trim_end().ends_with('}'){
+        let funcs=rsi_top_level_functions(new_text);
+        if funcs.len()==1 && new_text.trim_start()
+            .starts_with(funcs[0].1.trim_start()) {
+            return Some(RsiEditIntent::CompleteFunction(funcs[0].0.clone()));
+        }
+    }
+    let start=rsi_line_number(args,"startLine").filter(|n|*n>0)?;
+    let single=new_text.trim_end_matches(['\n','\r']);
+    (!single.is_empty()&&!single.contains('\n'))
+        .then_some(RsiEditIntent::SingleLine(start))
+}
+
+fn rsi_pinned_source_sha(ctx:&ToolContext<'_>,path:&Path,args:&Value)->Option<String>{
+    if args["expectedSha256"].as_str().is_some() {return None;}
+    let session=ctx.store.get("session",ctx.session_id)?;
+    if session["rsiRun"]!=true {return None;}
+    let index=session["rsiCodeIndexId"].as_str()?;
+    let relative=path.strip_prefix(ctx.workspace).ok()?.to_str()?;
+    if !crate::engine::rsi::safe_path(relative){return None;}
+    crate::engine::code_index::indexed_source_hash(ctx.state,index,relative)
+}
+
 async fn replace_source_lines(
     ctx:&ToolContext<'_>, path:&Path, start:u64, end:u64,
     new_text:&str, expected_sha256:&str, run_id:&str,
@@ -1894,6 +1975,78 @@ mod tests {
         assert!(stale.contains("소스가 읽은 뒤 변경"),"{stale}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(),
             "first();\nlet count = 1;\nlast();\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn malformed_small_model_edit_contract_recovery_is_unambiguous() {
+        let complete="fn target() -> u32 {\n    2\n}";
+        assert_eq!(rsi_unambiguous_edit_intent(
+            &json!({"startLine":13,"endLine":0}),complete),
+            Some(RsiEditIntent::CompleteFunction("target".into())));
+        assert_eq!(rsi_unambiguous_edit_intent(
+            &json!({"startLine":"13"}),"let score = 2;"),
+            Some(RsiEditIntent::SingleLine(13)));
+        assert_eq!(rsi_unambiguous_edit_intent(
+            &json!({"startLine":3}),"let x = 2;\nlet y = 3;"),None);
+        assert_eq!(rsi_unambiguous_edit_intent(
+            &json!({"startLine":1,"endLine":3}),complete),None);
+    }
+
+    #[tokio::test]
+    async fn rsi_workspace_replace_repairs_missing_end_line_with_model_authored_function() {
+        use crate::{config::Config,db::Store,vault::Vault};
+        let dir=std::env::temp_dir().join(format!("sub1-model-edit-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src/engine")).unwrap();
+        let path=dir.join("src/engine/example.rs");
+        let original="fn sibling() -> u32 {\n    3\n}\n\nfn target() -> u32 {\n    1\n}\n";
+        std::fs::write(&path,original).unwrap();
+        let cfg=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),
+            workspace:dir.clone()};
+        let state=crate::state::AppState::new(cfg.clone(),
+            Store::open(&cfg.db_path()).unwrap(),Vault::open(&cfg.key_path()));
+        let index=crate::engine::code_index::refresh(&state,&dir).unwrap();
+        state.store.put("session",&json!({"id":"model-editor","rsiRun":true,
+            "rsiCodeIndexId":index["id"],
+            "rsiExplicitFocus":true,"rsiObjective":"Improve target()"})).unwrap();
+        let ctx=ToolContext{workspace:&dir,store:&state.store,state:&state,
+            session_id:"model-editor",agent_id:None,
+            tools_enabled:true,tools_execution_enabled:true};
+        let edit=json!({"path":"src/engine/example.rs",
+            "startLine":5,"endLine":0,
+            "newText":"fn target() -> u32 {\n    2\n}"});
+        let changed=execute(&ctx,"workspace_replace",&edit,"run").await.unwrap();
+        assert_eq!(changed["written"],true,"{changed}");
+        assert_eq!(changed["editContractRecovered"],"model_authored_complete_function");
+        assert_eq!(changed["sourceHashRecoveredFromIndex"],true);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("fn sibling() -> u32 {\n    3"));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("fn target() -> u32 {\n    2"));
+        assert!(execute(&ctx,"workspace_replace",&edit,"run").await.is_err(),
+            "a stale indexed SHA must fail even if the model repeats the same edit");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rsi_workspace_replace_refuses_guessed_multiline_edit() {
+        use crate::{config::Config,db::Store,vault::Vault};
+        let dir=std::env::temp_dir().join(format!("sub1-refuse-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let path=dir.join("src/example.rs");
+        let source="fn original() {\n    foo();\n}\n";
+        std::fs::write(&path,source).unwrap();
+        let cfg=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),
+            workspace:dir.clone()};
+        let state=crate::state::AppState::new(cfg.clone(),
+            Store::open(&cfg.db_path()).unwrap(),Vault::open(&cfg.key_path()));
+        state.store.put("session",&json!({"id":"refuse","rsiRun":true})).unwrap();
+        let ctx=ToolContext{workspace:&dir,store:&state.store,state:&state,
+            session_id:"refuse",agent_id:None,
+            tools_enabled:true,tools_execution_enabled:true};
+        let sha=format!("{:x}",Sha256::digest(source.as_bytes()));
+        let ambiguous=json!({"path":"src/example.rs","startLine":1,"endLine":0,
+            "newText":"let foo = 1;\nlet bar = 2;","expectedSha256":sha});
+        assert!(execute(&ctx,"workspace_replace",&ambiguous,"run").await.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),source);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
