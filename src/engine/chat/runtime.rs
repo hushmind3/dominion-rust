@@ -1459,6 +1459,8 @@ async fn run_turn_body(
                         "campaignId":session["rsiCampaignId"],
                         "policyRevision":session["rsiEditPolicy"]["revision"],
                         "phase":stage.phase,"toolCalls":tool_calls,
+                        "opSeqBefore":all_operations.iter()
+                            .filter_map(|op|op["opSeq"].as_u64()).max().unwrap_or(0),
                         "observedOperations":all_operations.len(),
                         "recordedAt":chrono::Utc::now().to_rfc3339()
                     });
