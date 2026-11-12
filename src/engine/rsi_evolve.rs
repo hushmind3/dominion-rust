@@ -3525,7 +3525,7 @@ async fn run_loop(
         // of LoRA weight promotion. Every trial is still evaluated against
         // the SAME frozen source-paired oracle and attributed to its real model.
         let generator_competition=
-            crate::engine::rsi_model_learning::generator_competition(
+            crate::engine::rsi_model_learning::live_generator_competition(
                 &context.state,
                 record["history"].as_array().map(Vec::as_slice)
                     .unwrap_or(&[]),
@@ -3535,7 +3535,7 @@ async fn run_loop(
                         &&input["rsiSystemEvolution"]==true))
                     &&input["rsiLockGeneratorModel"]!=true
                     &&child_input["rsiModelWeightLineage"].is_null()
-            );
+            ).await;
         if generator_competition["selectedRouteEnabled"]==true {
             child_input["providerId"]=
                 generator_competition["selectedProviderId"].clone();
