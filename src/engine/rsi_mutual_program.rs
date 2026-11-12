@@ -127,7 +127,8 @@ pub(crate) fn propose(history:&[Value],frontier:&[Value],commit:&str,
         adopted_source(g) && g["acceptedCommit"]==commit);
     let continuation=predecessor.and_then(|g|{
         let prior=&g["mutualProgram"];
-        if !matches!(prior["phase"].as_str(),Some("seed"|"complement")) {
+        if prior["generatorCommit"]!=g["generatorCommit"]
+            || !matches!(prior["phase"].as_str(),Some("seed"|"complement")) {
             return None;
         }
         let (next_role,next_path,phase)=if prior["phase"]=="seed" {
@@ -223,6 +224,57 @@ pub(crate) fn valid_program(program:&Value,frontier:&[Value],commit:&str,
         && crate::engine::rsi::safe_path(path)
         && frontier.iter().any(|row|row==target)
 }
+/// End-to-end lineage proof for an accepted A -> B -> A loop. The
+/// transitions and source hashes are independently adopted; the graph does
+/// not claim that A caused B without an intervention-control experiment.
+pub(crate) fn completed_cycles(history:&[Value])->Value {
+    let mut cycles=Vec::new();
+    let mut seen=BTreeSet::new();
+    for returned in history.iter().filter(|g|
+        adopted_source(g) && g["mutualProgram"]["phase"]=="return") {
+        let program=&returned["mutualProgram"];
+        let Some(root_id)=program["rootGenerationId"].as_str()
+            .filter(|s|!s.is_empty()) else{continue};
+        let Some(root)=history.iter().find(|g|g["id"]==root_id
+            && adopted_source(g)
+            && g["mutualProgram"]["phase"]=="seed") else{continue};
+        let (Some(origin),Some(partner))=(
+            program["origin"]["role"].as_str(),
+            program["partner"]["role"].as_str()) else{continue};
+        if origin==partner || !implemented_roles(root).iter().any(|r|r==origin)
+            || !implemented_roles(returned).iter().any(|r|r==origin) {continue;}
+        let Some(middle)=history.iter().find(|g|
+            adopted_source(g)
+            && g["generatorCommit"]==root["acceptedCommit"]
+            && g["acceptedCommit"]==returned["generatorCommit"]
+            && g["mutualProgram"]["phase"]=="complement"
+            && g["mutualProgram"]["rootGenerationId"]==root_id
+            && implemented_roles(g).iter().any(|r|r==partner))
+        else{continue};
+        if program["generatorCommit"]!=returned["generatorCommit"]
+            || middle["mutualProgram"]["origin"]["role"]!=origin
+            || middle["mutualProgram"]["partner"]["role"]!=partner {
+            continue;
+        }
+        let Some(returned_id)=returned["id"].as_str() else{continue};
+        if !seen.insert(returned_id.to_owned()){continue;}
+        cycles.push(json!({
+            "originGenerationId":root_id,"complementGenerationId":middle["id"],
+            "returnGenerationId":returned["id"],
+            "sourceRole":origin,"complementRole":partner,
+            "sourceCommit":root["acceptedCommit"],
+            "complementCommit":middle["acceptedCommit"],
+            "returnCommit":returned["acceptedCommit"],
+            "allThreeIndependentAdoptions":true,
+            "causalityProven":false
+        }));
+    }
+    let mut result=json!({"source":"independently_adopted_reciprocal_lineage_v1",
+        "completedCycles":cycles.len(),"cycles":cycles,
+        "claim":"three_real_sequential_adoptions_not_proof_of_causal_effect"});
+    result["sha256"]=json!(sha(&result));
+    result
+}
 pub(crate) fn instruction(program:&Value)->String {
     if !program.is_object(){return String::new();}
     format!(
@@ -249,9 +301,9 @@ mod tests {
         let a=row("harness","src/engine/jobs.rs");
         let b=row("memory","src/engine/memory.rs");
         let frontier=vec![a.clone(),b.clone()];
-        let first=propose(&[],&frontier,"a",&a,&json!({"edges":[]}),&["context","memory"]);
+        let first=propose(&[],&frontier,&"a".repeat(40),&a,&json!({"edges":[]}),&["context","memory"]);
         assert_eq!(first["phase"],"seed");
-        assert!(valid_program(&first,&frontier,"a",0,&transfer_graph(&[])));
+        assert!(valid_program(&first,&frontier,&"a".repeat(40),0,&transfer_graph(&[])));
         let accepted=json!({"id":"g1","generatorCommit":"a","acceptedCommit":"b",
             "candidateId":"candidate1",
             "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
@@ -292,9 +344,24 @@ mod tests {
         child["changedSourcePaths"]=json!(["src/engine/memory.rs"]);
         child["acceptedSourceHashes"]=json!({"src/engine/memory.rs":"f".repeat(64)});
         child["mutualProgram"]=one;
-        let finish=propose(&[accepted,child],&frontier,&"c".repeat(40),&b,
-            &json!({"edges":[]}),&["context","memory"]);
+        let finish=propose(&[accepted.clone(),child.clone()],&frontier,
+            &"c".repeat(40),&b,&json!({"edges":[]}),&["context","memory"]);
         assert_eq!(finish["phase"],"return");
         assert_eq!(finish["target"]["role"],"harness");
+        assert_eq!(completed_cycles(&[accepted.clone(),child.clone()])["completedCycles"],0);
+        let mut returned=accepted.clone();
+        returned["id"]=json!("g4");
+        returned["jobId"]=json!("job4");
+        returned["generatorCommit"]=json!("c".repeat(40));
+        returned["compiledPlanExecuted"]["generatorCommit"]=json!("c".repeat(40));
+        returned["systemDesign"]["generatorCommit"]=json!("c".repeat(40));
+        returned["systemDesign"]["generationJobId"]=json!("job4");
+        returned["acceptedCommit"]=json!("d".repeat(40));
+        returned["mutualProgram"]=finish;
+        assert_eq!(completed_cycles(&[accepted.clone(),child.clone(),returned.clone()])
+            ["completedCycles"],1);
+        returned["accepted"]=json!(false);
+        assert_eq!(completed_cycles(&[accepted,child,returned])["completedCycles"],0,
+            "an unadopted return does not complete recursive improvement");
     }
 }
