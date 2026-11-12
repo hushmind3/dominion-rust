@@ -417,6 +417,17 @@ pub async fn finish(
     let edit_evidence=edit_outcomes(&context.state,session_id);
     let model_calls=context.state.store.session_usage(session_id)["calls"]
         .as_u64().unwrap_or(0);
+    let expected_provider=input["providerId"].as_str().unwrap_or("");
+    let expected_model=input["model"].as_str().unwrap_or("");
+    let model_route_usage=context.state.store.api_route_usage(
+        session_id,expected_provider,expected_model);
+    let model_routes=context.state.store.session_model_routes(session_id);
+    let model_route_exclusive=model_routes.as_ref().is_ok_and(|routes|
+        routes.len()==1
+        && routes[0]["providerId"]==expected_provider
+        && routes[0]["model"]==expected_model);
+    let model_route_verified=model_route_exclusive
+        && model_route_usage["matchedExactProviderModelSession"]==true;
     // A native induction is a separate accountable code generator. Its
     // receipt must match this job, source and patch bytes; never credit the
     // model merely because the resulting code compiles.
@@ -447,6 +458,8 @@ pub async fn finish(
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
     } else if !native_origin && model_calls==0 {
         capture_error="실제 모델 API 호출 기록이 없으므로 이 패치를 모델 주도 개선 후보로 등록하지 않았습니다.".into();
+    } else if !native_origin && !model_route_verified {
+        capture_error="요청 모델의 실제 제공자·모델 호출 기록이 없거나 다른 모델이 동일 세션에 섞여 있어 후보를 등록하지 않았습니다.".into();
     } else if !native_origin && edit_evidence["verifiedWrites"]
         .as_u64().unwrap_or(0)==0 {
         capture_error="모델이 수행한 검증된 소스 쓰기 도구 기록이 없습니다.".into();
@@ -473,6 +486,12 @@ pub async fn finish(
         match rsi::propose(&context.state,&proposal) {
             Ok(mut candidate)=>{
                 candidate["rsiJobId"]=json!(context.job_id);
+                candidate["modelSessionId"]=json!(session_id);
+                candidate["actualModelRoute"]=json!({
+                    "providerId":expected_provider,"model":expected_model
+                });
+                candidate["modelRouteUsage"]=model_route_usage.clone();
+                candidate["modelRouteSessionExclusive"]=json!(model_route_exclusive);
                 candidate["origin"]=json!(if native_origin {
                     "native_inductive_source_mutation"
                 }else{"model_driven_detached_worktree"});
@@ -519,6 +538,11 @@ pub async fn finish(
         "nativeMutation":native_receipt,
         "editEvidence":edit_evidence,
         "modelProviderCalls":model_calls,
+        "modelRouteUsage":model_route_usage,
+        "modelRouteSessionExclusive":model_route_exclusive,
+        "modelRouteVerified":model_route_verified,
+        "actualModelRoute":{"providerId":expected_provider,"model":expected_model},
+        "modelSessionId":session_id,
         "originAttribution":"model_usage_and_verified_tool_write_or_native_receipt",
         "inheritedCandidateId":input["rsiInheritedCandidateId"],
         "inheritedPatchChanged":inherited_patch_changed,
@@ -1230,7 +1254,7 @@ mod tests {
             "rsiBaseCommit":base,"rsiSourceDir":source.to_str().unwrap(),
             "rsiSourceBranch":"dominion-champion",
             "rsiObjective":"DOMINION 화면 렌더링 검증 대상 소스를 수정한다",
-            "model":"test-model",
+            "model":"test-model","providerId":"test-provider",
             "rsiFrozenCases":[
                 {"id":"memory","domain":"memory","holdout":true,"filter":"engine::room_state::tests::korean_owner_correction_replaces_the_previous_assignment"},
                 {"id":"algorithm","domain":"algorithm","holdout":true,"filter":"engine::algorithms::tests::generation_uses_evidence_and_returns_executable_kernels"}
@@ -1260,10 +1284,27 @@ mod tests {
         // Unit-test fixture: emulate both independent receipt sources after
         // demonstrating the zero-call rejection. Not a real model benchmark.
         state.store.audit("model.usage",json!({
-            "sessionId":"session-rsi","promptTokens":10,
+            "sessionId":"session-mixed","providerId":"test-provider",
+            "model":"test-model","promptTokens":10,
+            "completionTokens":10,"totalTokens":20,"estimated":false
+        }));
+        state.store.audit("model.usage",json!({
+            "sessionId":"session-mixed","providerId":"other-provider",
+            "model":"other-model","promptTokens":10,
+            "completionTokens":10,"totalTokens":20,"estimated":false
+        }));
+        let mixed=finish(&context,&job,&worktree,
+            Ok(Some(json!({"id":"mixed"}))),"session-mixed").await.unwrap();
+        assert!(mixed["rsi"]["candidateId"].is_null(),
+            "another model on the same worker session invalidates source attribution");
+        assert_eq!(mixed["rsi"]["modelRouteSessionExclusive"],false);
+        state.store.audit("model.usage",json!({
+            "sessionId":"session-rsi","providerId":"test-provider",
+            "model":"test-model","promptTokens":10,
             "completionTokens":10,"totalTokens":20,"estimated":false
         }));
         state.store.put("execution_operation",&json!({
+            "id":"fixture-verified-model-write",
             "sessionId":"session-rsi","origin":"model",
             "tool":"workspace_replace","status":"completed",
             "result":{"written":true},"toolReceipt":{"verified":true}
