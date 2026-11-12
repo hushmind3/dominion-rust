@@ -94,6 +94,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/rsi/campaigns/:id/choose", post(rsi::choose))
         .route("/api/rsi/campaigns/:id/apply", post(rsi::apply_campaign))
         .route("/api/rsi/campaigns/:id", get(rsi::campaign))
+        .route("/api/rsi/campaigns/:id/verify", get(rsi::verify))
         .route("/api/rsi/:id", get(rsi::one))
         .route("/api/rsi/:id/evaluate", post(rsi::evaluate))
         .route("/api/rsi/:id/apply", post(rsi::apply))

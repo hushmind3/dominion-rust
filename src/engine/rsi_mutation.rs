@@ -455,6 +455,9 @@ mod tests {
                 let expected=scores.into_iter().fold((f64::NEG_INFINITY,candidates[0]),
                     |best,(domain,score)|if score>best.0 {(score,domain)}else{best}).1;
                 assert_eq!(got,expected,"history={n} objective={objective}");
+                assert_eq!(rsi_evolve::select_domain(
+                    &json!({"implementation":"failure-clusters"}),&history,objective),expected,
+                    "the compiled descendant must execute the same verified selector");
             }
         }
         let source=include_str!("rsi_evolve.rs");

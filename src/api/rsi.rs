@@ -165,6 +165,13 @@ pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Respo
     Json(record).into_response()
 }
 
+pub async fn verify(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(campaign)=state.store.get("rsi_campaign",&id) else {
+        return error("캠페인 기록을 찾을 수 없습니다.".into());
+    };
+    Json(engine::capability_audit(&state,&campaign)).into_response()
+}
+
 pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
     let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|record|{
         let job=record["id"].as_str().and_then(|id|state.store.get("job",id)).unwrap_or(Value::Null);

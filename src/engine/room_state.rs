@@ -201,7 +201,7 @@ fn fact_domain(text: &str) -> Option<&'static str> {
     }
 }
 
-fn query_relevance(query: &str, text: &str) -> usize {
+fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>) -> usize {
     if query.trim().is_empty() {
         return 0;
     }
@@ -211,7 +211,6 @@ fn query_relevance(query: &str, text: &str) -> usize {
             score += 32;
         }
     }
-    let query_tokens = memory::terms(query);
     let text_tokens = memory::terms(text);
     score + query_tokens.intersection(&text_tokens).count().min(12)
 }
@@ -284,6 +283,7 @@ pub fn observe_owner_message(
         "sourceMessageId": message_id.clone(),
         "createdAt": message["created_at"].as_str().unwrap_or("").to_string(),
         "status": "active",
+        "verifiedLocalOwner": true,
     }));
     if facts.len() > MAX_ENTRIES {
         let drop = facts.len() - MAX_ENTRIES;
@@ -327,6 +327,7 @@ pub fn context_block_for_query(
 fn context_block_at(state:&AppState,room_id:&str,query:&str,visible:Option<&HashSet<String>>)->Option<String>{
     let record = state.store.get("room_state", &state_id(room_id))?;
     let facts = record["facts"].as_array()?;
+    let query_tokens = memory::terms(query);
     let mut ranked = facts
         .iter()
         .enumerate()
@@ -335,14 +336,16 @@ fn context_block_at(state:&AppState,room_id:&str,query:&str,visible:Option<&Hash
             || visible.is_some_and(|ids|fact["status"]=="superseded"
                 && fact["supersededBy"].as_str().is_some_and(|id|!ids.contains(id))))
         .filter(|(_, fact)| {
-            !fact["sourceMessageId"]
+            // Ingestion already authenticated local owner records. Legacy
+            // entries without the flag still revalidate against the source.
+            fact["verifiedLocalOwner"]==true || !fact["sourceMessageId"]
                 .as_str()
                 .and_then(|id| state.store.message(id))
                 .is_some_and(|source| source["metadata"]["origin"].is_object())
         })
         .filter_map(|(index, fact)| {
             let text = fact["text"].as_str()?.trim();
-            (!text.is_empty()).then_some((query_relevance(query, text), index, fact))
+            (!text.is_empty()).then_some((query_relevance(query, text, &query_tokens), index, fact))
         })
         .collect::<Vec<_>>();
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
