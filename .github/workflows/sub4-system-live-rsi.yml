@@ -19,8 +19,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: sub4-system-live-${{ github.run_id }}
-  cancel-in-progress: false
+  group: sub4-system-live-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   live-recursive-design:
@@ -85,14 +85,11 @@ jobs:
         run: |
           test -n "$SUB4_MODEL_API_KEY"
           nohup node scripts/sub4-live-rsi.mjs proxy > "$RUNNER_TEMP/sub4-model-proxy.log" 2>&1 &
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:5667/v1/models >/dev/null 2>&1; then break; fi
-            sleep 1
-          done
-          # The model proxy can have no /models endpoint upstream, so verify
-          # the local gateway process remains alive rather than claiming a model
-          # response from the health request.
-          test -s "$RUNNER_TEMP/sub4-model-proxy.log" || true
+          proxy_pid=$!
+          sleep 2
+          kill -0 "$proxy_pid"
+          # Actual remote inference and tool-call capability are checked
+          # inside the live experiment with only the configured model endpoint.
       - name: Launch the exact newly built native Rust source and ledger
         run: |
           mkdir -p "$RUNNER_TEMP/sub4-live/data/rsi-build" "$RUNNER_TEMP/sub4-live/workspace"
