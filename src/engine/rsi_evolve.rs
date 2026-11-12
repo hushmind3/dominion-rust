@@ -4729,6 +4729,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .map_err(|e|format!("후손 모델 감사 시작점 조회 실패: {e}"))?);
     state.store.put("job",&job).ok_or("후손 모델 감사 시작점 보존 실패")?;
     let result = jobs::run_prompt(&context, &job).await;
+    // Close the audit interval immediately after the real model/tool turn.
+    // The persisted finite range is replayable after campaign restarts and
+    // cannot accidentally incorporate a later user or descendant session.
+    let mut finished=state.store.get("job",job_id)
+        .ok_or("후손 모델 감사 종료 기록 없음")?;
+    finished["rsiAuditEndRowid"]=json!(state.store.audit_rowid_cursor()
+        .map_err(|e|format!("후손 모델 감사 종료점 조회 실패: {e}"))?);
+    state.store.put("job",&finished).ok_or("후손 모델 감사 종료점 보존 실패")?;
     // Count actual provider-specific inference calls made by this
     // descendant, not the model's declaration or the plan's intent.
     if job["input"]["rsiModelEcologyPolicy"]["active"]==true {
@@ -4748,7 +4756,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let session=finished["sessionId"].as_str().unwrap_or("");
         let cursor=finished["rsiAuditStartRowid"].as_i64().filter(|v|*v>=0)
             .ok_or("후손 모델 추론의 감사 시작점 없음")?;
-        let audit=state.store.model_usage_for_session_since(session,cursor);
+        let end=finished["rsiAuditEndRowid"].as_i64().filter(|v|*v>=cursor)
+            .ok_or("후손 모델 추론의 감사 종료점 없음")?;
+        let audit=state.store.model_usage_for_session_in_window(session,cursor,end);
         let complete=audit.is_ok();
         let events=audit.unwrap_or_default();
         let owned=!session.is_empty() &&state.store.get("session",session)
@@ -4775,6 +4785,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         evidence["mixedChatModelCalls"]=json!(mixed);
         evidence["sessionOwnedByGeneration"]=json!(owned);
         evidence["auditWindowStartRowid"]=json!(cursor);
+        evidence["auditWindowEndRowid"]=json!(end);
         evidence["auditComplete"]=json!(complete);
         evidence["actuallyUsedInGeneration"]=json!(exclusively_used);
         finished["rsiAdapterInferenceExecuted"]=evidence;
