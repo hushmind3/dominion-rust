@@ -1773,6 +1773,93 @@ async fn run_turn_body(
                 "needsFreshRead":require_read,"round":round
             }));
         }
+        // MAIN's evolved edit-program and counterexample-induced judgments
+        // now govern the ACTUAL offered source tools of this RSI descendant.
+        // Legacy compiler/quality repairs outrank a learned policy; oracle
+        // evaluation, owner approvals and regular chats remain untouched.
+        if session["rsiRun"]==true && !force_final
+            &&session["rsiEditPolicy"]["program"].is_array()
+            &&session["rsiCompilerRepair"]!=true
+            &&session["rsiQualityRepair"]!=true
+            &&!rsi_syntax_repair_pending {
+            let mut ordered=state.store.all("execution_operation").into_iter()
+                .filter(|op|op["runId"].as_str()==Some(execution_id))
+                .collect::<Vec<_>>();
+            ordered.sort_by_key(|op|op["opSeq"].as_u64().unwrap_or(u64::MAX));
+            let tool_calls=ordered.len() as u64;
+            let focused=session["rsiExplicitFocus"]==true
+                ||session["rsiAutoFocus"]==true
+                ||session["rsiSystemEvolution"]==true;
+            let has_current_read=ordered.iter().any(|op|
+                op["tool"]=="workspace_read_range"
+                    &&op["status"]=="completed"
+                    &&op["result"]["sourceSha256"].as_str().is_some_and(|h|
+                        h.len()==64&&h.bytes().all(|b|b.is_ascii_hexdigit())));
+            let route=crate::engine::rsi_edit_program::route(
+                &session["rsiEditPolicy"],&ordered,tool_calls,
+                focused,session["rsiFocusContextReady"]==true);
+            let must_reground=route.is_some_and(|r|
+                matches!(r.phase,"focus_ground"|"reground"));
+            let learned_rule=if must_reground {None} else {
+                crate::engine::rsi_decision_rules::choose(
+                    &session["rsiEditPolicy"],&ordered,tool_calls,
+                    focused,has_current_read)
+            };
+            // A version-grounded learned rule can change source-edit tool
+            // execution. It cannot rewrite the evaluator or suppress the
+            // whole-system design tool that links real invented components.
+            if let Some(rule)=learned_rule {
+                let next=round_tools.iter().filter(|def|{
+                    let name=tool_name(def);
+                    rule.allows(name)
+                        ||session["rsiSystemEvolution"]==true
+                            &&name=="rsi_system_plan"
+                }).cloned().collect::<Vec<_>>();
+                if !next.is_empty(){
+                    round_tools=next;
+                    let evidence=json!({
+                        "id":crate::engine::memory::stable_id(&[
+                            execution_id,&rule.id,&tool_calls.to_string()]),
+                        "sessionId":session_id,"runId":execution_id,
+                        "generationJobId":session["rsiGenerationJobId"],
+                        "policyRevision":session["rsiEditPolicy"]["revision"],
+                        "ruleId":rule.id,"toolCalls":tool_calls,
+                        "opSeqBefore":ordered.iter()
+                            .filter_map(|op|op["opSeq"].as_u64())
+                            .max().unwrap_or(0),
+                        "allow":rule.allow,
+                        "source":"inherited_measured_compositional_rule_v1",
+                        "recordedAt":chrono::Utc::now().to_rfc3339()
+                    });
+                    state.store.put("rsi_rule_execution",&evidence);
+                    state.store.audit("rsi.rule_executed",evidence);
+                }
+            }else if let Some(route)=route {
+                let mut next=round_tools.iter().filter(|def|{
+                    let name=tool_name(def);
+                    route.allows(name)
+                        ||route.edit_only()&&name=="workspace_replace_function"
+                        ||session["rsiSystemEvolution"]==true
+                            &&name=="rsi_system_plan"
+                }).cloned().collect::<Vec<_>>();
+                if next.is_empty()&&must_reground {
+                    // An earlier checkpoint might have removed the read
+                    // operation; rebuild ONLY the grounded read tool.
+                    next=tool_definitions.iter().filter(|def|
+                        tool_name(def)=="workspace_read_range")
+                        .cloned().collect();
+                }
+                if !next.is_empty(){
+                    round_tools=next;
+                    state.store.audit("rsi.edit_program_executed",json!({
+                        "sessionId":session_id,"runId":execution_id,
+                        "phase":route.phase,"toolCalls":tool_calls,
+                        "programRevision":session["rsiEditPolicy"]["revision"],
+                        "source":"compiled_descendant_edit_program"
+                    }));
+                }
+            }
+        }
         let grounded_edit=if session["rsiRun"]==true && !force_final {
             let ops=state.store.all("execution_operation");
             rsi_grounded_edit_messages(&session,session_id,&ops,&request.input)
