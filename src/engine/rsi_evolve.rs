@@ -1279,6 +1279,10 @@ fn paired_behavioral_feedback(state:&AppState,candidate_id:&str)->Vec<String> {
     }
     let mut failures=Vec::new();
     for case in pair["report"]["cases"].as_array().into_iter().flatten() {
+        // Holdout examples and answers must never become reflection data.
+        // Explicit development cases may supply actionable counterexamples.
+        if !candidate["cases"].as_array().is_some_and(|plan|plan.iter().any(|spec|
+            spec["id"]==case["id"] && spec["holdout"]==false)) {continue;}
         let name=case["id"].as_str().unwrap_or("behavior");
         for observed in case["behavioralCounterexamples"]["candidate"]
             .as_array().into_iter().flatten() {
@@ -2755,28 +2759,6 @@ fn session_tool_usage(state: &AppState, session_id: &str) -> Vec<Value> {
 /// Turn a real, compiler-passing but neutral descendant into an editable
 /// starting point for its successor. Rejection remains rejection: this never
 /// changes the accepted HEAD or promotes an unmeasured patch.
-fn inherited_neutral_candidate(
-    state: &AppState, history: &[Value], base: &str,
-) -> Option<String> {
-    history.iter().rev().filter(|generation|
-        generation["accepted"]!=true
-            && generation["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
-            && generation["evaluation"]["metrics"]["metricGains"]==0
-            && generation["evaluation"]["metrics"]["regressions"]==0
-            && generation["verification"]["checksPassed"]==true
-    ).find_map(|generation|{
-        let id=generation["candidateId"].as_str()?;
-        let candidate=state.store.get("rsi_candidate",id)?;
-        (candidate["baseCommit"]==base
-            && candidate["pairedComparisonComplete"]==true
-            && candidate["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
-            && candidate["origin"]=="model_driven_detached_worktree"
-            && candidate["patch"].as_str().is_some_and(|patch|!patch.is_empty())
-            && candidate["patchSha256"].as_str().is_some())
-            .then(||id.to_string())
-    })
-}
-
 /// A neutral inherited patch changes the disposable checkout *after* the
 /// coordinator has indexed the pristine base. Source excerpts and old read
 /// ranges therefore refer to the WRONG bytes for the descendant. Let the
@@ -2930,11 +2912,10 @@ async fn run_loop(
                     .unwrap_or(Value::Null)
             };
         }
-        if let Some(id)=inherited_neutral_candidate(&context.state,&prior_history,&head) {
-            child_input["rsiInheritedCandidateId"]=json!(id);
-        } else {
-            child_input["rsiInheritedCandidateId"]=Value::Null;
-        }
+        let archive = crate::engine::rsi_archive::select(
+            &context.state, &prior_history, &head, &child_input["rsiFrozenCases"]);
+        child_input["rsiInheritedCandidateId"]=archive["candidateId"].clone();
+        child_input["rsiArchiveSelection"]=archive;
         let objective = input["rsiObjective"].as_str().unwrap_or("");
         let mut allowed_campaigns = vec![context.job_id.to_string()];
         if let Some(prior)=matching_prior_campaign(&context.state,input,record) {
@@ -3286,6 +3267,7 @@ async fn run_loop(
                 })
             }).collect::<Vec<_>>();
         generation["inheritedCandidateId"]=current["input"]["rsiInheritedCandidateId"].clone();
+        generation["archiveSelection"]=current["input"]["rsiArchiveSelection"].clone();
         generation["inheritedPatchChanged"]=current["result"]["rsi"]["inheritedPatchChanged"].clone();
         generation["verification"]=json!({
             "rawCandidateId":current["result"]["rsi"]["candidateId"],
@@ -4163,13 +4145,14 @@ mod tests {
         let (state,root)=state();
         let a="a".repeat(64);
         let b="b".repeat(64);
-        let candidate=json!({"id":"candidate-1","patchSha256":a,
+        let mut candidate=json!({"id":"candidate-1","patchSha256":a,
+            "cases":[{"id":"planning-development","holdout":false}],
             "pairedComparisonComplete":true,
             "evaluation":{"evidenceSha256":b}});
         state.store.put("rsi_candidate",&candidate).unwrap();
         let pair=json!({"id":"rsi-pair-candidate-1","candidateId":"candidate-1",
             "evidenceSha256":b,"report":{"patchSha256":a,
-                "cases":[{"id":"planning-quality",
+                "cases":[{"id":"planning-development",
                     "behavioralCounterexamples":{"candidate":[
                         {"input":"설정을 읽고 결과를 저장한 다음 검증해",
                          "expectedSegments":3,"observedSegments":2,
@@ -4181,6 +4164,10 @@ mod tests {
         assert!(cases[0].contains("기대 단계=3"));
         assert!(cases[0].contains("후보 단계=2"));
         assert!(cases[0].contains("설정을 읽고"));
+        candidate["cases"][0]["holdout"]=json!(true);
+        state.store.put("rsi_candidate",&candidate).unwrap();
+        assert!(paired_behavioral_feedback(&state,"candidate-1").is_empty(),
+            "even authentic evaluator output must not expose a holdout answer");
         let mut stale=pair;
         stale["evidenceSha256"]=json!("0".repeat(64));
         state.store.put("rsi_pair",&stale).unwrap();

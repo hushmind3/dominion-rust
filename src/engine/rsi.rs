@@ -71,7 +71,7 @@ fn patch_paths(patch: &str) -> Result<Vec<String>, String> {
     Ok(paths.into_iter().collect())
 }
 
-fn case_plan(value: &Value) -> Result<Vec<Value>, String> {
+pub(crate) fn case_plan(value: &Value) -> Result<Vec<Value>, String> {
     let rows = value.as_array().ok_or("평가 계획 cases 배열이 필요합니다.")?;
     if rows.len() < 2 || rows.len() > 128 {
         return Err("평가 계획은 2~128개의 독립 사례를 포함해야 합니다.".into());
@@ -421,14 +421,20 @@ fn verified_holdout_domains(metrics:&Value)->Option<BTreeSet<String>> {
 /// Each candidate owns its receipt; campaign-job IDs are not unique across
 /// generations and would overwrite previously adopted evidence.
 pub(crate) fn verified_pair_receipt(state: &AppState, candidate: &Value) -> bool {
-    let Some(id) = candidate["id"].as_str() else { return false; };
+    replayed_pair_metrics(state, candidate).is_some_and(|metrics| metrics["eligible"] == true)
+}
+
+/// Recompute both successful and neutral experiments from the server's raw
+/// paired receipt. Neutral patches may seed search, but cannot earn adoption.
+pub(crate) fn replayed_pair_metrics(state: &AppState, candidate: &Value) -> Option<Value> {
+    let id = candidate["id"].as_str()?;
     let Some(receipt) = state.store.get("rsi_pair", &format!("rsi-pair-{id}")) else {
-        return false;
+        return None;
     };
     let evaluation = &candidate["evaluation"];
     let report = &receipt["report"];
-    let Some(plan) = candidate["cases"].as_array() else { return false; };
-    let Some(measured) = report["cases"].as_array() else { return false; };
+    let plan = candidate["cases"].as_array()?;
+    let measured = report["cases"].as_array()?;
     if receipt["candidateId"] != candidate["id"]
         || receipt["runner"] != "local_gitrepo_not_os_sandbox"
         || receipt["evidenceSha256"] != evaluation["evidenceSha256"]
@@ -437,16 +443,15 @@ pub(crate) fn verified_pair_receipt(state: &AppState, candidate: &Value) -> bool
         || report["patchSha256"] != candidate["patchSha256"]
         || report["oracleVersion"] != candidate["oracleVersion"]
         || report["baselineBuildOk"] != true || report["candidateBuildOk"] != true
-    { return false; }
+    { return None; }
     let Ok(recalculated) = evaluate_cases(
         plan, measured, candidate["target"].as_str().unwrap_or("")) else {
-        return false;
+        return None;
     };
-    recalculated["eligible"] == true
-        && recalculated == evaluation["metrics"]
+    (recalculated == evaluation["metrics"]
         && recalculated == receipt["metrics"]
         && recalculated["verdict"] == evaluation["verdict"]
-        && recalculated["verdict"] == receipt["verdict"]
+        && recalculated["verdict"] == receipt["verdict"]).then_some(recalculated)
 }
 
 /// Three accepted patches alone do not demonstrate recursive intelligence.

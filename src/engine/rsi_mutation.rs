@@ -345,32 +345,24 @@ pub(crate) fn induce(
     let original = fs::read_to_string(source.join(relative)).map_err(|e| e.to_string())?;
     let existing = fs::read_to_string(isolated.join(relative)).map_err(|e| e.to_string())?;
     if original != existing { return Ok(None); }
-    let (operator,transformed)=if let Some(next)=stream_verified_policy_statistics(&existing) {
-        ("streamed_verified_improver_statistics_v2",next)
-    }else if let Some(next)=stream_search_policy_statistics(&existing) {
-        ("streamed_improver_policy_statistics_v1",next)
-    }else if let Some(next)=materialize_verified_owner_provenance(&existing) {
-        ("verified_owner_provenance_cache_v1",next)
-    }else if let Some(next)=hoist_invariant_query_terms(&existing) {
-        ("loop_invariant_term_hoist_v1",next)
-    }else if let Some(next)=cache_invariant_fact_terms(&existing) {
-        ("immutable_owner_fact_token_cache_v1",next)
-    }else if let Some(next)=hoist_invariant_query_domain(&existing) {
-        ("loop_invariant_domain_hoist_v2",next)
-    }else{
-        return Ok(None);
-    };
     // The exact same code transformation is deterministic. A rejected
     // source hash/operator pair must not loop forever as a new generation.
     // Keep each repository partition isolated from other users' histories.
     let repository=source.to_string_lossy().to_string();
     let before=digest(&existing);
-    let already_measured=state.store.all("rsi_mutation").iter().any(|trial|
+    let trials=state.store.all("rsi_mutation");
+    let measured=|operator: &str| trials.iter().any(|trial|
         trial["sourceDir"].as_str()==Some(repository.as_str())
             && trial["beforeSha256"].as_str()==Some(before.as_str())
             && trial["operator"].as_str()==Some(operator)
-            && trial["evaluation"].is_object());
-    if already_measured { return Ok(None); }
+            && trial["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id))
+                .is_some_and(|candidate|
+                    candidate["origin"]=="native_inductive_source_mutation"
+                    && candidate["nativeMutation"]["beforeSha256"]==before
+                    && candidate["nativeMutation"]["afterSha256"]==trial["afterSha256"]
+                    && candidate["nativeMutation"]["operator"]==operator
+                    && crate::engine::rsi::replayed_pair_metrics(state,&candidate).is_some()));
+    let Some((operator,transformed))=choose_transformation(&existing,measured) else {return Ok(None);};
     let receipt = json!({
         "id": job_id, "operator": operator, "sourceDir": repository,
         "campaignId": input["rsiCampaignId"],
@@ -381,15 +373,42 @@ pub(crate) fn induce(
         "proof": "pending_independent_compile_and_paired_holdout",
     });
     fs::write(isolated.join(relative), transformed).map_err(|e| e.to_string())?;
-    state.store.put("rsi_mutation", &receipt)
-        .ok_or("RSI 소스 변형 영수증을 저장하지 못했습니다.")?;
+    if state.store.put("rsi_mutation", &receipt).is_none() {
+        fs::write(isolated.join(relative),existing).map_err(|e|e.to_string())?;
+        return Err("RSI 소스 변형 영수증을 저장하지 못했습니다.".into());
+    }
     state.store.audit("rsi.inductive_source_mutation", receipt.clone());
     Ok(Some(receipt))
+}
+
+/// A measured rejection of one applicable operator must not hide the other
+/// source-derived alternatives. No model invocation or acceptance is implied.
+fn choose_transformation(source: &str, measured: impl Fn(&str)->bool) -> Option<(&'static str,String)> {
+    type Operator = (&'static str, fn(&str)->Option<String>);
+    let operators: [Operator;6] = [
+        ("streamed_verified_improver_statistics_v2",stream_verified_policy_statistics),
+        ("streamed_improver_policy_statistics_v1",stream_search_policy_statistics),
+        ("verified_owner_provenance_cache_v1",materialize_verified_owner_provenance),
+        ("loop_invariant_term_hoist_v1",hoist_invariant_query_terms),
+        ("immutable_owner_fact_token_cache_v1",cache_invariant_fact_terms),
+        ("loop_invariant_domain_hoist_v2",hoist_invariant_query_domain),
+    ];
+    operators.into_iter().filter(|(name,_)| !measured(name))
+        .find_map(|(name,transform)|transform(source).map(|next|(name,next)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_rejected_applicable_operator_does_not_starve_other_source_hypotheses() {
+        let source=include_str!("room_state.rs");
+        let first=choose_transformation(source, |_|false).unwrap();
+        let second=choose_transformation(source, |name|name==first.0).unwrap();
+        assert_ne!(first.0,second.0);
+        assert_ne!(first.1,second.1);
+        assert!(choose_transformation(source, |_|true).is_none());
+    }
     #[test]
     fn current_sub3_improver_streaming_keeps_verified_payoff_features() {
         let source=include_str!("rsi_evolve.rs");

@@ -64,7 +64,7 @@ for(const spec of plan.cases){
     // The frozen oracle prints the same observations in BOTH revisions.
     const behaviorLines=result.stdout.split('\n')
       .filter(line=>line.includes('DOMINION_RSI_BEHAVIOR '));
-    if(behaviorLines.length===1){
+    if(spec.holdout!==true&&behaviorLines.length===1){
       try{
         const observed=JSON.parse(behaviorLines[0].split('DOMINION_RSI_BEHAVIOR ')[1]);
         if(Array.isArray(observed))arm.behavior.push(observed);
@@ -81,7 +81,7 @@ for(const spec of plan.cases){
  }
  // Quality metrics and pass/fail remain identical. These are training
  // counterexamples, not a new or automatically passed holdout test.
- const failedBehaviors=label=>(arms[label].behavior[0]||[])
+ const failedBehaviors=label=>(spec.holdout===true?[]:(arms[label].behavior[0]||[]))
   .filter(item=>Number.isInteger(item.expectedSegments)
     && Number.isInteger(item.observedSegments)
     && item.expectedSegments!==item.observedSegments

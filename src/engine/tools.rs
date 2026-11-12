@@ -121,6 +121,13 @@ pub async fn execute(
     if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
     }
+    if isolated_rsi && matches!(name,"workspace_read"|"workspace_read_range"
+        |"workspace_write"|"workspace_replace"|"workspace_replace_range") {
+        let path=resolve_workspace(ctx.workspace,&required_arg(args,"path")?)?;
+        if path.file_name().is_some_and(|name|name=="rsi_oracle_fixture.rs") {
+            return Err("동결 평가 사례는 자기개선 모델의 읽기·수정 대상이 아닙니다.".into());
+        }
+    }
     if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range") {
         let path=args["path"].as_str().unwrap_or("");
         if !crate::engine::rsi::safe_path(path) {
@@ -748,6 +755,7 @@ fn search_code_index(
     for file in ctx.store.all("code_index_file") {
         if file["indexId"].as_str()!=Some(index_id) {continue;}
         let path=file["path"].as_str().unwrap_or("");
+        if session["rsiRun"]==true && path.ends_with("/rsi_oracle_fixture.rs") {continue;}
         let rank=score(path);
         if rank>0 {matches.push((rank,json!({"path":path,"kind":"file","name":path,"line":1})));}
         for symbol in file["symbols"].as_array().into_iter().flatten() {
@@ -1488,6 +1496,28 @@ fn strip_html(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn rsi_cannot_read_or_overwrite_the_coordinators_holdout_source() {
+        use crate::{config::Config, db::Store, vault::Vault};
+        let dir=std::env::temp_dir().join(format!("rsi-holdout-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src/engine")).unwrap();
+        let path="src/engine/rsi_oracle_fixture.rs";
+        std::fs::write(dir.join(path),"secret holdout examples").unwrap();
+        let config=Config{port:0,data_dir:dir.join("data"),web_dir:dir.join("web"),workspace:dir.clone()};
+        let state=crate::state::AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
+        state.store.put("session",&json!({"id":"rsi","rsiRun":true})).unwrap();
+        let ctx=ToolContext{workspace:&dir,store:&state.store,state:&state,session_id:"rsi",
+            agent_id:None,tools_enabled:true,tools_execution_enabled:true};
+        for tool in ["workspace_read_range","workspace_write","workspace_replace","workspace_replace_range"] {
+            let error=execute(&ctx,tool,&json!({"path":path,"content":"overwrite"}),"run").await.unwrap_err();
+            assert!(error.contains("동결 평가"),"{tool}: {error}");
+        }
+        crate::engine::code_index::refresh(&state,&dir).unwrap();
+        assert_eq!(search_code_index(&ctx,"rsi_oracle_fixture",10).unwrap()["matchCount"],0);
+        assert_eq!(std::fs::read_to_string(dir.join(path)).unwrap(),"secret holdout examples");
+        let _=std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn workspace_paths_cannot_escape() {

@@ -497,17 +497,14 @@ fn rsi_edit_repair_limit(input:&Value)->usize {
     input["rsiEditPolicy"]["repairLimit"].as_u64().unwrap_or(2).min(3) as usize
 }
 
-/// The descendant may run an independently evidenced native source operator
-/// before asking another model for speculative edits. This is ONLY available
-/// after an adopted ancestor caused a measured target/domain change. The
-/// original model-led generation, explicit owner edits and inherited neutral
-/// patches remain on the model-first path.
+/// Explicitly opted-in source search may try a native operator before a model
+/// call, including its first generation. Fixed owner file edits and inherited
+/// patches stay model-led. A native proposal still needs compilation and A/B.
 fn rsi_native_preflight(input: &Value) -> bool {
     input["rsiNativeInduction"]==true
-        && input["rsiSourceScopeExpanded"]==true
-        && input["rsiAutonomous"]==true
         && input["rsiAutoFocus"]==true
         && !input["rsiInheritedCandidateId"].is_string()
+        && !input["rsiFailedPatchRecovery"]["candidateId"].is_string()
 }
 
 pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> {
@@ -1154,17 +1151,22 @@ mod tests {
 mod rsi_native_preflight_tests {
     use super::*;
     #[test]
-    fn descendants_run_measured_native_source_operator_before_model() {
+    fn opted_in_source_search_can_start_natively_without_spending_a_model_turn() {
         let input=json!({"rsiNativeInduction":true,
             "rsiSourceScopeExpanded":true,"rsiAutonomous":true,
             "rsiAutoFocus":true,"rsiInheritedCandidateId":null});
         assert!(rsi_native_preflight(&input));
-        for key in ["rsiNativeInduction","rsiSourceScopeExpanded",
-            "rsiAutonomous","rsiAutoFocus"] {
+        for key in ["rsiNativeInduction","rsiAutoFocus"] {
             let mut blocked=input.clone();
             blocked[key]=json!(false);
             assert!(!rsi_native_preflight(&blocked));
         }
+        let mut initial=input.clone();
+        initial["rsiSourceScopeExpanded"]=json!(false);
+        initial["rsiAutonomous"]=json!(false);
+        assert!(rsi_native_preflight(&initial));
+        initial["rsiFailedPatchRecovery"]=json!({"candidateId":"compiler-failure"});
+        assert!(!rsi_native_preflight(&initial));
         let mut inherited=input;
         inherited["rsiInheritedCandidateId"]=json!("neutral-patch");
         assert!(!rsi_native_preflight(&inherited));

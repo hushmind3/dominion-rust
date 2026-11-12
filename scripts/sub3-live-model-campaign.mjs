@@ -92,13 +92,15 @@ if(mode==='probe'){
       // The anonymous model caps a response near 1500 output tokens. Low
       // reasoning effort leaves room for an executable workspace_replace call.
       reasoningEffort:'low',
-      request:"Fix real Korean multi-action decomposition behavior in src/engine/decompose.rs, not documentation or tests. First read split_markers() and nearby helpers with workspace_read_range and use CURRENT sourceSha256. Preserve existing markers, numbered input and original phrase order. Two behaviors are missing in the historical source: (1) standalone 다음 and 나서 split ordered steps; (2) -고 after an action verb followed by whitespace divides actions while preserving -고 on the preceding action (읽고/하고/쓰고, NOT nouns 사고/최고). Frozen evaluation expects three ordered steps for 설정을 읽고 결과를 저장한 다음 검증해. Prefer SMALL source-grounded workspace_replace or workspace_replace_range edits using exact original text. You may add a small helper and change the scanner separately; do not regenerate the entire function at once. If a tool rejects syntax, re-read current source and repair that exact failure. In a descendant the earlier compiler-passing neutral patch may already be restored: CORRECT its remaining missing behavior instead of restarting the old candidate. Do not edit tests, validators, or fixtures. Do not stop after planning, only adding a marker, or an identical write.",
+      request:"Improve DOMINION's current self-improvement algorithm and then transfer a measured improvement into memory. Start from the unchanged current source. Find repeated allocation, scans, or redundant work in self-improvement policy selection and owner-fact retrieval. Preserve policy features, provenance checks and ranking semantics. Inspect source before editing; use small SHA-bound edits. Use independently measured development feedback to repair unsuccessful candidates. The runtime can also try native source transformations, whose provenance must stay separate from model edits. Do not modify tests, evaluators, fixtures, or report an unevaluated proposal as an improvement.",
       // Reserve capacity for a genuine second-generation correction of a
       // compiler-passing but zero-gain source candidate. No paid model.
-      focusFiles:['src/engine/decompose.rs'],expandAfterGain:true,nativeInduction:true,maxAttempts:9,
+      focusFiles:[],expandAfterGain:true,nativeInduction:true,maxAttempts:6,
       tokenBudget:520000,timeBudgetSeconds:6000
     };
-    trace.submittedRequest={...request,request:request.request.slice(0,320)};
+    trace.submittedRequest={...request};
+    trace.evaluationScope='current_source_frozen_native_suite';
+    trace.historicalBugRestored=false;
     const queued=await call('/api/rsi/start',request);
     trace.jobId=queued.id;
     if(typeof trace.jobId!=='string'||!trace.jobId)throw Error(`RSI did not return a job id: ${content(queued)}`);
@@ -121,6 +123,7 @@ if(mode==='probe'){
       error:g.error,toolsUsed:g.toolsUsed,newFindings:g.newFindings,
       editEvidence:g.editEvidence,diffBytes:g.diffBytes,captureError:g.captureError,
       inheritedCandidateId:g.inheritedCandidateId,
+      archiveSelection:g.archiveSelection,
       inheritedPatchChanged:g.inheritedPatchChanged,
       editPolicy:g.editPolicy,programStages:g.programStages,
       compilerRepairReceipts:g.compilerRepairReceipts,

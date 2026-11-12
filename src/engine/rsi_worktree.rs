@@ -114,6 +114,7 @@ pub fn metric_cases()->Vec<Value>{
     [
         ("memory-quality","memory","memory_ranking",false),
         ("long-recall-quality","memory","long_owner_recall",true),
+        ("planning-development","planning","planning_development_quality",false),
         ("planning-quality","planning","planning_quality",true),
         ("search-quality","improver","improvement_search",true),
         ("group-chat-input-cost","context","group_chat_context_efficiency",true),
@@ -206,16 +207,7 @@ async fn inherit_neutral_patch(
     let candidate=context.state.store.get("rsi_candidate",id)
         .ok_or("계승할 실제 개선 후보를 찾을 수 없습니다.")?;
     let patch=candidate["patch"].as_str().ok_or("계승 후보의 소스 패치 없음")?;
-    if candidate["baseCommit"]!=base
-        || candidate["origin"]!="model_driven_detached_worktree"
-        || candidate["pairedComparisonComplete"]!=true
-        || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
-        || candidate["evaluation"]["metrics"]["metricGains"]!=0
-        || candidate["evaluation"]["metrics"]["regressions"]!=0
-        || digest(patch)!=candidate["patchSha256"].as_str().unwrap_or("")
-        || candidate["paths"].as_array().is_none_or(|paths|
-            paths.is_empty() || paths.iter().any(|p|
-                !p.as_str().is_some_and(crate::engine::rsi::safe_path))) {
+    if crate::engine::rsi_archive::parent_metrics(&context.state, &candidate, base).is_none() {
         return Err("독립 검증되지 않았거나 다른 기준 커밋의 패치는 계승하지 않습니다.".into());
     }
     let temporary=std::env::temp_dir().join(format!(
@@ -289,6 +281,8 @@ fn classify(patch:&str)->&'static str {
         && (line.contains("src/engine/rsi.rs ")
             || line.contains("src/engine/rsi_worktree.rs ")
             || line.contains("src/engine/rsi_evolve.rs ")
+            || line.contains("src/engine/rsi_archive.rs ")
+            || line.contains("src/engine/rsi_mutation.rs ")
             || line.contains("src/engine/rsi_metrics.rs ")
             || line.contains("src/engine/algorithms.rs ")
             || line.contains("src/engine/algorithm_eval.rs ")
