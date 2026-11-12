@@ -166,7 +166,20 @@ pub(crate) fn valid(plan:&Value,frontier:&[Value],commit:&str,len:usize)->bool{
         && frontier.contains(&row["victim"])
         && row["source"]["role"]!=row["victim"]["role"]
         && row["source"]["path"]!=row["victim"]["path"];
-    plan["selected"].is_null() || good(&plan["selected"])
+    let Some(all)=plan["crossCapabilityCounterexamples"].as_array()
+        .filter(|rows|rows.len()<=32)else{return false};
+    if all.iter().any(|row|
+        row["source"]["sourceSha256"].as_str()
+            .is_none_or(|s|!sha(s,64))
+        || row["victim"]["sourceSha256"].as_str()
+            .is_none_or(|s|!sha(s,64))
+        || !frontier.contains(&row["source"])
+        || !frontier.contains(&row["victim"])) {
+        return false;
+    }
+    plan["selected"].is_null()
+        || (good(&plan["selected"])
+            && all.iter().any(|row|row==&plan["selected"]))
 }
 pub(crate) fn instruction(plan:&Value)->String{
     let pair=&plan["selected"];
@@ -267,6 +280,13 @@ mod tests {
         assert_eq!(result["selected"]["independentCandidateCounterexamples"],2);
         assert_eq!(result["selected"]["distinctDamagedHoldoutCases"],2);
         assert!(valid(&result,&frontier,&head,2));
+        let mut forged_plan=result.clone();
+        forged_plan["selected"]["victim"]["path"]=json!("src/engine/other.rs");
+        let mut unsigned=forged_plan.clone();
+        unsigned.as_object_mut().unwrap().remove("sha256");
+        forged_plan["sha256"]=json!(hash(&unsigned));
+        assert!(!valid(&forged_plan,&frontier,&head,2),
+            "even a rehashed supervisor proposal cannot invent source ownership");
         let next_revision=plan(&state,&history,&frontier,&"e".repeat(40));
         assert!(next_revision["selected"].is_null(),
             "old failures cannot force a joint edit after source code changed");
