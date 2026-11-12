@@ -89,13 +89,15 @@ fn unfinished_discovery(history:&[Value],frontier:&[Value])->Option<Value>{
                     "lineage":[child["acceptedCommit"]]}));
             }
             let back=back?;
-            let meta=current(frontier,"improvement_methods")?;
+            let meta=current(frontier,"scientific_method")
+                .or_else(||current(frontier,"improvement_methods"))?;
+            let meta_role=meta["role"].as_str()?;
             let next=back["acceptedCommit"].as_str()?;
             let finished=history.iter().any(|g|
-                g["generatorCommit"]==next && altered(g,"improvement_methods"));
+                g["generatorCommit"]==next && altered(g,meta_role));
             if !finished {
                 return Some(json!({"phase":"rewrite_discovery_algorithm",
-                    "role":"improvement_methods","target":meta,"origin":origin,
+                    "role":meta_role,"target":meta,"origin":origin,
                     "birthCommit":born,"birthJob":birth["jobId"],
                     "lineage":[child["acceptedCommit"],back["acceptedCommit"]]}));
             }
