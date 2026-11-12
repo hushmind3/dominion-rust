@@ -38,6 +38,7 @@ pub mod rsi_symbiosis;
 pub mod rsi_interaction;
 pub mod rsi_factorial;
 pub mod rsi_open_topology;
+pub mod rsi_recursive_scientist;
 pub mod rsi_evolve;
 pub mod rsi_edit_genome;
 pub mod rsi_edit_program;
