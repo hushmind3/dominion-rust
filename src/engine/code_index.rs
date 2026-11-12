@@ -592,7 +592,11 @@ pub fn refresh(state: &AppState, source: &Path) -> Result<Value, String> {
     let mut hotspots = Vec::new();
     for file in &files {
         let path = file["path"].as_str().unwrap_or("");
-        if path.starts_with("tests/") {
+        // Preserve complete test source lookup for developers, but do not
+        // report test-only modules as production complexity hotspots.
+        if path.starts_with("tests/")
+            || path.ends_with("_tests.rs")
+            || path.ends_with("_fixture.rs") {
             continue;
         }
         let lines = file["lines"].as_u64().unwrap_or(0);
