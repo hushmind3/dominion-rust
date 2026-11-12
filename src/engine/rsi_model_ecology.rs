@@ -87,9 +87,14 @@ fn session_chat_calls(rows:&[Value],session:&str,route:&Value)->(u64,u64,BTreeSe
             continue;
         }
         let detail=&row["detail"];
-        let (Some(provider),Some(model))=(
-            detail["providerId"].as_str(),detail["model"].as_str())else{continue};
-        actual.insert(format!("{provider}/{model}"));
+        if let (Some(provider),Some(model))=(
+            detail["providerId"].as_str(),detail["model"].as_str()){
+            actual.insert(format!("{provider}/{model}"));
+        }else{
+            // A real token-bearing call with missing route metadata is
+            // unidentifiable, not evidence that the selected model was alone.
+            actual.insert("unknown_model_actor".into());
+        }
         if same_route(detail,route){selected+=1;}else{mixed+=1;}
     }
     (selected,mixed,actual)
@@ -538,6 +543,14 @@ mod tests{
         assert_eq!(selected_calls,1);
         assert_eq!(mixed,1);
         assert_eq!(actors.len(),2);
+        let mut incomplete=events.clone();
+        incomplete.push(json!({"event":"model.usage","detail":{
+            "sessionId":"session-1","purpose":"chat","totalTokens":13}}));
+        let (accepted,ambiguous,actors)=session_chat_calls(
+            &incomplete,"session-1",&selected);
+        assert_eq!(accepted,1);
+        assert_eq!(ambiguous,2);
+        assert!(actors.contains("unknown_model_actor"));
         let (only,foreign,_)=session_chat_calls(&events[..1],"session-1",&selected);
         assert_eq!((only,foreign),(1,0));
         let (none,_,_)=session_chat_calls(&events,"",&selected);
@@ -784,11 +797,20 @@ mod tests{
         state.store.audit("model.usage",json!({
             "sessionId":"owned-session","purpose":"chat",
             "providerId":"provider-b","model":"model-b","totalTokens":12}));
+        // 715 later unrelated events exceed recent_audit(800)'s true 500
+        // result cap. Both earlier chat actors must still be visible.
+        for i in 0..715{
+            state.store.audit("tool.call",json!({"number":i}));
+        }
         job["rsiAuditEndRowid"]=json!(state.store.audit_rowid_cursor().unwrap());
         let mixed=executed(&state,&job);
         assert_eq!(mixed["actualModelCalls"],1);
         assert_eq!(mixed["mixedChatModelCalls"],1);
         assert_eq!(mixed["actuallyUsedInGeneration"],false);
+        let mut missing_end=job.clone();
+        missing_end["rsiAuditEndRowid"]=Value::Null;
+        assert_eq!(executed(&state,&missing_end)["auditComplete"],false);
+        assert_eq!(executed(&state,&missing_end)["actuallyUsedInGeneration"],false);
         job["id"]=json!("generation-other");
         assert_eq!(executed(&state,&job)["sessionOwnedByGeneration"],false);
         job["id"]=json!("generation-1");
