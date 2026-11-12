@@ -333,6 +333,134 @@ pub(crate) fn architecture_frontier(
     frontier
 }
 
+/// The resident supervisor validates MATERIAL facts, not the old
+/// generation's ranking, self-model taxonomy, or improvement equation.
+/// Otherwise an improved descendant metacontroller would be rejected merely
+/// for making a different architectural decision from its parent.
+pub(crate) fn validate_plan_evidence(
+    state:&crate::state::AppState,root:&Path,commit:&str,
+    index_id:&str,plan:&Value,history:&[Value]
+)->Result<(),String>{
+    use std::collections::{BTreeMap,BTreeSet};
+    let actual=source_inventory(root);
+    let digest=format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&actual).map_err(|e|e.to_string())?));
+    let blueprint=&plan["systemBlueprint"];
+    if blueprint["generatorCommit"]!=commit
+        || blueprint["sourceTreeSha256"]!=digest
+        || plan["sourceTreeSha256"]!=digest
+        || blueprint["sourceInventory"]!=json!(actual)
+        || blueprint["sourceFileCount"].as_u64()!=Some(actual.len() as u64){
+        return Err("후손의 전체 소스 스냅샷과 현재 소스 파일이 일치하지 않습니다.".into());
+    }
+    let known=actual.iter().filter_map(|row|
+        Some((row["path"].as_str()?.to_string(),row["sha256"].as_str()?.to_string())))
+        .collect::<BTreeMap<_,_>>();
+    let components=blueprint["architecture"].as_array()
+        .filter(|c|!c.is_empty()&&c.len()<=64)
+        .ok_or("후손의 지능 구성요소 목록 오류")?;
+    let mut names=BTreeSet::new();
+    let mut ownership=BTreeMap::<String,BTreeSet<String>>::new();
+    for component in components{
+        let role=component["role"].as_str().filter(|r|valid_role(r))
+            .ok_or("자기모형 구성요소 이름 오류")?;
+        if !names.insert(role.to_string()){
+            return Err("자기모형의 구성요소가 중복됐습니다.".into());
+        }
+        let domain=component["domain"].as_str()
+            .filter(|d|crate::engine::rsi_evolve::DOMAINS.contains(d))
+            .ok_or("자기모형 구성요소 분야 오류")?;
+        let _=domain;
+        let entries=component["representativeSources"].as_array()
+            .ok_or("자기모형 구성요소 소스 목록 오류")?;
+        let mut mapped=BTreeSet::new();
+        for entry in entries{
+            let path=entry["path"].as_str().filter(|path|
+                crate::engine::rsi::safe_path(path))
+                .ok_or("자기모형 구성요소 소스 경로 오류")?;
+            let sha=entry["sha256"].as_str().ok_or("자기모형 소스 해시 누락")?;
+            if !mapped.insert(path.to_string())
+                || known.get(path).map(String::as_str)!=Some(sha)
+                || crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                    .as_deref()!=Some(sha){
+                return Err("구성요소 소스와 현재 색인의 SHA-256이 다릅니다.".into());
+            }
+        }
+        ownership.insert(role.to_string(),mapped);
+    }
+    let frontier=plan["architectureFrontier"].as_array()
+        .filter(|rows|rows.len()<=128).ok_or("후손 탐색 근거 수 오류")?;
+    let mut available=BTreeSet::new();
+    for item in frontier{
+        let role=item["role"].as_str().ok_or("탐색 구성요소 이름 누락")?;
+        let path=item["path"].as_str()
+            .filter(|path|crate::engine::rsi::safe_path(path))
+            .ok_or("탐색 소스 경로 오류")?;
+        let sha=item["sourceSha256"].as_str()
+            .ok_or("탐색 소스 해시 누락")?;
+        let domain=item["domain"].as_str().filter(|d|
+            crate::engine::rsi_evolve::DOMAINS.contains(d))
+            .ok_or("탐색 분야 오류")?;
+        if !names.contains(role)
+            || !ownership.get(role).is_some_and(|files|files.contains(path))
+            || known.get(path).map(String::as_str)!=Some(sha)
+            || crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                .as_deref()!=Some(sha)
+            || !available.insert((role.to_string(),domain.to_string(),
+                path.to_string(),sha.to_string())){
+            return Err("후손 탐색 결정의 소스·역할·인덱스 근거 오류".into());
+        }
+    }
+    let bound=|value:&Value|->bool{
+        let (Some(role),Some(domain),Some(path),Some(sha))=(
+            value["role"].as_str(),value["domain"].as_str(),
+            value["path"].as_str(),value["sourceSha256"].as_str()) else{
+            return false;
+        };
+        available.contains(&(role.to_string(),domain.to_string(),
+            path.to_string(),sha.to_string()))
+    };
+    if !plan["architectureTarget"].is_null()
+        && !bound(&plan["architectureTarget"]){
+        return Err("후손이 선택한 아키텍처 대상이 실제 소스에 없습니다.".into());
+    }
+    let meta=&plan["metaPolicy"];
+    if !meta.is_object() || (meta["target"].is_object() && !bound(&meta["target"])){
+        return Err("후손 메타 제어기의 선택 대상이 실제 소스에 없습니다.".into());
+    }
+    if plan["metaActionPolicy"]!=meta["controlPolicy"]{
+        return Err("후손이 실행할 메타 정책이 계획과 다릅니다.".into());
+    }
+    let policy=&plan["metaActionPolicy"];
+    if policy.is_object(){
+        if !matches!(policy["toolPolicy"].as_str(),
+            Some("patch_only"|"allow_new_modules"))
+            || !matches!(policy["learningPolicy"].as_str(),
+                Some("avoid_failed"|"retry_failed"))
+            || !matches!(policy["executionPolicy"].as_str(),
+                Some("grounded_edit"|"explore_then_edit"))
+            || !available.iter().any(|(role,domain,path,sha)|
+                policy["role"]==*role && policy["domain"]==*domain
+                    && policy["path"]==*path && policy["sourceSha256"]==*sha){
+            return Err("후손의 실행·학습·도구 정책이 실제 소스에 연결되지 않았습니다.".into());
+        }
+    }
+    let stage=&plan["successorStage"];
+    if stage.is_object(){
+        if !bound(stage) || !history.iter().any(|g|
+            g["accepted"]==true && g["pairedRevalidated"]==true
+            && g["systemDesign"]["id"]==stage["sourceDesignId"]
+            && g["acceptedCommit"]==stage["predecessorCommit"]
+            && g["systemDesign"]["successorStages"].as_array().is_some_and(|rows|
+                rows.iter().any(|row|row["role"]==stage["role"]
+                    && row["domain"]==stage["domain"]
+                    && row["path"]==stage["path"]))) {
+            return Err("후손에게 계승된 설계 단계의 채택 계보가 다릅니다.".into());
+        }
+    }
+    Ok(())
+}
+
 /// Read only source assets under the experiment's pinned checkout. The
 /// coordinator cannot author or alter this blueprint without changing its
 /// measured generator revision; no holdout content is read here.
