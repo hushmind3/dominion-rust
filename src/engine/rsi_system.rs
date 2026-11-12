@@ -128,7 +128,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         method. Propose a genuinely new executable design, inspect source \
         hashes with code_search/workspace_read_range and WRITE the required \
         cross-module Rust changes with workspace_replace_range/function/write. \
-        Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
+        Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. For a coupled redesign of several subsystems set component=system and specify 2-7 actual components in components, with up to 24 verified source paths; you can change algorithm, harness, memory, learning, tools and improvement methods together. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
         rsi_method_propose; mere registration is not evidence of execution. \
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
@@ -166,8 +166,31 @@ pub(crate) fn propose(
         return Err("진행 중인 전체 시스템 자기개선 후손만 설계할 수 있습니다.".into());
     }
     let component=body["component"].as_str()
-        .filter(|name|COMPONENTS.iter().any(|row|row.0==*name))
+        .filter(|name| *name=="system" || COMPONENTS.iter().any(|row|row.0==*name))
         .ok_or("시스템 구성요소 지정 오류")?;
+    let components=if component=="system" {
+        let list=body["components"].as_array()
+            .filter(|rows| (2..=COMPONENTS.len()).contains(&rows.len()))
+            .ok_or("전체 시스템 설계에는 구체적인 구성요소 2~7개가 필요합니다.")?;
+        let mut seen=std::collections::BTreeSet::new();
+        let mut chosen=Vec::new();
+        for row in list {
+            let name=row.as_str()
+                .filter(|value|COMPONENTS.iter().any(|item|item.0==*value))
+                .ok_or("알 수 없는 시스템 구성요소입니다.")?;
+            if !seen.insert(name) {
+                return Err("중복된 시스템 구성요소입니다.".into());
+            }
+            chosen.push(name);
+        }
+        chosen
+    }else{
+        if body["components"].as_array().is_some_and(|rows|
+            rows.len()!=1 || rows[0]!=component) {
+            return Err("단일 구성요소 설계에는 다른 구성요소를 지정할 수 없습니다.".into());
+        }
+        vec![component]
+    };
     let next=body["nextDomain"].as_str()
         .filter(|name|crate::engine::rsi_evolve::DOMAINS.contains(name))
         .ok_or("다음 개선 분야 오류")?;
@@ -178,8 +201,9 @@ pub(crate) fn propose(
         .filter(|v|v.trim().len()>=30 && v.len()<=6000)
         .ok_or("실행할 설계 30~6000자가 필요합니다.")?;
     let paths=body["targetFiles"].as_array()
-        .filter(|rows|!rows.is_empty()&&rows.len()<=8)
-        .ok_or("변경할 실제 소스 1~8개를 선택하세요.")?;
+        .filter(|rows|!rows.is_empty() && rows.len()<=24 &&
+            (component!="system" || rows.len()>=2))
+        .ok_or("실제 소스 1~24개가 필요하며 시스템 재설계에는 2개 이상이 필요합니다.")?;
     let root=fs::canonicalize(&state.config.workspace).map_err(|e|e.to_string())?;
     let mut unique=std::collections::BTreeSet::new();
     for path in paths {
@@ -196,13 +220,13 @@ pub(crate) fn propose(
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,next,hypothesis,design,paths]).to_string().as_bytes()));
+        commit,component,components,next,hypothesis,design,paths]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
         "campaignId":campaign_id,"generationJobId":child_id,
         "generatorCommit":commit,"component":component,
-        "nextDomain":next,"hypothesis":hypothesis,
+        "components":components,"nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,
         "qualityProven":false,"adopted":false
     });
@@ -303,6 +327,20 @@ mod tests {
         let mut bad=request.clone();
         bad["targetFiles"]=json!(["src/engine/../escape.rs"]);
         assert!(propose(&state,"session",&bad).is_err());
+        fs::write(workspace.join("src/engine/learning.rs"),"pub fn learn() {}").unwrap();
+        let mut coupled=request.clone();
+        coupled["component"]=json!("system");
+        coupled["components"]=json!(["algorithms","learning"]);
+        coupled["targetFiles"]=json!(["src/engine/algorithms.rs","src/engine/learning.rs"]);
+        let whole=propose(&state,"session",&coupled).unwrap();
+        assert_eq!(whole["proposal"]["components"][1],"learning");
+        assert_eq!(whole["proposal"]["targetFiles"].as_array().unwrap().len(),2);
+        let mut duplicate=coupled.clone();
+        duplicate["components"]=json!(["algorithms","algorithms"]);
+        assert!(propose(&state,"session",&duplicate).is_err());
+        let mut one_file=coupled;
+        one_file["targetFiles"]=json!(["src/engine/learning.rs"]);
+        assert!(propose(&state,"session",&one_file).is_err());
         let mut disabled=state.store.get("job","descendant").unwrap();
         disabled["input"]["rsiSystemEvolution"]=json!(false);
         state.store.put("job",&disabled).unwrap();
