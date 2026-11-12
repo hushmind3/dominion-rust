@@ -78,7 +78,7 @@ fn patch_paths(patch: &str) -> Result<Vec<String>, String> {
     Ok(paths.into_iter().collect())
 }
 
-fn case_plan(value: &Value) -> Result<Vec<Value>, String> {
+pub(crate) fn case_plan(value: &Value) -> Result<Vec<Value>, String> {
     let rows = value.as_array().ok_or("평가 계획 cases 배열이 필요합니다.")?;
     if rows.len() < 2 || rows.len() > 128 {
         return Err("평가 계획은 2~128개의 독립 사례를 포함해야 합니다.".into());
