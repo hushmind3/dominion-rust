@@ -291,12 +291,15 @@ pub(crate) fn plan(state:&AppState,history:&[Value],input:&Value,commit:&str)
                         .unwrap_or(0) as f64)
             };
             if let Some(original)=baseline_quality{
+                let mut best_quality=quality(original)+0.05;
                 for row in &evidence {
-                    // Only an independent measured gain warrants replacing
-                    // the baseline API model on future descendant calls.
+                    // Compare ALL eligible candidates, not the last one
+                    // in an arbitrary owner-provided pool order.
+                    let observed_quality=quality(row);
                     if row["replayedSameSourceTrials"].as_u64().unwrap_or(0)>0
                         && row["frozenHoldoutRegressions"]==0
-                        && quality(row)>quality(original)+0.05 {
+                        && observed_quality>best_quality {
+                        best_quality=observed_quality;
                         selected=json!({"providerId":row["providerId"],
                             "model":row["model"]});
                         basis="matched_source_measured_model_route_preference";
