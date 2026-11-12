@@ -49,13 +49,13 @@ class PrivateAdapterDatasetTests(unittest.TestCase):
                 "prompt":"training prompt","completion":"training completion"},
                 {"split":"train","approvedForTraining":True,
                 "prompt":"question 3?","completion":"answer 3"}]
-            train.write_text("".join(json.dumps(x)+"\\n" for x in rows),encoding="utf-8")
+            train.write_text("".join(json.dumps(x)+"\n" for x in rows),encoding="utf-8")
             train_sha=hashlib.sha256(train.read_bytes()).hexdigest()
             self.assertNotEqual(train_sha,sha)
             with self.assertRaises(ValueError):
                 evaluator.verify_training_separation(train,train_sha,private)
             rows[1]["prompt"]="distinct training prompt"
-            train.write_text("".join(json.dumps(x)+"\\n" for x in rows),encoding="utf-8")
+            train.write_text("".join(json.dumps(x)+"\n" for x in rows),encoding="utf-8")
             train_sha=hashlib.sha256(train.read_bytes()).hexdigest()
             evaluator.verify_training_separation(train,train_sha,private)
 
