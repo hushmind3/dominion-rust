@@ -256,6 +256,61 @@ pub(crate) fn valid_portfolio(portfolio:&Value,graph:&Value,frontier:&[Value])->
                 && frontier.iter().any(|known|known==row)
         })
 }
+/// Feed independently measured cross-role effects back into the *editable*
+/// target-selection algorithm. Only isolated source-role interventions have
+/// directional credit; jointly edited subsystems may suggest a follow-up
+/// experiment but cannot be credited as individually productive.
+///
+/// The prior is intentionally conservative: one positive case is a hint,
+/// not an automatic ranking victory. This affects search ONLY; the frozen
+/// paired evaluator is still the sole source of successful adoption.
+pub(crate) fn reinforce_meta_with_holdout(mut policy:Value,graph:&Value)->Value{
+    if policy["source"]!="compiled_editable_meta_controller_v1"
+        || !valid_graph(graph){return policy;}
+    let Some(mut alternatives)=policy["alternatives"].as_array().cloned()
+        else{return policy};
+    for alternative in &mut alternatives{
+        let Some(role)=alternative["role"].as_str() else{continue};
+        let mut gains=0u64;
+        let mut regressions=0u64;
+        let mut observations=0u64;
+        let mut confounded=0u64;
+        for edge in graph["edges"].as_array().into_iter().flatten(){
+            if edge["sourceRole"]!=role || edge["targetRole"]==role {continue;}
+            gains+=edge["isolatedGains"].as_u64().unwrap_or(0);
+            regressions+=edge["isolatedRegressions"].as_u64().unwrap_or(0);
+            observations+=edge["isolatedObservations"].as_u64().unwrap_or(0);
+            confounded+=edge["jointInterventionObservations"].as_u64().unwrap_or(0);
+        }
+        let signed=gains as f64-regressions as f64;
+        let adjustment=(0.24*signed/(observations as f64+8.0)).clamp(-0.16,0.16);
+        alternative["crossRoleHoldoutAdjustment"]=json!(adjustment);
+        alternative["isolatedCrossRoleGains"]=json!(gains);
+        alternative["isolatedCrossRoleRegressions"]=json!(regressions);
+        alternative["isolatedCrossRoleObservations"]=json!(observations);
+        alternative["confoundedJointObservations"]=json!(confounded);
+        alternative["score"]=json!(
+            alternative["score"].as_f64().unwrap_or(0.0)+adjustment);
+    }
+    alternatives.sort_by(|a,b|b["score"].as_f64().unwrap_or(0.0)
+        .total_cmp(&a["score"].as_f64().unwrap_or(0.0))
+        .then_with(||a["role"].as_str().cmp(&b["role"].as_str())));
+    let Some(winner)=alternatives.first() else{return policy};
+    let old=policy["revision"].clone();
+    policy["target"]=winner["target"].clone();
+    policy["selectionEvidence"]=winner.clone();
+    policy["forecast"]["acceptanceProbability"]=
+        winner["predictedAdoptionProbability"].clone();
+    policy["forecast"]["uncertainty"]=winner["uncertainty"].clone();
+    policy["alternatives"]=json!(alternatives);
+    policy["sourceAttributionHoldoutGraphSha256"]=graph["sha256"].clone();
+    policy["holdoutTransferPolicy"]="conservative_isolated_observation_only".into();
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([old,graph["sha256"],policy["alternatives"]]))
+            .unwrap_or_default())));
+    policy
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +348,45 @@ mod tests {
         assert!(graph["edges"].as_array().unwrap().iter().all(|row|
             row["causalityProven"]==false && row["isolatedObservations"]==0));
     }
+    #[test]
+    fn only_isolated_verified_holdout_effects_reinforce_meta_targeting(){
+        let policy=json!({"source":"compiled_editable_meta_controller_v1",
+            "revision":"original",
+            "alternatives":[
+                {"role":"harness","target":{"role":"harness"},"score":1.0,
+                    "predictedAdoptionProbability":0.5,"uncertainty":0.3},
+                {"role":"memory","target":{"role":"memory"},"score":1.0,
+                    "predictedAdoptionProbability":0.5,"uncertainty":0.3}
+            ],"forecast":{"qualityProven":false}});
+        let adopted=json!({"id":"adopted","generatorCommit":"a".repeat(40),
+            "pairedMeasured":true,"candidateId":"c","jobId":"job1",
+            "changedSourcePaths":["src/engine/jobs.rs"],
+            "systemDesign":{"source":"model_authored_system_design",
+                "generatorCommit":"a".repeat(40),"generationJobId":"job1",
+                "component":"harness","targetFiles":["src/engine/jobs.rs"]},
+            "evaluation":{"metrics":{"verdict":"improved","measurements":[
+                {"domain":"memory","holdout":true,
+                 "baselinePass":false,"candidatePass":true,"metrics":[]}
+            ]}}});
+        let graph=influence_graph(&[adopted.clone()],&[]);
+        let updated=reinforce_meta_with_holdout(policy.clone(),&graph);
+        assert_eq!(updated["target"]["role"],"harness");
+        assert!(updated["selectionEvidence"]["crossRoleHoldoutAdjustment"]
+            .as_f64().unwrap()>0.0);
+        assert_eq!(updated["forecast"]["qualityProven"],false);
+        let mut joint=adopted;
+        joint["systemDesign"]["component"]="system".into();
+        joint["systemDesign"]["components"]=json!(["harness","memory"]);
+        joint["systemDesign"]["componentFiles"]=json!({
+            "harness":["src/engine/jobs.rs"],"memory":["src/engine/memory.rs"]});
+        joint["changedSourcePaths"]=json!([
+            "src/engine/jobs.rs","src/engine/memory.rs"]);
+        let confounded=influence_graph(&[joint],&[]);
+        let updated=reinforce_meta_with_holdout(policy,&confounded);
+        assert!(updated["alternatives"].as_array().unwrap().iter().all(|row|
+            row["crossRoleHoldoutAdjustment"]==0.0));
+    }
+
     #[test]
     fn coupled_plan_follows_current_source_sha_and_distinct_components(){
         let frontier=vec![
