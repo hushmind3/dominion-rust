@@ -10620,3 +10620,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 }
+
+
+#[cfg(test)]
+mod sub2_inherited_main_capabilities_tests {
+    use super::*;
+    #[test]
+    fn an_unevaluated_or_model_claimed_rule_cannot_earn_quality_credit() {
+        let fake=json!({"accepted":true,"pairedRevalidated":true,
+            "candidateOrigin":"model_driven_detached_worktree",
+            "evidenceVerified":true,
+            "evaluation":{"metrics":{"eligible":true}},
+            "editPolicy":{"revision":"r1","rules":[{"id":"learnt-guard"}]},
+            "acceptedSourceHashes":{"src/engine/memory.rs":"a".repeat(64)},
+            "ruleExecutions":[{"ruleId":"learnt-guard",
+                "policyRevision":"r1","runId":"run1","opSeqBefore":1,
+                "allow":["workspace_replace"]}],
+            "toolTimeline":[]});
+        assert_eq!(sub2_edit_policy_reward(&fake),0.0);
+        let mut unverified=fake.clone();
+        unverified["evidenceVerified"]=json!(false);
+        assert_eq!(sub2_edit_policy_reward(&unverified),0.0);
+        let mut no_receipt=fake.clone();
+        no_receipt["toolTimeline"]=json!([{"runId":"run1","opSeq":2,
+            "tool":"workspace_replace","status":"completed",
+            "path":"src/engine/memory.rs",
+            "result":{"written":true,"postSha256":"a".repeat(64)},
+            "toolReceipt":{"verified":false}}]);
+        assert_eq!(sub2_edit_policy_reward(&no_receipt),0.0);
+        let mut real=no_receipt;
+        real["toolTimeline"][0]["toolReceipt"]["verified"]=json!(true);
+        assert_eq!(sub2_edit_policy_reward(&real),1.0);
+    }
+    #[test]
+    fn neutral_source_patch_is_not_edit_program_quality_proof() {
+        let neutral=json!({"accepted":false,"pairedRevalidated":true,
+            "candidateOrigin":"model_driven_detached_worktree",
+            "candidateId":"neutral-1",
+            "evaluation":{"metrics":{"regressions":0}},
+            "editPolicy":{"revision":"r1","rules":[]}});
+        assert!(sub2_edit_policy_reward(&neutral)<0.11);
+        let native=json!({"accepted":true,"pairedRevalidated":true,
+            "candidateOrigin":"native_inductive_source_mutation",
+            "evidenceVerified":true,
+            "editPolicy":{"revision":"r1","rules":[]}});
+        assert_eq!(sub2_edit_policy_reward(&native),0.0);
+    }
+}
