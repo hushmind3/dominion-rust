@@ -4490,9 +4490,12 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // A model-authored graph can invent NEW causal improvement sequences,
     // branches and self-rewrites. It is executable only after its source
     // revision is independently adopted and recompiled.
+    // A more recently adopted, model-authored open program may supersede
+    // a legacy fixed-stage continuation; otherwise the old reciprocal
+    // continuation remains the fallback. Source adoption, not stage rank,
+    // determines whether a newly invented improvement policy can take over.
     let open_program=if explicit || paired_descendant_target(input)
-        || input["rsiAutonomous"]!=true
-        || matches!(mutual_program["phase"].as_str(),Some("complement"|"return")) {
+        || input["rsiAutonomous"]!=true {
         Value::Null
     }else{
         crate::engine::rsi_program_graph::synthesize(
