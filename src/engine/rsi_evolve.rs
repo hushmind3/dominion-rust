@@ -19,7 +19,7 @@ use std::{
 };
 use tokio::process::Command;
 
-pub const DOMAINS: &[&str] = &["memory", "tools", "context", "learning", "ui", "improver"];
+pub const DOMAINS: &[&str] = &["memory", "tools", "context", "learning", "models", "ui", "improver"];
 
 pub(crate) fn objective_matches(domain: &str, objective: &str) -> bool {
     let text = objective.to_lowercase();
@@ -27,6 +27,7 @@ pub(crate) fn objective_matches(domain: &str, objective: &str) -> bool {
         "memory" => &["기억", "회상", "메모리", "memory", "recall"],
         "context" => &["대화", "문맥", "컨텍스트", "토큰", "캐시", "context", "chat", "token", "cache"],
         "learning" => &["학습", "지식", "경험", "learning", "knowledge", "experience"],
+        "models" => &["모델", "모형", "추론 모델", "models", "model", "inference", "routing", "provider"],
         "tools" => &["도구", "검색", "외부 연결", "브라우저", "tools", "tool", "search", "browser"],
         "ui" => &["화면", "버튼", "사용성", "인터페이스", "ui", "interface"],
         "improver" => &["자기개선", "자기 개선", "알고리즘", "연구 전략", "improver", "rsi", "algorithm"],
@@ -1577,6 +1578,8 @@ fn focus_domain_hint(path:&str)->&'static str {
     if path.contains("memory") { "memory" }
     else if path.contains("chat/")||path.contains("context")||path.contains("room") { "context" }
     else if path.contains("learning")||path.contains("experience") { "learning" }
+    else if path.contains("models.rs")||path.contains("cli_model")||path.contains("router")
+        ||path.contains("gateway")||path.contains("model_planner") { "models" }
     else if path.starts_with("web/src")||path.contains("/pages/") { "ui" }
     else if path.contains("rsi")||path.contains("algorithm") { "improver" }
     else { "tools" }
