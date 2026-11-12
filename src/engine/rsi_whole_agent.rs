@@ -76,9 +76,10 @@ fn cross_component_interference(
         // currently represented intelligence role, with a matching authored
         // component-to-file mapping. Otherwise attribution is ambiguous.
         let mut source_roles=sources.iter().filter(|(role,source)|
-            source["path"]==changed
+            source["path"].as_str()==Some(changed)
                 &&g["systemDesign"]["componentFiles"][role.as_str()]
-                    .as_array().is_some_and(|files|files.iter().any(|f|f==changed)));
+                    .as_array().is_some_and(|files|
+                        files.iter().any(|f|f.as_str()==Some(changed))));
         let Some((source_role,_))=source_roles.next()else{continue};
         let source_role=source_role.clone();
         if source_roles.next().is_some(){continue;}
@@ -88,7 +89,7 @@ fn cross_component_interference(
             if !case["id"].as_str().is_some_and(|id|!id.is_empty()){continue;}
             let Some(domain)=case["domain"].as_str() else{continue};
             let target_role=mapped_role(domain);
-            if target_role==source_role || !sources.contains_key(target_role){
+            if target_role==source_role.as_str() || !sources.contains_key(target_role){
                 continue;
             }
             if case["baselinePass"]==true
@@ -334,8 +335,14 @@ pub(crate) fn instruction(p:&Value)->String{
         Actual successor growth plan: {} revision={}. \
         Edit the ACTUAL intelligence source role={} path={}. \
         Frozen behavioral deficits and cases are observable in the source-grounded \
-        capability ledger={}. Source-grounded cross-component counterfactual={} (unproven). Your task is to make the next recompiled DOMINION \
-        BETTER at solving real work AND at improving its next descendants. \
+        capability ledger={}. Cross-component counterfactual={} (unproven). \
+        When this counterfactual selects TWO focused roles, inspect and actually \
+        rewrite both pinned source files. Contrast source-only, victim-only and \
+        joint edits against the same frozen cases to distinguish repair from \
+        interference. Preserve previously passing capabilities; do not promote \
+        any hypothesis without independent paired evaluation. Your task is to \
+        make the next compiled DOMINION BETTER at solving real work AND at \
+        improving its next descendants. \
         If the cause is a failed improvement method, rewrite that method too, \
         and test both with independent heldout tasks. A patch that is adopted \
         without later capability transfer is not recursive intelligence gain. \
