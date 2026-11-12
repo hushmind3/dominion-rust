@@ -14,7 +14,8 @@ const SOURCE_TOOLS: &[&str] = &[
     "workspace_replace", "workspace_replace_function", "workspace_write",
 ];
 const EDIT_TOOLS: &[&str] = &[
-    "workspace_replace_range", "workspace_replace", "workspace_write",
+    "workspace_replace_range", "workspace_replace", "workspace_replace_function",
+    "workspace_write",
 ];
 const MAX_RULES: usize = 6;
 
