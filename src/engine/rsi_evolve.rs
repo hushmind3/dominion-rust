@@ -3332,7 +3332,13 @@ async fn run_loop(
             "knowledgePartition":research_scope(&current["input"]).partition_key,
             "objectiveId":crate::engine::memory::stable_id(&[
                 target_focus_objective(&current["input"])]),
-            "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
+            // Attribute the actual selected actor, not the original
+            // request route, once a descendant has evolved its model.
+            "generatorBinarySha256":record["generatorBinarySha256"],
+            "generatorModel":current["input"]["model"],
+            "generatorProviderId":current["input"]["providerId"],
+            "requestedOriginalModel":input["model"],
+            "requestedOriginalProviderId":input["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"]});
         let generation_details = json!({
@@ -3358,6 +3364,10 @@ async fn run_loop(
             .extend(generation_details.as_object().expect("generation details object").clone());
         generation["requestedModel"]=input["model"].clone();
         generation["adaptedModelActuallyUsed"]=current["rsiAdapterInferenceExecuted"].clone();
+        if generation["adaptedModelActuallyUsed"]["actuallyUsedInGeneration"]==true {
+            generation["generatorModel"]=json!("dominion-promoted-lora");
+            generation["generatorProviderId"]=json!("isolated-lora-inference");
+        }
         generation["modelEcologyPolicy"]=current["input"]["rsiModelEcologyPolicy"].clone();
         generation["modelEcologyExecuted"]=current["rsiModelEcologyExecuted"].clone();
         generation["sourceModelSelection"]=current["input"]["rsiSelectedAdapter"].clone();
