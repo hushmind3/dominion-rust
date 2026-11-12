@@ -75,6 +75,7 @@ pub(crate) fn synthesize(
         .map(Vec::len).unwrap_or(0);
     let peer_count=peers["references"].as_array().map(Vec::len).unwrap_or(0);
     let transfer=crate::engine::rsi_mutual_program::transfer_graph(history);
+    let learned_principles=crate::engine::rsi_principle_learning::study(history);
     let mut ranked=Vec::<(Value,f64)>::new();
     let mut roles=BTreeSet::new();
     let total_trials=history.iter().filter(|g|independent_outcome(g).is_some()).count();
@@ -161,6 +162,34 @@ pub(crate) fn synthesize(
         }else{0.0};
         let token_cost_penalty=average_tokens.map(|tokens|
             (tokens/80_000.0).min(1.0)).unwrap_or(0.0);
+        // Prefer improvements that actually help TASKS and later compiled
+        // offspring, not just source edit acceptance. Only observed case
+        // measurements enter these numbers. Unmeasured roles retain a prior
+        // rather than receiving fabricated learned gains.
+        let (quality_sum,quality_cases,productive_future,future_cases)=
+            learned_principles["principles"].as_array().into_iter().flatten()
+                .filter(|item|item["changedRoles"].as_array().is_some_and(|roles|
+                    roles.iter().any(|r|r==role)))
+                .fold((0.0_f64,0_u64,0.0_f64,0_u64),|acc,item|{
+                    let n=item["measuredCases"].as_u64().unwrap_or(0);
+                    let next=item["nextGenerationCases"].as_u64().unwrap_or(0);
+                    (acc.0+item["posteriorCaseGain"].as_f64().unwrap_or(0.5)*n as f64,
+                     acc.1+n,
+                     acc.2+item["posteriorDescendantGain"].as_f64().unwrap_or(0.5)*next as f64,
+                     acc.3+next)
+                });
+        let quality_signal=if quality_cases>0 {
+            (quality_sum/quality_cases as f64-0.5)*0.35
+        }else{0.0};
+        let future_signal=if future_cases>0 {
+            (productive_future/future_cases as f64-0.5)*0.30
+        }else{0.0};
+        // Expose model and learning runtime as active, hypothesis-bearing
+        // source targets. They can be improved via different verified tasks;
+        // this is no claim that local LLM parameters were already trained.
+        let underexplored_intelligence=if matches!(role,"models"|"learning")
+            && quality_cases==0 {0.05}else{0.0};
+        let principle_effect=quality_signal+future_signal+underexplored_intelligence;
         // Give the descendant's own editable meta-program a fair place in
         // the portfolio without declaring it automatically better.
         let metacognition=if path=="src/engine/rsi_meta_controller.rs"{0.08}else{0.0};
@@ -170,7 +199,7 @@ pub(crate) fn synthesize(
         let score=0.44*posterior+0.38*uncertainty
             +0.22*novelty+0.26*reproduction+0.07*evidence_pressure
             +inherited+program_bonus+metacognition+interaction_bonus
-            +generational_bonus
+            +generational_bonus+principle_effect
             -0.11*regressions-0.06*noise_penalty-0.09*file_stall
             -0.035*cost-0.08*token_cost_penalty;
         roles.insert(role.to_string());
@@ -190,6 +219,9 @@ pub(crate) fn synthesize(
             "offspringCrossRoleAdoptions":productive,
             "offspringReciprocalImprovementObservations":reciprocal,
             "crossGenerationReward":generational_bonus,
+            "measuredTaskQualityCases":quality_cases,
+            "measuredFutureOffspringCases":future_cases,
+            "measuredPrincipleLearningBonus":principle_effect,
             "novelComponent":novelty>0.0
         }),score));
     }
@@ -234,6 +266,7 @@ pub(crate) fn synthesize(
         "editableInNextGeneration":true,
         "peerReferences":peer_count,
         "interactionGraphSha256":interaction["sha256"],
+        "principleLearningSha256":learned_principles["sha256"],
         "intergenerationalGraphSha256":transfer["sha256"],
         "crossSubsystemImprovementEnabled":true,
         "lineageDesigns":accepted_lineages,
