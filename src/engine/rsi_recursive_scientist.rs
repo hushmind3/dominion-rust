@@ -120,6 +120,26 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],factorial:&Value,
     let mut focus=Vec::<Value>::new();
     let mut proposed=Value::Null;
     let mut ancestry=Value::Null;
+    // After the frozen A-only/B-only/A+B contrasts are complete, the
+    // unresolved negative-transfer interaction becomes a source-grounded
+    // architectural problem. An invention must respond to an observed gap
+    // rather than just an arbitrary co-edit pair.
+    let learned_gap=factorial["pairFrontier"].as_array()
+        .into_iter().flatten()
+        .filter(|pair|pair["observations"]["matchedFrozenHoldoutCases"]
+            .as_u64().unwrap_or(0)>0)
+        .filter_map(|pair|pair["observations"]["meanInteractionContrast"]
+            .as_f64().filter(|n|n.is_finite())
+            .map(|contrast|(contrast,pair)))
+        .min_by(|a,b|a.0.total_cmp(&b.0))
+        .map(|(contrast,pair)|json!({
+            "left":pair["left"],"right":pair["right"],
+            "matchedFrozenHoldoutCases":
+                pair["observations"]["matchedFrozenHoldoutCases"],
+            "observedInteractionContrast":contrast,
+            "causalIdentification":false,
+            "source":"matched_frozen_case_experiment_diagnosis"
+        })).unwrap_or(Value::Null);
     if let Some(loop_stage)=pending {
         // A genuinely accepted invented intelligence has scheduling priority
         // over an arbitrary fresh regression experiment.
@@ -147,7 +167,11 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],factorial:&Value,
         }
     }
     if phase=="discover_new_mechanism"{
-        let sources=portfolio["focus"].as_array().cloned().unwrap_or_default();
+        let sources=if learned_gap.is_object(){
+            vec![learned_gap["left"].clone(),learned_gap["right"].clone()]
+        }else{
+            portfolio["focus"].as_array().cloned().unwrap_or_default()
+        };
         if sources.len()>=2 {
             let a=&sources[0];let b=&sources[1];
             if let (Some(ar),Some(br))=(a["role"].as_str(),b["role"].as_str()){
@@ -164,6 +188,7 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],factorial:&Value,
                     "fromPath":a["path"],"toPath":b["path"],
                     "fromSha256":a["sourceSha256"],
                     "toSha256":b["sourceSha256"],
+                    "diagnosedCrossRoleGap":learned_gap,
                     "requiresModelWrittenExecutableMechanism":true,
                     "requiresIndependentAdoption":true,
                     "qualityProven":false
@@ -183,6 +208,7 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],factorial:&Value,
         "historyCount":history.len(),
         "phase":phase,"focus":focus,"invention":proposed,
         "recursiveAncestry":ancestry,
+        "experimentDiagnosis":learned_gap,
         "factorialEvidenceSha256":factorial["sha256"],
         "portfolioEvidenceSha256":portfolio["sha256"],
         "experimentalPolicyIsEditableSource":"src/engine/rsi_recursive_scientist.rs",
