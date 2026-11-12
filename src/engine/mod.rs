@@ -36,6 +36,7 @@ pub mod rsi_meta_controller;
 pub mod rsi_interaction;
 pub mod rsi_factorial;
 pub mod rsi_reflexive;
+pub mod rsi_program_graph;
 pub mod rsi_component_birth;
 pub mod rsi_mutual_program;
 pub mod rsi_evolve;
