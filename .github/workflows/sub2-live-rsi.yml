@@ -15,6 +15,12 @@ on:
     paths:
       - .github/workflows/sub2-live-rsi.yml
 
+# Re-run a complete three-generation native source improvement from the
+# latest Sub2 HEAD. The original failed run actually adopted memory ->
+# improver -> memory, with one verified meta holdout gain and zero regressions.
+# Its final proof was rejected due to a missing evaluation.reportSha256 field.
+# The Sub3 receipt verifier and its absence/tamper regression are now ported.
+# No acceptance flag is synthesized or inherited from an old run.
 # This dispatch is intentionally renewed after fixing the mismatch between
 # Qwen's indexed-source edit checkpoint and its advertised tool menu.
 # The proof remains fully model-driven: no synthetic patch or acceptance.
@@ -78,6 +84,7 @@ jobs:
       - name: Check source-derived descendants and compiler recovery before live inference
         run: |
           cargo test --release --locked --bin dominion-rust rsi_mutation::tests -- --nocapture
+          cargo test --release --locked --bin dominion-rust three_accepted_patches_do_not_prove_recursive_growth_without_meta_transfer -- --nocapture
           cargo test --release --locked --bin dominion-rust rsi_compiler_repair::tests -- --nocapture
           cargo test --release --locked --bin dominion-rust rsi::tests -- --nocapture
 
