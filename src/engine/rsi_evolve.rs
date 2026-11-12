@@ -4021,8 +4021,13 @@ async fn run_loop(
                 || focus.len()>3 || focus.iter().any(|row|row.as_str()
                     .is_none_or(|p|!crate::engine::rsi::safe_path(p)
                         || !lab.join(p).is_file()
-                        || crate::engine::code_index::indexed_source_hash(
-                            &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),p).is_none()))
+                        || (crate::engine::code_index::indexed_source_hash(
+                            &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),p)
+                            .is_none()
+                            && !plan["systemBlueprint"]["sourceInventory"]
+                                .as_array().is_some_and(|sources|sources.iter().any(|row|
+                                    row["path"]==p && row["sha256"].as_str()
+                                        .is_some_and(|sha|sha.len()==64))))))
             {
                 return Err("후손 소스·계보·인덱스·전체 구조 계획이 일치하지 않습니다.".into());
             }

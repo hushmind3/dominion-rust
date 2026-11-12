@@ -285,8 +285,11 @@ pub(crate) fn architecture_frontier(
                 let path=item["path"].as_str()?;
                 if !crate::engine::rsi::safe_path(path) {return None;}
                 let hash=item["sha256"].as_str()?;
+                // The parent's index is a search acceleration, not an
+                // immutable allowlist of source languages. Byte-for-byte
+                // source verification below remains the adoption boundary.
                 if crate::engine::code_index::indexed_source_hash(state,index_id,path)
-                    .as_deref()!=Some(hash) {return None;}
+                    .as_deref().is_some_and(|indexed|indexed!=hash){return None;}
                 let bytes=item["bytes"].as_u64()?;
                 // The code-index DB is an observation from before the child
                 // may have changed source. Re-read the ACTUAL checked-out
