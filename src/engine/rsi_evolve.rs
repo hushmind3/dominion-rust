@@ -3030,6 +3030,11 @@ async fn run_loop(
             crate::engine::rsi_lineage_transfer::validate(
                 &context.state,&plan["peerLineages"],&context.job_id,
                 &child_input,child_input["rsiIndexId"].as_str().unwrap_or(""))?;
+            crate::engine::rsi_intervention_lab::validate(
+                &plan["factorialExperiment"],
+                plan["architectureFrontier"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+                &head,record["history"].as_array().map(Vec::len).unwrap_or(0),
+                crate::engine::rsi_lineage_transfer::profile(&child_input).as_deref())?;
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
             child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
@@ -3344,6 +3349,7 @@ async fn run_loop(
         generation["comparativeMode"]=current["input"]["rsiComparativeMode"].clone();
         generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
         generation["symbioticCurriculum"]=current["input"]["rsiSymbioticCurriculum"].clone();
+        generation["factorialExperiment"]=current["input"]["rsiFactorialExperiment"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
@@ -3423,6 +3429,24 @@ async fn run_loop(
                         .store
                         .get("rsi_candidate", id)
                         .ok_or("후보 소실")?;
+                    // Preserve independently replayed NEUTRAL and NEGATIVE
+                    // experiments too. Such experiments inform future source
+                    // selection but never become adopted intelligence.
+                    let fresh=crate::engine::rsi::replayed_pair_metrics(
+                        &context.state,&candidate);
+                    let receipt_valid=fresh.as_ref().is_some_and(|metrics|
+                        metrics==&candidate["evaluation"]["metrics"]
+                        && generation["evaluation"]["evidenceSha256"]==
+                            candidate["evaluation"]["evidenceSha256"]);
+                    generation["pairedMeasured"]=json!(receipt_valid);
+                    let changed=candidate["paths"].as_array().cloned().unwrap_or_default();
+                    generation["changedSourcePaths"]=json!(changed);
+                    generation["factorialCompliance"]=
+                        crate::engine::rsi_intervention_lab::compliance(
+                            &generation["factorialExperiment"],&changed);
+                    generation["factorialMeasured"]=json!(receipt_valid
+                        && generation["factorialCompliance"]["eligibleForFactorial"]==true
+                        && generation["evaluation"]["metrics"]["measurements"].is_array());
                     let eligible = candidate["status"] == "verified"
                         && candidate["evaluation"]["metrics"]["eligible"] == true;
                     let winner = if eligible {
@@ -3522,6 +3546,16 @@ async fn run_loop(
         lineage.push(independently_checked.clone());
         generation["reciprocalCycleEvidence"]=json!(
             crate::engine::rsi_symbiosis::completed_cycles(&lineage));
+        generation["factorialLearning"]=json!({
+            "source":"independently_replayed_source_factorial_trial_v1",
+            "planSha256":generation["factorialExperiment"]["sha256"],
+            "actualChangedPaths":generation["changedSourcePaths"],
+            "originalPairedReceiptReplayed":generation["pairedMeasured"],
+            "eligibleForFactorial":generation["factorialMeasured"],
+            "factorialCompliance":generation["factorialCompliance"],
+            "accepted":generation["accepted"]==true,
+            "causalEffectProven":false
+        });
         if candidate_id.is_none() && new_findings>0 && output.is_ok() && stopped.is_none()
             && current["result"]["rsi"]["modelError"].is_null() {
             generation["error"]=Value::Null;
@@ -4332,6 +4366,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let plan=&job["input"]["rsiDescendantPlan"];
         crate::engine::rsi_system::validate_plan_evidence(
             &state,root,plan,job["input"]["rsiIndexId"].as_str().unwrap_or(""))?;
+        crate::engine::rsi_intervention_lab::validate(
+            &plan["factorialExperiment"],
+            plan["architectureFrontier"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+            &commit,history.len(),
+            crate::engine::rsi_lineage_transfer::profile(&job["input"]).as_deref())?;
         // The source blueprint still anchors this binary's exact inherited
         // revision, but source ranking and meta synthesis are intentionally
         // not replayed by an unmodified predecessor policy.
