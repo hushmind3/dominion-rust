@@ -453,7 +453,7 @@ pub async fn finish(
     let edit_actions=context.state.store.all("execution_operation").into_iter()
         .filter(|operation|operation["sessionId"].as_str()==Some(session_id)
             && matches!(operation["tool"].as_str(),
-                Some("workspace_write"|"workspace_replace")))
+                Some("workspace_write"|"workspace_replace"|"workspace_replace_function")))
         .take(16)
         .map(|operation|{
             let error=operation["result"]["error"].as_str()
@@ -610,7 +610,7 @@ pub fn failed_edit_feedback(
     let failure=operations.iter().rev().find(|op|
         op["sessionId"]==session["id"] && op["arguments"]["path"]==path
         && matches!(op["status"].as_str(),Some("completed"|"failed"))
-        && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_write"))
+        && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_replace_function"|"workspace_write"))
         && op["result"]["written"]!=true
         && (op["result"]["staleVersion"]==true
             || op["result"]["preflightBlocked"]==true
@@ -660,7 +660,7 @@ pub fn no_edit_feedback(
     // Failed source changes are for the next failure-specific repair method,
     // not a second speculative "no edit" call in this same generation.
     if own.iter().any(|op|matches!(op["tool"].as_str(),
-        Some("workspace_replace"|"workspace_write"))) {return None}
+        Some("workspace_replace"|"workspace_replace_function"|"workspace_write"))) {return None}
     let grounded=own.iter().rev().find(|op|
         op["status"]=="completed" && op["tool"]=="workspace_read_range"
         && op["arguments"]["path"]==path && op["result"]["error"].is_null()
@@ -724,7 +724,7 @@ pub fn inherited_unchanged_feedback(
     let error=operations.iter().rev().find(|op|
         op["sessionId"]==session["id"]
         && op["arguments"]["path"]==path
-        && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_write"))
+        && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_replace_function"|"workspace_write"))
         && op["result"]["written"]!=true)
         .and_then(|op|op["result"]["error"].as_str())
         .unwrap_or("");
