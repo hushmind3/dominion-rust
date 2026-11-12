@@ -183,6 +183,36 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
 }
 
 
+
+/// A new or previously unlisted source module is still part of the
+/// intelligence system. This classification is a descendant-editable search
+/// heuristic, not an immutable scoring taxonomy.
+fn source_role(path:&str)->&'static str{
+    let lower=path.to_ascii_lowercase();
+    if lower.starts_with("web/src/"){return "frontend";}
+    if lower.starts_with("src/engine/rsi_")
+        || lower.contains("/self_improv") || lower.contains("/evolution"){
+        return "improvement_methods";
+    }
+    if lower.contains("/memory") || lower.contains("/room_state")
+        || lower.contains("/room_knowledge") || lower.contains("/recall"){
+        return "memory";
+    }
+    if lower.contains("/learn") || lower.contains("/experience")
+        || lower.contains("/procedure") || lower.contains("/strategy"){
+        return "learning";
+    }
+    if lower.contains("/tools") || lower.contains("/browser")
+        || lower.contains("/mcp") || lower.contains("/connector"){
+        return "tools";
+    }
+    if lower.contains("/algorithm") || lower.contains("/reasoning")
+        || lower.contains("/search") || lower.contains("/planner"){
+        return "algorithms";
+    }
+    "harness"
+}
+
 /// The source graph is factual evidence. Ranking is an evolvable algorithm
 /// in the currently built descendant; the external parent validates only
 /// that chosen files and their hashes are real.
@@ -230,20 +260,39 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState,
     }
     let usage=crate::engine::rsi_scan::report(state);
     let signals=usage["signals"].as_array().cloned().unwrap_or_default();
+    let full_source=source_inventory(root);
     let mut frontier=Vec::new();
     for component in model["architecture"].as_array().into_iter().flatten() {
         let Some(role)=component["role"].as_str().filter(|role|valid_role(role)) else{continue};
         let domain=component["domain"].as_str()
             .filter(|d|crate::engine::rsi_evolve::DOMAINS.contains(d))
             .unwrap_or_else(||role_domain(role));
-        let mut sources=component["representativeSources"].as_array()
-            .into_iter().flatten()
-            .filter(|file|source_entry_valid(state,root,index_id,file,"sha256"))
-            .collect::<Vec<_>>();
+        // Do not restrict a self-modifying intelligence to the files named
+        // by its human-designed ancestor. All current Rust/TS modules
+        // participate; accepted novel roles carry their own source links.
+        let representatives=component["representativeSources"].as_array()
+            .cloned().unwrap_or_default();
+        let mut all=representatives.clone();
+        let mut names=representatives.iter().filter_map(|entry|entry["path"]
+            .as_str()).map(str::to_string).collect::<BTreeSet<_>>();
+        for file in &full_source {
+            let Some(path)=file["path"].as_str() else{continue};
+            if source_role(path)==role && names.insert(path.to_string()){
+                all.push(file.clone());
+            }
+        }
+        let mut sources=all.iter().filter(|file|
+            source_entry_valid(state,root,index_id,file,"sha256")).collect::<Vec<_>>();
         sources.sort_by(|a,b| {
-            let ca=attempted.get(a["path"].as_str().unwrap_or("")).copied().unwrap_or(0);
-            let cb=attempted.get(b["path"].as_str().unwrap_or("")).copied().unwrap_or(0);
-            ca.cmp(&cb).then(a["bytes"].as_u64().cmp(&b["bytes"].as_u64()))
+            let path_a=a["path"].as_str().unwrap_or("");
+            let path_b=b["path"].as_str().unwrap_or("");
+            let ca=attempted.get(path_a).copied().unwrap_or(0);
+            let cb=attempted.get(path_b).copied().unwrap_or(0);
+            let preferred_a=!names.contains(path_a);
+            let preferred_b=!names.contains(path_b);
+            ca.cmp(&cb)
+                .then(preferred_a.cmp(&preferred_b))
+                .then(a["bytes"].as_u64().cmp(&b["bytes"].as_u64()))
                 .then(a["path"].as_str().cmp(&b["path"].as_str()))
         });
         let Some(source)=sources.first() else{continue};
