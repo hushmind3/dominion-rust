@@ -92,6 +92,18 @@ pub fn definitions() -> Vec<Value> {
                     "fromPath":{"type":"string"},"toPath":{"type":"string"},
                     "mechanism":{"type":"string"},"observable":{"type":"string"}
                 },"required":["fromRole","toRole","fromPath","toPath","mechanism","observable"]}}),
+            "improvementPrinciples":json!({"type":"array","maxItems":12,
+                "description":"Model-created and source-implemented, freely composable GENERATIVE principles. Their value is learned from next-generation verified intelligence improvements, never from a claim of adoption.",
+                "items":{"type":"object","properties":{
+                    "name":{"type":"string"},"methodRole":{"type":"string"},
+                    "methodSourcePaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8},
+                    "improvesRoles":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12},
+                    "mechanism":{"type":"string"},
+                    "falsifiableOutcome":{"type":"string"},
+                    "composedFrom":{"type":"array","items":{"type":"string"},"maxItems":6,
+                        "description":"Optional other principles whose techniques are recombined into this NEW source-changing improvement mechanism"}
+                },"required":["name","methodRole","methodSourcePaths",
+                    "improvesRoles","mechanism","falsifiableOutcome"]}}),
             "nextTargetFiles":json!({"type":"array","items":{"type":"string"},"maxItems":3,"description":"Next child's source targets after this design is adopted"}),
             "methodHypothesis":text("Optional new recursive design/editing method and its causal rationale"),
             "actionProgram":json!({"type":"array","items":{"type":"string"},"minItems":2,"maxItems":8,"description":"Optional grounding/editing tool sequence. Independent adoption is required before inheritance."}),
