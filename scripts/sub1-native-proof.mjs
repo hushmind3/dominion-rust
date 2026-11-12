@@ -50,6 +50,16 @@ try {
   report.phase='measured';
   report.status=last.status;
   report.stopReason=evolution.stopReason||null;
+  // Preserve the true campaign failure, not just the summary counters.
+  report.failureDetail={
+    jobError:last.error||null,
+    campaignError:evolution.error||null,
+    campaignPhase:evolution.phase||null,
+    activeGenerationJobId:evolution.activeGenerationJobId||null,
+    nextGenerationPlan:evolution.nextGenerationPlan?.targetPlan||null,
+    planObjectiveOverride:evolution.planObjectiveOverride||null,
+    attempts:evolution.attempts||0
+  };
   report.history=evolution.history||[];
   report.proof={
     maxVerifiedStreak:evolution.maxVerifiedStreak||0,
@@ -73,6 +83,7 @@ try {
   save(report);
   console.log(JSON.stringify({phase:report.phase,campaignId:job.id,
     status:report.status,stopReason:report.stopReason,
+    failureDetail:report.failureDetail,
     proof:report.proof,complete:report.complete}));
   if(!report.complete)throw Error('Independent native RSI proof incomplete');
 }catch(error){

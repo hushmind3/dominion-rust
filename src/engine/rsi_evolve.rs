@@ -3415,10 +3415,17 @@ async fn run_loop(
         // After a measured native adoption, the descendant must be offered
         // the next domain rather than re-solving a saturated original target.
         // The new generator still independently plans, compiles and evaluates.
+        record["planObjectiveOverride"]=Value::Null;
         if let Some(domain)=native_descendant_target(input,
             record["history"].as_array().map(Vec::as_slice).unwrap_or(&[])) {
+            // The newly built planner reads the durable parent campaign.
+            // Publish the measured next objective before launching it, so
+            // planner and coordinator agree on the next domain and digest.
+            record["planObjectiveOverride"]=json!(domain);
             child_input["rsiObjective"]=json!(domain);
-            child_input["rsiAutonomous"]=json!(true);
+            // An observed native post-adoption target is explicit enough to
+            // constrain domain selection even in an automatic campaign.
+            child_input["rsiAutonomous"]=json!(false);
             child_input["rsiFocusFiles"]=json!([]);
             child_input["rsiSelectedDomain"]=json!(domain);
             child_input["rsiDecisionInput"]=json!({
@@ -4698,6 +4705,23 @@ fn select_generation_strategy(
     )
 }
 
+/// Reconcile a measured post-adoption target with the real new executable's
+/// durable campaign input. The parent request remains unchanged; this only
+/// derives the next isolated worker's objective.
+fn native_plan_source_input(parent:&Value,campaign:&Value)->Value {
+    let mut input=parent.clone();
+    if input["rsiNativeInduction"]==true && input["rsiExpandAfterGain"]==true
+        && input["selectionPolicy"]=="automatic" {
+        if let Some(domain)=campaign["planObjectiveOverride"].as_str()
+            .filter(|domain|DOMAINS.contains(domain)) {
+            input["rsiObjective"]=json!(domain);
+            input["rsiAutonomous"]=json!(false);
+            input["rsiFocusFiles"]=json!([]);
+        }
+    }
+    input
+}
+
 /// The model-bearing generation is planned by its own compiled executable,
 /// not by an older coordinator. This method only reads durable observations
 /// and returns a bounded proposal; it does not invoke a model or mutate code.
@@ -4719,7 +4743,8 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         || campaign["planAttempt"].as_u64()!=Some(history.len() as u64+1) {
         return Err("계획 시점의 세대 이력과 저장된 실험 계보가 다릅니다.".into());
     }
-    let source_input=&job["input"];
+    let scoped_input=native_plan_source_input(&job["input"],campaign);
+    let source_input=&scoped_input;
     let objective=selection_objective(source_input);
     let selected_domain=campaign["planSelectedDomain"].as_str()
         .filter(|domain|DOMAINS.contains(domain))
@@ -4755,6 +4780,28 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "improvementDirective":generation_improvement_directive(source_input,&action_history),
         "rankedFiles":ranked
     }))
+}
+
+#[cfg(test)]
+mod native_plan_transfer_regression {
+    use super::*;
+    #[test]
+    fn adopted_native_descendant_goal_reaches_fresh_executable_without_losing_owner_request() {
+        let original=json!({"rsiObjective":"memory","rsiAutonomous":false,
+            "rsiNativeInduction":true,"rsiExpandAfterGain":true,
+            "selectionPolicy":"automatic",
+            "rsiFocusFiles":["src/engine/room_state.rs"]});
+        let campaign=json!({"planObjectiveOverride":"improver"});
+        let planned=native_plan_source_input(&original,&campaign);
+        assert_eq!(selection_objective(&planned),"improver");
+        assert_eq!(planned["rsiFocusFiles"],json!([]));
+        assert_eq!(original["rsiObjective"],"memory");
+        let denied=native_plan_source_input(
+            &json!({"rsiObjective":"memory","rsiNativeInduction":false,
+                "rsiExpandAfterGain":true,"selectionPolicy":"automatic"}),
+            &campaign);
+        assert_eq!(denied["rsiObjective"],"memory");
+    }
 }
 
 /// A short-lived native planning subprocess runs before a paid model worker.
