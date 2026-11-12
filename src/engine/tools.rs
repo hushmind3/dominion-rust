@@ -124,7 +124,7 @@ pub async fn execute(
     if isolated_rsi && matches!(name,"workspace_read"|"workspace_read_range"
         |"workspace_write"|"workspace_replace"|"workspace_replace_range") {
         let path=resolve_workspace(ctx.workspace,&required_arg(args,"path")?)?;
-        if path.file_name().is_some_and(|name|name=="rsi_oracle_fixture.rs") {
+        if path.file_name().is_some_and(|name|name=="rsi_oracle_fixture.rs" || name=="rsi_meta.rs") {
             return Err("동결 평가 사례는 자기개선 모델의 읽기·수정 대상이 아닙니다.".into());
         }
     }
@@ -151,9 +151,9 @@ pub async fn execute(
             let text = result["content"].as_str().unwrap_or_default();
             let lines = text.lines().collect::<Vec<_>>();
             let begin = (start as usize).min(lines.len());
-            // RSI generations must leave budget for the edit. A 400-line read
-            // can consume most of the remaining campaign budget on its own.
-            let line_cap = if isolated_rsi { 120 } else { 400 };
+            // Match the tool contract in RSI too. Silently cutting a requested
+            // 400-line read to 120 forces repeated paid prefix replays.
+            let line_cap = 399;
             let end = (requested_end as usize).min(lines.len()).max(begin).min(begin.saturating_add(line_cap));
             let mut numbered = String::new();
             for (offset, line) in lines[begin.saturating_sub(1)..end].iter().enumerate() {
@@ -755,13 +755,28 @@ fn search_code_index(
     for file in ctx.store.all("code_index_file") {
         if file["indexId"].as_str()!=Some(index_id) {continue;}
         let path=file["path"].as_str().unwrap_or("");
-        if session["rsiRun"]==true && path.ends_with("/rsi_oracle_fixture.rs") {continue;}
+        if session["rsiRun"]==true && !crate::engine::rsi::safe_path(path) {continue;}
         let rank=score(path);
         if rank>0 {matches.push((rank,json!({"path":path,"kind":"file","name":path,"line":1})));}
         for symbol in file["symbols"].as_array().into_iter().flatten() {
             let name=symbol["name"].as_str().unwrap_or("");let rank=score(name);
             if rank==0 {continue;}
             matches.push((rank,json!({"path":path,"kind":symbol["kind"],"name":name,"line":symbol["line"]})));
+        }
+    }
+    // Literal diagnostics and field names often are not symbol names. Search
+    // the actual workspace bytes when the index has no navigation hit.
+    if matches.is_empty() {
+        for file in ctx.store.all("code_index_file") {
+            if file["indexId"].as_str()!=Some(index_id) {continue;}
+            let Some(path)=file["path"].as_str() else {continue;};
+            if session["rsiRun"]==true && !crate::engine::rsi::safe_path(path) {continue;}
+            let Ok(full)=resolve_workspace(ctx.workspace,path) else {continue;};
+            let Ok(content)=std::fs::read_to_string(full) else {continue;};
+            for (index,line) in content.lines().enumerate().filter(|(_,line)|line.to_lowercase().contains(&needle)).take(limit) {
+                matches.push((100,json!({"path":path,"kind":"literal","line":index+1,
+                    "name":line.trim().chars().take(180).collect::<String>()})));
+            }
         }
     }
     matches.sort_by(|(a,left),(b,right)|b.cmp(a)
@@ -1496,6 +1511,27 @@ fn strip_html(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn rsi_navigation_finds_literal_diagnostics_and_honors_the_read_contract() {
+        use crate::{config::Config,db::Store,vault::Vault};
+        let dir=std::env::temp_dir().join(format!("rsi-navigation-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let mut lines=(1..=450).map(|n|format!("// ordinary source line {n}")).collect::<Vec<_>>();
+        lines[229]="// unique_runtime_diagnostic_token".into();
+        std::fs::write(dir.join("src/subject.rs"),lines.join("\n")).unwrap();
+        let config=Config{port:0,data_dir:dir.join("data"),web_dir:dir.join("web"),workspace:dir.clone()};
+        let state=crate::state::AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
+        state.store.put("session",&json!({"id":"rsi","rsiRun":true}));
+        let ctx=ToolContext{workspace:&dir,store:&state.store,state:&state,session_id:"rsi",agent_id:None,tools_enabled:true,tools_execution_enabled:true};
+        let found=search_code_index(&ctx,"unique_runtime_diagnostic_token",10).unwrap();
+        assert_eq!(found["matches"][0]["path"],"src/subject.rs");
+        assert_eq!(found["matches"][0]["line"],230);
+        let read=execute(&ctx,"workspace_read_range",&json!({"path":"src/subject.rs","startLine":1,"endLine":400}),"test").await.unwrap();
+        assert_eq!(read["endLine"],400);
+        assert!(read["content"].as_str().unwrap().contains("ordinary source line 400"));
+        let _=std::fs::remove_dir_all(dir);
+    }
 
     #[tokio::test]
     async fn rsi_cannot_read_or_overwrite_the_coordinators_holdout_source() {

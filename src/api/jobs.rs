@@ -25,6 +25,11 @@ pub async fn create(State(state):State<AppState>,Json(body):Json<Value>)->Respon
 }
 pub async fn cancel(State(state):State<AppState>,Path(id):Path<String>)->Response{
     let Some(job)=state.store.get("job",&id)else{return error(StatusCode::NOT_FOUND,"작업이 없습니다.")};
+    if job["kind"]=="rsi_evolve" {
+        // Also clean up descendants when a client repeats Stop on a terminal parent.
+        engine::jobs::cancel_rsi_children(&state,&id);
+        if job["status"]=="cancelled" {return Json(job).into_response();}
+    }
     if !matches!(job["status"].as_str(),Some("queued"|"running")){return error(StatusCode::CONFLICT,"진행 중인 작업만 중단할 수 있습니다.");}
     if let Some(session)=job["sessionId"].as_str(){state.cancel_session(session);}
     match state.store.patch_if("job",&id,"status",&job["status"],&json!({"status":"cancelled","cancelRequested":true,"finishedAt":chrono::Utc::now().to_rfc3339()})){

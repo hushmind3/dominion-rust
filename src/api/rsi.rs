@@ -141,40 +141,94 @@ pub async fn apply_campaign(State(state):State<AppState>,Path(id):Path<String>,J
     }
 }
 
+fn campaign_view(state: &AppState, job: &Value) -> Value {
+    let id = job["id"].as_str().unwrap_or("");
+    let mut record=state.store.get("rsi_campaign",id)
+        .unwrap_or_else(||json!({"id":id,"phase":"preparing_lab"}));
+    for (field,key) in [("objective","rsiObjective"),("providerId","providerId"),("model","model"),
+        ("applyWhenFinished","rsiApplyWhenFinished")] {
+        record[field]=job["input"][key].clone();
+    }
+    record["selectedVersionRunning"]=json!(record["headCommit"].as_str()==option_env!("DOMINION_BUILD_COMMIT"));
+    apply_capability(state, &mut record);
+    let children=state.store.all("job").into_iter().filter(|j|
+        j["kind"]=="rsi_generation" && j["input"]["rsiCampaignId"].as_str()==Some(id)).collect::<Vec<_>>();
+    let sessions=children.iter().filter_map(|j|j["sessionId"].as_str()).collect::<std::collections::HashSet<_>>();
+    let mut calls=0u64;let mut tokens=0u64;let mut estimated=false;
+    for session in &sessions {
+        let usage=state.store.session_usage(session);
+        calls+=usage["calls"].as_u64().unwrap_or(0);
+        tokens+=usage["totalTokens"].as_u64().unwrap_or(0);
+        estimated|=usage["estimatedCalls"].as_u64().unwrap_or(0)>0;
+    }
+    let writes=state.store.all("execution_operation").iter().filter(|op|
+        op["sessionId"].as_str().is_some_and(|id|sessions.contains(id))
+        && op["origin"]=="model" && op["status"]=="completed"
+        && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true
+        && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))).count();
+    let proposal_sessions=children.iter().filter(|j|j["input"]["rsiMetaEpisode"]!=true)
+        .filter_map(|j|j["sessionId"].as_str()).collect::<std::collections::HashSet<_>>();
+    let system_writes=state.store.all("execution_operation").iter().filter(|op|
+        op["sessionId"].as_str().is_some_and(|id|proposal_sessions.contains(id))
+        && op["origin"]=="model" && op["status"]=="completed"
+        && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true).count();
+    record["systemSourceWrites"]=json!(system_writes);
+    record["evaluationEpisodes"]=json!(children.iter().filter(|j|j["input"]["rsiMetaEpisode"]==true).count());
+    let candidates=state.store.all("rsi_candidate").iter().filter(|c|
+        c["experimentCampaignId"].as_str()==Some(id) && c["rsiJobId"].as_str()
+            .and_then(|id|state.store.get("job",id)).is_some_and(|j|j["input"]["rsiMetaEpisode"]!=true)).count();
+    let mut reused=0usize;
+    for session in &sessions {
+        reused+=state.store.get("session",session).and_then(|s|s["rsiKnowledgeReuse"].as_array().cloned())
+            .unwrap_or_default().iter().filter(|r|r["status"]=="provided").count();
+    }
+    record["reusedArtifacts"]=json!(reused);
+    record["preservedFailureAttempts"]=json!(record["history"].as_array().into_iter().flatten()
+        .filter(|row|row["accepted"]!=true && row["error"].as_str().is_some_and(|s|!s.is_empty())).count());
+    record["modelCalls"]=json!(calls);record["verifiedSourceWrites"]=json!(writes);
+    record["candidateCount"]=json!(candidates);
+    record["tokens"]=json!(tokens.max(record["tokens"].as_u64().unwrap_or(0)));
+    record["tokensEstimated"]=json!(estimated || record["tokensEstimated"]==true);
+    record["systemEvolution"]=job["input"]["rsiSystemEvolution"].clone();
+    record["scope"]=json!({"mode":"whole_source","includes":["algorithms","improver","harness","memory","learning","tools","backend","frontend"],"indexedFiles":job["input"]["rsiIndexFiles"]});
+    if record["phase"]=="measuring" && job["rsiPhase"]=="meta_evaluating" {
+        record["phase"]=json!("meta_evaluating");
+        record["metaEvaluationProgress"]=json!({"arm":job["rsiMetaArm"],"task":job["rsiMetaTask"],"jobId":job["rsiMetaActiveJobId"]});
+    }
+    if let Some(active)=children.iter().find(|j|Some(&j["id"])==record.get("activeGenerationJobId")) {
+        record["activeWorker"]=json!({"id":active["id"],"status":active["status"],
+            "phase":active["rsiPhase"],"generatorCommit":active["input"]["rsiGeneratorCommit"],
+            "focusFiles":active["input"]["rsiFocusFiles"]});
+        if record["phase"]=="diagnosing_and_editing" && active["status"]=="running"
+            && active["rsiPhase"].is_string() {record["phase"]=active["rsiPhase"].clone();}
+    }
+    if job["status"]!="running"||record["status"].is_null(){record["status"]=job["status"].clone();}
+    if !job["error"].is_null(){record["error"]=job["error"].clone();}
+    record
+}
+
 pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Response{
     let Some(job)=state.store.get("job",&id).filter(|job|job["kind"]=="rsi_evolve")else{
         return error("개선 작업을 찾을 수 없습니다.".into());
     };
-    let mut record=state.store.get("rsi_campaign",&id).unwrap_or_else(||json!({"id":id,"phase":"preparing_lab"}));
-    for (field,key) in [("objective","rsiObjective"),("providerId","providerId"),("model","model")] {
-        record[field]=job["input"][key].clone();
-    }
-    record["selectedVersionRunning"]=json!(record["headCommit"].as_str()==option_env!("DOMINION_BUILD_COMMIT"));
-    apply_capability(&state, &mut record);
-    if record["phase"]=="diagnosing_and_editing" {
-        if let Some(session)=record["activeGenerationJobId"].as_str().and_then(|id|state.store.get("job",id))
-            .and_then(|j|j["sessionId"].as_str().map(str::to_string)) {
-            let usage=state.store.session_usage(&session);
-            record["tokens"]=json!(record["activeBaseTokens"].as_u64().unwrap_or(0)
-                .saturating_add(usage["totalTokens"].as_u64().unwrap_or(0)));
-            record["tokensEstimated"]=json!(record["tokensEstimated"]==true || usage["estimatedCalls"].as_u64().unwrap_or(0)>0);
-        }
-    }
-    if job["status"]!="running"||record["status"].is_null(){record["status"]=job["status"].clone();}
-    if !job["error"].is_null(){record["error"]=job["error"].clone();}
-    Json(record).into_response()
+    Json(campaign_view(&state,&job)).into_response()
+}
+
+pub async fn verify(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(campaign)=state.store.get("rsi_campaign",&id) else {
+        return error("캠페인 기록을 찾을 수 없습니다.".into());
+    };
+    Json(engine::capability_audit(&state,&campaign)).into_response()
 }
 
 pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
-    let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|record|{
-        let job=record["id"].as_str().and_then(|id|state.store.get("job",id)).unwrap_or(Value::Null);
-        let mut verified = record.clone();
-        apply_capability(&state,&mut verified);
-        json!({"id":record["id"],"phase":record["phase"],
-            "maxAcceptedStreak":verified["maxAcceptedStreak"],
-            "capabilityDemonstrated":verified["capabilityDemonstrated"],
-            "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
-    }).collect::<Vec<_>>();
+    let rows=state.store.all("job").into_iter().filter(|job|job["kind"]=="rsi_evolve")
+        .take(20).map(|job| {
+            let record=state.store.get("rsi_campaign",job["id"].as_str().unwrap_or("")).unwrap_or(Value::Null);
+            json!({"id":job["id"],"status":job["status"],"phase":record["phase"],
+                "model":job["input"]["model"],"providerId":job["input"]["providerId"],
+                "createdAt":job["queuedAt"],"acceptedGenerations":record["acceptedGenerations"]})
+        }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
 }
 
@@ -257,6 +311,9 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     let Some(provider) = state.store.get("provider", provider_id) else {
         return error("선택한 모델 제공자를 찾을 수 없습니다.".into());
     };
+    if body["localOnly"]==true && provider["local"]!=true && provider["kind"]!="ollama" {
+        return error("로컬 전용 모드에서는 로컬로 등록된 제공자를 선택하세요.".into());
+    }
     if provider["enabled"] == false {
         return error("비활성화된 모델 제공자입니다.".into());
     }
@@ -310,7 +367,9 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         return error("개선 요청은 3,000자 이하로 입력하세요.".into());
     }
     let autonomous = request.is_empty();
-    let objective = if autonomous {
+    let objective = if autonomous && continuous && body["evolutionTarget"] != "product" && body["nativeInduction"] != true {
+        "DOMINION 전체 소스의 알고리즘·하네스·학습·기억·도구를 탐색하여 자기개선기 자체를 수정하고, 선택한 생성 모델과 동일 예산에서 이전 개선기보다 나은 후속 코딩 성과를 독립 평가한다.".to_string()
+    } else if autonomous {
         "기존 코드 지식과 경험을 재사용해 실제 작업에 필요한 능력 하나를 개선한다. 필요한 부분만 확인하고 적용 조건과 검증 근거가 있는 변경을 제안한다. 오류 수정은 이 과정에서 필요할 때 수행하며, 개선 근거가 없으면 변경 없이 이유를 보고한다.".to_string()
     } else {
         request.to_string()
@@ -331,6 +390,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
             Ok(value) => value,
             Err(message) => return error(message),
         };
+    crate::engine::rsi_evolve::preserve_failed_research(&state,&source_dir);
     let previous_evidence = crate::engine::rsi_worktree::recent_feedback(&state);
     let mode = if focus_files.is_empty() {
         if autonomous {
@@ -360,6 +420,9 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
+        "rsiLocalOnly":body["localOnly"]==true,
+        "rsiSystemEvolution": continuous && body["evolutionTarget"] != "product" && body["nativeInduction"] != true,
+        "rsiApplyWhenFinished": continuous && body["applyWhenFinished"] == true,
         // Only explicitly opted-in automatic campaigns may broaden the
         // source search after independent adoption of the original goal.
         "rsiExpandAfterGain": continuous && body["expandAfterGain"] == true
@@ -417,6 +480,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     }
     let mut cases=input["rsiFrozenCases"].as_array().cloned().unwrap_or_default();
     cases.extend(crate::engine::rsi_worktree::metric_cases());
+    if input["rsiSystemEvolution"]==true {cases.push(crate::engine::rsi_meta::case());}
     input["rsiFrozenCases"]=json!(cases);
     match crate::engine::jobs::enqueue(&state, if continuous{"rsi_evolve"}else{"prompt"}, input) {
         Some(job) => (StatusCode::ACCEPTED, Json(job)).into_response(),

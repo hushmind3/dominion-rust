@@ -686,7 +686,7 @@ fn should_mark_slow_provider(elapsed: std::time::Duration, rsi_run: bool) -> boo
 
 fn rsi_edit_requires_tool(session: &Value, tools: &[Value]) -> bool {
     session["rsiRun"] == true
-        && session["rsiExplicitFocus"] == true
+        && (session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true)
         && !tools.is_empty()
         && tools.iter().all(|tool| matches!(
             tool["function"]["name"].as_str(),
@@ -1987,6 +1987,7 @@ mod tests {
             json!({"type":"function","function":{"name":"workspace_write"}}),
         ];
         assert!(rsi_edit_requires_tool(&focus,&tools));
+        assert!(rsi_edit_requires_tool(&json!({"rsiRun":true,"rsiAutoFocus":true}),&tools));
         assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&tools));
         assert!(!rsi_edit_requires_tool(&json!({}),&tools));
         let mut reads = tools.clone();

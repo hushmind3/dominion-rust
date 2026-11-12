@@ -31,6 +31,7 @@ pub mod code_index;
 pub mod rsi;
 pub mod rsi_archive;
 pub mod rsi_metrics;
+pub mod rsi_meta;
 pub mod rsi_evolve;
 pub mod rsi_edit_genome;
 pub mod rsi_edit_program;
