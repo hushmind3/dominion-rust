@@ -47,6 +47,7 @@ pub mod rsi_decision_rules;
 pub mod rsi_rule_induction;
 pub mod rsi_rule_rewrite;
 pub mod rsi_rule_tournament;
+pub mod rsi_successor_productivity;
 pub mod rsi_model_ecology;
 pub mod rsi_scan;
 pub mod rsi_worktree;
