@@ -11,7 +11,8 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("scientific_method",&["src/engine/rsi_recursive_scientist.rs"]),
+    ("scientific_method",&["src/engine/rsi_recursive_scientist.rs",
+        "src/engine/rsi_improvement_algebra.rs"]),
     ("experimental_design",&["src/engine/rsi_factorial.rs"]),
     ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_symbiosis.rs"]),
     ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/router.rs","src/engine/gateway.rs"]),
@@ -663,6 +664,64 @@ pub(crate) fn propose(
             }));
         }
     }
+    // Unlike a fixed stage list, improvementRules are authored by the model
+    // as source-implemented transformation operators over arbitrary
+    // intelligence roles. They can later compose into any-length role cycles.
+    // A declared operator remains a hypothesis until a paired-adopted source
+    // revision proves its method path was really changed.
+    let mut improvement_rules=Vec::new();
+    if let Some(rules)=body["improvementRules"].as_array(){
+        if rules.len()>12 || component!="system" {
+            return Err("개선 규칙은 다중 지능 재설계에서 최대 12개를 제안합니다.".into());
+        }
+        let mut seen=BTreeSet::new();
+        for rule in rules {
+            let name=rule["name"].as_str()
+                .filter(|s|!s.is_empty()&&s.len()<=64
+                    && s.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_'))
+                .ok_or("개선 규칙 이름이 유효하지 않습니다.")?;
+            if !seen.insert(name) {return Err("중복 개선 규칙 이름".into());}
+            let method_role=rule["methodRole"].as_str()
+                .filter(|role|assignments.contains_key(*role))
+                .ok_or("규칙의 실제 실행 방법 역할이 설계에서 누락됐습니다.")?;
+            let method_path=rule["methodPath"].as_str()
+                .filter(|p|crate::engine::rsi::safe_path(p)
+                    && assignments[method_role].as_array().is_some_and(|rows|
+                        rows.iter().any(|row|row==p))
+                    && matches!(Path::new(p).extension().and_then(|x|x.to_str()),
+                        Some("rs"|"ts"|"tsx"|"js"|"jsx"|"py")))
+                .ok_or("개선 규칙을 구현하는 실제 소스 파일이 필요합니다.")?;
+            let parse_roles=|key:&str|->Result<Vec<Value>,String>{
+                let rows=rule[key].as_array()
+                    .filter(|v|!v.is_empty()&&v.len()<=8)
+                    .ok_or("개선 규칙의 역할 목록이 비어 있거나 너무 깁니다.")?;
+                let mut unique=BTreeSet::new();
+                for row in rows{
+                    let role=row.as_str()
+                        .filter(|r|crate::engine::rsi_open_topology::valid_role(r))
+                        .ok_or("개선 규칙 역할 이름 오류")?;
+                    if !unique.insert(role){
+                        return Err("개선 규칙의 동일 역할 중복".into());
+                    }
+                }
+                Ok(rows.clone())
+            };
+            let premises=parse_roles("premises")?;
+            let products=parse_roles("products")?;
+            let hypothesis=rule["hypothesis"].as_str()
+                .filter(|s|(25..=1600).contains(&s.len()))
+                .ok_or("개선 규칙에는 관찰 가능한 메커니즘 가설이 필요합니다.")?;
+            let observable=rule["observable"].as_str()
+                .filter(|s|(12..=800).contains(&s.len()))
+                .ok_or("개선 규칙에는 독립 평가할 관측량이 필요합니다.")?;
+            improvement_rules.push(json!({
+                "name":name,"methodRole":method_role,"methodPath":method_path,
+                "premises":premises,"products":products,
+                "hypothesis":hypothesis,"observable":observable,
+                "qualityProven":false
+            }));
+        }
+    }
     // Stages are an evolvable REBUILD-BINARY programme. They are not
     // executable merely because a model declared them: adoption, current
     // source SHA and the descendant's actual target must all match.
@@ -722,7 +781,7 @@ pub(crate) fn propose(
     let revision=format!("{:x}",Sha256::digest(json!([
         commit,component,components,assignments,next,hypothesis,design,paths,
         action_program,method_hypothesis,interaction_edges,successor_stages,
-        new_components
+        new_components,improvement_rules
     ]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
@@ -734,6 +793,7 @@ pub(crate) fn propose(
         "actionProgram":action_program,"methodHypothesis":method_hypothesis,
         "interactionEdges":interaction_edges,"successorStages":successor_stages,
         "newComponents":new_components,
+        "improvementRules":improvement_rules,
         "qualityProven":false,"adopted":false
     });
     session["rsiSystemDesign"]=proposal.clone();
