@@ -75,6 +75,14 @@ fn plan_identity(base:&str, plan:&[Value], oracle:&str) -> String {
     let plan=serde_json::to_string(plan).unwrap_or_default();
     format!("{:x}", Sha256::digest(format!("{base}\n{oracle}\n{plan}").as_bytes()))
 }
+fn scoped_identity(base:&str,plan:&[Value],oracle:&str,branch:Option<&str>)->String{
+    let root=plan_identity(base,plan,oracle);
+    match branch {
+        Some(name) if !name.is_empty() => format!("{:x}",
+            Sha256::digest(format!("{root}\nsourceBranch={name}").as_bytes())),
+        _ => root
+    }
+}
 
 /// Candidate-only checks shared by the live history and the persisted archive.
 /// A stored entry is never trusted; its paired receipt is replayed again.
@@ -132,7 +140,7 @@ fn select_scoped(
         "{:x}",
         Sha256::digest(include_bytes!("rsi_oracle_fixture.rs"))
     );
-    let identity=plan_identity(base,&plan,&oracle);
+    let identity=scoped_identity(base,&plan,&oracle,branch);
     let mut seen = BTreeSet::new();
     let mut entries = Vec::new();
     for generation in history {
@@ -228,7 +236,7 @@ pub(crate) fn validate_selection(
     let oracle=format!("{:x}",Sha256::digest(
         include_bytes!("rsi_oracle_fixture.rs")));
     if choice["oracleSha256"]!=oracle {return false;}
-    let identity=plan_identity(base,&plan,&oracle);
+    let identity=scoped_identity(base,&plan,&oracle,Some(branch));
     let record=state.store.get("rsi_archive",&format!(
         "{identity}:{}",candidate["patchSha256"].as_str().unwrap_or("")));
     record.as_ref().is_some_and(|row|
