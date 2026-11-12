@@ -202,6 +202,7 @@ mod tests {
                     "generatorProviderId":model,"generatorModel":"m",
                     "comparisonProfileSha256":"f".repeat(64),
                     "domain":domain,"candidateId":id,"pairedRevalidated":true,
+                    "changedSourcePaths":["src/engine/router.rs"],
                     "selfControllerVerified":true,
                     "candidateOrigin":"model_driven_detached_worktree",
                     "accepted":good,
