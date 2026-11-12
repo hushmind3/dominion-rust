@@ -213,9 +213,16 @@ pub fn parse_rsi_unwrapped_edit_observed(
     if path.starts_with('/') || path.contains("..") {return None;}
     if ["name","tool","tool_name","function","action"].iter()
         .any(|key|args.get(*key).is_some()) {return None;}
-    if args["expectedSha256"].is_null() && args["sourceSha256"].is_null() {
+    // The real model sometimes supplies 32 hex digits instead of SHA-256.
+    // A non-empty but malformed model hash must not prevent binding the
+    // complete revision from a trusted prior read of this exact path.
+    // A valid 64-character (possibly stale) hash is preserved for the normal
+    // compare-before-write rejection; it is never silently overwritten.
+    let hash_valid=args["expectedSha256"].as_str().is_some_and(|hash|
+        hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit()));
+    if !hash_valid {
         if let Some(hash)=observed(path) {
-            if hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit()){
+            if hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit()) {
                 args["expectedSha256"]=json!(hash);
             }
         }
@@ -452,6 +459,26 @@ mod sub1_structured_patch_tests {
             &text.replace("split_markers","../../untrusted"),&available,
             |_|Some(observed.clone())).is_none());
     }
+    #[test]
+    fn truncated_model_hash_is_replaced_only_by_real_source_observation() {
+        let available=std::collections::HashSet::from([
+            "workspace_replace_function".to_string()]);
+        let draft=r#"{"path":"src/engine/decompose.rs","functionName":"split_markers","expectedSha256":"b4a48b5d76e4d13a585778d1f0b66a71","newText":"fn split_markers() -> Vec<String> { vec![] }"}"#;
+        let full="e".repeat(64);
+        let (tool,raw)=parse_rsi_unwrapped_edit_observed(draft,&available,
+            |path| (path=="src/engine/decompose.rs").then(||full.clone())).unwrap();
+        assert_eq!(tool,"workspace_replace_function");
+        let args:Value=serde_json::from_str(&raw).unwrap();
+        assert_eq!(args["expectedSha256"],full);
+        assert!(parse_rsi_unwrapped_edit_observed(draft,&available,|_|None).is_none());
+        let stale=draft.replace("b4a48b5d76e4d13a585778d1f0b66a71",&"c".repeat(64));
+        let (_,raw)=parse_rsi_unwrapped_edit_observed(&stale,&available,
+            |_|Some(full.clone())).unwrap();
+        let stale_args:Value=serde_json::from_str(&raw).unwrap();
+        assert_eq!(stale_args["expectedSha256"],"c".repeat(64),
+            "A plausible but stale SHA must fail on the native write path");
+    }
+
     #[test]
     fn prose_wrapped_single_source_bound_patch_is_a_real_tool_intent() {
         let mut available=std::collections::HashSet::new();
