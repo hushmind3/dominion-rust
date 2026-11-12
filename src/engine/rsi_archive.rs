@@ -94,6 +94,38 @@ fn candidate_scores(state:&AppState,candidate:&Value,base:&str,plan:&[Value],ora
     Some((id.clone(),fitness(&metrics)?))
 }
 
+/// The old coordinator accepts an archive choice produced by the newly
+/// compiled descendant, but only if the ORIGINAL independent evaluator
+/// can replay the candidate. This decouples policy evolution from evidence
+/// authority: an evolved policy may rank parents differently, but cannot
+/// invent a candidate, a baseline, or a frozen oracle.
+pub(crate) fn validate_selected(
+    state:&AppState,selection:&Value,base:&str,cases:&Value
+)->Result<(),String>{
+    if selection.is_null(){return Ok(());}
+    if !selection.is_object(){return Err("후손 아카이브 선택 형식 오류".into());}
+    let plan=rsi::case_plan(cases)
+        .map_err(|e|format!("동결 평가 사례 오류: {e}"))?;
+    let oracle=format!("{:x}",Sha256::digest(
+        include_bytes!("rsi_oracle_fixture.rs")));
+    let id=selection["candidateId"].as_str()
+        .filter(|id|!id.is_empty()).ok_or("아카이브 후보 ID 없음")?;
+    if selection["baseCommit"]!=base
+        ||selection["oracleSha256"]!=oracle
+        ||selection["adopted"]!=false
+        ||selection["qualityProven"]!=false{
+        return Err("후손 선택이 원본 기준 커밋·평가 오라클에 묶이지 않았습니다.".into());
+    }
+    let candidate=state.store.get("rsi_candidate",id)
+        .ok_or("후손이 선택한 소스 후보가 없습니다.")?;
+    let Some((verified_id,_scores))=candidate_scores(state,&candidate,base,&plan,&oracle)
+        else{return Err("후손이 선택한 탐색 부모가 독립 평가 재검증을 통과하지 못했습니다.".into())};
+    if verified_id!=id ||selection["patchSha256"]!=candidate["patchSha256"]{
+        return Err("후손 탐색 부모의 후보 ID·패치 해시가 다릅니다.".into());
+    }
+    Ok(())
+}
+
 /// Every verified stepping stone is persisted under the exact evaluation
 /// identity (base commit + case plan + oracle). Later campaigns can therefore
 /// continue the same archive instead of rebuilding it from nothing.
@@ -444,6 +476,27 @@ mod tests {
         let (state,root)=state();
         assert!(!verified_productive_offspring(
             &state,&fake,&"a".repeat(40),&"b".repeat(64)));
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compiled_descendant_archive_selection_requires_replayed_original_oracle() {
+        let (state,root)=state();
+        let base="a".repeat(40);
+        let g=insert(&state,"descendant-choice",[0.53,0.52]);
+        let parent=select(&state,&[g],&base,&plan());
+        assert!(validate_selected(&state,&parent,&base,&plan()).is_ok());
+        let mut changed=parent.clone();
+        changed["patchSha256"]=json!("f".repeat(64));
+        assert!(validate_selected(&state,&changed,&base,&plan()).is_err());
+        changed=parent.clone();
+        changed["oracleSha256"]=json!("e".repeat(64));
+        assert!(validate_selected(&state,&changed,&base,&plan()).is_err());
+        changed=parent.clone();
+        changed["adopted"]=json!(true);
+        assert!(validate_selected(&state,&changed,&base,&plan()).is_err());
+        assert!(validate_selected(&state,&parent,&"b".repeat(40),&plan()).is_err());
+        assert!(validate_selected(&state,&Value::Null,&base,&plan()).is_ok());
         let _=std::fs::remove_dir_all(root);
     }
 
