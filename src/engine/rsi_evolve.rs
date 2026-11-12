@@ -3956,7 +3956,7 @@ async fn run_loop(
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
             child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
-            record["nextGenerationPlan"]=plan;
+            record["nextGenerationPlan"]=plan.clone();
             context.state.store.audit("rsi.rebuilt_descendant_planned",json!({
                 "campaignId":context.job_id,"generatorCommit":head,
                 "attempt":attempt,"domain":domain,
@@ -5315,9 +5315,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     {
         return Err("세대 작업 또는 개선기 소스 revision이 일치하지 않습니다.".into());
     }
-    let campaign = job["input"]["rsiCampaignId"]
-        .as_str()
-        .ok_or("자동 개선 ID 없음")?;
+    // Own the campaign ID independently of the editable child job.
+    // The compiled planner records additional runtime fields on job.
+    let campaign_value=job["input"]["rsiCampaignId"].clone();
+    let campaign=campaign_value.as_str().ok_or("자동 개선 ID 없음")?;
     if state.store.get("job", campaign).is_none_or(|p| {
         p["kind"] != "rsi_evolve" || p["status"] != "running" || p["cancelRequested"] == true
     }) {
