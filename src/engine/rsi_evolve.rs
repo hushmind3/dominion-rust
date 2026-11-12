@@ -4455,7 +4455,12 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let successor_hint=if explicit || paired_descendant_target(input) {
         system_evolution_target_hint(input,snapshot["attempt"].as_u64().unwrap_or(0))
     }else{architecture_target["domain"].as_str().map(str::to_string).or(inherited)};
-    let trial=if paired_descendant_target(input) {None} else {
+    // A verified ancestor's reciprocal program takes priority over an
+    // unrelated pending search trial. Otherwise the source chooser can silently
+    // move to another domain and the A->B->A stage never actually executes.
+    let trial=if paired_descendant_target(input)
+        || (!explicit && matches!(mutual_program["phase"].as_str(),
+            Some("complement"|"return"))) {None} else {
         input["rsiTrialAlgorithmId"].as_str().map(str::to_string)
     };
     let (domain,selection,strategy)=select_generation_strategy(
