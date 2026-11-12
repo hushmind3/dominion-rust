@@ -126,17 +126,24 @@ if(mode==='probe'){
     });
     receipt.providerId=provider.id||'sub4-live-model';
     await post(host+'/api/dev/config',{sourceDir:process.env.DOMINION_SOURCE_WORKSPACE});
-    const goal='Autonomously improve DOMINION source code and its own improvement strategy through consecutive native generations. Begin with a measurable planning defect in src/engine/decompose.rs: "설정을 읽고 결과를 저장한 다음 검증해" must produce three ordered actions while words like 사고 and 최고 remain intact. After the first independently accepted gain, inherit the rebuilt engine and search other existing algorithm, memory, context, tool or improvement domains for the next measurable quality gain. Observe real source via workspace_read_range, author the smallest compilable Rust patch via workspace_replace_range and the witnessed SHA, preserve unrelated behavior, and let the native paired evaluator adopt only measured gains. If a patch fails compiler validation, inherit that exact changed source and repair the diagnosed line rather than restarting the research.';
+    const nativeProof=process.env.SUB4_NATIVE_INDUCTION==='1';
+    const goal=nativeProof
+      ? 'Evolve DOMINION source with independently measured native transformations, beginning with memory, then improving the improver and transferring the rebuilt descendant to a distinct capability. The native editor must change actual Rust source, be compiled, pass a frozen paired A/B, and be adopted. Only measured gains choose the next domain. If native induction has no applicable safe transformation, fall back to actual model-authored edits.'
+      : 'Autonomously improve DOMINION source code and its own improvement strategy through consecutive native generations. Begin with a measurable planning defect in src/engine/decompose.rs: "설정을 읽고 결과를 저장한 다음 검증해" must produce three ordered actions while words like 사고 and 최고 remain intact. After the first independently accepted gain, inherit the rebuilt engine and search other existing algorithm, memory, context, tool or improvement domains for the next measurable quality gain. Observe real source via workspace_read_range, author the smallest compilable Rust patch via workspace_replace_range and the witnessed SHA, preserve unrelated behavior, and let the native paired evaluator adopt only measured gains. If a patch fails compiler validation, inherit that exact changed source and repair the diagnosed line rather than restarting the research.';
     const started=await post(host+'/api/rsi/start',{
       confirmation:'START_RSI_EVOLUTION',mode:'continuous',
       providerId:receipt.providerId,model:selectedModel,
       selectionPolicy:'automatic',autonomous:true,request:goal,
-      focusFiles:['src/engine/decompose.rs'],expandFocusAfterAdoption:true,
+      focusFiles:nativeProof?[]:['src/engine/decompose.rs'],
+      expandFocusAfterAdoption:true,
+      nativeInduction:nativeProof,stopAfterProof:nativeProof,
       maxAttempts:6,tokenBudget:260000,
       timeBudgetSeconds:Number(process.env.SUB4_CAMPAIGN_SECONDS||1250)
     });
     if(typeof started.id!=='string'||!started.id)throw Error('campaign start returned no id');
-    receipt.campaignId=started.id;receipt.status='running';persist();
+    receipt.campaignId=started.id;receipt.status='running';
+    receipt.nativeInduction=nativeProof;
+    persist();
     const deadline=Date.now()+Number(process.env.SUB4_RUN_DEADLINE_MS||21*60*1000);
     let last;
     while(Date.now()<deadline){
