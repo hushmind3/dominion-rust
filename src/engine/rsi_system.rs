@@ -510,6 +510,11 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         let design=&generation["systemDesign"];
         for role in design_roles(design) {
             if components.iter().any(|item|item["role"]==role){continue;}
+            // Explicitly invented capabilities have a stronger contract:
+            // both the module and its distinct runtime integration must be
+            // independently adopted; the old fallback cannot bypass it.
+            if design["newComponents"].as_array().is_some_and(|items|
+                items.iter().any(|item|item["role"]==role)) {continue;}
             let paths=design["componentFiles"][&role].as_array().or_else(||
                 if design_roles(design).len()==1 {design["targetFiles"].as_array()}else{None});
             let sources=paths.into_iter().flatten().filter_map(|path| {
@@ -521,6 +526,12 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
             if !sources.is_empty() && components.len()<64 {
                 components.push(json!({"role":role,"domain":design["nextDomain"],"representativeSources":sources}));
             }
+        }
+    }
+    for born in crate::engine::rsi_component_birth::admitted(root,history) {
+        if !components.iter().any(|item|item["role"]==born["role"])
+            && components.len()<64 {
+            components.push(born);
         }
     }
     let evidence=history.iter().rev().take(8).map(|generation|json!({
@@ -766,6 +777,8 @@ pub(crate) fn propose(
     if paths.iter().filter_map(Value::as_str).any(|path|!assigned.contains(path)) {
         return Err("모든 targetFiles를 구성요소에 연결하세요.".into());
     }
+    let new_components=crate::engine::rsi_component_birth::validate_declarations(
+        body,&Value::Object(assignments.clone()),&components,paths)?;
     // The next source revision can inherit a model-written multi-step
     // improvement procedure, including its learning and tool-use policies.
     // It is activated only after this generation's REAL source patch passes
@@ -813,14 +826,15 @@ pub(crate) fn propose(
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,components,assignments,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
+        commit,component,components,assignments,next,hypothesis,design,paths,new_components,successor_stages]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
         "campaignId":campaign_id,"generationJobId":child_id,
         "generatorCommit":commit,"component":component,"components":components,"componentFiles":assignments,
         "nextDomain":next,"hypothesis":hypothesis,
-        "design":design,"targetFiles":paths,"successorStages":successor_stages,
+        "design":design,"targetFiles":paths,"newComponents":new_components,
+        "successorStages":successor_stages,
         "qualityProven":false,"adopted":false
     });
     session["rsiSystemDesign"]=proposal.clone();
