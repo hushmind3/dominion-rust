@@ -1038,7 +1038,7 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
         .ok_or("A/B 평가 후보 갱신에 실패했습니다.")?;
     state.store.put("rsi_evaluation",&updated["evaluation"]);
     let receipt=json!({
-        "id":format!("rsi-pair-{}",context.job_id),
+        "id":format!("rsi-pair-{id}"),
         "candidateId":id,"jobId":context.job_id,
         "report":report,"verdict":verdict,"metrics":metrics,
         "evidenceSha256":evidence_sha,
