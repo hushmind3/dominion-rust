@@ -3485,8 +3485,16 @@ async fn run_loop(
         generation["knowledgeArtifactHashes"]=json!(hashes);
         generation["newFindings"]=json!(new_findings);
         generation["stopReason"]=json!(stopped);
+        // A just-adopted child has not yet been replayed through the durable
+        // history loader. Revalidate its ORIGINAL frozen candidate and paired
+        // receipt now; otherwise every successful prediction would be
+        // mislabeled as a failure while training the next meta-generation.
+        let checked=crate::engine::rsi_system::revalidated_history(
+            &context.state,&[generation.clone()]);
+        let independently_checked=checked.first().unwrap_or(&generation);
+        generation["pairedRevalidated"]=independently_checked["pairedRevalidated"].clone();
         generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
-            &generation["metaPolicy"],&generation);
+            &generation["metaPolicy"],independently_checked);
         if candidate_id.is_none() && new_findings>0 && output.is_ok() && stopped.is_none()
             && current["result"]["rsi"]["modelError"].is_null() {
             generation["error"]=Value::Null;
