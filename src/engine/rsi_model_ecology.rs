@@ -71,8 +71,34 @@ fn candidates(state:&AppState,input:&Value)->Vec<Value>{
     routes.truncate(12);
     routes
 }
+/// Attribute only actual source-authoring turns in the exact generation
+/// session. Helper calls and model failover may consume tokens without being
+/// the sole actor that produced the source patch.
+fn session_chat_calls(rows:&[Value],session:&str,route:&Value)->(u64,u64,BTreeSet<String>){
+    let mut selected=0u64;
+    let mut mixed=0u64;
+    let mut actual=BTreeSet::new();
+    if session.is_empty(){return (selected,mixed,actual);}
+    for row in rows {
+        if row["event"]!="model.usage"
+            ||row["detail"]["sessionId"]!=session
+            ||row["detail"]["purpose"]!="chat"
+            ||row["detail"]["totalTokens"].as_u64().unwrap_or(0)==0{
+            continue;
+        }
+        let detail=&row["detail"];
+        let (Some(provider),Some(model))=(
+            detail["providerId"].as_str(),detail["model"].as_str())else{continue};
+        actual.insert(format!("{provider}/{model}"));
+        if same_route(detail,route){selected+=1;}else{mixed+=1;}
+    }
+    (selected,mixed,actual)
+}
+
 fn verified_attempt(g:&Value)->bool{
-    g["modelEcologyExecuted"]["actuallyUsedInGeneration"]==true
+    g["modelEcologyExecuted"]["sessionOwnedByGeneration"]==true
+        &&g["modelEcologyExecuted"]["mixedChatModelCalls"]==0
+        &&g["modelEcologyExecuted"]["actuallyUsedInGeneration"]==true
         &&g["modelEcologyExecuted"]["actualModelCalls"].as_u64().unwrap_or(0)>0
         &&g["modelEcologyExecuted"]["source"]=="real_descendant_model_usage_v1"
         &&g["modelEcologyExecuted"]["generationJobId"]==g["jobId"]
@@ -340,20 +366,27 @@ pub(crate) fn executed(state:&AppState,job:&Value)->Value{
     let route=&policy["selected"];
     let provider=route["providerId"].as_str().unwrap_or("");
     let model=route["model"].as_str().unwrap_or("");
-    let calls=state.store.recent_audit(800).into_iter().filter(|row|
-        row["event"]=="model.usage"
-            &&row["detail"]["providerId"]==provider
-            &&row["detail"]["model"]==model
-            &&row["detail"]["sessionId"]==session
-            &&row["detail"]["totalTokens"].as_u64().unwrap_or(0)>0
-        ).count();
+    let session_owned=!id.is_empty() &&!session.is_empty()
+        &&state.store.get("session",session).is_some_and(|row|
+            row["rsiRun"]==true
+                &&row["rsiGenerationJobId"]==id);
+    let audit=state.store.recent_audit(800);
+    let (calls,mixed,actual)=session_chat_calls(&audit,session,route);
+    let route_matches_input=input["providerId"]==provider
+        &&input["model"]==model;
+    let exclusive=session_owned &&route_matches_input &&calls>0 &&mixed==0;
     json!({
         "source":"real_descendant_model_usage_v1",
         "generationJobId":id,
         "generatorCommit":input["rsiGeneratorCommit"],
         "providerId":provider,"model":model,
         "actualModelCalls":calls,
-        "actuallyUsedInGeneration":calls>0,
+        "mixedChatModelCalls":mixed,
+        "observedChatActors":actual,
+        "sessionOwnedByGeneration":session_owned,
+        "routeMatchedWorkerInput":route_matches_input,
+        "actuallyUsedInGeneration":exclusive,
+        "excludedFromSingleActorCredit":!exclusive,
         "selectedBy":policy["revision"],
         "apiProviderWeightsChanged":false,
         "independentSourcePerformanceNotYetKnown":true
@@ -382,6 +415,53 @@ pub(crate) fn instruction(policy:&Value)->String{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test] fn mixed_model_or_helper_calls_cannot_earn_single_actor_credit(){
+        let selected=identity("provider-a","model-a");
+        let events=vec![
+            json!({"event":"model.usage","detail":{"sessionId":"session-1",
+                "purpose":"chat","providerId":"provider-a",
+                "model":"model-a","totalTokens":40}}),
+            json!({"event":"model.usage","detail":{"sessionId":"session-1",
+                "purpose":"chat","providerId":"provider-b",
+                "model":"model-b","totalTokens":70}}),
+            json!({"event":"model.usage","detail":{"sessionId":"session-1",
+                "purpose":"helper","providerId":"provider-c",
+                "model":"model-c","totalTokens":20}}),
+            json!({"event":"model.usage","detail":{"sessionId":"other",
+                "purpose":"chat","providerId":"provider-d",
+                "model":"model-d","totalTokens":10}})
+        ];
+        let (selected_calls,mixed,actors)=session_chat_calls(&events,"session-1",&selected);
+        assert_eq!(selected_calls,1);
+        assert_eq!(mixed,1);
+        assert_eq!(actors.len(),2);
+        let (only,foreign,_)=session_chat_calls(&events[..1],"session-1",&selected);
+        assert_eq!((only,foreign),(1,0));
+        let (none,_,_)=session_chat_calls(&events,"",&selected);
+        assert_eq!(none,0);
+    }
+    #[test] fn fake_single_model_receipt_from_mixed_session_is_rejected(){
+        let mut g=json!({"modelEcologyExecuted":{
+            "source":"real_descendant_model_usage_v1",
+            "generationJobId":"generation","generatorCommit":"a".repeat(40),
+            "providerId":"p","model":"m","selectedBy":"policy",
+            "sessionOwnedByGeneration":true,
+            "mixedChatModelCalls":1,
+            "actualModelCalls":1,"actuallyUsedInGeneration":true},
+            "jobId":"generation","generatorCommit":"a".repeat(40),
+            "candidateOrigin":"model_driven_detached_worktree",
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+            "modelEcologyPolicy":{"revision":"policy",
+                "selected":{"providerId":"p","model":"m"}},
+            "pairedMeasured":true,
+            "evaluation":{"metrics":{"measurements":[{"id":"holdout"}]}}
+        });
+        assert!(outcome(&g).is_none());
+        g["modelEcologyExecuted"]["mixedChatModelCalls"]=json!(0);
+        assert!(outcome(&g).is_some());
+        g["modelEcologyExecuted"]["sessionOwnedByGeneration"]=json!(false);
+        assert!(outcome(&g).is_none());
+    }
     #[test] fn execution_requires_real_model_traffic(){
         let g=json!({"modelEcologyExecuted":{"source":"real_descendant_model_usage_v1",
             "providerId":"api-1","model":"model-a",
@@ -397,6 +477,7 @@ mod tests{
             "generationJobId":"generation-1",
             "generatorCommit":"a".repeat(40),
             "selectedBy":"chosen-policy",
+            "sessionOwnedByGeneration":true,"mixedChatModelCalls":0,
             "actuallyUsedInGeneration":true,"actualModelCalls":1},
             "jobId":"generation-1",
             "modelEcologyPolicy":{"revision":"chosen-policy",
@@ -446,6 +527,7 @@ mod tests{
             "modelEcologyPolicy":{"revision":"policy-1",
                 "selected":{"providerId":"remote","model":"model-1"}},
             "modelEcologyExecuted":{"source":"real_descendant_model_usage_v1",
+                "sessionOwnedByGeneration":true,"mixedChatModelCalls":0,
                 "actuallyUsedInGeneration":true,"actualModelCalls":1,
                 "generationJobId":"trial-1",
                 "generatorCommit":"a".repeat(40),"selectedBy":"policy-1",
@@ -496,6 +578,7 @@ mod tests{
             "generationJobId":"adopted-agent-1",
             "generatorCommit":"a".repeat(40),
             "selectedBy":"policy-1",
+            "sessionOwnedByGeneration":true,"mixedChatModelCalls":0,
             "actuallyUsedInGeneration":true,"actualModelCalls":2},
             "jobId":"adopted-agent-1",
             "modelEcologyPolicy":{"revision":"policy-1",
