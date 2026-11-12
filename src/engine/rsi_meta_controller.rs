@@ -15,22 +15,26 @@ fn planned_role(g:&Value)->Option<&str> {
         .or_else(||g["architectureTarget"]["role"].as_str())
 }
 fn independent_outcome(g:&Value)->Option<bool> {
-    // Unfinished calls, synthetic feedback, native transformation receipts and
-    // unverifiable claims cannot train an adoption probability.
-    if g["evaluation"]["metrics"]["eligible"].as_bool().is_none()
-        || g["pairedRevalidated"]!=true {return None;}
+    // Two distinct facts: an experiment can have a replayable independent
+    // measurement even if its patch was rejected, regressed or never adopted.
+    // Successful offspring require an actual separate adoption receipt.
+    // Source-writing method (native / local / API) is not a success criterion.
+    if g["pairedMeasured"]!=true
+        || g["evaluation"]["metrics"]["eligible"].as_bool().is_none()
+        || g["evaluation"]["metrics"]["verdict"].as_str().is_none() {
+        return None;
+    }
     let accepted=g["accepted"]==true
-        && g["candidateOrigin"]=="model_driven_detached_worktree"
-        && g["systemDesign"]["source"]=="model_authored_system_design"
+        && g["pairedRevalidated"]==true
         && g["acceptedCommit"].as_str().is_some_and(|s|s.len()==40
             && s.bytes().all(|c|c.is_ascii_hexdigit()))
-        && g["systemDesign"]["targetFiles"].as_array().is_some_and(|paths|
-            !paths.is_empty() && paths.iter().all(|path|
-                path.as_str().is_some_and(|p|g["acceptedSourceHashes"][p]
-                    .as_str().is_some_and(|sha|sha.len()==64
-                        && sha.bytes().all(|b|b.is_ascii_hexdigit())))));
+        && g["acceptedSourceHashes"].as_object()
+            .is_some_and(|hashes|!hashes.is_empty() && hashes.values().all(|hash|
+                hash.as_str().is_some_and(|sha|sha.len()==64
+                    && sha.bytes().all(|b|b.is_ascii_hexdigit()))));
     Some(accepted)
 }
+
 fn subsequent_successes(history:&[Value],parent:&Value)->usize {
     if independent_outcome(parent)!=Some(true){return 0;}
     let Some(head)=parent["acceptedCommit"].as_str() else{return 0};
@@ -323,7 +327,9 @@ mod tests {
         assert!(observation["brierError"].is_null());
         let mut measured=history[0].clone();
         measured["evaluation"]["metrics"]["eligible"]=json!(false);
-        measured["pairedRevalidated"]=json!(true);
+        measured["evaluation"]["metrics"]["verdict"]=json!("regressed");
+        measured["pairedMeasured"]=json!(true);
+        measured["pairedRevalidated"]=json!(false);
         let measured_feedback=feedback(&policy,&measured);
         assert_eq!(measured_feedback["independentObservation"],false);
         assert!(measured_feedback["brierError"].is_number());
@@ -339,16 +345,18 @@ mod tests {
         let before=synthesize(&[],&frontier,&["improver","learning"],None,
             &json!({}),&json!({}),&json!({"edges":[]}));
         assert!(valid_policy(&before,0));
-        let eligible=json!({"metrics":{"eligible":true}});
+        let eligible=json!({"metrics":{"eligible":true,"verdict":"improved"}});
         let parent=json!({"id":"p","generatorCommit":"a".repeat(40),
-            "acceptedCommit":"b".repeat(40),"accepted":true,"pairedRevalidated":true,
+            "acceptedCommit":"b".repeat(40),"accepted":true,
+            "pairedMeasured":true,"pairedRevalidated":true,
             "metaPolicy":{"target":{"role":"learning"}},
             "evaluation":eligible,"candidateOrigin":"model_driven_detached_worktree",
             "systemDesign":{"source":"model_authored_system_design",
                 "targetFiles":["src/engine/learning.rs"]},
             "acceptedSourceHashes":{"src/engine/learning.rs":"c".repeat(64)}});
         let child=json!({"id":"c","generatorCommit":"b".repeat(40),
-            "acceptedCommit":"d".repeat(40),"accepted":true,"pairedRevalidated":true,
+            "acceptedCommit":"d".repeat(40),"accepted":true,
+            "pairedMeasured":true,"pairedRevalidated":true,
             "controllerPlan":{"source":"compiled_descendant_system_controller_v2"},
             "metaPolicy":{"target":{"role":"learning"}},
             "evaluation":eligible,"candidateOrigin":"model_driven_detached_worktree",
