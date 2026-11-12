@@ -6,7 +6,7 @@
 //! quality is based on sealed task cases and REAL API usage, not a patch count.
 //! Source-edit outcomes are observational proxies for coder performance,
 //! NOT a controlled claim that one provider's underlying weights improved.
-use crate::{engine::{gateway,rsi_principle_learning},state::AppState};
+use crate::{engine::gateway,state::AppState};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::collections::{BTreeMap,BTreeSet};
@@ -66,8 +66,9 @@ fn attested(g:&Value)->bool {
         && g["generatorModel"]==g["requestedModel"]
         && name(&g["requestedProviderId"]).is_some()
         && name(&g["requestedModel"]).is_some()
-        && g["tokenUsage"]["calls"].as_u64().unwrap_or(0)>0
-        && g["tokenUsage"]["totalTokens"].as_u64().unwrap_or(0)>0
+        && g["apiRouteUsage"]["matchedExactProviderModelSession"]==true
+        && g["apiRouteUsage"]["calls"].as_u64().unwrap_or(0)>0
+        && g["apiRouteUsage"]["totalTokens"].as_u64().unwrap_or(0)>0
         && g["candidateOrigin"]!="native_inductive_source_mutation"
 }
 fn measured(g:&Value)->bool {
@@ -124,7 +125,7 @@ pub(crate) fn learn(history:&[Value],routes:&Value)->Value{
         let Some(row)=data.get_mut(&k) else{continue};
         if !attested(g){continue;}
         row.trials+=1;
-        row.tokens+=g["tokenUsage"]["totalTokens"].as_u64().unwrap_or(0);
+        row.tokens+=g["apiRouteUsage"]["totalTokens"].as_u64().unwrap_or(0);
         if !measured(g){continue;}
         let profile=g["evaluationProfileSha256"].as_str().unwrap_or("");
         let candidate=g["candidateId"].as_str().unwrap_or("");
@@ -210,11 +211,18 @@ pub(crate) fn decide(history:&[Value],routes:&Value,origin:&Value,
             .then_with(||a["providerId"].as_str().cmp(&b["providerId"].as_str()))
             .then_with(||a["model"].as_str().cmp(&b["model"].as_str()))
     });
-    let measured=choices.iter().any(|r|
-        r["independentlyMeasuredCases"].as_u64().unwrap_or(0)>0);
-    // No arbitrary new charges for an untested model; the owner can still
-    // explicitly run an A/B pilot and let the next descendant learn it.
-    let choice=if measured {choices.first().unwrap_or(base)}else{base};
+    let baseline_samples=choices.iter().find(|r|
+        r["providerId"]==base["providerId"]&&r["model"]==base["model"])
+        .and_then(|r|r["independentlyMeasuredCases"].as_u64()).unwrap_or(0);
+    // A controlled exploration trial becomes eligible only after at least
+    // two independently measured baseline tasks. No random API spending:
+    // all routes were registered and explicitly authorized by the owner.
+    let trial=if baseline_samples>=2 {
+        choices.iter().find(|r|r["independentlyMeasuredCases"]==0)
+    }else{None};
+    let choice=trial.or_else(||choices.iter().find(|r|
+        r["independentlyMeasuredCases"].as_u64().unwrap_or(0)>0))
+        .unwrap_or(base);
     let mut result=json!({
         "source":"source_editable_descendant_api_route_policy_v1",
         "generatorCommit":commit,"authorizedRoutes":routes,
@@ -223,7 +231,8 @@ pub(crate) fn decide(history:&[Value],routes:&Value,origin:&Value,
         "forecastCaseGain":choice["posteriorCaseGain"],
         "ledgerSha256":ledger["sha256"],
         "observedTaskCases":choice["independentlyMeasuredCases"],
-        "explanation":if measured{"observed_source_task_quality_not_causal_model_AB"}
+        "explanation":if trial.is_some(){"owner_approved_bounded_exploration_trial"}
+            else if baseline_samples>0{"observed_source_task_quality_not_causal_model_AB"}
             else{"owner_selected_model_until_measured_api_route_evidence"},
         "modelWeightsChanged":false
     });
@@ -236,7 +245,10 @@ pub(crate) fn valid(plan:&Value,history:&[Value],routes:&Value,origin:&Value,
 }
 pub(crate) fn approved_choice(plan:&Value,routes:&Value)->bool{
     let chosen=&plan["chosen"];
-    pair(chosen).is_some() && routes.as_array().is_some_and(|rows|
+    if pair(chosen).is_none()||plan["authorizedRoutes"]!=*routes{return false;}
+    let mut copy=plan.clone();
+    if let Some(body)=copy.as_object_mut(){body.remove("revision");}
+    plan["revision"]==seal(&copy) && routes.as_array().is_some_and(|rows|
         rows.iter().any(|row|row==chosen))
 }
 pub(crate) fn instruction(policy:&Value)->String {
@@ -264,6 +276,8 @@ mod tests {
             "generatorProviderId":"deepseek","requestedProviderId":"deepseek",
             "generatorModel":model,"requestedModel":model,
             "apiRouteExecutionVerified":true,
+            "apiRouteUsage":{"matchedExactProviderModelSession":true,
+                "calls":1,"totalTokens":450},
             "tokenUsage":{"calls":1,"totalTokens":450},
             "evaluationProfileSha256":"e".repeat(64),
             "pairedMeasured":true,"pairedRevalidated":true,"accepted":true,
