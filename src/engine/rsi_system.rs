@@ -843,7 +843,7 @@ pub(crate) fn propose(
         "generatorCommit":commit,"component":component,"components":components,"componentFiles":assignments,
         "nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,"newComponents":new_components,
-        "successorStages":successor_stages,
+        "openProgram":open_program,"successorStages":successor_stages,
         "qualityProven":false,"adopted":false
     });
     session["rsiSystemDesign"]=proposal.clone();
