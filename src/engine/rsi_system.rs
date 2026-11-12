@@ -178,6 +178,30 @@ pub(crate) fn propose(
         "next":"실제 코드를 변경해야 합니다. 독립 A/B 채택 이전에는 개선 증거가 아닙니다."}))
 }
 
+/// The planner must derive its adoption flags from the original paired
+/// receipts, not from a mutable generation record or a model's claims.
+pub(crate) fn revalidated_history(
+    state:&crate::state::AppState,history:&[Value]
+)->Vec<Value>{
+    history.iter().map(|generation|{
+        let mut checked=generation.clone();
+        let valid= if generation["accepted"]==true {
+            generation["candidateId"].as_str()
+                .and_then(|id|state.store.get("rsi_candidate",id))
+                .is_some_and(|candidate|{
+                    candidate["status"]=="verified"
+                        && candidate["evaluation"]["metrics"]["eligible"]==true
+                        && candidate["experimentAdoption"]["commit"]==generation["acceptedCommit"]
+                        && candidate["experimentAdoption"]["generatorCommit"]==generation["generatorCommit"]
+                        && candidate["experimentAdoption"]["productionDeployed"]==false
+                        && crate::engine::rsi::verified_pair_receipt(state,&candidate)
+                })
+        }else{false};
+        checked["pairedRevalidated"]=json!(valid);
+        checked
+    }).collect()
+}
+
 /// Reuse the model's target only when its *source change*, not its
 /// explanation, was independently evaluated and adopted.
 pub(crate) fn inherited_domain(history:&[Value])->Option<String>{

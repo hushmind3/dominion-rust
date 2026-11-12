@@ -4013,12 +4013,14 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         || campaign["planAttempt"].as_u64()!=Some(history.len() as u64+1) {
         return Err("후손 계획과 저장된 세대 계보 불일치".into());
     }
+    let history=crate::engine::rsi_system::revalidated_history(&state,&history);
     let objective=selection_objective(&parent["input"]);
     let inherited=if parent["input"]["selectionPolicy"]=="automatic"{
         crate::engine::rsi_system::inherited_domain(&history)
     }else{None};
-    let selected=inherited.or_else(||campaign["planSelectedDomain"].as_str()
-        .filter(|domain|DOMAINS.contains(domain)).map(str::to_string));
+    // A parent's suggested domain is not a successor's independent policy.
+    // Only a source-backed, independently adopted design may constrain it.
+    let selected=inherited;
     let (domain,selection,strategy)=select_generation_strategy(
         &state,&history,&objective,None,None,selected,revision);
     let lab=campaign["labDir"].as_str().ok_or("후손 소스 경로 없음")?;
@@ -4154,6 +4156,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
     let system_prompt=if job["input"]["rsiSystemEvolution"]==true {
+        let history=crate::engine::rsi_system::revalidated_history(&state,&history);
         let path=job["input"]["rsiSourceDir"].as_str()
             .ok_or("후손 소스 경로가 없습니다.")?;
         let model=crate::engine::rsi_system::blueprint(Path::new(path),&commit,&history);
