@@ -270,6 +270,81 @@ mod tests {
         assert_eq!(adapted["selected"]["target"]["path"],"src/engine/models.rs");
     }
     #[test]
+    fn forged_holdout_feedback_without_independent_pair_receipt_is_ignored(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let root=std::env::temp_dir().join(
+            format!("rsi-method-learning-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config=Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let rule="a".repeat(64);
+        let base="b".repeat(40);
+        let path="src/engine/models.rs";
+        let fake=json!({
+            "id":"candidate-fake",
+            "baseCommit":base,
+            "paths":[path],
+            "status":"verified",
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"eligible":true,"verdict":"improved",
+                    "measurements":[{"id":"model-generalization",
+                        "domain":"models","holdout":true,
+                        "baselinePass":false,"candidatePass":true}]}}
+        });
+        state.store.put("rsi_candidate",&fake).unwrap();
+        let plan=json!({"source":"compiled_model_authored_improvement_algebra_v1",
+            "generatorCommit":base,"sha256":"c".repeat(64),
+            "selected":{"ruleId":rule,"rule":{"id":rule},
+                "target":{"path":path}}});
+        let generation=json!({
+            "generatorCommit":base,"candidateId":"candidate-fake",
+            "changedSourcePaths":[path],
+            "evaluationProfileSha256":"d".repeat(64),
+            "accepted":true,"pairedRevalidated":true,
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
+                "generatorCommit":base},
+            "improvementAlgebraPlan":plan,
+            "controllerPlan":{"improvementAlgebra":plan},
+            "evaluation":fake["evaluation"]
+        });
+        let algebra=json!({"operators":[{"id":rule,
+            "methodRole":"scientific_method"}]});
+        let learned=learn(&state,&[generation],&[],&algebra,&base);
+        assert_eq!(learned["operatorLearning"][0]["independentReplayedTrials"],0);
+        assert_eq!(learned["operatorLearning"][0]["crossCapabilityGains"],0);
+        assert!(valid(&learned,&base,1));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+    #[test]
+    fn replayed_feedback_changes_selection_without_faking_success(){
+        let strong="a".repeat(64);
+        let weak="b".repeat(64);
+        let algebra=json!({"source":"compiled_model_authored_improvement_algebra_v1",
+            "rankedCandidates":[
+                {"ruleId":weak,"selectionPriority":300,
+                    "target":{"path":"src/engine/memory.rs"},
+                    "rule":{"method":{"path":"src/engine/rsi_improvement_algebra.rs"}}},
+                {"ruleId":strong,"selectionPriority":100,
+                    "target":{"path":"src/engine/models.rs"},
+                    "rule":{"method":{"path":"src/engine/rsi_method_generalization.rs"}}}
+            ]});
+        let feedback=json!({"sha256":"e".repeat(64),"operatorLearning":[
+            {"ruleId":weak,"independentReplayedTrials":3,
+                "holdoutRegressions":0,"holdoutGains":0,
+                "crossCapabilityGains":0,"transferScore":0.0},
+            {"ruleId":strong,"independentReplayedTrials":3,
+                "holdoutRegressions":0,"holdoutGains":4,
+                "crossCapabilityGains":3,"transferScore":0.75}
+        ]});
+        let evolved=adapt(algebra,&feedback);
+        assert_eq!(evolved["selected"]["ruleId"],strong);
+        assert_eq!(evolved["selected"]["target"]["path"],"src/engine/models.rs");
+        assert_eq!(evolved["selected"]["qualityProven"],Value::Null);
+    }
+    #[test]
     fn measured_regression_redirects_a_future_method_edit(){
         let method=json!({"rankedCandidates":[{"ruleId":"a".repeat(64),
             "selectionPriority":100,"intent":"improve_composed_intelligence",
