@@ -209,7 +209,7 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
                 if !file.starts_with(root)||!file.is_file(){return false;}
                 let Ok(contents)=fs::read(file) else{return false};
                 let text=String::from_utf8_lossy(&contents);
-                stems.iter().any(|stem|text.contains(stem))
+                stems.iter().any(|stem|text.contains(*stem))
             });
             if !wired {continue;}
             components.push(json!({"role":role,"domain":domain,
