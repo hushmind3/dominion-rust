@@ -3760,6 +3760,14 @@ async fn run_loop(
         // Workers read this durable table, not the coordinator's in-memory
         // history. Publish only after research, method feedback and trial
         // outcomes are complete so the next worker can actually continue.
+        // Archive a measured neutral stepping stone before the coordinator
+        // can stop at its final budget or be interrupted. Waiting for the
+        // NEXT call to select() would silently lose a campaign's last
+        // independently verified candidate across campaign restarts.
+        generation["archivePersistedImmediately"]=json!(
+            crate::engine::rsi_archive::persist_completed(
+                &context.state,&generation,&head,&current["input"]["rsiFrozenCases"])
+        );
         // A real completion timestamp is also necessary to evolve the method
         // from the latest measured outcome across restarted campaigns.
         generation["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
