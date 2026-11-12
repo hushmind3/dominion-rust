@@ -467,9 +467,15 @@ async fn run_turn_with_policy(
             state.store.put("execution", &execution);
         }
     }
+    let turn_limit=if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {
+        session["rsiCampaignId"].as_str().and_then(|id|state.store.get("job",id))
+            .and_then(|job|job["input"]["limits"]["timeBudgetSeconds"].as_u64())
+            .filter(|seconds|*seconds>0).map(std::time::Duration::from_secs)
+            .unwrap_or(std::time::Duration::from_secs(365*24*3600))
+    }else{MAX_ELAPSED};
     let result = tokio::select! {
-        result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
-            result.unwrap_or_else(|_| Err("실행 시간 제한(10분)을 초과했습니다.".into())),
+        result = tokio::time::timeout(turn_limit, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
+            result.unwrap_or_else(|_| Err("설정한 실행 시간 제한을 초과했습니다.".into())),
         // A closed SSE client must not destroy work already in flight. The turn
         // keeps running in its spawned task; only an explicit cancel or the
         // elapsed budget stops it. Results stay durable for later reads.
@@ -719,11 +725,24 @@ async fn run_turn_body(
         // Unfocused source discovery still needs the regular edit budget.
         max_rounds = max_rounds.max(16);
     }
-    let max_tools = budget_algorithm
+    let mut max_tools = budget_algorithm
         .as_ref()
         .and_then(|algorithm| algorithm["parameters"]["maxTools"].as_u64())
         .unwrap_or(MAX_TOOL_CALLS as u64)
         .clamp(4, 120) as usize;
+    let campaign_budgeted=session["rsiRun"]==true && session["rsiCampaignId"].is_string();
+    if campaign_budgeted {
+        // The campaign's actual token/time budget and cancellation own the run.
+        // Generic chat's learned 20-tool cap must not truncate source research.
+        max_rounds=usize::MAX/4;
+        max_tools=usize::MAX/4;
+    }
+    let elapsed_limit=if campaign_budgeted {
+        session["rsiCampaignId"].as_str().and_then(|id|state.store.get("job",id))
+            .and_then(|job|job["input"]["limits"]["timeBudgetSeconds"].as_u64())
+            .filter(|seconds|*seconds>0).map(std::time::Duration::from_secs)
+            .unwrap_or(std::time::Duration::from_secs(365*24*3600))
+    }else{MAX_ELAPSED};
     let mut tool_definitions = if request.tools_enabled && request.tools_execution_enabled {
         tools::definitions()
     } else {
@@ -1087,8 +1106,8 @@ async fn run_turn_body(
         "reasoningLanguage": request.reasoning_language,
         "toolsEnabled": request.tools_enabled,
         "toolsExecutionEnabled": request.tools_execution_enabled,
-        "maxRounds": max_rounds,
-        "maxToolCalls": max_tools,
+        "maxRounds": if campaign_budgeted {Value::Null}else{json!(max_rounds)},
+        "maxToolCalls": if campaign_budgeted {Value::Null}else{json!(max_tools)},
         "maxTokens": if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {Value::Null}else{json!(MAX_TOKENS)},
         "maxElapsedMs": MAX_ELAPSED.as_millis() as u64,
     });
@@ -1141,7 +1160,7 @@ async fn run_turn_body(
     let mut adaptation_attempts = 0usize;
     let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
-    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
+    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, elapsed_limit);
     let mut rsi_decision_checkpoint = false;
     let mut rsi_edit_only_announced = false;
     let mut rsi_edit_retry = false;
@@ -1186,7 +1205,7 @@ async fn run_turn_body(
         {
             return Err("실행이 중단되었습니다.".into());
         }
-        if started_at.elapsed() > MAX_ELAPSED {
+        if started_at.elapsed() > elapsed_limit {
             return Err("실행 시간 제한(10분)을 초과했습니다.".into());
         }
         if metrics.lock().unwrap().tool_calls as usize >= max_tools {
@@ -2061,7 +2080,7 @@ async fn run_turn_body(
             if !budget.charge_proposal() {
                 return Err(format!(
                     "도구 제안 예산({}회)을 초과했습니다.",
-                    MAX_TOOL_CALLS.saturating_mul(2)
+                    max_tools.saturating_mul(2)
                 ));
             }
             if state.is_cancelled(session_id)

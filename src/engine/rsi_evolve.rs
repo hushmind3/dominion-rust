@@ -1356,7 +1356,7 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
         if !recent.is_empty() {
             text.push_str("\n### 이전 시도의 실제 결과\n");
             for generation in recent.into_iter().rev() {
-                let candidate=generation["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id));
+                    let candidate=generation["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id));
                 let evidence=json!({"accepted":generation["accepted"],"commit":generation["acceptedCommit"],
                     "hypothesis":candidate.as_ref().map(|c|&c["hypothesis"]),"paths":candidate.as_ref().map(|c|&c["paths"]),
                     "verdict":generation["evaluation"]["verdict"],"error":generation["error"],
@@ -1751,14 +1751,39 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
     receipts
 }
 
+pub(crate) fn preserve_failed_research(state:&AppState, source:&str) {
+    let mut jobs=state.store.all("job").into_iter().filter(|job|
+        job["kind"]=="rsi_generation" && job["input"]["rsiKnowledgeSource"]==source
+        && (job["status"]!="completed" || job["result"]["rsi"]["candidateId"].is_null())
+        && !matches!(job["status"].as_str(),Some("running"|"queued"))).take(12).collect::<Vec<_>>();
+    jobs.reverse();
+    for job in jobs {
+        if let (Some(session),Some(id))=(job["sessionId"].as_str(),job["id"].as_str()) {
+            let scope=research_scope(&job["input"]);
+            let existing=format!("experience-rsi-{}",crate::engine::memory::stable_id(&[&scope.partition_key,id]));
+            if state.store.get("experience",&existing).is_some_and(|e|e["failureBackfilled"]==true){continue;}
+            if let Some(saved)=remember_research(state,&job["input"],&json!({"jobId":id,"accepted":false,"domain":job["rsiDomain"],
+                "candidateId":job["result"]["rsi"]["candidateId"],"error":job["error"]}),session) {
+                state.store.patch_if("experience",&saved,"id",&json!(saved),&json!({"failureBackfilled":true}));
+            }
+        }
+    }
+}
+
 fn research_artifacts(state:&AppState,session:&str)->Vec<Value>{
     let mut operations=state.store.all("execution_operation");
     operations.sort_by(|a,b|a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64()).then(a["id"].as_str().cmp(&b["id"].as_str())));
     let mut artifacts=Vec::new();
     for op in operations {
-        if op["sessionId"]!=session || op["status"]!="completed" {continue;}
+        if op["sessionId"]!=session {continue;}
         let result=&op["result"];let args=&op["arguments"];
-        if result["error"].is_string() || result["ok"]==false {continue;}
+        if op["status"]!="completed" || result["error"].is_string() || result["ok"]==false {
+            let content=json!({"tool":op["tool"],"arguments":args,"error":op["error"],"result":result}).to_string();
+            let hash=format!("{:x}",Sha256::digest(json!([&op["tool"],args,&op["error"],&result["error"],&op["status"]]).to_string().as_bytes()));
+            artifacts.push(json!({"tool":"tool_failure","path":args["path"],"content":content.chars().take(4000).collect::<String>(),
+                "verified":false,"operationId":op["id"],"hash":hash}));
+            continue;
+        }
         let tool=op["tool"].as_str().unwrap_or("");
         let content=match tool {
             "workspace_read_range"|"http_fetch"=>result["content"].as_str().or_else(||result["text"].as_str()).unwrap_or("").to_string(),
@@ -1769,8 +1794,8 @@ fn research_artifacts(state:&AppState,session:&str)->Vec<Value>{
             _=>continue,
         };
         if content.trim().is_empty(){continue;}
-        let text=content.chars().take(2200).collect::<String>();
-        let body=json!({"tool":tool,"path":args["path"],"url":args["url"],"query":args["query"],"truncated":content.chars().count()>2200,
+        let text=content.chars().take(24_000).collect::<String>();
+        let body=json!({"tool":tool,"path":args["path"],"url":args["url"],"query":args["query"],"truncated":content.chars().count()>24_000,
             "startLine":result["startLine"],"endLine":result["endLine"],"sourceSha256":result["sourceSha256"],"content":text});
         // Queries, timing and operation IDs are provenance, not new findings.
         let hash=format!("{:x}",Sha256::digest(json!([tool,&body["path"],&body["url"],&body["sourceSha256"],&body["content"]]).to_string().as_bytes()));
@@ -1778,7 +1803,7 @@ fn research_artifacts(state:&AppState,session:&str)->Vec<Value>{
         let mut artifact=body;artifact["hash"]=json!(hash);artifact["operationId"]=op["id"].clone();artifacts.push(artifact);
     }
     // Keep a bounded set of actual findings, not just their call counters.
-    if artifacts.len()>40 {artifacts.truncate(40);}
+    if artifacts.len()>40 {artifacts.drain(..artifacts.len()-40);}
     artifacts
 }
 
@@ -1793,6 +1818,18 @@ pub(crate) fn remember_research(state:&AppState,input:&Value,generation:&Value,s
             artifacts.push(json!({"tool":"model_hypothesis","content":text,"verified":false,"sourceMessageId":note["id"],
                 "hash":format!("{:x}",Sha256::digest(content.as_bytes()))}));
         }
+    }
+    // Interrupted reasoning can contain the next exact implementation plan.
+    // Keep it as an unverified hypothesis, anchored to an observed source hash.
+    if let Some(message)=state.store.messages(session).iter().rev().find(|m|
+        m["role"]=="assistant" && m["reasoning"].as_str().is_some_and(|s|s.len()>100)).cloned() {
+        let path=input["rsiFocusFiles"].as_array().and_then(|files|files.first()).cloned().unwrap_or(Value::Null);
+        let source_hash=artifacts.iter().rev().find(|a|a["tool"]=="workspace_read_range" && a["path"]==path)
+            .map(|a|a["sourceSha256"].clone()).unwrap_or(Value::Null);
+        let content=message["reasoning"].as_str().unwrap_or("");
+        artifacts.insert(0,json!({"tool":"model_hypothesis","path":path,"sourceSha256":source_hash,
+            "content":content.chars().rev().take(12_000).collect::<String>().chars().rev().collect::<String>(),
+            "verified":false,"sourceMessageId":message["id"],"hash":format!("{:x}",Sha256::digest(content.as_bytes()))}));
     }
     let candidate=generation["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id));
     let proposals = state.store.get("session",session)
@@ -1820,7 +1857,7 @@ pub(crate) fn remember_research(state:&AppState,input:&Value,generation:&Value,s
         "researchArtifacts":artifacts,"executableMethods":methods,
         "generationJobId":generation["jobId"],"domain":generation["domain"],
         "implementation_ref":if accepted {json!({"kind":"source_revision","commit":generation["acceptedCommit"],"paths":candidate.as_ref().map(|c|&c["paths"])})}else{Value::Null},
-        "evidence":{"candidateId":generation["candidateId"],"evaluation":generation["evaluation"],"accepted":accepted},
+        "evidence":{"candidateId":generation["candidateId"],"evaluation":generation["evaluation"],"accepted":accepted,"failure":generation["error"],"captureError":generation["captureError"]},
         "knowledgeApplications":applications,"laterGain":"unmeasured",
         "createdAt":previous["createdAt"].as_str().map(str::to_string).unwrap_or_else(||chrono::Utc::now().to_rfc3339()),"lastSeenAt":chrono::Utc::now().to_rfc3339()});
     state.store.put("experience",&record)?;
@@ -2373,11 +2410,13 @@ pub(crate) fn reuse_research(state:&AppState,input:&Value,workspace:&Path,sessio
     let records=experience::retrieve(state,&scope,&query,3);
     let root=match workspace.canonicalize(){Ok(root)=>root,Err(_)=>return String::new()};
     let mut rows=Vec::new();let mut receipts=Vec::new();let mut chars=0;
+    let max_rows=if input["rsiSystemEvolution"]==true {8}else{3};
+    let max_chars=if input["rsiSystemEvolution"]==true {48_000}else{16_000};
     let mut refreshes=BTreeMap::<String,Vec<Value>>::new();
     for record in records {
         let record_id=record["id"].as_str().unwrap_or("").to_string();
         for artifact in record["researchArtifacts"].as_array().into_iter().flatten(){
-            if rows.len()>=3 {break;}
+            if rows.len()>=max_rows {break;}
             let mut receipt=json!({"experienceId":record["id"],"artifactHash":artifact["hash"],"sourceOperationId":artifact["operationId"],"sourceMessageId":artifact["sourceMessageId"],"path":artifact["path"],"status":"provided"});
             let mut item=artifact.clone();
             match artifact["tool"].as_str(){
@@ -2446,7 +2485,7 @@ pub(crate) fn reuse_research(state:&AppState,input:&Value,workspace:&Path,sessio
                     if item["truncated"]==true {
                         if let (Ok(text),Some(start),Some(end))=(std::str::from_utf8(&bytes),item["startLine"].as_u64(),item["endLine"].as_u64()) {
                             let (complete,begin,last)=numbered_source_range(text,start,end);
-                            if !complete.is_empty() && complete.chars().count()<=12_000 {
+                            if !complete.is_empty() && complete.chars().count()<=24_000 {
                                 item["content"]=json!(complete);item["startLine"]=json!(begin);item["endLine"]=json!(last);
                                 item["truncated"]=json!(false);receipt["rangeHydrated"]=json!(true);
                                 receipt["deliveredChars"]=json!(complete.chars().count());
@@ -2460,7 +2499,12 @@ pub(crate) fn reuse_research(state:&AppState,input:&Value,workspace:&Path,sessio
                     receipt["sourceValidity"]=json!("unverified_external_source");
                     receipt["hypothesisValidity"]=json!("prior_external_research_unverified");
                 }
-                Some("model_hypothesis")=>{
+                Some("model_hypothesis"|"tool_failure")=>{
+                    if let (Some(relative),Some(expected))=(artifact["path"].as_str(),artifact["sourceSha256"].as_str()) {
+                        let current=root.join(relative).canonicalize().ok().filter(|p|p.starts_with(&root))
+                            .and_then(|p|std::fs::read(p).ok()).map(|bytes|format!("{:x}",Sha256::digest(bytes)));
+                        receipt["sourceValidity"]=json!(if current.as_deref()==Some(expected){"hash_verified_current_source"}else{"source_changed_hypothesis_unverified"});
+                    }
                     receipt["mode"]=json!("prior_model_hypothesis_unverified");
                     receipt["hypothesisValidity"]=json!("prior_hypothesis_unverified");
                 }
@@ -2472,11 +2516,12 @@ pub(crate) fn reuse_research(state:&AppState,input:&Value,workspace:&Path,sessio
                     && row["endLine"].as_u64()>=item["endLine"].as_u64()) {
                 receipt["coveredByDeliveredRange"]=json!(true);receipts.push(receipt);continue;
             }
-            let size=item.to_string().chars().count();if chars+size>16_000 {continue;}
+            let size=item.to_string().chars().count();if chars+size>max_chars {continue;}
             if receipts.iter().any(|r:&Value|r["artifactHash"]==receipt["artifactHash"]){continue;}
             chars+=size;
             rows.push(json!({"tool":item["tool"],"path":item["path"],"url":item["url"],
                 "startLine":item["startLine"],"endLine":item["endLine"],"content":item["content"],
+                "sourceSha256":item["sourceSha256"],
                 "truncated":item["truncated"],"experienceId":record["id"],
                 "sourceValidity":receipt["sourceValidity"],"hypothesisValidity":receipt["hypothesisValidity"]}));
             receipts.push(receipt);
@@ -3198,7 +3243,7 @@ async fn run_loop(
         let worker_timeout = if remaining == u64::MAX {
             7 * 24 * 3600
         } else {
-            remaining.clamp(1, 900)
+            remaining.max(1)
         };
         let output = command(context, worker, Duration::from_secs(worker_timeout)).await;
         let current = context
@@ -4883,6 +4928,33 @@ mod tests {
             "the research record survives an unavailable source"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_tools_and_unfinished_plans_survive_and_reuse_the_source_hash() {
+        let (state,root)=state();std::fs::create_dir_all(root.join("src")).unwrap();
+        let source="fn reusable() {}\n";let hash=format!("{:x}",Sha256::digest(source.as_bytes()));
+        std::fs::write(root.join("src/reuse.rs"),source).unwrap();
+        state.store.put("session",&json!({"id":"before"}));
+        state.store.put("session",&json!({"id":"after"}));
+        state.store.write_message(&json!({"session_id":"before","role":"assistant","content":"",
+            "reasoning":"UNFINISHED_IMPLEMENTATION_PLAN ".repeat(10)})).unwrap();
+        state.store.put("execution_operation",&json!({"id":"read","sessionId":"before","opSeq":1,
+            "tool":"workspace_read_range","status":"completed","arguments":{"path":"src/reuse.rs"},
+            "result":{"content":source,"sourceSha256":hash,"startLine":1,"endLine":1}}));
+        state.store.put("execution_operation",&json!({"id":"failed","sessionId":"before","opSeq":2,
+            "tool":"workspace_replace_range","status":"failed","arguments":{"path":"src/reuse.rs"},
+            "result":{"error":"STALE_SOURCE_EDIT_REJECTED"}}));
+        let input=json!({"rsiSourceDir":root,"rsiObjective":"memory reuse","rsiFocusFiles":["src/reuse.rs"],"rsiSystemEvolution":true});
+        let id=remember_research(&state,&input,&json!({"jobId":"failed-job","domain":"memory","accepted":false,"error":"tool limit"}),"before").unwrap();
+        let saved=state.store.get("experience",&id).unwrap();
+        assert_eq!(saved["evidence"]["accepted"],false);
+        assert_eq!(saved["evidence"]["failure"],"tool limit");
+        let prompt=reuse_research(&state,&input,&root,"after");
+        assert!(prompt.contains("UNFINISHED_IMPLEMENTATION_PLAN"));
+        assert!(prompt.contains("STALE_SOURCE_EDIT_REJECTED"));
+        assert!(prompt.contains(&hash),"source cache must deliver its hash for a grounded edit");
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]

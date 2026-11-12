@@ -177,6 +177,14 @@ fn campaign_view(state: &AppState, job: &Value) -> Value {
     let candidates=state.store.all("rsi_candidate").iter().filter(|c|
         c["experimentCampaignId"].as_str()==Some(id) && c["rsiJobId"].as_str()
             .and_then(|id|state.store.get("job",id)).is_some_and(|j|j["input"]["rsiMetaEpisode"]!=true)).count();
+    let mut reused=0usize;
+    for session in &sessions {
+        reused+=state.store.get("session",session).and_then(|s|s["rsiKnowledgeReuse"].as_array().cloned())
+            .unwrap_or_default().iter().filter(|r|r["status"]=="provided").count();
+    }
+    record["reusedArtifacts"]=json!(reused);
+    record["preservedFailureAttempts"]=json!(record["history"].as_array().into_iter().flatten()
+        .filter(|row|row["accepted"]!=true && row["error"].as_str().is_some_and(|s|!s.is_empty())).count());
     record["modelCalls"]=json!(calls);record["verifiedSourceWrites"]=json!(writes);
     record["candidateCount"]=json!(candidates);
     record["tokens"]=json!(tokens.max(record["tokens"].as_u64().unwrap_or(0)));
@@ -303,6 +311,9 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     let Some(provider) = state.store.get("provider", provider_id) else {
         return error("선택한 모델 제공자를 찾을 수 없습니다.".into());
     };
+    if body["localOnly"]==true && provider["local"]!=true && provider["kind"]!="ollama" {
+        return error("로컬 전용 모드에서는 로컬로 등록된 제공자를 선택하세요.".into());
+    }
     if provider["enabled"] == false {
         return error("비활성화된 모델 제공자입니다.".into());
     }
@@ -357,7 +368,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     }
     let autonomous = request.is_empty();
     let objective = if autonomous && continuous && body["evolutionTarget"] != "product" && body["nativeInduction"] != true {
-        "DOMINION 전체 소스의 알고리즘·하네스·학습·기억·도구를 탐색하여 자기개선기 자체를 수정하고, 고정된 딥시크 모델과 동일 예산에서 이전 개선기보다 나은 후속 코딩 성과를 독립 평가한다.".to_string()
+        "DOMINION 전체 소스의 알고리즘·하네스·학습·기억·도구를 탐색하여 자기개선기 자체를 수정하고, 선택한 생성 모델과 동일 예산에서 이전 개선기보다 나은 후속 코딩 성과를 독립 평가한다.".to_string()
     } else if autonomous {
         "기존 코드 지식과 경험을 재사용해 실제 작업에 필요한 능력 하나를 개선한다. 필요한 부분만 확인하고 적용 조건과 검증 근거가 있는 변경을 제안한다. 오류 수정은 이 과정에서 필요할 때 수행하며, 개선 근거가 없으면 변경 없이 이유를 보고한다.".to_string()
     } else {
@@ -379,6 +390,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
             Ok(value) => value,
             Err(message) => return error(message),
         };
+    crate::engine::rsi_evolve::preserve_failed_research(&state,&source_dir);
     let previous_evidence = crate::engine::rsi_worktree::recent_feedback(&state);
     let mode = if focus_files.is_empty() {
         if autonomous {
@@ -408,6 +420,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
+        "rsiLocalOnly":body["localOnly"]==true,
         "rsiSystemEvolution": continuous && body["evolutionTarget"] != "product" && body["nativeInduction"] != true,
         "rsiApplyWhenFinished": continuous && body["applyWhenFinished"] == true,
         // Only explicitly opted-in automatic campaigns may broaden the
