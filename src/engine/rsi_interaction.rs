@@ -202,6 +202,22 @@ pub(crate) fn coupled_portfolio(
         serde_json::to_vec(&out).unwrap_or_default())));
     out
 }
+pub(crate) fn valid_graph(graph:&Value)->bool{
+    let mut copy=graph.clone();
+    let Some(map)=copy.as_object_mut() else{return false};
+    map.remove("sha256");
+    let digest=format!("{:x}",Sha256::digest(serde_json::to_vec(&copy).unwrap_or_default()));
+    graph["source"]=="compiled_cross_system_influence_graph_v1"
+        && graph["sha256"].as_str()==Some(digest.as_str())
+        && graph["rewardSource"]=="independent_frozen_holdout_only"
+        && graph["edges"].as_array().is_some_and(|rows|
+            rows.len()<=96 && rows.iter().all(|row|
+                row["causalityProven"]==false
+                && row["sourceRole"].as_str().is_some_and(|r|!r.is_empty()&&r.len()<=64)
+                && row["targetRole"].as_str().is_some_and(|r|!r.is_empty()&&r.len()<=64)
+                && row["directionalScore"].as_f64().is_some_and(|v|
+                    v.is_finite()&&(-1.0..=1.0).contains(&v))))
+}
 pub(crate) fn valid_portfolio(portfolio:&Value,graph:&Value,frontier:&[Value])->bool{
     let mut copy=portfolio.clone();
     let Some(obj)=copy.as_object_mut() else{return false};
@@ -235,6 +251,7 @@ mod tests {
                     "metrics":[{"key":"quality","improved":true,"regressed":false}]}
             ]}}});
         let graph=influence_graph(&[paired.clone()],&[]);
+        assert!(valid_graph(&graph));
         assert_eq!(graph["edges"].as_array().unwrap().len(),2);
         assert!(graph["edges"].as_array().unwrap().iter().any(|row|
             row["sourceRole"]=="harness" && row["targetRole"]=="memory"
