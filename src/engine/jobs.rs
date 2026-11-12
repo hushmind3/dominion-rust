@@ -522,7 +522,15 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     let recovered=if let Some(worktree)=&rsi_workspace {
         match crate::engine::rsi_worktree::restore_failed_patch(
             context,&input,worktree).await {
-            Ok(restored)=>restored,
+            Ok(restored) if restored["status"]=="restored_unverified"=>restored,
+            Ok(_)=>match crate::engine::rsi_worktree::restore_archived_parent(
+                context,&input,worktree).await {
+                Ok(archived)=>archived,
+                Err(error)=>{
+                    let _=crate::engine::rsi_worktree::cleanup(worktree).await;
+                    return Err(error);
+                }
+            },
             Err(error)=>{
                 let _=crate::engine::rsi_worktree::cleanup(worktree).await;
                 return Err(error);
@@ -581,10 +589,17 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 "{}: {}",check["label"].as_str().unwrap_or("compiler"),
                 check["diagnostic"].as_str().unwrap_or("").chars().take(900).collect::<String>()
             )).take(2).collect::<Vec<_>>().join("\n");
-        prompt.push_str(&format!(
-            "\n\n### 차세대 실제 소스 복구\n이전 세대가 실제 작성한 미채택 패치를 이 세대의 별도 작업공간에 복원했습니다. 기존 발췌의 SHA는 오래된 값입니다. 현재 파일을 새로 읽고 컴파일 오류를 고치는 코드 수정을 실행하세요. 복원 자체는 개선 성공이 아닙니다.\n복구 대상: {}\n실제 이전 검증 실패:\n{}\n",
-            recovered["paths"],check_notes
-        ));
+        if recovered["kind"]=="neutral_pareto_stepping_stone" {
+            prompt.push_str(&format!(
+                "\n\n### 영구 아카이브의 실제 중립 패치 계승\n독립적으로 재생 검증된 중립 후보를 분리된 후손 작업공간에만 복원했습니다. 원본 Git 브랜치와 기준 커밋은 그대로입니다. 이 부모 패치의 기존 평가 결과는 개선 성공이 아닙니다. 반드시 실제 새로운 코드 변경을 실행해 원본 기준 커밋과 독립 A/B 검증을 다시 받으세요. 현재 발췌가 아닌 복원된 파일 해시를 기준으로 편집하세요.\n계승한 소스 경로: {}\n",
+                recovered["paths"]
+            ));
+        }else{
+            prompt.push_str(&format!(
+                "\n\n### 차세대 실제 소스 복구\n이전 세대가 실제 작성한 미채택 패치를 이 세대의 별도 작업공간에 복원했습니다. 기존 발췌의 SHA는 오래된 값입니다. 현재 파일을 새로 읽고 컴파일 오류를 고치는 코드 수정을 실행하세요. 복원 자체는 개선 성공이 아닙니다.\n복구 대상: {}\n실제 이전 검증 실패:\n{}\n",
+                recovered["paths"],check_notes
+            ));
+        }
         prompt.push_str(&current_excerpts);
     }
     // The coordinator, verifier and learned DAG synthesizer must all use
