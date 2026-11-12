@@ -182,5 +182,9 @@ jobs:
           retention-days: 14
           path: |
             ${{ runner.temp }}/dominion-live/live-rsi-receipt.json
+            ${{ runner.temp }}/dominion-live/data/rsi-paired/**/candidate.patch
+            ${{ runner.temp }}/dominion-live/data/rsi-paired/**/plan.json
+            ${{ runner.temp }}/dominion-live/data/rsi-paired/**/report.json
+            ${{ runner.temp }}/dominion-live/data/rsi-paired/**/report.json.evidence.txt
             ${{ runner.temp }}/dominion-live/engine.log
             ${{ runner.temp }}/ollama-live.log
