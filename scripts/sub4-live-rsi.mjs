@@ -163,6 +163,26 @@ if(mode==='probe'){
       if(typeof effective==='number' && effective<8192)
         throw Error('Actual Ollama context <8192 tokens; tool-based source editing not viable');
     }
+    if(systemGoal && !localModel && !nativeProof) {
+      // Test actual native tool support, not the provider name. Keys remain
+      // inside the job's local proxy and are never put into the RSI ledger.
+      const probe=await fetch(upstream,{method:'POST',
+        headers:{'content-type':'application/json',
+          authorization:'Bearer '+remoteApiKey},
+        body:JSON.stringify({model:selectedModel,stream:false,max_tokens:128,
+          messages:[{role:'user',content:'Use code_search to find the Rust symbol memory_retrieve.'}],
+          tools:[{type:'function',function:{name:'code_search',
+            description:'Locate Rust source',
+            parameters:{type:'object',properties:{query:{type:'string'}},required:['query']}}}]}),
+        signal:AbortSignal.timeout(90000)});
+      if(!probe.ok)throw Error('Hosted inference preflight status '+probe.status);
+      const result=await probe.json();
+      const calls=result?.choices?.[0]?.message?.tool_calls||[];
+      toolMode=calls.some(call=>call?.function?.name==='code_search')?'native':'compat';
+      receipt.modelPreflight={toolMode,actualNativeToolCalls:calls.length,
+        hostedInference:true,selectedModel};
+      persist();
+    }
     const provider=await post(host+'/api/providers',{
       id:'sub4-live-model',name:localModel?'Sub4 real local model':'Sub4 real public model',
       kind:localModel?'ollama':'openai',
