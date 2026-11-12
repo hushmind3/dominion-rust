@@ -2984,6 +2984,50 @@ async fn run_loop(
             }
         }
         child_input["rsiIndexId"]=crate::engine::code_index::refresh(&context.state,&lab)?["id"].clone();
+
+        // The compiled successor, not the previous coordinator, now chooses
+        // the architecture target and the ranked source files.
+        let mut descendant_plan=Value::Null;
+        if input["rsiSystemEvolution"]==true {
+            child_input["rsiNativeInduction"]=json!(false);
+            record["planAttempt"]=json!(attempt);
+            record["planIndexId"]=child_input["rsiIndexId"].clone();
+            record["planSelectedDomain"]=child_input["rsiSelectedDomain"].clone();
+            record["phase"]=json!("planning_with_compiled_descendant");
+            save(context,record)?;
+            let mut planner=Command::new(&binary);
+            planner.arg("--rsi-worker-plan").arg(&context.job_id)
+                .current_dir(&lab)
+                .env("DOMINION_DATA",std::fs::canonicalize(&context.state.config.data_dir)
+                    .map_err(|e|e.to_string())?)
+                .env("DOMINION_WORKSPACE",&lab)
+                .env_remove("DOMINION_DESKTOP_PARENT");
+            let output=command(context,planner,Duration::from_secs(30)).await?;
+            if !output.status.success() || output.stdout.len()>65536 {
+                return Err(format!("차세대 실행기의 시스템 계획 실패: {}",
+                    String::from_utf8_lossy(&output.stderr).chars().take(500).collect::<String>()));
+            }
+            let plan:Value=serde_json::from_slice(&output.stdout)
+                .map_err(|e|format!("후손 계획 파싱 실패: {e}"))?;
+            if plan["source"]!="compiled_descendant_system_plan_v1"
+                || plan["generatorCommit"]!=head
+                || plan["campaignId"]!=context.job_id
+                || plan["attempt"]!=attempt
+                || plan["historyCount"].as_u64()!=Some(record["history"].as_array()
+                    .map(Vec::len).unwrap_or(0) as u64)
+                || plan["indexId"]!=child_input["rsiIndexId"]
+                || !plan["domain"].as_str().is_some_and(|domain|DOMAINS.contains(&domain))
+                || plan["systemBlueprint"]["source"]!="compiled_descendant_system_blueprint_v1"
+                || plan["systemBlueprint"]["generatorCommit"]!=head
+                || plan["systemBlueprint"]["architecture"].as_array().is_none_or(|v|v.len()!=7) {
+                return Err("후손 계획의 소스·세대·색인·전체 시스템 계보 불일치".into());
+            }
+            child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
+            child_input["rsiDescendantPlan"]=plan.clone();
+            record["nextGenerationPlan"]=plan.clone();
+            descendant_plan=plan;
+        }
+
         let inherited_candidates=context.state.store.all("experience").into_iter()
             .filter(|item|item["status"]=="active" && item["partitionKey"]==research_scope(&child_input).partition_key
                 && item["outcome"]=="success" && item["evidence"]["accepted"]==true)
@@ -3017,14 +3061,31 @@ async fn run_loop(
             .filter(|_|child_input["rsiAllowedTrialCampaigns"].is_array())
             .map(str::to_string);
         let suggested=child_input["rsiSelectedDomain"].as_str().map(str::to_string);
-        let (target_domain, target_selection, target_strategy)=select_generation_strategy(
-            &context.state,&history,&target_objective,continuation,trial,suggested,&head);
+        let (target_domain, target_selection, target_strategy)=if descendant_plan.is_object(){
+            (descendant_plan["domain"].as_str().ok_or("후손 분야 없음")?.to_string(),
+                "compiled_descendant_system_plan",descendant_plan["strategy"].clone())
+        }else{
+            select_generation_strategy(
+                &context.state,&history,&target_objective,continuation,trial,suggested,&head)
+        };
         child_input["rsiTargetDomain"]=json!(target_domain);
         child_input["rsiTargetPlan"]=json!({
             "domain":target_domain,"selection":target_selection,
             "strategy":target_strategy,"generatorCommit":head
         });
-        if child_input["rsiFocusFiles"]
+        if descendant_plan.is_object()
+            && child_input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
+            let ranked=descendant_plan["rankedFiles"].as_array().cloned().unwrap_or_default();
+            child_input["rsiFocusFiles"]=json!(ranked.iter()
+                .filter_map(|row|row["path"].as_str()).collect::<Vec<_>>());
+            child_input["rsiAutoFocus"]=json!(true);
+            child_input["rsiFocusSelection"]=json!({
+                "source":"compiled_descendant_system_plan",
+                "candidates":ranked,"domain":target_domain,
+                "sourceIndexId":child_input["rsiIndexId"],
+                "generatorCommit":head
+            });
+        }else if child_input["rsiFocusFiles"]
             .as_array().is_none_or(|files|files.is_empty()) {
             let policy=target_strategy["id"].as_str()
                 .and_then(|id|context.state.store.get("algorithm",id))
@@ -3249,6 +3310,12 @@ async fn run_loop(
         generation.as_object_mut().expect("generation object")
             .extend(generation_details.as_object().expect("generation details object").clone());
         generation["requestedModel"]=input["model"].clone();
+        generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
+        generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
+        generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
+        generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
+            .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
+        generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
         if generation["candidateOrigin"]=="native_inductive_source_mutation" {
             generation["generatorModel"]=json!(format!("dominion-native:{}",
                 generation["nativeMutation"]["operator"].as_str().unwrap_or("unknown")));
@@ -3923,6 +3990,60 @@ mod paired_descendant_target_tests {
 
 /// Executes only one durable generation, without starting a server, scheduler,
 /// migrations or recovering another process's jobs in the shared ledger.
+/// Run the next plan with the newly compiled generation's own policy.
+pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
+    let config=crate::config::Config::from_env();
+    let store=crate::db::Store::open(&config.db_path()).map_err(|e|e.to_string())?;
+    let vault=crate::vault::Vault::open(&config.key_path());
+    let state=AppState::new(config,store,vault);
+    let campaign=state.store.get("rsi_campaign",campaign_id).ok_or("후손 계획 기록 없음")?;
+    let parent=state.store.get("job",campaign_id).ok_or("후손 계획 작업 없음")?;
+    let revision=option_env!("DOMINION_BUILD_COMMIT").ok_or("후손 빌드 revision 없음")?;
+    if parent["kind"]!="rsi_evolve" || parent["status"]!="running"
+        || parent["cancelRequested"]==true
+        || parent["input"]["rsiSystemEvolution"]!=true
+        || campaign["headCommit"]!=revision
+        || campaign["planAttempt"].as_u64().is_none() {
+        return Err("후손 계획의 권한·빌드 revision·캠페인 상태 불일치".into());
+    }
+    let mut history=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["campaignId"]==campaign_id).collect::<Vec<_>>();
+    history.sort_by_key(|row|row["attempt"].as_u64().unwrap_or(0));
+    if campaign["history"].as_array().is_none_or(|rows|rows.len()!=history.len())
+        || campaign["planAttempt"].as_u64()!=Some(history.len() as u64+1) {
+        return Err("후손 계획과 저장된 세대 계보 불일치".into());
+    }
+    let objective=selection_objective(&parent["input"]);
+    let inherited=if parent["input"]["selectionPolicy"]=="automatic"{
+        crate::engine::rsi_system::inherited_domain(&history)
+    }else{None};
+    let selected=inherited.or_else(||campaign["planSelectedDomain"].as_str()
+        .filter(|domain|DOMAINS.contains(domain)).map(str::to_string));
+    let (domain,selection,strategy)=select_generation_strategy(
+        &state,&history,&objective,None,None,selected,revision);
+    let lab=campaign["labDir"].as_str().ok_or("후손 소스 경로 없음")?;
+    let blueprint=crate::engine::rsi_system::blueprint(Path::new(lab),revision,&history);
+    let mut focus=parent["input"].clone();
+    focus["rsiTargetDomain"]=json!(domain);
+    focus["rsiIndexId"]=campaign["planIndexId"].clone();
+    let policy=strategy["id"].as_str()
+        .and_then(|id|state.store.get("algorithm",id))
+        .or_else(||crate::engine::algorithms::active(&state,"selfimprove.search"));
+    let ranked=if focus["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
+        choose_focus_files(&state,&focus,&history,policy.as_ref())
+    }else{Vec::new()};
+    let plan=json!({
+        "source":"compiled_descendant_system_plan_v1",
+        "generatorCommit":revision,"campaignId":campaign_id,
+        "attempt":campaign["planAttempt"],"historyCount":history.len(),
+        "indexId":campaign["planIndexId"],
+        "domain":domain,"selection":selection,"strategy":strategy,
+        "rankedFiles":ranked,"systemBlueprint":blueprint
+    });
+    println!("{plan}");
+    Ok(())
+}
+
 pub async fn worker(job_id: &str) -> Result<(), String> {
     let config = crate::config::Config::from_env();
     let store = crate::db::Store::open(&config.db_path()).map_err(|e| e.to_string())?;
@@ -4032,8 +4153,20 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
+    let system_prompt=if job["input"]["rsiSystemEvolution"]==true {
+        let path=job["input"]["rsiSourceDir"].as_str()
+            .ok_or("후손 소스 경로가 없습니다.")?;
+        let model=crate::engine::rsi_system::blueprint(Path::new(path),&commit,&history);
+        if model!=job["input"]["rsiSystemBlueprint"] {
+            return Err("후손 바이너리와 시스템 자기모형의 revision·계보가 다릅니다.".into());
+        }
+        job["rsiSystemBlueprintVerified"]=json!(true);
+        let directive=crate::engine::rsi_system::instruction(
+            &model,job["input"]["rsiObjective"].as_str().unwrap_or(""));
+        format!("{directive}\n\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+    }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
-        job["input"]["prompt"].as_str().unwrap_or(""), &domain, &capability,
+        &system_prompt, &domain, &capability,
         &history, job["input"]["rsiRemainingCampaignTokens"].as_u64()
     );
     let (prompt, plan) = match prepared {
