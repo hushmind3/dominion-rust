@@ -3930,7 +3930,7 @@ async fn run_loop(
             "totalPromptChars":current["input"]["rsiPromptContextChars"],
             "parentContextFit":current["input"]["rsiParentContextFit"],
             "workerContextFit":current["rsiWorkerContextFit"],
-            "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
+            "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":current["input"]["model"],"generatorProviderId":current["input"]["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
             "nativePlan":current["input"]["rsiNativePlan"],
