@@ -5545,6 +5545,54 @@ mod tests {
         assert_eq!(edited["editToolCalls"],3);
         assert_eq!(edited["candidateCreated"],false);
     }
+    #[test]
+    fn compiled_descendant_plans_from_its_actual_whole_source_graph() {
+        let (state,root)=state();
+        let source=root.join("architecture");
+        std::fs::create_dir_all(source.join("src/engine")).unwrap();
+        std::fs::write(source.join("src/engine/rsi_evolve.rs"),
+            "fn next_improvement() { /* inherited revision */ }\n").unwrap();
+        std::fs::write(source.join("src/engine/room_state.rs"),
+            "fn recall() { /* baseline implementation */ }\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&source).unwrap();
+        let commit="a".repeat(40);
+        let input=json!({
+            "rsiSystemEvolution":true,
+            "rsiSourceDir":source,
+            "rsiGeneratorCommit":commit,
+            "rsiIndexId":index["id"],
+            "rsiObjective":"기억 및 자기개선 소스의 실행 방식을 바꿔라",
+            "rsiSelectedDomain":"memory",
+            "rsiAutonomous":true,
+            "rsiAutoFocus":true,
+            "rsiFocusFiles":[]
+        });
+        let first=compiled_system_generation_plan(
+            &state,&input,&[],&commit).unwrap();
+        assert_eq!(first["source"],"compiled_descendant_system_controller_v3");
+        assert_eq!(first["generatorCommit"],commit);
+        assert_eq!(first["historyCount"],0);
+        assert_eq!(first["systemBlueprint"]["architecture"].as_array().unwrap().len(),7);
+        assert_eq!(first["systemBlueprint"]["sourceTreeSha256"],
+            first["sourceTreeSha256"]);
+        assert_eq!(first["decisionOwner"],"rebuilt_descendant_binary");
+        assert_eq!(first["improvementDirective"]["mode"],"discover");
+        // The new binary must re-inspect the actual modified code graph.
+        std::fs::write(source.join("src/engine/room_state.rs"),
+            "fn recall() { /* NEW inherited implementation */ }\n").unwrap();
+        let revised=compiled_system_generation_plan(
+            &state,&input,&[],&commit).unwrap();
+        assert_ne!(first["sourceTreeSha256"],revised["sourceTreeSha256"]);
+        // Identity is a real code revision guard, not a prompt label.
+        assert!(compiled_system_generation_plan(
+            &state,&input,&[],"b").is_err());
+        let mut disabled=input.clone();
+        disabled["rsiSystemEvolution"]=json!(false);
+        assert!(compiled_system_generation_plan(
+            &state,&disabled,&[],&commit).is_err());
+        let _=std::fs::remove_dir_all(root);
+    }
+
     fn state() -> (AppState, PathBuf) {
         let root =
             std::env::temp_dir().join(format!("dominion-evolution-test-{}", uuid::Uuid::new_v4()));
