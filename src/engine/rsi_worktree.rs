@@ -1242,6 +1242,10 @@ mod tests {
         assert!(prepare(&context,&job["input"]).await.is_err(),
             "same-commit sibling work branches must not inherit a queued source job");
         git_local(&source,&["checkout","dominion-champion"]);
+        let mut missing_origin=job["input"].clone();
+        missing_origin.as_object_mut().unwrap().remove("rsiSourceBranch");
+        assert!(prepare(&context,&missing_origin).await.is_err(),
+            "a new champion worktree may not be started without a recorded source branch");
         let worktree=prepare(&context,&job["input"]).await.unwrap();
         assert_ne!(worktree.path,source);
         assert_eq!(git_local(&source,&["rev-parse","HEAD"]),base);
