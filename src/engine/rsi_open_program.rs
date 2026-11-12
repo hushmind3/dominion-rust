@@ -411,6 +411,60 @@ mod tests {
         assert!(!guard(&expression,&no_eval));
     }
     #[test]
+    fn failed_real_descendant_selects_model_authored_recovery_branch() {
+        let graph=normalize(&json!({
+            "entry":"train","nodes":[
+                {"id":"train","role":"learning","domain":"learning",
+                 "path":"src/engine/learning.rs",
+                 "objective":"Rewrite the learning source to improve repeated task failures.",
+                 "mechanism":"Use aggregate feedback to learn a new task improvement method."},
+                {"id":"repair","role":"memory","domain":"memory",
+                 "path":"src/engine/memory.rs",
+                 "objective":"Recover the failing memory subsystem from observed failures.",
+                 "mechanism":"Transfer learning errors into the memory revision algorithm."}
+            ],"edges":[{"from":"train","to":"repair","when":"not_adopted"}]
+        })).unwrap();
+        let parent_commit="1".repeat(40);
+        let parent=json!({
+            "id":"g1","jobId":"j1","accepted":true,
+            "generatorCommit":"0".repeat(40),
+            "acceptedCommit":parent_commit,
+            "pairedRevalidated":true,
+            "candidateOrigin":"model_driven_detached_worktree",
+            "evaluation":{"metrics":{"eligible":true,"improvedHoldouts":1}},
+            "systemDesign":{
+                "id":"d1","source":"model_authored_system_design",
+                "generatorCommit":"0".repeat(40),
+                "generationJobId":"j1","component":"learning",
+                "targetFiles":["src/engine/learning.rs"],
+                "openProgram":graph
+            },
+            "acceptedSourceHashes":{"src/engine/learning.rs":"a".repeat(64)}
+        });
+        let frontier=vec![
+            json!({"role":"learning","domain":"learning",
+                "path":"src/engine/learning.rs","sourceSha256":"a".repeat(64)}),
+            json!({"role":"memory","domain":"memory",
+                "path":"src/engine/memory.rs","sourceSha256":"b".repeat(64)})
+        ];
+        let first=synthesize(&[parent.clone()],&frontier,
+            parent_commit.as_str());
+        assert_eq!(first["nodeId"],"train");
+        assert!(validate(&first,&[parent.clone()],&frontier,
+            parent_commit.as_str()));
+        let rejected=json!({"id":"g2","jobId":"j2",
+            "generatorCommit":parent_commit,
+            "openProgramPlan":first,"openProgramExecuted":true,
+            "candidateId":"rejected-candidate","accepted":false});
+        let history=vec![parent,rejected];
+        let next=synthesize(&history,&frontier,
+            history[1]["generatorCommit"].as_str().unwrap());
+        assert_eq!(next["nodeId"],"repair");
+        assert_eq!(next["target"]["role"],"memory");
+        assert!(validate(&next,&history,&frontier,
+            history[1]["generatorCommit"].as_str().unwrap()));
+    }
+    #[test]
     fn graph_revisions_bind_to_content() {
         let raw=json!({"entry":"a","nodes":[{"id":"a","role":"learning",
             "domain":"learning","path":"src/engine/learning.rs",
