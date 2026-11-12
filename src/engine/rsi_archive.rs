@@ -154,18 +154,36 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
         .iter()
         .filter(|entry| !entries.iter().any(|other| dominates(&other.2, &entry.2)))
         .collect::<Vec<_>>();
-    // DGM's offspring penalty explores alternative stepping stones instead
-    // of endlessly repairing the last neutral patch. Child attempts are
-    // counted across every campaign so a restarted archive keeps its credit.
-    let children = |id: &str| {
-        let mut jobs=BTreeSet::new();
-        for generation in history.iter().chain(state.store.all("rsi_generation").iter()) {
-            if generation["inheritedCandidateId"].as_str()==Some(id) {
-                if let Some(job)=generation["jobId"].as_str() {jobs.insert(job.to_string());}
+    // Count durable descendant attempts across campaigns. A worker may
+    // crash after its job was recorded but before its generation receipt
+    // exists. Such attempts must not vanish on restart and cause repeated
+    // selection of a failed stepping stone. The two records share one jobId.
+    let mut child_jobs=BTreeMap::<String,BTreeSet<String>>::new();
+    for generation in history.iter().chain(state.store.all("rsi_generation").iter()) {
+        if let (Some(parent),Some(job))=(
+            generation["inheritedCandidateId"].as_str(),
+            generation["jobId"].as_str()) {
+            if !job.is_empty() {
+                child_jobs.entry(parent.to_string()).or_default().insert(job.to_string());
             }
         }
-        jobs.len()
-    };
+    }
+    for job in state.store.all("job") {
+        if job["kind"]!="rsi_generation" || job["input"]["rsiBaseCommit"]!=base
+            || job["input"]["rsiArchiveSelection"]["baseCommit"]!=base
+            || job["input"]["rsiArchiveSelection"]["oracleSha256"]!=oracle {
+            continue;
+        }
+        if let (Some(id),Some(job_id))=(
+            job["input"]["rsiInheritedCandidateId"].as_str(),
+            job["id"].as_str()){
+            if !job_id.is_empty()
+                && job["input"]["rsiArchiveSelection"]["candidateId"]==id{
+                child_jobs.entry(id.to_string()).or_default().insert(job_id.to_string());
+            }
+        }
+    }
+    let children=|id:&str|child_jobs.get(id).map_or(0,BTreeSet::len);
     let selected = frontier.iter().min_by(|left, right| {
         children(&left.0)
             .cmp(&children(&right.0))
@@ -272,6 +290,51 @@ mod tests {
         assert_eq!(next["adopted"], false);
         assert_eq!(next["qualityProven"], false);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persisted_archive_survives_store_reopen_and_counts_unfinished_child_job() {
+        let (state, root) = state();
+        let base="a".repeat(40);
+        let generation=insert(&state,"restart-child",[0.53,0.51]);
+        let selected=select(&state,&[generation],&base,&plan());
+        let id=selected["candidateId"].as_str().unwrap().to_string();
+        assert_eq!(selected["descendantAttempts"],0);
+        // This durable child was created before an interrupted worker
+        // could produce a finished rsi_generation entry.
+        state.store.put("job",&json!({
+            "id":"interrupted-descendant-1",
+            "kind":"rsi_generation","status":"running",
+            "input":{
+                "rsiBaseCommit":base,
+                "rsiInheritedCandidateId":id,
+                "rsiArchiveSelection":selected
+            }
+        })).unwrap();
+        // A superficially matching job with the wrong oracle is never
+        // charged to this frozen comparison identity.
+        state.store.put("job",&json!({
+            "id":"unrelated-child",
+            "kind":"rsi_generation","status":"completed",
+            "input":{
+                "rsiBaseCommit":base,
+                "rsiInheritedCandidateId":id,
+                "rsiArchiveSelection":{"baseCommit":base,
+                    "candidateId":id,"oracleSha256":"wrong-oracle"}
+            }
+        })).unwrap();
+        drop(state);
+        let config=Config{port:0,data_dir:root.clone(),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let resumed=AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let restored=select(&resumed,&[],&base,&plan());
+        assert_eq!(restored["candidateId"],id);
+        assert_eq!(restored["descendantAttempts"],1);
+        assert_eq!(restored["persisted"],true);
+        drop(resumed);
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
