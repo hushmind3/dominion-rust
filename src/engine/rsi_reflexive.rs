@@ -522,19 +522,19 @@ mod tests {
     #[test]
     fn source_adopted_meta_to_capability_to_meta_is_a_compiled_feedback_loop(){
         let f=frontier();
-        let p0=propose(&[],&f,&"0".repeat(40),&["improver","memory"],&Value::Null);
+        let p0=propose(&[],&f,&"0".repeat(40),&["improver","memory"],&Value::Null,&Value::Null);
         assert_eq!(p0["phase"],"seed");
         assert!(valid(&p0,&[],&f,&"0".repeat(40)));
         let first=accepted("first",&"1".repeat(40),&"0".repeat(40),
             "improvement_methods","src/engine/rsi_meta_controller.rs",p0);
         let p1=propose(&[first.clone()],&f,&"1".repeat(40),
-            &["improver","memory"],&Value::Null);
+            &["improver","memory"],&Value::Null,&Value::Null);
         assert_eq!(p1["phase"],"transfer");
         assert!(valid(&p1,&[first.clone()],&f,&"1".repeat(40)));
         let middle=accepted("middle",&"2".repeat(40),&"1".repeat(40),
             "memory","src/engine/memory.rs",p1);
         let p2=propose(&[first.clone(),middle.clone()],&f,&"2".repeat(40),
-            &["improver","memory"],&Value::Null);
+            &["improver","memory"],&Value::Null,&Value::Null);
         assert_eq!(p2["phase"],"return");
         assert!(valid(&p2,&[first.clone(),middle.clone()],&f,&"2".repeat(40)));
         let last=accepted("last",&"3".repeat(40),&"2".repeat(40),
@@ -544,43 +544,43 @@ mod tests {
     #[test]
     fn missing_real_meta_change_cannot_advance_source_cycle(){
         let f=frontier();
-        let p0=propose(&[],&f,&"0".repeat(40),&["improver","memory"],&Value::Null);
+        let p0=propose(&[],&f,&"0".repeat(40),&["improver","memory"],&Value::Null,&Value::Null);
         let mut fake=accepted("fake",&"1".repeat(40),&"0".repeat(40),
             "improvement_methods","src/engine/rsi_meta_controller.rs",p0);
         fake["changedSourcePaths"]=json!(["src/engine/tools.rs"]);
         let p=propose(&[fake],&f,&"1".repeat(40),
-            &["improver","memory"],&Value::Null);
+            &["improver","memory"],&Value::Null,&Value::Null);
         assert_eq!(p["phase"],"seed");
         assert_eq!(p["inheritedFromVerifiedParent"],false);
     }
     #[test]
     fn fabricated_executed_meta_sha_is_not_a_real_transfer(){
         let f=frontier();
-        let p0=propose(&[],&f,&"0".repeat(40),&["improver","memory"],&Value::Null);
+        let p0=propose(&[],&f,&"0".repeat(40),&["improver","memory"],&Value::Null,&Value::Null);
         let mut first=accepted("first",&"1".repeat(40),&"0".repeat(40),
             "improvement_methods","src/engine/rsi_meta_controller.rs",p0);
         first["compiledPlanExecuted"]["reflexiveSha256"]=json!("e".repeat(64));
         let next=propose(&[first],&f,&"1".repeat(40),
-            &["improver","memory"],&Value::Null);
+            &["improver","memory"],&Value::Null,&Value::Null);
         assert_eq!(next["phase"],"seed");
     }
     #[test]
     fn repeated_failed_reflexive_edits_release_the_source_target(){
         let f=frontier();
         let initial=propose(&[],&f,&"0".repeat(40),
-            &["improver","memory"],&Value::Null);
+            &["improver","memory"],&Value::Null,&Value::Null);
         let failed=|id:&str|json!({
             "id":id,"jobId":id,"generatorCommit":"0".repeat(40),
             "candidateId":id,"accepted":false,"reflexiveProgram":initial.clone()
         });
         let plan=propose(&[failed("failure-one"),failed("failure-two")],&f,
-            &"0".repeat(40),&["improver","memory"],&Value::Null);
+            &"0".repeat(40),&["improver","memory"],&Value::Null,&Value::Null);
         assert!(plan.is_null());
     }
     #[test]
     fn source_rebound_or_false_parent_commit_is_rejected(){
         let f=frontier();
-        let p=propose(&[],&f,&"0".repeat(40),&["improver","memory"],&Value::Null);
+        let p=propose(&[],&f,&"0".repeat(40),&["improver","memory"],&Value::Null,&Value::Null);
         let mut stale=p.clone();
         stale["target"]["sourceSha256"]=json!("wrong");
         let mut unsigned=stale.clone();
