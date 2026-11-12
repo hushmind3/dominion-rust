@@ -145,6 +145,17 @@ pub(crate) fn propose(history:&[Value],frontier:&[Value],commit:&str,
         }
     }else {seed(frontier,allowed).cloned()};
     let Some(target)=selected else{return Value::Null};
+    // Repeated unsuccessful trials at the same source commit must release
+    // the objective to other compiled search policies, not create a
+    // self-reinforcing fixed-meta-edit trap.
+    let stalled=history.iter().rev().filter(|g|
+        g["generatorCommit"]==commit
+        && g["reflexiveProgram"]["phase"]==phase
+        && g["accepted"]!=true
+        && (g["candidateId"].is_string()
+            || g["error"].as_str().is_some_and(|e|!e.is_empty())))
+        .take(2).count()>=2;
+    if stalled {return Value::Null;}
     if !rsi::safe_path(target["path"].as_str().unwrap_or(""))
         || target["sourceSha256"].as_str().is_none_or(|s|s.len()!=64) {
         return Value::Null;
