@@ -295,7 +295,7 @@ pub async fn evaluate(context:&JobContext, candidate:&Value, source:&Path, outpu
             if key=="quality"{r["quality"].as_f64().unwrap_or(0.0)}else{r["usage"]["calls"].as_f64().unwrap_or(0.0)}).sum::<f64>()/META_TASK_COUNT as f64;
         let measured=json!({"id":"meta-downstream-editing","baselinePass":true,"candidatePass":true,
             "metrics":{"quality":{"baseline":mean("baseline","quality"),"candidate":mean("candidate","quality"),"samples":META_TASK_COUNT},
-                "modelCalls":{"baseline":mean("baseline","calls"),"candidate":mean("candidate","calls"),"samples":2}}});
+                "modelCalls":{"baseline":mean("baseline","calls"),"candidate":mean("candidate","calls"),"samples":META_TASK_COUNT}}});
         let receipt=json!({"version":1,"campaignId":context.job_id,"candidateId":candidate["id"],
             "baselineGeneratorCommit":base,"candidateGeneratorCommit":commit,"subjectCommit":base,
             "providerId":outer["input"]["providerId"],"model":outer["input"]["model"],
