@@ -33,11 +33,11 @@ fn last_verified_system_design(history: &[Value]) -> Option<&Value> {
             && design["generatorCommit"] == generation["generatorCommit"]
             && design["generationJobId"] == generation["jobId"]
             && design["targetFiles"].as_array().is_some_and(|paths| {
-                paths.iter().filter_map(Value::as_str).any(|path| {
+                paths.iter().all(|entry| entry.as_str().is_some_and(|path| {
                     generation["acceptedSourceHashes"][path].as_str()
                         .is_some_and(|hash| hash.len() == 64
                             && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
-                })
+                }))
             })
     })
 }
@@ -395,6 +395,14 @@ mod tests {
         assert_eq!(model["inheritedDesign"]["nextDomain"],"learning");
         assert_eq!(model["inheritedDesignEvidence"]["acceptedCommit"],"successful-child");
         assert!(instruction(&model,"redesign the whole agent").contains("source-grounded retrieval"));
+        let mut partial=accepted.clone();
+        partial["systemDesign"]["component"]=json!("system");
+        partial["systemDesign"]["components"]=json!(["memory","learning"]);
+        partial["systemDesign"]["targetFiles"]=json!(["src/engine/memory.rs","src/engine/learning.rs"]);
+        assert!(inherited_domain(&[partial.clone()]).is_none(),
+            "A model cannot claim coupled system change after editing one file");
+        partial["acceptedSourceHashes"]["src/engine/learning.rs"]=json!("a".repeat(64));
+        assert_eq!(inherited_domain(&[partial]),Some("learning".into()));
         let mut forged=accepted;
         forged["acceptedSourceHashes"]["src/engine/memory.rs"]=json!("not-a-real-hash");
         assert!(inherited_domain(&[forged]).is_none());
