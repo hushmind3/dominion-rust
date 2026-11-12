@@ -4220,6 +4220,10 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let isolation_debt=inherited_meta["selectionEvidence"]["causalCredit"]
         ["requiresIsolation"]==true;
     let factorial_active=auto && stage.is_null()
+        // Complete an actual descendant meta-code rewrite before allowing
+        // a speculative factorial schedule to replace its source target.
+        && !(inherited_meta["recursiveProgram"]["active"]==true
+            && inherited_meta["recursiveProgram"]["phase"]=="rewrite_meta_method")
         && parent["input"]["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty)
         && proposed_factorial["selected"].is_object()
         && (measured_siblings>0 || history.len()%3==1

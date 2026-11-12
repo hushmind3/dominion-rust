@@ -242,18 +242,21 @@ mod tests{
     use super::*;
     fn generation(base:&str,commit:&str,role:&str,path:&str)->Value{
         let digest="c".repeat(64);
-        json!({"accepted":true,"pairedRevalidated":true,
+        let mut g=json!({"accepted":true,"pairedRevalidated":true,
             "candidateOrigin":"model_driven_detached_worktree",
             "candidateId":format!("candidate-{commit}"),
             "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
             "evaluation":{"metrics":{"eligible":true}},
             "generatorCommit":base,"acceptedCommit":commit,"jobId":format!("j-{commit}"),
             "changedSourcePaths":[path],
-            "acceptedSourceHashes":{path:digest},
+            "acceptedSourceHashes":{},
             "systemDesign":{"source":"model_authored_system_design",
                 "generatorCommit":base,"generationJobId":format!("j-{commit}"),
-                "component":role,"componentFiles":{role:[path]},
-                "targetFiles":[path]}})
+                "component":role,"componentFiles":{},
+                "targetFiles":[path]}});
+        g["acceptedSourceHashes"][path]=json!(digest);
+        g["systemDesign"]["componentFiles"][role]=json!([path]);
+        g
     }
     fn born()->Value{
         let mut g=generation(&"a".repeat(40),&"b".repeat(40),
