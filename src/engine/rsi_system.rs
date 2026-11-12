@@ -417,6 +417,28 @@ pub(crate) fn validate_plan_evidence(
     }else if !target.is_null(){
         return Err("후손 선택의 데이터 형식이 올바르지 않습니다.".into());
     }
+    let coupling=&plan["symbioticCurriculum"];
+    if coupling["source"]!="compiled_mutual_intelligence_curriculum_v1"
+        || coupling["primary"]!=*target
+        || coupling["revision"].as_str()
+            .is_none_or(|sha|sha.len()!=64||!sha.bytes().all(|c|c.is_ascii_hexdigit())) {
+        return Err("후손의 상호 지능 개선 계획의 출처가 다릅니다.".into());
+    }
+    let peer=&coupling["complement"];
+    if peer.is_object(){
+        if peer["fromRole"]!=target["role"]
+            || peer["fromPath"]!=target["path"]
+            || peer["fromSha256"]!=target["sourceSha256"]
+            || !frontier.iter().any(|source|
+                source["role"]==peer["toRole"] && source["path"]==peer["toPath"]
+                && source["sourceSha256"]==peer["toSha256"])
+            || coupling["recursiveLoop"].as_array().is_none_or(|stages|
+                stages.len()!=3){
+            return Err("후손 상호 개선 대상의 소스 계보가 불일치합니다.".into());
+        }
+    }else if !peer.is_null(){
+        return Err("후손 상호 개선 계획의 자료형이 올바르지 않습니다.".into());
+    }
     let stage=&plan["successorStage"];
     if stage.is_object() && (
         stage["source"]!="rebound_verified_model_successor_program_v1"
@@ -467,6 +489,8 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         cross-module Rust changes with workspace_replace_range/function/write. \
         Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. For a coupled redesign of several subsystems set component=system and specify 2-7 actual components in components, with up to 24 verified source paths; you can change algorithm, harness, memory, learning, tools and improvement methods together. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
         rsi_method_propose; mere registration is not evidence of execution. \
+        For a coupled redesign list interactionEdges defining fromRole, toRole, \
+        fromPath, toPath, mechanism and observable NEXT-GENERATION effect. \
         For a coupled redesign list componentFiles mapping EVERY declared \
         intelligence role to its actual targetFiles. Claims about unedited \
         roles will not be credited as inherited architecture changes. \
@@ -611,6 +635,47 @@ pub(crate) fn propose(
     }else{
         component_files.insert(component.to_string(),json!(paths));
     }
+    // Explicit machine-readable cross-component mechanism makes the
+    // reciprocal claim falsifiable and reusable by the next binary. These
+    // are design hypotheses until an independently adopted descendant
+    // changes each declared component's actual source.
+    let mut interaction_edges=Vec::new();
+    if let Some(rows)=body["interactionEdges"].as_array(){
+        if rows.len()>12 || (component!="system"&&!rows.is_empty()){
+            return Err("상호 개선 관계는 전체 시스템 설계에서 최대 12개입니다.".into());
+        }
+        let mut seen=std::collections::BTreeSet::new();
+        for edge in rows {
+            let from=edge["fromRole"].as_str()
+                .filter(|role|components.contains(role))
+                .ok_or("상호 개선 시작 구성요소가 선언되지 않았습니다.")?;
+            let to=edge["toRole"].as_str()
+                .filter(|role|components.contains(role)&&*role!=from)
+                .ok_or("상호 개선 대상 구성요소가 중복되거나 없습니다.")?;
+            let from_path=edge["fromPath"].as_str()
+                .filter(|path|component_files[from].as_array()
+                    .is_some_and(|paths|paths.iter().any(|row|row==*path)))
+                .ok_or("상호 개선 원인 소스가 구성요소에 속하지 않습니다.")?;
+            let to_path=edge["toPath"].as_str()
+                .filter(|path|component_files[to].as_array()
+                    .is_some_and(|paths|paths.iter().any(|row|row==*path)))
+                .ok_or("상호 개선 결과 소스가 구성요소에 속하지 않습니다.")?;
+            if !seen.insert((from.to_string(),to.to_string())){
+                return Err("중복된 방향성 개선 가설입니다.".into());
+            }
+            let mechanism=edge["mechanism"].as_str()
+                .filter(|v|(20..=1200).contains(&v.chars().count()))
+                .ok_or("구성요소 간 개선 작용 원리 20~1200자가 필요합니다.")?;
+            let observable=edge["observable"].as_str()
+                .filter(|v|(12..=800).contains(&v.chars().count()))
+                .ok_or("후손의 개선 능력을 확인할 관찰 지표가 필요합니다.")?;
+            interaction_edges.push(json!({"fromRole":from,"toRole":to,
+                "fromPath":from_path,"toPath":to_path,
+                "mechanism":mechanism,"observable":observable,
+                "status":"unverified_causal_hypothesis",
+                "qualityProven":false}));
+        }
+    }
     // A model can author the actual NEXT descendant's executable task
     // schedule. Merely declaring a stage does not prove improvement. The
     // rebuilt child binds each stage to current source SHA and controls the
@@ -654,13 +719,14 @@ pub(crate) fn propose(
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,components,component_files,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
+        commit,component,components,component_files,interaction_edges,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
         "campaignId":campaign_id,"generationJobId":child_id,
         "generatorCommit":commit,"component":component,
         "components":components,"componentFiles":component_files,
+        "interactionEdges":interaction_edges,
         "successorStages":successor_stages,
         "nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,

@@ -66,6 +66,11 @@ pub fn definitions() -> Vec<Value> {
             "design":text("Concrete architectural and code implementation changes"),
             "targetFiles":json!({"type":"array","description":"Current or new workspace source paths; 2-24 for component=system","items":{"type":"string"},"minItems":1,"maxItems":24}),
             "componentFiles":json!({"type":"object","description":"REQUIRED when component=system: map each selected role to one or more paths from targetFiles that actually implement that role. All declared roles need source evidence.","additionalProperties":{"type":"array","minItems":1,"items":{"type":"string"}}}),
+            "interactionEdges":json!({"type":"array","description":"Directed causal hypotheses for whole-system co-evolution: fromRole code makes toRole better at improving the system, with specific fromPath/toPath, mechanism and observable successor behavior.","maxItems":12,"items":{"type":"object","properties":{
+                "fromRole":{"type":"string"},"toRole":{"type":"string"},
+                "fromPath":{"type":"string"},"toPath":{"type":"string"},
+                "mechanism":{"type":"string"},"observable":{"type":"string"}
+            },"required":["fromRole","toRole","fromPath","toPath","mechanism","observable"]}}),
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
             "successorStages":json!({"type":"array","description":"Optional executable next-generation improvement program of up to eight stages, bound to adopted source evidence. Each stage has role, domain, path, objective, learningPolicy (avoid_failed/retry_failed), toolPolicy (patch_only/allow_new_modules), executionPolicy (grounded_edit/explore_then_edit).",
                 "maxItems":8,"items":{"type":"object","properties":{

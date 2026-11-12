@@ -3035,6 +3035,7 @@ async fn run_loop(
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
+            child_input["rsiSymbioticCurriculum"]=plan["symbioticCurriculum"].clone();
             child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
             record["nextGenerationPlan"]=plan.clone();
@@ -3340,6 +3341,7 @@ async fn run_loop(
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["comparativeMode"]=current["input"]["rsiComparativeMode"].clone();
         generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
+        generation["symbioticCurriculum"]=current["input"]["rsiSymbioticCurriculum"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
@@ -3842,6 +3844,7 @@ fn compiled_system_target(
         || plan["peerLineages"] != input["rsiPeerLineages"]
         || plan["comparativeMode"] != input["rsiComparativeMode"]
         || plan["successorStage"] != input["rsiSuccessorStage"]
+        || plan["symbioticCurriculum"] != input["rsiSymbioticCurriculum"]
         || plan["editPolicy"] != input["rsiEditPolicy"]
         || plan["systemBlueprint"]["generatorCommit"] != commit
         || input["rsiTargetPlan"] != expected
@@ -4140,6 +4143,11 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     }else{Value::Null};
     let meta=crate::engine::rsi_meta_controller::apply_successor_stage(transferred_meta,&stage);
     let architecture_target=meta["target"].clone();
+    // This compiled descendant's co-evolution algorithm proposes a coupled
+    // source-level experiment: capability -> complementary improver -> return.
+    // It must survive into the model editor, adoption lineage and next child.
+    let symbiosis=crate::engine::rsi_symbiosis::curriculum(
+        &history,&frontier,&meta,&permitted);
     let auto=parent["input"]["selectionPolicy"]=="automatic";
     let selected=if auto{
         architecture_target["domain"].as_str()
@@ -4179,6 +4187,22 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
             row["path"]==stage["path"] && row["sourceHash"]==stage["sourceSha256"]){
         ranked.truncate(1);
     }
+    if auto && stage.is_null()
+        && symbiosis["complement"]["fromRole"]==architecture_target["role"]
+        && symbiosis["primary"]["domain"]==domain {
+        let partner=&symbiosis["complement"];
+        if let (Some(path),Some(hash))=(partner["toPath"].as_str(),
+            partner["toSha256"].as_str()){
+            if ranked.iter().any(|row|row["path"]==architecture_target["path"]) {
+                ranked.retain(|row|row["path"]!=path);
+                ranked.insert(1,json!({"path":path,"sourceHash":hash,
+                    "source":"compiled_bidirectional_intelligence_curriculum",
+                    "role":partner["toRole"],
+                    "sourceIndexId":campaign["planIndexId"]}));
+                ranked.truncate(4);
+            }
+        }
+    }
     let mut descendant_policy=learned_edit_method(&state,&focus,&history);
     if stage["source"]=="rebound_verified_model_successor_program_v1" {
         if stage["executionPolicy"]=="grounded_edit" {
@@ -4202,6 +4226,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         "metaPolicy":meta,
         "peerLineages":peers,"comparativeMode":comparative_mode,
         "successorStage":stage,"editPolicy":descendant_policy,
+        "symbioticCurriculum":symbiosis,
         "sourceTreeSha256":blueprint["sourceTree"]["sourceTreeSha256"],
         "decisionOwner":"rebuilt_compiled_descendant"
     });
@@ -4279,7 +4304,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || job["input"]["rsiSystemBlueprint"]!=model
             || plan["metaPolicy"]!=job["input"]["rsiMetaPolicy"]
             || plan["architectureTarget"]!=job["input"]["rsiArchitectureTarget"]
-            || plan["successorStage"]!=job["input"]["rsiSuccessorStage"]{
+            || plan["successorStage"]!=job["input"]["rsiSuccessorStage"]
+            || plan["symbioticCurriculum"]!=job["input"]["rsiSymbioticCurriculum"]{
             return Err("후손 바이너리·설계 revision·작업 입력이 다릅니다.".into());
         }
     }
@@ -4387,6 +4413,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiMetaPolicy"]);
         let peer_context=crate::engine::rsi_lineage_transfer::instruction(
             &job["input"]["rsiPeerLineages"]);
+        let mutual_context=crate::engine::rsi_symbiosis::instruction(
+            &job["input"]["rsiSymbioticCurriculum"]);
         let stage=&job["input"]["rsiSuccessorStage"];
         let stage_context=if stage.is_object() {
             format!("\n[EXECUTABLE INHERITED SUCCESSOR PROGRAM] Design={} phase={} objective={} source={} sourceSha256={} learningPolicy={} toolPolicy={} executionPolicy={}. This is your parent's independently adopted task plan; actually implement the stage and improve the meta-program.\n",
@@ -4394,7 +4422,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 stage["path"],stage["sourceSha256"],stage["learningPolicy"],
                 stage["toolPolicy"],stage["executionPolicy"])
         }else{String::new()};
-        format!("{directive}\n{meta_directive}\n{peer_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+        format!("{directive}\n{meta_directive}\n{peer_context}\n{mutual_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
         &system_prompt, &domain, &capability,
