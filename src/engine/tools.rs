@@ -64,12 +64,22 @@ pub fn definitions() -> Vec<Value> {
         tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
-        tool("rsi_system_plan", "Propose a causal whole-system redesign and next descendant target. This proposal needs real source edits and independent paired evaluation.", object(json!({
-            "component":json!({"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","frontend"]}),
+        tool("rsi_system_plan", "Design executable improvements across one or several intelligence subsystems. For a coupled design set component=system, specify components and componentFiles assigning EACH target file to exactly one role, then really edit EVERY target. successorStages is a program handed to the REBUILT descendant for its next design decisions; a plan alone never earns evidence.", object(json!({
+            "component":text("Existing subsystem (algorithms, harness, memory, learning, tools, improvement_methods, frontend), new named intelligence role, or 'system' for coupled redesign"),
+            "components":json!({"type":"array","items":{"type":"string"},"minItems":2,"maxItems":16,
+                "description":"For component=system, all redesign roles including any new modules"}),
+            "componentFiles":json!({"type":"object","description":"For component=system map each role to its own nonempty list of files from targetFiles; files cannot be credited twice",
+                "additionalProperties":{"type":"array","items":{"type":"string"},"minItems":1}}),
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
-            "hypothesis":text("Observed limitation and falsifiable expectation, at least 20 characters"),
-            "design":text("Implementable new architecture or method, at least 30 characters"),
-            "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8})
+            "hypothesis":text("Falsifiable causal limitation; at least 20 characters"),
+            "design":text("Executable architecture, interface contracts, memory/learning/tool changes and failure handling; at least 30 characters"),
+            "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24}),
+            "successorStages":json!({"type":"array","maxItems":8,
+                "description":"Executable planning intentions for the NEXT compiled descendant. Each stage is rebound to fresh indexed source; no stage receives improvement credit before actual editing.",
+                "items":{"type":"object","properties":{
+                    "role":{"type":"string"},"domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
+                    "path":{"type":"string"},"objective":{"type":"string"}},
+                    "required":["role","domain","path","objective"],"additionalProperties":false}})
         }), vec!["component","nextDomain","hypothesis","design","targetFiles"])),
         tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({
             "name":text("Reusable method name"),
