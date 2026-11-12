@@ -1154,6 +1154,109 @@ mod tests {
         assert!(!worktree.path.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn independently_measured_plateau_restores_real_patch_into_descendant_only() {
+        use crate::{config::Config, db::Store, state::AppState, vault::Vault};
+        use std::process::Command as SyncCommand;
+        fn git_result(path: &Path, args: &[&str]) -> String {
+            let output=SyncCommand::new("git").current_dir(path).args(args)
+                .output().unwrap();
+            assert!(output.status.success(),
+                "git {:?}: {}",args,String::from_utf8_lossy(&output.stderr));
+            String::from_utf8(output.stdout).unwrap()
+        }
+        let root=std::env::temp_dir().join(format!("rsi-plateau-worktree-{}",uuid::Uuid::new_v4()));
+        let source=root.join("source");
+        let data=root.join("data");
+        std::fs::create_dir_all(source.join("src/engine")).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(source.join("Cargo.toml"),
+            "[package]\nname=\"sample\"\nversion=\"0.1.0\"\nedition=\"2021\"\n").unwrap();
+        std::fs::write(source.join("src/engine/rsi.rs"),"// system source\n").unwrap();
+        let original="pub fn sample() -> u8 { 1 }\n";
+        let changed="pub fn sample() -> u8 { 2 }\n";
+        let path="src/engine/sample.rs";
+        std::fs::write(source.join(path),original).unwrap();
+        git_result(&source,&["init","-q"]);
+        git_result(&source,&["checkout","-b","dominion-sub1"]);
+        git_result(&source,&["add","."]);
+        git_result(&source,&["-c","user.name=CI","-c","user.email=ci@example.com",
+            "commit","-qm","baseline"]);
+        let base=git_result(&source,&["rev-parse","HEAD"]).trim().to_string();
+        std::fs::write(source.join(path),changed).unwrap();
+        let patch=git_result(&source,&["diff","--",path]);
+        std::fs::write(source.join(path),original).unwrap();
+        assert!(!patch.trim().is_empty());
+        let cfg=Config{port:0,data_dir:data.clone(),web_dir:data.join("web"),
+            workspace:data.clone()};
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
+            Vault::open(&cfg.key_path()));
+        let plan=(0..8).map(|i|json!({
+            "id":format!("case-{i}"),
+            "domain":if i==1 {"other"} else {"harness"},
+            "holdout":i<3,
+            "filter":format!("engine::rsi::tests::case_{i}")
+        })).collect::<Vec<_>>();
+        let mut candidate=crate::engine::rsi::propose(&state,&json!({
+            "target":"harness","baseCommit":base,
+            "patch":patch,"hypothesis":"Improve real source",
+            "cases":plan,"oracleVersion":"frozen-v1",
+            "generatorModel":"real-model"
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap().to_string();
+        candidate["rsiJobId"]=json!("parent-gen");
+        candidate["origin"]=json!("model_driven_detached_worktree");
+        state.store.put("rsi_candidate",&candidate);
+        let raw=json!({
+            "baseCommit":base,"patchSha256":candidate["patchSha256"],
+            "oracleVersion":"frozen-v1","runner":"local_gitrepo_not_os_sandbox",
+            "reportSha256":"b".repeat(64),
+            "baselineBuildOk":true,"candidateBuildOk":true,
+            "cases":(0..8).map(|i|json!({
+                "id":format!("case-{i}"),"baselinePass":true,"candidatePass":true
+            })).collect::<Vec<_>>()
+        });
+        candidate=crate::engine::rsi::evaluate(&state,&id,&raw).unwrap();
+        assert_eq!(candidate["status"],"inconclusive");
+        candidate["pairedComparisonComplete"]=json!(true);
+        candidate["evaluation"]["source"]=json!("server_invoked_local_paired_git_worktrees");
+        candidate["evaluation"]["evidenceSha256"]=raw["reportSha256"].clone();
+        state.store.put("rsi_candidate",&candidate);
+        state.store.put("rsi_pair",&json!({
+            "id":"measured-neutral-pair","candidateId":id,
+            "evaluationId":candidate["evaluation"]["id"],
+            "report":raw,"verdict":"inconclusive",
+            "metrics":candidate["evaluation"]["metrics"],
+            "evidenceSha256":candidate["evaluation"]["evidenceSha256"],
+            "runner":"local_gitrepo_not_os_sandbox"
+        }));
+        state.store.put("rsi_run",&json!({
+            "id":"rsi-run-parent-gen","candidateId":id,
+            "baseCommit":base,"checksPassed":true,
+            "checks":[{"label":"cargo check --all-targets","ran":true,"passed":true}]
+        }));
+        state.store.put("job",&json!({
+            "id":"child-gen","kind":"rsi_generation","status":"running"
+        }));
+        let context=JobContext::new(state.clone(),"child-gen".into());
+        let child_path=root.join("descendant");
+        git_result(&source,&["worktree","add","--detach",
+            child_path.to_str().unwrap(),&base]);
+        let isolated=Worktree{source:source.clone(),path:child_path.clone(),base:base.clone()};
+        let input=json!({"rsiRepairCandidateId":id,"rsiRepairParentJobId":"parent-gen"});
+        let repaired=restore_failed_candidate(&context,&input,&isolated).await.unwrap().unwrap();
+        assert_eq!(repaired["repairKind"],"quality_plateau");
+        assert_eq!(repaired["qualityMetrics"]["improvedHoldouts"],0);
+        assert_eq!(std::fs::read_to_string(child_path.join(path)).unwrap(),changed);
+        assert_eq!(std::fs::read_to_string(source.join(path)).unwrap(),original);
+        assert_eq!(git_result(&source,&["rev-parse","HEAD"]).trim(),base);
+        assert!(git_result(&source,&["status","--porcelain"]).trim().is_empty());
+        cleanup(&isolated).await.unwrap();
+        assert!(!child_path.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn rsi_model_cannot_use_absolute_write_or_shell_tools(){
         use crate::{config::Config,db::Store,state::AppState,vault::Vault};
