@@ -42,6 +42,62 @@ fn last_verified_system_design(history: &[Value]) -> Option<&Value> {
     })
 }
 
+
+/**
+ * Whole-source fingerprint: component examples are never a hard-coded
+ * mutation allowlist. Record source revisions beyond the representative list
+ * while keeping the serialized model bounded for descendant workers.
+ */
+fn source_tree_manifest(root: &Path) -> Value {
+    let Ok(root) = fs::canonicalize(root) else {
+        return json!({"fileCount":0,"sourceTreeSha256":Value::Null,"paths":[]});
+    };
+    let mut directories=vec![
+        root.join("src"), root.join("web/src"), root.join("scripts"),
+        root.join("tests"), root.join(".github/workflows"), root.join("assets")
+    ];
+    let mut paths=std::collections::BTreeSet::<String>::new();
+    for entry in ["Cargo.toml","build.rs","web/package.json"] {
+        if root.join(entry).is_file() {paths.insert(entry.to_string());}
+    }
+    while let Some(dir)=directories.pop() {
+        if paths.len()>=2048 {break;}
+        let Ok(entries)=fs::read_dir(&dir) else {continue;};
+        for entry in entries.flatten() {
+            let Ok(kind)=entry.file_type() else {continue;};
+            if kind.is_symlink() {continue;}
+            let path=entry.path();
+            if kind.is_dir() {directories.push(path);continue;}
+            if !kind.is_file() {continue;}
+            let supported=path.extension().and_then(|ext|ext.to_str())
+                .is_some_and(|ext|matches!(ext,
+                    "rs"|"ts"|"tsx"|"js"|"mjs"|"json"|"toml"|"yml"|"yaml"));
+            if !supported {continue;}
+            if let Ok(relative)=path.strip_prefix(&root) {
+                if let Some(name)=relative.to_str() {
+                    paths.insert(name.to_string());
+                }
+            }
+        }
+    }
+    let mut fingerprint=Sha256::new();
+    let mut included=Vec::new();
+    for relative in paths.iter().take(2048) {
+        let Ok(file)=fs::canonicalize(root.join(relative)) else {continue;};
+        if !file.starts_with(&root) || !file.is_file() {continue;}
+        let Ok(bytes)=fs::read(file) else {continue;};
+        fingerprint.update(relative.as_bytes());
+        fingerprint.update([0]);
+        fingerprint.update(Sha256::digest(&bytes));
+        included.push(relative.clone());
+    }
+    json!({"fileCount":included.len(),
+        "sourceTreeSha256":format!("{:x}",fingerprint.finalize()),
+        "paths":included.iter().take(96).collect::<Vec<_>>(),
+        "additionalPaths":included.len().saturating_sub(96),
+        "complete":paths.len()<=2048})
+}
+
 /// Read only source assets under the experiment's pinned checkout. The
 /// coordinator cannot author or alter this blueprint without changing its
 /// measured generator revision; no holdout content is read here.
@@ -78,6 +134,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "source":"compiled_descendant_system_blueprint_v1",
         "generatorCommit":revision,
         "architecture":components,
+        "sourceTree":source_tree_manifest(root),
         "historyCount":history.len(),
         "inheritedDesign":inherited.map(|row|row["systemDesign"].clone()).unwrap_or(Value::Null),
         "inheritedDesignEvidence":inherited.map(|row|json!({
@@ -106,6 +163,9 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
                 .collect::<Vec<_>>().join(", ");
             Some(format!("{name}: {paths}"))
         }).collect::<Vec<_>>().join("\n");
+    let tree=&self_model["sourceTree"];
+    let components=format!("{components}\\nWhole-source snapshot: files={}, sha256={}, remaining indexed paths={}. Search other source files by code_index, not only the examples.",
+        tree["fileCount"],tree["sourceTreeSha256"],tree["additionalPaths"]);
     let inherited=self_model["inheritedDesign"].as_object().map(|_|format!(
         "Previously independently adopted system design: nextDomain={} hypothesis={} implementation={} acceptedCommit={}",
         self_model["inheritedDesign"]["nextDomain"],self_model["inheritedDesign"]["hypothesis"],
@@ -291,6 +351,11 @@ mod tests {
         assert_eq!(first["recentMeasuredGenerations"][0]["accepted"],true);
         assert!(instruction(&first,"improve the whole system").contains("workspace_replace_range"));
         let baseline=first["architecture"][0]["representativeSources"][0]["sha256"].clone();
+        let full_tree_before=first["sourceTree"]["sourceTreeSha256"].clone();
+        fs::write(root.join("src/engine/unlisted.rs"),"pub fn extra_capability() {}").unwrap();
+        let new_scope=blueprint(&root,"commit-one",&history);
+        assert_ne!(full_tree_before,new_scope["sourceTree"]["sourceTreeSha256"]);
+        assert_eq!(new_scope["sourceTree"]["fileCount"],3);
         fs::write(root.join("src/engine/algorithms.rs"),"pub fn changed_policy() {}").unwrap();
         let second=blueprint(&root,"commit-two",&history);
         assert_ne!(baseline,second["architecture"][0]["representativeSources"][0]["sha256"]);
