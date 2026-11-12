@@ -3035,6 +3035,9 @@ async fn run_loop(
                 plan["architectureFrontier"].as_array().map(Vec::as_slice).unwrap_or(&[]),
                 &head,record["history"].as_array().map(Vec::len).unwrap_or(0),
                 crate::engine::rsi_lineage_transfer::profile(&child_input).as_deref())?;
+            crate::engine::rsi_intervention_lab::validate_receipts(
+                &context.state,record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+                &plan["factorialExperiment"])?;
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
             child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
@@ -4373,6 +4376,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             plan["architectureFrontier"].as_array().map(Vec::as_slice).unwrap_or(&[]),
             &commit,history.len(),
             crate::engine::rsi_lineage_transfer::profile(&job["input"]).as_deref())?;
+        crate::engine::rsi_intervention_lab::validate_receipts(
+            &state,&history,&plan["factorialExperiment"])?;
         // The source blueprint still anchors this binary's exact inherited
         // revision, but source ranking and meta synthesis are intentionally
         // not replayed by an unmodified predecessor policy.

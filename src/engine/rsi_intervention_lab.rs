@@ -96,6 +96,7 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
     let mut counts=[0usize;3];
     let mut blocks=BTreeMap::<Block,Arms>::new();
     let mut provenance=BTreeSet::<String>::new();
+    let mut measured_ids=BTreeSet::<String>::new();
     for g in history.iter().filter(|g|
         g["generatorCommit"]==commit
         && g["comparisonProfileSha256"]==profile
@@ -116,7 +117,10 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
                 [arm].push((after as i32-before as i32) as f64);
             contributed=true;
         }
-        if contributed{counts[arm]+=1;}
+        if contributed{
+            counts[arm]+=1;
+            measured_ids.insert(id.to_string());
+        }
     }
     let mut matched=Vec::new();
     for ((name,_,baseline),arms) in blocks.iter(){
@@ -146,7 +150,8 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
             else{json!(2.0/(rows as f64).sqrt())},
         "contrasts":matched.into_iter().take(16).collect::<Vec<_>>(),
         "observationalOnly":true,"causalityProven":false,
-        "candidateCount":counts.iter().sum::<usize>()
+        "candidateCount":counts.iter().sum::<usize>(),
+        "pairedCandidateIds":measured_ids.into_iter().take(32).collect::<Vec<_>>()
     });
     evidence["sha256"]=json!(digest(&evidence));
     evidence
@@ -311,6 +316,57 @@ pub(crate) fn validate(plan:&Value,frontier:&[Value],commit:&str,
         && (plan["selected"].is_null()
             || (check(&plan["selected"])&&rows.contains(&plan["selected"])))) {
         return Err("후손의 요인별 실험 대상이 실제 소스 구조와 다릅니다.".into());
+    }
+    Ok(())
+}
+
+/// A frozen supervisor checks the *original* paired-worktree measurement
+/// receipts. It must not recalculate the descendant's editable experiment
+/// selection formula, but can reject fabricated or cross-revision evidence.
+pub(crate) fn validate_receipts(
+    state:&crate::state::AppState,history:&[Value],plan:&Value
+)->Result<(),String>{
+    if plan.is_null(){return Ok(());}
+    let Some(pairs)=plan["pairAlternatives"].as_array()
+        .filter(|v|v.len()<=6) else{
+        return Err("요인 실험 후보의 원본 평가 출처가 없습니다.".into());
+    };
+    let commit=plan["generatorCommit"].as_str()
+        .ok_or("실험 원본 생성기 SHA 없음")?;
+    let profile=plan["comparisonProfileSha256"].as_str()
+        .ok_or("동결 평가 사례 SHA 없음")?;
+    for pair in pairs {
+        let evidence=&pair["evidence"];
+        let ids=evidence["pairedCandidateIds"].as_array()
+            .filter(|ids|ids.len()<=32)
+            .ok_or("요인 실험은 원본 측정 후보의 ID를 보존해야 합니다.")?;
+        if evidence["candidateCount"].as_u64()!=Some(ids.len() as u64) {
+            return Err("요인 실험의 원본 측정 횟수와 후보 목록이 다릅니다.".into());
+        }
+        let mut seen=BTreeSet::new();
+        for id in ids {
+            let id=id.as_str().filter(|s|!s.is_empty())
+                .ok_or("요인 실험 후보의 ID가 유효하지 않습니다.")?;
+            if !seen.insert(id){
+                return Err("중복된 요인 실험 후보를 계산했습니다.".into());
+            }
+            let row=history.iter().find(|g|g["candidateId"]==id
+                && g["generatorCommit"]==commit
+                && g["comparisonProfileSha256"]==profile
+                && g["factorialMeasured"]==true
+                && g["factorialCompliance"]["eligibleForFactorial"]==true)
+                .ok_or("요인 실험 후보의 동결 평가 조건이 다릅니다.")?;
+            let candidate=state.store.get("rsi_candidate",id)
+                .ok_or("실험 원본 후보가 저장되어 있지 않습니다.")?;
+            let replayed=crate::engine::rsi::replayed_pair_metrics(state,&candidate)
+                .ok_or("원본 짝 비교 평가 영수증을 독립 재계산하지 못했습니다.")?;
+            if candidate["baseCommit"]!=commit
+                || row["changedSourcePaths"]!=candidate["paths"]
+                || row["evaluation"]["metrics"]!=replayed
+                || row["pairedMeasured"]!=true {
+                return Err("실험의 변경 소스와 독립 평가 원본이 일치하지 않습니다.".into());
+            }
+        }
     }
     Ok(())
 }
