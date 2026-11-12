@@ -87,7 +87,7 @@ fn accepted_measured(g:&Value)->bool {
         && rsi_mutual_program::adopted_source(g)
         && g["evaluation"]["metrics"]["eligible"]==true
         && grounded_mechanism(g).is_some_and(|(_,_,path)|
-            g["acceptedSourceHashes"][&path].as_str().is_some_and(|s|
+            g["acceptedSourceHashes"][path.as_str()].as_str().is_some_and(|s|
                 s.len()==64 && s.bytes().all(|b|b.is_ascii_hexdigit())))
 }
 /// A downstream descendant may use a completely DIFFERENT improvement
@@ -420,6 +420,21 @@ mod tests {
         assert_eq!(row["improvedCases"],0);
         assert_eq!(row["independentSourceAdoptions"],1);
         assert_eq!(row["posteriorCaseGain"].as_f64(),Some(1.0/3.0));
+    }
+    #[test]
+    fn legacy_model_authored_system_change_teaches_the_next_open_learner(){
+        let mut g=trial("legacy","placeholder","src/engine/models.rs",
+            "models",false,true,true);
+        g["openImprovementProgram"]=Value::Null;
+        g["metaPolicy"]=json!({"revision":"m"});
+        g["systemDesign"]["hypothesis"]=json!(
+            "Replace the model selection and context assembly strategy so the frozen downstream tasks improve");
+        g["systemDesign"]["component"]=json!("models");
+        let ledger=study(&[g.clone()]);
+        assert_eq!(ledger["principles"].as_array().unwrap().len(),1);
+        assert_eq!(ledger["principles"][0]["improvedCases"],1);
+        g["systemDesign"]["generatorCommit"]=json!("forged-parent");
+        assert_eq!(study(&[g])["principles"].as_array().unwrap().len(),0);
     }
     #[test]
     fn model_prose_without_independent_paired_evidence_never_trains_principle(){
