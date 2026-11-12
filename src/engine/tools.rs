@@ -60,10 +60,11 @@ pub fn definitions() -> Vec<Value> {
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
         tool("rsi_system_plan", "Propose a measured redesign of the running descendant; a proposal alone cannot pass independent evaluation.", object(json!({
-            "component":json!({"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","frontend"]}),
+            "component":json!({"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","frontend","system"]}),
+            "components":json!({"type":"array","description":"Required for component=system: choose 2-7 distinct subsystems to redesign together","items":{"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","frontend"]},"minItems":2,"maxItems":7}),
             "hypothesis":text("Causal limitation and falsifiable improvement prediction"),
             "design":text("Concrete architectural and code implementation changes"),
-            "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8}),
+            "targetFiles":json!({"type":"array","description":"Existing workspace source paths; 2-24 for component=system","items":{"type":"string"},"minItems":1,"maxItems":24}),
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS})
         }), vec!["component","hypothesis","design","targetFiles","nextDomain"])),
         tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({
