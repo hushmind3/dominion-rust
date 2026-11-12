@@ -3384,6 +3384,26 @@ async fn run_loop(
                 &head,history.len()) {
                 return Err("동결 평가 결과에서 발견된 능력 간 간섭·수정 소스 근거가 유효하지 않습니다.".into());
             }
+            let pair=&plan["negativeTransferPlan"]["selected"];
+            if input["rsiAutonomous"]==true
+                && input["rsiFocusFiles"].as_array().is_none_or(|rows|!rows.is_empty())
+                && !paired_descendant_target(&child_input)
+                && pair.is_object() {
+                let expected=[&pair["victim"],&pair["source"]];
+                let chosen=plan["focusFiles"].as_array()
+                    .ok_or("간섭 복구 후손의 실제 두 수정 파일이 없습니다.")?;
+                let ranked=plan["ranked"].as_array()
+                    .ok_or("간섭 복구 후손의 소스 후보 근거가 없습니다.")?;
+                if chosen.len()!=2 || ranked.len()<2
+                    || expected.iter().enumerate().any(|(i,row)|{
+                        chosen[i]!=row["path"]
+                            || ranked[i]["path"]!=row["path"]
+                            || ranked[i]["sourceHash"]!=row["sourceSha256"]
+                            || ranked[i]["sourceIndexId"]!=child_input["rsiIndexId"]
+                    }) {
+                    return Err("후손의 공동 복구 대상과 실제 소스 인덱스 해시가 다릅니다.".into());
+                }
+            }
             if !crate::engine::rsi_interaction::valid_graph(
                 &plan["interactionGraph"])
                 || (plan["coupledPortfolio"].is_object()
@@ -5304,6 +5324,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             crate::engine::rsi_method_generalization::instruction(
                 &job["input"]["rsiMethodGeneralization"])
         }else{String::new()};
+        let negative_transfer_instruction=if science_enabled {
+            crate::engine::rsi_negative_transfer::instruction(
+                &job["input"]["rsiNegativeTransferPlan"])
+        }else{String::new()};
         let model_lineage_instruction=format!(
             "Approved, actually executed model={}, provider={}, original_owner={},              frozen downstream model-lineage decision={},              external_API_weights_retrained=false.              The improvement-agent model can be changed only among approved              routes by this self-editable compiled policy; selection is not              evidence that its underlying weights or general inference improved.",
             job["input"]["model"],job["input"]["providerId"],
@@ -5315,6 +5339,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             algebra_instruction,scientific_instruction,factorial_instruction,
             job["input"]["rsiComparativeMode"],capsule(&peer_evidence,3000),
             capsule(&independent_effects,2400),capsule(&combined_sources,1600));
+        let peer_context=format!(
+            "{}\nCROSS-CAPABILITY FROZEN HOLDOUT DAMAGE / JOINT REPAIR EXPERIMENT:\n{}",
+            peer_context,negative_transfer_instruction);
         let frontier_hint=if job["input"]["rsiFocusSelection"]["source"]=="rebuilt_descendant_controller"
             && job["input"]["rsiArchitectureTarget"].is_object() {
             let gap=&job["input"]["rsiArchitectureTarget"];
