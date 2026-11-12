@@ -255,6 +255,9 @@ fn reciprocal_evolution_contract(
         let attempts=candidate["attempts"].as_u64().unwrap_or(0) as f64;
         let unexplored=if candidate["verifiedRedesigns"].as_u64().unwrap_or(0)==0
             {0.3}else{0.0};
+        let reversal_prior=adopted_reciprocal_reversal(history,frontier)
+            .is_some_and(|(next,previous)|next["role"]==primary_role
+                && previous==role);
         let score=12.0*(forward.min(reverse) as f64)
             +4.0*((forward+reverse) as f64)
             +2.0*(observed_joint as f64)
@@ -262,6 +265,7 @@ fn reciprocal_evolution_contract(
             +3.0*((gain_ab+gain_ba) as f64)
             +0.5*((joint_ab+joint_ba) as f64)
             -6.0*((regression_ab+regression_ba) as f64)
+            +if reversal_prior{24.0}else{0.0}
             +meta_prior+unexplored+1.0/(1.0+attempts);
         Some((candidate.clone(),score,forward,reverse,observed_joint,
             gain_ab,gain_ba,regression_ab,regression_ba))
@@ -297,6 +301,41 @@ fn reciprocal_evolution_contract(
         "causalImprovementProven":false,
         "qualityProven":false
     })
+}
+
+/// Only a truly adopted two-role patch can ask the next compiled child to
+/// reverse direction. Source SHA receipts must cover BOTH role mappings;
+/// merely mentioning two roles in the model's design is never sufficient.
+fn adopted_reciprocal_reversal(history:&[Value],frontier:&[Value])
+    ->Option<(Value,String)>{
+    let ancestor=history.last()?;
+    if !independent_adoption(ancestor)
+        || ancestor["selfControllerVerified"]!=true{return None;}
+    let pair=&ancestor["systemAgenda"]["reciprocalExperiment"];
+    if pair["source"]!="compiled_descendant_reciprocal_evolution_v1"{
+        return None;
+    }
+    let old_primary=pair["primary"]["role"].as_str()?;
+    let old_partner=pair["partner"]["role"].as_str()?;
+    if old_primary==old_partner{return None;}
+    let targets=ancestor["systemDesign"]["targetFiles"].as_array()?;
+    for component in [&pair["primary"],&pair["partner"]]{
+        let role=component["role"].as_str()?;
+        let path=component["path"].as_str()?;
+        let role_files=ancestor["systemDesign"]["componentFiles"][role].as_array()?;
+        if !role_files.iter().any(|item|item==path)
+            || !targets.iter().any(|item|item==path)
+            || ancestor["acceptedSourceHashes"][path].as_str().is_none_or(|sha|
+                sha.len()!=64||!sha.bytes().all(|b|b.is_ascii_hexdigit())){
+            return None;
+        }
+    }
+    let target=frontier.iter().find(|row|
+        row["role"]==old_partner && row["domain"].is_string()
+            && row["path"].is_string()
+            && row["sourceSha256"].as_str()
+                .is_some_and(|sha|sha.len()==64))?;
+    Some((target.clone(),old_primary.to_string()))
 }
 
 /// Attach the new descendant's counterpart to ACTUAL automatically selected
@@ -384,7 +423,14 @@ pub(crate) fn synthesize(
     ranked.sort_by(|(left,a),(right,b)|
         b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
             .then_with(||left["role"].as_str().cmp(&right["role"].as_str())));
-    let winner=ranked.first().map(|row|row.0.clone()).unwrap_or(Value::Null);
+    let reverse_step=adopted_reciprocal_reversal(history,frontier);
+    let mut winner=ranked.first().map(|row|row.0.clone()).unwrap_or(Value::Null);
+    if let Some((ref reverse_target,_))=reverse_step {
+        if let Some((row,_))=ranked.iter().find(|(row,_)|
+            row["target"]==*reverse_target){
+            winner=row.clone();
+        }
+    }
     let target=winner["target"].clone();
     let reciprocal=reciprocal_evolution_contract(history,&target,frontier);
     let reference=history.iter().rev().filter(|g|independent_adoption(g))
@@ -417,7 +463,7 @@ pub(crate) fn synthesize(
     let alternatives=ranked.iter().take(6)
         .map(|(row,_)|row.clone()).collect::<Vec<_>>();
     let serialized=json!([target,alternatives,reference,counterexamples,mode,
-        inherited_domain,history.len(),reciprocal]);
+        inherited_domain,history.len(),reciprocal,reverse_step]);
     let revision=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&serialized).unwrap_or_default()));
     json!({
@@ -425,6 +471,12 @@ pub(crate) fn synthesize(
         "revision":revision,"historyCount":history.len(),
         "mode":mode,"target":target,"selectionEvidence":winner,
         "reciprocalExperiment":reciprocal,
+        "reciprocalContinuation":reverse_step.as_ref().map(|(target,from)|
+            json!({"source":"verified_descendant_reverse_redesign_v1",
+                "nextRole":target["role"],"priorRole":from,
+                "sourceSha256":target["sourceSha256"],
+                "priorChangeWasAdopted":true,"qualityProven":false}))
+            .unwrap_or(Value::Null),
         "alternatives":alternatives,
         "referenceDesigns":reference,"counterexamples":counterexamples,
         "forecast":{"acceptanceProbability":winner["predictedAdoptionProbability"],
@@ -894,6 +946,40 @@ mod tests{
         let edges=measured_interaction_edges(&[joint]);
         assert_eq!(edges[&("harness".to_string(),"memory".to_string())].0,0);
         assert_eq!(edges[&("harness".to_string(),"memory".to_string())].2,1);
+    }
+    #[test]
+    fn reverse_redesign_requires_both_accepted_component_source_receipts(){
+        let source=|role:&str,path:&str|json!({
+            "role":role,"path":path,"domain":"improver",
+            "sourceSha256":"c".repeat(64),"sourceBytes":100,
+            "verifiedRedesigns":0});
+        let harness=source("harness","src/engine/jobs.rs");
+        let learning=source("learning","src/engine/learning.rs");
+        let ancestor=json!({
+            "jobId":"j","generatorCommit":"a".repeat(40),
+            "acceptedCommit":"b".repeat(40),"accepted":true,
+            "pairedRevalidated":true,"selfControllerVerified":true,
+            "candidateOrigin":"model_driven_detached_worktree",
+            "evaluation":{"metrics":{"eligible":true}},
+            "systemAgenda":{"reciprocalExperiment":{
+                "source":"compiled_descendant_reciprocal_evolution_v1",
+                "primary":harness,"partner":learning}},
+            "systemDesign":{"source":"model_authored_system_design",
+                "component":"system","components":["harness","learning"],
+                "generatorCommit":"a".repeat(40),"generationJobId":"j",
+                "targetFiles":["src/engine/jobs.rs","src/engine/learning.rs"],
+                "componentFiles":{"harness":["src/engine/jobs.rs"],
+                    "learning":["src/engine/learning.rs"]}},
+            "acceptedSourceHashes":{"src/engine/jobs.rs":"c".repeat(64),
+                "src/engine/learning.rs":"d".repeat(64)}
+        });
+        let frontier=vec![source("harness","src/engine/jobs.rs"),
+            source("learning","src/engine/learning.rs")];
+        let result=adopted_reciprocal_reversal(&[ancestor.clone()],&frontier);
+        assert_eq!(result.unwrap().0["role"],"learning");
+        let mut invalid=ancestor;
+        invalid["acceptedSourceHashes"]["src/engine/learning.rs"]=Value::Null;
+        assert!(adopted_reciprocal_reversal(&[invalid],&frontier).is_none());
     }
     #[test]
     fn comparison_prioritizes_novelty_then_updates_after_grounded_failures(){
