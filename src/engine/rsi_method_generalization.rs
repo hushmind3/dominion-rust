@@ -106,11 +106,24 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
         let mut profiles=BTreeSet::<String>::new();
         let mut commits=BTreeSet::<String>::new();
         let mut receipt_ids=BTreeSet::<String>::new();
+        // Compare successive METHOD SOURCE REVISIONS on exactly the same
+        // frozen profile, holdout case, domain and baseline result. A new
+        // method source SHA alone is not evidence of improved methodology.
+        let mut method_versions=Vec::<String>::new();
+        let mut matched_cases=BTreeMap::<(String,String,String,bool),
+            BTreeMap<String,Vec<i8>>>::new();
         for g in history {
             let Some((candidate,metrics,profile))=independent_use(state,g,rule)
                 else{continue};
             let Some(candidate_id)=g["candidateId"].as_str()else{continue};
             if !trials.insert(candidate_id.to_owned()) {continue}
+            let method_sha=g["improvementAlgebraPlan"]["selected"]["rule"]["method"]
+                ["sourceSha256"].as_str().filter(|sha|hash_ok(sha,64));
+            if let Some(sha)=method_sha {
+                if !method_versions.iter().any(|old|old==sha) {
+                    method_versions.push(sha.to_owned());
+                }
+            }
             profiles.insert(profile.to_owned());
             if let Some(parent)=g["generatorCommit"].as_str() {
                 commits.insert(parent.to_owned());
@@ -128,6 +141,11 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
                 // candidate+profile+domain, not once per rewritten JSON copy.
                 if !cases.insert((candidate_id.to_string(),profile.to_owned(),
                     case.to_owned(),domain.to_owned())) {continue;}
+                if let (Some(sha),Some(before))=(method_sha,m["baselinePass"].as_bool()) {
+                    matched_cases.entry((profile.to_owned(),case.to_owned(),
+                        domain.to_owned(),before)).or_default()
+                        .entry(sha.to_owned()).or_default().push(effect);
+                }
                 let capability=observed_domain(domain);
                 if effect>0 {gains+=1;domains.insert(capability.to_owned());}
                 else if effect<0 {regressions+=1;}
@@ -136,6 +154,30 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
                     if effect>0 {cross_gains+=1;}
                     if effect<0 {cross_regressions+=1;}
                 }
+            }
+        }
+        let current_method=rule["method"]["sourceSha256"].as_str().unwrap_or("");
+        let predecessor=method_versions.iter().rfind(|sha|
+            sha.as_str()!=current_method).map(String::as_str);
+        let mut matched_revision_cases=0u64;
+        let mut revision_lift=0.0f64;
+        if let Some(previous)=predecessor {
+            for versions in matched_cases.values(){
+                if let (Some(new),Some(old))=(
+                    versions.get(current_method),versions.get(previous)) {
+                    if !new.is_empty() && !old.is_empty(){
+                        let new_mean=new.iter().map(|x|*x as f64).sum::<f64>()
+                            /new.len() as f64;
+                        let old_mean=old.iter().map(|x|*x as f64).sum::<f64>()
+                            /old.len() as f64;
+                        revision_lift+=new_mean-old_mean;
+                        matched_revision_cases+=1;
+                    }
+                }
+            }
+            if matched_revision_cases>0 {
+                revision_lift=(revision_lift/(matched_revision_cases as f64))
+                    .clamp(-2.0,2.0);
             }
         }
         let measured=gains+regressions+neutral;
@@ -159,6 +201,11 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
             "generatorCommits":commits.into_iter().take(12).collect::<Vec<_>>(),
             "independentReceiptSha256":receipt_ids.into_iter().take(12).collect::<Vec<_>>(),
             "transferScore":transferable,
+            "currentMethodSourceSha256":current_method,
+            "previousMethodSourceSha256":predecessor,
+            "matchedFrozenRevisionCases":matched_revision_cases,
+            "observedRevisionTransferLift":revision_lift,
+            "revisionDifferenceIsCausalProof":false,
             "hasMeasuredTransfer":cross_gains>0 && cross_regressions==0,
             "causalityProven":false,
             "source":"replayed_independent_paired_candidate_receipts"
@@ -211,7 +258,16 @@ pub(crate) fn adapt(mut algebra:Value,feedback:&Value)->Value{
         let gain=evidence["holdoutGains"].as_u64().unwrap_or(0);
         let cross=evidence["crossCapabilityGains"].as_u64().unwrap_or(0);
         let transfer=evidence["transferScore"].as_f64().unwrap_or(0.0);
-        let adjusted=(transfer*600.0).round() as i64
+        let revision_support=evidence["matchedFrozenRevisionCases"]
+            .as_u64().unwrap_or(0);
+        let matched_lift=evidence["observedRevisionTransferLift"]
+            .as_f64().unwrap_or(0.0);
+        let revision_weight=if revision_support>0 {
+            matched_lift.clamp(-2.0,2.0)*
+                (revision_support as f64/(revision_support as f64+6.0))
+                *300.0
+        }else{0.0};
+        let adjusted=((transfer*600.0)+revision_weight).round() as i64
             + (if cross>0 && reg==0 {240}else{0});
         let base=row["selectionPriority"].as_i64().unwrap_or(0);
         row["selectionPriority"]=json!(base.saturating_add(adjusted));
