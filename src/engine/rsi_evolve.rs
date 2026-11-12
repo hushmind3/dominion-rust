@@ -4768,6 +4768,26 @@ fn native_plan_source_input(parent:&Value,campaign:&Value)->Value {
     input
 }
 
+/// A descendant can only plan source files that actually exist in its own
+/// pinned checkout with the same bytes hashed by its source index. The source
+/// index contains non-editable docs/assets too; a raw top-ranked path may
+/// otherwise abort the campaign before any model edit is attempted.
+fn verified_descendant_focus(
+    state:&AppState,index_id:&str,lab:&Path,ranked:Vec<Value>
+)->Vec<Value>{
+    let Ok(root)=std::fs::canonicalize(lab) else{return Vec::new()};
+    ranked.into_iter().filter(|row|{
+        let Some(path)=row["path"].as_str() else{return false};
+        if !crate::engine::rsi::safe_path(path){return false;}
+        let Some(indexed)=crate::engine::code_index::indexed_source_hash(
+            state,index_id,path) else{return false};
+        let Ok(file)=std::fs::canonicalize(root.join(path)) else{return false};
+        if !file.starts_with(&root)||!file.is_file(){return false;}
+        let Ok(bytes)=std::fs::read(file) else{return false};
+        format!("{:x}",Sha256::digest(&bytes))==indexed
+    }).take(2).collect()
+}
+
 /// The model-bearing generation is planned by its own compiled executable,
 /// not by an older coordinator. This method only reads durable observations
 /// and returns a bounded proposal; it does not invoke a model or mutate code.
@@ -4819,6 +4839,16 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
     } else {
         Vec::new()
     };
+    // Restrict the native descendant's chosen files to the exact indexed
+    // revision of its own detached source. Invalid paths no longer abort the
+    // generation; the model can still search if no ranked source remains.
+    let ranked=if source_input["rsiSystemEvolution"]==true {
+        let lab=campaign["labDir"].as_str()
+            .ok_or("후손 계획의 실제 소스 디렉터리가 없습니다.")?;
+        verified_descendant_focus(state,
+            campaign["planIndexId"].as_str().unwrap_or(""),
+            Path::new(lab),ranked)
+    }else{ranked};
     let target_plan=generation_target_plan(&domain,selection,&strategy,binary_commit);
     let system_blueprint=if source_input["rsiSystemEvolution"]==true {
         let root=campaign["labDir"].as_str()
@@ -4843,6 +4873,32 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
 #[cfg(test)]
 mod native_plan_transfer_regression {
     use super::*;
+    #[test]
+    fn system_descendant_filters_non_source_and_stale_indexed_paths_before_planning() {
+        let (state,root)=state();
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        std::fs::write(root.join("src/engine/memory.rs"),
+            "pub fn recall() -> u32 { 7 }\n").unwrap();
+        std::fs::write(root.join(".github/workflows/memory.yml"),
+            "name: pretend-target\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let index_id=index["id"].as_str().unwrap();
+        let valid="src/engine/memory.rs";
+        let rows=vec![
+            json!({"path":".github/workflows/memory.yml"}),
+            json!({"path":"src/engine/../secrets.rs"}),
+            json!({"path":"src/engine/missing.rs"}),
+            json!({"path":valid,"score":1.0})
+        ];
+        let actual=verified_descendant_focus(&state,index_id,&root,rows.clone());
+        assert_eq!(actual.len(),1);
+        assert_eq!(actual[0]["path"],valid);
+        std::fs::write(root.join(valid),"pub fn recall() -> u32 { 8 }\n").unwrap();
+        assert!(verified_descendant_focus(&state,index_id,&root,rows).is_empty(),
+            "stale indexed content must not be fed to model-source editor");
+        let _=std::fs::remove_dir_all(root);
+    }
     #[test]
     fn adopted_native_descendant_goal_reaches_fresh_executable_without_losing_owner_request() {
         let original=json!({"rsiObjective":"memory","rsiAutonomous":false,
