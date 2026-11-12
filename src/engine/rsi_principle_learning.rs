@@ -506,7 +506,7 @@ pub(crate) fn instruction(ledger:&Value)->String {
          propose source-level revision of learner={}. \
          Diagnose which MECHANISM fails to transfer, and invent a new, \
          falsifiable improvement rule by rewriting the learning algorithm, \
-         model architecture/training source, memory, harness or tool logic. \
+         API model routing, memory, harness, tool behavior and learning algorithms (NOT external API weights). \
          Propose a new openProgram graph and implement the actual source. \
          Reuse good mechanisms across domains only when case-level evidence \
          supports transfer. Do not optimize raw patch-count or self-reported \
