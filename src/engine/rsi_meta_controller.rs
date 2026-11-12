@@ -335,6 +335,26 @@ mod tests {
         assert!(measured_feedback["brierError"].is_number());
     }
     #[test]
+    fn independently_replayed_rejection_lowers_next_success_forecast() {
+        let frontier=vec![json!({"role":"memory","domain":"memory",
+            "path":"src/engine/memory.rs","sourceBytes":900})];
+        let base=synthesize(&[],&frontier,&["memory"],None,
+            &json!({}),&json!({}),&json!({"edges":[]}));
+        let failed=json!({"metaPolicy":{"target":{"role":"memory"}},
+            "pairedMeasured":true,"pairedRevalidated":false,
+            "accepted":false,"candidateId":"replayed-rejected-source",
+            "evaluation":{"metrics":{"eligible":false,"verdict":"regressed",
+                "regressions":1}}});
+        let updated=synthesize(&[failed.clone()],&frontier,&["memory"],None,
+            &json!({}),&json!({}),&json!({"edges":[]}));
+        assert_eq!(updated["prediction"]["observedTrials"],1);
+        assert!(updated["forecast"]["probability"].as_f64().unwrap()
+            <base["forecast"]["probability"].as_f64().unwrap());
+        let feedback=feedback(&updated,&failed);
+        assert_eq!(feedback["independentObservation"],false);
+        assert!(feedback["brierError"].as_f64().is_some_and(|e|e>0.0));
+    }
+    #[test]
     fn productive_descendant_evidence_changes_target_ranking() {
         let frontier=vec![
             json!({"role":"improvement_methods","domain":"improver",
