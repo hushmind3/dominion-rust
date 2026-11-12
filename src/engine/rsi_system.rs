@@ -303,6 +303,17 @@ pub(crate) fn architecture_frontier(
             cost(a.0,a.2).cmp(&cost(b.0,b.2))
                 .then(a.0.cmp(b.0))
         });
+        // Keep the CURRENT self-evolving scientific-method source in the
+        // actual frontier. Otherwise cost-ranked file caps may hide the very
+        // algorithm that an invented intelligence must later re-improve.
+        // This changes SOURCE DISCOVERY only, not the self-chosen target rank.
+        if role=="improvement_methods" {
+            if let Some(pos)=available.iter().position(|(path,_,_)|
+                *path=="src/engine/rsi_recursive_discovery.rs") {
+                let method=available.remove(pos);
+                available.insert(0,method);
+            }
+        }
         // Preserve alternate source targets. The original frontier exposed
         // only ONE representative per role, silently discarding a model's
         // perfectly valid inherited next-stage path whenever another file
