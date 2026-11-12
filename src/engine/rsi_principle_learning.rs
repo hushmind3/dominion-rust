@@ -479,6 +479,13 @@ pub(crate) fn instruction(ledger:&Value)->String {
             .total_cmp(&ea["estimatedPriority"].as_f64().unwrap_or(0.0))
     });
     let calibration=&ledger["predictiveCalibration"];
+    let transfer=ledger["transferFeatures"].as_array().into_iter().flatten()
+        .filter(|f|f["transferEligible"]==true)
+        .take(5).map(|f|format!(
+            "transferable principle={} independent-mechanisms={} measured-cases={} observed-domains={} task-gains={} regressions={}",
+            f["key"],f["independentMechanisms"],f["measuredCases"],
+            f["domains"],f["improvedCases"],f["regressedCases"]))
+        .collect::<Vec<_>>().join("\n");
     let top=rows.iter().take(5).map(|row|format!(
         "mechanism={} measured={} gains={} regressions={} next-generation cases={} next-generation improvements={} across-domains={}",
         row["mechanism"],row["measuredCases"],row["improvedCases"],
@@ -487,6 +494,7 @@ pub(crate) fn instruction(ledger:&Value)->String {
     )).collect::<Vec<_>>().join("\n");
     format!(
         "VERIFIED PRINCIPLE LEARNING (ledger={}):\n{}\n\
+         CROSS-MECHANISM ABSTRACTIONS (independently supported):\n{}\n\
          These are independently evaluated task effects and observational \
          successor effects, not proof of a universal causal law. \
          Predictor calibration: {} cases; mean Brier error={}; \
@@ -498,7 +506,7 @@ pub(crate) fn instruction(ledger:&Value)->String {
          Reuse good mechanisms across domains only when case-level evidence \
          supports transfer. Do not optimize raw patch-count or self-reported \
          acceptance. This learner's source can itself be redesigned.",
-        ledger["sha256"],top,calibration["measuredCases"],
+        ledger["sha256"],top,transfer,calibration["measuredCases"],
         calibration["meanBrierError"],calibration["needsLearnerSourceRevision"])
 }
 #[cfg(test)]
