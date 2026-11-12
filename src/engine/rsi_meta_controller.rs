@@ -8,7 +8,7 @@
 //! are ordinary mutable Rust source in every accepted descendant.
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::collections::{BTreeMap,BTreeSet};
+use std::collections::BTreeSet;
 
 fn planned_role(g:&Value)->Option<&str> {
     g["metaPolicy"]["target"]["role"].as_str()
@@ -82,6 +82,12 @@ pub(crate) fn synthesize(
         let observed=relevant.iter().filter_map(|g|independent_outcome(g)).collect::<Vec<_>>();
         let wins=observed.iter().filter(|v|**v).count();
         let attempts=relevant.len();
+        let file_attempts=history.iter().filter(|g|
+            g["focusFiles"].as_array().is_some_and(|files|files.iter()
+                .any(|file|file.as_str()==Some(path)))).count();
+        let file_wins=history.iter().filter(|g|independent_outcome(g)==Some(true)
+            && g["focusFiles"].as_array().is_some_and(|files|files.iter()
+                .any(|file|file.as_str()==Some(path)))).count();
         let n=observed.len();
         let regressions=relevant.iter().filter(|g|
             g["evaluation"]["metrics"]["regressions"].as_u64().unwrap_or(0)>0).count();
@@ -98,12 +104,19 @@ pub(crate) fn synthesize(
         let evidence_pressure=(1.0+(total_trials as f64+1.0).ln())
             /(1.0+n as f64).sqrt();
         let noise_penalty=incomplete as f64/(attempts.max(1) as f64);
+        let file_stall=(file_attempts.saturating_sub(file_wins)) as f64
+            /(file_attempts.max(1) as f64);
+        let program_bonus=if target["inheritedProgramStage"]==true{0.31}else{0.0};
+        // Give the descendant's own editable meta-program a fair place in
+        // the portfolio without declaring it automatically better.
+        let metacognition=if path=="src/engine/rsi_meta_controller.rs"{0.08}else{0.0};
         // This scoring equation is intentionally EDITABLE by an adopted
         // descendant. Its predictions remain unproven until later paired
         // outcomes; no change to the external validation threshold is allowed.
         let score=0.44*posterior+0.38*uncertainty
             +0.22*novelty+0.26*reproduction+0.07*evidence_pressure
-            +inherited-0.11*regressions-0.06*noise_penalty-0.035*cost;
+            +inherited+program_bonus+metacognition
+            -0.11*regressions-0.06*noise_penalty-0.09*file_stall-0.035*cost;
         roles.insert(role.to_string());
         ranked.push((json!({
             "target":target,"role":role,"domain":target["domain"],
@@ -112,6 +125,8 @@ pub(crate) fn synthesize(
             "confirmedAdoptions":wins,"attempts":attempts,
             "incompleteTrials":incomplete,"productiveOffspring":offspring,
             "regressionFrequency":regressions,"sourceCost":cost,
+            "fileAttempts":file_attempts,"fileVerifiedAdoptions":file_wins,
+            "inheritedProgramStage":target["inheritedProgramStage"]==true,
             "novelComponent":novelty>0.0
         }),score));
     }
@@ -137,7 +152,8 @@ pub(crate) fn synthesize(
             "designId":g["systemDesign"]["id"],
             "source":"independently_adopted_pair"
         })).collect::<Vec<_>>();
-    let mode=if recent_failed.len()>=2{"counterfactual_mechanism_revision"}
+    let mode=if selected["inheritedProgramStage"]==true{"execute_inherited_improvement_program"}
+        else if recent_failed.len()>=2{"counterfactual_mechanism_revision"}
         else if peer_count>0{"cross_lineage_hybrid_design"}
         else if accepted_lineages>0{"reproductive_policy_extension"}
         else{"novel_mechanism_search"};
@@ -155,6 +171,7 @@ pub(crate) fn synthesize(
         "editableInNextGeneration":true,
         "peerReferences":peer_count,
         "lineageDesigns":accepted_lineages,
+        "inheritedImprovementProgramApplied":selected["inheritedProgramStage"]==true,
         "coveredRoles":roles.len(),
         "externalEvaluationOwner":"independent_supervisor"
     });
