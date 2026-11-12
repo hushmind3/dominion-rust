@@ -1029,7 +1029,7 @@ mod tests {
         let history=vec![json!({"generatorCommit":"first","accepted":true,
             "evaluation":{"verdict":"improved","metrics":{"improvedHoldouts":1}}})];
         let first=blueprint(&root,"commit-one",&history);
-        assert_eq!(first["architecture"].as_array().unwrap().len(),8);
+        assert_eq!(first["architecture"].as_array().unwrap().len(),10);
         assert_eq!(first["generatorCommit"],"commit-one");
         assert_eq!(first["historyCount"],1);
         assert_eq!(first["recentMeasuredGenerations"][0]["accepted"],true);
