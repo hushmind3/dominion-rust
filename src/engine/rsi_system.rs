@@ -22,7 +22,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
     ("harness",&["src/engine/jobs.rs","src/engine/chat/runtime.rs","src/engine/decompose.rs","src/engine/chat/mod.rs"]),
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
-    ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
+    ("learning",&["src/engine/rsi_whole_agent.rs","src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
     ("improvement_methods",&["src/engine/rsi_principle_learner.rs","src/engine/rsi_recursive_laboratory.rs","src/engine/rsi_causal_ecology.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
     ("models",&["src/engine/rsi_weight_cycle.rs","src/engine/rsi_adapter_cycle.py","src/engine/rsi_model_learning.rs","src/engine/router.rs","src/engine/models.rs","src/engine/cli_model.rs","src/engine/llm.rs","src/engine/gateway.rs"]),
