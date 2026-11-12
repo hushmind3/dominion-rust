@@ -242,6 +242,17 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     if crate::engine::dev::installation_running() {return error("버전 반영이 끝난 뒤 발전 작업을 시작하세요.".into());}
     let body=match continued_request(&state,body){Ok(body)=>body,Err(message)=>return error(message)};
     let continuous=body["mode"]=="continuous";
+    // Model routing may use other already connected providers and therefore
+    // requires an explicit cost-bearing owner choice for an automatic
+    // whole-intelligence evolution campaign; local LoRA is not a shortcut.
+    if body["adaptiveModelSelection"]==true
+        && (!continuous || body["systemEvolution"]!=true
+            || body["selectionPolicy"]!="automatic") {
+        return error("모델 포트폴리오 탐색은 자동 전체 지능 개선 모드에서만 선택할 수 있습니다.".into());
+    }
+    if body["modelCandidates"].as_array().is_some_and(|list|list.len()>24) {
+        return error("모델 후보는 최대 24개로 제한합니다.".into());
+    }
     let _start_guard=if continuous{
         if !state.begin_session("rsi-evolution-start"){return error("개선 시작을 처리 중입니다.".into());}
         let guard=state.session_guard("rsi-evolution-start");
@@ -372,6 +383,10 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
             && body["selectionPolicy"]=="automatic",
         "rsiSystemEvolution": continuous && body["systemEvolution"]==true
             && body["selectionPolicy"]=="automatic",
+        "rsiAdaptiveModelSelection": continuous && body["systemEvolution"]==true
+            && body["selectionPolicy"]=="automatic"
+            && body["adaptiveModelSelection"]==true,
+        "rsiModelCandidates":body["modelCandidates"],
         "rsiIndexId": index_meta["id"],
         "rsiIndexFingerprint": index_meta["fingerprint"],
         "rsiIndexFiles": index_meta["files"],
