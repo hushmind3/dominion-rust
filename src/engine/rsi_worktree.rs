@@ -776,8 +776,9 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
     let applied=async {
         git(&source,&["apply","--check",path]).await?;
         if !git(&source,&["status","--porcelain","--untracked-files=normal"]).await?.is_empty()
-            || git(&source,&["rev-parse","HEAD"]).await?!=candidate["baseCommit"].as_str().unwrap_or("") {
-            return Err("최종 적용 직전 기준 소스가 변경되어 중단했습니다.".into());
+            || git(&source,&["rev-parse","HEAD"]).await?!=candidate["baseCommit"].as_str().unwrap_or("")
+            || git(&source,&["symbolic-ref","--quiet","HEAD"]).await?!="refs/heads/dominion-sub3" {
+            return Err("최종 적용 직전 서브3 원본 브랜치·기준 소스가 변경되어 중단했습니다.".into());
         }
         git(&source,&["apply",path]).await?;
         Ok::<(),String>(())
