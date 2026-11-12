@@ -269,6 +269,14 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     // Detached Git worktree, not a new branch; the running server checkout stays pristine.
     git(&source,&["worktree","add","--detach",name,base]).await?;
     if let Some(id)=input["rsiInheritedCandidateId"].as_str().filter(|id|!id.is_empty()) {
+        if input["rsiArchiveSelection"].is_object()
+            && (input["rsiArchiveSelection"]["candidateId"]!=id
+                || !crate::engine::rsi_archive::valid_selection(
+                    &context.state,&input["rsiArchiveSelection"],base,
+                    &input["rsiFrozenCases"])) {
+            let _=git(&source,&["worktree","remove","--force",name]).await;
+            return Err("영구 아카이브의 원본 동결 평가와 일치하지 않는 패치 계승입니다.".into());
+        }
         if let Err(error)=inherit_neutral_patch(context,&path,base,id).await {
             let _=git(&source,&["worktree","remove","--force",name]).await;
             return Err(error);
