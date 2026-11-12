@@ -185,7 +185,13 @@ if(mode==='probe'){
       independentlyVerifiedImprovement:accepted.some(g=>g.verdict==='improved'),
       note:'CI completed does not imply an accepted model-generated RSI improvement'
     };
-    trace.actualCompletion=trace.summary.independentlyVerifiedImprovement;
+    // A single adopted patch is progress, not completed recursive RSI.
+    // Full proof requires three verified descendant adoptions and measured
+    // cross-domain method transfer in the engine's lineage receipts.
+    trace.actualCompletion=trace.lineage.capabilityDemonstrated===true
+      && trace.lineage.metaTransferProven===true
+      && Number(trace.lineage.maxVerifiedStreak)>=3
+      && trace.summary.acceptedGenerations>=3;
     if(trace.generationEvidence.some(g=>countCalls(g,editTools)===0)) {
       trace.noEditModelResponses=[];
       for(const generation of trace.generationEvidence) {
