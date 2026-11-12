@@ -136,9 +136,11 @@ pub fn definitions() -> Vec<Value> {
                     "edges":{"type":"array","maxItems":384,
                         "items":{"type":"object","properties":{
                             "from":{"type":"string"},"to":{"type":"string"},
-                            "when":{"type":"string","enum":["always","adopted",
-                                "not_adopted","improved","regressed",
-                                "rejected","no_candidate","neutral"]}},
+                            "when":{"description":"String outcome or recursive aggregate-metric condition: {all:[...]}, {any:[...]}, {not:...}, or {metric:'improvedHoldouts',op:'>=',value:2}. Model may combine predicates without prewritten experiment stages.",
+                                "anyOf":[{"type":"string","enum":["always","adopted",
+                                    "not_adopted","improved","regressed",
+                                    "rejected","no_candidate","neutral"]},
+                                    {"type":"object"}]}},
                             "required":["from","to","when"],
                             "additionalProperties":false}}
                 },"required":["entry","nodes","edges"],"additionalProperties":false}),
