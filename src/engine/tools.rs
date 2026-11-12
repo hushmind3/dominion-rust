@@ -133,7 +133,7 @@ pub async fn execute(
     if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
     }
-    if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace") {
+    if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_function") {
         let path=args["path"].as_str().unwrap_or("");
         if !crate::engine::rsi::safe_path(path) {
             return Err("자기개선은 허용된 소스코드 경로만 수정할 수 있습니다.".into());
