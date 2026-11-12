@@ -407,6 +407,32 @@ mod tests {
         assert!(compared_preference(&model,&strong,&weak).is_none());
     }
     #[test]
+    fn api_model_is_credited_only_for_measured_compiled_successor_capability(){
+        let a="a".repeat(40);let other="b".repeat(40);
+        let parent=sample("parent",&a,"memory","api",true);
+        let competitor=sample("competitor",&a,"memory","local",false);
+        let unrelated_parent=sample("unrelated",&other,"tools","local",false);
+        let unrelated_cmp=sample("second",&other,"tools","api",true);
+        let mut offspring=sample("offspring",&"c".repeat(40),
+            "tools","api",true);
+        offspring["generatorBinarySha256"]=json!("a".repeat(64));
+        offspring["systemBlueprintVerified"]=json!(true);
+        let history=vec![parent.clone(),competitor.clone(),
+            unrelated_parent.clone(),unrelated_cmp.clone(),
+            offspring.clone()];
+        let model=learn(&history);
+        let api=model["models"].as_array().unwrap().iter()
+            .find(|row|row["providerId"]=="api").unwrap();
+        assert_eq!(api["verifiedCompiledSuccessorTrials"],1);
+        assert_eq!(api["crossCapabilitySuccessorAdoptions"],1);
+        offspring["generatorBinarySha256"]=Value::Null;
+        let changed=learn(&[parent,competitor,unrelated_parent,
+            unrelated_cmp,offspring]);
+        let api=changed["models"].as_array().unwrap().iter()
+            .find(|row|row["providerId"]=="api").unwrap();
+        assert_eq!(api["verifiedCompiledSuccessorTrials"],0);
+    }
+    #[test]
     fn no_model_comparison_without_same_frozen_baseline(){
         let a="a".repeat(40);let b="b".repeat(40);
         let model=learn(&[
