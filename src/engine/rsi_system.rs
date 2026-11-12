@@ -544,10 +544,13 @@ pub(crate) fn propose(
         || child["cancelRequested"]==true{
         return Err("진행 중인 전체 시스템 자기개선 후손만 설계할 수 있습니다.".into());
     }
-    let known=child["input"]["rsiSystemBlueprint"]["architecture"]
+    let mut known=child["input"]["rsiSystemBlueprint"]["architecture"]
         .as_array().into_iter().flatten()
         .filter_map(|row|row["role"].as_str()).map(str::to_string)
         .collect::<std::collections::BTreeSet<_>>();
+    // Built-in roles remain valid even for older generation receipts that
+    // predate the compiled source-blueprint protocol.
+    known.extend(COMPONENTS.iter().map(|(role,_)|(*role).to_string()));
     let mut named=known.clone();
     let mut new_components=Vec::<Value>::new();
     if let Some(rows)=body["newComponents"].as_array(){
@@ -760,10 +763,20 @@ pub(crate) fn propose(
                 return Err("후손 단계의 실행·학습·도구 정책이 올바르지 않습니다.".into());
             }
             let file=root.join(path);
-            let existing=fs::canonicalize(&file)
-                .map_err(|_|"후손 프로그램 소스 파일이 없습니다.".to_string())?;
-            if !existing.starts_with(&root)||!existing.is_file() {
-                return Err("후손 프로그램은 자기 작업공간의 소스만 선택할 수 있습니다.".into());
+            let safe_existing=fs::canonicalize(&file).ok()
+                .is_some_and(|file|file.starts_with(&root)&&file.is_file());
+            // A newly invented intelligence module does not exist in G1
+            // until the model writes it. It can nevertheless be the real
+            // first editing assignment of the independently adopted G2.
+            let planned_new=new_components.iter().any(|component|
+                component["role"]==role
+                && component["sourcePaths"].as_array().is_some_and(|files|
+                    files.iter().any(|entry|entry==path)))
+                && unique.contains(path)
+                && file.parent().and_then(|parent|fs::canonicalize(parent).ok())
+                    .is_some_and(|parent|parent.starts_with(&root));
+            if !safe_existing && !planned_new{
+                return Err("후손 프로그램은 실재하거나 실제 생성할 예정인 자기 소스만 선택할 수 있습니다.".into());
             }
             successor_stages.push(json!({"role":role,"domain":domain,
                 "path":path,"objective":objective,

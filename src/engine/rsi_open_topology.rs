@@ -184,6 +184,51 @@ mod tests{
         assert_eq!(cycle[1]["role"],"memory");
     }
     #[test]
+    fn accepted_source_plus_runtime_integration_inherits_a_new_subsystem(){
+        let new_path="src/engine/causal_research.rs";
+        let runtime="src/engine/mod.rs";
+        let generation=json!({
+            "accepted":true,"pairedRevalidated":true,
+            "candidateOrigin":"model_driven_detached_worktree",
+            "evaluation":{"metrics":{"eligible":true}},
+            "generatorCommit":"a".repeat(40),
+            "acceptedCommit":"b".repeat(40),"jobId":"child-1",
+            "acceptedSourceHashes":{new_path:"c".repeat(64),runtime:"d".repeat(64)},
+            "systemDesign":{"source":"model_authored_system_design",
+                "generatorCommit":"a".repeat(40),
+                "generationJobId":"child-1",
+                "targetFiles":[new_path,runtime],
+                "componentFiles":{"causal_research":[new_path]},
+                "newComponents":[{"role":"causal_research","domain":"learning",
+                    "purpose":"Test source-grounded theories and improve the agent research algorithm",
+                    "sourcePaths":[new_path],"integrationPaths":[runtime]}]}
+        });
+        let inherited=inherited_roles(&[generation]);
+        assert_eq!(inherited.len(),1);
+        assert_eq!(inherited[0]["role"],"causal_research");
+        assert_eq!(inherited[0]["integrationPaths"][0],runtime);
+    }
+    #[test]
+    fn nonintegrated_module_never_becomes_intelligence(){
+        let file="src/engine/unused.rs";
+        let g=json!({"accepted":true,"pairedRevalidated":true,
+            "candidateOrigin":"model_driven_detached_worktree",
+            "evaluation":{"metrics":{"eligible":true}},
+            "generatorCommit":"a".repeat(40),"acceptedCommit":"b".repeat(40),
+            "jobId":"worker",
+            "acceptedSourceHashes":{file:"c".repeat(64)},
+            "systemDesign":{"source":"model_authored_system_design",
+                "generatorCommit":"a".repeat(40),
+                "generationJobId":"worker",
+                "targetFiles":[file],
+                "componentFiles":{"new_unused":[file]},
+                "newComponents":[{"role":"new_unused","domain":"learning",
+                    "purpose":"An isolated source file does not constitute an integrated new intelligence",
+                    "sourcePaths":[file],"integrationPaths":[]}]}
+        });
+        assert!(inherited_roles(&[g]).is_empty());
+    }
+    #[test]
     fn proposed_capability_is_not_inherited_without_paired_acceptance(){
         let g=json!({"accepted":true,"pairedRevalidated":false,
             "systemDesign":{"newComponents":[{"role":"causal_world_model",
