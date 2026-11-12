@@ -390,6 +390,8 @@ pub(crate) fn instruction(policy:&Value)->String {
     if policy.is_null(){return String::new();}
     format!("API-EXECUTED INTELLIGENCE: selected authorized provider={} model={}, \
         based on {} measured source-task cases (forecast {}). \
+        Same-source frozen-case comparisons: {}, relative case delta: {}. \
+        These results are observational and NOT intrinsic model A/B. \
         The API model's WEIGHTS are NOT trainable or modified. \
         Improve your own provider selection, tool invocation, search, memory, \
         context management and learning policies as EDITABLE Rust source. \
@@ -398,7 +400,9 @@ pub(crate) fn instruction(policy:&Value)->String {
         Revise src/engine/rsi_api_route_learning.rs when this policy is poorly \
         calibrated, and let the rebuilt descendant make a new source-grounded choice.",
         policy["chosen"]["providerId"],policy["chosen"]["model"],
-        policy["observedTaskCases"],policy["forecastCaseGain"])
+        policy["observedTaskCases"],policy["forecastCaseGain"],
+        policy["matchedEvidence"]["matchedFrozenSourceCases"],
+        policy["matchedEvidence"]["meanRelativeHoldoutDelta"])
 }
 #[cfg(test)]
 mod tests {
