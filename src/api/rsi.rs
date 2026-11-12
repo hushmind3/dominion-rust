@@ -373,8 +373,6 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiAutonomous": autonomous,
         // A paid model descendant designs across all its own subsystems.
         // Opt-in legacy native induction retains its separate bounded protocol.
-        // Explicit operator opt-in, separate from normal source evolution.
-        "rsiAllowLocalAdapterTraining": continuous && body["allowLocalAdapterTraining"] == true,
         "rsiSystemEvolution": continuous && body["nativeInduction"] != true
             && body["evolutionTarget"] != "product",
         "rsiNativeInduction": continuous && body["nativeInduction"]==true
