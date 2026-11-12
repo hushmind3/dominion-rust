@@ -1008,6 +1008,7 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
     let interaction=crate::engine::rsi_interaction::influence_graph(history,&[]);
     let reciprocal=crate::engine::rsi_mutual_program::completed_cycles(history);
     let reflexive=crate::engine::rsi_reflexive::completed(history);
+    let experiment_methods=crate::engine::rsi_reflexive::completed_method_cycles(history);
     let transfer=crate::engine::rsi_mutual_program::transfer_graph(history);
     let edges=interaction["edges"].as_array().cloned().unwrap_or_default();
     let cross=edges.iter().filter(|edge|
@@ -1034,6 +1035,9 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
         "acceptedReflexiveLoops":reflexive["completedLoops"],
         "reflexiveLineageSha256":reflexive["sha256"],
         "verifiedMetaCapabilityMetaCycles":reflexive["loops"],
+        "completedExperimentMethodCycles":experiment_methods["completedMethodCycles"],
+        "experimentMethodLineageSha256":experiment_methods["sha256"],
+        "verifiedMethodRedesignAndExecution":experiment_methods["cycles"],
         "crossSubsystemAttribution":"independent_paired_observation_not_isolated_causal_proof",
         "demonstrated":chain>=3 && handoffs>=2 && missing.is_empty() && method_transfer && meta_gain,
         "coverageMeaning":"independently adopted source roles; performance is measured separately by downstream tasks"})
