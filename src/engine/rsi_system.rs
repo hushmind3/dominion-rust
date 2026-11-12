@@ -11,7 +11,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
+    ("improvement_methods",&["src/engine/rsi_principle_lab.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_recursive_discovery.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
     ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/llm.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
@@ -697,6 +697,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         use workspace_replace_function, for any language use workspace_replace \
         (line mode or exact oldText), and create new modules with workspace_write. \
         Before editing call rsi_system_plan(component, nextDomain, hypothesis, design, targetFiles). For a NEW intelligence component, use component=system, assign the invented role and an existing consumer role separate source files, then author moduleIntroductions [{role,newFiles,integrationFiles,interfaceContract,integrationSymbol,improvementMechanism}], create the module AND update its actual caller or execution interface; the integrationSymbol must occur in BOTH edited sources and a successorStages entry must schedule the new role for further improvement. A new module alone is not an integrated capability. For a coupled redesign of algorithm, harness, memory, models, learning, tools and improvement methods, use component=system and explicitly assign each file to one role with components and componentFiles. For actual cross-subsystem redesign, declare interactionEdges [{fromRole,toRole,fromPath,toPath,mechanism,expectedEffect}] that bind distinct source edits, and successorStages for the NEXT compiled descendant. Explain how A improves B's ability to improve A again. Then WRITE ALL the named source files: partially implemented designs receive no credit. New roles and source modules are allowed. Optionally author successorStages [{role,domain,path,objective,learningPolicy,toolPolicy,executionPolicy}]: the accepted descendant will apply observed-failure task ranking, source-edit focus and restricted tool access from these fields; only after your source is independently adopted will the NEW compiled descendant read its own code and attempt those next tasks. A design and a saved stage alone earn zero. At least one adopted generation must INVENT an executable method with rsi_method_propose and a later compiled descendant must EXECUTE it with verified postconditions. \
+        You may propose improvementPrinciple: a MODEL-AUTHORED mechanistic theory that joins one real task intelligence source (models, memory, learning, tools, harness, algorithms) to an EDITABLE method-learning source. For its paired experiment use component=system, disjoint componentFiles, real edits to BOTH files, and fields name,taskRole,taskFile,methodFile,failureMode,mechanism,counterfactual,transferPrediction,learningSignal. Its task-level quality and the NEXT descendant's actual improvement ability will be learned separately; source adoption is not evidence of transfer. \
         Predict source-candidate creation, independent adoption, meta improvement and regressions with expectedOutcomes in rsi_system_plan BEFORE editing. The independent evaluator later calibrates this forecast and your descendant learns from its errors. Improve the intelligence control loop, not only a benchmark number. \
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
@@ -954,11 +955,15 @@ pub(crate) fn propose(
             expectations.insert(name.clone(),p.clone());
         }
     }
+    // A principle is experimental DATA only when the model binds it to
+    // distinct task-intelligence and self-improvement source revisions.
+    let improvement_principle=crate::engine::rsi_principle_lab::validate_authored(
+        &body["improvementPrinciple"],&assignments,paths)?;
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
         commit,component,roles,assignments,next,hypothesis,design,paths,
-        edges,introductions,stages,expectations
+        edges,introductions,stages,expectations,improvement_principle
     ]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
@@ -970,6 +975,7 @@ pub(crate) fn propose(
         "moduleIntroductions":introductions,
         "successorStages":stages,
         "expectedOutcomes":expectations,
+        "improvementPrinciple":improvement_principle,
         "nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,
         "qualityProven":false,"adopted":false
