@@ -3,6 +3,7 @@
 //! co-design, and an authored next-stage intention are different evidence.
 //! An external paired evaluator alone decides whether any change improved.
 use serde_json::{json,Value};
+use sha2::{Digest,Sha256};
 use std::collections::{BTreeMap,BTreeSet};
 
 #[derive(Default,Clone)]
@@ -144,4 +145,111 @@ pub(crate) fn graph(history:&[Value],frontier:&[Value])->Value{
         "interpretation":"source-bound cross-role exploration, not causal proof",
         "qualityProven":false
     })
+}
+
+
+/// Turn a statistical cross-role graph into a CURRENT, SOURCE-GROUNDED
+/// three-phase programme. A phase is an experiment, never a proof of gain.
+/// This routine belongs to the compiled descendant and can evolve with it.
+pub(crate) fn curriculum(frontier:&[Value],meta:&Value,allowed:&[&str])->Value{
+    let main=&meta["target"];
+    let graph=&meta["mutualDevelopmentGraph"];
+    let primary=frontier.iter().find(|row|row["role"]==main["role"]
+        && row["path"]==main["path"]
+        && row["sourceSha256"]==main["sourceSha256"])
+        .cloned().unwrap_or(Value::Null);
+    let mut pairs=Vec::<(f64,Value)>::new();
+    if primary.is_object(){
+        for partner in frontier.iter().filter(|row|
+            row["role"]!=primary["role"] && row["path"]!=primary["path"]
+                && row["sourceSha256"].as_str().is_some_and(|sha|sha.len()==64)
+                && row["domain"].as_str().is_some_and(|domain|allowed.contains(&domain))) {
+            let a=primary["role"].as_str().unwrap_or("");
+            let b=partner["role"].as_str().unwrap_or("");
+            let evidence=graph["edges"].as_array();
+            let forward=evidence.into_iter().flatten().find(|e|
+                e["from"]==a && e["to"]==b);
+            let backward=evidence.into_iter().flatten().find(|e|
+                e["from"]==b && e["to"]==a);
+            let known=forward.and_then(|e|e["observedDirectSuccessorAdoptions"].as_u64())
+                .unwrap_or(0).min(4)
+                +backward.and_then(|e|e["observedDirectSuccessorAdoptions"].as_u64())
+                    .unwrap_or(0).min(4);
+            let attempts=forward.and_then(|e|e["observedDirectSuccessorAttempts"].as_u64())
+                .unwrap_or(0)
+                +backward.and_then(|e|e["observedDirectSuccessorAttempts"].as_u64())
+                    .unwrap_or(0);
+            let meta_partner=a=="improvement_methods" || b=="improvement_methods";
+            let untouched=partner["verifiedRoleImproved"]!=true;
+            let reciprocal=(known as f64+1.0)/(attempts as f64+2.0);
+            let score=0.35*reciprocal
+                +if meta_partner{0.24}else{0.07}
+                +if untouched{0.20}else{0.0}
+                +0.10/(1.0+attempts as f64)
+                -((partner["sourceBytes"].as_u64().unwrap_or(0) as f64)/200_000.0)
+                    .min(0.10);
+            pairs.push((score,json!({
+                "fromRole":a,"toRole":b,
+                "fromPath":primary["path"],"toPath":partner["path"],
+                "fromSourceSha256":primary["sourceSha256"],
+                "toSourceSha256":partner["sourceSha256"],
+                "fromDomain":primary["domain"],"toDomain":partner["domain"],
+                "score":score,"observedBidirectionalSuccessors":known,
+                "observedAttempts":attempts,"causalityProven":false
+            })));
+        }
+    }
+    pairs.sort_by(|(a,first),(b,second)|b.total_cmp(a)
+        .then_with(||first["toRole"].as_str().cmp(&second["toRole"].as_str()))
+        .then_with(||first["toPath"].as_str().cmp(&second["toPath"].as_str())));
+    let pair=pairs.first().map(|(_,v)|v.clone()).unwrap_or(Value::Null);
+    let phases=if pair.is_object(){
+        json!([{
+            "phase":"redesign_primary",
+            "role":pair["fromRole"],"path":pair["fromPath"],
+            "sourceSha256":pair["fromSourceSha256"]
+        },{
+            "phase":"redesign_partner_to_improve_primary",
+            "role":pair["toRole"],"path":pair["toPath"],
+            "sourceSha256":pair["toSourceSha256"]
+        },{
+            "phase":"return_improvement_to_primary",
+            "role":pair["fromRole"],"path":pair["fromPath"],
+            "sourceRebindRequired":true
+        }])
+    }else{json!([])};
+    let revision=format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([&primary,&pair,&phases,graph["source"]]))
+            .unwrap_or_default()));
+    json!({
+        "source":"compiled_reciprocal_intelligence_curriculum_v1",
+        "revision":revision,"primary":primary,"pair":pair,"phases":phases,
+        "candidatePartners":pairs.len(),
+        "bundleRequiresBothWrittenSources":true,
+        "returnStageRequiresAcceptedParentAndFreshSource":true,
+        "feedbackTarget":"improve_future_ability_to_improve_other_components",
+        "qualityProven":false,"causalityProven":false
+    })
+}
+
+pub(crate) fn instruction(curriculum:&Value)->String {
+    let pair=&curriculum["pair"];
+    if !pair.is_object(){return String::new();}
+    format!(
+        "[RECIPROCAL INTELLIGENCE REDESIGN revision={}]\n\
+        Current indexed primary {} at {} (sourceSha256={}) and partner {} \
+        at {} (sourceSha256={}) form the planned loop {}.\n\
+        You must AUTHOR the causal design yourself. To claim a coupled \
+        design, use rsi_system_plan(component=system, components, \
+        componentFiles, interactionEdges, successorStages), then actually \
+        edit BOTH source files; source receipts and frozen evaluation decide \
+        adoption. interactionEdges must bind the actual two source files \
+        and the hypothesized mechanism. Set the next descendant's stage \
+        toward the complementary system; propose the return stage only after \
+        the observed descendant can continue. A source model and policy \
+        declaration alone are not improvements.\n",
+        curriculum["revision"],pair["fromRole"],pair["fromPath"],
+        pair["fromSourceSha256"],pair["toRole"],pair["toPath"],
+        pair["toSourceSha256"],curriculum["phases"]
+    )
 }
