@@ -10,6 +10,9 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
         println!("{}",option_env!("DOMINION_BUILD_COMMIT").unwrap_or("unknown"));
         return Ok(());
     }
+    if args.first().map(String::as_str)==Some("--rsi-worker-plan") {
+        return engine::rsi_evolve::worker_plan(args.get(1).ok_or("개선 캠페인 ID가 필요합니다.")?).await;
+    }
     if args.first().map(String::as_str)==Some("--rsi-worker-job") {
         return engine::rsi_evolve::worker(args.get(1).ok_or("세대 작업 ID가 필요합니다.")?).await;
     }

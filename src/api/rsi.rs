@@ -367,6 +367,8 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
+        "rsiSystemEvolution": continuous && body["nativeInduction"] != true
+            && body["evolutionTarget"] != "product",
         // Only explicitly opted-in automatic campaigns may broaden the
         // source search after independent adoption of the original goal.
         "rsiExpandAfterGain": continuous && body["expandAfterGain"] == true
