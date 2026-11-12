@@ -2,12 +2,13 @@
 //! A source patch only supplies a reward after the existing paired evaluator
 //! validates it; competing controllers are matched on exact source and model.
 use serde_json::{json,Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap,BTreeSet};
 
 fn scope(row:&Value)->Option<String>{
     let mut values=Vec::new();
     for name in ["generatorCommit","generatorModel","generatorProviderId",
-        "objectiveId","knowledgePartition"] {
+        "objectiveId","knowledgePartition","sourceBranch",
+        "comparisonProfileSha256","domain"] {
         values.push(row.get(name)?.as_str().filter(|s|!s.is_empty())?);
     }
     Some(json!(values).to_string())
@@ -18,6 +19,13 @@ fn comparable(row:&Value)->bool {
         && row["editPolicy"]["revision"].as_str().is_some_and(|s|!s.is_empty())
         && row["candidateId"].as_str().is_some_and(|s|!s.is_empty())
         && row["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+        && row["evaluation"]["candidateId"]==row["candidateId"]
+        && row["evaluation"]["evidenceSha256"].as_str()
+            .is_some_and(|sha|sha.len()==64)
+        && row["pairedRevalidated"]==true
+        && row["candidateOrigin"]=="model_driven_detached_worktree"
+        && row["nativeMutation"].is_null()
+        && row["tokenUsage"]["calls"].as_u64().is_some_and(|n|n>0)
         && row["evaluation"]["metrics"].is_object()
 }
 
@@ -27,16 +35,24 @@ fn comparable(row:&Value)->bool {
 /// contrary pair. This only promotes methods: no source adoption bypass.
 pub fn compare(rows:&[&Value],reward:fn(&Value)->f64)->Value {
     let mut cohorts=BTreeMap::<String,BTreeMap<String,f64>>::new();
+    let mut duplicate=BTreeSet::<String>::new();
     for row in rows {
         if !comparable(row) {continue;}
         let Some(context)=scope(row) else {continue;};
         let revision=row["editPolicy"]["revision"].as_str().unwrap();
-        cohorts.entry(context).or_default()
-            .entry(revision.to_string())
-            .or_insert_with(||reward(row).clamp(0.0,1.0));
+        let entry=cohorts.entry(context.clone()).or_default();
+        if entry.contains_key(revision) {
+            // Multiple attempts of one method at a single fixed base would
+            // let whichever run arrived first determine the winner.
+            // Exclude the entire ambiguous comparison context instead.
+            duplicate.insert(context);
+        }else{
+            entry.insert(revision.to_string(),reward(row).clamp(0.0,1.0));
+        }
     }
     let mut contests=BTreeMap::<(String,String),(u64,u64,u64)>::new();
-    for cohort in cohorts.values() {
+    for (context,cohort) in &cohorts {
+        if duplicate.contains(context){continue;}
         let policies=cohort.iter().collect::<Vec<_>>();
         for (index,&(left,lr)) in policies.iter().enumerate() {
             for &(right,rr) in policies.iter().skip(index+1) {
@@ -82,12 +98,18 @@ mod tests {
     }
     fn trial(job:&str,rev:&str,commit:&str,model:&str,accepted:bool)->Value{
         json!({"jobId":job,"tokens":2300,"candidateId":job,
+            "pairedRevalidated":true,"candidateOrigin":"model_driven_detached_worktree",
+            "nativeMutation":null,"tokenUsage":{"calls":1},
+            "sourceBranch":"dominion-sub2","domain":"learning",
+            "comparisonProfileSha256":"frozen-profile",
             "accepted":accepted,"evidenceVerified":accepted,
             "generatorCommit":commit,"generatorModel":model,
             "generatorProviderId":"p","objectiveId":"goal",
             "knowledgePartition":"space",
             "editPolicy":{"revision":rev},
-            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+            "evaluation":{"candidateId":job,
+                "evidenceSha256":"b".repeat(64),
+                "source":"server_invoked_local_paired_git_worktrees",
                 "metrics":{"eligible":accepted}}})
     }
     #[test]
@@ -103,6 +125,45 @@ mod tests {
         let result=compare(&refs,reward);
         assert_eq!(result["winnerRevision"],"child");
         assert_eq!(result["matchedWins"],2);
+    }
+    #[test]
+    fn real_flat_paired_receipts_include_neutral_controls_not_model_stories(){
+        let neutral=trial("negative","base","sha1","m",false);
+        assert!(comparable(&neutral),"a replayed neutral A/B trial is a valid control");
+        let mut story=neutral.clone();
+        story["evaluation"]["evidenceSha256"]=Value::Null;
+        assert!(!comparable(&story));
+        story=neutral.clone();
+        story["pairedRevalidated"]=json!(false);
+        assert!(!comparable(&story));
+        story=neutral.clone();
+        story["tokenUsage"]["calls"]=json!(0);
+        assert!(!comparable(&story));
+    }
+    #[test]
+    fn source_branch_and_frozen_profile_mismatch_never_pair_controllers() {
+        let mut a=trial("a","base","sha1","m",false);
+        let mut b=trial("b","rewritten","sha1","m",true);
+        let c=trial("c","base","sha2","m",false);
+        let d=trial("d","rewritten","sha2","m",true);
+        b["comparisonProfileSha256"]=json!("different-frozen-suite");
+        let rows=vec![a.clone(),b,c,d];
+        let refs=rows.iter().collect::<Vec<_>>();
+        assert_eq!(compare(&refs,reward)["promotion"],false);
+        a["sourceBranch"]=json!("main");
+        assert_ne!(scope(&a),scope(&rows[0]));
+    }
+    #[test]
+    fn repeated_same_policy_on_same_commit_does_not_cherry_pick() {
+        let rows=[
+            trial("a","base","sha1","m",false),
+            trial("b","rewrite","sha1","m",true),
+            trial("duplicated","rewrite","sha1","m",true),
+            trial("c","base","sha2","m",false),
+            trial("d","rewrite","sha2","m",true)
+        ];
+        let refs=rows.iter().collect::<Vec<_>>();
+        assert_eq!(compare(&refs,reward)["promotion"],false);
     }
     #[test]
     fn unmatched_model_and_contradictory_results_block_promotion(){
