@@ -5192,10 +5192,15 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             crate::engine::rsi_method_generalization::instruction(
                 &job["input"]["rsiMethodGeneralization"])
         }else{String::new()};
+        let model_lineage_instruction=format!(
+            "Approved, actually executed model={}, provider={}, original_owner={},              frozen downstream model-lineage decision={},              external_API_weights_retrained=false.              The improvement-agent model can be changed only among approved              routes by this self-editable compiled policy; selection is not              evidence that its underlying weights or general inference improved.",
+            job["input"]["model"],job["input"]["providerId"],
+            job["input"]["rsiModelOrigin"],
+            capsule(&job["input"]["rsiModelEvolutionPlan"],1600));
         let peer_context=format!(
-            "DOWNSTREAM METHOD EFFECTIVENESS (replayed independent holdouts): {}\n            OPEN MODEL-AUTHORED IMPROVEMENT ALGEBRA (executed current source): {}\n            RECURSIVE SCIENTIFIC DISCOVERY (descendant-owned): {}\n            FACTORIAL HOLDOUT EXPERIMENT: {}\nCOMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}\n            CROSS-SUBSYSTEM HOLDOUT OBSERVATIONS (changed source paths, isolated versus joint edits; hypotheses not causal proof):\n{}\n            NEXT SOURCE-BOUND CO-DESIGN PORTFOLIO (edit and independently evaluate actual implementations):\n{}",
-            method_learning_instruction,algebra_instruction,
-            scientific_instruction,factorial_instruction,
+            "DESCENDANT MODEL SELECTION / MODEL-IMPROVEMENT EXPERIMENT: {}\n            DOWNSTREAM METHOD EFFECTIVENESS (replayed independent holdouts): {}\n            OPEN MODEL-AUTHORED IMPROVEMENT ALGEBRA (executed current source): {}\n            RECURSIVE SCIENTIFIC DISCOVERY (descendant-owned): {}\n            FACTORIAL HOLDOUT EXPERIMENT: {}\nCOMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}\n            CROSS-SUBSYSTEM HOLDOUT OBSERVATIONS (changed source paths, isolated versus joint edits; hypotheses not causal proof):\n{}\n            NEXT SOURCE-BOUND CO-DESIGN PORTFOLIO (edit and independently evaluate actual implementations):\n{}",
+            model_lineage_instruction,method_learning_instruction,
+            algebra_instruction,scientific_instruction,factorial_instruction,
             job["input"]["rsiComparativeMode"],capsule(&peer_evidence,3000),
             capsule(&independent_effects,2400),capsule(&combined_sources,1600));
         let frontier_hint=if job["input"]["rsiFocusSelection"]["source"]=="rebuilt_descendant_controller"
