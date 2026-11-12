@@ -4153,7 +4153,7 @@ async fn run_loop(
             context.state.store.put("rsi_mutation",&mutation)
                 .ok_or("코드 변형 결과의 지속 저장 실패")?;
 
-            generation["nativeMutation"]=mutation;
+            generation["nativeMutation"]=mutation.clone();
             // Sub3's proof distinguished the actual native generator from
             // the requested LLM. No model calls or tokens may be credited
             // to a source mutation that executed without an LLM turn.
