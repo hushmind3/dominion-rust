@@ -181,11 +181,13 @@ pub(crate) fn synthesize(
             -0.12*penalty-0.07*stall-0.035*cost
             +0.08*outcomes["metaImprovement"].as_f64().unwrap_or(0.5)
             -0.12*outcomes["regression"].as_f64().unwrap_or(0.5)
-            +0.07*public_case_mean;
+            +0.07*public_case_mean
+            +crate::engine::rsi_open_topology::exploration_bonus(history,role);
         ranked.push((json!({
             "target":target,"role":role,"domain":target["domain"],
             "sourceSha256":target["sourceSha256"],
             "score":score,"mutualTransferPriority":incoming,
+            "openTopologyBonus":crate::engine::rsi_open_topology::exploration_bonus(history,role),
             "predictedAdoptionProbability":probability,
             "uncertainty":epistemic*calibration,"attempts":attempts,
             "verifiedModelAdoptions":adopted,"regressions":regressions,

@@ -579,6 +579,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
     })).collect::<Vec<_>>();
     let fingerprint=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&files).unwrap_or_default()));
+    let open_topology=crate::engine::rsi_open_topology::observed(history,root);
     json!({
         "source":"compiled_descendant_system_blueprint_v1",
         "generatorCommit":revision,
@@ -586,6 +587,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "sourceInventory":files,
         "sourceFileCount":files.len(),
         "sourceTreeSha256":fingerprint,
+        "openTopology":open_topology,
         "historyCount":history.len(),
         "inheritedDesign":history.iter().rev().find(|g|g["accepted"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
         "recentMeasuredGenerations":evidence,
@@ -628,7 +630,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         You may change Rust, TypeScript and Python source; for Rust functions \
         use workspace_replace_function, for any language use workspace_replace \
         (line mode or exact oldText), and create new modules with workspace_write. \
-        Before editing call rsi_system_plan(component, nextDomain, hypothesis, design, targetFiles). For a coupled redesign of algorithm, harness, memory, models, learning, tools and improvement methods, use component=system and explicitly assign each file to one role with components and componentFiles. For actual cross-subsystem redesign, declare interactionEdges [{fromRole,toRole,fromPath,toPath,mechanism,expectedEffect}] that bind distinct source edits, and successorStages for the NEXT compiled descendant. Explain how A improves B's ability to improve A again. Then WRITE ALL the named source files: partially implemented designs receive no credit. New roles and source modules are allowed. Optionally author successorStages [{role,domain,path,objective,learningPolicy,toolPolicy,executionPolicy}]: the accepted descendant will apply observed-failure task ranking, source-edit focus and restricted tool access from these fields; only after your source is independently adopted will the NEW compiled descendant read its own code and attempt those next tasks. A design and a saved stage alone earn zero. At least one adopted generation must INVENT an executable method with rsi_method_propose and a later compiled descendant must EXECUTE it with verified postconditions. \
+        Before editing call rsi_system_plan(component, nextDomain, hypothesis, design, targetFiles). For a NEW intelligence component, use component=system, assign the invented role and an existing consumer role separate source files, then author moduleIntroductions [{role,newFiles,integrationFiles,interfaceContract,improvementMechanism}], create the module AND update its actual caller or execution interface. A new module alone is not an integrated capability. For a coupled redesign of algorithm, harness, memory, models, learning, tools and improvement methods, use component=system and explicitly assign each file to one role with components and componentFiles. For actual cross-subsystem redesign, declare interactionEdges [{fromRole,toRole,fromPath,toPath,mechanism,expectedEffect}] that bind distinct source edits, and successorStages for the NEXT compiled descendant. Explain how A improves B's ability to improve A again. Then WRITE ALL the named source files: partially implemented designs receive no credit. New roles and source modules are allowed. Optionally author successorStages [{role,domain,path,objective,learningPolicy,toolPolicy,executionPolicy}]: the accepted descendant will apply observed-failure task ranking, source-edit focus and restricted tool access from these fields; only after your source is independently adopted will the NEW compiled descendant read its own code and attempt those next tasks. A design and a saved stage alone earn zero. At least one adopted generation must INVENT an executable method with rsi_method_propose and a later compiled descendant must EXECUTE it with verified postconditions. \
         Predict source-candidate creation, independent adoption, meta improvement and regressions with expectedOutcomes in rsi_system_plan BEFORE editing. The independent evaluator later calibrates this forecast and your descendant learns from its errors. Improve the intelligence control loop, not only a benchmark number. \
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
@@ -789,6 +791,8 @@ pub(crate) fn propose(
     if paths.iter().filter_map(Value::as_str).any(|path|!assigned.contains(path)) {
         return Err("모든 targetFiles를 실제 구성요소에 할당해야 합니다.".into());
     }
+    let introductions=crate::engine::rsi_open_topology::validate_proposal(
+        body,&root,&roles,paths,&assignments)?;
     // Explicit source-bound A->B interactions are hypotheses until two actual
     // edits and an independent source-adoption receipt exist. Disjoint
     // componentFiles prevent claiming the same changed file for both roles.
@@ -888,7 +892,7 @@ pub(crate) fn propose(
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
         commit,component,roles,assignments,next,hypothesis,design,paths,
-        edges,stages,expectations
+        edges,introductions,stages,expectations
     ]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
@@ -897,6 +901,7 @@ pub(crate) fn propose(
         "generatorCommit":commit,"component":component,
         "components":roles,"componentFiles":assignments,
         "interactionEdges":edges,
+        "moduleIntroductions":introductions,
         "successorStages":stages,
         "expectedOutcomes":expectations,
         "nextDomain":next,"hypothesis":hypothesis,

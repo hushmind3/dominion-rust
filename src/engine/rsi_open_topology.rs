@@ -63,7 +63,7 @@ pub(crate) fn validate_proposal(
         for file in files{
             let path=file.as_str().filter(|p|crate::engine::rsi::safe_path(p)
                 && targets.iter().any(|v|v.as_str()==Some(*p))
-                && assignments[role].as_array().is_some_and(|assigned|
+                && assignments.get(role).and_then(Value::as_array).is_some_and(|assigned|
                     assigned.iter().any(|entry|entry.as_str()==Some(*p)))
                 && !root.join(p).exists())
                 .ok_or("새 지능 파일은 실제로 존재하지 않는 고유한 대상이어야 합니다.")?;

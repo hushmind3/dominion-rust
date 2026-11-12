@@ -70,6 +70,18 @@ pub fn definitions() -> Vec<Value> {
                 "description":"For component=system, all redesign roles including any new modules"}),
             "componentFiles":json!({"type":"object","description":"For component=system map each role to its own nonempty list of files from targetFiles; files cannot be credited twice",
                 "additionalProperties":{"type":"array","items":{"type":"string"},"minItems":1}}),
+            "moduleIntroductions":json!({"type":"array","maxItems":8,
+                "description":"Invent a NEW intelligence role with new implementation source AND an existing integrating consumer source; both files must change and pass independent evaluation.",
+                "items":{"type":"object","properties":{
+                    "role":{"type":"string"},"newFiles":{"type":"array",
+                        "minItems":1,"maxItems":8,"items":{"type":"string"}},
+                    "integrationFiles":{"type":"array",
+                        "minItems":1,"maxItems":8,"items":{"type":"string"}},
+                    "interfaceContract":{"type":"string"},
+                    "improvementMechanism":{"type":"string"}
+                },"required":["role","newFiles","integrationFiles",
+                    "interfaceContract","improvementMechanism"],
+                "additionalProperties":false}}),
             "interactionEdges":json!({"type":"array","maxItems":16,
                 "description":"Source-bound A->B improvement mechanism: both assigned sources must actually change; acceptance and descendant transfer are independently evaluated",
                 "items":{"type":"object","properties":{
