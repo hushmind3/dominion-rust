@@ -164,7 +164,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
             Some(format!("{name}: {paths}"))
         }).collect::<Vec<_>>().join("\n");
     let tree=&self_model["sourceTree"];
-    let components=format!("{components}\\nWhole-source snapshot: files={}, sha256={}, remaining indexed paths={}. Search other source files by code_index, not only the examples.",
+    let components=format!("{components}\nWhole-source snapshot: files={}, sha256={}, remaining indexed paths={}. Search other source files by code_index, not only the examples.",
         tree["fileCount"],tree["sourceTreeSha256"],tree["additionalPaths"]);
     let inherited=self_model["inheritedDesign"].as_object().map(|_|format!(
         "Previously independently adopted system design: nextDomain={} hypothesis={} implementation={} acceptedCommit={}",
