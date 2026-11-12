@@ -73,6 +73,21 @@ pub fn definitions() -> Vec<Value> {
                     "workspace_replace_range","workspace_write","rsi_system_plan","rsi_method_propose"]},
                 "minItems":2,"maxItems":8,"description":"Optional NEW tool sequence for the NEXT descendant. Source range read must precede actual edit; only adopted source designs may transfer it."}),
             "methodHypothesis":text("Optional falsifiable rationale for changing the next descendant's executable method"),
+            "interactionEdges":json!({"type":"array","maxItems":12,
+                "description":"For component=system: directed source-backed hypotheses A→B, with causal mechanism and future observable",
+                "items":{"type":"object","properties":{
+                    "fromRole":{"type":"string"},"toRole":{"type":"string"},
+                    "fromPath":{"type":"string"},"toPath":{"type":"string"},
+                    "mechanism":{"type":"string"},"observable":{"type":"string"}},
+                    "required":["fromRole","toRole","fromPath","toPath","mechanism","observable"]}}),
+            "successorStages":json!({"type":"array","maxItems":8,
+                "description":"Model invented future tasks for next COMPILED descendant; current source identity is rebound every generation",
+                "items":{"type":"object","properties":{
+                    "role":{"type":"string"},"domain":{"type":"string"},
+                    "path":{"type":"string"},"objective":{"type":"string"},
+                    "learningPolicy":{"type":"string","enum":["avoid_failed","retry_failed"]},
+                    "executionPolicy":{"type":"string","enum":["grounded_edit","explore_then_edit"]}},
+                    "required":["role","domain","path","objective"]}}),
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS})
         }), vec!["component","hypothesis","design","targetFiles","nextDomain"])),
         tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({

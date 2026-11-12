@@ -392,6 +392,12 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         your current improved intelligence. Do not substitute unrelated agent \
         redesign for the requested patch. The downstream result measures \
         whether the improved generator really solves more problems.\n\
+        You can propose source-bound interactionEdges (fromRole/toRole/fromPath/toPath,
+        mechanism, observable) that specify HOW improving one intelligence subsystem
+        will improve another. You may also write successorStages that transfer
+        a new research/learning/editing policy to the real compiled next child,
+        with an explicit return to the originally improved subsystem. The
+        supervisor validates current source identities, not your conjecture. \
         You may propose an optional actionProgram (ordered allowed tool calls) \
         within rsi_system_plan to redesign your NEXT descendant's real \
         read/search/edit sequence. An accepted source change can transfer \
@@ -550,6 +556,89 @@ pub(crate) fn propose(
     if paths.iter().filter_map(Value::as_str).any(|path|!assigned.contains(path)) {
         return Err("모든 targetFiles를 구성요소에 연결하세요.".into());
     }
+    // Model-authored hypotheses are not causal evidence until an adopted
+    // source change and a separately observed compiled descendant support them.
+    let mut interaction_edges=Vec::new();
+    if let Some(edges)=body["interactionEdges"].as_array() {
+        if edges.len()>12 || (component!="system" && !edges.is_empty()){
+            return Err("상호개선 가설은 다중 영역 설계에서 최대 12개입니다.".into());
+        }
+        let mut seen=BTreeSet::new();
+        for edge in edges {
+            let from=edge["fromRole"].as_str()
+                .filter(|role|assignments.contains_key(*role))
+                .ok_or("상호개선 시작 역할이 선언된 설계에 없습니다.")?;
+            let to=edge["toRole"].as_str()
+                .filter(|role|*role!=from && assignments.contains_key(*role))
+                .ok_or("상호개선 대상 역할이 설계에 없거나 동일합니다.")?;
+            let from_path=edge["fromPath"].as_str()
+                .filter(|path|assignments[from].as_array()
+                    .is_some_and(|files|files.iter().any(|file|file.as_str()==Some(*path))))
+                .ok_or("상호개선 출발 소스가 해당 역할에 배정되지 않았습니다.")?;
+            let to_path=edge["toPath"].as_str()
+                .filter(|path|assignments[to].as_array()
+                    .is_some_and(|files|files.iter().any(|file|file.as_str()==Some(*path))))
+                .ok_or("상호개선 도착 소스가 해당 역할에 배정되지 않았습니다.")?;
+            if !seen.insert((from.to_string(),to.to_string())){
+                return Err("중복된 방향성 개선 가설입니다.".into());
+            }
+            let mechanism=edge["mechanism"].as_str()
+                .filter(|text|(20..=1200).contains(&text.chars().count()))
+                .ok_or("영역 간 개선이 작동하는 원리 20~1200자가 필요합니다.")?;
+            let observable=edge["observable"].as_str()
+                .filter(|text|(12..=800).contains(&text.chars().count()))
+                .ok_or("후손이 바뀌었는지 측정할 관찰 지표가 필요합니다.")?;
+            interaction_edges.push(json!({
+                "fromRole":from,"toRole":to,"fromPath":from_path,"toPath":to_path,
+                "mechanism":mechanism,"observable":observable,
+                "qualityProven":false,"status":"unverified_causal_hypothesis"
+            }));
+        }
+    }
+    // Stages are an evolvable REBUILD-BINARY programme. They are not
+    // executable merely because a model declared them: adoption, current
+    // source SHA and the descendant's actual target must all match.
+    let mut successor_stages=Vec::new();
+    if let Some(stages)=body["successorStages"].as_array(){
+        if stages.len()>8{return Err("후손 개선 프로그램은 최대 8단계입니다.".into());}
+        for stage in stages {
+            let role=stage["role"].as_str().filter(|name|valid_role(name)&&*name!="system")
+                .ok_or("후손 개선 단계의 구성요소 이름 오류")?;
+            let domain=stage["domain"].as_str()
+                .filter(|domain|crate::engine::rsi_evolve::DOMAINS.contains(domain))
+                .ok_or("후손 개선 단계의 분야 오류")?;
+            let path=stage["path"].as_str()
+                .filter(|path|crate::engine::rsi::safe_path(path)
+                    && matches!(std::path::Path::new(path).extension().and_then(|x|x.to_str()),
+                        Some("rs"|"ts"|"tsx"|"js"|"jsx"|"py")))
+                .ok_or("후손 개선 단계가 지원하는 실제 소스 경로가 아닙니다.")?;
+            let objective=stage["objective"].as_str()
+                .filter(|text|(25..=1200).contains(&text.chars().count()))
+                .ok_or("후손 단계에는 실제 구현 목표 25~1200자가 필요합니다.")?;
+            let learning=stage["learningPolicy"].as_str().unwrap_or("avoid_failed");
+            let execution=stage["executionPolicy"].as_str().unwrap_or("explore_then_edit");
+            if !matches!(learning,"avoid_failed"|"retry_failed")
+                || !matches!(execution,"grounded_edit"|"explore_then_edit") {
+                return Err("후손 개선 단계의 학습·편집 정책 오류".into());
+            }
+            // New modules are allowed when this generation created them;
+            // existing paths remain bound to the future checkout digest.
+            let proposed=root.join(path);
+            if proposed.exists(){
+                let canonical=fs::canonicalize(&proposed).map_err(|e|e.to_string())?;
+                if !canonical.starts_with(&root)||!canonical.is_file(){
+                    return Err("후손 단계가 실제 작업공간 외부를 가리킵니다.".into());
+                }
+            }else if !paths.iter().any(|file|file.as_str()==Some(path)){
+                return Err("새 후손 단계 모듈은 이번 세대의 수정 대상에 포함돼야 합니다.".into());
+            }
+            successor_stages.push(json!({
+                "role":role,"domain":domain,"path":path,"objective":objective,
+                "learningPolicy":learning,"executionPolicy":execution,
+                "qualityProven":false
+            }));
+        }
+    }
     let action_program=if body["actionProgram"].is_null() {Value::Null}
         else{
             compile_action_program(&body["actionProgram"])
@@ -564,7 +653,8 @@ pub(crate) fn propose(
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
         commit,component,components,assignments,next,hypothesis,design,paths,
-        action_program,method_hypothesis]).to_string().as_bytes()));
+        action_program,method_hypothesis,interaction_edges,successor_stages
+    ]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
@@ -573,6 +663,7 @@ pub(crate) fn propose(
         "nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,
         "actionProgram":action_program,"methodHypothesis":method_hypothesis,
+        "interactionEdges":interaction_edges,"successorStages":successor_stages,
         "qualityProven":false,"adopted":false
     });
     session["rsiSystemDesign"]=proposal.clone();
@@ -656,6 +747,70 @@ pub(crate) fn inherited_program(
         return Some(trial);
     }
     None
+}
+
+/// Choose the next *model-authored* child development stage only from an
+/// independently adopted implementation. The successor rebinds every stage
+/// to the CURRENT architecture frontier, and advances on recorded execution
+/// rather than the parent's declarative intention.
+pub(crate) fn inherited_stage(
+    state:&crate::state::AppState,history:&[Value],frontier:&[Value]
+)->Value {
+    for parent in history.iter().rev(){
+        if parent["accepted"]!=true || parent["pairedRevalidated"]!=true
+            || parent["candidateOrigin"]!="model_driven_detached_worktree"
+            || parent["evaluation"]["metrics"]["eligible"]!=true
+            || parent["systemDesign"]["source"]!="model_authored_system_design"
+            || parent["systemDesign"]["generationJobId"]!=parent["jobId"]
+            || parent["systemDesign"]["generatorCommit"]!=parent["generatorCommit"] {
+            continue;
+        }
+        let Some(stages)=parent["systemDesign"]["successorStages"].as_array()
+            .filter(|steps|!steps.is_empty() && steps.len()<=8) else{continue};
+        let Some(id)=parent["candidateId"].as_str() else{continue};
+        let Some(candidate)=state.store.get("rsi_candidate",id) else{continue};
+        if candidate["status"]!="verified"
+            || candidate["baseCommit"]!=parent["generatorCommit"]
+            || candidate["experimentAdoption"]["commit"]!=parent["acceptedCommit"]
+            || candidate["evaluation"]["metrics"]["eligible"]!=true
+            || !crate::engine::rsi::verified_pair_receipt(state,&candidate) {
+            continue;
+        }
+        let accepted_files=candidate["paths"].as_array().cloned().unwrap_or_default();
+        if !design_implemented(&parent["systemDesign"],&accepted_files){continue;}
+        let design_id=&parent["systemDesign"]["id"];
+        let mut next=0usize;
+        for executed in history.iter().filter(|child|
+            child["successorStage"]["designId"]==*design_id
+                && child["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"){
+            if executed["successorStage"]["stageIndex"].as_u64()!=Some(next as u64){
+                continue;
+            }
+            if executed["accepted"]==true && executed["pairedRevalidated"]==true
+                || executed["successorStage"]["learningPolicy"]!="retry_failed"{
+                next+=1;
+            }
+        }
+        let Some(stage)=stages.get(next) else {continue};
+        let Some(path)=stage["path"].as_str().filter(|p|crate::engine::rsi::safe_path(p))
+            else{continue};
+        let Some(role)=stage["role"].as_str().filter(|r|valid_role(r)) else{continue};
+        let Some(target)=frontier.iter().find(|row|
+            row["path"]==path && row["role"]==role
+                && row["domain"]==stage["domain"]
+                && row["sourceSha256"].as_str().is_some_and(|sha|
+                    sha.len()==64 && sha.bytes().all(|c|c.is_ascii_hexdigit())))
+            else{continue};
+        let mut bound=stage.clone();
+        bound["source"]=json!("rebound_verified_model_successor_program_v1");
+        bound["designId"]=design_id.clone();
+        bound["stageIndex"]=json!(next);
+        bound["acceptedParentCommit"]=parent["acceptedCommit"].clone();
+        bound["sourceSha256"]=target["sourceSha256"].clone();
+        bound["qualityProven"]=json!(false);
+        return bound;
+    }
+    Value::Null
 }
 
 /// Reuse the model's target only when its *source change*, not its
