@@ -123,11 +123,19 @@ pub fn evolve(parent:&[Value],observation:&Value)->Vec<Value>{
     let mut new_op=None::<Value>;
     // Failed edits teach a different patch operator.
     if let Some(failed)=timeline.into_iter().flatten().rev().find(|event|
-        event["status"]=="failed" && matches!(event["tool"].as_str(),
-            Some("workspace_replace_range"|"workspace_replace"))) {
+        (event["status"]=="failed"
+            || (event["status"]=="completed"
+                && event["result"]["written"]==false))
+            && matches!(event["tool"].as_str(),
+                Some("workspace_replace_range"|"workspace_replace"
+                    |"workspace_replace_function"))) {
         let from=failed["tool"].as_str().unwrap_or("");
-        let to=if from=="workspace_replace_range"{"workspace_replace"}
-            else{"workspace_replace_range"};
+        // Sub2 exposes source-hash-aware function edits instead of main's
+        // range editor. A failed real function replacement must update the
+        // inherited generator's operator, not disappear from its feedback.
+        let to=if from=="workspace_replace" {
+            "workspace_replace_function"
+        }else{"workspace_replace"};
         new_op=Some(json!({"kind":"switch_edit","from":from,"to":to}));
     }
     let model_edit_matches_adoption=observation["toolTimeline"].as_array().is_some_and(|events|
@@ -214,6 +222,25 @@ mod tests{
         assert_ne!(child[0]["id"],crate::engine::rsi_decision_rules::normalize(
             &json!([rule()]))[0]["id"]);
         assert!(evolve(&grammar,&json!({"jobId":"g2","tokens":0})).eq(&grammar));
+    }
+    #[test]
+    fn actual_function_editor_failure_rewrites_next_descendant_rule() {
+        let failed=json!({
+            "jobId":"sub2-executed-worker","tokens":1200,
+            "toolTimeline":[{"tool":"workspace_replace_function",
+                "status":"failed","result":{"written":false}}]
+        });
+        let next=evolve(&[],&failed);
+        assert_eq!(next[0]["kind"],"switch_edit");
+        assert_eq!(next[0]["from"],"workspace_replace_function");
+        assert_eq!(next[0]["to"],"workspace_replace");
+        let rules=crate::engine::rsi_decision_rules::normalize(&json!([
+            {"guard":{"metric":"grounded","cmp":"eq","value":1},
+                "allow":["workspace_replace_function"]}
+        ]));
+        let rewritten=apply(&next,&rules);
+        assert_eq!(rewritten[0]["allow"],json!(["workspace_replace"]));
+        assert_ne!(rewritten[0]["id"],rules[0]["id"]);
     }
     #[test]
     fn evaluated_neutral_quality_changes_the_synthesis_grammar(){
