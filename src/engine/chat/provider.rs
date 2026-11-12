@@ -59,41 +59,6 @@ pub(crate) fn select_provider(
     request: &TurnRequest,
     session: &Value,
 ) -> Result<ProviderRef, String> {
-    // A separately promoted model must be visible ONLY inside the exact
-    // detached RSI generation that launched its PEFT server. Never add it
-    // to global provider ranking or inherit it into unrelated user chats.
-    if session["rsiRun"]==true {
-        let route=&session["rsiAdapterRoute"];
-        if route.is_object() {
-            let endpoint=route["baseUrl"].as_str()
-                .ok_or("후손 어댑터 제공자의 로컬 주소 없음")?;
-            let port=endpoint.strip_prefix("http://127.0.0.1:")
-                .and_then(|s|s.parse::<u16>().ok())
-                .filter(|v|*v>0)
-                .ok_or("후손 어댑터는 루프백 서버로만 호출할 수 있습니다.")?;
-            let provider_id=route["providerId"].as_str()
-                .filter(|s|s.starts_with("rsi-adapter-") && s.len()<=100)
-                .ok_or("후손 어댑터 제공자 ID 오류")?;
-            if route["source"]!="isolated_promoted_peft_inference_route_v1"
-                ||route["model"]!="dominion-promoted-lora"
-                ||route["adapterSha256"].as_str().is_none_or(|sha|
-                    sha.len()!=64 || !sha.bytes().all(|b|b.is_ascii_hexdigit()))
-                ||session["rsiGenerationJobId"].as_str()
-                    .is_none_or(|id|provider_id!=format!("rsi-adapter-{id}")){
-                return Err("후손 모델 추론 계보가 불일치합니다.".into());
-            }
-            return Ok(ProviderRef{
-                id:provider_id.to_string(),name:"Isolated RSI PEFT adapter".into(),
-                base_url:format!("http://127.0.0.1:{port}"),
-                api_key:String::new(),model:"dominion-promoted-lora".into(),
-                tool_mode:"compat".into(),reasoning_protocol:"chat_template".into(),
-                local:true,context_tokens:Some(8192),
-                max_output_tokens:Some(2048),
-                requests_per_minute:None,kind:"openai".into(),
-                account_id:None
-            });
-        }
-    }
     let agent = request
         .agent_id
         .as_deref()
