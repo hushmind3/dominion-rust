@@ -66,7 +66,17 @@ pub fn definitions() -> Vec<Value> {
             "hypothesis":text("Observed limitation, causal reason and falsifiable outcome"),
             "design":text("New executable architecture or algorithm to implement"),
             "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24,"uniqueItems":true}),
-            "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS})
+            "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
+            "successorStages":json!({"type":"array","maxItems":8,
+                "description":"Up to eight model-designed next-generation improvement stages. A rebuilt descendant independently rebinds stage source hashes and may change the program based on verified outcomes.",
+                "items":{"type":"object","properties":{
+                    "role":{"type":"string"},"domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
+                    "path":{"type":"string"},"objective":{"type":"string"},
+                    "learningPolicy":{"type":"string","enum":["avoid_failed","retry_failed"]},
+                    "toolPolicy":{"type":"string","enum":["patch_only","allow_new_modules"]},
+                    "executionPolicy":{"type":"string","enum":["grounded_edit","explore_then_edit"]}
+                },"required":["role","domain","path","objective"],
+                    "additionalProperties":false}})
         }),vec!["component","hypothesis","design","targetFiles","nextDomain"])),
         tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({
             "name":text("Reusable method name"),
