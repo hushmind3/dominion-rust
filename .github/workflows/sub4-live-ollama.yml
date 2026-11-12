@@ -8,6 +8,9 @@ on:
     paths:
       - .github/workflows/sub4-live-ollama.yml
       - src/engine/rsi_population.rs
+      - src/engine/rsi_mutation.rs
+      - src/engine/rsi_domain_accumulator.rs
+      - src/api/rsi.rs
       - src/engine/rsi_evolve.rs
       - src/engine/jobs.rs
       - src/engine/chat/runtime.rs
@@ -31,6 +34,7 @@ jobs:
       SUB4_CAMPAIGN_SECONDS: '3600'
       SUB4_RUN_DEADLINE_MS: '3800000'
       SUB4_EXPECT_COMPLETION: '1'
+      SUB4_NATIVE_INDUCTION: '1'
       DOMINION_PORT: '43179'
       DOMINION_JOB_WORKERS: '1'
       OLLAMA_CONTEXT_LENGTH: '16384'
