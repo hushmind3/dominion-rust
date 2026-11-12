@@ -497,6 +497,11 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiAutonomous": autonomous,
         "rsiLocalOnly":body["localOnly"]==true,
         "rsiSystemEvolution": continuous && body["evolutionTarget"] != "product" && body["nativeInduction"] != true,
+        // User-approved model routing belongs to DOMINION's API harness,
+        // NOT to trainable weights. No routing opt-in means no model changes.
+        "rsiAdaptiveApiRouting":continuous && autonomous
+            && body["allowAdaptiveApiRouting"]==true,
+        "rsiOriginalApiRoute":{"providerId":provider_id,"model":model},
         "rsiApplyWhenFinished": continuous && body["applyWhenFinished"] == true,
         // Only explicitly opted-in automatic campaigns may broaden the
         // source search after independent adoption of the original goal.
