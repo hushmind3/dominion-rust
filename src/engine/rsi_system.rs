@@ -52,6 +52,106 @@ fn source_inventory(root:&Path)->Vec<Value> {
     rows
 }
 
+/// DGM/AlphaEvolve-style architecture frontier, evaluated by the descendant
+/// executable against its OWN current source graph. The resident coordinator
+/// receives a proposed next capability, not authority to invent that proposal.
+/// Scores schedule exploratory edits only: no item is an adopted gain.
+fn architecture_role_domain(role:&str)->Option<&'static str>{
+    match role {
+        "algorithms"|"improvement_methods"=>Some("improver"),
+        "harness"=>Some("context"),
+        "memory"=>Some("memory"),
+        "learning"=>Some("learning"),
+        "tools"=>Some("tools"),
+        "frontend"=>Some("ui"),
+        _=>None,
+    }
+}
+
+/// A source path may participate in several architectural roles. The
+/// resulting frontier makes unmodified subsystems visible to the compiled
+/// successor while preserving their original hashes and real index location.
+pub(crate) fn architecture_frontier(
+    state:&crate::state::AppState,
+    blueprint:&Value,history:&[Value],index_id:&str,
+)->Vec<Value>{
+    use std::collections::{BTreeMap,BTreeSet};
+    let mut verified_roles=BTreeSet::<String>::new();
+    let mut attempts=BTreeMap::<String,u64>::new();
+    let mut source_attempts=BTreeMap::<String,u64>::new();
+    for generation in history {
+        for path in generation["focusFiles"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str){
+            *source_attempts.entry(path.to_string()).or_default()+=1;
+        }
+        if generation["accepted"]!=true
+            || generation["pairedRevalidated"]!=true {continue;}
+        let Some(candidate)=generation["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id)) else {continue;};
+        if candidate["status"]!="verified"
+            || candidate["experimentAdoption"]["commit"]!=generation["acceptedCommit"]
+            || candidate["baseCommit"]!=generation["generatorCommit"]
+            || !crate::engine::rsi::verified_pair_receipt(state,&candidate) {continue;}
+        for path in candidate["paths"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str) {
+            let Some(hash)=generation["acceptedSourceHashes"][path].as_str() else {continue;};
+            if crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                .as_deref()!=Some(hash) {continue;}
+            for role in blueprint["architecture"].as_array().into_iter().flatten(){
+                let Some(name)=role["role"].as_str() else {continue;};
+                if role["representativeSources"].as_array().into_iter().flatten()
+                    .any(|item|item["path"]==path){
+                    verified_roles.insert(name.to_string());
+                }
+            }
+        }
+    }
+    let mut frontier=Vec::<Value>::new();
+    for component in blueprint["architecture"].as_array().into_iter().flatten() {
+        let Some(role)=component["role"].as_str() else {continue;};
+        let Some(domain)=architecture_role_domain(role) else {continue;};
+        let touched=verified_roles.contains(role);
+        let mut available=component["representativeSources"].as_array()
+            .into_iter().flatten()
+            .filter_map(|item|{
+                let path=item["path"].as_str()?;
+                if !crate::engine::rsi::safe_path(path) {return None;}
+                let hash=item["sha256"].as_str()?;
+                if crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                    .as_deref()!=Some(hash) {return None;}
+                let bytes=item["bytes"].as_u64()?;
+                Some((path,hash,bytes))
+            }).collect::<Vec<_>>();
+        // Prioritize new systems, cheap-to-inspect source and actual failures.
+        // A role's observed experiments are a scheduling cost, never a gain.
+        available.sort_by(|a,b|{
+            let cost=|p:&str,bytes:u64| source_attempts.get(p).copied().unwrap_or(0)*100
+                + bytes/4096;
+            cost(a.0,a.2).cmp(&cost(b.0,b.2))
+                .then(a.0.cmp(b.0))
+        });
+        let Some((path,hash,bytes))=available.first().copied() else {continue;};
+        let prior=source_attempts.get(path).copied().unwrap_or(0);
+        *attempts.entry(role.to_string()).or_default()+=prior;
+        frontier.push(json!({
+            "role":role,"domain":domain,"path":path,
+            "sourceSha256":hash,"sourceBytes":bytes,
+            "verifiedRoleImproved":touched,
+            "sourceAttempts":prior,
+            "reason":if touched{"extend_prior_verified_component"}
+                else {"unmodified_intelligence_component"},
+            "qualityProven":false
+        }));
+    }
+    frontier.sort_by(|a,b|{
+        (a["verifiedRoleImproved"]==true).cmp(&(b["verifiedRoleImproved"]==true))
+            .then(a["sourceAttempts"].as_u64().cmp(&b["sourceAttempts"].as_u64()))
+            .then(a["sourceBytes"].as_u64().cmp(&b["sourceBytes"].as_u64()))
+            .then(a["role"].as_str().cmp(&b["role"].as_str()))
+    });
+    frontier
+}
+
 /// Read only source assets under the experiment's pinned checkout. The
 /// coordinator cannot author or alter this blueprint without changing its
 /// measured generator revision; no holdout content is read here.
@@ -477,6 +577,43 @@ mod tests {
         assert_ne!(first["sourceTreeSha256"],second["sourceTreeSha256"],
             "the full system inventory must follow real source changes");
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn architecture_frontier_rejects_unverified_adoption_and_uses_real_index() {
+        let root=std::env::temp_dir().join(format!("rsi-frontier-{}",
+            uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("src/engine")).unwrap();
+        fs::write(root.join("src/engine/algorithms.rs"),
+            "pub fn selector() -> usize { 1 }").unwrap();
+        fs::write(root.join("src/engine/memory.rs"),
+            "pub fn memory() -> usize { 2 }").unwrap();
+        fs::write(root.join("src/engine/tools.rs"),
+            "pub fn tool() -> usize { 3 }").unwrap();
+        let config=crate::config::Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=crate::state::AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()));
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let model=blueprint(&root,"a".repeat(40).as_str(),&[]);
+        let baseline=architecture_frontier(&state,&model,&[],
+            index["id"].as_str().unwrap());
+        assert!(baseline.iter().any(|row|row["role"]=="memory"));
+        assert!(baseline.iter().all(|row|row["qualityProven"]==false));
+        let forged=json!({"accepted":true,"pairedRevalidated":true,
+            "candidateId":"fabricated","generatorCommit":"a".repeat(40),
+            "acceptedCommit":"b".repeat(40),
+            "acceptedSourceHashes":{"src/engine/memory.rs":
+                model["architecture"][2]["representativeSources"][0]["sha256"]}});
+        let explored=architecture_frontier(&state,&model,&[forged],index["id"].as_str().unwrap());
+        assert_eq!(explored,baseline,
+            "a claimed adoption cannot remove an unmodified system component");
+        fs::write(root.join("src/engine/memory.rs"),
+            "pub fn memory() -> usize { 4 }").unwrap();
+        let stale=architecture_frontier(&state,&model,&[],index["id"].as_str().unwrap());
+        assert!(stale.iter().all(|row|row["role"]!="memory"),
+            "a changed source without a fresh index must not inherit its old SHA");
+        let _=fs::remove_dir_all(root);
     }
     #[test]
     fn model_can_propose_design_only_in_its_own_active_system_generation() {
