@@ -318,10 +318,11 @@ pub(crate) fn system_agenda(state:&crate::state::AppState,model:&Value,
 pub(crate) fn validate_system_agenda(state:&crate::state::AppState,
     model:&Value,agenda:&Value,index_id:&str,root:&Path,
     commit:&str,history_len:usize)->Result<(),String>{
+    let facts=source_facts(root);
     if model["generatorCommit"]!=commit
         || model["historyCount"].as_u64()!=Some(history_len as u64)
-        || model["sourceTreeSha256"]!=source_facts(root)["sha256"]
-        || model["sourceFileCount"]!=source_facts(root)["fileCount"]
+        || model["sourceTreeSha256"]!=facts["sha256"]
+        || model["sourceFileCount"]!=facts["fileCount"]
         || model["architecture"].as_array().is_none_or(|roles|
             roles.is_empty()||roles.len()>64)
         || agenda["source"]!="compiled_descendant_self_controller_v1"
@@ -386,6 +387,41 @@ pub(crate) fn inherited_program(history:&[Value])->Option<Value>{
             "methodTrialUnverified":true
         }
     }))
+}
+
+/// The next compiled intelligence worker receives its own source-grounded
+/// research agenda and actual inherited experimental editing method. The
+/// model remains free to reject the hypothesis and implement a better one.
+pub(crate) fn agenda_instruction(agenda:&Value)->String{
+    let target=&agenda["target"];
+    let focus=agenda["focus"].as_array().into_iter().flatten()
+        .filter_map(|row|row["path"].as_str())
+        .collect::<Vec<_>>().join(", ");
+    let frontier=agenda["frontier"].as_array().into_iter().flatten()
+        .take(7).map(|row|format!(
+            "{}: path={} priorAttempts={} verifiedRedesigns={} lastFailure={} reason={}",
+            row["role"],row["path"],row["attempts"],
+            row["verifiedRedesigns"],row["latestFailure"],row["reason"]
+        )).collect::<Vec<_>>().join("\n");
+    format!(
+        "[SELF-OWNED TASK+META RESEARCH CONTROLLER]\n\
+        Your compiled agent chose component={} domain={} because {}.\n\
+        Actual target source: {}, sourceSha256={}.\n\
+        Grounded focus: {}. Source-tree revision SHA-256: {}.\n\
+        Your model must inspect these true source bytes, evaluate the prior \
+        limitations, and invent a causal change to the *same intelligence \
+        system* which will design the next descendant. Use rsi_system_plan \
+        with component=system, components, componentFiles and all targetFiles \
+        for a coupled redesign; new source modules are permitted. Use the \
+        optional actionProgram to teach the next accepted agent a DIFFERENT \
+        executable method. The first action must still be actual source \
+        observation and the method must write implementation, not prose.\n\
+        Previous independently adopted hypothesis: {}.\n\
+        Self-selected source research frontier:\n{}",
+        target["role"],target["domain"],target["reason"],
+        target["path"],target["sourceSha256"],focus,
+        agenda["sourceTreeSha256"],agenda["nextHypothesis"],frontier
+    )
 }
 
 /// A system-generation *model* chooses the actual design and edits. The
@@ -530,7 +566,9 @@ pub(crate) fn propose(
     }
     let mut component_files=body["componentFiles"].clone();
     if roles.len()==1 && !component_files.is_object(){
-        component_files=json!({roles[0].clone():targets});
+        let mut map=serde_json::Map::new();
+        map.insert(roles[0].clone(),json!(targets));
+        component_files=Value::Object(map);
     }
     for role in &roles {
         let files=component_files[role].as_array()
