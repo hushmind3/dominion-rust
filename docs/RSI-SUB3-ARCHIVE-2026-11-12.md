@@ -19,6 +19,8 @@ Non-dominated per-case quality/cost vectors form a Pareto frontier. Selection pr
 
 Native source generation now tries the remaining applicable operators after one operator has been independently evaluated, instead of returning no candidate at the first exhausted operator. Only replayable server-owned receipts reserve a source/operator pair. Explicitly opted-in automatic source search can run a native candidate before spending a model turn; fixed owner file edits and inherited patches retain their editing path. Native actions and model actions remain separately attributed.
 
+The first current-source trial accepted a native memory change (long recall 130.194ms → 72.110ms) but rejected a merely 5% faster improver candidate under the unchanged 20% threshold. That experiment was stopped during the next model repair attempt to develop a stronger operator. The new operator synthesizes a single accumulator across all eligible domains, preserving verified gain/cost payoff, objective constraints, domain ties and the existing expression/counterexample interpreters. Differential tests compare it to the original feature-map selector across mixed histories and objectives. Native candidates identify their actual operator as generator and cannot credit an unused model editing policy.
+
 ## Evaluation changes
 
 - The live workflow starts from the exact current commit. It no longer reintroduces a historical decomposition bug.
@@ -26,6 +28,7 @@ Native source generation now tries the remaining applicable operators after one 
 - A distinct 16-input planning confirmation set is frozen into both variants. Its raw examples/answers are not returned as model feedback.
 - The coordinator's fixture is excluded from source discovery and RSI file read/write tools. This is a tool boundary, not an OS security sandbox.
 - Other regression cases, metric improvement thresholds, AB/BA ordering, build identity checks, explicit production application and the three-generation capability proof remain in force.
+- An automatic proof campaign can request `stopAfterProof:true`. It finishes only after replaying the complete independent three-generation capability proof; a streak counter or caller-supplied capability flag cannot stop the run as a success. Ordinary campaigns retain their existing continuation behavior.
 
 ## Verification and evidence
 

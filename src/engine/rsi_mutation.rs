@@ -5,8 +5,44 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
+#[cfg(test)]
+#[path = "rsi_domain_accumulator.rs"]
+mod accumulator;
+
 fn digest(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+/// Replace the default selector's six feature maps and repeated domain scans
+/// with one accumulator. Expression and counterexample policies still execute
+/// their original interpreters; verified payoff and objective constraints stay.
+fn stream_verified_domain_selection(source: &str) -> Option<String> {
+    let entry="pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &str) -> String {";
+    let features_start=source.find("fn search_features(")?;
+    let score_start=source[features_start..].find("\nfn score_domain(")?+features_start+1;
+    let score_end=source[score_start..].find("\npub(crate) fn candidate_domains(")?+score_start;
+    let features_hash=digest(&source[features_start..score_start-1]);
+    // This optimizer implements two specifically verified feature layouts.
+    // A descendant may evolve a NEW scoring formula; do not silently bypass
+    // that formula merely because some old snippets still appear in it.
+    if !matches!(features_hash.as_str(),
+        "fee020813338a7a5c3a5c6d4b6767a5854852b5beb7994c173480c60bff92efc"
+        |"c50260d36d53cd2641cdf3c483ea14cc8616101a68cfed9c26830b89656da977")
+        || digest(&source[score_start..score_end])
+            !="a85223433037d93f97c213b8f41d7e9d65b7cf3366f698639dac7452cf5015eb" {
+        return None;
+    }
+    if source.matches(entry).count()!=1 || source.contains("fn fast_failure_domain(")
+        || !source.contains("let measured_payoff=if get(\"verifiedOutcomes\")>0.0")
+        || !source.contains("get(\"gainPer10kTokens\").min(4.0)*0.30")
+        || !source.contains("let mut best = (f64::NEG_INFINITY, candidate_domains(objective)[0]);") {
+        return None;
+    }
+    let dispatch=format!("{entry}\n    let implementation=algorithm[\"implementation\"].as_str()\n        .or_else(||algorithm[\"variant\"].as_str()).unwrap_or(\"failure-clusters\");\n    if !matches!(implementation,\"expression\"|\"counterexample-first\") {{\n        return fast_failure_domain(history,&candidate_domains(objective),\n            |domain|objective_matches(domain,objective));\n    }}");
+    let mut next=source.replacen(entry,&dispatch,1);
+    next.push('\n');
+    next.push_str(include_str!("rsi_domain_accumulator.rs"));
+    Some(next)
 }
 
 /// The writer has already authenticated every durable owner message.
@@ -385,7 +421,8 @@ pub(crate) fn induce(
 /// source-derived alternatives. No model invocation or acceptance is implied.
 fn choose_transformation(source: &str, measured: impl Fn(&str)->bool) -> Option<(&'static str,String)> {
     type Operator = (&'static str, fn(&str)->Option<String>);
-    let operators: [Operator;6] = [
+    let operators: [Operator;7] = [
+        ("streamed_verified_domain_selector_v3",stream_verified_domain_selection),
         ("streamed_verified_improver_statistics_v2",stream_verified_policy_statistics),
         ("streamed_improver_policy_statistics_v1",stream_search_policy_statistics),
         ("verified_owner_provenance_cache_v1",materialize_verified_owner_provenance),
@@ -400,6 +437,40 @@ fn choose_transformation(source: &str, measured: impl Fn(&str)->bool) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_domain_selector_preserves_verified_payoff_objective_and_ties() {
+        use crate::engine::rsi_evolve;
+        let mut history=Vec::new();
+        for n in 0..80 {
+            history.push(json!({"domain":rsi_evolve::DOMAINS[n%6],
+                "accepted":n%4==0,"tokens":(n*919)%45000,
+                "evidenceVerified":n%3==0,"verifiedHoldoutGains":n%90,
+                "evaluation":{"verdict":if n%7==0 {"regressed"}else{"inconclusive"}}}));
+            for objective in ["","memory","기억 improver","tools context","algorithm"] {
+                let candidates=rsi_evolve::candidate_domains(objective);
+                let got=accumulator::fast_failure_domain(&history,&candidates,
+                    |domain|rsi_evolve::objective_matches(domain,objective));
+                let scores=rsi_evolve::scored_domains(&json!({"implementation":"failure-clusters"}),&history,objective).unwrap();
+                let expected=scores.into_iter().fold((f64::NEG_INFINITY,candidates[0]),
+                    |best,(domain,score)|if score>best.0 {(score,domain)}else{best}).1;
+                assert_eq!(got,expected,"history={n} objective={objective}");
+            }
+        }
+        let source=include_str!("rsi_evolve.rs");
+        let evolved=stream_verified_domain_selection(source).unwrap_or_else(||source.to_string());
+        assert!(evolved.contains("return fast_failure_domain(history"));
+        assert!(evolved.contains("\"expression\"|\"counterexample-first\""));
+        assert!(stream_verified_domain_selection(&evolved).is_none());
+        let changed_formula=source.replace("get(\"objectiveMatch\") * 2.0)",
+            "get(\"objectiveMatch\") * 2.0 + get(\"unresolved\"))");
+        assert_ne!(changed_formula,source);
+        assert!(stream_verified_domain_selection(&changed_formula).is_none(),
+            "a genuinely evolved policy must not be replaced by an old default formula");
+        let changed_features=source.replace("holdout_gains*10_000.0/verified_tokens",
+            "holdout_gains*20_000.0/verified_tokens");
+        assert!(stream_verified_domain_selection(&changed_features).is_none());
+    }
     #[test]
     fn a_rejected_applicable_operator_does_not_starve_other_source_hypotheses() {
         let source=include_str!("room_state.rs");

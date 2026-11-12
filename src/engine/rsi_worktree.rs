@@ -283,6 +283,7 @@ fn classify(patch:&str)->&'static str {
             || line.contains("src/engine/rsi_evolve.rs ")
             || line.contains("src/engine/rsi_archive.rs ")
             || line.contains("src/engine/rsi_mutation.rs ")
+            || line.contains("src/engine/rsi_domain_accumulator.rs ")
             || line.contains("src/engine/rsi_metrics.rs ")
             || line.contains("src/engine/algorithms.rs ")
             || line.contains("src/engine/algorithm_eval.rs ")
@@ -459,7 +460,9 @@ pub async fn finish(
             "target":classify(&patch),"baseCommit":worktree.base,
             "patch":patch,"hypothesis":hypothesis,
             "cases":input["rsiFrozenCases"],"oracleVersion":"rsi-worktree-v2",
-            "generatorModel":input["model"],"generatorEffort":input["reasoningEffort"],
+            "generatorModel":if native_origin {json!(format!("dominion-native:{}",
+                native_receipt.as_ref().and_then(|row|row["operator"].as_str()).unwrap_or("unknown")))}else{input["model"].clone()},
+            "generatorEffort":if native_origin {Value::Null}else{input["reasoningEffort"].clone()},
             "generatorSourceCommit":worktree.base
         });
         match rsi::propose(&context.state,&proposal) {

@@ -21,7 +21,7 @@ use tokio::process::Command;
 
 pub const DOMAINS: &[&str] = &["memory", "tools", "context", "learning", "ui", "improver"];
 
-fn objective_matches(domain: &str, objective: &str) -> bool {
+pub(crate) fn objective_matches(domain: &str, objective: &str) -> bool {
     let text = objective.to_lowercase();
     let aliases: &[&str] = match domain {
         "memory" => &["기억", "회상", "메모리", "memory", "recall"],
@@ -224,7 +224,7 @@ fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f
     }
 }
 
-fn candidate_domains(objective: &str) -> Vec<&'static str> {
+pub(crate) fn candidate_domains(objective: &str) -> Vec<&'static str> {
     // Explicit capability requests are constraints, not small bonuses that
     // another domain can override through unrelated historical successes.
     // An empty objective is an intentional open-ended survey of all domains.
@@ -234,7 +234,7 @@ fn candidate_domains(objective: &str) -> Vec<&'static str> {
     if matching.is_empty() { DOMAINS.to_vec() } else { matching }
 }
 
-fn scored_domains(
+pub(crate) fn scored_domains(
     algorithm: &Value, history: &[Value], objective: &str,
 ) -> Option<Vec<(&'static str, f64)>> {
     candidate_domains(objective).into_iter().map(|domain| {
@@ -319,6 +319,11 @@ fn executed_policy_rule(generation:&Value)->bool {
     })
 }
 fn edit_method_reward(generation:&Value)->f64 {
+    // A native source operator did not execute the model's editing policy,
+    // even if an earlier unproductive model turn consumed tokens.
+    if generation["candidateOrigin"]=="native_inductive_source_mutation" {
+        return 0.0;
+    }
     if !executed_policy_rule(generation) {return 0.0;}
     if generation["accepted"]==true
         && generation["evidenceVerified"]==true
@@ -3237,6 +3242,12 @@ async fn run_loop(
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         generation.as_object_mut().expect("generation object")
             .extend(generation_details.as_object().expect("generation details object").clone());
+        generation["requestedModel"]=input["model"].clone();
+        if generation["candidateOrigin"]=="native_inductive_source_mutation" {
+            generation["generatorModel"]=json!(format!("dominion-native:{}",
+                generation["nativeMutation"]["operator"].as_str().unwrap_or("unknown")));
+            generation["generatorProviderId"]=json!("dominion-native");
+        }
         // Keep the generation JSON macro below Rust's recursive expansion
         // ceiling and attach bounded evidence only after building the core
         // generation receipt.
@@ -3582,6 +3593,9 @@ async fn run_loop(
         });
         elapsed(record, started);
         save(context, record)?;
+        if proof_goal_reached(&context.state,input,record) {
+            return Ok("capability_demonstrated".into());
+        }
         if let Some(reason)=stopped {return Ok(reason.into());}
         if let Some(error)=generation_model_error(&current) {
             // A late provider failure after source bytes were written,
@@ -3600,6 +3614,12 @@ async fn run_loop(
             return Ok("no_progress".into());
         }
     }
+}
+
+fn proof_goal_reached(state:&AppState,input:&Value,record:&Value)->bool {
+    input["rsiStopAfterProof"]==true
+        && record["maxAcceptedStreak"].as_u64().unwrap_or(0)>=3
+        && crate::engine::rsi::campaign_capability_proven(state,record)
 }
 
 /// Empty strings are not model errors; a research-only generation sets the
@@ -4581,6 +4601,10 @@ mod tests {
     #[test]
     fn edit_method_reward_requires_measured_quality_for_full_credit() {
         assert_eq!(edit_method_reward(&json!({"accepted":true,"evidenceVerified":true,
+            "candidateOrigin":"native_inductive_source_mutation","tokens":9000,
+            "evaluation":{"metrics":{"eligible":true}}})),0.0,
+            "native mutations cannot credit an unused model editor, even after model calls");
+        assert_eq!(edit_method_reward(&json!({"accepted":true,"evidenceVerified":true,
             "evaluation":{"metrics":{"eligible":true}}})),1.0);
         assert_eq!(edit_method_reward(&json!({"accepted":true,"evidenceVerified":false,
             "evaluation":{"metrics":{"eligible":true}}})),0.0,
@@ -4618,6 +4642,14 @@ mod tests {
         real["ruleExecutions"][0]["allow"]=json!(["code_search"]);
         assert_eq!(edit_method_reward(&real),0.0,
             "a rule whose advertised action did not run is uncredited");
+    }
+
+    #[test]
+    fn proof_goal_does_not_stop_on_unverified_streak_counters() {
+        let (state,root)=state();
+        assert!(!proof_goal_reached(&state,&json!({"rsiStopAfterProof":true}),
+            &json!({"id":"forged","maxAcceptedStreak":3,"capabilityDemonstrated":true,"history":[]})));
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]

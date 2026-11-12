@@ -95,7 +95,7 @@ if(mode==='probe'){
       request:"Improve DOMINION's current self-improvement algorithm and then transfer a measured improvement into memory. Start from the unchanged current source. Find repeated allocation, scans, or redundant work in self-improvement policy selection and owner-fact retrieval. Preserve policy features, provenance checks and ranking semantics. Inspect source before editing; use small SHA-bound edits. Use independently measured development feedback to repair unsuccessful candidates. The runtime can also try native source transformations, whose provenance must stay separate from model edits. Do not modify tests, evaluators, fixtures, or report an unevaluated proposal as an improvement.",
       // Reserve capacity for a genuine second-generation correction of a
       // compiler-passing but zero-gain source candidate. No paid model.
-      focusFiles:[],expandAfterGain:true,nativeInduction:true,maxAttempts:6,
+      focusFiles:[],expandAfterGain:true,nativeInduction:true,stopAfterProof:true,maxAttempts:6,
       tokenBudget:520000,timeBudgetSeconds:6000
     };
     trace.submittedRequest={...request};
@@ -115,7 +115,7 @@ if(mode==='probe'){
     if(!last)throw Error('No status after launch');
     const history=last.evolution?.history||last.result?.evolution?.history||[];
     trace.generationEvidence=history.map(g=>({
-      attempt:g.attempt,jobId:g.jobId,model:g.generatorModel,
+      attempt:g.attempt,jobId:g.jobId,model:g.generatorModel,requestedModel:g.requestedModel,
       tokenUsage:g.tokenUsage,candidateId:g.candidateId,accepted:g.accepted,
       acceptedCommit:g.acceptedCommit,verdict:g.evaluation?.verdict,
       improvedHoldouts:g.evaluation?.metrics?.improvedHoldouts,
