@@ -3719,6 +3719,18 @@ async fn run_loop(
         child_input["rsiBaseCommit"] = json!(head);
         child_input["rsiCampaignId"] = json!(context.job_id);
         child_input["rsiGeneratorCommit"] = json!(head);
+        // In whole-system evolution, the child is a model-bearing redesign
+        // agent. It may modify algorithms, harness, memory, learning, tools
+        // and its own improvement policy; native fixed patches cannot stand
+        // in for that new system's judgment or implementation.
+        if input["rsiSystemEvolution"]==true {
+            child_input["rsiNativeInduction"]=json!(false);
+            if input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
+                child_input["rsiFocusFiles"]=json!([]);
+                child_input["rsiAutonomous"]=json!(true);
+                child_input["rsiAutoFocus"]=json!(true);
+            }
+        }
         let objective=selection_objective(input);
         let allowed_campaigns=allowed_trial_campaigns(
             &context.state,input,record,&context.job_id);
@@ -3867,6 +3879,93 @@ async fn run_loop(
         // not only its instruction text. Keep the originally ranked options
         // as evidence while narrowing an implementation stage to one source.
         bind_action_to_source(&context.state,&mut child_input,&recorded_history);
+        if input["rsiSystemEvolution"]==true {
+            // Sub1's compiled-planner principle, extended with Sub3's full
+            // source self-model. This EXECUTES the rebuilt descendant instead
+            // of asking the old coordinator to impersonate its next plan.
+            record["phase"]=json!("planning_next_generator");
+            save(context,record)?;
+            let plan_dir=context.state.config.data_dir.join("rsi-controller-plans");
+            std::fs::create_dir_all(&plan_dir).map_err(|e|e.to_string())?;
+            let plan_path=plan_dir.join(format!("{}-{attempt}.json",context.job_id));
+            let snapshot=json!({
+                "campaignId":context.job_id,
+                "generatorCommit":head,
+                "attempt":attempt,
+                "historyCount":recorded_history.len(),
+                "input":child_input
+            });
+            std::fs::write(&plan_path,
+                serde_json::to_vec(&snapshot).map_err(|e|e.to_string())?)
+                .map_err(|e|e.to_string())?;
+            let mut planner=Command::new(&binary);
+            planner.arg("--rsi-plan-generation").arg(&plan_path)
+                .current_dir(&lab)
+                .env("DOMINION_DATA",std::fs::canonicalize(
+                    &context.state.config.data_dir).map_err(|e|e.to_string())?)
+                .env("DOMINION_WORKSPACE",&lab)
+                .env_remove("DOMINION_DESKTOP_PARENT");
+            let result=command(context,planner,Duration::from_secs(45)).await;
+            let _=std::fs::remove_file(&plan_path);
+            let result=result?;
+            if !result.status.success() {
+                return Err(format!("실제 후손의 전체 시스템 계획 실행 실패: {}",
+                    String::from_utf8_lossy(&result.stderr).chars().take(1500).collect::<String>()));
+            }
+            if result.stdout.len()>2*1024*1024 {
+                return Err("후손 계획이 허용된 크기를 초과했습니다.".into());
+            }
+            let plan:Value=serde_json::from_slice(&result.stdout)
+                .map_err(|e|format!("후손 계획 JSON 오류: {e}"))?;
+            let domain=plan["domain"].as_str().filter(|d|DOMAINS.contains(d))
+                .ok_or("후손이 유효하지 않은 개선 분야를 계획했습니다.")?;
+            let focus=plan["focusFiles"].as_array()
+                .ok_or("후손의 소스 계획이 없습니다.")?;
+            if plan["source"]!="compiled_descendant_system_controller_v3"
+                || plan["generatorCommit"]!=head
+                || plan["historyCount"].as_u64()!=Some(recorded_history.len() as u64)
+                || plan["indexId"]!=child_input["rsiIndexId"]
+                || plan["objectiveId"]!=crate::engine::memory::stable_id(
+                    &[&selection_objective(&child_input)])
+                || plan["systemBlueprint"]["architecture"].as_array()
+                    .is_none_or(|architecture|architecture.len()!=7)
+                || plan["systemBlueprint"]["generatorCommit"]!=head
+                || plan["sourceTreeSha256"]!=plan["systemBlueprint"]["sourceTreeSha256"]
+                || focus.len()>3 || focus.iter().any(|row|row.as_str()
+                    .is_none_or(|p|!crate::engine::rsi::safe_path(p)
+                        || !lab.join(p).is_file()
+                        || crate::engine::code_index::indexed_source_hash(
+                            &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),p).is_none()))
+            {
+                return Err("후손 소스·계보·인덱스·전체 구조 계획이 일치하지 않습니다.".into());
+            }
+            child_input["rsiSelectedDomain"]=json!(domain);
+            child_input["rsiTargetDomain"]=json!(domain);
+            child_input["rsiTargetPlan"]=plan["targetPlan"].clone();
+            if input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
+                child_input["rsiFocusFiles"]=json!(focus);
+                child_input["rsiAutoFocus"]=json!(true);
+            }
+            child_input["rsiFocusSelection"]=json!({
+                "source":"rebuilt_descendant_system_controller",
+                "candidates":plan["ranked"],
+                "domain":domain,
+                "generatorCommit":head,
+                "sourceIndexId":child_input["rsiIndexId"]
+            });
+            child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
+            child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
+            child_input["rsiDescendantPlan"]=plan.clone();
+            record["nextGenerationPlan"]=plan;
+            context.state.store.audit("rsi.rebuilt_descendant_planned",json!({
+                "campaignId":context.job_id,"generatorCommit":head,
+                "attempt":attempt,"domain":domain,
+                "source":"compiled_descendant_system_controller_v3",
+                "modelImprovementDemonstrated":false
+            }));
+            save(context,record)?;
+            bind_action_to_source(&context.state,&mut child_input,&recorded_history);
+        }
         let inherited = generation_context(&context.state, input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
