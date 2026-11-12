@@ -299,3 +299,108 @@ pub(crate) fn selected_for_child(state:&AppState,campaign_id:&str)->Value{
         .ok().as_deref()!=Some(expected){return Value::Null;}
     receipt
 }
+
+
+/// An actual inference service is started from the adopted successor's
+/// source tree, with the independently promoted adapter loaded into PEFT.
+/// A path string or prompt directive is never counted as model usage.
+pub(crate) struct AdaptedInference{
+    pub provider_id:String,
+    pub evidence:Value,
+    process:tokio::process::Child,
+}
+impl Drop for AdaptedInference{
+    fn drop(&mut self){
+        let _=self.process.start_kill();
+    }
+}
+pub(crate) async fn launch(
+    state:&AppState,job:&Value
+)->Result<Option<AdaptedInference>,String>{
+    let promoted=&job["input"]["rsiSelectedAdapter"];
+    if !promoted.is_object(){return Ok(None);}
+    let campaign=job["input"]["rsiCampaignId"].as_str()
+        .ok_or("모델 계보의 캠페인 ID 없음")?;
+    let current=selected_for_child(state,campaign);
+    if current.is_null() || current["id"]!=promoted["id"]
+        || current["adapterSha256"]!=promoted["adapterSha256"]
+        || current["status"]!="promoted"
+        || job["input"]["rsiAllowLocalAdapterTraining"]!=true {
+        return Err("독립 평가에서 선택되지 않은 모델 어댑터입니다.".into());
+    }
+    let root=fs::canonicalize(job["input"]["rsiSourceDir"].as_str()
+        .ok_or("개선 후손 소스가 없습니다.")?).map_err(|e|e.to_string())?;
+    let script=fs::canonicalize(root.join("scripts/sub4_adapter_server.py"))
+        .map_err(|e|e.to_string())?;
+    if !inside(&script,&root)||!script.is_file(){
+        return Err("승격된 모델용 후손 추론기 소스가 없습니다.".into());
+    }
+    let script_sha=sha_file(&script)?;
+    let model=fs::canonicalize(promoted["baseModel"].as_str()
+        .ok_or("로컬 기본 모델 경로가 없습니다.")?).map_err(|e|e.to_string())?;
+    let model_root=fs::canonicalize(state.config.data_dir.join("models"))
+        .map_err(|e|e.to_string())?;
+    if !inside(&model,&model_root)||!model.is_dir(){
+        return Err("후손의 기본 모델 출처가 유효하지 않습니다.".into());
+    }
+    let dir=fs::canonicalize(promoted["candidateDirectory"].as_str()
+        .ok_or("LoRA 어댑터 디렉터리 없음")?).map_err(|e|e.to_string())?;
+    let sha=promoted["adapterSha256"].as_str().filter(|s|hex(s))
+        .ok_or("LoRA 해시가 올바르지 않습니다.")?;
+    if sha_file(&dir.join("adapter_model.safetensors"))?!=sha{
+        return Err("채택된 모델 가중치가 변경됐습니다.".into());
+    }
+    let listener=std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e|e.to_string())?;
+    let port=listener.local_addr().map_err(|e|e.to_string())?.port();
+    drop(listener);
+    let mut process=Command::new("python3");
+    process.arg(&script).arg("--base").arg(&model)
+        .arg("--adapter").arg(&dir).arg("--sha").arg(sha)
+        .arg("--port").arg(port.to_string())
+        .env("HF_HUB_OFFLINE","1").env("TRANSFORMERS_OFFLINE","1")
+        .env("PYTHONNOUSERSITE","1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut process=process.spawn().map_err(|e|e.to_string())?;
+    let endpoint=format!("http://127.0.0.1:{port}");
+    let client=reqwest::Client::new();
+    let mut ready=false;
+    for _ in 0..120 {
+        if process.try_wait().map_err(|e|e.to_string())?.is_some(){
+            return Err("채택된 PEFT 추론 서버가 시작되지 못했습니다.".into());
+        }
+        if let Ok(resp)=client.get(format!("{endpoint}/health"))
+            .timeout(Duration::from_secs(1)).send().await {
+            if resp.status().is_success(){ready=true;break;}
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    if !ready{return Err("LoRA 추론 서비스 준비 시간 제한".into());}
+    let provider_id=format!("rsi-adapter-{}",job["id"].as_str()
+        .ok_or("후손 ID 없음")?);
+    state.store.put("provider",&json!({
+        "id":provider_id,"name":"RSI independently promoted PEFT",
+        "baseUrl":endpoint,"kind":"openai","toolMode":"compat",
+        "reasoningProtocol":"chat_template","local":true,
+        "enabled":true,"model":"dominion-promoted-lora",
+        "capabilities":{"text":true,"contextTokens":8192,
+            "maxOutputTokens":2048}
+    })).ok_or("후손에 로컬 추론 제공자 등록 실패")?;
+    let evidence=json!({
+        "source":"running_adapted_descendant_inference_v1",
+        "promotionId":promoted["id"],
+        "campaignId":campaign,
+        "adapterSha256":sha,"inferenceSourceSha256":script_sha,
+        "modelWeightsVerifiedAtLaunch":true,
+        "actualServerReady":true,"qualityProvenByThisCall":false
+    });
+    Ok(Some(AdaptedInference{provider_id,evidence,process}))
+}
+pub(crate) fn disable_inference(state:&AppState,id:&str){
+    if let Some(mut provider)=state.store.get("provider",id){
+        provider["enabled"]=json!(false);
+        let _=state.store.put("provider",&provider);
+    }
+}

@@ -2892,6 +2892,12 @@ async fn run_loop(
         }
         let attempt = record["attempts"].as_u64().unwrap_or(0) + 1;
         let mut child_input = input.clone();
+        // This is a weight-adoption decision made by the previous,
+        // independently running campaign coordinator, not by the model
+        // that authored the adapter or by an unvalidated child prompt.
+        child_input["rsiSelectedAdapter"]=
+            crate::engine::rsi_model_weights::selected_for_child(
+                &context.state,&context.job_id);
         child_input["rsiSourceDir"] = json!(lab);
         child_input["rsiKnowledgeSource"]=record["sourceDir"].clone();
         child_input["rsiBaseCommit"] = json!(head);
@@ -3340,6 +3346,8 @@ async fn run_loop(
         generation.as_object_mut().expect("generation object")
             .extend(generation_details.as_object().expect("generation details object").clone());
         generation["requestedModel"]=input["model"].clone();
+        generation["adaptedModelActuallyUsed"]=current["rsiAdapterInferenceExecuted"].clone();
+        generation["sourceModelSelection"]=current["input"]["rsiSelectedAdapter"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
@@ -3559,14 +3567,25 @@ async fn run_loop(
         generation["principleLearningFeedback"]=
             crate::engine::rsi_principle_learning::feedback(
                 &generation["metaPolicy"],independently_checked);
+        // The parent coordinator runs the private evaluator AFTER the
+        // candidate worker has exited. The child cannot inspect these
+        // evaluation cases or create its own promotion decision.
+        let adapter_evaluation=crate::engine::rsi_model_weights::evaluate_candidate(
+            &context.state,&context.job_id,&generation,
+            Path::new(record["sourceDir"].as_str().unwrap_or(""))
+        ).await;
+        generation["modelAdapterIndependentEvaluation"]=adapter_evaluation.clone();
         generation["modelWeightLearning"]=json!({
             "candidate":generation["modelAdapterCandidate"],
+            "actualInference":generation["adaptedModelActuallyUsed"],
             "adapterWeightsActuallyCreated":generation["modelAdapterCandidate"]
                 ["adapterCreated"]==true,
-            "independentWeightGainMeasured":false,
-            "adapterPromoted":false,
-            "requiresPairedModelHarnessEvaluation":generation["modelAdapterCandidate"]
-                ["adapterCreated"]==true
+            "independentWeightGainMeasured":
+                adapter_evaluation["pairedModelImprovementMeasured"]==true,
+            "adapterPromoted":adapter_evaluation["status"]=="promoted",
+            "requiresPairedModelHarnessEvaluation":
+                adapter_evaluation.is_null() &&
+                generation["modelAdapterCandidate"]["adapterCreated"]==true
         });
         let mut lineage=history.clone();
         lineage.push(independently_checked.clone());
