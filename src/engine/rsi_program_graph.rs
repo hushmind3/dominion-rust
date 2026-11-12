@@ -98,7 +98,13 @@ fn path_target<'a>(frontier:&'a [Value],node:&Value,allowed:&[&str])->Option<&'a
 }
 fn executed(g:&Value)->bool {
     let plan=&g["openImprovementProgram"];
-    plan["source"]=="compiled_descendant_open_improvement_program_v1"
+    let Some(path)=plan["target"]["path"].as_str() else{return false};
+    let source_verified=g["changedSourcePaths"].as_array().is_some_and(|paths|
+        paths.iter().any(|row|row.as_str()==Some(path)))
+        && g["acceptedSourceHashes"][path].as_str().is_some_and(|h|
+            h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit()));
+    source_verified && g["metaPolicy"]["target"]==plan["target"]
+        && plan["source"]=="compiled_descendant_open_improvement_program_v1"
         && g["metaPolicy"]["selectionMode"]=="authored_open_improvement_program"
         && g["metaPolicy"]["openImprovementRevision"]==plan["revision"]
         && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
@@ -359,7 +365,8 @@ mod tests {
             "generatorCommit":one,"openImprovementRevision":plan["revision"],
             "metaRevision":"m"});
         child["metaPolicy"]=json!({"selectionMode":"authored_open_improvement_program",
-            "openImprovementRevision":plan["revision"],"revision":"m"});
+            "openImprovementRevision":plan["revision"],"revision":"m",
+            "target":plan["target"]});
         let history=vec![first,child.clone()];
         let next=synthesize(&history,&f,&["memory","improver"],&two);
         assert_eq!(next["nodeId"],"new_algorithm");
@@ -380,7 +387,8 @@ mod tests {
             "openImprovementRevision":first_plan["revision"]});
         observed["metaPolicy"]=json!({
             "selectionMode":"authored_open_improvement_program","revision":"m",
-            "openImprovementRevision":first_plan["revision"]});
+            "openImprovementRevision":first_plan["revision"],
+            "target":first_plan["target"]});
         let history=vec![first,observed];
         let next=synthesize(&history,&f,&["memory","improver"],&two);
         assert_eq!(next["nodeId"],"rewrite_program");
@@ -417,7 +425,8 @@ mod tests {
         let mut author=parent("rewriter",&two,&one,new.clone(),p1.clone());
         author["metaPolicy"]=json!({
             "selectionMode":"authored_open_improvement_program",
-            "revision":"m","openImprovementRevision":p1["revision"]
+            "revision":"m","openImprovementRevision":p1["revision"],
+            "target":p1["target"]
         });
         author["compiledPlanExecuted"]=json!({
             "source":"running_compiled_descendant_binary",
@@ -435,7 +444,8 @@ mod tests {
         let mut execution=parent("new-method-exec",&three,&two,Value::Null,p2.clone());
         execution["metaPolicy"]=json!({
             "selectionMode":"authored_open_improvement_program",
-            "revision":"q","openImprovementRevision":p2["revision"]
+            "revision":"q","openImprovementRevision":p2["revision"],
+            "target":p2["target"]
         });
         execution["compiledPlanExecuted"]=json!({
             "source":"running_compiled_descendant_binary",
