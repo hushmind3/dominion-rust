@@ -97,15 +97,15 @@ fn candidate_scores(state:&AppState,candidate:&Value,base:&str,plan:&[Value],ora
 /// Every verified stepping stone is persisted under the exact evaluation
 /// identity (base commit + case plan + oracle). Later campaigns can therefore
 /// continue the same archive instead of rebuilding it from nothing.
-fn remember(state:&AppState,identity:&str,candidate:&Value) {
-    let _=state.store.put("rsi_archive",&json!({
+fn remember(state:&AppState,identity:&str,candidate:&Value)->bool {
+    state.store.put("rsi_archive",&json!({
         "id":format!("{identity}:{}",candidate["patchSha256"].as_str().unwrap_or("")),
         "identity":identity,
         "candidateId":candidate["id"],
         "patchSha256":candidate["patchSha256"],
         "caseCount":candidate["cases"].as_array().map(Vec::len),
         "createdAt":chrono::Utc::now().to_rfc3339(),
-    }));
+    })).is_some()
 }
 
 /// Only completed, independently evaluated candidates enter the archive. The
@@ -139,16 +139,25 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
             continue;
         };
         if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
-        remember(state,&identity,&candidate);
-        entries.push((id, candidate["patchSha256"].clone(), scores));
+        let persisted=remember(state,&identity,&candidate);
+        entries.push((id, candidate["patchSha256"].clone(), scores,persisted));
     }
     for record in state.store.all("rsi_archive") {
         if record["identity"].as_str()!=Some(identity.as_str()) {continue;}
         let Some(candidate)=record["candidateId"].as_str()
             .and_then(|id|state.store.get("rsi_candidate",id)) else {continue};
-        if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
+        // A persisted pointer is not trusted just because its candidate
+        // happens to be independently valid. Verify the exact candidate
+        // patch and archive identity before giving it search-parent credit.
+        let Some(patch)=candidate["patchSha256"].as_str() else {continue};
+        if record["patchSha256"]!=patch
+            ||record["id"]!=format!("{identity}:{patch}")
+            ||record["caseCount"].as_u64()!=Some(plan.len() as u64) {
+            continue;
+        }
         let Some((id,scores))=candidate_scores(state,&candidate,base,&plan,&oracle) else {continue};
-        entries.push((id,candidate["patchSha256"].clone(),scores));
+        if !seen.insert(patch.to_string()) {continue;}
+        entries.push((id,candidate["patchSha256"].clone(),scores,true));
     }
     let frontier = entries
         .iter()
@@ -196,7 +205,7 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
                 "policy":"paired-pareto-stepping-stones-v2","baseCommit":base,
                 "oracleSha256":oracle,"archiveSize":entries.len(),"frontierSize":frontier.len(),
                 "descendantAttempts":children(&entry.0),
-                "persisted":true,"adopted":false,"qualityProven":false,
+                "persisted":entry.3,"adopted":false,"qualityProven":false,
             })
         })
         .unwrap_or(Value::Null)
@@ -351,6 +360,29 @@ mod tests {
         // A different evaluation identity must never reuse that entry.
         assert!(select(&state, &[], &"c".repeat(40), &plan()).is_null());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn archive_record_requires_exact_stored_patch_and_identity() {
+        let (state,root)=state();
+        let base="a".repeat(40);
+        let generation=insert(&state,"immutable-record",[0.53,0.52]);
+        let original=select(&state,&[generation],&base,&plan());
+        let key=format!("{}:{}",
+            plan_identity(&base,&rsi::case_plan(&plan()).unwrap(),
+                &format!("{:x}",Sha256::digest(include_bytes!("rsi_oracle_fixture.rs")))),
+            original["patchSha256"].as_str().unwrap());
+        let record=state.store.get("rsi_archive",&key).unwrap();
+        let mut forged=record.clone();
+        forged["patchSha256"]=json!("c".repeat(64));
+        state.store.put("rsi_archive",&forged).unwrap();
+        assert!(select(&state,&[],&base,&plan()).is_null(),
+            "An archived pointer with a changed patch hash is ineligible");
+        state.store.put("rsi_archive",&record).unwrap();
+        let restored=select(&state,&[],&base,&plan());
+        assert_eq!(restored["candidateId"],original["candidateId"]);
+        assert_eq!(restored["persisted"],true);
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
