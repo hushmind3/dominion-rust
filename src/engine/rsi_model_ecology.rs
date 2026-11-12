@@ -547,6 +547,118 @@ mod tests{
         g["modelEcologyExecuted"]["sessionOwnedByGeneration"]=json!(false);
         assert!(outcome(&g).is_none());
     }
+    #[test] fn cross_campaign_verified_pair_is_recovered_and_tampering_excluded(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let root=std::env::temp_dir().join(format!(
+            "sub4-source-matched-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg=Config{port:0,data_dir:root.clone(),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
+            Vault::open(&cfg.key_path()));
+        let base="a".repeat(40);
+        let cases=json!((0..8).map(|i|json!({
+            "id":format!("case-{i}"),"domain":"memory","holdout":i<2,
+            "filter":format!("rsi_frozen_oracle::case_{i}"),
+            "metrics":[{"key":"quality","direction":"higher",
+                "minRelativeGain":0.1}]
+        })).collect::<Vec<_>>());
+        let patch="diff --git a/src/engine/memory.rs b/src/engine/memory.rs\n--- a/src/engine/memory.rs\n+++ b/src/engine/memory.rs\n@@ -1 +1 @@\n-old\n+model-edit\n";
+        let mut candidate=crate::engine::rsi::propose(&state,&json!({
+            "target":"algorithm","baseCommit":base,"patch":patch,
+            "hypothesis":"A measured source change in memory implementation.",
+            "cases":cases,"oracleVersion":"rsi-worktree-v2",
+            "generatorModel":"actor-model"})).unwrap();
+        let id=candidate["id"].as_str().unwrap().to_string();
+        let oracle=format!("{:x}",Sha256::digest(
+            include_bytes!("rsi_oracle_fixture.rs")));
+        let report=json!({
+            "baseCommit":base,"patchSha256":candidate["patchSha256"],
+            "oracleVersion":"rsi-worktree-v2",
+            "reportSha256":"d".repeat(64),
+            "oracleSha256":oracle,"runner":"test",
+            "baselineBuildOk":true,"candidateBuildOk":true,
+            "cases":(0..8).map(|i|json!({
+                "id":format!("case-{i}"),"baselinePass":true,
+                "candidatePass":true,
+                "metrics":{"quality":{"baseline":0.5,"candidate":0.51}}
+            })).collect::<Vec<_>>()
+        });
+        candidate=crate::engine::rsi::evaluate(&state,&id,&report).unwrap();
+        candidate["origin"]=json!("model_driven_detached_worktree");
+        candidate["pairedComparisonComplete"]=json!(true);
+        candidate["evaluation"]["source"]=json!(
+            "server_invoked_local_paired_git_worktrees");
+        candidate["evaluation"]["evidenceSha256"]=json!("d".repeat(64));
+        state.store.put("rsi_candidate",&candidate).unwrap();
+        state.store.put("rsi_pair",&json!({
+            "id":format!("rsi-pair-{id}"),"candidateId":id,
+            "runner":"local_gitrepo_not_os_sandbox",
+            "report":report,"evidenceSha256":"d".repeat(64),
+            "metrics":candidate["evaluation"]["metrics"],
+            "verdict":candidate["evaluation"]["verdict"]
+        })).unwrap();
+        assert!(crate::engine::rsi::replayed_pair_metrics(
+            &state,&candidate).is_some());
+        let route=identity("provider-a","actor-model");
+        let policy=json!({"revision":"policy-executed","selected":route});
+        let executed=json!({
+            "source":"real_descendant_model_usage_v1",
+            "generationJobId":"real-child","generatorCommit":base,
+            "providerId":"provider-a","model":"actor-model",
+            "selectedBy":"policy-executed",
+            "sessionOwnedByGeneration":true,
+            "routeMatchedWorkerInput":true,"mixedChatModelCalls":0,
+            "actuallyUsedInGeneration":true,"actualModelCalls":1
+        });
+        let compiled=json!({"source":"running_compiled_descendant_binary"});
+        let input=json!({
+            "rsiGeneratorCommit":base,"rsiModelEcologyPolicy":policy,
+            "rsiFrozenCases":cases,"providerId":"provider-a",
+            "model":"actor-model"
+        });
+        let job=json!({"id":"real-child","kind":"rsi_generation",
+            "input":input,"rsiModelEcologyExecuted":executed,
+            "rsiCompiledPlanExecuted":compiled});
+        state.store.put("job",&job).unwrap();
+        let profile=crate::engine::rsi_lineage_transfer::profile(&input).unwrap();
+        let objective=crate::engine::memory::stable_id(&["memory"]);
+        let record=json!({
+            "id":"cross-campaign-1","campaignId":"older-campaign",
+            "jobId":"real-child","generatorCommit":base,
+            "comparisonProfileSha256":profile,"objectiveId":objective,
+            "domain":"memory","candidateId":id,
+            "candidateOrigin":"model_driven_detached_worktree",
+            "modelEcologyPolicy":policy,"modelEcologyExecuted":executed,
+            "compiledPlanExecuted":compiled,
+            "accepted":false,"pairedMeasured":true,
+            "evaluation":candidate["evaluation"]
+        });
+        state.store.put("rsi_generation",&record).unwrap();
+        let saved=historical_same_source_trials(
+            &state,&[],&base,&profile,&objective,"memory");
+        assert_eq!(saved.len(),1);
+        let matched=matched_cohort(&saved,&route,&base,&profile,&objective,"memory");
+        assert_eq!(matched["comparedGenerations"],1);
+        // The current campaign already loaded this job: never double count.
+        assert!(historical_same_source_trials(
+            &state,&[record.clone()],&base,&profile,&objective,"memory").is_empty());
+        // A claimed model outcome must still match its original job record.
+        let mut forged=job.clone();
+        forged["input"]["model"]=json!("other-model");
+        state.store.put("job",&forged).unwrap();
+        assert!(historical_same_source_trials(
+            &state,&[],&base,&profile,&objective,"memory").is_empty());
+        state.store.put("job",&job).unwrap();
+        let mut changed=candidate.clone();
+        changed["evaluation"]["evidenceSha256"]=json!("c".repeat(64));
+        state.store.put("rsi_candidate",&changed).unwrap();
+        assert!(historical_same_source_trials(
+            &state,&[],&base,&profile,&objective,"memory").is_empty());
+        drop(state);
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test] fn cross_campaign_model_comparison_rejects_missing_original_job(){
         use crate::{config::Config,db::Store,vault::Vault};
         let root=std::env::temp_dir().join(format!(
