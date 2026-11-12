@@ -784,6 +784,10 @@ pub(crate) fn propose(
     }
     let new_components=crate::engine::rsi_component_birth::validate_declarations(
         body,&Value::Object(assignments.clone()),&components,paths)?;
+    // Model-authored open graph: arbitrary roles, feedback branches and
+    // higher-order self-rewrites. It becomes executable only if the actual
+    // source revision is independently accepted by the frozen evaluator.
+    let open_program=crate::engine::rsi_program_graph::normalize(&body["openProgram"])?;
     // The next source revision can inherit a model-written multi-step
     // improvement procedure, including its learning and tool-use policies.
     // It is activated only after this generation's REAL source patch passes
