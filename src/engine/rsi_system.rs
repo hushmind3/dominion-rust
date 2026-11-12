@@ -315,10 +315,19 @@ pub(crate) fn architecture_frontier(
         // algorithm that an invented intelligence must later re-improve.
         // This changes SOURCE DISCOVERY only, not the self-chosen target rank.
         if role=="improvement_methods" {
-            if let Some(pos)=available.iter().position(|(path,_,_)|
-                *path=="src/engine/rsi_recursive_discovery.rs") {
-                let method=available.remove(pos);
-                available.insert(0,method);
+            // A size-ranked frontier must not conceal the executable
+            // evaluator-error learning law or the program-discovery method.
+            // Both are ordinary editable source targets, never privileged
+            // for independent adoption or scoring.
+            for anchor in [
+                "src/engine/rsi_recursive_discovery.rs",
+                "src/engine/rsi_meta_controller.rs",
+            ] {
+                if let Some(pos)=available.iter().position(|(path,_,_)|
+                    *path==anchor) {
+                    let method=available.remove(pos);
+                    available.insert(0,method);
+                }
             }
         }
         // Preserve alternate source targets. The original frontier exposed
@@ -1321,6 +1330,40 @@ mod tests {
         let stale=architecture_frontier(&state,&model,&[],index["id"].as_str().unwrap(),&root);
         assert!(stale.iter().all(|row|row["role"]!="memory"),
             "a changed source without a fresh index must not inherit its old SHA");
+        let _=fs::remove_dir_all(root);
+    }
+    #[test]
+    fn self_modifying_meta_policy_survives_frontier_size_truncation() {
+        let root=std::env::temp_dir().join(format!("rsi-meta-frontier-{}",
+            uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("src/engine")).unwrap();
+        // 20 cheaper method sources would previously push the larger,
+        // executable meta-policy itself beyond the per-role frontier cap.
+        for i in 0..20 {
+            fs::write(root.join(format!("src/engine/rsi_minor_{i}.rs")),
+                format!("pub fn minor_{i}() {{}}")).unwrap();
+        }
+        for source in ["rsi_meta_controller.rs","rsi_recursive_discovery.rs"] {
+            fs::write(root.join("src/engine").join(source),
+                "pub fn method() { let _source = 123456789; }".repeat(512))
+                .unwrap();
+        }
+        let config=crate::config::Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=crate::state::AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()));
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let model=blueprint(&root,&"a".repeat(40),&[]);
+        let frontier=architecture_frontier(&state,&model,&[],
+            index["id"].as_str().unwrap(),&root);
+        for source in ["rsi_meta_controller.rs","rsi_recursive_discovery.rs"] {
+            let path=format!("src/engine/{source}");
+            assert!(frontier.iter().any(|row|row["path"]==path
+                && row["role"]=="improvement_methods"
+                && row["qualityProven"]==false),
+                "method rewriter must remain discoverable: {path}");
+        }
         let _=fs::remove_dir_all(root);
     }
     #[test]
