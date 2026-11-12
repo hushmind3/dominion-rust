@@ -1047,6 +1047,38 @@ pub(crate) fn propose(
             return Err("상호개선 관계의 메커니즘과 관찰 가능한 결과가 필요합니다.".into());
         }
     }
+    // The running descendant's self-research curriculum is a source-
+    // changing contract, not a narrative. Its claimed stage must be present
+    // in the actual edited files before the method can survive adoption.
+    let laboratory=&child["input"]["rsiRecursiveLaboratory"];
+    if laboratory["source"]=="descendant_editable_recursive_laboratory_v1"{
+        let step=laboratory["phase"].as_str().unwrap_or("");
+        let required=laboratory["target"]["path"].as_str()
+            .filter(|path|intelligence_editable_path(path));
+        if matches!(step,"develop_invented_intelligence"|
+            "return_to_origin"|"rewrite_scientific_method"|
+            "rewrite_stalled_scientific_method"|"repair_measured_negative_experiment")
+            && required.is_none_or(|path|!target_set.contains(path)){
+            return Err("후손 연구 단계가 요구한 실제 소스 수정이 설계에 없습니다.".into());
+        }
+        if step=="invent_new_intelligence" {
+            let expected=laboratory["invention"]["role"].as_str()
+                .ok_or("새로 발명할 지능 역할이 지정되지 않았습니다.")?;
+            if !births.iter().any(|item|item["role"]==expected){
+                return Err("후손이 발명한 지능 역할을 실행 가능한 코드 설계에 포함하세요.".into());
+            }
+        }
+        if matches!(step,"rewrite_scientific_method"|
+            "rewrite_stalled_scientific_method"){
+            // The inherited action program is used by the *next* binary's
+            // actual native tool runner. No source-only description qualifies.
+            if !body["actionProgram"].as_array().is_some_and(|seq|seq.len()>=2)
+                || !body["methodHypothesis"].as_str().is_some_and(|note|
+                    note.trim().len()>=20){
+                return Err("실험 알고리즘 재작성에는 계승 가능한 실제 편집 절차와 방법 가설이 필요합니다.".into());
+            }
+        }
+    }
     let next_files=body["nextTargetFiles"].as_array()
         .cloned().unwrap_or_default();
     if next_files.len()>3 || next_files.iter().any(|file|file.as_str()
