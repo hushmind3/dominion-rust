@@ -172,17 +172,23 @@ pub(crate) fn architecture_frontier(
             || candidate["experimentAdoption"]["commit"]!=generation["acceptedCommit"]
             || candidate["baseCommit"]!=generation["generatorCommit"]
             || !crate::engine::rsi::verified_pair_receipt(state,&candidate) {continue;}
-        for path in candidate["paths"].as_array().into_iter().flatten()
-            .filter_map(Value::as_str) {
-            let Some(hash)=generation["acceptedSourceHashes"][path].as_str() else {continue;};
-            if crate::engine::code_index::indexed_source_hash(state,index_id,path)
-                .as_deref()!=Some(hash) {continue;}
-            for role in blueprint["architecture"].as_array().into_iter().flatten(){
-                let Some(name)=role["role"].as_str() else {continue;};
-                if role["representativeSources"].as_array().into_iter().flatten()
-                    .any(|item|item["path"]==path){
-                    verified_roles.insert(name.to_string());
-                }
+        // Only credit the explicit, COMPLETELY implemented source-to-role
+        // contract. A helper file shared by two seed roles cannot claim
+        // that both intelligence subsystems were actually redesigned.
+        let design=&generation["systemDesign"];
+        let changed=candidate["paths"].as_array().cloned().unwrap_or_default();
+        if design["generatorCommit"]!=generation["generatorCommit"]
+            || design["generationJobId"]!=generation["jobId"]
+            || !design_implemented(design,&changed) {continue;}
+        for role in design_roles(design) {
+            let Some(files)=design_role_files(design,&role) else{continue;};
+            if files.iter().all(|file|file.as_str().is_some_and(|path|{
+                let Some(sha)=generation["acceptedSourceHashes"][path].as_str()
+                    else{return false;};
+                crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                    .as_deref()==Some(sha)
+            })){
+                verified_roles.insert(role);
             }
         }
     }
@@ -363,8 +369,8 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         method. Propose a genuinely new executable design, inspect source \
         hashes with code_search/workspace_read_range and WRITE the required \
         cross-module Rust changes with workspace_replace_function (complete Rust function), workspace_replace (line mode or exact oldText), workspace_write. \
-        Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. A design alone earns no credit. At least one accepted generation must INVENT a new executable method with rsi_method_propose, and a compiled successor must actually EXECUTE and verify it; registration alone earns no evidence. Propose that reusable method using \
-        rsi_method_propose; mere registration is not evidence of execution. \
+        Before editing call rsi_system_plan(component, nextDomain, hypothesis, design, targetFiles). For a coupled redesign of algorithm, harness, memory, learning, tools, and improvement methods, use component=system and explicitly assign each file to one role with components and componentFiles. Then WRITE ALL the named source files: partially implemented designs receive no credit. New roles and source modules are allowed. Optionally author successorStages [{role,domain,path,objective}]: only after your source is independently adopted will the NEW compiled descendant read its own code and attempt those next tasks. A design and a saved stage alone earn zero. At least one adopted generation must INVENT an executable method with rsi_method_propose and a later compiled descendant must EXECUTE it with verified postconditions. \
+        Improve the intelligence control loop, not only a benchmark number. \
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
         evaluator alone decides adoption; do not edit the evaluator. \
@@ -653,7 +659,8 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
             && generation["systemEvolution"]==true
             && generation["systemBlueprintVerified"]==true
             && model["generatorCommit"]==generator
-            && model["architecture"].as_array().is_some_and(|a|a.len()==7)
+            && model["architecture"].as_array().is_some_and(|a|
+                (7..=64).contains(&a.len()))
             && model["sourceTreeSha256"].as_str().is_some_and(|h|
                 h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit()))
             && plan["source"]=="compiled_descendant_system_controller_v3"
@@ -756,6 +763,55 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coupled_design_counts_only_all_real_changed_files_and_distinct_roles() {
+        let design=json!({"component":"system","components":["memory","learning"],
+            "targetFiles":["src/engine/memory.rs","src/engine/learning.rs"],
+            "componentFiles":{
+                "memory":["src/engine/memory.rs"],
+                "learning":["src/engine/learning.rs"]
+            }});
+        assert!(!design_implemented(&design,&[json!("src/engine/memory.rs")]),
+            "a partially written multi-role redesign must be rejected");
+        assert!(design_implemented(&design,&[
+            json!("src/engine/memory.rs"),json!("src/engine/learning.rs")]));
+        let mut duplicate=design.clone();
+        duplicate["componentFiles"]["learning"]=json!(["src/engine/memory.rs"]);
+        assert!(!design_implemented(&duplicate,&[
+            json!("src/engine/memory.rs"),json!("src/engine/learning.rs")]),
+            "a shared source path must never count twice as two redesigned roles");
+    }
+
+    #[test]
+    fn only_an_adopted_model_can_program_a_rebuilt_descendants_next_task() {
+        let rows=vec![json!({"role":"learning","domain":"learning",
+            "path":"src/engine/learning.rs",
+            "sourceSha256":"a".repeat(64)})];
+        let model=json!({"accepted":true,"generatorCommit":"parent",
+            "acceptedCommit":"child","jobId":"episode",
+            "evaluation":{"metrics":{"eligible":true}},
+            "acceptedSourceHashes":{
+                "src/engine/memory.rs":"b".repeat(64)},
+            "systemDesign":{"source":"model_authored_system_design",
+                "id":"design1","component":"memory",
+                "generatorCommit":"parent","generationJobId":"episode",
+                "targetFiles":["src/engine/memory.rs"],
+                "successorStages":[{"role":"learning","domain":"learning",
+                    "path":"src/engine/learning.rs",
+                    "objective":"Build a distinct learned policy informed by real runtime failures"}]}});
+        let picked=inherited_stage(&[model.clone()],&rows).unwrap();
+        assert_eq!(picked["path"],"src/engine/learning.rs");
+        assert_eq!(picked["qualityProven"],false);
+        let mut unadopted=model.clone();
+        unadopted["accepted"]=json!(false);
+        assert!(inherited_stage(&[unadopted],&rows).is_none());
+        let mut mismatched=model;
+        mismatched["acceptedSourceHashes"]=json!({});
+        assert!(inherited_stage(&[mismatched],&rows).is_none());
+        let stale=vec![json!({"role":"learning","domain":"learning",
+            "path":"src/engine/unknown.rs"})];
+        assert!(inherited_stage(&[json!({"accepted":false})],&stale).is_none());
+    }
     #[test]
     fn system_self_model_tracks_real_source_revision_and_covers_all_capabilities() {
         let root=std::env::temp_dir().join(format!("rsi-system-{}",uuid::Uuid::new_v4()));
