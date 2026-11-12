@@ -541,7 +541,7 @@ mod tests {
             crate::engine::rsi_improvement_algebra::method_family_id(&altered));
     }
     #[test]
-    fn real_independent_receipt_links_method_revisions_with_different_ids(){
+    fn archived_paired_receipt_fixture_links_method_revisions_with_different_ids(){
         use crate::{config::Config,db::Store,vault::Vault};
         let root=std::env::temp_dir().join(
             format!("rsi-method-family-replay-{}",uuid::Uuid::new_v4()));
@@ -551,6 +551,8 @@ mod tests {
         let state=AppState::new(config.clone(),
             Store::open(&config.db_path()).unwrap(),
             Vault::open(&config.key_path()));
+        // Synthetic paired-runner fixture. This exercises replay logic,
+        // NOT real API calls or a live independent model benchmark.
         let commit="a".repeat(40);
         let path="src/engine/models.rs";
         let cases=(0..8).map(|i|json!({"id":format!("case-{i}"),
