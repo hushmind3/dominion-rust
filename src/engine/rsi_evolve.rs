@@ -2997,12 +2997,14 @@ fn durable_edit_policy_history(
         }else{
             generation["evidenceVerified"]=json!(false);
         }
-        rows.entry(job).and_modify(|current|{
+        if let Some(current)=rows.get_mut(&job){
             if generation_completion_millis(&generation)
-                >generation_completion_millis(current) {
-                *current=generation.clone();
+                >generation_completion_millis(current){
+                *current=generation;
             }
-        }).or_insert(generation);
+        }else{
+            rows.insert(job,generation);
+        }
     }
     let mut output=rows.into_values().collect::<Vec<_>>();
     output.sort_by(|a,b|
