@@ -213,6 +213,70 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     }
     Ok(Worktree{source,path,base:base.to_string()})
 }
+/// Restore an independently REPLAYED neutral stepping stone. An archive
+/// pointer alone is never authorization to execute a patch: the candidate,
+/// its exact source branch/base/patch hash, and original raw paired receipt
+/// must all agree. The accepted generator HEAD remains unchanged.
+pub(crate) async fn restore_archived_parent(
+    context:&JobContext,input:&Value,worktree:&Worktree,
+)->Result<Value,String>{
+    let Some(id)=input["rsiInheritedCandidateId"].as_str()
+        .filter(|s|!s.is_empty()) else {return Ok(Value::Null)};
+    let choice=&input["rsiArchiveSelection"];
+    let candidate=context.state.store.get("rsi_candidate",id)
+        .ok_or("영구 아카이브에 기록된 개선 후보가 없습니다.")?;
+    let patch=candidate["patch"].as_str()
+        .ok_or("계승할 원본 패치가 없습니다.")?;
+    let source_branch=input["rsiSourceBranch"].as_str()
+        .ok_or("계승 실험의 원본 브랜치가 없습니다.")?;
+    if candidate["id"]!=id
+        || candidate["sourceBranch"]!=source_branch
+        || !is_rsi_work_branch(source_branch)
+        || candidate["baseCommit"]!=worktree.base
+        || choice["candidateId"]!=id
+        || choice["baseCommit"]!=worktree.base
+        || choice["patchSha256"]!=candidate["patchSha256"]
+        || choice["persisted"]!=true || choice["adopted"]!=false
+        || patch.is_empty() || patch.len()>=80_000
+        || candidate["patchSha256"]!=digest(patch)
+        || candidate["paths"].as_array().is_none_or(|paths|
+            paths.is_empty() || paths.iter().any(|row|
+                row.as_str().is_none_or(|p|!rsi::safe_path(p))))
+        || crate::engine::rsi_archive::parent_metrics(
+            &context.state,&candidate,&worktree.base).is_none() {
+        return Err("보관된 후보의 브랜치·쌍대 검증·패치 계보가 다릅니다.".into());
+    }
+    let file=std::env::temp_dir().join(format!(
+        "dominion-rsi-archive-{}.patch",uuid::Uuid::new_v4()));
+    std::fs::write(&file,patch).map_err(|e|e.to_string())?;
+    let target=file.to_str().ok_or("아카이브 패치 경로 오류")?.to_string();
+    let applied=async{
+        git(&worktree.path,&["apply","--check",&target]).await?;
+        git(&worktree.path,&["apply",&target]).await?;
+        if git(&worktree.path,&["status","--porcelain","--untracked-files=normal"])
+            .await?.is_empty() {
+            return Err("보관 패치가 새로운 실험 작업공간을 변경하지 않았습니다.".into());
+        }
+        Ok::<(),String>(())
+    }.await;
+    let _=std::fs::remove_file(file);
+    applied?;
+    let restored=json!({
+        "status":"restored_unverified",
+        "kind":"neutral_pareto_stepping_stone",
+        "candidateId":id,"baseCommit":worktree.base,
+        "paths":candidate["paths"],"patchSha256":candidate["patchSha256"],
+        "inheritedAdoption":false,"qualityGain":Value::Null,
+        "originalPairReplayed":true
+    });
+    context.checkpoint(json!({"rsiRecoveredPatch":restored}))?;
+    context.state.store.audit("rsi.archived_neutral_restored",json!({
+        "jobId":context.job_id,"candidateId":id,
+        "baseCommit":worktree.base,"sourceBranch":source_branch
+    }));
+    Ok(restored)
+}
+
 /// Restore only a compiler-failed candidate from the same campaign and
 /// unchanged source revision. This is a repair starting point, not a
 /// successful generation. The prior patch is never applied to the checkout:
