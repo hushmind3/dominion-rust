@@ -4021,6 +4021,12 @@ async fn run_loop(
                 domain,&original_objective){
                 return Err("후손의 모델 선택이 승인된 제공자·평가 계보와 일치하지 않습니다.".into());
             }
+            if !crate::engine::rsi_archive::validate_selection(
+                &context.state,&plan["archiveSelection"],&head,
+                &child_input["rsiFrozenCases"],
+                child_input["rsiSourceBranch"].as_str().unwrap_or("")){
+                return Err("후손이 고른 영구 아카이브 부모의 독립 검증 또는 브랜치가 일치하지 않습니다.".into());
+            }
             let focus=plan["focusFiles"].as_array()
                 .ok_or("후손의 소스 계획이 없습니다.")?;
             if plan["source"].as_str().is_none_or(str::is_empty)
@@ -4068,6 +4074,8 @@ async fn run_loop(
             child_input["rsiPrincipleProgramme"]=plan["principleProgramme"].clone();
             child_input["rsiPrincipleActive"]=plan["principleActive"].clone();
             child_input["rsiOpenProgramPlan"]=plan["openProgramPlan"].clone();
+            child_input["rsiArchiveSelection"]=plan["archiveSelection"].clone();
+            child_input["rsiInheritedCandidateId"]=plan["archiveSelection"]["candidateId"].clone();
             child_input["rsiModelRoute"]=plan["modelRoute"].clone();
             if plan["modelRoute"]["selected"].is_object(){
                 child_input["providerId"]=plan["modelRoute"]["selected"]["providerId"].clone();
@@ -4272,6 +4280,10 @@ async fn run_loop(
         generation["principleActive"]=current["input"]["rsiPrincipleActive"].clone();
         generation["openProgramPlan"]=current["input"]["rsiOpenProgramPlan"].clone();
         generation["openProgramExecuted"]=current["rsiOpenProgramExecuted"].clone();
+        generation["archiveSelection"]=current["input"]["rsiArchiveSelection"].clone();
+        generation["inheritedCandidateId"]=current["input"]["rsiInheritedCandidateId"].clone();
+        generation["inheritedCandidateActuallyEdited"]=
+            current["result"]["rsi"]["inheritedCandidateActuallyEdited"].clone();
         generation["recursiveSciencePlanExecuted"]=current["rsiRecursiveSciencePlanExecuted"].clone();
         generation["mutualProgrammeExecuted"]=current["rsiMutualProgrammeExecuted"].clone();
         generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
@@ -4691,6 +4703,24 @@ async fn run_loop(
             .as_array_mut()
             .ok_or("세대 목록 손상")?
             .push(generation);
+        // The archive is durably refreshed FROM completed, independently
+        // paired neutral candidates. The next rebuilt binary alone chooses
+        // whether/which archived patch to inherit.
+        if record["history"].as_array().and_then(|rows|rows.last())
+            .is_some_and(|g|g["accepted"]!=true
+                && g["candidateId"].is_string()
+                && g["staticChecksPassed"]==true) {
+            let update=crate::engine::rsi_archive::select_bound(
+                &context.state,
+                record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+                &head,&input["rsiFrozenCases"],
+                input["rsiSourceBranch"].as_str().unwrap_or(""));
+            record["archiveRefreshObservation"]=json!({
+                "hasMeasuredNeutralParent":update["candidateId"].is_string(),
+                "archiveSize":update["archiveSize"],
+                "qualityProven":false
+            });
+        }
         // New findings, not a write count or query spelling, justify continuing
         // a research-only generation within the configured campaign budgets.
         let no_edit = candidate_id.is_none() && novel_source_bytes==0;
@@ -5719,6 +5749,15 @@ fn compiled_system_generation_plan(
         }
     }
     let directive=crate::engine::rsi_system::improvement_directive(history);
+    // Choose an independently replayed persistent stepping stone INSIDE the
+    // rebuilt descendant. Frozen evidence is shared; model-authored and
+    // executable selection methods may evolve with the child binary.
+    let archive=if !explicit_focus && input["rsiAutoFocus"]==true
+        && input["rsiFailedPatchRecovery"]["candidateId"].is_null() {
+        crate::engine::rsi_archive::select_bound(
+            state,history,commit,&input["rsiFrozenCases"],
+            input["rsiSourceBranch"].as_str().unwrap_or(""))
+    }else{Value::Null};
     // The NEWLY COMPILED child, not the old campaign supervisor, learns
     // which real configured API/local model will author this generation.
     // Updating this source or rsi_model_ecology.rs changes future routing.
@@ -5753,6 +5792,7 @@ fn compiled_system_generation_plan(
         "principleProgramme":principle,
         "principleActive":principle_active,
         "openProgramPlan":open_program,
+        "archiveSelection":archive,
         "modelRoute":model_route,
         "successorStage":successor_stage,
         "improvementDirective":directive,
@@ -5889,12 +5929,21 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || job["input"]["rsiPrincipleProgramme"]!=plan["principleProgramme"]
             || job["input"]["rsiPrincipleActive"]!=plan["principleActive"]
             || job["input"]["rsiOpenProgramPlan"]!=plan["openProgramPlan"]
+            || job["input"]["rsiArchiveSelection"]!=plan["archiveSelection"]
+            || job["input"]["rsiInheritedCandidateId"]
+                !=plan["archiveSelection"]["candidateId"]
             || job["input"]["rsiModelRoute"]!=plan["modelRoute"]
             || job["input"]["rsiSuccessorStage"]!=plan["successorStage"]
             || job["input"]["rsiSystemBlueprint"]!=plan["systemBlueprint"]
             || job["input"]["rsiImprovementDirective"]!=plan["improvementDirective"]
             || job["input"]["rsiTargetPlan"]!=plan["targetPlan"] {
             return Err("후손 계획·정책·계보와 자신의 재계산 결과가 다릅니다.".into());
+        }
+        if !crate::engine::rsi_archive::validate_selection(
+            &state,&plan["archiveSelection"],&commit,
+            &job["input"]["rsiFrozenCases"],
+            job["input"]["rsiSourceBranch"].as_str().unwrap_or("")){
+            return Err("후손이 계승한 독립 검증 아카이브 기록의 원본 결속이 다릅니다.".into());
         }
         crate::engine::rsi_meta_controller::validate_peer_lineages(
             &state,&plan["peerLineages"],
