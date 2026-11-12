@@ -1074,7 +1074,15 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
         "independentlyImprovedDescendantCases":improved_descendant_cases,
         "learnedPrincipleModels":principle_rows,
         "crossSubsystemAttribution":"independent_paired_observation_not_isolated_causal_proof",
-        "demonstrated":chain>=3 && handoffs>=2 && missing.is_empty() && method_transfer && meta_gain,
+        // A source adoption streak is not enough to demonstrate that the
+        // improvement method actually learns to make BETTER descendants.
+        // Require observed cross-role task improvement and an independently
+        // executed improvement-method rewrite before claiming the closed loop.
+        "demonstrated":chain>=3 && handoffs>=2 && missing.is_empty()
+            && method_transfer && meta_gain
+            && improved_descendant_cases>0
+            && (open_programs["executedProgramRewrites"].as_u64().unwrap_or(0)>0
+                || experiment_methods["completedMethodCycles"].as_u64().unwrap_or(0)>0),
         "coverageMeaning":"independently adopted source roles; performance is measured separately by downstream tasks"})
 }
 
