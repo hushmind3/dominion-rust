@@ -169,6 +169,25 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState, model:&Value,
             }
         }
     }
+    // Multiple executable methods can belong to the same invented role.
+    // A frontier of one heuristic source per role would silently strand a
+    // method authored in any OTHER source file: expose independently adopted
+    // method paths in addition to that role's baseline representative.
+    let adopted_method_paths=history.iter().filter(|g|
+        g["accepted"]==true && g["pairedRevalidated"]==true
+        && g["candidateOrigin"]=="model_driven_detached_worktree"
+        && g["evaluation"]["metrics"]["eligible"]==true)
+        .flat_map(|g|g["systemDesign"]["improvementRules"]
+            .as_array().into_iter().flatten().filter_map(move |rule|{
+                let path=rule["methodPath"].as_str()?;
+                let role=rule["methodRole"].as_str()?;
+                (g["changedSourcePaths"].as_array().is_some_and(|changed|
+                    changed.iter().any(|p|p==path))
+                    && g["acceptedSourceHashes"][path].as_str()
+                        .is_some_and(|hash|hash.len()==64))
+                    .then(||(role.to_owned(),path.to_owned()))
+            }))
+        .collect::<BTreeSet<_>>();
     let usage=usage_evidence(state);
     let related=|path:&str|usage["signals"].as_array().into_iter().flatten().filter(|signal|
         signal["targetFiles"].as_array().is_some_and(|paths|paths.iter().any(|entry|entry==path)))
@@ -192,6 +211,18 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState, model:&Value,
             "usageSignalIds":related(path),"usageSignalCount":related(path).len(),
             "verifiedRoleChanged":covered.contains(role),"qualityProven":false,
             "reason":if covered.contains(role){"extend_verified_source"}else{"unexplored_component"}}));
+        for (method_path,method_sha,method_bytes) in sources.iter().copied() {
+            if method_path==path || !adopted_method_paths.contains(
+                &(role.to_owned(),method_path.to_owned())) {continue;}
+            rows.push(json!({"role":role,"domain":role_domain(component),
+                "path":method_path,"sourceSha256":method_sha,
+                "sourceBytes":method_bytes,
+                "sourceAttempts":attempts.get(method_path).copied().unwrap_or(0),
+                "usageSignalIds":related(method_path),
+                "usageSignalCount":related(method_path).len(),
+                "verifiedRoleChanged":true,"qualityProven":false,
+                "reason":"inherited_model_written_improvement_operator"}));
+        }
     }
     rows.sort_by(|a,b|b["usageSignalCount"].as_u64().cmp(&a["usageSignalCount"].as_u64())
         .then((a["verifiedRoleChanged"]==true).cmp(&(b["verifiedRoleChanged"]==true)))
