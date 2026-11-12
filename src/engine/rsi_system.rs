@@ -1420,12 +1420,21 @@ mod integration_contract_tests {
         assert_eq!(proposal["components"].as_array().unwrap().len(),2);
         assert!(!design_implemented(&proposal,&[json!("src/engine/memory.rs")]));
         assert!(design_implemented(&proposal,body["targetFiles"].as_array().unwrap()));
+        // The adopted-design contract requires a nonempty original candidate ID.
+        // A fake "accepted" flag without source-candidate provenance is not
+        // a transferable improvement, even if its role mapping looks complete.
         let mut history=json!({"accepted":true,"evaluation":{"metrics":{"eligible":true}},"generatorCommit":"a".repeat(40),
             "acceptedCommit":"b".repeat(40),"jobId":"child","systemDesign":proposal,
             "acceptedSourceHashes":{"src/engine/memory.rs":"c".repeat(64)}});
         assert!(inherited_domain(&[history.clone()]).is_none());
         history["acceptedSourceHashes"]["src/engine/new_planner.rs"]=json!("d".repeat(64));
-        assert_eq!(inherited_domain(&[history]),Some("memory".into()));
+        assert!(inherited_domain(&[history.clone()]).is_none(),
+            "a complete map alone must not inherit an unattributed design");
+        history["candidateId"]=json!("measured-contract-candidate");
+        assert_eq!(inherited_domain(&[history.clone()]),Some("memory".into()));
+        history["acceptedSourceHashes"]["src/engine/new_planner.rs"]=Value::Null;
+        assert!(inherited_domain(&[history]).is_none(),
+            "the improvement must retain all mapped source digests");
         fs::remove_dir_all(root).unwrap();
     }
     // These are simulated recorded-experiment receipts, not claims of new live
