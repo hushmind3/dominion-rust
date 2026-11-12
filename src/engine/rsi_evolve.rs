@@ -532,6 +532,29 @@ pub fn auto_write_allowed(state: &AppState, session_id: &str, tool: &str, args: 
             .is_some_and(|path| Path::new(path) == state.config.workspace)
 }
 
+/// Reject queued campaigns that were started on main/legacy/sibling branches
+/// even if the current Git commit happens to be identical.
+fn owned_source_origin(recorded:Option<&str>, actual:&str)->bool {
+    rsi_worktree::rsi_work_branch(actual) && recorded==Some(actual)
+}
+
+#[cfg(test)]
+mod branch_ownership_tests {
+    use super::owned_source_origin;
+    #[test]
+    fn a_source_commit_never_substitutes_for_owned_branch_provenance() {
+        assert!(owned_source_origin(Some("dominion-sub3"),"dominion-sub3"));
+        for foreign in ["main","master","dominion-sub","dominion-sub1",
+            "dominion-sub2","dominion-sub4","dominion-champion","HEAD"] {
+            assert!(!owned_source_origin(Some(foreign),foreign));
+            assert!(!owned_source_origin(Some("dominion-sub3"),foreign));
+        }
+        assert!(!owned_source_origin(None,"dominion-sub3"));
+        assert!(!owned_source_origin(Some(""),"dominion-sub3"));
+        assert!(!owned_source_origin(Some("main"),"dominion-sub3"));
+    }
+}
+
 pub fn campaign_source(state: &AppState, input: &Value, source: &Path, base: &str) -> bool {
     let Some(id) = input["rsiCampaignId"].as_str() else {
         return false;
@@ -540,6 +563,8 @@ pub fn campaign_source(state: &AppState, input: &Value, source: &Path, base: &st
         record["labDir"]
             .as_str()
             .is_some_and(|p| Path::new(p) == source)
+            && owned_source_origin(record["sourceBranch"].as_str(),
+                input["rsiSourceBranch"].as_str().unwrap_or(""))
             && record["headCommit"] == base
             && record["status"] == "running"
             && record["nativeApproved"] == true
@@ -899,11 +924,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     if git(context, &source, &["rev-parse", "HEAD"]).await? != base {
         return Err("원본 소스가 시작 시점과 다릅니다. 다시 시작하세요.".into());
     }
-    if let Some(recorded_branch)=input["rsiSourceBranch"].as_str().filter(|value|!value.is_empty()) {
-        let current_branch=git(context,&source,&["rev-parse","--abbrev-ref","HEAD"]).await?;
-        if current_branch!=recorded_branch {
-            return Err("자기개선 대기 중 원본 브랜치가 바뀌었습니다. 같은 브랜치에서 다시 시작하세요.".into());
-        }
+    let current_branch=git(context,&source,&["rev-parse","--abbrev-ref","HEAD"]).await?;
+    if !owned_source_origin(input["rsiSourceBranch"].as_str(),&current_branch) {
+        return Err("서브3 연속 자기개선은 기록된 dominion-sub3 원본 브랜치에서만 실행합니다.".into());
     }
     let limits = limits(&input["limits"])?;
     let parent = context.state.config.data_dir.join("rsi-labs");
@@ -6657,6 +6680,7 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         git(&context, &source, &["init", "-q"]).await.unwrap();
+        git(&context, &source, &["checkout","-b","dominion-sub3"]).await.unwrap();
         git(&context, &source, &["add", "."]).await.unwrap();
         git(
             &context,
@@ -6681,6 +6705,7 @@ mod tests {
         context
             .checkpoint(
                 json!({"input":{"rsiNativeApproved":true,"rsiSourceDir":source,"rsiBaseCommit":base,
+            "rsiSourceBranch":"dominion-sub3",
             "selectionPolicy":"automatic","rsiFrozenCases":cases,
             "limits":{"maxAttempts":2,"tokenBudget":1000,"timeBudgetSeconds":240}}}),
             )
