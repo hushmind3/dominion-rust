@@ -4205,9 +4205,15 @@ async fn run_loop(
         let follow_up=transfer_failure_repair(&recorded_history)
             .and_then(|plan|plan["domain"].as_str().map(str::to_string))
             .or_else(||research_continuation(&recorded_history));
-        let (target_domain,target_selection,target_strategy)=select_generation_strategy(
+        let (mut target_domain,mut target_selection,mut target_strategy)=select_generation_strategy(
             &context.state,&recorded_history,&target_objective,
             follow_up,target_trial,None,&head);
+        if let Some(measured)=native_verified_next_domain(&child_input,&recorded_history) {
+            target_domain=measured.to_string();
+            target_selection="verified_native_transfer_target";
+            target_strategy=json!({"mode":"measured_transfer",
+                "domain":measured,"generatorCommit":head});
+        }
         // A previous coordinator's nextDomain is advice, not a frozen veto on
         // an evolved descendant selector. The worker rechecks the proposal.
         child_input["rsiTargetDomain"]=json!(target_domain);
@@ -4380,11 +4386,21 @@ async fn run_loop(
             "totalPromptChars":current["input"]["rsiPromptContextChars"],
             "contextPlan":current["input"]["rsiContextPlan"],
             "workerContextPlan":current["rsiWorkerContextPlan"],
-            "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
+            "generatorBinarySha256":record["generatorBinarySha256"],
+            "generatorModel":if current["result"]["nativeMutation"]["operator"].is_string(){
+                json!(format!("dominion-native:{}",
+                    current["result"]["nativeMutation"]["operator"].as_str().unwrap_or("")))
+            }else{input["model"].clone()},
+            "requestedModel":input["model"],
+            "generatorProviderId":if current["result"]["nativeMutation"]["operator"].is_string(){
+                json!("dominion-native")
+            }else{input["providerId"].clone()},
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
             "evolutionaryAction":current["input"]["rsiEvolutionaryAction"],
             "offspringGeneratedByDescendant":current["rsiProposedGenome"],
+            "nativeMutation":current["result"]["nativeMutation"],
+            "candidateOrigin":current["result"]["rsi"]["candidateOrigin"],
             "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
             "boundaryResult":current["rsiBoundaryResult"],
             "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
@@ -4770,6 +4786,38 @@ async fn run_loop(
             return Ok("no_progress".into());
         }
     }
+}
+
+/// Select the next *work target* from the prior verified native lineage, not
+/// from a fixed iteration number. The frozen evaluator alone credits gains.
+fn native_verified_next_domain(input:&Value,history:&[Value])->Option<&'static str>{
+    if input["rsiNativeInduction"]!=true || input["rsiAutonomous"]!=true
+        || input["rsiExpandFocusAfterAdoption"]!=true {
+        return None;
+    }
+    let verified=history.iter().filter(|row|{
+        let evaluation=&row["acceptedProof"]["evaluation"];
+        row["accepted"]==true
+            && row["acceptedProof"]["status"]=="verified"
+            && row["acceptedProof"]["candidateId"]==row["candidateId"]
+            && row["acceptedProof"]["baseCommit"]==row["generatorCommit"]
+            && row["acceptedProof"]["adoptedCommit"]==row["acceptedCommit"]
+            && evaluation["source"]=="server_invoked_local_paired_git_worktrees"
+            && evaluation["metrics"]["eligible"]==true
+            && evaluation["metrics"]["regressions"].as_u64()==Some(0)
+            && evaluation["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)>0
+            && evaluation["evidenceSha256"]==row["evaluation"]["evidenceSha256"]
+            && evaluation["evidenceSha256"].as_str().is_some_and(|sha|
+                sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit()))
+    }).collect::<Vec<_>>();
+    let first=verified.first()?;
+    if first["domain"]!="memory" {
+        return None;
+    }
+    let meta=verified.iter().any(|row|row["acceptedProof"]["target"]=="improver"
+        && row["acceptedProof"]["evaluation"]["metrics"]["metaHoldoutGains"]
+            .as_u64().unwrap_or(0)>0);
+    if meta {Some("memory")}else{Some("improver")}
 }
 
 /// Empty strings are not model errors; a research-only generation sets the
@@ -5248,9 +5296,15 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // by the actual descendant binary. Explicit owner scope is enforced by
     // selection_objective() and eligible_domains() instead.
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
-    let (domain, domain_selection, strategy) =
+    let (mut domain, mut domain_selection, mut strategy) =
         select_generation_strategy(&state, &history, &objective, continuation, trial_id,
             None, &commit);
+    if let Some(measured)=native_verified_next_domain(&job["input"],&history) {
+        domain=measured.to_string();
+        domain_selection="verified_native_transfer_target";
+        strategy=json!({"mode":"measured_transfer",
+            "domain":measured,"generatorCommit":commit});
+    }
     // Child-authoritative decision: source targeting and the prompt are rebuilt
     // whenever the descendant's policy disagrees with the frozen coordinator.
     // The old plan is preserved as an audit receipt, never silently relabelled.
