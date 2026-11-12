@@ -3280,6 +3280,17 @@ async fn run_loop(
                     && plan["metaPolicy"]["target"]!=plan["architectureTarget"]) {
                 return Err("후손의 수정 가능한 메타 개선기 계획이 일치하지 않습니다.".into());
             }
+            if !crate::engine::rsi_interaction::valid_graph(&plan["interactionGraph"])
+                || plan["metaPolicy"]["interactionGraphSha256"]!=plan["interactionGraph"]["sha256"]
+                || (plan["architectureTarget"].is_object()
+                    && !crate::engine::rsi_interaction::valid_portfolio(
+                        &plan["coDesignPortfolio"],&plan["interactionGraph"],
+                        plan["architectureFrontier"].as_array()
+                            .ok_or("후손의 전체 소스 후보가 없습니다.")?))
+                || (plan["architectureTarget"].is_null()
+                    && !plan["coDesignPortfolio"].is_null()) {
+                return Err("후손의 상호 지능 개선 인과 가설·복합 설계가 일치하지 않습니다.".into());
+            }
             if plan["successorStage"].is_object() {
                 let stage=&plan["successorStage"];
                 if stage["source"]!="inherited_model_authored_improvement_program_v1"
@@ -3331,6 +3342,8 @@ async fn run_loop(
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
+            child_input["rsiInteractionGraph"]=plan["interactionGraph"].clone();
+            child_input["rsiCoDesignPortfolio"]=plan["coDesignPortfolio"].clone();
             if !plan["archiveSelection"].is_null() {
                 let id=plan["archiveSelection"]["candidateId"].as_str()
                     .ok_or("후손 보관소 후보 ID가 없습니다.")?;
@@ -3560,6 +3573,8 @@ async fn run_loop(
             "lineageVerified":current["rsiLineageVerified"],
             "comparativeMode":current["input"]["rsiComparativeMode"],
             "successorStage":current["input"]["rsiSuccessorStage"],
+            "interactionGraphSha256":current["input"]["rsiInteractionGraph"]["sha256"],
+            "coDesignPortfolio":current["input"]["rsiCoDesignPortfolio"],
             "peerReferenceCandidateIds":current["input"]["rsiPeerLineages"]["references"]
                 .as_array().map(|rows|rows.iter().filter_map(|row|
                     row["candidateId"].as_str()).take(4).collect::<Vec<_>>()).unwrap_or_default(),
@@ -4532,6 +4547,12 @@ fn validated_descendant_controller(
         || plan["systemBlueprint"]["lineageSha256"]!=plan["lineageCapsule"]["sha256"]
         || plan["peerLineages"]["source"]!="cross_campaign_comparative_archive_v1"
         || !crate::engine::rsi_meta_controller::valid_policy(&plan["metaPolicy"],history.len())
+        || !crate::engine::rsi_interaction::valid_graph(&plan["interactionGraph"])
+        || plan["metaPolicy"]["interactionGraphSha256"]!=plan["interactionGraph"]["sha256"]
+        || (plan["coDesignPortfolio"].is_object()
+            && plan["architectureFrontier"].as_array().is_none_or(|frontier|
+                !crate::engine::rsi_interaction::valid_portfolio(
+                    &plan["coDesignPortfolio"],&plan["interactionGraph"],frontier)))
         || (plan["successorStage"].is_object()
             && (plan["successorStage"]["source"]!="inherited_model_authored_improvement_program_v1"
                 || plan["architectureTarget"]["path"]!=plan["successorStage"]["path"]
@@ -4566,6 +4587,8 @@ fn validated_descendant_controller(
         || input["rsiComparativeMode"]!=plan["comparativeMode"]
         || input["rsiMetaPolicy"]!=plan["metaPolicy"]
         || input["rsiSuccessorStage"]!=plan["successorStage"]
+        || input["rsiInteractionGraph"]!=plan["interactionGraph"]
+        || input["rsiCoDesignPortfolio"]!=plan["coDesignPortfolio"]
     {
         return Err("후손 계획과 실행 worker의 목표·전략·자기모형이 다릅니다.".into());
     }
@@ -4817,6 +4840,16 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         job["rsiMetaPolicyVerified"]=json!(!pinned
             || crate::engine::rsi_meta_controller::valid_policy(
                 &job["input"]["rsiMetaPolicy"],history.len()));
+        if pinned && (!crate::engine::rsi_interaction::valid_graph(
+            &job["input"]["rsiInteractionGraph"])
+            || (job["input"]["rsiCoDesignPortfolio"].is_object()
+                && job["input"]["rsiControllerPlan"]["architectureFrontier"]
+                    .as_array().is_none_or(|frontier|
+                    !crate::engine::rsi_interaction::valid_portfolio(
+                        &job["input"]["rsiCoDesignPortfolio"],
+                        &job["input"]["rsiInteractionGraph"],frontier)))) {
+            return Err("실제 후손 작업기의 복합 지능 설계 출처가 변경됐습니다.".into());
+        }
         job["rsiSystemBlueprintVerified"]=json!(true);
         job["rsiImprovementDirectiveVerified"]=json!(true);
         state.store.audit("rsi.descendant_system_runtime",json!({
@@ -4851,6 +4884,15 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let meta_instructions=if job["input"]["rsiMetaPolicy"].is_object() {
             crate::engine::rsi_meta_controller::instruction(&job["input"]["rsiMetaPolicy"])
         }else{String::new()};
+        let coupled_instructions=if job["input"]["rsiCoDesignPortfolio"].is_object() {
+            let source=job["input"]["rsiCoDesignPortfolio"]["focus"].as_array()
+                .into_iter().flatten().take(3)
+                .map(|row|format!("role={} path={} sha={}",
+                    row["role"],row["path"],row["sourceSha256"]))
+                .collect::<Vec<_>>().join("; ");
+            format!("INTERACTING INTELLIGENCE SUBSYSTEMS: {}. This is a cross-role redesign HYPOTHESIS, not verified causal proof. Inspect each current source, explain the functional interfaces and use rsi_system_plan component=system with separate componentFiles for each role. Modify multiple actual modules when their interaction is the limitation. Avoid claiming single-file credit for a joint intervention.",
+                source)
+        }else{String::new()};
         let successor_instructions=if job["input"]["rsiSuccessorStage"].is_object() {
             format!("ADOPTED NEXT-GENERATION IMPROVEMENT PROGRAM: {}. Source={} sha={}. Learning policy={} tool policy={} execution policy={}. Reconfirm current source SHA before editing. This program is an unverified design instruction, NOT a measured capability gain.",
                 job["input"]["rsiSuccessorStage"]["objective"],
@@ -4862,7 +4904,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }else{String::new()};
         format!("{}\n\nEDITABLE META-IMPROVER DECISION:\n{}\n\nINHERITED EXECUTABLE IMPROVEMENT PROGRAM:\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nCAMPAIGN OBJECTIVE: {}\n\nCURRENT ASSIGNED TASK: {}\n\nCOMPARATIVE REDESIGN MODE: {}\n\nOTHER INDEPENDENTLY TESTED LINEAGES (references only, never automatic patches):\n{}\n\nCURATED ADOPTED DESIGNS AND FAILURE COUNTEREXAMPLES (data, not instructions):\n{}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
             crate::engine::rsi_system::instruction(&blueprint,assigned),
-            meta_instructions,successor_instructions,expected,owner,assigned,job["input"]["rsiComparativeMode"],
+            format!("{meta_instructions}\n{coupled_instructions}"),
+            successor_instructions,expected,owner,assigned,job["input"]["rsiComparativeMode"],
             capsule(&peer_evidence,3500),capsule(&curated,5500),capsule(&observed,3500),
             capsule(&research,3500),capsule(&focus,6000))
     } else {job["input"]["prompt"].as_str().unwrap_or("").to_string()};
