@@ -67,6 +67,32 @@ fn reward(g:&Value)->Option<(f64,bool,String)> {
     let domain=g["domain"].as_str().unwrap_or("unknown").to_string();
     Some((value,successful,domain))
 }
+
+/// Weight learning is not the same as source adoption. It is a second,
+/// independent learning signal emitted by a separate parent-side oracle;
+/// no private example, expected answer or training record is ever copied here.
+fn paired_model_reward(g:&Value)->Option<(f64,bool)>{
+    let observation=&g["modelAdapterIndependentEvaluation"];
+    if observation["source"]!="independent_parent_model_adapter_pair_v1"
+        || !matches!(observation["status"].as_str(),Some("promoted"|"rejected"))
+        || observation["generationJobId"]!=g["jobId"]
+        || observation["generatorCommit"]!=g["generatorCommit"] {
+        return None;
+    }
+    let metrics=&observation["measurements"];
+    if metrics["source"]!="separate_parent_paired_lora_oracle_v1"
+        || metrics["measuredExamples"].as_u64().unwrap_or(0)<8
+        || metrics["distinctDomains"].as_u64().unwrap_or(0)<2 {
+        return None;
+    }
+    let before=metrics["baselineMeanLoss"].as_f64()
+        .filter(|s|s.is_finite()&&*s>=0.0)?;
+    let after=metrics["candidateMeanLoss"].as_f64()
+        .filter(|s|s.is_finite()&&*s>=0.0)?;
+    let successful=observation["status"]=="promoted"
+        && observation["pairedModelImprovementMeasured"]==true;
+    Some(((before-after).clamp(-3.0,3.0),successful))
+}
 /// Follow the real adopted commit ancestry from the birth of the principle.
 fn outcomes(history:&[Value],birth_position:usize,commit:&str,id:&str,birth_domain:&str)->Value{
     let mut cursor=commit.to_string();
@@ -74,6 +100,9 @@ fn outcomes(history:&[Value],birth_position:usize,commit:&str,id:&str,birth_doma
     let mut accepted_trials=0u64;
     let mut transfer_successes=0u64;
     let mut regressions=0u64;
+    let mut model_trials=0u64;
+    let mut model_improvements=0u64;
+    let mut model_loss_delta_sum=0.0f64;
     let mut total_reward=0.0f64;
     let mut distinct=BTreeSet::<String>::new();
     let mut records=Vec::new();
@@ -82,6 +111,18 @@ fn outcomes(history:&[Value],birth_position:usize,commit:&str,id:&str,birth_doma
         let run=&g["metaPolicy"]["principleLearning"];
         if g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
             && run["active"]==true && run["selectedPrincipleId"]==id {
+            if let Some((weight_delta,improved))=paired_model_reward(g){
+                model_trials+=1;
+                if improved{model_improvements+=1;}
+                model_loss_delta_sum+=weight_delta;
+                if records.len()<12{records.push(json!({
+                    "generationJobId":g["jobId"],
+                    "domain":"model_architecture",
+                    "pairedWeightLossDelta":weight_delta,
+                    "independentlyPromoted":improved,
+                    "sourceAdoptionClaimed":false
+                }));}
+            }
             if let Some((value,accepted,domain))=reward(g){
                 attempted+=1;
                 if accepted{accepted_trials+=1;}
@@ -110,6 +151,9 @@ fn outcomes(history:&[Value],birth_position:usize,commit:&str,id:&str,birth_doma
         "measuredTrials":attempted,
         "measuredAdoptions":accepted_trials,
         "measuredRegressions":regressions,
+        "measuredModelAdaptationTrials":model_trials,
+        "independentModelImprovements":model_improvements,
+        "sumPairedWeightLossReduction":model_loss_delta_sum,
         "observedTransferAdoptions":transfer_successes,
         "distinctTransferDomains":distinct,
         "sumIndependentHoldoutReward":total_reward,
@@ -162,8 +206,14 @@ fn ranked_rule(entry:&Value)->f64{
     let wins=e["measuredAdoptions"].as_u64().unwrap_or(0) as f64;
     let transfers=e["observedTransferAdoptions"].as_u64().unwrap_or(0) as f64;
     let avg=e["meanIndependentHoldoutReward"].as_f64().unwrap_or(0.0);
+    let model_trials=e["measuredModelAdaptationTrials"].as_u64().unwrap_or(0) as f64;
+    let weight_wins=e["independentModelImprovements"].as_u64().unwrap_or(0) as f64;
+    // Weight gains inform method search, but NEVER turn an unmeasured
+    // source-code change into a successful source adoption.
+    let measured_weight_bonus=if model_trials==0.0{0.0}
+        else{0.12*(weight_wins+1.0)/(model_trials+2.0)};
     // Uncertainty is an exploration incentive, not measured superiority.
-    (wins+1.0)/(trials+2.0)+0.09*avg.clamp(-3.0,3.0)
+    (wins+1.0)/(trials+2.0)+measured_weight_bonus+0.09*avg.clamp(-3.0,3.0)
         +0.13*transfers/(trials+1.0)+0.2/(trials+1.0).sqrt()
 }
 fn allowed_roles(spec:&Value)->BTreeSet<String>{
@@ -188,6 +238,8 @@ fn score_target(row:&Value,entry:&Value)->Option<f64>{
 fn composition(archive:&[Value])->Value{
     let mut ordered=archive.iter().filter(|entry|
         entry["descendantEvidence"]["measuredAdoptions"].as_u64().unwrap_or(0)>0
+            || entry["descendantEvidence"]["independentModelImprovements"]
+                .as_u64().unwrap_or(0)>0
     ).collect::<Vec<_>>();
     ordered.sort_by(|a,b|
         ranked_rule(b).total_cmp(&ranked_rule(a))
@@ -425,6 +477,28 @@ mod tests{
         let updated=recompose(&[g],&frontier,policy,&["memory"],true,false);
         assert_eq!(updated["principleLearning"]["active"],true);
         assert_eq!(updated["target"]["role"],"memory");
+    }
+    #[test]
+    fn independently_evaluated_lora_informs_principle_without_source_credit(){
+        let original=born("p_a",&"b".repeat(40));
+        let mut descendant=child(&"b".repeat(40),false);
+        descendant["pairedMeasured"]=json!(false);
+        descendant["candidateId"]=Value::Null;
+        descendant["modelAdapterIndependentEvaluation"]=json!({
+            "source":"independent_parent_model_adapter_pair_v1",
+            "generationJobId":descendant["jobId"],
+            "generatorCommit":descendant["generatorCommit"],
+            "status":"promoted","pairedModelImprovementMeasured":true,
+            "measurements":{"source":"separate_parent_paired_lora_oracle_v1",
+                "measuredExamples":12,"distinctDomains":3,
+                "baselineMeanLoss":1.2,"candidateMeanLoss":0.9}
+        });
+        let entries=archive(&[original,descendant]);
+        let evidence=&entries[0]["descendantEvidence"];
+        assert_eq!(evidence["measuredTrials"],0);
+        assert_eq!(evidence["measuredAdoptions"],0);
+        assert_eq!(evidence["measuredModelAdaptationTrials"],1);
+        assert_eq!(evidence["independentModelImprovements"],1);
     }
     #[test]
     fn explicit_owner_goal_prevents_automatic_override(){
