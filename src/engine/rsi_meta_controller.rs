@@ -443,6 +443,9 @@ mod tests{
                     "architectureTarget":policy["target"],
                     "generatorCommit":"a".repeat(40)},
                 "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+                "metaPolicyExecuted":{"source":"running_compiled_descendant_meta_controller",
+                    "metaRevision":policy["revision"]},
+                "focusFiles":[policy["target"]["path"]],
                 "candidateOrigin":"model_driven_detached_worktree",
                 "candidateId":format!("candidate-{i}"),
                 "pairedMeasured":true,"accepted":false,
@@ -466,6 +469,8 @@ mod tests{
         last["metaPolicy"]=next_policy.clone();
         last["descendantPlan"]["metaPolicy"]=next_policy.clone();
         last["descendantPlan"]["architectureTarget"]=next_policy["target"].clone();
+        last["metaPolicyExecuted"]["metaRevision"]=next_policy["revision"].clone();
+        last["focusFiles"]=json!(["src/engine/rsi_prequential.rs"]);
         last["metaLearning"]=crate::engine::rsi_prequential::feedback(
             &next_policy,&last,false);
         rows.push(last);
