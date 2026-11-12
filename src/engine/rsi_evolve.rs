@@ -3291,6 +3291,27 @@ async fn run_loop(
                     && !plan["coDesignPortfolio"].is_null()) {
                 return Err("후손의 상호 지능 개선 인과 가설·복합 설계가 일치하지 않습니다.".into());
             }
+            if input["rsiAdaptiveApiRouting"]==true {
+                if !crate::engine::rsi_api_route_learning::approved_choice(
+                    &plan["apiRoutePolicy"],&input["rsiApprovedApiRoutes"])
+                    || plan["apiRoutePolicy"]["ownerOriginal"]
+                        !=input["rsiOriginalApiRoute"]
+                    || plan["apiRoutePolicy"]["generatorCommit"]!=head {
+                    return Err("후손이 승인되지 않은 API 제공자·모델을 선택했습니다.".into());
+                }
+                let selection=&plan["apiRoutePolicy"]["chosen"];
+                let provider_id=selection["providerId"].as_str().ok_or("API 제공자 없음")?;
+                let model=selection["model"].as_str().ok_or("API 모델 없음")?;
+                let provider=context.state.store.get("provider",provider_id)
+                    .ok_or("실행 모델 제공자가 연결 해제됐습니다.")?;
+                if !crate::engine::gateway::provider_eligible(&provider)
+                    || crate::engine::gateway::route_from_provider(
+                        &context.state,&provider,Some(model)).is_err() {
+                    return Err("후손의 API 실행 모델이 현재 사용 불가능합니다.".into());
+                }
+            }else if plan["apiRoutePolicy"].is_object(){
+                return Err("소유자 승인 없는 API 모델 재선택입니다.".into());
+            }
             if plan["principleLearning"].is_object()
                 && !crate::engine::rsi_principle_learning::verify_replay(
                     &context.state,&history) {
@@ -3413,6 +3434,10 @@ async fn run_loop(
             child_input["rsiOpenImprovementProgram"]=plan["openImprovementProgram"].clone();
             child_input["rsiPrincipleLearning"]=plan["principleLearning"].clone();
             child_input["rsiApiRoutePolicy"]=plan["apiRoutePolicy"].clone();
+            if input["rsiAdaptiveApiRouting"]==true {
+                child_input["providerId"]=plan["apiRoutePolicy"]["chosen"]["providerId"].clone();
+                child_input["model"]=plan["apiRoutePolicy"]["chosen"]["model"].clone();
+            }
             child_input["rsiMutualProgram"]=plan["mutualProgram"].clone();
             if !plan["archiveSelection"].is_null() {
                 let id=plan["archiveSelection"]["candidateId"].as_str()
@@ -4781,6 +4806,13 @@ fn validated_descendant_controller(
             !crate::engine::rsi_mutual_program::valid_program(
                 &plan["mutualProgram"],frontier,commit,history.len(),
                 &plan["mutualProgram"]["transferGraph"]))
+        || (input["rsiAdaptiveApiRouting"]==true
+            && (!crate::engine::rsi_api_route_learning::valid(
+                &plan["apiRoutePolicy"],history,&input["rsiApprovedApiRoutes"],
+                &input["rsiOriginalApiRoute"],commit)
+                || input["providerId"]!=plan["apiRoutePolicy"]["chosen"]["providerId"]
+                || input["model"]!=plan["apiRoutePolicy"]["chosen"]["model"]))
+        || (input["rsiAdaptiveApiRouting"]!=true && plan["apiRoutePolicy"].is_object())
         || (plan["principleLearning"].is_object()
             && (!crate::engine::rsi_principle_learning::valid(
                 &plan["principleLearning"],history)
@@ -5143,6 +5175,17 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                         &job["input"]["rsiCoDesignPortfolio"],
                         &job["input"]["rsiInteractionGraph"],frontier)))) {
             return Err("실제 후손 작업기의 복합 지능 설계 출처가 변경됐습니다.".into());
+        }
+        if pinned && job["input"]["rsiAdaptiveApiRouting"]==true
+            && (!crate::engine::rsi_api_route_learning::valid(
+                &job["input"]["rsiApiRoutePolicy"],&history,
+                &job["input"]["rsiApprovedApiRoutes"],
+                &job["input"]["rsiOriginalApiRoute"],&commit)
+                || job["input"]["model"]
+                    !=job["input"]["rsiApiRoutePolicy"]["chosen"]["model"]
+                || job["input"]["providerId"]
+                    !=job["input"]["rsiApiRoutePolicy"]["chosen"]["providerId"]) {
+            return Err("실행 후손의 API 모델 선택이 학습 계보와 다릅니다.".into());
         }
         if pinned && job["input"]["rsiPrincipleLearning"].is_object()
             && (!crate::engine::rsi_principle_learning::valid(
