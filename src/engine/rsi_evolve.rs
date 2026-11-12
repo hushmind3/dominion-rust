@@ -4283,6 +4283,20 @@ fn validated_descendant_controller(
     input:&Value,history:&[Value],commit:&str,
 )->Result<Option<(String,&'static str,Value)>,String>{
     if input["rsiSystemEvolution"]!=true {return Ok(None);}
+    // A separately assigned downstream coding task has a pinned target and
+    // a distinct, source-identified compiled generator. There is no automatic
+    // next-generation plan to inherit in this mode; the real descendant
+    // worker still runs the ordinary model, harness and editing policy.
+    // Normal self-evolution campaigns must always provide a controller plan.
+    if input["rsiControllerPlan"].is_null()
+        && input["rsiGeneratorSourceDir"].as_str().is_some_and(|p|!p.is_empty())
+        && input["rsiFocusFiles"].as_array().is_some_and(|p|!p.is_empty())
+        && input["rsiSystemBlueprint"]["generatorCommit"]==commit
+        && input["rsiSystemBlueprint"]["source"]=="compiled_descendant_system_blueprint_v1"
+        && input["rsiImprovementDirective"].is_object()
+        && input["rsiAutoFocus"]==false {
+        return Ok(None);
+    }
     let plan=&input["rsiControllerPlan"];
     if plan["source"]!="compiled_descendant_system_controller_v2"
         || plan["generatorCommit"]!=commit
@@ -4366,6 +4380,17 @@ mod descendant_controller_contract_tests {
         let mut stale=input.clone();
         stale["rsiControllerPlan"]["generatorCommit"]=json!("old");
         assert!(validated_descendant_controller(&stale,&history,&commit).is_err());
+        let manual=json!({"rsiSystemEvolution":true,"rsiAutoFocus":false,
+            "rsiGeneratorSourceDir":"/pinned/source","rsiFocusFiles":["src/engine/memory.rs"],
+            "rsiSystemBlueprint":{"source":"compiled_descendant_system_blueprint_v1",
+                "generatorCommit":commit},
+            "rsiImprovementDirective":{"mode":"discover"}});
+        assert!(validated_descendant_controller(&manual,&history,&commit)
+            .unwrap().is_none(),"assigned downstream coding uses the normal compiled worker");
+        let mut unsafe_manual=manual;
+        unsafe_manual["rsiGeneratorSourceDir"]=Value::Null;
+        assert!(validated_descendant_controller(&unsafe_manual,&history,&commit).is_err(),
+            "unplanned self-evolution cannot bypass the compiled controller");
         let mut wrong_method=input;
         wrong_method["rsiEditPolicy"]["revision"]=json!("parent");
         assert!(validated_descendant_controller(&wrong_method,&history,&commit).is_err());
