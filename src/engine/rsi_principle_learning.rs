@@ -23,16 +23,21 @@ fn sha_ok(v:&Value)->bool {
     v.as_str().is_some_and(|s|s.len()==64
         && s.bytes().all(|b|b.is_ascii_hexdigit()))
 }
-fn independent_trial(g:&Value)->bool {
-    let plan=&g["openImprovementProgram"];
-    let Some(path)=plan["target"]["path"].as_str().filter(|p|rsi::safe_path(p))
-        else{return false};
+fn independent_pair(g:&Value)->bool {
     (g["pairedMeasured"]==true||g["pairedRevalidated"]==true)
         && g["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
         && g["evaluation"]["metrics"]["measurements"].is_array()
         && g["candidateId"].as_str().is_some_and(|s|!s.is_empty())
         && g["generatorCommit"].as_str().is_some_and(|s|s.len()==40)
         && sha_ok(&g["evaluationProfileSha256"])
+        && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+        && g["compiledPlanExecuted"]["generatorCommit"]==g["generatorCommit"]
+}
+fn independent_trial(g:&Value)->bool {
+    let plan=&g["openImprovementProgram"];
+    let Some(path)=plan["target"]["path"].as_str().filter(|p|rsi::safe_path(p))
+        else{return false};
+    independent_pair(g)
         && g["changedSourcePaths"].as_array().is_some_and(|paths|
             paths.iter().any(|p|p.as_str()==Some(path)))
         && plan["source"]=="compiled_descendant_open_improvement_program_v1"
@@ -55,6 +60,37 @@ fn accepted_measured(g:&Value)->bool {
             [g["openImprovementProgram"]["target"]["path"].as_str().unwrap_or("")]
             .as_str().is_some_and(|s|s.len()==64
                 && s.bytes().all(|b|b.is_ascii_hexdigit()))
+}
+/// A downstream descendant may use a completely DIFFERENT improvement
+/// method. Credit real outcome data by role even when no openProgram was
+/// executed in that child. Never require a hand-written improvement path.
+fn adopted_child(g:&Value)->bool {
+    independent_pair(g)
+        && rsi_mutual_program::adopted_source(g)
+        && g["evaluation"]["metrics"]["eligible"]==true
+        && !rsi_mutual_program::implemented_roles(g).is_empty()
+}
+fn changed_child_roles(g:&Value)->Vec<String> {
+    if adopted_child(g) {
+        return rsi_mutual_program::implemented_roles(g);
+    }
+    // A measured rejection still gives a loss/counterexample. Its target
+    // role must come from an authentic model-authored design AND an actual
+    // changed file, not from mere declared multi-role intent.
+    let design=&g["systemDesign"];
+    if !independent_pair(g)
+        || design["source"]!="model_authored_system_design"
+        || design["generatorCommit"]!=g["generatorCommit"]
+        || design["generationJobId"]!=g["jobId"] {return Vec::new();}
+    let mut roles=BTreeSet::new();
+    for (role,paths) in design["componentFiles"].as_object().into_iter().flat_map(|m|m.iter()) {
+        if paths.as_array().is_some_and(|files|files.iter().any(|file|
+            g["changedSourcePaths"].as_array().is_some_and(|changes|
+                changes.iter().any(|change|change==file)))) {
+            roles.insert(role.clone());
+        }
+    }
+    roles.into_iter().collect()
 }
 fn case_delta(m:&Value)->Option<i8> {
     if m["holdout"]!=true {return None;}
@@ -146,16 +182,16 @@ pub(crate) fn study(history:&[Value])->Value {
         let mut seen_children=BTreeSet::new();
         for child in history.iter().skip(i+1).filter(|child|
             child["generatorCommit"].as_str()==Some(commit)
-            && independent_trial(child)) {
+            && independent_pair(child)) {
             let Some(child_candidate)=child["candidateId"].as_str() else{continue};
             if !seen_children.insert(child_candidate.to_string()){continue;}
-            let child_role=child["openImprovementProgram"]["target"]["role"]
-                .as_str().unwrap_or("");
-            if child_role.is_empty()||child_role==role{continue;}
-            let child_adopted=accepted_measured(child);
-            for (domain,_case,delta) in cases(child){
+            let other_roles=changed_child_roles(child).into_iter()
+                .filter(|r|r!=role).collect::<Vec<_>>();
+            if other_roles.is_empty(){continue;}
+            let child_adopted=adopted_child(child);
+            for (domain,_case,delta) in cases(child) {
                 group.successor_cases+=1;
-                group.next_roles.insert(child_role.into());
+                for other in &other_roles {group.next_roles.insert(other.clone());}
                 group.domains.insert(domain);
                 if delta>0 && child_adopted {
                     group.successor_gains+=1;
