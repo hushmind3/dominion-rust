@@ -5,9 +5,20 @@ use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::{path::Path,fs,collections::{BTreeMap,BTreeSet}};
 
+/// Independent baseline, metric and adoption logic is not intelligence
+/// subject to self-modification; all other agent system source is editable.
+pub(crate) fn intelligence_editable_path(path:&str)->bool{
+    crate::engine::rsi::safe_path(path)
+        && !crate::engine::rsi::hidden_rsi_oracle_path(path)
+        && !matches!(path,
+            "src/engine/rsi.rs"|"src/engine/rsi_worktree.rs"
+            |"src/engine/rsi_metrics.rs"|"src/engine/rsi_profile.rs")
+}
+
+
 const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
-    ("harness",&["src/engine/jobs.rs","src/engine/rsi_worktree.rs","src/engine/chat/runtime.rs","src/engine/decompose.rs"]),
+    ("harness",&["src/engine/jobs.rs","src/engine/chat/runtime.rs","src/engine/decompose.rs","src/engine/decompose.rs"]),
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
@@ -21,7 +32,8 @@ const COMPONENTS: &[(&str,&[&str])] = &[
 /// Stable sorting + content hashes make this an actual revision self-model.
 fn source_inventory(root:&Path)->Vec<Value>{
     let Ok(root)=fs::canonicalize(root) else{return Vec::new()};
-    let mut pending=vec![root.join("src"),root.join("web").join("src")];
+    let mut pending=vec![root.join("src"),root.join("web").join("src"),
+        root.join("src-tauri").join("src")];
     let mut visited=BTreeSet::<std::path::PathBuf>::new();
     let mut files=Vec::new();
     while let Some(directory)=pending.pop(){
@@ -35,8 +47,7 @@ fn source_inventory(root:&Path)->Vec<Value>{
             if !path.is_file(){continue;}
             let Ok(relative)=path.strip_prefix(&root) else{continue};
             let relative=relative.to_string_lossy().replace('\\',"/");
-            if !crate::engine::rsi::safe_path(&relative)
-                || crate::engine::rsi::hidden_rsi_oracle_path(&relative){continue;}
+            if !intelligence_editable_path(&relative){continue;}
             if !matches!(path.extension().and_then(|ext|ext.to_str()),
                 Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"css")){continue;}
             let Ok(bytes)=fs::read(&path) else{continue};
@@ -82,7 +93,7 @@ fn design_implemented(design:&Value, accepted_hashes:&Value)->bool{
     let Some(targets)=design["targetFiles"].as_array()
         .filter(|targets|!targets.is_empty()) else{return false};
     targets.iter().all(|target|target.as_str().is_some_and(|path|
-        crate::engine::rsi::safe_path(path) &&
+        intelligence_editable_path(path) &&
         accepted_hashes[path].as_str().is_some_and(|sha|
             sha.len()==64&&sha.bytes().all(|c|c.is_ascii_hexdigit()))))
 }
@@ -112,7 +123,7 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
     for (role,paths) in COMPONENTS {
         let mut inventory=Vec::new();
         for relative in *paths {
-            if !crate::engine::rsi::safe_path(relative){continue;}
+            if !intelligence_editable_path(relative){continue;}
             let Some(root)=canonical_root.as_ref() else{continue};
             let Ok(file)=fs::canonicalize(root.join(relative)) else{continue};
             if !file.starts_with(root)||!file.is_file(){continue;}
@@ -132,7 +143,7 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
             let files=design["componentFiles"][&role].as_array().or_else(||
                 (design_roles(design).len()==1).then(||design["targetFiles"].as_array()).flatten());
             let entries=files.into_iter().flatten().filter_map(|path|{
-                let path=path.as_str().filter(|p|crate::engine::rsi::safe_path(p))?;
+                let path=path.as_str().filter(|p|intelligence_editable_path(p))?;
                 let base=canonical_root.as_ref()?;
                 let real=fs::canonicalize(base.join(path)).ok()?;
                 if !real.starts_with(base)||!real.is_file(){return None;}
@@ -189,7 +200,9 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
 /// heuristic, not an immutable scoring taxonomy.
 fn source_role(path:&str)->&'static str{
     let lower=path.to_ascii_lowercase();
-    if lower.starts_with("web/src/"){return "frontend";}
+    if lower.starts_with("web/src/") || lower.starts_with("src-tauri/src/"){
+        return "frontend";
+    }
     if lower.starts_with("src/engine/rsi_")
         || lower.contains("/self_improv") || lower.contains("/evolution"){
         return "improvement_methods";
@@ -220,8 +233,7 @@ fn source_entry_valid(state:&crate::state::AppState,root:&Path,index_id:&str,
     entry:&Value,hash_key:&str)->bool{
     let Some(path)=entry["path"].as_str() else{return false};
     let Some(sha)=entry[hash_key].as_str() else{return false};
-    if !crate::engine::rsi::safe_path(path)
-        || crate::engine::rsi::hidden_rsi_oracle_path(path)
+    if !intelligence_editable_path(path)
         || sha.len()!=64 || !sha.bytes().all(|b|b.is_ascii_hexdigit()) {
         return false;
     }
@@ -695,10 +707,10 @@ pub(crate) fn propose(
     let mut observed=serde_json::Map::new();
     for file in targets {
         let path=file.as_str().ok_or("소스 경로는 문자열이어야 합니다.")?;
-        if !crate::engine::rsi::safe_path(path)
-            || crate::engine::rsi::hidden_rsi_oracle_path(path)
+        if !intelligence_editable_path(path)
             || !target_set.insert(path.to_string())
-            || !(path.starts_with("src/")||path.starts_with("web/src/")) {
+            || !(path.starts_with("src/")||path.starts_with("web/src/")
+                || path.starts_with("src-tauri/src/")) {
             return Err("허용되지 않은 구성요소 파일 또는 중복 경로".into());
         }
         let target=root.join(path);
@@ -758,8 +770,7 @@ pub(crate) fn propose(
     let next_files=body["nextTargetFiles"].as_array()
         .cloned().unwrap_or_default();
     if next_files.len()>3 || next_files.iter().any(|file|file.as_str()
-        .is_none_or(|path|!crate::engine::rsi::safe_path(path)
-            || crate::engine::rsi::hidden_rsi_oracle_path(path))) {
+        .is_none_or(|path|!intelligence_editable_path(path))) {
         return Err("다음 세대의 목표 파일은 허용된 소스 3개 이하여야 합니다.".into());
     }
     let method_hypothesis=body["methodHypothesis"].as_str().unwrap_or("");

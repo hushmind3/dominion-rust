@@ -1256,6 +1256,21 @@ async fn checked_write(
 ) -> Result<Value, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    // The self-modifying intelligence may edit every one of its own code
+    // layers. The independent comparator and approval boundary remain fixed.
+    // Enforce this at the actual write entry point, for all edit tool names.
+    if ctx.store.get("session",ctx.session_id)
+        .is_some_and(|session|session["rsiRun"]==true
+            && session["rsiSystemEvolution"]==true){
+        let root=canonical_target(ctx.workspace).map_err(|e|e.to_string())?;
+        let target=canonical_target(path).map_err(|e|e.to_string())?;
+        let relative=target.strip_prefix(&root)
+            .map_err(|_|"후손의 소스 편집 경로가 실험 외부입니다.".to_string())?;
+        let relative=relative.to_str().ok_or("UTF-8 소스 경로 필요")?;
+        if !crate::engine::rsi_system::intelligence_editable_path(relative){
+            return Err("전체 지능 자기개선은 독립 평가기·승격기가 아닌 자신의 시스템 소스만 수정할 수 있습니다.".into());
+        }
+    }
     let policy = preflight_policy(ctx, path, run_id);
     let canonical = canonical_target(path);
     let lock_path = match &canonical {
