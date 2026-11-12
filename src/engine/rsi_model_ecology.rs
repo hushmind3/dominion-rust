@@ -30,7 +30,12 @@ fn endpoint_value(key:&(String,String))->Value{
     json!({"providerId":key.0,"model":key.1})
 }
 fn source_bound_candidate(g:&Value)->bool{
-    g["accepted"]==true && g["pairedRevalidated"]==true
+    g["modelAttributionConsistent"]==true
+        && g["modelAttribution"]["verifiedHomogeneous"]==true
+        && g["modelAttribution"]["providerId"]==g["generatorProviderId"]
+        && g["modelAttribution"]["model"]==g["generatorModel"]
+        && g["modelAttribution"]["calls"]==g["tokenUsage"]["calls"]
+        && g["accepted"]==true && g["pairedRevalidated"]==true
         && g["evaluation"]["metrics"]["eligible"]==true
         && g["candidateOrigin"]=="model_driven_detached_worktree"
         && g["acceptedSourceHashes"].as_object().is_some_and(|m|
@@ -39,7 +44,12 @@ fn source_bound_candidate(g:&Value)->bool{
         && g["generatorBinarySha256"].as_str().is_some_and(|s|!s.is_empty())
 }
 fn comparable(g:&Value, commit:&str, profile:&str, domain:&str, objective:&str)->bool{
-    g["generatorCommit"]==commit
+    g["modelAttributionConsistent"]==true
+        && g["modelAttribution"]["verifiedHomogeneous"]==true
+        && g["modelAttribution"]["providerId"]==g["generatorProviderId"]
+        && g["modelAttribution"]["model"]==g["generatorModel"]
+        && g["modelAttribution"]["calls"]==g["tokenUsage"]["calls"]
+        && g["generatorCommit"]==commit
         && g["comparisonProfileSha256"]==profile
         && g["objectiveId"]==objective
         && g["domain"]==domain
@@ -380,6 +390,9 @@ mod tests{
             "objectiveId":"o","domain":"learning","systemEvolution":true,
             "generatorBinarySha256":"binary","generatorProviderId":provider,
             "generatorModel":provider,"nativeMutation":null,
+            "tokenUsage":{"calls":1},"modelAttributionConsistent":true,
+            "modelAttribution":{"verifiedHomogeneous":true,
+                "providerId":provider,"model":provider,"calls":1},
             "pairedRevalidated":true,
             "candidateOrigin":"model_driven_detached_worktree",
             "accepted":accepted,
