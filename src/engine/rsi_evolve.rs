@@ -5756,6 +5756,19 @@ fn inherited_edit_policy(
     }else{generated}
 }
 
+// Allow the compiled model's *own* meta-method redesign to reach the
+// executable source selector, without overriding an owner's explicit focus
+// or an independently adopted predecessor programme.
+fn evidence_based_meta_repair_focus(
+    meta:&Value,successor_stage:&Value,explicit_focus:bool
+)->bool{
+    !explicit_focus && !successor_stage.is_object()
+        && meta["metaRepairChosen"]==true
+        && matches!(meta["mode"].as_str(),
+            Some("repair_own_prediction_mechanism"|"repair_own_transfer_method"))
+        && meta["target"]["path"]=="src/engine/rsi_meta_controller.rs"
+}
+
 /// Compute the NEXT system architecture proposal inside the currently
 /// compiled descendant. The resident coordinator has no authority to replace
 /// this decision; it may validate a plan and then run a frozen evaluator.
@@ -5835,11 +5848,8 @@ fn compiled_system_generation_plan(
     // An independently observed meta-rule failure should reach the actual
     // compiled source target. Existing adopted successor programmes and
     // explicit owner focus retain their higher priority.
-    let enforce_meta_repair=!explicit_focus && !successor_stage.is_object()
-        && meta["metaRepairChosen"]==true
-        && matches!(meta["mode"].as_str(),
-            Some("repair_own_prediction_mechanism"|"repair_own_transfer_method"))
-        && meta["target"]["path"]=="src/engine/rsi_meta_controller.rs";
+    let enforce_meta_repair=evidence_based_meta_repair_focus(
+        &meta,&successor_stage,explicit_focus);
     if enforce_meta_repair{
         architecture_target=meta["target"].clone();
     }
@@ -6474,6 +6484,34 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observed_meta_method_failure_reaches_compiled_focus_without_owner_override() {
+        let repair=json!({
+            "metaRepairChosen":true,"mode":"repair_own_transfer_method",
+            "target":{"role":"improvement_methods","domain":"improver",
+                "path":"src/engine/rsi_meta_controller.rs",
+                "sourceSha256":"a".repeat(64)}
+        });
+        assert!(evidence_based_meta_repair_focus(&repair,&Value::Null,false));
+        assert!(!evidence_based_meta_repair_focus(&repair,&Value::Null,true),
+            "explicit owner-selected source must not be overridden");
+        assert!(!evidence_based_meta_repair_focus(&repair,
+            &json!({"source":"model_authored_open_program_stage"}),false),
+            "independently adopted predecessor programme keeps priority");
+        let mut wrong=repair.clone();
+        wrong["target"]["path"]=json!("src/engine/tools.rs");
+        assert!(!evidence_based_meta_repair_focus(&wrong,&Value::Null,false));
+        wrong=repair.clone();
+        wrong["metaRepairChosen"]=json!(false);
+        assert!(!evidence_based_meta_repair_focus(&wrong,&Value::Null,false));
+        wrong=repair.clone();
+        wrong["mode"]=json!("test_cross_role_portable_method");
+        assert!(!evidence_based_meta_repair_focus(&wrong,&Value::Null,false));
+        wrong["mode"]=json!("repair_own_prediction_mechanism");
+        assert!(evidence_based_meta_repair_focus(&wrong,&Value::Null,false),
+            "forecast-driven self-repair uses the same executable focus path");
+    }
 
     #[test]
     fn bounded_local_excerpts_keep_source_lines_and_request_exact_missing_ranges() {
