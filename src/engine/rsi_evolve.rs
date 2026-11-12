@@ -3697,6 +3697,7 @@ async fn run_loop(
                         .ok_or("후보 소실")?;
                     let design=&generation["systemDesign"];
                     let paths=candidate["paths"].as_array().cloned().unwrap_or_default();
+                    generation["changedSourcePaths"]=json!(paths);
                     let design_complete=input["rsiSystemEvolution"]!=true || (
                         candidate["origin"]=="model_driven_detached_worktree"
                         && design["source"]=="model_authored_system_design"
