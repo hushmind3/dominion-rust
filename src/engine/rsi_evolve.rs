@@ -4424,8 +4424,14 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // scores possible meta-improvement targets and proposes its next experiment.
     let unsteered=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,&allowed,inherited.as_deref(),&lineage,&peers,&influence);
-    let mutual_program=crate::engine::rsi_mutual_program::propose(
-        &history,&frontier,commit,&unsteered["target"],&influence,&allowed);
+    // Manual source assignments and sealed downstream A/B episodes are not
+    // autonomous reciprocal research. They must never mint an A->B->A stage.
+    let mutual_program=if explicit || paired_descendant_target(input) {
+        Value::Null
+    }else{
+        crate::engine::rsi_mutual_program::propose(
+            &history,&frontier,commit,&unsteered["target"],&influence,&allowed)
+    };
     let meta_policy=crate::engine::rsi_meta_controller::steer_reciprocal(
         unsteered,&mutual_program);
     let architecture_target=if explicit || paired_descendant_target(input) {
