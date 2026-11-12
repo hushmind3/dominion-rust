@@ -12,6 +12,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
     ("improvement_methods",&["src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
+    ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
@@ -68,6 +69,10 @@ fn source_role(path:&str)->&'static str {
         return "frontend";
     }
     let name=path.rsplit('/').next().unwrap_or(path);
+    if name.starts_with("model_") || name.starts_with("training")
+        || matches!(name,"models.rs"|"cli_model.rs"|"router.rs") {
+        return "models";
+    }
     if name.starts_with("rsi_") || matches!(name,"rsi.rs"|"algorithms.rs"|"algorithm_eval.rs"|"policy_patch.rs") {
         return "improvement_methods";
     }
@@ -318,7 +323,7 @@ fn role_domain(role:&Value)->&str {
     if let Some(domain)=role["domain"].as_str().filter(|d|
         crate::engine::rsi_evolve::DOMAINS.contains(d)) {return domain;}
     match role["role"].as_str().unwrap_or("") {
-        "memory"=>"memory", "learning"=>"learning", "tools"=>"tools",
+        "memory"=>"memory", "learning"=>"learning", "models"=>"learning", "tools"=>"tools",
         "harness"=>"context", "frontend"=>"ui", _=>"improver"
     }
 }
@@ -719,7 +724,7 @@ pub(crate) fn propose(
                 .ok_or("새 파일을 만들 실제 소스 폴더가 없습니다.")?;
             if !parent.starts_with(&root)
                 || !matches!(proposed.extension().and_then(|ext|ext.to_str()),
-                    Some("rs"|"ts"|"tsx"|"js"|"jsx")) {
+                    Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"py")) {
                 return Err("새 모듈은 현재 저장소의 소스 폴더 아래에 작성해야 합니다.".into());
             }
         }
@@ -884,7 +889,7 @@ mod tests {
         let history=vec![json!({"generatorCommit":"first","accepted":true,
             "evaluation":{"verdict":"improved","metrics":{"improvedHoldouts":1}}})];
         let first=blueprint(&root,"commit-one",&history);
-        assert_eq!(first["architecture"].as_array().unwrap().len(),7);
+        assert_eq!(first["architecture"].as_array().unwrap().len(),8);
         assert_eq!(first["generatorCommit"],"commit-one");
         assert_eq!(first["historyCount"],1);
         assert_eq!(first["sourceInventory"].as_array().unwrap().len(),2);
