@@ -4418,8 +4418,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         // source excerpts as purported evidence.
         let observed=generation_context(&state,&job["input"],&campaign_record);
         let research=research_digest(&state,&job["input"],&campaign_record);
-        let focus=focus_file_context(&state,
-            &json!({"labDir":source}),&job["input"]);
+        // Neutral archived source is inherited AFTER the campaign checkout.
+        // A pre-inheritance excerpt belongs to the wrong bytes and SHA.
+        // Give the model a fresh-read instruction instead of stale source.
+        let focus=if job["input"]["rsiInheritedCandidateId"].is_string() {
+            "중립 후속 후보가 별도 작업공간에 적용됩니다. 이전 소스 발췌와 해시는 변경 전 버전입니다. workspace_read_range로 현재 원문과 sourceSha256을 확인한 뒤 편집하세요.".to_string()
+        }else{
+            focus_file_context(&state,&json!({"labDir":source}),&job["input"])
+        };
         let capsule=|text:&str,limit:usize|text.chars().take(limit).collect::<String>();
         let owner=state.store.get("job",&campaign)
             .and_then(|parent|parent["input"]["rsiObjective"].as_str()
