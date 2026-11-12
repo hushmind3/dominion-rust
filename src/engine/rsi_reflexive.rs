@@ -53,8 +53,20 @@ fn applied_meta(g:&Value)->bool {
         && g["compiledPlanExecuted"]["metaRevision"]==g["metaPolicy"]["revision"]
         && g["metaPolicy"]["revision"].as_str().is_some_and(|s|s.len()==64)
 }
+fn stage_executed(g:&Value)->bool {
+    let program=&g["reflexiveProgram"];
+    let mut unsigned=program.clone();
+    let Some(body)=unsigned.as_object_mut() else{return false};
+    body.remove("sha256");
+    program["sha256"].as_str()==Some(digest(&unsigned).as_str())
+        && applied_meta(g)
+        && g["metaPolicy"]["selectionMode"]=="recompiled_reflexive_method_evolution"
+        && g["metaPolicy"]["reflexiveProgramSha256"]==program["sha256"]
+        && g["compiledPlanExecuted"]["reflexiveSha256"]==program["sha256"]
+        && g["compiledPlanExecuted"]["reflexivePhase"]==program["phase"]
+}
 fn capability_change(g:&Value)->bool {
-    rsi_mutual_program::adopted_source(g) && applied_meta(g)
+    rsi_mutual_program::adopted_source(g) && stage_executed(g)
         && rsi_mutual_program::implemented_roles(g).iter().any(|r|
             r!="improvement_methods")
         && g["changedSourcePaths"].as_array().is_some_and(|paths|
@@ -77,7 +89,7 @@ pub(crate) fn propose(history:&[Value],frontier:&[Value],commit:&str,
         let last=&p["reflexiveProgram"];
         if last["phase"]=="seed"
             && last["generatorCommit"]==p["generatorCommit"]
-            && applied_meta(p)
+            && stage_executed(p)
             && last["target"]["path"].as_str()
                 .is_some_and(|path|meta_source(path) && actual_source(p,path))
         {
@@ -115,7 +127,7 @@ pub(crate) fn propose(history:&[Value],frontier:&[Value],commit:&str,
                     && g["acceptedCommit"]==p["generatorCommit"]
                     && g["reflexiveProgram"]["phase"]=="seed"
                     && rsi_mutual_program::adopted_source(g)
-                    && applied_meta(g)
+                    && stage_executed(g)
                     && g["reflexiveProgram"]["target"]["path"].as_str()
                         .is_some_and(|path|meta_source(path)&&actual_source(g,path)));
             if let Some(first)=founding {
@@ -197,7 +209,7 @@ pub(crate) fn valid(plan:&Value,history:&[Value],frontier:&[Value],
         Some("transfer")=>{
             let origin=parent["reflexiveProgram"]["target"]["path"].as_str();
             parent["reflexiveProgram"]["phase"]=="seed"
-                && applied_meta(parent)
+                && stage_executed(parent)
                 && origin.is_some_and(|p|meta_source(p)&&actual_source(parent,p))
                 && plan["rootGenerationId"]==parent["id"]
                 && plan["originMetaPath"]==parent["reflexiveProgram"]["target"]["path"]
@@ -210,7 +222,7 @@ pub(crate) fn valid(plan:&Value,history:&[Value],frontier:&[Value],
                 && g["acceptedCommit"]==parent["generatorCommit"]
                 && rsi_mutual_program::adopted_source(g)
                 && g["reflexiveProgram"]["phase"]=="seed"
-                && applied_meta(g)
+                && stage_executed(g)
                 && g["reflexiveProgram"]["target"]["path"].as_str()
                     .is_some_and(|p|actual_source(g,p)&&meta_source(p)))
                 else{return false};
@@ -234,14 +246,14 @@ pub(crate) fn completed(history:&[Value])->Value {
     let mut loops=Vec::new();
     for last in history.iter().filter(|g|
         rsi_mutual_program::adopted_source(g)
-        && applied_meta(g)
+        && stage_executed(g)
         && g["reflexiveProgram"]["phase"]=="return"
         && g["reflexiveProgram"]["target"]["path"].as_str()
             .is_some_and(|p|meta_source(p)&&actual_source(g,p))) {
         let Some(first)=history.iter().find(|g|
             g["id"]==last["reflexiveProgram"]["rootGenerationId"]
             && rsi_mutual_program::adopted_source(g)
-            && applied_meta(g)
+            && stage_executed(g)
             && g["reflexiveProgram"]["phase"]=="seed"
             && g["reflexiveProgram"]["target"]["path"].as_str()
                 .is_some_and(|p|meta_source(p)&&actual_source(g,p)))
@@ -313,6 +325,8 @@ mod tests {
         hashes.insert(path.to_string(),json!("c".repeat(64)));
         let mut role_files=serde_json::Map::new();
         role_files.insert(role.to_string(),json!([path]));
+        let plan_sha=plan["sha256"].clone();
+        let phase=plan["phase"].clone();
         json!({"id":id,"jobId":format!("job-{id}"),"candidateId":format!("cand-{id}"),
             "generatorCommit":generator,"acceptedCommit":commit,
             "accepted":true,"pairedRevalidated":true,
@@ -320,8 +334,11 @@ mod tests {
             "changedSourcePaths":[path],
             "acceptedSourceHashes":Value::Object(hashes),
             "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
-                "generatorCommit":generator,"metaRevision":"d".repeat(64)},
-            "metaPolicy":{"revision":"d".repeat(64)},
+                "generatorCommit":generator,"metaRevision":"d".repeat(64),
+                "reflexiveSha256":plan_sha,"reflexivePhase":phase},
+            "metaPolicy":{"revision":"d".repeat(64),
+                "selectionMode":"recompiled_reflexive_method_evolution",
+                "reflexiveProgramSha256":plan["sha256"]},
             "systemDesign":{"source":"model_authored_system_design",
                 "generatorCommit":generator,"generationJobId":format!("job-{id}"),
                 "components":[role],"componentFiles":Value::Object(role_files),
