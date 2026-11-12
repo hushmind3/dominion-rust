@@ -2326,7 +2326,7 @@ async fn run_turn_body(
                 // One successful targeted observation closes this repair read.
                 rsi_repair_read_allowed=false;
             }
-            if ok {
+            if ok && session["rsiRun"]==true {
                 // The design tool updates the persisted session DURING this
                 // turn. An old in-memory session would miss its targetFiles.
                 let live_session=state.store.get("session",session_id)
