@@ -1243,13 +1243,17 @@ fn choose_focus_files(
         .collect::<Vec<_>>();
     prior.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     for generation in prior.iter().take(8) {consider(generation,true);}
-    // Keep the generic index complete for normal developer tools, but never
-    // surface the frozen evaluator as a source target inside an RSI generation.
-    // Fetch extra ranks so filtering cannot exhaust the real improvement pool.
+    // Generic developer search retains tests and fixtures. Autonomous RSI
+    // edits should focus on release intelligence, not test scaffolding that
+    // happens to share the same symbols. Manual developer focus stays open.
+    let automatic=input["rsiAutoFocus"]==true;
     crate::engine::code_index::rank_focus_files_with_feedback(
-        state,index_id,objective,domain,&failures,&successes,policy,10
-    ).into_iter().filter(|row|!crate::engine::rsi::sealed_measurement_path(
-        row["path"].as_str().unwrap_or(""))).take(2).collect()
+        state,index_id,objective,domain,&failures,&successes,policy,24
+    ).into_iter().filter(|row|{
+        let path=row["path"].as_str().unwrap_or("");
+        !crate::engine::rsi::sealed_measurement_path(path)
+            && (!automatic || crate::engine::rsi_system::runtime_source_file(path))
+    }).take(2).collect()
 }
 
 /// Empty focus is meaningful: the model searches the index instead of being
