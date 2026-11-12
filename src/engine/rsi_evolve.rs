@@ -4254,6 +4254,7 @@ async fn run_loop(
         // independent model-route learning. The campaign input is only a
         // baseline and must not impersonate a dynamically selected provider.
         generation["modelRoute"]=current["input"]["rsiModelRoute"].clone();
+        generation["modelRouteExecuted"]=current["rsiModelRouteExecuted"].clone();
         generation["originalModel"]=current["input"]["rsiOriginalModel"].clone();
         generation["originalProviderId"]=current["input"]["rsiOriginalProviderId"].clone();
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
@@ -4657,6 +4658,8 @@ async fn run_loop(
         // reconstruct the latter only after real independent evaluations.
         generation["principleObservation"]=
             crate::engine::rsi_principle_lab::observation(&generation);
+        generation["modelRouteObservation"]=
+            crate::engine::rsi_model_ecology::observation(&generation);
         // Persist the real outcome of the newly executed recovery policy.
         // A ranking score or a source write is not a validated improvement;
         // this is the observed action utility that the next built generator
