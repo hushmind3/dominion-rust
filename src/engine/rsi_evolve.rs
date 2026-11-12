@@ -3444,10 +3444,6 @@ async fn run_loop(
         }
         let attempt = record["attempts"].as_u64().unwrap_or(0) + 1;
         let mut child_input = input.clone();
-        // Parent independent adoption, not a child's proposal, selects weights.
-        child_input["rsiSelectedAdapter"]=
-            crate::engine::rsi_model_weights::selected_for_child(
-                &context.state,&context.job_id);
         child_input["rsiSourceDir"] = json!(lab);
         child_input["rsiKnowledgeSource"]=record["sourceDir"].clone();
         child_input["rsiBaseCommit"] = json!(head);
@@ -4059,16 +4055,6 @@ async fn run_loop(
         generation["principleModel"]=current["input"]["rsiPrincipleModel"].clone();
         generation["principleCurriculum"]=current["input"]["rsiPrincipleCurriculum"].clone();
         generation["wholeDominionGrowth"]=current["input"]["rsiWholeDominionGrowth"].clone();
-        generation["adaptedModelActuallyUsed"]=current["rsiAdapterInferenceExecuted"].clone();
-        generation["sourceModelSelection"]=current["input"]["rsiSelectedAdapter"].clone();
-        if generation["adaptedModelActuallyUsed"]["actuallyUsedInGeneration"]==true {
-            generation["generatorModel"]=json!("dominion-promoted-lora");
-            generation["generatorProviderId"]=json!(generation["adaptedModelActuallyUsed"]["providerId"]);
-        }
-        generation["modelAdapterCandidate"]=context.state.store.all("rsi_adapter_candidate")
-            .into_iter().rev().find(|adapter|
-                adapter["generationJobId"].as_str()==Some(child_id))
-            .unwrap_or(Value::Null);
         generation["generatorCompetition"]=
             current["input"]["rsiGeneratorCompetition"].clone();
         generation["controllerPlan"]=current["input"]["rsiNativePlan"]["systemAgenda"].clone();
@@ -4194,20 +4180,6 @@ async fn run_loop(
                 .or_else(|| current["error"].as_str())
                 .unwrap_or("유효한 변경이나 검사 통과 없음"));
         }
-        // Parent-only independent paired adapter test after worker completion.
-        let weight_comparison=crate::engine::rsi_model_weights::evaluate_candidate(
-            &context.state,&context.job_id,&generation,
-            Path::new(record["sourceDir"].as_str().unwrap_or(""))
-        ).await;
-        generation["modelAdapterIndependentEvaluation"]=weight_comparison.clone();
-        generation["modelWeightLearning"]=json!({
-            "candidate":generation["modelAdapterCandidate"],
-            "actualInference":generation["adaptedModelActuallyUsed"],
-            "adapterWeightsActuallyCreated":generation["modelAdapterCandidate"]["adapterCreated"]==true,
-            "independentWeightGainMeasured":weight_comparison["pairedModelImprovementMeasured"]==true,
-            "adapterPromoted":weight_comparison["status"]=="promoted",
-            "sourceQualityProven":generation["accepted"]==true && generation["pairedRevalidated"]==true
-        });
         generation["elapsedMs"] = json!((worker_started.elapsed().as_millis() as u64)
             .saturating_sub(
                 record["waitingMs"]
@@ -5681,16 +5653,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             genome["rules"].as_array().map(Vec::len).unwrap_or(0),
             archive["candidateId"],job["input"]["rsiArchiveRestored"])
     }else{String::new()};
-    let adapter_instruction=if job["input"]["rsiAllowLocalAdapterTraining"]==true {
-        "\n[OPTIONAL LOCAL MODEL WEIGHT EVOLUTION]\n\
-         A previously owner-approved training-only JSON manifest may be used\n\
-         with rsi_train_local_adapter(mode=check then train). You must identify\n\
-         its approved manifestName; do not invent or read private test cases.\n\
-         Training is only a candidate; the separate parent evaluator tests\n\
-         heldout performance and alone may promote weights for a later child.\n\
-         Continue improving the actual agent's source and meta-improver.\n"
-    }else{""};
-    let system_prompt=format!("{system_prompt}{edit_inheritance}{adapter_instruction}");
+    let system_prompt=format!("{system_prompt}{edit_inheritance}");
     let (prompt,fit)=fit_worker_generation_context(
         &system_prompt,
         &domain,&capability,&history,&directive,available)?;
@@ -5700,40 +5663,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiWorkerContextFit"]=fit;
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;
     let context = JobContext::new(state.clone(), job_id.into());
-    // Only the isolated compiled descendant may call the adopted adapter.
-    let model_inference=crate::engine::rsi_model_weights::launch(&state,&job).await?;
-    if let Some(server)=&model_inference {
-        job["input"]["rsiAdapterRoute"]=json!({
-            "source":"isolated_promoted_peft_inference_route_v1",
-            "providerId":server.provider_id,
-            "baseUrl":server.endpoint,
-            "model":"dominion-promoted-lora",
-            "adapterSha256":server.evidence["adapterSha256"]
-        });
-        job["rsiAdapterInferenceExecuted"]=server.evidence.clone();
-        state.store.put("job",&job).ok_or("후손 모델 경로 저장 실패")?;
-    }
     let result = jobs::run_prompt(&context, &job).await;
-    if let Some(server)=&model_inference {
-        let mut finished=state.store.get("job",job_id)
-            .ok_or("후손 모델 호출 기록이 없습니다.")?;
-        let session=finished["sessionId"].as_str().unwrap_or("");
-        let usage=state.store.session_provider_usage(session,&server.provider_id);
-        let actual=usage["calls"].as_u64().unwrap_or(0)>0
-            &&usage["totalTokens"].as_u64().unwrap_or(0)>0;
-        let mut receipt=server.evidence.clone();
-        receipt["source"]=json!(if actual{
-            "running_adapted_descendant_inference_v1"
-        }else{"promoted_adapter_ready_without_model_call"});
-        receipt["providerId"]=json!(server.provider_id);
-        receipt["sessionId"]=json!(session);
-        receipt["actualModelCalls"]=usage["calls"].clone();
-        receipt["actualModelTokens"]=usage["totalTokens"].clone();
-        receipt["actuallyUsedInGeneration"]=json!(actual);
-        finished["rsiAdapterInferenceExecuted"]=receipt;
-        state.store.put("job",&finished).ok_or("후손 모델 호출 증거 저장 실패")?;
-    }
-    drop(model_inference);
     match result {
         Ok(value) => {
             context.checkpoint(json!({"status":"completed","result":value}))?;
