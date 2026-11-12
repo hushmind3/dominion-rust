@@ -3458,10 +3458,20 @@ async fn run_loop(
                         context.state.store.get("provider",provider_id)
                             .filter(|row|row["enabled"]==true
                                 && row["model"]==model_name)) {
-                        let health=reqwest::Client::new()
-                            .get("http://127.0.0.1:4321/v1/models")
-                            .timeout(Duration::from_secs(2)).send().await
-                            .ok();
+                        // The active owner-approved adapter is bound to an
+                        // actual local provider with a checked runtime URL.
+                        // A stale, remote or model-mismatched provider is never
+                        // inherited as the next descendant's inference model.
+                        let local_url=provider["baseUrl"].as_str()
+                            .filter(|url|url.starts_with("http://127.0.0.1:")
+                                && url.ends_with("/v1")
+                                && active["baseUrl"]==*url);
+                        let health=if let Some(url)=local_url {
+                            reqwest::Client::new()
+                                .get(format!("{url}/models"))
+                                .timeout(Duration::from_secs(2))
+                                .send().await.ok()
+                        }else{None};
                         let healthy=if let Some(reply)=health {
                             reply.status().is_success()
                                 && reply.json::<Value>().await.ok()
