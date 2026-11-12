@@ -4271,7 +4271,7 @@ pub fn capability_demonstrated(history: &[Value]) -> bool {
         let measured=|row:&Value|row["evaluation"]["metrics"]["holdoutEvidence"]
             .as_array().is_some_and(|rows|rows.iter().any(|case|
                 case["domain"]==row["domain"] && case["improved"]==true));
-        measured(chain[transfer_at]) && measured(grandchild)
+        measured(&chain[transfer_at]) && measured(grandchild)
             && chain.iter().any(|row|row["evaluation"]["metrics"]["improvedHoldouts"]
                 .as_u64().unwrap_or(0)>0)
     })
