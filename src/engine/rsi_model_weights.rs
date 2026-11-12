@@ -391,6 +391,9 @@ pub(crate) fn selected_for_child(state:&AppState,campaign_id:&str)->Value{
     let observations=state.store.all("rsi_generation").into_iter()
         .filter(|g|g["campaignId"]==campaign_id
             && g["adaptedModelActuallyUsed"]["promotionId"]==receipt["id"]
+            && g["adaptedModelActuallyUsed"]["adapterSha256"]==
+                receipt["adapterSha256"]
+            && g["adaptedModelActuallyUsed"]["actuallyUsedInGeneration"]==true
             && g["pairedMeasured"]==true).collect::<Vec<_>>();
     if observations.len()>=3 && observations.iter().all(|g|
         g["accepted"]!=true || g["pairedRevalidated"]!=true){
