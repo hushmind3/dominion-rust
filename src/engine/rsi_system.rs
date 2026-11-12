@@ -1069,6 +1069,10 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
         "openImprovementSourceEvidence":open_programs["steps"],
         "openImprovementProgramRewrites":open_programs["rewrites"],
         "learnedImprovementPrincipleCount":principle_rows.len(),
+        "independentlySupportedTransferablePrinciples":
+            principle_learning["transferFeatures"].as_array()
+                .map(|features|features.iter().filter(|row|
+                    row["transferEligible"]==true).count()).unwrap_or(0),
         "learnedPrincipleLedgerSha256":principle_learning["sha256"],
         "independentlyImprovedTaskCases":improved_task_cases,
         "independentlyImprovedDescendantCases":improved_descendant_cases,
