@@ -6,6 +6,11 @@ on:
     paths:
       - '.github/workflows/sub3-live-model-cycle.yml'
       - 'scripts/sub3-live-model-campaign.mjs'
+      - 'scripts/sub3-prepare-owned-source.sh'
+      - 'scripts/sub3-prepare-owned-source.test.mjs'
+      - 'src/api/rsi.rs'
+      - 'src/engine/rsi_worktree.rs'
+      - 'src/engine/rsi_evolve.rs'
   workflow_dispatch:
 
 permissions:
@@ -31,6 +36,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Validate owned source checkout without a model or paid token
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test scripts/sub3-prepare-owned-source.test.mjs
+          bash scripts/sub3-prepare-owned-source.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/sub3-source" "$GITHUB_SHA"
+          test "$(git -C "$RUNNER_TEMP/sub3-source" symbolic-ref HEAD)" = "refs/heads/dominion-sub3"
+          test "$(git -C "$RUNNER_TEMP/sub3-source" rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "Verified separate, pinned dominion-sub3 source checkout." >> "$GITHUB_STEP_SUMMARY"
       - name: Probe a genuine model, not a fixture
         id: probe
         shell: bash
@@ -64,8 +78,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Never restore a known historical bug to manufacture a first gain.
-          git worktree add --detach "$RUNNER_TEMP/sub3-source" "$GITHUB_SHA"
+          # The preflight created a separate owned clone. A detached HEAD
+          # would now be rejected by the real RSI start API by design.
+          test "$(git -C "$RUNNER_TEMP/sub3-source" symbolic-ref HEAD)" = "refs/heads/dominion-sub3"
+          test "$(git -C "$RUNNER_TEMP/sub3-source" rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git -C "$RUNNER_TEMP/sub3-source" status --porcelain)"
           echo "SUB3_RUNTIME_HARNESS_COMMIT=$GITHUB_SHA"
           echo "SUB3_EXPERIMENT_SOURCE_COMMIT=$(git -C "$RUNNER_TEMP/sub3-source" rev-parse HEAD)"
@@ -87,7 +103,7 @@ jobs:
           cat "$SUB3_LIVE_REPORT"
           # Count executed range edits AND rejected native proposals. A proposed
           # tool call in an assistant message is not evidence of a file write.
-          # The detached runner contains only this public test task's model text.
+          # The isolated owned runner contains only this public test task's model text.
           python3 - <<'PY'
           import json,os,sqlite3
           db=os.path.join(os.environ["DOMINION_DATA"],"dominion.sqlite")
