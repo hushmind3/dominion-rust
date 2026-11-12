@@ -3929,7 +3929,7 @@ async fn run_loop(
                 || plan["objectiveId"]!=crate::engine::memory::stable_id(
                     &[&selection_objective(&child_input)])
                 || plan["systemBlueprint"]["architecture"].as_array()
-                    .is_none_or(|architecture|architecture.len()!=7)
+                    .is_none_or(|architecture|architecture.len()<7||architecture.len()>64)
                 || plan["systemBlueprint"]["generatorCommit"]!=head
                 || plan["sourceTreeSha256"]!=plan["systemBlueprint"]["sourceTreeSha256"]
                 || plan["architectureFrontier"]!=json!(
@@ -3939,6 +3939,12 @@ async fn run_loop(
                 || plan["architectureTarget"]!=plan["architectureFrontier"]
                     .as_array().and_then(|rows|rows.first()).cloned()
                     .unwrap_or(Value::Null)
+                || plan["successorStage"]!=
+                    crate::engine::rsi_system::inherited_stage(
+                        &recorded_history,
+                        plan["architectureFrontier"].as_array()
+                            .map(Vec::as_slice).unwrap_or(&[]))
+                        .unwrap_or(Value::Null)
                 || focus.len()>3 || focus.iter().any(|row|row.as_str()
                     .is_none_or(|p|!crate::engine::rsi::safe_path(p)
                         || !lab.join(p).is_file()
@@ -3964,6 +3970,7 @@ async fn run_loop(
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
             child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
+            child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             record["nextGenerationPlan"]=plan.clone();
             context.state.store.audit("rsi.rebuilt_descendant_planned",json!({
                 "campaignId":context.job_id,"generatorCommit":head,
@@ -5238,7 +5245,7 @@ fn compiled_system_generation_plan(
     let root=Path::new(input["rsiSourceDir"].as_str().unwrap_or(""));
     let blueprint=crate::engine::rsi_system::blueprint(root,commit,history);
     if blueprint["sourceTreeSha256"].as_str().is_none_or(|s|s.len()!=64)
-        || blueprint["architecture"].as_array().is_none_or(|a|a.len()!=7) {
+        || blueprint["architecture"].as_array().is_none_or(|a|a.len()<7||a.len()>64) {
         return Err("후손이 실제 전체 시스템 자기모형을 구축하지 못했습니다.".into());
     }
     let objective=selection_objective(input);
@@ -5253,12 +5260,19 @@ fn compiled_system_generation_plan(
     let frontier=crate::engine::rsi_system::architecture_frontier(
         state,&blueprint,history,input["rsiIndexId"].as_str().unwrap_or(""),root);
     let architecture_target=frontier.first().cloned().unwrap_or(Value::Null);
+    // A predecessor can AUTHOR the successor's task program. The compiled
+    // descendant interprets it against its own newly built source graph and
+    // silently drops stages whose path/role/hash is no longer current.
+    let successor_stage=crate::engine::rsi_system::inherited_stage(history,&frontier)
+        .unwrap_or(Value::Null);
+    let successor_domain=successor_stage["domain"].as_str()
+        .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
     let architecture_domain=architecture_target["domain"].as_str()
         .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
-    let continuation=if inherited.is_some()||architecture_domain.is_some(){
-        None
-    }else{research_continuation(history)};
-    let selected=inherited.clone().or(architecture_domain).or_else(||
+    let continuation=if successor_domain.is_some()||inherited.is_some()
+        ||architecture_domain.is_some(){None}else{research_continuation(history)};
+    let selected=successor_domain.or(inherited.clone())
+        .or(architecture_domain).or_else(||
         input["rsiSelectedDomain"].as_str()
             .filter(|domain|DOMAINS.contains(domain)).map(str::to_string));
     let (domain,selection,strategy)=select_generation_strategy(
@@ -5271,18 +5285,30 @@ fn compiled_system_generation_plan(
     // Keep the indexed source evidence and SHA attached to the actual
     // descendant-selected target. An inherited model design can change the
     // domain, in which case use that domain's indexed focus instead.
-    let preferred=if inherited.is_none()
-        && architecture_target["domain"]==domain {
+    let preferred=if successor_stage["domain"]==domain {
+        successor_stage["path"].as_str()
+    }else if inherited.is_none() && architecture_target["domain"]==domain {
         architecture_target["path"].as_str()
     }else{None};
     if let Some(path)=preferred {
         if root.join(path).is_file() {
             ranked.retain(|row|row["path"]!=path);
+            let inherited_focus=successor_stage["path"]==path;
             let mut prioritised=json!({
-                "path":path,"sourceHash":architecture_target["sourceSha256"],
-                "source":"compiled_architecture_frontier",
-                "role":architecture_target["role"],
-                "domain":domain,"unmodified":architecture_target["verifiedRoleImproved"]==false
+                "path":path,
+                "sourceHash":if inherited_focus {
+                    successor_stage["sourceSha256"].clone()
+                }else{architecture_target["sourceSha256"].clone()},
+                "source":if inherited_focus {
+                    "inherited_model_authored_successor_program"
+                }else{"compiled_architecture_frontier"},
+                "role":if inherited_focus {
+                    successor_stage["role"].clone()
+                }else{architecture_target["role"].clone()},
+                "domain":domain,
+                "unmodified":if inherited_focus {
+                    true
+                }else{architecture_target["verifiedRoleImproved"]==false}
             });
             // Keep exact current-file index binding, so stale source graph
             // choices never become model-authorized write targets.
@@ -5311,6 +5337,7 @@ fn compiled_system_generation_plan(
         "systemBlueprint":blueprint,
         "architectureFrontier":frontier,
         "architectureTarget":architecture_target,
+        "successorStage":successor_stage,
         "improvementDirective":directive,
         "decisionOwner":"rebuilt_descendant_binary",
         "frozenAuthority":"resident_independent_evaluator"
@@ -5437,6 +5464,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || plan["systemBlueprint"]!=blueprint
             || plan["architectureFrontier"]!=json!(frontier)
             || plan["architectureTarget"]!=frontier.first().cloned().unwrap_or(Value::Null)
+            || plan["successorStage"]!=crate::engine::rsi_system::inherited_stage(
+                &history,&frontier).unwrap_or(Value::Null)
+            || job["input"]["rsiSuccessorStage"]!=plan["successorStage"]
             || job["input"]["rsiSystemBlueprint"]!=blueprint
             || job["input"]["rsiImprovementDirective"]!=directive
             || plan["improvementDirective"]!=directive
@@ -5526,6 +5556,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let research=job["input"]["rsiPromptResearch"].as_str().unwrap_or("")
             .chars().take(1100).collect::<String>();
         let target=job["input"]["rsiDescendantPlan"]["architectureTarget"].clone();
+        let inherited_step=job["input"]["rsiSuccessorStage"].clone();
+        let inherited_task=if let Some(objective)=inherited_step["objective"].as_str(){
+            format!("\n\nADOPTED PREDECESSOR'S NEXT-SYSTEM DESIGN STAGE (NOT a proof): role={} domain={} path={} objective={}. Re-read the actual CURRENT source and design the implementation yourself; independent evaluation decides acceptance.",
+                inherited_step["role"],inherited_step["domain"],
+                inherited_step["path"],objective)
+        }else{String::new()};
         job["rsiSourceContextDelivered"]=json!(!current_source.is_empty());
         state.store.audit("rsi.compiled_descendant_source_bound",json!({
             "jobId":job_id,"generatorCommit":commit,
@@ -5538,7 +5574,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             crate::engine::rsi_system::instruction(
                 &job["input"]["rsiSystemBlueprint"],&objective),
             job["input"]["rsiImprovementDirective"],feedback,target,
-            current_source,research)
+            current_source,format!("{research}{inherited_task}"))
     }else{
         format!("{}{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
             job["input"]["prompt"].as_str().unwrap_or(""),action_prompt,feedback)
