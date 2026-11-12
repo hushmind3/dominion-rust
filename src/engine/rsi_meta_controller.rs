@@ -308,6 +308,37 @@ pub(crate) fn steer_factorial(mut policy:Value,experiment:&Value)->Value {
         serde_json::to_vec(&unsigned).unwrap_or_default())));
     policy
 }
+/// Recursion is a program over real compiled descendants, not a fixed
+/// number of high scores. The current successor can rewrite this selector
+/// and the separate reflexive curriculum as ordinary Rust source.
+pub(crate) fn steer_reflexive(mut policy:Value,program:&Value)->Value {
+    let Some(phase)=program["phase"].as_str() else{return policy};
+    if !matches!(phase,"seed"|"transfer"|"return"){return policy;}
+    let selected=&program["target"];
+    let Some(path)=selected["path"].as_str() else{return policy};
+    if !crate::engine::rsi::safe_path(path) {return policy;}
+    let prediction=policy["alternatives"].as_array().into_iter().flatten()
+        .find(|row|row["target"]==*selected).cloned()
+        .unwrap_or_else(||json!({
+            "target":selected,"predictedAcceptance":0.5,
+            "uncertainty":0.5,"observedTrials":0,
+            "source":"inherited_reflexive_curriculum_prior"
+        }));
+    policy["target"]=selected.clone();
+    policy["prediction"]=prediction.clone();
+    policy["forecast"]["probability"]=prediction["predictedAcceptance"].clone();
+    policy["forecast"]["uncertainty"]=prediction["uncertainty"].clone();
+    policy["forecast"]["verifiedByIndependentHoldout"]=json!(false);
+    policy["selectionMode"]=json!("recompiled_reflexive_method_evolution");
+    policy["reflexivePhase"]=program["phase"].clone();
+    policy["reflexiveProgramSha256"]=program["sha256"].clone();
+    policy["reflexiveRootGenerationId"]=program["rootGenerationId"].clone();
+    let mut unsigned=policy.clone();
+    if let Some(obj)=unsigned.as_object_mut(){obj.remove("revision");}
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&unsigned).unwrap_or_default())));
+    policy
+}
 pub(crate) fn valid_policy(policy:&Value,history_count:usize)->bool {
     // The parent may enforce a content hash, but never re-run or override
     // the descendant's compiled search ranking. Hash binds the exact
