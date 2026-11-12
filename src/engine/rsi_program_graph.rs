@@ -367,6 +367,38 @@ mod tests {
             "a new role target must execute if its current source is indexed");
     }
     #[test]
+    fn independently_measured_non_gain_can_rewrite_the_program_not_repeat_improvement(){
+        let program=authored();let f=frontier();
+        let zero="0".repeat(40);let one="1".repeat(40);let two="2".repeat(40);
+        let first=parent("seed",&one,&zero,program,Value::Null);
+        let first_plan=synthesize(&[first.clone()],&f,&["memory","improver"],&one);
+        let mut observed=parent("neutral",&two,&one,Value::Null,first_plan.clone());
+        observed["evaluation"]["metrics"]["improvedHoldouts"]=json!(0);
+        observed["compiledPlanExecuted"]=json!({
+            "source":"running_compiled_descendant_binary",
+            "generatorCommit":one,"metaRevision":"m",
+            "openImprovementRevision":first_plan["revision"]});
+        observed["metaPolicy"]=json!({
+            "selectionMode":"authored_open_improvement_program","revision":"m",
+            "openImprovementRevision":first_plan["revision"]});
+        let history=vec![first,observed];
+        let next=synthesize(&history,&f,&["memory","improver"],&two);
+        assert_eq!(next["nodeId"],"rewrite_program");
+        assert_eq!(next["target"]["path"],"src/engine/rsi_program_graph.rs");
+        assert!(valid(&next,&history,&f,&two));
+    }
+    #[test]
+    fn stale_rebound_source_is_rejected_even_with_recomputed_revision(){
+        let program=authored();let f=frontier();let one="1".repeat(40);
+        let first=parent("seed",&one,&"0".repeat(40),program,Value::Null);
+        let mut selected=synthesize(&[first.clone()],&f,&["memory","improver"],&one);
+        selected["target"]["sourceSha256"]=json!("0".repeat(64));
+        let mut unsigned=selected.clone();
+        unsigned.as_object_mut().unwrap().remove("revision");
+        selected["revision"]=json!(sha(&unsigned));
+        assert!(!valid(&selected,&[first],&f,&one));
+    }
+    #[test]
     fn an_adopted_program_rewrite_counts_only_after_the_new_program_executes(){
         let old=authored();
         let mut new=old.clone();
