@@ -128,6 +128,13 @@ fn frontier_target<'a>(frontier: &'a [Value], n: &Value) -> Option<&'a Value> {
         && f["sourceSha256"].as_str().is_some_and(|h|
             h.len()==64 && h.bytes().all(|c|c.is_ascii_hexdigit())))
 }
+fn carried(g: &Value, revision: &Value) -> bool {
+    if !actual_source_role(g) || !executed(g,revision) {return false;}
+    let Some(path)=g["openProgramPlan"]["target"]["path"].as_str()
+        else{return false};
+    g["acceptedSourceHashes"][path].as_str().is_some_and(|h|
+        h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit()))
+}
 fn executed(g: &Value, revision: &Value) -> bool {
     g["openProgramExecuted"] == true
         && g["openProgramPlan"]["source"] == "compiled_descendant_open_experiment_graph_v1"
@@ -174,7 +181,7 @@ pub(crate) fn synthesize(history: &[Value], frontier: &[Value], commit: &str)
         (fresh, parent["id"].clone(),true)
     }else{
         let inherited=&parent["openProgramPlan"];
-        if !executed(parent,&inherited["program"]["revision"])
+        if !carried(parent,&inherited["program"]["revision"])
             || !authored_valid(&inherited["program"]) {
             return Value::Null;
         }
@@ -189,24 +196,27 @@ pub(crate) fn synthesize(history: &[Value], frontier: &[Value], commit: &str)
     let previous_id=previous.map(|g|g["openProgramPlan"]["nodeId"].clone())
         .unwrap_or(Value::Null);
     let mut candidates=Vec::<(f64,Value,Value)>::new();
-    let mut enqueue=|n:&Value,priority:f64|{
+    fn enqueue(
+        candidates:&mut Vec<(f64,Value,Value)>,history:&[Value],
+        program:&Value,frontier:&[Value],n:&Value,priority:f64,
+    ) {
         if let Some(f)=frontier_target(frontier,n) {
             candidates.push((score(history,program,n)+priority,n.clone(),f.clone()));
         }
-    };
+    }
     if let Some(g)=previous {
         for edge in program["edges"].as_array().into_iter().flatten() {
             if edge["from"]==previous_id &&
                 edge["when"].as_str().is_some_and(|when|guard(when,g)) {
                 if let Some(n)=node(program,edge["to"].as_str().unwrap_or("")) {
-                    enqueue(n,0.12);
+                    enqueue(&mut candidates,history,program,frontier,n,0.12);
                 }
             }
         }
     }
     if candidates.is_empty() {
         if let Some(n)=node(program,program["entry"].as_str().unwrap_or("")) {
-            enqueue(n,0.0);
+            enqueue(&mut candidates,history,program,frontier,n,0.0);
         }
     }
     // An edited component may no longer exist. Allow the compiled child to
@@ -214,7 +224,7 @@ pub(crate) fn synthesize(history: &[Value], frontier: &[Value], commit: &str)
     // inventing an untrusted path or becoming permanently stuck.
     if candidates.is_empty() {
         for n in program["nodes"].as_array().into_iter().flatten(){
-            enqueue(n,0.0);
+            enqueue(&mut candidates,history,program,frontier,n,0.0);
         }
     }
     candidates.sort_by(|a,b|b.0.total_cmp(&a.0)
@@ -291,7 +301,7 @@ pub(crate) fn validate(
             && plan["originGenerationId"]==parent["id"]
     } else {
         let past=&parent["openProgramPlan"];
-        executed(parent,&past["program"]["revision"])
+        carried(parent,&past["program"]["revision"])
             && past["program"]==plan["program"]
             && plan["originGenerationId"]==past["originGenerationId"]
     }
