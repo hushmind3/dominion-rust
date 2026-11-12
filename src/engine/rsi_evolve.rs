@@ -5075,6 +5075,102 @@ fn reconcile_descendant_target(
     Ok(true)
 }
 
+/// Compute the NEXT system architecture proposal inside the currently
+/// compiled descendant. The resident coordinator has no authority to replace
+/// this decision; it may validate a plan and then run a frozen evaluator.
+fn compiled_system_generation_plan(
+    state:&AppState,input:&Value,history:&[Value],commit:&str
+)->Result<Value,String> {
+    if input["rsiSystemEvolution"]!=true
+        || input["rsiGeneratorCommit"]!=commit
+        || !input["rsiSourceDir"].is_string() {
+        return Err("컴파일된 후손 계획의 revision 또는 시스템 모드가 올바르지 않습니다.".into());
+    }
+    let root=Path::new(input["rsiSourceDir"].as_str().unwrap_or(""));
+    let blueprint=crate::engine::rsi_system::blueprint(root,commit,history);
+    if blueprint["sourceTreeSha256"].as_str().is_none_or(|s|s.len()!=64)
+        || blueprint["architecture"].as_array().is_none_or(|a|a.len()!=7) {
+        return Err("후손이 실제 전체 시스템 자기모형을 구축하지 못했습니다.".into());
+    }
+    let objective=selection_objective(input);
+    // The accepted model's independently measured design is executable
+    // successor policy. Failure/research history still drives the evolved
+    // search algorithm when no adopted model-designed successor exists.
+    let inherited=crate::engine::rsi_system::inherited_domain(history);
+    let selected=inherited.or_else(||input["rsiSelectedDomain"].as_str()
+        .filter(|domain|DOMAINS.contains(domain)).map(str::to_string));
+    let (domain,selection,strategy)=select_generation_strategy(
+        state,history,&objective,research_continuation(history),
+        None,selected,commit
+    );
+    let mut focus_input=input.clone();
+    focus_input["rsiTargetDomain"]=json!(domain);
+    let ranked=choose_focus_files(state,&focus_input,history,None);
+    let paths=ranked.iter().filter_map(|row|row["path"].as_str())
+        .filter(|path|crate::engine::rsi::safe_path(path)
+            && root.join(path).is_file())
+        .take(3).collect::<Vec<_>>();
+    let directive=crate::engine::rsi_system::improvement_directive(history);
+    Ok(json!({
+        "source":"compiled_descendant_system_controller_v3",
+        "generatorCommit":commit,
+        "historyCount":history.len(),
+        "sourceTreeSha256":blueprint["sourceTreeSha256"],
+        "objectiveId":crate::engine::memory::stable_id(&[&objective]),
+        "indexId":input["rsiIndexId"],
+        "domain":domain,
+        "selection":selection,
+        "strategy":strategy,
+        "targetPlan":generation_target_plan(&domain,selection,&strategy,commit),
+        "focusFiles":paths,
+        "ranked":ranked,
+        "systemBlueprint":blueprint,
+        "improvementDirective":directive,
+        "decisionOwner":"rebuilt_descendant_binary",
+        "frozenAuthority":"resident_independent_evaluator"
+    }))
+}
+
+/// Spawned by the earlier coordinator from the newly built binary, before
+/// any model call. Reads the shared read-only lineage, owns the actual next
+/// selection, and emits a plan bound to its embedded build SHA.
+pub async fn plan_generation(path:&str)->Result<(),String>{
+    let snapshot:Value=serde_json::from_slice(&std::fs::read(path)
+        .map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    let config=crate::config::Config::from_env();
+    let store=crate::db::Store::open(&config.db_path()).map_err(|e|e.to_string())?;
+    let vault=crate::vault::Vault::open(&config.key_path());
+    let state=AppState::new(config,store,vault);
+    let commit=option_env!("DOMINION_BUILD_COMMIT")
+        .ok_or("계획 생성기 바이너리의 커밋 식별자가 없습니다.")?;
+    if snapshot["generatorCommit"]!=commit
+        || snapshot["input"]["rsiGeneratorCommit"]!=commit
+        || snapshot["input"]["rsiSystemEvolution"]!=true {
+        return Err("소스 스냅샷과 실제 후손 바이너리가 다릅니다.".into());
+    }
+    let campaign_id=snapshot["campaignId"].as_str().ok_or("캠페인 ID 없음")?;
+    let job=state.store.get("job",campaign_id).ok_or("캠페인 작업 없음")?;
+    let campaign=state.store.get("rsi_campaign",campaign_id)
+        .ok_or("연속 캠페인 계보 없음")?;
+    if job["kind"]!="rsi_evolve" || job["status"]!="running"
+        || job["cancelRequested"]==true
+        || campaign["headCommit"]!=commit {
+        return Err("정지되거나 다른 소스의 캠페인은 계획할 수 없습니다.".into());
+    }
+    let mut history=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["campaignId"]==campaign_id).collect::<Vec<_>>();
+    history.sort_by_key(|row|row["attempt"].as_u64().unwrap_or(0));
+    if snapshot["historyCount"].as_u64()!=Some(history.len() as u64)
+        || snapshot["attempt"].as_u64()!=Some(history.len() as u64+1)
+        || campaign["history"].as_array().map(Vec::len)!=Some(history.len()) {
+        return Err("후손이 읽은 이전 세대의 실험 기록이 일치하지 않습니다.".into());
+    }
+    let plan=compiled_system_generation_plan(
+        &state,&snapshot["input"],&history,commit)?;
+    println!("{plan}");
+    Ok(())
+}
+
 /// Executes only one durable generation, without starting a server, scheduler,
 /// migrations or recovering another process's jobs in the shared ledger.
 pub async fn worker(job_id: &str) -> Result<(), String> {
