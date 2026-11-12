@@ -1016,7 +1016,7 @@ mod exact_api_route_replay_tests {
             "generatorModel":"model-a",
             "modelSessionId":"session-a",
             "actualModelRoute":{"providerId":"provider-a","model":"model-a"},
-            "modelRouteUsage":usage,"modelRouteSessionExclusive":true
+            "modelRouteUsage":usage.clone(),"modelRouteSessionExclusive":true
         })).unwrap();
         let mut generation=json!({
             "candidateId":"candidate-route-1","jobId":"worker-route-1",
@@ -1027,7 +1027,7 @@ mod exact_api_route_replay_tests {
             "apiRouteSessionId":"session-a",
             "requestedProviderId":"provider-a","requestedModel":"model-a",
             "generatorProviderId":"provider-a","generatorModel":"model-a",
-            "apiRouteUsage":usage
+            "apiRouteUsage":usage.clone()
         });
         assert!(model_route_audited(&state,&generation));
         generation["requestedModel"]=json!("fake-model");
