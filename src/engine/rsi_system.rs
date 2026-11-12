@@ -12,6 +12,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
     ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
+    ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
@@ -21,15 +22,21 @@ const COMPONENTS: &[(&str,&[&str])] = &[
 /// system's source graph; the prompt can remain short without losing lineage.
 fn source_inventory(root:&Path)->Vec<Value> {
     let Ok(root)=fs::canonicalize(root) else {return Vec::new()};
-    let mut pending=vec![root.join("src"),root.join("web").join("src")];
+    // Traverse deterministically even when there are more than 2048 sources.
+    // An unstable read_dir order changes the pinned tree digest without an edit.
+    let mut pending=vec![root.join("src-tauri").join("src"),
+        root.join("web").join("src"),root.join("src")];
     let mut rows=Vec::new();
     while let Some(directory)=pending.pop() {
         let Ok(entries)=fs::read_dir(&directory) else {continue};
-        for entry in entries.flatten() {
+        let mut entries=entries.flatten().collect::<Vec<_>>();
+        entries.sort_by_key(|entry|entry.file_name());
+        let mut child_directories=Vec::new();
+        for entry in entries {
             let Ok(file)=fs::canonicalize(entry.path()) else {continue};
             if !file.starts_with(&root){continue;}
             if file.is_dir() {
-                pending.push(file);
+                child_directories.push(file);
                 continue;
             }
             if !file.is_file(){continue;}
@@ -37,7 +44,7 @@ fn source_inventory(root:&Path)->Vec<Value> {
             let relative=relative.to_string_lossy().replace('\\',"/");
             if !crate::engine::rsi::safe_path(&relative){continue;}
             let allowed=matches!(file.extension().and_then(|e|e.to_str()),
-                Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"));
+                Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"py"));
             if !allowed {continue;}
             let Ok(bytes)=fs::read(&file) else {continue};
             if bytes.len()>2_000_000 {continue;}
@@ -46,6 +53,7 @@ fn source_inventory(root:&Path)->Vec<Value> {
                 "bytes":bytes.len()}));
             if rows.len()>=2048 {break;}
         }
+        for directory in child_directories.into_iter().rev() {pending.push(directory);}
         if rows.len()>=2048 {break;}
     }
     rows.sort_by(|a,b|a["path"].as_str().cmp(&b["path"].as_str()));
@@ -58,6 +66,35 @@ pub(crate) fn source_facts(root:&Path)->Value {
     let files=source_inventory(root);
     json!({"fileCount":files.len(),"sha256":format!("{:x}",Sha256::digest(
         serde_json::to_vec(&files).unwrap_or_default()))})
+}
+
+/// All existing source modules are candidates, including newly invented
+/// model, learner, harness and improvement modules. Heuristic ownership is
+/// a source-editable offspring policy, never a frozen evaluator taxonomy.
+fn source_role(path:&str)->&'static str {
+    if path.starts_with("web/src/") || path.starts_with("src-tauri/src/") {
+        return "frontend";
+    }
+    let name=path.rsplit('/').next().unwrap_or(path);
+    if name.starts_with("model_") || name.starts_with("training")
+        || matches!(name,"models.rs"|"cli_model.rs"|"router.rs"|"gateway.rs") {
+        return "models";
+    }
+    if name.starts_with("rsi_") || matches!(name,"rsi.rs"|"algorithm_eval.rs"|"policy_patch.rs") {
+        return "improvement_methods";
+    }
+    if path.contains("/chat/") || matches!(name,"chat.rs"|"jobs.rs"|"decompose.rs") {
+        return "harness";
+    }
+    if name.starts_with("memory") || name.starts_with("room_") {return "memory";}
+    if name.starts_with("learning") || name.starts_with("experience")
+        || name.starts_with("procedure") || name.starts_with("agent_growth") {
+        return "learning";
+    }
+    if name.starts_with("tools") || name.starts_with("browser") || name.starts_with("mcp") {
+        return "tools";
+    }
+    "algorithms"
 }
 
 fn valid_role(name:&str)->bool {
@@ -224,6 +261,7 @@ fn validate_source_entry(state:&crate::state::AppState,root:&Path,index_id:&str,
 /// measured generator revision; no holdout content is read here.
 pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
     let canonical_root=fs::canonicalize(root).ok();
+    let files=source_inventory(root);
     let mut components=Vec::new();
     for (role,paths) in COMPONENTS {
         let mut inventory=Vec::new();
@@ -236,9 +274,21 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
             inventory.push(json!({"path":relative,"sha256":format!("{:x}",Sha256::digest(&contents)),
                 "bytes":contents.len()}));
         }
+        // Dynamic modules feed the exact same source graph and SHA contract.
+        // Limit prompt representatives, not the complete source-tree digest.
+        let discovered=files.iter().filter(|item|item["path"].as_str()
+            .is_some_and(|path|source_role(path)==*role)).count();
+        for item in files.iter().filter(|item|item["path"].as_str()
+            .is_some_and(|path|source_role(path)==*role)) {
+            if inventory.len()>=16 {break;}
+            if !inventory.iter().any(|v|v["path"]==item["path"]) {
+                inventory.push(item.clone());
+            }
+        }
         let row=json!({"role":role,"representativeSources":inventory});
         let domain=role_domain(&row).to_string();
-        components.push(json!({"role":role,"domain":domain,"representativeSources":inventory}));
+        components.push(json!({"role":role,"domain":domain,
+            "representativeSources":inventory,"discoveredSourceCount":discovered}));
     }
     for generation in history.iter().filter(|generation|generation["accepted"]==true
         && generation["pairedRevalidated"]==true
@@ -276,7 +326,6 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "regressions":generation["evaluation"]["metrics"]["regressions"],
         "candidateOrigin":generation["candidateOrigin"]
     })).collect::<Vec<_>>();
-    let files=source_inventory(root);
     let fingerprint=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&files).unwrap_or_default()));
     let total=files.len();
@@ -666,7 +715,7 @@ mod tests {
         let history=vec![json!({"generatorCommit":"first","accepted":true,
             "evaluation":{"verdict":"improved","metrics":{"improvedHoldouts":1}}})];
         let first=blueprint(&root,"commit-one",&history);
-        assert_eq!(first["architecture"].as_array().unwrap().len(),7);
+        assert_eq!(first["architecture"].as_array().unwrap().len(),8);
         assert_eq!(first["generatorCommit"],"commit-one");
         assert_eq!(first["historyCount"],1);
         assert_eq!(first["recentMeasuredGenerations"][0]["accepted"],true);
@@ -676,6 +725,28 @@ mod tests {
         let second=blueprint(&root,"commit-two",&history);
         assert_ne!(baseline,second["architecture"][0]["representativeSources"][0]["sha256"]);
         assert_ne!(first["generatorCommit"],second["generatorCommit"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn model_and_python_modules_are_in_the_rebuilt_source_graph() {
+        let root=std::env::temp_dir().join(format!("rsi-model-graph-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("src/engine")).unwrap();
+        fs::create_dir_all(root.join("src-tauri/src")).unwrap();
+        fs::write(root.join("src/engine/model_planner.py"),"def plan(): return 1").unwrap();
+        fs::write(root.join("src/engine/novel_meta_operator.rs"),"pub fn meta() {}").unwrap();
+        fs::write(root.join("src-tauri/src/main.rs"),"fn main() {}").unwrap();
+        let first=blueprint(&root,"before",&[]);
+        let model=first["architecture"].as_array().unwrap().iter()
+            .find(|row|row["role"]=="models").unwrap();
+        assert!(model["representativeSources"].as_array().unwrap().iter()
+            .any(|row|row["path"]=="src/engine/model_planner.py"));
+        assert!(first["architecture"].as_array().unwrap().iter()
+            .any(|row|row["role"]=="improvement_methods"
+                && row["representativeSources"].as_array().unwrap().iter()
+                    .any(|file|file["path"]=="src/engine/novel_meta_operator.rs")));
+        fs::write(root.join("src/engine/model_planner.py"),"def plan(): return 2").unwrap();
+        let second=blueprint(&root,"after",&[]);
+        assert_ne!(first["sourceTreeSha256"],second["sourceTreeSha256"]);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
