@@ -1234,6 +1234,10 @@ async fn run_turn_body(
     let mut rsi_edit_retry_used = false;
     let mut rsi_force_edit_stage = false;
     let mut rsi_repair_read_allowed = false;
+    // These guards prevent duplicating evidence for a model's repeated
+    // visible tool menu. A rule's reward requires an actual LATER write.
+    let mut rsi_last_edit_rule = String::new();
+    let mut rsi_last_edit_phase = String::new();
     // A native edit reply without a tool call gets exactly one compat retry;
     // do not change provider settings or repeatedly replay free-model output.
     let mut rsi_text_edit_retry = false;
@@ -1379,10 +1383,14 @@ async fn run_turn_body(
         }
         if session["rsiRun"]==true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
-            let completed = state.store.all("execution_operation").into_iter()
-                .filter(|operation| operation["runId"].as_str() == Some(execution_id)
-                    && operation["status"].as_str() == Some("completed"))
+            let mut all_operations = state.store.all("execution_operation").into_iter()
+                .filter(|operation|operation["runId"].as_str()==Some(execution_id))
                 .collect::<Vec<_>>();
+            all_operations.sort_by_key(|op|
+                op["opSeq"].as_u64().unwrap_or(u64::MAX));
+            let completed = all_operations.iter()
+                .filter(|operation|operation["status"]=="completed")
+                .cloned().collect::<Vec<_>>();
             // A returned tool envelope is not a source mutation. Count only
             // a real write; otherwise a noChange/staleVersion response would
             // reopen search instead of retaining the grounded repair menu.
@@ -1401,8 +1409,61 @@ async fn run_turn_body(
             let focused_generation = (session["rsiExplicitFocus"] == true
                 || session["rsiSystemEvolution"] == true)
                 && session["rsiGenerationJobId"].is_string();
+            // These stages are computed from THIS run's ordered real tool
+            // outcomes, never from text a model wrote about success.
+            let program_stage=crate::engine::rsi_edit_program::route(
+                &session["rsiEditPolicy"],&all_operations,tool_calls,
+                focused_generation,session["rsiFocusContextReady"]==true);
+            let need_fresh_ground=program_stage.is_some_and(|stage|
+                matches!(stage.phase,"focus_ground"|"reground"));
+            let rule_decision=if focused_generation && !need_fresh_ground
+                && !has_write {
+                crate::engine::rsi_decision_rules::choose(
+                    &session["rsiEditPolicy"],&all_operations,tool_calls,
+                    focused_generation,session["rsiFocusContextReady"]==true)
+            }else{None};
+            if let Some(rule)=rule_decision.as_ref(){
+                if rsi_last_edit_rule!=rule.id {
+                    let receipt=json!({
+                        "id":crate::engine::memory::stable_id(&[
+                            execution_id,&rule.id,&tool_calls.to_string()
+                        ]),
+                        "sessionId":session_id,"runId":execution_id,
+                        "generationJobId":session["rsiGenerationJobId"],
+                        "campaignId":session["rsiCampaignId"],
+                        "policyRevision":session["rsiEditPolicy"]["revision"],
+                        "ruleId":rule.id,"allow":rule.allow,
+                        "opSeqBefore":all_operations.iter()
+                            .filter_map(|op|op["opSeq"].as_u64()).max().unwrap_or(0),
+                        "toolCalls":tool_calls,"firedAt":chrono::Utc::now().to_rfc3339()
+                    });
+                    state.store.put("rsi_rule_execution",&receipt);
+                    state.store.audit("rsi.descendant_rule_fired",receipt);
+                    rsi_last_edit_rule=rule.id.clone();
+                }
+            }else{rsi_last_edit_rule.clear();}
+            if let Some(stage)=program_stage{
+                if rsi_last_edit_phase!=stage.phase{
+                    let receipt=json!({
+                        "id":crate::engine::memory::stable_id(&[
+                            execution_id,stage.phase,&tool_calls.to_string()
+                        ]),
+                        "sessionId":session_id,"runId":execution_id,
+                        "generationJobId":session["rsiGenerationJobId"],
+                        "campaignId":session["rsiCampaignId"],
+                        "policyRevision":session["rsiEditPolicy"]["revision"],
+                        "phase":stage.phase,"toolCalls":tool_calls,
+                        "observedOperations":all_operations.len(),
+                        "recordedAt":chrono::Utc::now().to_rfc3339()
+                    });
+                    state.store.put("rsi_program_phase",&receipt);
+                    rsi_last_edit_phase=stage.phase.to_string();
+                }
+            }
             let checkpoint = if focused_generation && rsi_force_edit_stage && !has_write {
                 Some(true)
+            } else if focused_generation && need_fresh_ground && !has_write{
+                Some(false)
             } else if focused_generation && session["rsiNoEditGroundedTarget"]==true
                 && tool_calls==0 && !has_write {
                 // The exact file and its revision were indexed before this
@@ -1415,6 +1476,12 @@ async fn run_turn_body(
                 // Quoted, indexed source came with the generation. After a
                 // genuine tool action, stop reopening search for that source.
                 Some(true)
+            } else if focused_generation && !has_write
+                && rule_decision.is_some(){
+                rule_decision.as_ref().map(|rule|rule.edit_only())
+            } else if focused_generation && !has_write
+                && program_stage.is_some() {
+                program_stage.map(|stage|stage.edit_only())
             } else {
                 rsi_checkpoint_stage(
                     tool_calls, if focused_generation { read_calls } else { 0 }, has_write
@@ -1456,8 +1523,42 @@ async fn run_turn_body(
                         round_tools.retain(|definition|
                             tool_name(definition)!="workspace_write");
                     }
+                } else if need_fresh_ground {
+                    round_tools=tool_definitions.iter()
+                        .filter(|definition|tool_name(definition)=="workspace_read_range")
+                        .cloned().collect();
+                } else if let Some(rule)=rule_decision.as_ref() {
+                    round_tools=tool_definitions.iter()
+                        .filter(|definition|rule.allows(tool_name(definition))
+                            || tool_name(definition)=="rsi_system_plan")
+                        .cloned().collect();
+                } else if let Some(stage)=program_stage {
+                    round_tools=tool_definitions.iter()
+                        .filter(|definition|stage.allows(tool_name(definition))
+                            || tool_name(definition)=="rsi_system_plan")
+                        .cloned().collect();
                 } else {
                     round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition), false));
+                }
+                // Learned runnable rules may specialize the actual editor,
+                // but cannot remove the mandatory model-authored system
+                // design tool or the verified hash-recovery read.
+                if edit_only {
+                    if let Some(rule)=rule_decision.as_ref().filter(|rule|rule.edit_only()){
+                        let filtered=round_tools.iter().filter(|def|
+                            rule.allows(tool_name(def))
+                            || tool_name(def)=="rsi_system_plan")
+                            .cloned().collect::<Vec<_>>();
+                        if filtered.iter().any(|def|matches!(tool_name(def),
+                            "workspace_replace"|"workspace_replace_function"
+                            |"workspace_write")) {
+                            round_tools=filtered;
+                        }
+                    }
+                    let preferred=session["rsiEditPolicy"]["preferredTool"]
+                        .as_str().unwrap_or("workspace_replace");
+                    round_tools.sort_by_key(|definition|
+                        tool_name(definition)!=preferred);
                 }
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system",
@@ -1487,7 +1588,10 @@ async fn run_turn_body(
                         "toolCalls":tool_calls, "readCalls":read_calls,
                         "editOnly":edit_only,
                         "policyFocused":session["rsiPolicyFocus"]==true,
-                        "actionPolicyRevision":session["rsiActionPolicyRevision"]
+                        "actionPolicyRevision":session["rsiActionPolicyRevision"],
+                        "editProgramRevision":session["rsiEditPolicy"]["revision"],
+                        "editProgramStage":program_stage.map(|stage|stage.phase),
+                        "learnedRuleId":rule_decision.as_ref().map(|rule|rule.id.as_str()),
                     }));
                 }
                 rsi_decision_checkpoint = true;
