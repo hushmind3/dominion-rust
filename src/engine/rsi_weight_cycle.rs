@@ -10,7 +10,7 @@
 use crate::state::AppState;
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::{collections::{BTreeMap,BTreeSet},fs,
+use std::{fs,
     io::Read,path::{Path,PathBuf},process::Stdio,
     sync::{Mutex,OnceLock},time::Duration};
 use tokio::process::{Child,Command};
@@ -83,49 +83,6 @@ fn approval(manifest:&Value,root:&Path,models:&Path)
     }
     Ok((train,holdout,model))
 }
-fn eval_cases(train:&Path,holdout:&Path)->Result<Vec<Value>,String>{
-    let training=fs::read_to_string(train).map_err(|e|e.to_string())?;
-    let mut trained=BTreeSet::new();
-    for (i,line) in training.lines().enumerate(){
-        if i>=4000{return Err("학습 사례 한도 초과".into());}
-        let row:Value=serde_json::from_str(line).map_err(|e|e.to_string())?;
-        if row["split"]!="train"||row["approvedForTraining"]!=true{
-            return Err("승인되지 않은 학습 사례".into());
-        }
-        let p=row["prompt"].as_str().ok_or("학습 프롬프트 없음")?;
-        trained.insert(p.to_owned());
-    }
-    let holdout_text=fs::read_to_string(holdout).map_err(|e|e.to_string())?;
-    let mut seen=BTreeSet::new();
-    let mut domains=BTreeSet::new();
-    let mut cases=Vec::new();
-    for line in holdout_text.lines(){
-        if cases.len()>=64{return Err("동결 평가 사례 한도 초과".into());}
-        let row:Value=serde_json::from_str(line).map_err(|e|e.to_string())?;
-        let id=row["id"].as_str().filter(|s|name(s))
-            .ok_or("동결 평가 사례 ID 오류")?;
-        let prompt=row["prompt"].as_str()
-            .filter(|s|!s.is_empty()&&s.len()<=8192)
-            .ok_or("동결 프롬프트 오류")?;
-        let answer=row["expected"].as_str()
-            .filter(|s|!s.is_empty()&&s.len()<=4096)
-            .ok_or("동결 정답 오류")?;
-        let domain=row["domain"].as_str()
-            .filter(|s|name(s))
-            .ok_or("동결 평가 지능 영역 누락")?;
-        if row["split"]!="holdout"||!seen.insert(id.to_string())
-            ||trained.contains(prompt)
-            ||!answer.is_char_boundary(answer.len()){
-            return Err("학습·동결 평가 누출 또는 사례 중복".into());
-        }
-        domains.insert(domain.to_string());
-        cases.push(row);
-    }
-    if cases.len()<4||domains.len()<2{
-        return Err("독립 평가에는 두 지능 영역에 걸친 4개 이상의 사례가 필요합니다.".into());
-    }
-    Ok(cases)
-}
 fn receipt(stdout:&[u8],prefix:&str)->Result<Value,String>{
     let output=String::from_utf8_lossy(stdout);
     output.lines().rev().find_map(|s|s.strip_prefix(prefix)
@@ -169,52 +126,6 @@ fn path_pair(state:&AppState,manifest_name:&str)
     let (training,holdout,base)=approval(&manifest,&root,&models)?;
     let sha=file_sha(&manifest_path)?;
     Ok((manifest,training,holdout,base,sha))
-}
-fn acceptance(cases:&[Value],predictions:&Value)->Result<Value,String>{
-    if predictions["source"]!="separate_blind_base_vs_lora_inference_v1"{
-        return Err("다른 추론 실행기의 동결 평가 결과".into());
-    }
-    let rows=predictions["predictions"].as_array()
-        .filter(|r|r.len()==cases.len())
-        .ok_or("동결 평가 사례 수가 서로 다릅니다.")?;
-    let mut ids=BTreeSet::new();
-    let mut received=BTreeMap::new();
-    for row in rows{
-        let id=row["id"].as_str().ok_or("추론 ID 누락")?;
-        if !ids.insert(id.to_owned())
-            ||!row["baseline"].is_string()||!row["candidate"].is_string(){
-            return Err("중복되거나 누락된 동결 평가 답변".into());
-        }
-        received.insert(id.to_owned(),row);
-    }
-    let mut wins=0u64;let mut losses=0u64;let mut base_hits=0u64;
-    let mut model_hits=0u64;let mut domains=BTreeSet::new();
-    let mut gains=BTreeSet::new();
-    for case in cases{
-        let domain=case["domain"].as_str().unwrap_or("");
-        let expected=case["expected"].as_str().unwrap_or("").trim();
-        let Some(out)=received.get(case["id"].as_str().unwrap_or("")) else{
-            return Err("동결 사례에 대응하는 모델 출력을 찾지 못했습니다.".into());
-        };
-        let base=out["baseline"].as_str().unwrap_or("").trim()==expected;
-        let updated=out["candidate"].as_str().unwrap_or("").trim()==expected;
-        domains.insert(domain.to_string());
-        if base{base_hits+=1;}
-        if updated{model_hits+=1;}
-        if !base&&updated{wins+=1;gains.insert(domain.to_owned());}
-        if base&&!updated{losses+=1;}
-    }
-    let accepted=wins>=2&&losses==0&&gains.len()>=2
-        &&domains.len()>=2&&model_hits>base_hits;
-    Ok(json!({"source":"rust_blind_frozen_base_vs_adapter_assessor_v1",
-        "pairedCases":cases.len(),"domains":domains.len(),
-        "baselineCorrect":base_hits,"candidateCorrect":model_hits,
-        "improvedCases":wins,"regressions":losses,
-        "improvedDomains":gains.len(),"eligible":accepted,
-        "adoptionAuthority":"separate_rust_holdout_assessor",
-        "foundationModelWeightsChanged":false,
-        "loraAdapterWeightsChanged":true,
-        "unseenTaskGeneralizationProven":false}))
 }
 static SERVER:OnceLock<Mutex<Option<(String,Child)>>>=OnceLock::new();
 fn server()->&'static Mutex<Option<(String,Child)>>{
@@ -412,9 +323,10 @@ pub(crate) async fn tool(
             ||state.store.get("rsi_adapter",&receipt_key).is_some(){
             return Err("가중치 후보는 한 번만 별도 평가합니다.".into());
         }
-        let cases=eval_cases(&train,&holdout)?;
+        let blinded=crate::engine::rsi_adapter_oracle::blind_prompts(
+            &train,&holdout)?;
         let mut prompts=String::new();
-        for item in &cases{
+        for item in &blinded{
             prompts.push_str(&json!({"id":item["id"],"prompt":item["prompt"]}).to_string());
             prompts.push('\n');
         }
@@ -426,7 +338,10 @@ pub(crate) async fn tool(
             "--prompts".into(),prompts_path.to_string_lossy().to_string(),
             "--max-new-tokens".into(),"64".into()
         ],&root,1200,"DOMINION_EVAL_RESULT=").await?;
-        let evaluation=acceptance(&cases,&predictions)?;
+        // Labels are never passed through this editable agent/tool.
+        // Only the separate, source-immutable assessor opens frozen answers.
+        let evaluation=crate::engine::rsi_adapter_oracle::assess(
+            &train,&holdout,&predictions)?;
         let mut summary=evaluation.clone();
         summary["sourceProgramSha256"]=json!(script_hash);
         summary["adapterSha256"]=candidate["adapterSha256"].clone();
@@ -478,28 +393,6 @@ pub(crate) async fn tool(
 #[cfg(test)]
 mod tests{
     use super::*;
-    fn case(id:&str,domain:&str)->Value{
-        json!({"id":id,"domain":domain,"split":"holdout",
-            "prompt":format!("question-{id}"),"expected":"right"})
-    }
-    #[test]
-    fn blind_assessment_requires_new_gains_in_two_domains_and_no_regressions(){
-        let cases=vec![case("a","memory"),case("b","tools"),
-            case("c","memory"),case("d","tools")];
-        let good=json!({"source":"separate_blind_base_vs_lora_inference_v1",
-            "predictions":[
-                {"id":"a","baseline":"wrong","candidate":"right"},
-                {"id":"b","baseline":"wrong","candidate":"right"},
-                {"id":"c","baseline":"right","candidate":"right"},
-                {"id":"d","baseline":"right","candidate":"right"}]});
-        assert_eq!(acceptance(&cases,&good).unwrap()["eligible"],true);
-        let mut bad=good.clone();
-        bad["predictions"][2]["candidate"]=json!("wrong");
-        assert_eq!(acceptance(&cases,&bad).unwrap()["eligible"],false);
-        bad=good;
-        bad["predictions"][1]["id"]=json!("a");
-        assert!(acceptance(&cases,&bad).is_err());
-    }
     #[test]
     fn approval_and_path_traversal_are_not_evaluation_evidence(){
         assert!(!manifest_file("../secret.json"));
