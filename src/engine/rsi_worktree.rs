@@ -480,6 +480,7 @@ pub async fn finish(
                 candidate["actualGeneratorCommit"]=input["rsiGeneratorCommit"].clone();
                 candidate_id=candidate["id"].clone();
                 context.state.store.put("rsi_candidate",&candidate);
+                context.checkpoint(json!({"rsiPhase":"compiling_candidate"}))?;
                 checks=validate(worktree,&patch).await;
                 // An added `unsafe` construct is checked against the same
                 // SAFETY rule as the CLI and the `unsafe_audit` tool. This is

@@ -141,28 +141,54 @@ pub async fn apply_campaign(State(state):State<AppState>,Path(id):Path<String>,J
     }
 }
 
+fn campaign_view(state: &AppState, job: &Value) -> Value {
+    let id = job["id"].as_str().unwrap_or("");
+    let mut record=state.store.get("rsi_campaign",id)
+        .unwrap_or_else(||json!({"id":id,"phase":"preparing_lab"}));
+    for (field,key) in [("objective","rsiObjective"),("providerId","providerId"),("model","model"),
+        ("applyWhenFinished","rsiApplyWhenFinished")] {
+        record[field]=job["input"][key].clone();
+    }
+    record["selectedVersionRunning"]=json!(record["headCommit"].as_str()==option_env!("DOMINION_BUILD_COMMIT"));
+    apply_capability(state, &mut record);
+    let children=state.store.all("job").into_iter().filter(|j|
+        j["kind"]=="rsi_generation" && j["input"]["rsiCampaignId"].as_str()==Some(id)).collect::<Vec<_>>();
+    let sessions=children.iter().filter_map(|j|j["sessionId"].as_str()).collect::<std::collections::HashSet<_>>();
+    let mut calls=0u64;let mut tokens=0u64;let mut estimated=false;
+    for session in &sessions {
+        let usage=state.store.session_usage(session);
+        calls+=usage["calls"].as_u64().unwrap_or(0);
+        tokens+=usage["totalTokens"].as_u64().unwrap_or(0);
+        estimated|=usage["estimatedCalls"].as_u64().unwrap_or(0)>0;
+    }
+    let writes=state.store.all("execution_operation").iter().filter(|op|
+        op["sessionId"].as_str().is_some_and(|id|sessions.contains(id))
+        && op["origin"]=="model" && op["status"]=="completed"
+        && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true
+        && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))).count();
+    let candidates=state.store.all("rsi_candidate").iter().filter(|c|
+        c["experimentCampaignId"].as_str()==Some(id)).count();
+    record["modelCalls"]=json!(calls);record["verifiedSourceWrites"]=json!(writes);
+    record["candidateCount"]=json!(candidates);
+    record["tokens"]=json!(tokens.max(record["tokens"].as_u64().unwrap_or(0)));
+    record["tokensEstimated"]=json!(estimated || record["tokensEstimated"]==true);
+    if let Some(active)=children.iter().find(|j|Some(&j["id"])==record.get("activeGenerationJobId")) {
+        record["activeWorker"]=json!({"id":active["id"],"status":active["status"],
+            "phase":active["rsiPhase"],"generatorCommit":active["input"]["rsiGeneratorCommit"],
+            "focusFiles":active["input"]["rsiFocusFiles"]});
+        if record["phase"]=="diagnosing_and_editing" && active["status"]=="running"
+            && active["rsiPhase"].is_string() {record["phase"]=active["rsiPhase"].clone();}
+    }
+    if job["status"]!="running"||record["status"].is_null(){record["status"]=job["status"].clone();}
+    if !job["error"].is_null(){record["error"]=job["error"].clone();}
+    record
+}
+
 pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Response{
     let Some(job)=state.store.get("job",&id).filter(|job|job["kind"]=="rsi_evolve")else{
         return error("개선 작업을 찾을 수 없습니다.".into());
     };
-    let mut record=state.store.get("rsi_campaign",&id).unwrap_or_else(||json!({"id":id,"phase":"preparing_lab"}));
-    for (field,key) in [("objective","rsiObjective"),("providerId","providerId"),("model","model")] {
-        record[field]=job["input"][key].clone();
-    }
-    record["selectedVersionRunning"]=json!(record["headCommit"].as_str()==option_env!("DOMINION_BUILD_COMMIT"));
-    apply_capability(&state, &mut record);
-    if record["phase"]=="diagnosing_and_editing" {
-        if let Some(session)=record["activeGenerationJobId"].as_str().and_then(|id|state.store.get("job",id))
-            .and_then(|j|j["sessionId"].as_str().map(str::to_string)) {
-            let usage=state.store.session_usage(&session);
-            record["tokens"]=json!(record["activeBaseTokens"].as_u64().unwrap_or(0)
-                .saturating_add(usage["totalTokens"].as_u64().unwrap_or(0)));
-            record["tokensEstimated"]=json!(record["tokensEstimated"]==true || usage["estimatedCalls"].as_u64().unwrap_or(0)>0);
-        }
-    }
-    if job["status"]!="running"||record["status"].is_null(){record["status"]=job["status"].clone();}
-    if !job["error"].is_null(){record["error"]=job["error"].clone();}
-    Json(record).into_response()
+    Json(campaign_view(&state,&job)).into_response()
 }
 
 pub async fn verify(State(state):State<AppState>,Path(id):Path<String>)->Response{
@@ -173,15 +199,13 @@ pub async fn verify(State(state):State<AppState>,Path(id):Path<String>)->Respons
 }
 
 pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
-    let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|record|{
-        let job=record["id"].as_str().and_then(|id|state.store.get("job",id)).unwrap_or(Value::Null);
-        let mut verified = record.clone();
-        apply_capability(&state,&mut verified);
-        json!({"id":record["id"],"phase":record["phase"],
-            "maxAcceptedStreak":verified["maxAcceptedStreak"],
-            "capabilityDemonstrated":verified["capabilityDemonstrated"],
-            "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
-    }).collect::<Vec<_>>();
+    let rows=state.store.all("job").into_iter().filter(|job|job["kind"]=="rsi_evolve")
+        .take(20).map(|job| {
+            let record=state.store.get("rsi_campaign",job["id"].as_str().unwrap_or("")).unwrap_or(Value::Null);
+            json!({"id":job["id"],"status":job["status"],"phase":record["phase"],
+                "model":job["input"]["model"],"providerId":job["input"]["providerId"],
+                "createdAt":job["queuedAt"],"acceptedGenerations":record["acceptedGenerations"]})
+        }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
 }
 
@@ -367,6 +391,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
+        "rsiApplyWhenFinished": continuous && body["applyWhenFinished"] == true,
         // Only explicitly opted-in automatic campaigns may broaden the
         // source search after independent adoption of the original goal.
         "rsiExpandAfterGain": continuous && body["expandAfterGain"] == true

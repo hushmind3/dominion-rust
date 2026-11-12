@@ -2795,6 +2795,28 @@ fn generation_prompt_variants(
     ]
 }
 
+/// Development-only observations from the ACTUALLY RUNNING revision. No
+/// replacement source, expected patch or confirmation examples are supplied.
+/// The same probe is rerun in every rebuilt descendant before choosing a task.
+pub fn diagnose_capabilities() -> Value {
+    let cases = [
+        ("파일을 만들고 이름을 알려줘", 2usize),
+        ("문장을 고치고 결과를 보여줘", 2),
+        ("캐시를 지우고 다시 시작해", 2),
+    ];
+    let observations=cases.iter().map(|(input,expected)| {
+        let result=crate::engine::decompose::decompose(input,
+            &json!({"implementation":"numbered-first","parameters":{"kernel":"numbered-first"}}));
+        let observed=result["subtasks"].as_array().map_or(0,Vec::len);
+        json!({"input":input,"expectedSegments":expected,"observedSegments":observed,
+            "passed":observed==*expected})
+    }).collect::<Vec<_>>();
+    let failures=observations.iter().filter(|row|row["passed"]==false).count();
+    json!({"version":1,"generatorCommit":option_env!("DOMINION_BUILD_COMMIT"),
+        "domain":"tools","focusFiles":["src/engine/decompose.rs"],
+        "failed":failures,"observations":observations})
+}
+
 async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -2923,6 +2945,24 @@ async fn run_loop(
                     .unwrap_or(Value::Null)
             };
         }
+        // Diagnose through the rebuilt executable, never through the old server's
+        // implementation. Fixed-model source improvement remains model-authored.
+        if input["rsiAutonomous"]==true && input["rsiNativeInduction"]!=true {
+            let mut probe=Command::new(&binary);probe.arg("--rsi-diagnose");
+            let output=command(context,probe,Duration::from_secs(10)).await?;
+            if !output.status.success() { return Err("선택 버전의 능력 진단 실행 실패".into()); }
+            let diagnosis:Value=serde_json::from_slice(&output.stdout).map_err(|e|e.to_string())?;
+            if diagnosis["generatorCommit"]!=head {return Err("진단 실행기 버전 불일치".into());}
+            record["diagnosis"]=diagnosis.clone();
+            if diagnosis["failed"].as_u64().unwrap_or(0)>0 {
+                child_input["rsiDiagnostic"]=diagnosis.clone();
+                child_input["rsiSelectedDomain"]=diagnosis["domain"].clone();
+                child_input["rsiFocusFiles"]=diagnosis["focusFiles"].clone();
+                child_input["rsiObjective"]=json!("실제 작업 분해 진단에서 실패한 순차 동작 인식을 개선한다. 기존 단일 명사와 기존 분해 동작을 보존하고 예문 전용 분기를 만들지 않는다.");
+                child_input["prompt"]=json!(format!(
+                    "DOMINION 실제 소스 자기개선입니다. 현재 실행 버전에서 관측한 개발 진단: {diagnosis}\n실패 원인을 소스에서 찾아 실제 코드를 수정하세요. 예문을 하드코딩하거나 평가기·테스트·진단 코드를 수정하지 마세요. 확인 평가는 별도로 동결되어 있습니다. workspace_read_range로 해당 구현과 해시를 확인한 뒤 workspace_replace_range로 근거 있는 최소 변경을 작성하세요. 빌드와 독립 비교는 실행기가 수행합니다."));
+            }
+        }
         let archive = crate::engine::rsi_archive::select(
             &context.state, &prior_history, &head, &child_input["rsiFrozenCases"]);
         child_input["rsiInheritedCandidateId"]=archive["candidateId"].clone();
@@ -3041,8 +3081,8 @@ async fn run_loop(
                 "sourceIndexId":child_input["rsiIndexId"]
             });
         } else {
-            child_input["rsiAutoFocus"]=json!(false);
-            child_input["rsiFocusSelection"]=json!({"source":"user_selected"});
+            child_input["rsiAutoFocus"]=json!(child_input["rsiDiagnostic"].is_object());
+            child_input["rsiFocusSelection"]=json!({"source":if child_input["rsiDiagnostic"].is_object(){"runtime_diagnosis"}else{"user_selected"}});
         }
         // This is the system's learned *execution method*, independently of
         // which model is used to write the candidate patch.
@@ -3955,7 +3995,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
-    let paired_target=paired_descendant_target(&job["input"]);
+    let paired_target=paired_descendant_target(&job["input"]) || job["input"]["rsiDiagnostic"]["failed"].as_u64().unwrap_or(0)>0;
     let latest=history.iter().max_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let continuation = latest.filter(|_|!paired_target)
         .filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)

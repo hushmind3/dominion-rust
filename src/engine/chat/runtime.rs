@@ -203,7 +203,7 @@ fn rsi_patch_ready_for_verification(
             || compiler_repair_target.is_some())
         && (session["rsiCampaignId"].is_string() || compiler_repair_target.is_some())
         && (compiler_repair_target.is_some() || session["rsiFocusFiles"].as_array().is_some_and(|files|
-            files.len() == 1 && files[0].as_str() == args["path"].as_str()))
+            files.iter().any(|file| file.as_str().is_some() && file.as_str() == args["path"].as_str())))
         && matches!(tool, "workspace_replace_range" | "workspace_replace")
         && result["written"] == true
         && result["postSha256"].as_str().is_some_and(|sha|
@@ -6676,7 +6676,9 @@ mod harness_tool_selection_tests {
             &args,&written,true));
         let multi = json!({"rsiRun":true,"rsiExplicitFocus":true,"rsiCampaignId":"c",
             "rsiFocusFiles":["src/engine/decompose.rs","src/engine/other.rs"]});
-        assert!(!rsi_patch_ready_for_verification(&multi, "workspace_replace_range", &args, &written, true));
+        assert!(rsi_patch_ready_for_verification(&multi, "workspace_replace_range", &args, &written, true));
+        assert!(!rsi_patch_ready_for_verification(&multi, "workspace_replace_range",
+            &json!({"path":"src/unselected.rs"}), &written, true));
     }
 
     #[test]
