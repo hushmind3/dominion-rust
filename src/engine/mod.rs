@@ -43,7 +43,6 @@ pub mod rsi_improvement_algebra;
 pub mod rsi_method_generalization;
 pub mod rsi_negative_transfer;
 pub mod rsi_model_lineage;
-pub mod rsi_model_weights;
 pub mod rsi_evolve;
 pub mod rsi_edit_genome;
 pub mod rsi_edit_program;

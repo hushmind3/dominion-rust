@@ -59,10 +59,6 @@ pub fn definitions() -> Vec<Value> {
         tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
-        tool("rsi_train_local_adapter", "Optional local LoRA training from explicitly approved hashed training data. The resulting weights are not adopted until a separate private paired model evaluation.", object(json!({
-            "manifestName":text("Approved manifest .json file within rsi-training-approved"),
-            "mode":json!({"type":"string","enum":["check","train"],"description":"check verifies the manifest, train produces an unproven local adapter"})
-        }), vec!["manifestName"]),
         tool("rsi_system_plan", "Propose a causal, source-bound redesign of one or multiple intelligence subsystems. A proposal is not evidence until every target is changed and independently adopted.", object(json!({
             "component":text("Existing or newly invented component, or 'system' for a coupled redesign (ASCII letters, digits, '_' or '-')"),
             "components":json!({"type":"array","items":{"type":"string"},"minItems":2,"maxItems":32,
@@ -163,7 +159,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose"|"rsi_system_plan"|"rsi_train_local_adapter")
+    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose"|"rsi_system_plan")
 }
 
 pub async fn execute(
@@ -406,7 +402,6 @@ pub async fn execute(
         }
         "rsi_method_propose" => crate::engine::rsi_evolve::propose_method(ctx.state, ctx.session_id, args),
         "rsi_system_plan" => crate::engine::rsi_system::propose(ctx.state, ctx.session_id, args),
-        "rsi_train_local_adapter" => crate::engine::rsi_model_weights::run_tool(ctx.state,ctx.session_id,ctx.workspace,args).await,
         "algorithm_propose" => {
             let session = ctx
                 .store
