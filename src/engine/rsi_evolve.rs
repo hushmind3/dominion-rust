@@ -5511,6 +5511,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let principle=crate::engine::rsi_principle_learner::instruction(
             &job["input"]["rsiPrincipleCurriculum"],
             &job["input"]["rsiPrincipleModel"]);
+        let competition=&job["input"]["rsiGeneratorCompetition"];
+        let model_experiment=if competition["source"]==
+            "compiled_open_model_scaffold_competition_v1" {
+            format!("[MODEL-AGNOSTIC AGENT EVOLUTION] Current API/local                 generator={} model={} decision={} incumbent={}                 comparedEvidence={}. The evaluation unit is the COMPILABLE                 DOMINION AGENT (model + harness + tools + memory + learner),                 not only trained weights. The externally configured API may                 generate source rewrites and entirely new improvement methods,                 but DO NOT claim it changed API parameters. Analyze why the                 current model and its scaffolding fail to improve next                 descendants, rewrite relevant source, and let the frozen paired                 evaluator independently measure gains. Future descendants may                 rewrite this model search policy in rsi_model_learning.rs.\n",
+                competition["selectedProviderId"],competition["selectedModel"],
+                competition["decision"],competition["previousProviderId"],
+                competition["modelEvidenceSha256"])
+        }else{String::new()};
         let model_weights=if job["input"]["rsiAllowLocalAdapterTraining"]==true {
             if let Some(name)=job["input"]["rsiAdapterManifestName"].as_str() {
                 format!("[SELF-EVOLVING MODEL PARAMETERS]\n\
@@ -5544,7 +5552,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
                 job["rsiInheritedMetaMethod"]["sequence"])
         }else{String::new()};
-        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{model_weights}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
+        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{model_experiment}\n\n{model_weights}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
             job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let (prompt,fit)=fit_worker_generation_context(
