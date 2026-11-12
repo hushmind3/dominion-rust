@@ -28,7 +28,7 @@ pub(crate) fn parent_metrics(state: &AppState, candidate: &Value, base: &str) ->
     {
         return None;
     }
-    let metrics = rsi::replayed_pair_metrics(state, candidate)?;
+    let metrics = rsi::verify_revisable_quality_receipt(state, candidate).ok()?;
     (metrics["verdict"] == "inconclusive"
         && metrics["regressions"] == 0
         && metrics["metricRegressions"] == 0
@@ -85,7 +85,12 @@ fn candidate_scores(state:&AppState,candidate:&Value,base:&str,plan:&[Value],ora
         return None;
     }
     let metrics=parent_metrics(state,candidate,base)?;
-    let pair=state.store.get("rsi_pair", &format!("rsi-pair-{id}"))?;
+    // Sub1 stores generation-scoped paired receipts by evaluation ID, not
+    // a guessed candidate-only ID. The neutral receipt was fully replayed
+    // by parent_metrics before this durable entry can be used.
+    let pair=state.store.all("rsi_pair").into_iter().find(|pair|
+        pair["candidateId"]==candidate["id"]
+            &&pair["evaluationId"]==candidate["evaluation"]["id"])?;
     let hash=pair["report"]["oracleSha256"].as_str()
         .filter(|hash|hash.len()==64 && hash.bytes().all(|byte|byte.is_ascii_hexdigit()))?;
     if hash != oracle {return None;}
