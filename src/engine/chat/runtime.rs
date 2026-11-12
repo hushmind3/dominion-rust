@@ -1424,6 +1424,12 @@ async fn run_turn_body(
             }else{None};
             if let Some(rule)=rule_decision.as_ref(){
                 if rsi_last_edit_rule!=rule.id {
+                    let mut executable_allow=rule.allow.clone();
+                    if rule.allows("workspace_replace_range")
+                        && !executable_allow.iter().any(|name|
+                            name=="workspace_replace_function") {
+                        executable_allow.push("workspace_replace_function".into());
+                    }
                     let receipt=json!({
                         "id":crate::engine::memory::stable_id(&[
                             execution_id,&rule.id,&tool_calls.to_string()
@@ -1432,7 +1438,7 @@ async fn run_turn_body(
                         "generationJobId":session["rsiGenerationJobId"],
                         "campaignId":session["rsiCampaignId"],
                         "policyRevision":session["rsiEditPolicy"]["revision"],
-                        "ruleId":rule.id,"allow":rule.allow,
+                        "ruleId":rule.id,"allow":executable_allow,
                         "opSeqBefore":all_operations.iter()
                             .filter_map(|op|op["opSeq"].as_u64()).max().unwrap_or(0),
                         "toolCalls":tool_calls,"firedAt":chrono::Utc::now().to_rfc3339()
@@ -1530,7 +1536,9 @@ async fn run_turn_body(
                 } else if let Some(rule)=rule_decision.as_ref() {
                     round_tools=tool_definitions.iter()
                         .filter(|definition|rule.allows(tool_name(definition))
-                            || tool_name(definition)=="rsi_system_plan")
+                            || tool_name(definition)=="rsi_system_plan"
+                            || (tool_name(definition)=="workspace_replace_function"
+                                && rule.allows("workspace_replace_range")))
                         .cloned().collect();
                 } else if let Some(stage)=program_stage {
                     round_tools=tool_definitions.iter()
@@ -1547,7 +1555,9 @@ async fn run_turn_body(
                     if let Some(rule)=rule_decision.as_ref().filter(|rule|rule.edit_only()){
                         let filtered=round_tools.iter().filter(|def|
                             rule.allows(tool_name(def))
-                            || tool_name(def)=="rsi_system_plan")
+                            || tool_name(def)=="rsi_system_plan"
+                            || (tool_name(def)=="workspace_replace_function"
+                                && rule.allows("workspace_replace_range")))
                             .cloned().collect::<Vec<_>>();
                         if filtered.iter().any(|def|matches!(tool_name(def),
                             "workspace_replace"|"workspace_replace_function"
