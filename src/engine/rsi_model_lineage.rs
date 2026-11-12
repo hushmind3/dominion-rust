@@ -75,6 +75,8 @@ fn independent_task_receipt(state:&AppState,g:&Value,profile:&str,head:&str)
         || g["compiledPlanExecuted"]["source"]!="running_compiled_descendant_binary"
         || g["compiledPlanExecuted"]["generatorCommit"]!=head
         || g["candidateOrigin"]!="model_driven_detached_worktree"
+        || g["tokenUsage"]["calls"].as_u64().unwrap_or(0)==0
+        || g["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)==0
         || g["pairedMeasured"]!=true
         || g["modelSelectionActual"]["providerId"]!=g["generatorProviderId"]
         || g["modelSelectionActual"]["model"]!=g["generatorModel"]
@@ -86,6 +88,8 @@ fn independent_task_receipt(state:&AppState,g:&Value,profile:&str,head:&str)
     let candidate=state.store.get("rsi_candidate",id)?;
     let replay=rsi::replayed_pair_metrics(state,&candidate)?;
     if candidate["baseCommit"]!=head
+        || candidate["origin"]!="model_driven_detached_worktree"
+        || candidate["generatorModel"]!=g["generatorModel"]
         || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
         || candidate["evaluation"]["metrics"]!=replay
         || g["evaluation"]["metrics"]!=replay {return None;}
