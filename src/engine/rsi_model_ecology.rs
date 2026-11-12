@@ -75,8 +75,16 @@ fn verified_attempt(g:&Value)->bool{
     g["modelEcologyExecuted"]["actuallyUsedInGeneration"]==true
         &&g["modelEcologyExecuted"]["actualModelCalls"].as_u64().unwrap_or(0)>0
         &&g["modelEcologyExecuted"]["source"]=="real_descendant_model_usage_v1"
+        &&g["modelEcologyExecuted"]["generationJobId"]==g["jobId"]
+        &&g["modelEcologyExecuted"]["generatorCommit"]==g["generatorCommit"]
+        &&g["modelEcologyExecuted"]["selectedBy"]==g["modelEcologyPolicy"]["revision"]
+        &&g["modelEcologyExecuted"]["providerId"]
+            ==g["modelEcologyPolicy"]["selected"]["providerId"]
+        &&g["modelEcologyExecuted"]["model"]
+            ==g["modelEcologyPolicy"]["selected"]["model"]
+        &&g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
         &&g["candidateOrigin"]=="model_driven_detached_worktree"
-        &&g["generatorCommit"].as_str().is_some_and(|s|s.len()==40)
+        &&sha(&g["generatorCommit"],40)
 }
 fn outcome(g:&Value)->Option<f64>{
     if !verified_attempt(g) ||g["pairedMeasured"]!=true
@@ -295,7 +303,12 @@ pub(crate) fn validate(
         ||policy["targetDomain"]!=domain{
         return Err("모델 선택 정책이 이 후손의 실제 작업·소스 revision과 다릅니다.".into());
     }
-    if !sha(&policy["revision"],64) ||policy["modelWeightChanged"]!=false
+    let mut sealed=policy.clone();
+    if let Some(map)=sealed.as_object_mut(){map.remove("revision");}
+    let expected=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&sealed).unwrap_or_default())));
+    if !sha(&policy["revision"],64) ||policy["revision"]!=expected
+        ||policy["modelWeightChanged"]!=false
         ||policy["apiWeightsModified"]!=false{
         return Err("외부 모델의 가중치 수정 또는 선택 근거가 허위입니다.".into());
     }
@@ -381,7 +394,14 @@ mod tests{
     #[test] fn independent_source_receipt_not_token_loss_is_reward(){
         let mut g=json!({"modelEcologyExecuted":{"source":"real_descendant_model_usage_v1",
             "providerId":"api-1","model":"model-a",
+            "generationJobId":"generation-1",
+            "generatorCommit":"a".repeat(40),
+            "selectedBy":"chosen-policy",
             "actuallyUsedInGeneration":true,"actualModelCalls":1},
+            "jobId":"generation-1",
+            "modelEcologyPolicy":{"revision":"chosen-policy",
+                "selected":{"providerId":"api-1","model":"model-a"}},
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
             "generatorCommit":"a".repeat(40),
             "candidateOrigin":"model_driven_detached_worktree",
             "pairedMeasured":true,"accepted":true,"pairedRevalidated":true,
@@ -418,12 +438,17 @@ mod tests{
         let mut row=json!({
             "generatorCommit":"a".repeat(40),
             "comparisonProfileSha256":"p".repeat(64),
-            "objectiveId":objective,
+            "objectiveId":objective.clone(),
             "domain":"tools",
             "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
             "candidateId":"independent-source-1",
+            "jobId":"trial-1",
+            "modelEcologyPolicy":{"revision":"policy-1",
+                "selected":{"providerId":"remote","model":"model-1"}},
             "modelEcologyExecuted":{"source":"real_descendant_model_usage_v1",
                 "actuallyUsedInGeneration":true,"actualModelCalls":1,
+                "generationJobId":"trial-1",
+                "generatorCommit":"a".repeat(40),"selectedBy":"policy-1",
                 "providerId":"remote","model":"model-1"},
             "candidateOrigin":"model_driven_detached_worktree",
             "pairedMeasured":true,"accepted":true,"pairedRevalidated":true,
@@ -468,7 +493,14 @@ mod tests{
         let performed=json!({"modelEcologyExecuted":{
             "source":"real_descendant_model_usage_v1",
             "providerId":"external-one","model":"actor-a",
+            "generationJobId":"adopted-agent-1",
+            "generatorCommit":"a".repeat(40),
+            "selectedBy":"policy-1",
             "actuallyUsedInGeneration":true,"actualModelCalls":2},
+            "jobId":"adopted-agent-1",
+            "modelEcologyPolicy":{"revision":"policy-1",
+                "selected":{"providerId":"external-one","model":"actor-a"}},
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
             "generatorCommit":"a".repeat(40),
             "candidateOrigin":"model_driven_detached_worktree",
             "pairedMeasured":true,"accepted":true,"pairedRevalidated":true,
