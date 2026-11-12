@@ -4420,6 +4420,10 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &state,campaign,input,None);
     let interaction_graph=crate::engine::rsi_interaction::influence_graph(
         &history,&frontier);
+    let algebra=crate::engine::rsi_improvement_algebra::compile(
+        &history,&frontier,commit);
+    let science_active=input["rsiAutonomous"]==true && !owner_focus && !paired;
+    let algebra_active=science_active && algebra["selected"]["target"].is_object();
     let raw_meta=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,DOMAINS,
         crate::engine::rsi_system::inherited_domain(&history).as_deref());
@@ -4432,7 +4436,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let reciprocal_graph=crate::engine::rsi_symbiosis::transition_graph(&history);
     let meta=crate::engine::rsi_symbiosis::apply_reciprocal_feedback(
         peer_meta,&reciprocal_graph);
-    let suggested_stage=if input["rsiAutonomous"]==true && !owner_focus && !paired {
+    let suggested_stage=if input["rsiAutonomous"]==true && !owner_focus
+        && !paired && !algebra_active {
         crate::engine::rsi_system::inherited_stage(&state,&history,&frontier)
     }else{Value::Null};
     let meta_policy=crate::engine::rsi_meta_controller::apply_successor_stage(
@@ -4463,10 +4468,6 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &history,&frontier,&factorial,&coupled_portfolio,commit);
     // Independently adopted model-authored improvement operators can compose
     // across any number of roles; no fixed scientist stage is needed.
-    let algebra=crate::engine::rsi_improvement_algebra::compile(
-        &history,&frontier,commit);
-    let science_active=input["rsiAutonomous"]==true && !owner_focus && !paired;
-    let algebra_active=science_active && algebra["selected"]["target"].is_object();
     if algebra_active {
         architecture_target=algebra["selected"]["target"].clone();
     }else if science_active && science["phase"]!="discover_new_mechanism" {
@@ -4865,8 +4866,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let owner_focus=matches!(
             job["input"]["rsiFocusSelection"]["source"].as_str(),
             Some("owner_selected"|"user_selected"));
+        let algebra_active=job["input"]["rsiAutonomous"]==true
+            && !owner_focus && !paired_descendant_target(&job["input"])
+            && job["input"]["rsiImprovementAlgebra"]["selected"]["target"].is_object();
         let suggested=if job["input"]["rsiAutonomous"]==true && !owner_focus
-            && !paired_descendant_target(&job["input"]) {
+            && !paired_descendant_target(&job["input"]) && !algebra_active {
             crate::engine::rsi_system::inherited_stage(&state,&history,frontier)
         }else{Value::Null};
         let expected=crate::engine::rsi_meta_controller::apply_successor_stage(
