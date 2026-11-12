@@ -280,6 +280,50 @@ pub(crate) fn choose(
         else{return Value::Null};
     decide(history,&baseline,&pool,commit,&profile,domain,objective)
 }
+/// An older supervisor may check only IMMUTABLE facts. It must not
+/// recompute or impose its own outdated model-ranking algorithm on a newer
+/// compiled descendant. Dynamic route policy is selected by the new binary.
+pub(crate) fn valid_facts(
+    state:&AppState,input:&Value,route:&Value,commit:&str,
+    domain:&str,objective:&str,
+)->bool{
+    if route.is_null(){return true;}
+    if input["rsiAdaptiveModelSelection"]!=true
+        || input["rsiSystemEvolution"]!=true{return false;}
+    let Some(original)=endpoint(&json!({
+        "providerId":input["rsiOriginalProviderId"]
+            .as_str().or_else(||input["providerId"].as_str()),
+        "model":input["rsiOriginalModel"]
+            .as_str().or_else(||input["model"].as_str())
+    })) else{return false};
+    let Some(selected)=endpoint(&route["selected"]) else{return false};
+    if route["source"].as_str().is_none_or(|s|
+        !s.starts_with("compiled_descendant_"))
+        || route["generatorCommit"]!=commit
+        || route["domain"]!=domain
+        || route["objectiveId"]!=objective
+        || route["baseline"]!=endpoint_value(&original)
+        || route["comparisonProfileSha256"].as_str() !=
+            crate::engine::rsi_meta_controller::comparison_profile(input).as_deref()
+        || route["evaluationAuthority"]!="frozen_independent_worktree_evaluator" {
+        return false;
+    }
+    let mut unsigned=route.clone();
+    let Some(object)=unsigned.as_object_mut() else{return false};
+    object.remove("revision");
+    if route["revision"].as_str()!=Some(sha(&unsigned).as_str()) {
+        return false;
+    }
+    if selected==original{return true;}
+    let Some(provider)=state.store.get("provider",&selected.0) else{return false};
+    if provider["enabled"]==false
+        || provider["model"].as_str()!=Some(selected.1.as_str()){
+        return false;
+    }
+    if let Some(allowlist)=input["rsiModelCandidates"].as_array(){
+        allowlist.iter().any(|candidate|endpoint(candidate).as_ref()==Some(&selected))
+    }else{true}
+}
 /// Verify that the route consumed by the model-call worker was actually
 /// selected by the current compiled ecology and source-bound evidence.
 pub(crate) fn valid_receipt(
