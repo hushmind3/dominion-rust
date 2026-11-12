@@ -79,7 +79,7 @@ fn grounded_mechanism(g:&Value)->Option<(String,String,String)> {
     if role.is_empty(){return None;}
     Some((mechanism.to_string(),role.to_string(),path.to_string()))
 }
-fn independent_trial(g:&Value)->bool {
+pub(crate) fn independent_trial(g:&Value)->bool {
     independent_pair(g) && grounded_mechanism(g).is_some()
 }
 /// Independent supervisor attestation of every case-level learning row.
