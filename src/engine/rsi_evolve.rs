@@ -4297,10 +4297,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     {
         return Err("세대 작업 또는 개선기 소스 revision이 일치하지 않습니다.".into());
     }
+    // Own the campaign identifier before mutating the descendant job.
+    // Holding an &str into job["input"] across replan/edit-policy updates
+    // prevents the Rust worker from compiling (E0502).
     let campaign = job["input"]["rsiCampaignId"]
         .as_str()
-        .ok_or("자동 개선 ID 없음")?;
-    if state.store.get("job", campaign).is_none_or(|p| {
+        .ok_or("자동 개선 ID 없음")?
+        .to_owned();
+    if state.store.get("job", &campaign).is_none_or(|p| {
         p["kind"] != "rsi_evolve" || p["status"] != "running" || p["cancelRequested"] == true
     }) {
         return Err("자동 개선이 중단되었습니다.".into());
