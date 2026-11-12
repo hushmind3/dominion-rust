@@ -334,7 +334,7 @@ pub fn evaluate_search_algorithm(
 fn isolated_write_check(
     state: &AppState, session_id: &str, tool: &str, args: &Value,
 ) -> Result<(), &'static str> {
-    if !matches!(tool, "workspace_write" | "workspace_replace") {
+    if !matches!(tool, "workspace_write" | "workspace_replace" | "workspace_replace_function") {
         return Err("tool_is_not_rsi_source_edit");
     }
     if !args["path"].as_str().is_some_and(crate::engine::rsi::safe_path) {
@@ -382,7 +382,7 @@ pub fn auto_write_allowed(state: &AppState, session_id: &str, tool: &str, args: 
 pub fn auto_write_denial_reason(
     state:&AppState,session_id:&str,tool:&str,args:&Value,
 )->Option<&'static str> {
-    if !matches!(tool,"workspace_write"|"workspace_replace") {
+    if !matches!(tool,"workspace_write"|"workspace_replace"|"workspace_replace_function") {
         return None;
     }
     let session=state.store.get("session",session_id)?;
@@ -2028,7 +2028,7 @@ fn method_wrote_accepted_candidate(
         && op["origin"]=="procedure"
         && op["procedureStrategyId"]==receipt["methodId"]
         && op["procedureRevision"]==receipt["revision"]
-        && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_write"))
+        && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_replace_function"|"workspace_write"))
         && crate::engine::procedure::operation_succeeded(op)
         && op["result"]["written"]==true)
         .any(|op|{
@@ -2646,7 +2646,7 @@ pub(crate) fn remember_research(state:&AppState,input:&Value,generation:&Value,s
     let accepted=generation["accepted"]==true && candidate.as_ref().is_some_and(|c|c["status"]=="verified" && c["evaluation"]["metrics"]["eligible"]==true);
     let lesson=candidate.as_ref().and_then(|c|c["hypothesis"].as_str()).unwrap_or("검증 전 연구 자료. 출처와 현재 코드 버전을 확인하고 다음 구현에 활용하세요.");
     let mut applications=state.store.get("session",session).and_then(|s|s["rsiKnowledgeReuse"].as_array().cloned()).unwrap_or_default();
-    let writes=state.store.all("execution_operation").into_iter().filter(|op|op["sessionId"]==session && op["status"]=="completed" && matches!(op["tool"].as_str(),Some("workspace_write"|"workspace_replace"))).collect::<Vec<_>>();
+    let writes=state.store.all("execution_operation").into_iter().filter(|op|op["sessionId"]==session && op["status"]=="completed" && matches!(op["tool"].as_str(),Some("workspace_write"|"workspace_replace"|"workspace_replace_function"))).collect::<Vec<_>>();
     for receipt in &mut applications {
         let actions=writes.iter().filter(|op|op["arguments"]["path"]==receipt["path"]).map(|op|op["id"].clone()).collect::<Vec<_>>();
         receipt["status"]=json!(if actions.is_empty(){"provided"}else if accepted{"related_verified_change"}else{"related_change_unverified"});
@@ -3777,7 +3777,7 @@ async fn run_loop(
         }
         child_input["rsiInheritedImplementations"]=json!(inherited_implementations);
         child_input["rsiAvailableTools"] =
-            json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
+            json!(["code_search", "workspace_read_range", "workspace_replace", "workspace_replace_function", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose", "rsi_system_plan"]);
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
         child_input["rsiActionDirective"]=evolved_execution_action(
             &context.state,&child_input,&recorded_history);
@@ -4065,7 +4065,7 @@ async fn run_loop(
             .filter(|row| {
                 matches!(
                     row["tool"].as_str(),
-                    Some("code_search" | "workspace_read_range" | "workspace_replace")
+                    Some("code_search" | "workspace_read_range" | "workspace_replace" | "workspace_replace_function")
                 )
             })
             .cloned()
@@ -4650,7 +4650,7 @@ pub(crate) async fn adopt(
 /// candidates. A tool attempt alone does not prove an independently measured gain.
 fn actual_edit_observation(tools:&[Value], candidate_created:bool)->Value {
     let calls=tools.iter()
-        .filter(|row|matches!(row["tool"].as_str(),Some("workspace_replace"|"workspace_write")))
+        .filter(|row|matches!(row["tool"].as_str(),Some("workspace_replace"|"workspace_replace_function"|"workspace_write")))
         .map(|row|row["calls"].as_u64().unwrap_or(0)).sum::<u64>();
     json!({"status":if calls>0 {"edit_attempted"} else {"no_edit"},
         "editToolCalls":calls,"candidateCreated":candidate_created})
