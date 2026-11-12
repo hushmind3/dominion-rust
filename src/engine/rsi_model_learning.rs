@@ -29,6 +29,9 @@ fn eligible(g:&Value)->bool{
                 p.as_str().is_some_and(crate::engine::rsi::safe_path)))
         && g["generatorCommit"].as_str().is_some_and(|v|
             v.len()==40 && v.bytes().all(|b|b.is_ascii_hexdigit()))
+        && g["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+        && g["evaluation"]["evidenceSha256"].as_str().is_some_and(|v|
+            v.len()==64 && v.bytes().all(|b|b.is_ascii_hexdigit()))
         && g["comparisonProfileSha256"].as_str().is_some_and(|v|
             v.len()==64 && v.bytes().all(|b|b.is_ascii_hexdigit()))
         && g["domain"].as_str().is_some_and(|s|!s.is_empty())
@@ -52,6 +55,12 @@ struct Stats {
     verified_gains:u64,
     regressions:u64,
     adopted:u64,
+    successor_trials:u64,
+    successor_adoptions:u64,
+    successor_cross_domain_wins:u64,
+    successor_holdout_gains:u64,
+    successor_holdout_regressions:u64,
+    successor_jobs:BTreeSet<String>,
     domains:BTreeSet<String>
 }
 /// Train an empirical capability-selection model on *comparable* trials.
@@ -89,6 +98,40 @@ pub(crate) fn learn(history:&[Value])->Value{
                 && g["evaluation"]["metrics"]["eligible"]==true
                 && g["acceptedCommit"].as_str().is_some_and(|v|v.len()==40){
                 item.adopted+=1;
+                // Whole-agent improvement productivity is measured by the
+                // RECOMPILED successor generating another independently
+                // evaluated source change. An adopted parent patch alone
+                // does not prove stronger future self-improvement.
+                if let Some(accepted)=g["acceptedCommit"].as_str(){
+                    for child in history.iter().filter(|next|
+                        next["generatorCommit"]==accepted && eligible(next)
+                            && next["generatorBinarySha256"].as_str()
+                                .is_some_and(|v|v.len()==64
+                                    && v.bytes().all(|b|b.is_ascii_hexdigit()))
+                            && next["systemBlueprintVerified"]==true){
+                        let Some(child_id)=child["jobId"].as_str()else{continue};
+                        if !item.successor_jobs.insert(child_id.to_string()){continue;}
+                        item.successor_trials+=1;
+                        if child["accepted"]==true
+                            && child["evaluation"]["metrics"]["eligible"]==true{
+                            item.successor_adoptions+=1;
+                            if child["domain"]!=g["domain"]{
+                                item.successor_cross_domain_wins+=1;
+                            }
+                        }
+                        for row in child["evaluation"]["metrics"]["holdoutEvidence"]
+                            .as_array().into_iter().flatten(){
+                            if row["baselinePass"]==false&&row["candidatePass"]==true
+                                || row["metricGains"].as_u64().unwrap_or(0)>0{
+                                item.successor_holdout_gains+=1;
+                            }
+                            if row["baselinePass"]==true&&row["candidatePass"]==false
+                                || row["metricRegressions"].as_u64().unwrap_or(0)>0{
+                                item.successor_holdout_regressions+=1;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -101,14 +144,28 @@ pub(crate) fn learn(history:&[Value])->Value{
         let trusted=cohorts>=2&&domains>=2&&independent>=2;
         let gains=s.verified_gains as f64;
         let losses=s.regressions as f64;
+        let offspring_rate=(s.successor_adoptions as f64+1.0)
+            /(s.successor_trials as f64+2.0);
+        let offspring_gain=if s.successor_trials>0{
+            0.25*offspring_rate
+                +0.12*(s.successor_cross_domain_wins.min(4) as f64)
+                -0.12*(s.successor_holdout_regressions.min(4) as f64)
+        }else{0.0};
         let score=(gains+1.0)/(gains+losses+2.0)
-            +0.15*(s.adopted as f64)/(independent.max(1) as f64);
+            +0.15*(s.adopted as f64)/(independent.max(1) as f64)
+            +offspring_gain;
         json!({
             "providerId":provider,"model":model,
             "comparableCohorts":cohorts,"observedDomains":domains,
             "independentTrials":independent,
             "holdoutGains":s.verified_gains,"holdoutRegressions":s.regressions,
             "independentlyAdoptedSourceCandidates":s.adopted,
+            "verifiedCompiledSuccessorTrials":s.successor_trials,
+            "verifiedCompiledSuccessorAdoptions":s.successor_adoptions,
+            "crossCapabilitySuccessorAdoptions":s.successor_cross_domain_wins,
+            "successorHoldoutGains":s.successor_holdout_gains,
+            "successorHoldoutRegressions":s.successor_holdout_regressions,
+            "posteriorSuccessorImprovement":offspring_rate,
             "posteriorMeasuredImprovement":score,
             "trustedForDeepAutoRoute":trusted,
             "attribution":"observational_model_plus_harness_not_weight_causal_proof"
@@ -309,7 +366,9 @@ mod tests {
             "candidateOrigin":"model_driven_detached_worktree",
             "candidateId":job,"accepted":good,
             "acceptedCommit":if good{json!("c".repeat(40))}else{Value::Null},
-            "evaluation":{"metrics":{"eligible":good,"holdoutEvidence":[{
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "evidenceSha256":"e".repeat(64),
+                "metrics":{"eligible":good,"holdoutEvidence":[{
                 "id":"frozen","baselinePass":!good,"candidatePass":good,
                 "metricGains":0,"metricRegressions":0
             }]}}})
