@@ -458,6 +458,14 @@ pub(crate) fn synthesize(
     plan["revision"]=json!(revision);
     plan
 }
+// A target override invalidates any task-quality prior bound to the old
+// target. Keep the forecast sealed and conservative until new paired cases
+// measure this particular steered method.
+fn reset_steered_task_prior(policy:&mut Value) {
+    policy["forecast"]["taskCaseGainProbability"]=json!(0.5);
+    policy["forecast"]["taskEvidenceCases"]=json!(0);
+    policy["forecast"]["taskPredictionSource"]=json!("unmeasured_steered_target_prior");
+}
 /// Slow-timescale feedback is allowed to change WHAT the next compiled
 /// system improves, including revisiting a prior capability after a new
 /// complementary one is independently adopted. The algorithm lives here,
@@ -474,6 +482,7 @@ pub(crate) fn steer_reciprocal(mut policy:Value,program:&Value)->Value {
     policy["target"]=target["target"].clone();
     policy["prediction"]=target.clone();
     policy["forecast"]["probability"]=target["predictedAcceptance"].clone();
+    reset_steered_task_prior(&mut policy);
     policy["forecast"]["uncertainty"]=target["uncertainty"].clone();
     policy["selectionMode"]=json!("reciprocal_descendant_capability_transfer");
     policy["mutualProgramRevision"]=program["revision"].clone();
@@ -507,6 +516,7 @@ pub(crate) fn steer_factorial(mut policy:Value,experiment:&Value)->Value {
     policy["target"]=target.clone();
     policy["prediction"]=prediction.clone();
     policy["forecast"]["probability"]=prediction["predictedAcceptance"].clone();
+    reset_steered_task_prior(&mut policy);
     policy["forecast"]["uncertainty"]=prediction["uncertainty"].clone();
     policy["forecast"]["verifiedByIndependentHoldout"]=json!(false);
     policy["selectionMode"]=json!("matched_factorial_experiment_design");
@@ -540,6 +550,7 @@ pub(crate) fn steer_reflexive(mut policy:Value,program:&Value)->Value {
     policy["target"]=selected.clone();
     policy["prediction"]=prediction.clone();
     policy["forecast"]["probability"]=prediction["predictedAcceptance"].clone();
+    reset_steered_task_prior(&mut policy);
     policy["forecast"]["uncertainty"]=prediction["uncertainty"].clone();
     policy["forecast"]["verifiedByIndependentHoldout"]=json!(false);
     policy["selectionMode"]=json!("recompiled_reflexive_method_evolution");
@@ -575,6 +586,7 @@ pub(crate) fn steer_open_program(mut policy:Value,graph:&Value)->Value {
     policy["target"]=target.clone();
     policy["prediction"]=prediction.clone();
     policy["forecast"]["probability"]=prediction["predictedAcceptance"].clone();
+    reset_steered_task_prior(&mut policy);
     policy["forecast"]["uncertainty"]=prediction["uncertainty"].clone();
     policy["forecast"]["verifiedByIndependentHoldout"]=json!(false);
     policy["selectionMode"]=json!("authored_open_improvement_program");
@@ -611,6 +623,7 @@ pub(crate) fn steer_learner_repair(mut policy:Value,ledger:&Value,
     policy["target"]=target.clone();
     policy["prediction"]=prediction.clone();
     policy["forecast"]["probability"]=prediction["predictedAcceptance"].clone();
+    reset_steered_task_prior(&mut policy);
     policy["forecast"]["uncertainty"]=prediction["uncertainty"].clone();
     policy["forecast"]["verifiedByIndependentHoldout"]=json!(false);
     policy["selectionMode"]=json!("verified_calibration_driven_learner_rewrite");
@@ -652,6 +665,7 @@ pub(crate) fn steer_quality_predictor_repair(mut policy:Value,history:&[Value],
     policy["target"]=target.clone();
     policy["prediction"]=selected.clone();
     policy["forecast"]["probability"]=selected["predictedAcceptance"].clone();
+    reset_steered_task_prior(&mut policy);
     policy["forecast"]["uncertainty"]=selected["uncertainty"].clone();
     policy["forecast"]["verifiedByIndependentHoldout"]=json!(false);
     policy["selectionMode"]=json!("prequential_task_quality_predictor_repair");
