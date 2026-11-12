@@ -483,7 +483,7 @@ mod tests {
         std::fs::write(checkout.join("Cargo.toml"), "[package]\nname = \"dominion\"\nversion = \"0.1.0\"\n").unwrap();
         std::fs::write(checkout.join("src/engine/rsi.rs"), "// source\n").unwrap();
         git(&checkout, &["init", "-q"]);
-        git(&checkout, &["checkout", "-b", "dominion-sub3"]);
+        git(&checkout, &["checkout", "-b", "dominion-sub4"]);
         git(&checkout, &["add", "."]);
         git(&checkout, &["-c", "user.email=ci@example.com", "-c", "user.name=CI", "commit", "-qm", "fixture"]);
         let cfg = Config { port:0, data_dir:data.clone(), web_dir:data.join("web"), workspace:data.clone() };
@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(jobs[0]["input"]["providerId"], "test-provider");
         assert_eq!(jobs[0]["input"]["model"], "sample-model");
         assert_eq!(jobs[0]["input"]["rsiSourceDir"], checkout.canonicalize().unwrap().to_str().unwrap());
-        assert_eq!(jobs[0]["input"]["rsiSourceBranch"], "dominion-sub3");
+        assert_eq!(jobs[0]["input"]["rsiSourceBranch"], "dominion-sub4");
         assert!(jobs[0]["input"]["rsiBaseCommit"].as_str().is_some_and(|v|v.len()==40));
         let cases=jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap();
         assert_eq!(cases.len(),14);

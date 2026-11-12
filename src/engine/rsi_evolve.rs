@@ -5039,7 +5039,7 @@ mod tests {
         let fingerprint="f".repeat(64);
         state.store.put("rsi_campaign",&json!({
             "id":"digest-prior","headCommit":head,"sourceDir":"source-a",
-            "sourceBranch":"dominion-sub3","baseCommit":"base",
+            "sourceBranch":"dominion-sub4","baseCommit":"base",
             "sourceFingerprint":fingerprint,
             "history":[{"jobId":"digest-job","generatorCommit":head}]
         }));
@@ -5047,7 +5047,7 @@ mod tests {
         assert_eq!(research_digest(&state,&requested,&json!({"history":[]})),"",
             "goal matching alone must never import another campaign's reads");
         let verified=json!({
-            "sourceDir":"source-a","sourceBranch":"dominion-sub3",
+            "sourceDir":"source-a","sourceBranch":"dominion-sub4",
             "baseCommit":"base","sourceFingerprint":fingerprint,
             "headCommit":head,
             "lineage":{"reused":true,"selectedCommit":head},
@@ -6088,12 +6088,12 @@ mod tests {
         git(&context, &source, &["add", "."]).await.unwrap();
         git(&context, &source, &["-c","user.name=Test","-c","user.email=test@localhost","commit","-qm","controlled worker"]).await.unwrap();
         let base = git(&context, &source, &["rev-parse", "HEAD"]).await.unwrap();
-        git(&context,&source,&["checkout","-b","dominion-sub3"]).await.unwrap();
+        git(&context,&source,&["checkout","-b","dominion-sub4"]).await.unwrap();
         let cases=["zero_boundary","negative_one","negative_two","negative_three","positive_one","positive_two","positive_three","positive_four"]
             .into_iter().enumerate().map(|(i,name)|json!({"id":name,"domain":if i%2==0{"boundary"}else{"retention"},"holdout":i<2,"filter":format!("cases::{name}")})).collect::<Vec<_>>();
         context.checkpoint(json!({"input":{"rsiNativeApproved":true,"rsiSourceDir":source,"rsiBaseCommit":base,
             "selectionPolicy":"automatic","rsiFrozenCases":cases,
-            "rsiSourceBranch":"dominion-sub3",
+            "rsiSourceBranch":"dominion-sub4",
             "rsiObjective":"memory capability improvement",
             "rsiFocusFiles":["src/engine/memory.rs"],
             "rsiFixtureMode":"research_then_adopt",
@@ -6156,7 +6156,7 @@ mod tests {
         assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.is_err(),
             "main must never be an application target");
         assert_eq!(git(&context,&source,&["rev-parse","HEAD"]).await.unwrap(),base);
-        git(&context,&source,&["checkout","dominion-sub3"]).await.unwrap();
+        git(&context,&source,&["checkout","dominion-sub4"]).await.unwrap();
         std::fs::write(source.join("my-research.txt"),"keep my unrelated research").unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
         context.checkpoint(json!({"status":"completed"})).unwrap();
