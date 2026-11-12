@@ -27,3 +27,11 @@ This is executable integration, not a completed LoRA training experiment. No act
 Dependency path: torch, transformers, peft (installed separately), and local Hugging Face model files. The frozen source-code A/B evaluator remains independent and unmodified.
 
 Research and implementation reference: Hugging Face PEFT LoRA local loading and adapter deployment.
+
+## Execution branch ownership fix
+
+The source subtree inherited a Sub3-only RSI worktree branch allowlist. That rejected dominion-sub4 before any detached improvement experiment could begin. rsi_work_branch now admits dominion-sub4 while owns_application_branch still requires the exact campaign-recorded source branch and refuses cross-branch or missing-branch receipts. Existing legacy dominion-sub behavior remains unchanged. Tests explicitly cover Sub3/Sub4 mismatch and reject competitor branches.
+
+## Remaining empirical obligations
+
+A real owner-authorized train/eval campaign, compiler verification, an actual loaded adapted model invocation and subsequent independently adopted source changes must occur before the system can claim demonstrated sustained RSI. Source integration alone is not a measured increase in intelligence.
