@@ -134,6 +134,34 @@ fn pending_invention(history:&[Value],frontier:&[Value],commit:&str)->Option<Val
     None
 }
 
+/// Observed scientific-method trials must be both executed and source-
+/// changing. Planning a study, naming a role or claiming success without
+/// a paired candidate's actual changed files contributes ZERO evidence.
+fn witnessed_science_trial(g:&Value,method:&str)->bool {
+    let lab=&g["recursiveLaboratory"];
+    if lab["source"]!="descendant_editable_recursive_laboratory_v1"
+        || lab["method"]["name"]!=method
+        || g["systemAgenda"]["recursiveLaboratory"]!=*lab
+        || lab["generatorCommit"]!=g["generatorCommit"]
+        || g["selfControllerVerified"]!=true
+        || g["pairedRevalidated"]!=true
+        || !g["candidateId"].is_string()
+        || !g["evaluation"]["metrics"]["holdoutEvidence"].is_array(){
+        return false;
+    }
+    let Some(changed)=g["changedSourcePaths"].as_array() else{return false;};
+    if lab["phase"]=="invent_new_intelligence" {
+        let name=&lab["invention"]["role"];
+        return g["systemDesign"]["newComponents"].as_array()
+            .is_some_and(|rows|rows.iter().any(|item|&item["role"]==name
+                && item["sourcePaths"].as_array().is_some_and(|paths|
+                    !paths.is_empty()&&paths.iter().all(|path|
+                        changed.contains(path)))));
+    }
+    lab["focus"].as_array().is_some_and(|focus|focus.iter().any(|row|
+        changed.iter().any(|path|path==&row["path"])))
+}
+
 /// Evidence-based control policy is ordinary editable source. A method's
 /// posterior counts verified, measured source generations, not self-reports.
 fn choose_method(history:&[Value])->Value {
@@ -142,11 +170,8 @@ fn choose_method(history:&[Value])->Value {
         "rewrite_discovery_method"];
     let mut candidates=Vec::new();
     for name in names{
-        let trials=history.iter().filter(|g|
-            g["recursiveLaboratory"]["method"]["name"]==name
-                && g["candidateId"].is_string()
-                && g["pairedRevalidated"]==true
-                && g["selfControllerVerified"]==true).collect::<Vec<_>>();
+        let trials=history.iter()
+            .filter(|g|witnessed_science_trial(g,name)).collect::<Vec<_>>();
         let wins=trials.iter().filter(|g|adopted(g)).count();
         let inspected=trials.len();
         let posterior=(wins as f64+1.0)/(inspected as f64+2.0);
@@ -434,6 +459,27 @@ mod tests{
         assert!(pending_invention(&[birth,child,unrelated],&frontier,
             &"d".repeat(40)).is_none(),
             "A different method path cannot claim that the declared origin improved");
+    }
+    #[test]
+    fn method_success_cannot_be_learned_from_an_unexecuted_or_unrelated_edit(){
+        let focus=target("memory","src/engine/memory.rs");
+        let mut g=accepted("real",&"a".repeat(40),&"b".repeat(40),
+            "memory","src/engine/memory.rs");
+        g["candidateId"]=json!("candidate");
+        g["evaluation"]["metrics"]["holdoutEvidence"]=json!([
+            {"id":"h","domain":"memory","baselinePass":false,"candidatePass":true}]);
+        let science=json!({
+            "source":"descendant_editable_recursive_laboratory_v1",
+            "generatorCommit":"a".repeat(40),
+            "method":{"name":"experiment_isolation"},
+            "phase":"factorial_science","focus":[focus]});
+        g["recursiveLaboratory"]=science.clone();
+        assert!(!witnessed_science_trial(&g,"experiment_isolation"),
+            "A plan absent from the executed system agenda cannot train method quality");
+        g["systemAgenda"]["recursiveLaboratory"]=science;
+        assert!(witnessed_science_trial(&g,"experiment_isolation"));
+        g["changedSourcePaths"]=json!(["src/engine/tools.rs"]);
+        assert!(!witnessed_science_trial(&g,"experiment_isolation"));
     }
     #[test]
     fn research_method_rank_only_counts_real_measured_candidate_trials(){
