@@ -166,6 +166,19 @@ pub async fn execute(
     if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
     }
+    // Factor-isolated variants cannot change their comparison companion.
+    // Enforce this at the actual gateway even if a model invokes a hidden tool.
+    if isolated_rsi && matches!(name,
+        "workspace_replace"|"workspace_replace_function"|"workspace_write") {
+        if let Some(session)=ctx.store.get("session",ctx.session_id){
+            let item=&session["rsiFactorialCurriculum"]["selected"];
+            if session["rsiSystemEvolution"]==true
+                && item["isolationRequired"]==true
+                && args["path"]!=item["target"]["path"] {
+                return Err("요인별 분리 실험은 선택된 1개 소스만 수정할 수 있습니다.".into());
+            }
+        }
+    }
     // A policy inherited from an ADOPTED predecessor is enforced by the
     // tool gateway, not just by hiding a schema in the next model turn.
     // Only the isolated successor session may inherit this restriction.

@@ -477,6 +477,11 @@ pub(crate) fn validate_plan_evidence(
             return Err("대상이 없는 상호개선 계획에 실행 단계가 남았습니다.".into());
         }
     }
+    if !crate::engine::rsi_causal_curriculum::valid(
+        &plan["factorialCurriculum"],frontier,commit,history.len(),
+        &plan["mutualCurriculum"]) {
+        return Err("요인별 실험 계획의 독립 소스·계보가 일치하지 않습니다.".into());
+    }
     let stage=&plan["successorStage"];
     if stage.is_object(){
         if !bound(stage)
