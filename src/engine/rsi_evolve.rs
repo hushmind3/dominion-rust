@@ -3304,10 +3304,16 @@ async fn run_loop(
                 let model=selection["model"].as_str().ok_or("API 모델 없음")?;
                 let provider=context.state.store.get("provider",provider_id)
                     .ok_or("실행 모델 제공자가 연결 해제됐습니다.")?;
-                if !crate::engine::gateway::provider_eligible(&provider)
+                let currently_registered=plan["apiRoutePolicy"]["chosen"]
+                    ==input["rsiOriginalApiRoute"]
+                    || provider["model"].as_str()==Some(model)
+                    || provider["rsiApprovedModels"].as_array().is_some_and(|models|
+                        models.iter().any(|row|row.as_str()==Some(model)));
+                if !currently_registered
+                    || !crate::engine::gateway::provider_eligible(&provider)
                     || crate::engine::gateway::route_from_provider(
                         &context.state,&provider,Some(model)).is_err() {
-                    return Err("후손의 API 실행 모델이 현재 사용 불가능합니다.".into());
+                    return Err("후손의 API 실행 모델이 현재 등록·사용 가능하지 않습니다.".into());
                 }
             }else if plan["apiRoutePolicy"].is_object(){
                 return Err("소유자 승인 없는 API 모델 재선택입니다.".into());
