@@ -3318,6 +3318,19 @@ async fn run_loop(
                             .ok_or("후손 상호능력 구성의 소스 그래프가 없습니다.")?)) {
                 return Err("후손의 교차 능력 평가 근거 또는 소스 결합 계획이 변경됐습니다.".into());
             }
+            if !crate::engine::rsi_factorial::valid(
+                &plan["factorialExperiment"],
+                plan["architectureFrontier"].as_array().ok_or(
+                    "실험 설계용 탐색 근거 없음")?,
+                &head,history.len(),&plan["interactionGraph"])
+                || !crate::engine::rsi_recursive_scientist::valid(
+                    &plan["recursiveScientificProgram"],
+                    plan["architectureFrontier"].as_array().ok_or(
+                        "자기개선 과학 탐색 근거 없음")?,
+                    &head,history.len(),
+                    &plan["factorialExperiment"],&plan["coupledPortfolio"]) {
+                return Err("후손의 실험 설계 및 재귀과학 프로그램이 소스와 불일치합니다.".into());
+            }
             if plan["successorStage"].is_object()
                 && (plan["successorStage"]["source"]!=
                     "rebound_verified_model_successor_program_v1"
@@ -3365,6 +3378,8 @@ async fn run_loop(
             child_input["rsiSymbioticCurriculum"]=plan["symbioticCurriculum"].clone();
             child_input["rsiInteractionGraph"]=plan["interactionGraph"].clone();
             child_input["rsiCoupledPortfolio"]=plan["coupledPortfolio"].clone();
+            child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
+            child_input["rsiRecursiveScientificProgram"]=plan["recursiveScientificProgram"].clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
@@ -3607,6 +3622,19 @@ async fn run_loop(
         generation["symbioticCurriculum"]=current["input"]["rsiSymbioticCurriculum"].clone();
         generation["interactionGraph"]=current["input"]["rsiInteractionGraph"].clone();
         generation["coupledPortfolio"]=current["input"]["rsiCoupledPortfolio"].clone();
+        generation["factorialExperiment"]=current["input"]["rsiFactorialExperiment"].clone();
+        generation["recursiveScientificProgram"]=current["input"]["rsiRecursiveScientificProgram"].clone();
+        // Only compare holdout records from identical frozen case/profile
+        // definitions and the same actual compiled generator commit.
+        let frozen_profile=json!([
+            input["rsiFrozenCases"],input["rsiEvaluationConfig"],
+            input["rsiMetaCases"]
+        ]);
+        if !input["rsiFrozenCases"].is_null() {
+            generation["evaluationProfileSha256"]=json!(format!("{:x}",
+                Sha256::digest(serde_json::to_vec(&frozen_profile)
+                    .unwrap_or_default())));
+        }
         generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
         generation["successorStageExecuted"]=current["rsiSuccessorStageExecuted"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
@@ -4404,7 +4432,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         && meta_policy["successorStage"]==suggested_stage {
         suggested_stage
     }else{Value::Null};
-    let architecture_target=if input["rsiAutonomous"]==true
+    let mut architecture_target=if input["rsiAutonomous"]==true
         && !owner_focus && !paired && meta_policy["target"].is_object() {
         meta_policy["target"].clone()
     }else{frontier.first().cloned().unwrap_or(Value::Null)};
@@ -4416,6 +4444,20 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         crate::engine::rsi_interaction::coupled_portfolio(
             &architecture_target,&frontier,&interaction_graph,DOMAINS)
     }else{Value::Null};
+    // The recursive scientist does not merely collect observations.
+    // It decides whether to isolate a missing contrast, invent a new
+    // executable intelligence role, return an invented capability to its
+    // origin, or rewrite the scientific improvement policy itself.
+    let factorial=crate::engine::rsi_factorial::design(
+        &history,&frontier,&interaction_graph,DOMAINS,commit);
+    let science=crate::engine::rsi_recursive_scientist::plan(
+        &history,&frontier,&factorial,&coupled_portfolio,commit);
+    let science_active=input["rsiAutonomous"]==true && !owner_focus && !paired;
+    if science_active && science["phase"]!="discover_new_mechanism" {
+        if let Some(first)=science["focus"].as_array().and_then(|f|f.first()){
+            architecture_target=first.clone();
+        }
+    }
     let symbiosis=crate::engine::rsi_symbiosis::curriculum(
         &history,&frontier,&json!({"target":architecture_target}),DOMAINS);
     let inherited=if input["rsiAutonomous"]==true {
@@ -4430,12 +4472,15 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         input["rsiSelectedDomain"].as_str().map(str::to_string)
     }else{
         successor_stage["domain"].as_str().map(str::to_string)
+            .or_else(||science_active.then(||
+                architecture_target["domain"].as_str()).flatten().map(str::to_string))
             .or(frontier_hint).or(inherited.clone())
             .or_else(||system_evolution_target_hint(
                 input,snapshot["attempt"].as_u64().unwrap_or(0)))
     };
     let objective=selection_objective(input);
-    let trial=if paired {None} else {
+    let trial=if paired || (science_active
+        && science["phase"]!="discover_new_mechanism") {None} else {
         input["rsiTrialAlgorithmId"].as_str().map(str::to_string)
     };
     let (domain,selection,strategy)=select_generation_strategy(
@@ -4507,9 +4552,37 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             insertion+=1;
         }
     }
-    let focus=ranked.iter().filter_map(|row|row["path"].as_str())
-        .filter(|p|crate::engine::rsi::safe_path(p))
-        .take(8).collect::<Vec<_>>();
+    // The generated experiment is an actual editing decision, not just
+    // appended prompt text. Isolated experiments MUST focus only one role;
+    // accepted-source recursive stages take priority over older guesses.
+    if science_active && science["phase"]!="discover_new_mechanism" {
+        let members=science["focus"].as_array().cloned().unwrap_or_default();
+        for member in members.into_iter().rev(){
+            let Some(path)=member["path"].as_str()
+                .filter(|path|crate::engine::rsi::safe_path(path)
+                    && source_root.join(path).is_file()) else{continue};
+            let Some(sha)=member["sourceSha256"].as_str() else{continue};
+            if crate::engine::code_index::indexed_source_hash(
+                &state,input["rsiIndexId"].as_str().unwrap_or(""),path)
+                .as_deref()!=Some(sha){continue;}
+            ranked.retain(|row|row["path"]!=path);
+            ranked.insert(0,json!({
+                "path":path,"sourceHash":sha,"role":member["role"],
+                "domain":member["domain"],
+                "source":"compiled_recursive_scientific_program",
+                "sourceIndexId":input["rsiIndexId"]
+            }));
+        }
+    }
+    let focus=if science_active && matches!(science["phase"].as_str(),
+        Some("isolate_left"|"isolate_right")) {
+        ranked.iter().take(1).filter_map(|row|row["path"].as_str())
+            .collect::<Vec<_>>()
+    }else {
+        ranked.iter().filter_map(|row|row["path"].as_str())
+            .filter(|p|crate::engine::rsi::safe_path(p))
+            .take(8).collect::<Vec<_>>()
+    };
     let directive=crate::engine::rsi_system::improvement_directive(&history);
     let archive=crate::engine::rsi_archive::select(
         &state,&history,commit,&input["rsiFrozenCases"]);
@@ -4559,6 +4632,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "symbioticCurriculum":symbiosis,
         "interactionGraph":interaction_graph,
         "coupledPortfolio":coupled_portfolio,
+        "factorialExperiment":factorial,
+        "recursiveScientificProgram":science,
         "successorStage":successor_stage,
         "peerLineages":peers,
         "comparativeMode":comparative_mode,
@@ -4771,6 +4846,20 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiArchitectureTarget"],frontier)?;
         let observed_influence=observed_holdout;
         let portfolio=&job["input"]["rsiCoupledPortfolio"];
+        let factor_expected=crate::engine::rsi_factorial::design(
+            &history,frontier,&observed_influence,DOMAINS,&commit);
+        let science_expected=crate::engine::rsi_recursive_scientist::plan(
+            &history,frontier,&factor_expected,portfolio,&commit);
+        if job["input"]["rsiFactorialExperiment"]!=factor_expected
+            || job["input"]["rsiRecursiveScientificProgram"]!=science_expected
+            || job["input"]["rsiControllerPlan"]["factorialExperiment"]!=factor_expected
+            || job["input"]["rsiControllerPlan"]["recursiveScientificProgram"]!=science_expected
+            || !crate::engine::rsi_factorial::valid(
+                &factor_expected,frontier,&commit,history.len(),&observed_influence)
+            || !crate::engine::rsi_recursive_scientist::valid(
+                &science_expected,frontier,&commit,history.len(),&factor_expected,portfolio) {
+            return Err("실행 후손의 요인 실험·발명·복귀·개선기 재설계 순서가 실제 채택 계보와 다릅니다.".into());
+        }
         if !crate::engine::rsi_interaction::valid_graph(&observed_influence)
             || job["input"]["rsiControllerPlan"]["interactionGraph"]!=observed_influence
             || job["input"]["rsiInteractionGraph"]!=observed_influence
@@ -4900,8 +4989,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiInteractionGraph"]).unwrap_or_default();
         let combined_sources=serde_json::to_string(
             &job["input"]["rsiCoupledPortfolio"]).unwrap_or_default();
+        let scientific_instruction=crate::engine::rsi_recursive_scientist::instruction(
+            &job["input"]["rsiRecursiveScientificProgram"]);
+        let factorial_instruction=crate::engine::rsi_factorial::instruction(
+            &job["input"]["rsiFactorialExperiment"]);
         let peer_context=format!(
-            "COMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}\n            CROSS-SUBSYSTEM HOLDOUT OBSERVATIONS (changed source paths, isolated versus joint edits; hypotheses not causal proof):\n{}\n            NEXT SOURCE-BOUND CO-DESIGN PORTFOLIO (edit and independently evaluate actual implementations):\n{}",
+            "RECURSIVE SCIENTIFIC DISCOVERY (descendant-owned): {}\n            FACTORIAL HOLDOUT EXPERIMENT: {}\nCOMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}\n            CROSS-SUBSYSTEM HOLDOUT OBSERVATIONS (changed source paths, isolated versus joint edits; hypotheses not causal proof):\n{}\n            NEXT SOURCE-BOUND CO-DESIGN PORTFOLIO (edit and independently evaluate actual implementations):\n{}",
+            scientific_instruction,factorial_instruction,
             job["input"]["rsiComparativeMode"],capsule(&peer_evidence,3000),
             capsule(&independent_effects,2400),capsule(&combined_sources,1600));
         let frontier_hint=if job["input"]["rsiFocusSelection"]["source"]=="rebuilt_descendant_controller"
