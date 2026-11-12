@@ -77,7 +77,17 @@ pub fn definitions() -> Vec<Value> {
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
             "nextTargetFiles":json!({"type":"array","items":{"type":"string"},"maxItems":3,"description":"Next child's source targets after this design is adopted"}),
             "methodHypothesis":text("Optional new recursive design/editing method and its causal rationale"),
-            "actionProgram":json!({"type":"array","items":{"type":"string"},"minItems":2,"maxItems":8,"description":"Optional NEW executable tool sequence, read before edit. This is a future-generation trial, not a current quality claim."})
+            "actionProgram":json!({"type":"array","items":{"type":"string"},"minItems":2,"maxItems":8,"description":"Optional grounding/editing tool sequence. Independent adoption is required before inheritance."}),
+            "successorStages":json!({"type":"array","maxItems":10,"description":"Optional self-authored MULTI-STAGE executable meta-improvement policy after adoption; EACH stage has role, domain, path, objective, learningPolicy, executionPolicy, priority, maxRetries","items":{"type":"object","properties":{
+                "role":{"type":"string"},
+                "domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
+                "path":{"type":"string"},
+                "objective":{"type":"string"},
+                "learningPolicy":{"type":"string","enum":["avoid_failed","repair_failed","explore_novel","repeat_verified"]},
+                "executionPolicy":{"type":"string","enum":["grounded_edit","meta_rewrite_first","cross_component_revision","repair_then_edit"]},
+                "priority":{"type":"integer","minimum":-20,"maximum":20},
+                "maxRetries":{"type":"integer","minimum":0,"maximum":8}
+            },"required":["role","domain","path","objective"]}})
         }),vec!["component","hypothesis","design","targetFiles","nextDomain"])),
         tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({
             "name":text("Reusable method name"),

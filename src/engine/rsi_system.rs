@@ -633,6 +633,15 @@ pub(crate) fn agenda_instruction(agenda:&Value)->String{
             row["role"],row["path"],row["attempts"],
             row["verifiedRedesigns"],row["latestFailure"],row["reason"]
         )).collect::<Vec<_>>().join("\n");
+    let stage=&agenda["inheritedStage"];
+    let stage_instruction=if stage.is_object(){
+        format!(
+            "INHERITED EXECUTABLE METHOD STAGE: role={} domain={} file={} sha={} objective={} learning={} execution={} failures={} sourceDesign={}",
+            stage["role"],stage["domain"],stage["path"],
+            stage["sourceSha256"],stage["objective"],
+            stage["learningPolicy"],stage["executionPolicy"],
+            stage["failedAttemptsSinceAdoption"],stage["sourceDesignId"])
+    }else{String::new()};
     let archive=agenda["researchArchive"]["verifiedAdoptedDesigns"]
         .as_array().into_iter().flatten().take(4).map(|row|
             format!("ADOPTED roles={} sources={} hypothesis={} method={}",
@@ -657,10 +666,10 @@ pub(crate) fn agenda_instruction(agenda:&Value)->String{
         observation and the method must write implementation, not prose.\n\
         Previous independently adopted hypothesis: {}.\n\
         If inheritedStage is present, implement its model-authored, failure-adapted         objective using the indicated executionPolicy rather than blindly         repeating the previous attempt. This whole method can itself be         edited inside the next compiled meta-controller.\n\
-        Self-selected source research frontier:\n{}\n        Persisted previous research (only adopted source gains are verified):\n{}",
+        Self-selected source research frontier:\n{}\n        Persisted previous research (only adopted source gains are verified):\n{}\n{}",
         target["role"],target["domain"],target["reason"],
         target["path"],target["sourceSha256"],focus,
-        agenda["sourceTreeSha256"],agenda["nextHypothesis"],frontier,archive
+        agenda["sourceTreeSha256"],agenda["nextHypothesis"],frontier,archive,stage_instruction
     )
 }
 

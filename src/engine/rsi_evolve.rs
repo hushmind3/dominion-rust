@@ -4888,7 +4888,8 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         crate::engine::rsi_meta_controller::synthesize(
             &history,&frontier,DOMAINS,inherited.as_deref())
     }else{Value::Null};
-    if automatic && meta_policy["target"].is_object()
+    if automatic && agenda["inheritedStage"].is_null()
+        && meta_policy["target"].is_object()
         && agenda["frontier"].as_array().is_some_and(|f|f.contains(&meta_policy["target"])) {
         agenda["target"]=meta_policy["target"].clone();
         agenda["focus"]=json!([meta_policy["target"]]);
@@ -4910,7 +4911,11 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
     }else{None};
     let explicit=campaign["planSelectedDomain"].as_str()
         .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
-    let selected=inherited.or(self_domain).or(explicit);
+    let selected=if automatic && agenda["inheritedStage"].is_object() {
+        // Model-authored successor stage can override a generic inherited
+        // domain when the current source and observed failures support it.
+        self_domain.or(inherited).or(explicit)
+    }else{inherited.or(self_domain).or(explicit)};
     let trial_id=campaign["planTrialAlgorithmId"].as_str()
         .filter(|id|!id.is_empty()).map(str::to_string);
     let owns_choice=automatic && selected.is_some();
