@@ -4396,39 +4396,53 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let capability = if focus.is_empty() { domain.clone() } else { format!("{domain} · {focus}") };
     job["rsiDomain"] = json!(domain);
     job["input"]["rsiDomain"]=json!(domain);
-    // The running rebuilt worker inventories its OWN source and designs its
-    // successor. The resident coordinator is restricted to budgets and A/B.
-    let worker_system_prompt=if job["input"]["rsiSystemEvolution"]==true {
+    let descendant_prompt=if job["input"]["rsiSystemEvolution"]==true {
         let source=job["input"]["rsiSourceDir"].as_str()
-            .ok_or("후손 실행 소스 경로가 없습니다.")?;
-        let own=crate::engine::rsi_system::blueprint(
-            Path::new(source),&commit,&history);
-        if job["input"]["rsiSystemBlueprint"].is_object()
-            && own!=job["input"]["rsiSystemBlueprint"] {
-            return Err("후손의 시스템 자기모형과 생성기 소스가 다릅니다.".into());
+            .ok_or("후손 소스 폴더가 없습니다.")?.to_string();
+        let blueprint=crate::engine::rsi_system::blueprint(
+            Path::new(&source),&commit,&history);
+        if blueprint!=job["input"]["rsiSystemBlueprint"] {
+            return Err("후손 소스 자기모형이 컴파일된 계획과 일치하지 않습니다.".into());
         }
-        let directive=crate::engine::rsi_system::improvement_directive(&history);
-        if job["input"]["rsiImprovementDirective"]!=directive {
-            return Err("후손의 학습 지시가 독립적으로 저장된 세대 기록과 다릅니다.".into());
+        let expected=crate::engine::rsi_system::improvement_directive(&history);
+        if job["input"]["rsiImprovementDirective"]!=expected {
+            return Err("후손 실패 학습 지시와 실제 세대 기록이 다릅니다.".into());
         }
-        job["input"]["rsiSystemBlueprint"]=own.clone();
         job["rsiSystemBlueprintVerified"]=json!(true);
         job["rsiImprovementDirectiveVerified"]=json!(true);
         state.store.audit("rsi.descendant_system_runtime",json!({
             "jobId":job_id,"generatorCommit":commit,
             "source":"compiled_successor_planning_and_context",
-            "architectureComponents":own["architecture"].as_array().map(Vec::len),
-            "sourceTreeSha256":own["sourceTreeSha256"],
-            "improvementDirective":directive["mode"]
+            "architectureComponents":blueprint["architecture"].as_array().map(Vec::len),
+            "sourceTreeSha256":blueprint["sourceTreeSha256"],
+            "improvementDirective":expected["mode"]
         }));
-        let instruction=crate::engine::rsi_system::instruction(
-            &own,job["input"]["rsiObjective"].as_str().unwrap_or(""));
-        format!("{instruction}\n\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
-    } else {
-        job["input"]["prompt"].as_str().unwrap_or("").to_string()
-    };
+        let campaign_record=state.store.get("rsi_campaign",&campaign)
+            .unwrap_or(Value::Null);
+        // Recompute the context from the NEW generator's code. A previous
+        // resident server can neither select the prompt nor re-inject stale
+        // source excerpts as purported evidence.
+        let observed=generation_context(&state,&job["input"],&campaign_record);
+        let research=research_digest(&state,&job["input"],&campaign_record);
+        // Neutral archived source is inherited AFTER the campaign checkout.
+        // A pre-inheritance excerpt belongs to the wrong bytes and SHA.
+        // Give the model a fresh-read instruction instead of stale source.
+        let focus=if job["input"]["rsiInheritedCandidateId"].is_string() {
+            "중립 후속 후보가 별도 작업공간에 적용됩니다. 이전 소스 발췌와 해시는 변경 전 버전입니다. workspace_read_range로 현재 원문과 sourceSha256을 확인한 뒤 편집하세요.".to_string()
+        }else{
+            focus_file_context(&state,&json!({"labDir":source}),&job["input"])
+        };
+        let capsule=|text:&str,limit:usize|text.chars().take(limit).collect::<String>();
+        let owner=state.store.get("job",&campaign)
+            .and_then(|parent|parent["input"]["rsiObjective"].as_str()
+                .map(str::to_string)).unwrap_or_default();
+        format!("{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nOWNER OBJECTIVE: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
+            crate::engine::rsi_system::instruction(&blueprint,&owner),
+            expected,owner,capsule(&observed,3500),
+            capsule(&research,3500),capsule(&focus,6000))
+    } else {job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
-        &worker_system_prompt, &domain, &capability,
+        &descendant_prompt, &domain, &capability,
         &history, job["input"]["rsiRemainingCampaignTokens"].as_u64()
     );
     let (prompt, plan) = match prepared {
