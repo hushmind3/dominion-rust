@@ -6,10 +6,6 @@ name: Sub1 Codex whole-system redesign candidate
 # This account owns a personal repository, so configure a user-owned fine-
 # grained PAT with Account > Copilot Requests as SUB1_COPILOT_PAT.
 on:
-  push:
-    branches: [dominion-sub1]
-    paths:
-      - .github/workflows/sub1-codex-system-redesign.yml
   workflow_dispatch:
     inputs:
       model:
@@ -25,13 +21,8 @@ permissions:
   contents: read
 
 jobs:
-  workflow-check:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    steps:
-      - run: echo 'Copilot manual/opt-in workflow registered on Sub1; model inference not triggered by default.'
   codex-source-candidate:
-    if: github.ref_name == 'dominion-sub1' && (github.event_name == 'workflow_dispatch' || vars.SUB1_COPILOT_ENABLE == 'true')
+    if: github.ref_name == 'dominion-sub1'
     runs-on: ubuntu-24.04
     timeout-minutes: 80
     env:
