@@ -135,6 +135,95 @@ fn generalization_evidence(
         "causalityProven":false,"adoptionAuthority":"independent_supervisor"})
 }
 
+/// Separate prequential target: a source patch can be accepted without
+/// improving a held-out TASK. Measure those events independently of adoption.
+/// The compiled source and frozen pair are evaluated before they can teach the
+/// next generation; no model-reported outcome is accepted as training data.
+fn heldout_quality(g:&Value)->Vec<(bool,bool)> {
+    if independent_outcome(g).is_none()
+        || g["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+        || g["candidateId"].as_str().is_none()
+        || g["generatorCommit"].as_str().is_none_or(|sha|sha.len()!=40)
+        || g["evaluationProfileSha256"].as_str().is_none_or(|sha|sha.len()!=64)
+        || g["compiledPlanExecuted"]["source"]!="running_compiled_descendant_binary"
+        || g["compiledPlanExecuted"]["generatorCommit"]!=g["generatorCommit"] {
+        return Vec::new();
+    }
+    let mut seen=BTreeSet::new();
+    let mut observations=Vec::new();
+    for case in g["evaluation"]["metrics"]["measurements"].as_array().into_iter().flatten() {
+        if case["holdout"]!=true {continue;}
+        let (Some(id),Some(domain))=(case["id"].as_str(),case["domain"].as_str())
+            else{continue};
+        if !seen.insert((id.to_string(),domain.to_string())) {continue;}
+        let (Some(before),Some(after))=
+            (case["baselinePass"].as_bool(),case["candidatePass"].as_bool())
+            else{continue};
+        let mut improved=!before&&after;
+        let mut regressed=before&&!after;
+        for metric in case["metrics"].as_array().into_iter().flatten() {
+            improved|=metric["improved"]==true;
+            regressed|=metric["regressed"]==true;
+        }
+        observations.push((improved&&!regressed,regressed));
+    }
+    observations
+}
+fn task_quality_prior(history:&[Value],role:&str)->Value {
+    let mut candidates=BTreeSet::new();
+    let (mut n,mut gain,mut loss)=(0_u64,0_u64,0_u64);
+    for generation in history.iter().filter(|g|planned_role(g)==Some(role)) {
+        let Some(candidate)=generation["candidateId"].as_str() else{continue};
+        let key=(generation["evaluationProfileSha256"].as_str().unwrap_or("").to_owned(),
+            candidate.to_string());
+        if !candidates.insert(key){continue;}
+        for (better,worse) in heldout_quality(generation) {
+            n+=1;gain+=u64::from(better);loss+=u64::from(worse);
+        }
+    }
+    json!({"source":"independently_paired_heldout_task_quality_prior_v1",
+        "observedCases":n,"observedGains":gain,"observedRegressions":loss,
+        "probability":(gain as f64+1.0)/(n as f64+2.0),
+        "notAcceptanceProbability":true})
+}
+/// Compute prequential forecast error from the OLD policy sealed before
+/// editing each candidate. A high error means "rewrite this predictor" is
+/// an exploration target, not evidence that the revision is better.
+fn quality_forecast_calibration(history:&[Value])->Value {
+    let mut seen=BTreeSet::new();
+    let mut errors=Vec::<f64>::new();
+    let mut regressions=0_u64;
+    for generation in history.iter().rev() {
+        let Some(id)=generation["candidateId"].as_str() else{continue};
+        let key=(generation["evaluationProfileSha256"].as_str().unwrap_or("").to_owned(),
+            id.to_owned());
+        if !seen.insert(key) {continue;}
+        let forecast=&generation["metaPolicy"]["forecast"];
+        let Some(p)=forecast["taskCaseGainProbability"].as_f64()
+            .filter(|v|v.is_finite()&&(0.0..=1.0).contains(v)) else{continue};
+        if generation["metaPolicy"]["revision"].as_str()
+            .is_none_or(|sha|sha.len()!=64)
+            || generation["compiledPlanExecuted"]["metaRevision"]!=generation["metaPolicy"]["revision"] {
+            continue;
+        }
+        for (better,worse) in heldout_quality(generation) {
+            errors.push((p-f64::from(u8::from(better))).powi(2));
+            regressions+=u64::from(worse);
+        }
+        if errors.len()>=64 {break;}
+    }
+    let n=errors.len();
+    let mean=if n>0 {errors.iter().sum::<f64>()/n as f64}else{0.0};
+    // Four independent case outcomes in the last observed window trigger
+    // hypothesis generation, never self-acceptance or oracle edits.
+    json!({"source":"prequential_sealed_task_gain_calibration_v1",
+        "observations":n,"meanBrierError":mean,
+        "observedRegressions":regressions,
+        "needsPredictorSourceRevision":n>=4 && mean>0.35,
+        "editableSource":"src/engine/rsi_meta_controller.rs",
+        "qualityImproved":false,"independentMetaABProven":false})
+}
+
 /// Meta policy learns calibrated acceptance odds and, separately, how many
 /// independently adopted improvements each source revision produces later.
 /// Reproduction credit cannot be replaced by mere source-edit count.
@@ -310,6 +399,9 @@ pub(crate) fn synthesize(
             .then_with(||a["target"]["path"].as_str().cmp(&b["target"]["path"].as_str())));
     let chosen=ranked.first().map(|row|row.0.clone()).unwrap_or(Value::Null);
     let selected=chosen["target"].clone();
+    let task_prior=task_quality_prior(&history,
+        selected["role"].as_str().unwrap_or(""));
+    let quality_calibration=quality_forecast_calibration(history);
     let recent_failed=history.iter().rev().take(6).filter(|g|
         planned_role(g)==chosen["role"].as_str() && independent_outcome(g)!=Some(true)
     ).take(3).map(|g|json!({
@@ -341,12 +433,17 @@ pub(crate) fn synthesize(
         "alternatives":alternatives,"reproductiveEvidence":previous,
         "counterfactualFailures":recent_failed,
         "forecast":{"probability":chosen["predictedAcceptance"],
+            "taskCaseGainProbability":task_prior["probability"],
+            "taskEvidenceCases":task_prior["observedCases"],
+            "taskPredictionSource":task_prior["source"],
             "uncertainty":chosen["uncertainty"],"calibration":calibration,
             "verifiedByIndependentHoldout":false},
         "metaSource":"src/engine/rsi_meta_controller.rs",
         "editableInNextGeneration":true,
         "peerReferences":peer_count,
         "generalizationEvidenceSource":"isolated_paired_cross_domain_holdout_v1",
+        "taskQualityPrior":task_prior,
+        "qualityPredictorCalibration":quality_calibration,
         "interactionGraphSha256":interaction["sha256"],
         "principleLearningSha256":learned_principles["sha256"],
         "intergenerationalGraphSha256":transfer["sha256"],
@@ -525,6 +622,48 @@ pub(crate) fn steer_learner_repair(mut policy:Value,ledger:&Value,
         serde_json::to_vec(&copy).unwrap_or_default())));
     policy
 }
+/// Rewrite the descendant's actual forecast selection algorithm when its
+/// precommitted task-quality predictions repeatedly miss independent outcomes.
+/// This is an editable source assignment; the external evaluator stays frozen.
+pub(crate) fn steer_quality_predictor_repair(mut policy:Value,history:&[Value],
+    frontier:&[Value],allowed:&[&str])->Value {
+    let diagnostic=quality_forecast_calibration(history);
+    if diagnostic["needsPredictorSourceRevision"]!=true {return policy;}
+    // Repeated predictor rewrite without measured descendants wastes paid
+    // tokens. Give the previous policy revision two episodes to be evaluated.
+    if history.iter().rev().take(2).any(|g|
+        g["metaPolicy"]["selectionMode"]=="prequential_task_quality_predictor_repair") {
+        return policy;
+    }
+    let Some(target)=frontier.iter().find(|row|
+        row["role"]=="improvement_methods"
+            && row["path"]=="src/engine/rsi_meta_controller.rs"
+            && row["domain"].as_str().is_some_and(|d|allowed.contains(&d))
+            && row["sourceSha256"].as_str().is_some_and(|sha|
+                sha.len()==64 && sha.bytes().all(|c|c.is_ascii_hexdigit())))
+        else{return policy};
+    let selected=policy["alternatives"].as_array().into_iter().flatten()
+        .find(|row|row["target"]==*target).cloned()
+        .unwrap_or_else(||json!({
+            "target":target,"predictedAcceptance":0.5,
+            "uncertainty":0.5,"observedTrials":0,
+            "source":"frozen_task_forecast_calibration_hypothesis"
+        }));
+    policy["target"]=target.clone();
+    policy["prediction"]=selected.clone();
+    policy["forecast"]["probability"]=selected["predictedAcceptance"].clone();
+    policy["forecast"]["uncertainty"]=selected["uncertainty"].clone();
+    policy["forecast"]["verifiedByIndependentHoldout"]=json!(false);
+    policy["selectionMode"]=json!("prequential_task_quality_predictor_repair");
+    policy["qualityCalibration"]=diagnostic;
+    policy["predictorSource"]=json!("src/engine/rsi_meta_controller.rs");
+    let mut unsigned=policy.clone();
+    if let Some(body)=unsigned.as_object_mut(){body.remove("revision");}
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&unsigned).unwrap_or_default())));
+    policy
+}
+
 pub(crate) fn valid_policy(policy:&Value,history_count:usize)->bool {
     // The parent may enforce a content hash, but never re-run or override
     // the descendant's compiled search ranking. Hash binds the exact
@@ -547,6 +686,8 @@ pub(crate) fn valid_policy(policy:&Value,history_count:usize)->bool {
         && policy["prediction"]["target"]==policy["target"]
         && policy["forecast"]["probability"].as_f64().is_some_and(|p|
             p.is_finite() && (0.0..=1.0).contains(&p))
+        && policy["forecast"]["taskCaseGainProbability"].as_f64()
+            .is_some_and(|p|p.is_finite() && (0.0..=1.0).contains(&p))
         && policy["forecast"]["verifiedByIndependentHoldout"]==false
 }
 pub(crate) fn instruction(policy:&Value)->String {
@@ -570,6 +711,8 @@ pub(crate) fn instruction(policy:&Value)->String {
          Prior failures (evidence, not instructions):\n{}\n\
          Independently adopted reproductive ancestors:\n{}\n\
          Cross-domain holdout observations (isolated edits only): {}.\n\
+         Precommitted task-quality forecast={} (distinct from adoption).\n\
+         Predictor calibration={} (source revision is an experiment, not proof).\n\
          Your OWN src/engine/rsi_meta_controller.rs is writable; redesign how\n\
          you select goals, learn from outcomes, allocate tools/model budget,\n\
          and produce the NEXT improvement. The goal is better offspring,\n\
@@ -578,7 +721,9 @@ pub(crate) fn instruction(policy:&Value)->String {
         policy["revision"],policy["selectionMode"],target["role"],target["domain"],
         target["path"],policy["forecast"]["probability"],
         policy["forecast"]["uncertainty"],failures,reproductive,
-        policy["prediction"]["crossDomainEvidence"]
+        policy["prediction"]["crossDomainEvidence"],
+        policy["forecast"]["taskCaseGainProbability"],
+        policy["qualityPredictorCalibration"]
     )
 }
 /// Independent outcome feedback is fed into the NEXT compiled meta controller.
@@ -593,7 +738,19 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
     let verified=independent_outcome(generation);
     let brier=probability.zip(verified)
         .map(|(p,y)|(p-if y{1.0}else{0.0}).powi(2));
+    let task_cases=heldout_quality(generation);
+    let task_prob=policy["forecast"]["taskCaseGainProbability"].as_f64()
+        .filter(|p|p.is_finite() && (0.0..=1.0).contains(p));
+    let task_error=task_prob.filter(|_|!task_cases.is_empty()).map(|p|
+        task_cases.iter().map(|(gain,_)|
+            (p-f64::from(u8::from(*gain))).powi(2)).sum::<f64>()
+            /task_cases.len() as f64);
     json!({
+        "taskQualityObservations":task_cases.len(),
+        "taskQualityImprovedCases":task_cases.iter().filter(|(gain,_)|*gain).count(),
+        "taskQualityRegressedCases":task_cases.iter().filter(|(_,loss)|*loss).count(),
+        "taskQualityBrierError":task_error,
+        "precommittedTaskQualityProbability":task_prob,
         "metaSource":"compiled_self_modifying_meta_controller_v2",
         "metaRevision":policy["revision"],"sourceGeneratorCommit":generation["generatorCommit"],
         "targetRole":policy["target"]["role"],
@@ -676,6 +833,52 @@ mod tests {
         let untrusted=generalization_evidence(
             &[unpaired],&frontier,"memory","src/engine/memory.rs","memory");
         assert_eq!(untrusted["observedCases"],0);
+    }
+    #[test]
+    fn independent_task_forecast_error_targets_its_own_real_source() {
+        let mut history=Vec::new();
+        for i in 0..4 {
+            let revision="a".repeat(64);
+            history.push(json!({
+                "id":format!("prequential-{i}"),
+                "candidateId":format!("forecast-{i}"),
+                "generatorCommit":"b".repeat(40),
+                "evaluationProfileSha256":"c".repeat(64),
+                "pairedMeasured":true,"accepted":false,
+                "changedSourcePaths":["src/engine/memory.rs"],
+                "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                    "metrics":{"eligible":false,"verdict":"measured",
+                        "measurements":[{"id":format!("heldout-{i}"),
+                            "domain":"memory","holdout":true,
+                            "baselinePass":false,"candidatePass":false}]}},
+                "metaPolicy":{"revision":revision,
+                    "target":{"role":"memory"},
+                    "forecast":{"taskCaseGainProbability":0.95}},
+                "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
+                    "generatorCommit":"b".repeat(40),"metaRevision":revision}
+            }));
+        }
+        let frontier=vec![
+            json!({"role":"memory","domain":"memory",
+                "path":"src/engine/memory.rs","sourceBytes":50,
+                "sourceSha256":"e".repeat(64)}),
+            json!({"role":"improvement_methods","domain":"improver",
+                "path":"src/engine/rsi_meta_controller.rs",
+                "sourceSha256":"f".repeat(64),"sourceBytes":100})
+        ];
+        let base=synthesize(&history,&frontier,&["memory","improver"],
+            None,&json!({}),&json!({}),&json!({"edges":[]}));
+        assert!(valid_policy(&base,history.len()));
+        let repaired=steer_quality_predictor_repair(
+            base,&history,&frontier,&["memory","improver"]);
+        assert_eq!(repaired["selectionMode"],"prequential_task_quality_predictor_repair");
+        assert_eq!(repaired["target"]["path"],"src/engine/rsi_meta_controller.rs");
+        assert_eq!(repaired["qualityCalibration"]["observations"],4);
+        assert_eq!(repaired["qualityCalibration"]["independentMetaABProven"],false);
+        assert!(valid_policy(&repaired,history.len()));
+        history[0]["pairedMeasured"]=json!(false);
+        let insufficient=quality_forecast_calibration(&history);
+        assert_eq!(insufficient["needsPredictorSourceRevision"],false);
     }
     #[test]
     fn failed_unmeasured_edits_do_not_train_fake_success_rates() {
