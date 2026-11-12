@@ -1,0 +1,31 @@
+name: Champion inherited RSI evidence audit
+
+on:
+  push:
+    branches: [dominion-champion]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: champion-rsi-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lineage-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Recheck original generation commits, source hashes and paired logs
+        run: node scripts/champion-audit-inherited-rsi.mjs
+      - name: Label the evidence scope
+        run: |
+          echo '## Champion RSI lineage provenance' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Verified inherited Sub3 native 3-generation evidence against this branch Git history.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This is not a fresh Champion campaign or evidence of open-ended intelligence amplification.' >> "$GITHUB_STEP_SUMMARY"
