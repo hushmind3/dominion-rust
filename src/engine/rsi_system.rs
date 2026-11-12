@@ -477,6 +477,12 @@ pub(crate) fn validate_plan_evidence(
             return Err("대상이 없는 상호개선 계획에 실행 단계가 남았습니다.".into());
         }
     }
+    if !crate::engine::rsi_recursive_discovery::validate(
+        &plan["recursiveDiscovery"],frontier,commit,history.len(),
+        &blueprint["openTopology"],&plan["factorialCurriculum"],
+        &plan["mutualCurriculum"]) {
+        return Err("후손의 재귀 지능 발명·자기수정 계획 근거가 일치하지 않습니다.".into());
+    }
     if !crate::engine::rsi_causal_curriculum::valid(
         &plan["factorialCurriculum"],frontier,commit,history.len(),
         &plan["mutualCurriculum"]) {

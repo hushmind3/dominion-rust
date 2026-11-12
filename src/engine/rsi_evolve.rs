@@ -4024,6 +4024,7 @@ async fn run_loop(
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
             child_input["rsiMutualCurriculum"]=plan["mutualCurriculum"].clone();
             child_input["rsiFactorialCurriculum"]=plan["factorialCurriculum"].clone();
+            child_input["rsiRecursiveDiscovery"]=plan["recursiveDiscovery"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             record["nextGenerationPlan"]=plan.clone();
@@ -4200,6 +4201,8 @@ async fn run_loop(
         generation["mutualCurriculum"]=current["input"]["rsiMutualCurriculum"].clone();
         generation["factorialCurriculum"]=current["input"]["rsiFactorialCurriculum"].clone();
         generation["factorialPlanExecuted"]=current["rsiFactorialPlanExecuted"].clone();
+        generation["recursiveDiscovery"]=current["input"]["rsiRecursiveDiscovery"].clone();
+        generation["recursiveSciencePlanExecuted"]=current["rsiRecursiveSciencePlanExecuted"].clone();
         generation["mutualProgrammeExecuted"]=current["rsiMutualProgrammeExecuted"].clone();
         generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
         generation["comparisonProfileSha256"]=json!(
@@ -5412,6 +5415,20 @@ fn compiled_system_generation_plan(
         crate::engine::rsi_causal_curriculum::design(
             history,&mutual,&frontier,commit)
     };
+    let scientific=crate::engine::rsi_recursive_discovery::plan(
+        history,&frontier,&blueprint["openTopology"],&meta,
+        &factorial,&mutual,commit);
+    let phase=scientific["phase"].as_str().unwrap_or("");
+    let scientific_active=!explicit_focus
+        && scientific["target"].is_object()
+        && (matches!(phase,
+            "develop_invented_capability"|"return_to_origin"|"rewrite_discovery_method")
+            || !successor_stage.is_object());
+    let scientific_target=if scientific_active{
+        &scientific["target"]
+    }else{&Value::Null};
+    let scientific_domain=scientific_target["domain"].as_str()
+        .filter(|d|DOMAINS.contains(d)).map(str::to_string);
     let factorial_target=&factorial["selected"]["target"];
     let factorial_domain=factorial_target["domain"].as_str()
         .filter(|d|DOMAINS.contains(d)).map(str::to_string);
@@ -5421,7 +5438,7 @@ fn compiled_system_generation_plan(
         .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
     let continuation=if successor_domain.is_some()||inherited.is_some()
         ||architecture_domain.is_some(){None}else{research_continuation(history)};
-    let selected=successor_domain.or(factorial_domain)
+    let selected=scientific_domain.or(successor_domain).or(factorial_domain)
         .or(inherited.clone()).or(architecture_domain).or_else(||
         input["rsiSelectedDomain"].as_str()
             .filter(|domain|DOMAINS.contains(domain)).map(str::to_string));
@@ -5435,7 +5452,9 @@ fn compiled_system_generation_plan(
     // Keep the indexed source evidence and SHA attached to the actual
     // descendant-selected target. An inherited model design can change the
     // domain, in which case use that domain's indexed focus instead.
-    let preferred=if successor_stage["domain"]==domain {
+    let preferred=if scientific_active && scientific_target["domain"]==domain {
+        scientific_target["path"].as_str()
+    }else if successor_stage["domain"]==domain {
         successor_stage["path"].as_str()
     }else if factorial_target["domain"]==domain {
         factorial_target["path"].as_str()
@@ -5448,13 +5467,19 @@ fn compiled_system_generation_plan(
             let inherited_focus=successor_stage["path"]==path;
             let factorial_focus=factorial_target["path"]==path
                 && factorial_target["domain"]==domain;
-            let chosen=if inherited_focus{&successor_stage}else if factorial_focus{
-                factorial_target
-            }else{&architecture_target};
+            let scientific_focus=scientific_active
+                && scientific_target["path"]==path
+                && scientific_target["domain"]==domain;
+            let chosen=if scientific_focus{scientific_target}
+                else if inherited_focus{&successor_stage}
+                else if factorial_focus{factorial_target}
+                else{&architecture_target};
             let mut prioritised=json!({
                 "path":path,
                 "sourceHash":chosen["sourceSha256"],
-                "source":if inherited_focus {
+                "source":if scientific_focus{
+                    "compiled_recursive_discovery_experiment"
+                }else if inherited_focus {
                     "inherited_model_authored_successor_program"
                 }else if factorial_focus{"compiled_factorial_source_intervention"}
                 else{"compiled_architecture_frontier"},
@@ -5477,7 +5502,21 @@ fn compiled_system_generation_plan(
     // Both source modules enter the NATIVE edit context, not merely the
     // prompt text. The B module may belong to a different domain than A.
     let mut paths=Vec::<String>::new();
-    if factorial["selected"]["isolationRequired"]==true {
+    if scientific_active {
+        if let Some(path)=scientific_target["path"].as_str()
+            .filter(|p|crate::engine::rsi::safe_path(p)){
+            paths.push(path.to_string());
+        }
+        if phase=="invent_new_intelligence" {
+            for candidate in ["src/engine/rsi_evolve.rs","src/engine/mod.rs"] {
+                if paths.len()>=3{break;}
+                if !paths.iter().any(|p|p==candidate)
+                    && crate::engine::code_index::indexed_source_hash(
+                        state,input["rsiIndexId"].as_str().unwrap_or(""),candidate)
+                        .is_some(){paths.push(candidate.into());}
+            }
+        }
+    }else if factorial["selected"]["isolationRequired"]==true {
         if let (Some(path),Some(sha))=(
             factorial_target["path"].as_str(),factorial_target["sourceSha256"].as_str()) {
             if crate::engine::rsi::safe_path(path)
@@ -5500,7 +5539,10 @@ fn compiled_system_generation_plan(
             }
         }
     }
-    if factorial["selected"]["isolationRequired"]!=true{
+    if scientific_active {
+        // Invention may need a new module plus existing consumers; leave the
+        // execution target no broader than its SOURCE-GROUNDED programme.
+    }else if factorial["selected"]["isolationRequired"]!=true{
         for path in original_paths{
             if paths.len()>=3{break;}
             if !paths.iter().any(|p|p==path){paths.push(path.to_owned());}
@@ -5528,6 +5570,7 @@ fn compiled_system_generation_plan(
         "peerLineages":peers,
         "mutualCurriculum":mutual,
         "factorialCurriculum":factorial,
+        "recursiveDiscovery":scientific,
         "successorStage":successor_stage,
         "improvementDirective":directive,
         "decisionOwner":"rebuilt_descendant_binary",
@@ -5658,6 +5701,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || job["input"]["rsiPeerLineages"]!=plan["peerLineages"]
             || job["input"]["rsiMutualCurriculum"]!=plan["mutualCurriculum"]
             || job["input"]["rsiFactorialCurriculum"]!=plan["factorialCurriculum"]
+            || job["input"]["rsiRecursiveDiscovery"]!=plan["recursiveDiscovery"]
             || job["input"]["rsiSuccessorStage"]!=plan["successorStage"]
             || job["input"]["rsiSystemBlueprint"]!=plan["systemBlueprint"]
             || job["input"]["rsiImprovementDirective"]!=plan["improvementDirective"]
@@ -5675,6 +5719,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             plan["mutualCurriculum"]["pair"].is_object());
         job["rsiFactorialPlanExecuted"]=json!(
             plan["factorialCurriculum"]["selected"].is_object());
+        job["rsiRecursiveSciencePlanExecuted"]=json!(
+            plan["recursiveDiscovery"]["target"].is_object());
         state.store.audit("rsi.descendant_system_runtime",json!({
             "jobId":job_id,"generatorCommit":commit,
             "source":"same_compiled_descendant_recomputed_its_own_policy",
@@ -5689,6 +5735,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "reciprocalCurriculum":plan["mutualCurriculum"]["revision"],
             "factorialCurriculum":plan["factorialCurriculum"]["sha256"],
             "factorialPhase":plan["factorialCurriculum"]["selected"]["phase"],
+            "recursiveDiscoveryRevision":plan["recursiveDiscovery"]["revision"],
+            "recursiveDiscoveryPhase":plan["recursiveDiscovery"]["phase"],
             "forecast":plan["metaPolicy"]["taskOutcomeForecast"],
             "rankingAuthority":"compiled_descendant_not_resident_supervisor"
         }));
@@ -5778,6 +5826,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiFactorialCurriculum"]);
         let topology_instruction=crate::engine::rsi_open_topology::instruction(
             &job["input"]["rsiSystemBlueprint"]["openTopology"]);
+        let discovery_instruction=crate::engine::rsi_recursive_discovery::instruction(
+            &job["input"]["rsiRecursiveDiscovery"]);
         let target=job["input"]["rsiDescendantPlan"]["architectureTarget"].clone();
         let inherited_step=job["input"]["rsiSuccessorStage"].clone();
         let inherited_task=if let Some(objective)=inherited_step["objective"].as_str(){
@@ -5796,8 +5846,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         format!("{}\n\nNEXT SOURCE-EDIT ACTION: {}\n\nREAL PREDECESSOR RESULTS:\n{}\n\nTARGET COMPONENT IN MY COMPILED PLAN: {}\n\nCURRENT SOURCE WITH REAL LINE NUMBERS AND sourceSha256:\n{}\n\nPRIOR RESEARCH (not current source):\n{}\n\nYou have the current source now. Start with rsi_system_plan and perform a concrete workspace_replace or workspace_replace_function on the indicated file. Do not loop over code_search or workspace_read_range when the source excerpt is sufficient.",
             format!("{}\n\n{}\n{}\n{}\n{}\n{}",crate::engine::rsi_system::instruction(
                 &job["input"]["rsiSystemBlueprint"],&objective),
-                meta_instruction,peer_instruction,mutual_instruction,
-                factorial_instruction,topology_instruction),
+                meta_instruction,peer_instruction,
+                if job["input"]["rsiRecursiveDiscovery"]["target"].is_object(){
+                    String::new()
+                }else{mutual_instruction},
+                if job["input"]["rsiRecursiveDiscovery"]["target"].is_object(){
+                    String::new()
+                }else{factorial_instruction},
+                topology_instruction,discovery_instruction),
             job["input"]["rsiImprovementDirective"],feedback,target,
             current_source,format!("{research}{inherited_task}"))
     }else{
