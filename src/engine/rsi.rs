@@ -485,30 +485,70 @@ fn generation_proof(state:&AppState,generation:&Value)
     Some((commit.to_string(),meta,improved))
 }
 
+/// A model-driven successor requires an actual provider call and a verified
+/// model-origin source write whose FINAL bytes were adopted. Native mutation
+/// may establish source improvement, but is never proof that an API model
+/// generated an improvement, even if it independently passes A/B evaluation.
+pub(crate) fn model_driven_generation_provenance(g:&Value)->bool {
+    if g["accepted"]!=true
+        || g["candidateOrigin"]!="model_driven_detached_worktree"
+        || g["tokenUsage"]["calls"].as_u64().unwrap_or(0)==0
+        || g["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)==0 {
+        return false;
+    }
+    let Some(hashes)=g["acceptedSourceHashes"].as_object()else{return false};
+    g["toolTimeline"].as_array().is_some_and(|operations|
+        operations.iter().any(|op|{
+            let accepted=op["path"].as_str()
+                .and_then(|path|hashes.get(path))
+                .and_then(Value::as_str);
+            op["status"]=="completed"
+                && op["result"]["written"]==true
+                && op["toolReceipt"]["verified"]==true
+                && matches!(op["tool"].as_str(),
+                    Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))
+                && accepted.is_some_and(|sha|
+                    sha.len()==64 && sha.bytes().all(|byte|byte.is_ascii_hexdigit())
+                        && op["result"]["postSha256"].as_str()==Some(sha))
+        }))
+}
+
+/// General source evolution and MODEL-driven source evolution are distinct
+/// claims. Neither a zero-call native generation nor an unverified patch can
+/// qualify for the latter even when the general archive adopts it.
+fn capability_proven_with_origin(state:&AppState, history:&[Value], model_only:bool)->bool {
+    let mut chain: Vec<(String, bool, BTreeSet<String>)> = Vec::new();
+    for generation in history {
+        let Some(generator)=generation["generatorCommit"].as_str().filter(|s|sha(s))
+            else{chain.clear();continue;};
+        if model_only && !model_driven_generation_provenance(generation) {
+            chain.clear();continue;
+        }
+        let Some(proof)=generation_proof(state,generation)
+            else{chain.clear();continue;};
+        if chain.last().is_some_and(|(prior,_,_)|prior!=generator){
+            chain.clear();
+        }
+        chain.push(proof);
+        if chain.len()>=3 && chain.windows(3).any(|window|
+            window.iter().enumerate().any(|(i,(_,meta,domains))|
+                *meta && window[i+1..].iter().any(|(_,_,successor_domains)|
+                    successor_domains.iter().any(|domain|
+                        domain!="improver" && !domains.contains(domain))))) {
+            return true;
+        }
+    }
+    false
+}
+pub fn model_driven_capability_proven(state:&AppState,history:&[Value])->bool{
+    capability_proven_with_origin(state,history,true)
+}
+
 /// Three accepted patches alone do not demonstrate recursive intelligence.
 /// Require exact generator succession, independently measured holdout gains,
 /// a self-improver change, and subsequent transfer into another capability.
 pub fn capability_proven(state: &AppState, history: &[Value]) -> bool {
-    let mut chain: Vec<(String, bool, BTreeSet<String>)> = Vec::new();
-    for generation in history {
-        let Some(generator) = generation["generatorCommit"].as_str().filter(|s|sha(s)) else {
-            chain.clear(); continue;
-        };
-        let Some(proof) = generation_proof(state,generation) else {
-            chain.clear(); continue;
-        };
-        if chain.last().is_some_and(|(prior,_,_)|prior!=generator) {
-            chain.clear();
-        }
-        chain.push(proof);
-        if chain.len() >= 3 && chain.windows(3).any(|window|
-            window.iter().enumerate().any(|(i,(_,meta,domains))|
-                *meta && window[i+1..].iter().any(|(_,_,successor_domains)|
-                    successor_domains.iter().any(|domain|
-                        domain!="improver" && !domains.contains(domain)))))
-        { return true; }
-    }
-    false
+    capability_proven_with_origin(state,history,false)
 }
 
 /// Gather every inherited segment of a campaign in lineage order.
@@ -542,6 +582,9 @@ fn lineage_history(state:&AppState,campaign:&Value)->Vec<Value> {
 /// work branch and selected descendant. A reused goal label proves nothing.
 pub fn campaign_capability_proven(state:&AppState, campaign:&Value)->bool {
     capability_proven(state,&lineage_history(state,campaign))
+}
+pub fn campaign_model_driven_capability_proven(state:&AppState,campaign:&Value)->bool{
+    model_driven_capability_proven(state,&lineage_history(state,campaign))
 }
 
 /// Re-run the capability gate over stored evidence and report every generation
@@ -579,6 +622,10 @@ pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
             "acceptedCommit":generation["acceptedCommit"],
             "target":candidate.as_ref().and_then(|candidate|candidate["target"].as_str()),
             "independentReceipt":proof.is_some(),
+            "modelProviderCalls":generation["tokenUsage"]["calls"],
+            "modelDrivenSourceWriteProvenance":
+                proof.is_some() && model_driven_generation_provenance(generation),
+            "sourceImprovementOrigin":generation["candidateOrigin"],
             "metaTransfer":proof.as_ref().is_some_and(|(_,meta,_)|*meta),
             "regressions":metrics.as_ref().and_then(|metrics|metrics["regressions"].as_u64()),
             "improvedHoldoutDomains":metrics.as_ref().map(|metrics|metrics["improvedHoldoutDomains"].clone()),
@@ -589,6 +636,8 @@ pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
     json!({
         "campaignId":campaign["id"],
         "capabilityDemonstrated":campaign_capability_proven(state,campaign),
+        "modelDrivenCapabilityDemonstrated":
+            campaign_model_driven_capability_proven(state,campaign),
         "verifiedStreak":verified_best,
         "required":{"verifiedStreak":3,"holdoutDomains":1,"metaTransfer":true},
         "generations":rows,
@@ -840,5 +889,37 @@ mod tests {
         p["cases"][0]["metrics"][0]["minRelativeGain"]=json!(0.01);
         assert_ne!(propose(&state,&p).unwrap()["id"],candidate["id"],"a different oracle cannot reuse a verified candidate identity");
         let _=std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod model_driven_origin_audit_tests{
+    use super::*;
+    #[test]
+    fn zero_model_calls_never_become_model_driven_success(){
+        let mut g=json!({
+            "accepted":true,"candidateOrigin":"native_inductive_source_mutation",
+            "tokenUsage":{"calls":0},"editEvidence":{"verifiedWrites":0},
+            "acceptedSourceHashes":{"src/engine/memory.rs":"a".repeat(64)}
+        });
+        assert!(!model_driven_generation_provenance(&g));
+        g["candidateOrigin"]=json!("model_driven_detached_worktree");
+        assert!(!model_driven_generation_provenance(&g));
+        g["tokenUsage"]["calls"]=json!(1);
+        g["editEvidence"]["verifiedWrites"]=json!(1);
+        assert!(!model_driven_generation_provenance(&g),
+            "model calls alone are not verified code edits");
+        g["toolTimeline"]=json!([{"tool":"workspace_replace_range",
+            "status":"completed","path":"src/engine/memory.rs",
+            "result":{"written":true,"postSha256":"a".repeat(64)},
+            "toolReceipt":{"verified":true}}]);
+        assert!(model_driven_generation_provenance(&g));
+        g["toolTimeline"][0]["result"]["postSha256"]=json!("b".repeat(64));
+        assert!(!model_driven_generation_provenance(&g),
+            "a model-written intermediate byte sequence is not adopted source");
+        g["toolTimeline"][0]["result"]["postSha256"]=json!("a".repeat(64));
+        g["candidateOrigin"]=json!("native_inductive_source_mutation");
+        assert!(!model_driven_generation_provenance(&g),
+            "native source mutations never become API model improvements");
     }
 }
