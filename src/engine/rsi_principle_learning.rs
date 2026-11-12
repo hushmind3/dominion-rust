@@ -419,15 +419,34 @@ pub(crate) fn estimate(ledger:&Value,node:&Value)->Value {
     let mechanism=node["mechanism"].as_str().unwrap_or("");
     let row=ledger["principles"].as_array().into_iter().flatten()
         .find(|row|row["mechanism"]==mechanism);
-    let trials=row.and_then(|r|r["measuredCases"].as_u64()).unwrap_or(0);
-    let descendant_cases=row.and_then(|r|r["nextGenerationCases"].as_u64())
+    // A previously unseen mechanism can inherit a predictive PRIOR
+    // from a model-invented abstraction shared by at least two separately
+    // evaluated mechanisms. Pick one supported factor to avoid counting
+    // the same underlying task case multiple times through overlapping tags.
+    let factor=if row.is_none() {
+        ledger["transferFeatures"].as_array().into_iter().flatten()
+            .filter(|feature|feature["transferEligible"]==true
+                && node["principleKeys"].as_array().is_some_and(|keys|
+                    keys.iter().any(|k|k==&feature["key"])))
+            .max_by(|a,b|a["independentMechanisms"].as_u64()
+                .cmp(&b["independentMechanisms"].as_u64())
+                .then_with(||a["measuredCases"].as_u64()
+                    .cmp(&b["measuredCases"].as_u64())))
+    }else{None};
+    let evidence=row.or(factor);
+    let evidence_source=if row.is_some(){"exact_executed_mechanism"}
+        else if factor.is_some(){"cross_mechanism_transferable_principle"}
+        else{"unmeasured_prior"};
+    let trials=evidence.and_then(|r|r["measuredCases"].as_u64()).unwrap_or(0);
+    let descendant_cases=evidence.and_then(|r|r["nextGenerationCases"].as_u64())
         .unwrap_or(0);
-    let quality=row.and_then(|r|r["posteriorCaseGain"].as_f64()).unwrap_or(0.5);
-    let future=row.and_then(|r|r["posteriorDescendantGain"].as_f64()).unwrap_or(0.5);
-    let regressions=row.and_then(|r|r["regressedCases"].as_u64()).unwrap_or(0);
-    let child_regressions=row.and_then(|r|r["nextGenerationRegressions"].as_u64())
+    let quality=evidence.and_then(|r|r["posteriorCaseGain"].as_f64()).unwrap_or(0.5);
+    let future=evidence.and_then(|r|r["posteriorDescendantGain"].as_f64()).unwrap_or(0.5);
+    let regressions=evidence.and_then(|r|r["regressedCases"].as_u64()).unwrap_or(0);
+    let child_regressions=evidence.and_then(|r|r["nextGenerationRegressions"].as_u64())
         .unwrap_or(0);
-    let breadth=row.and_then(|r|r["domains"].as_array()).map(Vec::len).unwrap_or(0);
+    let breadth=evidence.and_then(|r|r["domains"].as_array()).map(Vec::len)
+        .unwrap_or(0);
     let novelty=0.16 / ((trials+1) as f64).sqrt();
     let risk=(regressions+child_regressions) as f64
         / ((trials+descendant_cases).max(1) as f64);
@@ -441,6 +460,9 @@ pub(crate) fn estimate(ledger:&Value,node:&Value)->Value {
         "futureDescendantPosterior":future,
         "measuredCases":trials,"nextGenerationCases":descendant_cases,
         "noveltyExploration":novelty,"crossTaskBreadth":breadth,
+        "learnedEvidenceSource":evidence_source,
+        "transferredPrincipleKey":factor.map(|r|r["key"].clone()),
+        "crossMechanismGeneralizationIsHypothesis":factor.is_some(),
         "penaltyFromRegressions":risk,
         "predictionNotIndependentProof":true
     })
