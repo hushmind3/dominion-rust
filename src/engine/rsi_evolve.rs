@@ -3347,6 +3347,8 @@ async fn run_loop(
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
         generation["recursivePolicyExecuted"]=
             current["input"]["rsiMetaPolicy"]["recursiveProgram"].clone();
+        generation["principlePolicyExecuted"]=
+            current["input"]["rsiMetaPolicy"]["principleLearning"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
         generation["comparisonProfileSha256"]=json!(
             crate::engine::rsi_lineage_transfer::profile(&current["input"]));
@@ -3547,6 +3549,9 @@ async fn run_loop(
         generation["pairedRevalidated"]=independently_checked["pairedRevalidated"].clone();
         generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
             &generation["metaPolicy"],independently_checked);
+        generation["principleLearningFeedback"]=
+            crate::engine::rsi_principle_learning::feedback(
+                &generation["metaPolicy"],independently_checked);
         let mut lineage=history.clone();
         lineage.push(independently_checked.clone());
         generation["reciprocalCycleEvidence"]=json!(
@@ -4198,6 +4203,8 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let auto=parent["input"]["selectionPolicy"]=="automatic";
     let inherited_meta=crate::engine::rsi_recursive_rewrite::reconfigure(
         &history,&frontier,inherited_meta,&permitted,auto,stage.is_object());
+    let inherited_meta=crate::engine::rsi_principle_learning::recompose(
+        &history,&frontier,inherited_meta,&permitted,auto,stage.is_object());
     let initial_symbiosis=crate::engine::rsi_symbiosis::curriculum(
         &history,&frontier,&inherited_meta,&permitted);
     let profile=crate::engine::rsi_lineage_transfer::profile(&peer_input);
@@ -4220,6 +4227,9 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let isolation_debt=inherited_meta["selectionEvidence"]["causalCredit"]
         ["requiresIsolation"]==true;
     let factorial_active=auto && stage.is_null()
+        // A learned principle experiment has to execute on its selected
+        // source; otherwise its downstream payoff can never be observed.
+        && inherited_meta["principleLearning"]["active"]!=true
         // Complete an actual descendant meta-code rewrite before allowing
         // a speculative factorial schedule to replace its source target.
         && !(inherited_meta["recursiveProgram"]["active"]==true
@@ -4246,6 +4256,14 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         meta["revision"]=json!(format!("{:x}",Sha256::digest(
             serde_json::to_vec(&json!([prior,meta["recursiveProgram"],meta["target"]]))
                 .unwrap_or_default())));
+    }
+    // A later empirically selected principle supersedes only the targeting
+    // action, not an already independently measured recursive source receipt.
+    if meta["principleLearning"]["active"]==true
+        && meta["recursiveProgram"]["active"]==true
+        && meta["recursiveProgram"]["selectedMethodOrCapability"]!=meta["target"]{
+        meta["recursiveProgram"]["active"]=json!(false);
+        meta["recursiveProgram"]["deferredBy"]=json!("principle_generalization_trial");
     }
     let architecture_target=meta["target"].clone();
     // The same compiled child can rewrite its coupling search algorithm.
@@ -4547,6 +4565,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiMetaPolicy"]);
         let recursive_directive=crate::engine::rsi_recursive_rewrite::instruction(
             &job["input"]["rsiMetaPolicy"]);
+        let principle_directive=crate::engine::rsi_principle_learning::instruction(
+            &job["input"]["rsiMetaPolicy"]);
         let peer_context=crate::engine::rsi_lineage_transfer::instruction(
             &job["input"]["rsiPeerLineages"]);
         let mutual_context=crate::engine::rsi_symbiosis::instruction(
@@ -4560,7 +4580,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 stage["path"],stage["sourceSha256"],stage["learningPolicy"],
                 stage["toolPolicy"],stage["executionPolicy"])
         }else{String::new()};
-        format!("{directive}\n{meta_directive}\n{recursive_directive}\n{peer_context}\n{mutual_context}\n{factorial_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+        format!("{directive}\n{meta_directive}\n{recursive_directive}\n{principle_directive}\n{peer_context}\n{mutual_context}\n{factorial_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
         &system_prompt, &domain, &capability,

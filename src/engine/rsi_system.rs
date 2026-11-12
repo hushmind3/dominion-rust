@@ -11,7 +11,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_symbiosis.rs","src/engine/rsi_intervention_lab.rs","src/engine/rsi_recursive_rewrite.rs"]),
+    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_symbiosis.rs","src/engine/rsi_intervention_lab.rs","src/engine/rsi_recursive_rewrite.rs","src/engine/rsi_principle_learning.rs"]),
     ("model_architecture",&["src/engine/models.rs","src/engine/llm.rs","src/engine/cli_model.rs","src/engine/learning.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
@@ -528,6 +528,12 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
         evaluator alone decides adoption; do not edit the evaluator. \
+        When a genuine NEW improvement mechanism is implemented, submit \
+        improvementPrinciples with id, mechanism, falsifier, prediction, \
+        methodPaths, targetRoles, transferDomains and composedFrom. The \
+        accepted descendant will evaluate subsequent cross-domain effects \
+        and can synthesize NEW mechanisms from prior verified outcomes. \
+        Do not credit a good hypothesis as an actual learned improvement. \
         The accepted source will be compiled as your successor, which must \
         design and execute the subsequent change.\n\
         Source architecture (representatives; the full repository is searchable):\n{}\n\
@@ -800,6 +806,57 @@ pub(crate) fn propose(
                 "executionPolicy":execution,"qualityProven":false}));
         }
     }
+    // Invented algorithmic principles must be backed by ACTUAL editable
+    // implementation paths. Their downstream impact is learned by compiled
+    // descendants, never inferred from their description alone.
+    let mut improvement_principles=Vec::<Value>::new();
+    if let Some(rows)=body["improvementPrinciples"].as_array(){
+        if rows.len()>8 {return Err("한 세대의 새로운 개선 원리는 최대 8개입니다.".into());}
+        let mut seen=std::collections::BTreeSet::new();
+        for row in rows {
+            let id=row["id"].as_str().filter(|id|
+                (4..=64).contains(&id.len()) && id.bytes().all(|c|
+                    c.is_ascii_alphanumeric()||c==b'_'||c==b'-'))
+                .ok_or("개선 원리 식별자가 올바르지 않습니다.")?;
+            if !seen.insert(id){return Err("개선 원리 ID가 중복됩니다.".into());}
+            let mechanism=row["mechanism"].as_str().filter(|s|
+                (25..=1800).contains(&s.chars().count()))
+                .ok_or("새 개선 원리에는 실행 메커니즘이 필요합니다.")?;
+            let falsifier=row["falsifier"].as_str().filter(|s|
+                (20..=1000).contains(&s.chars().count()))
+                .ok_or("원리의 실패를 판정할 관찰 조건이 필요합니다.")?;
+            let prediction=row["prediction"].as_str().filter(|s|
+                (20..=1000).contains(&s.chars().count()))
+                .ok_or("다음 세대에서 확인할 예측이 필요합니다.")?;
+            let methods=row["methodPaths"].as_array().filter(|rows|
+                !rows.is_empty() && rows.len()<=8 && rows.iter().all(|path|
+                    path.as_str().is_some_and(|p|unique.contains(p))))
+                .ok_or("원리의 실제 구현 소스가 변경 대상에 포함돼야 합니다.")?;
+            if !methods.iter().any(|path|path.as_str().is_some_and(|p|
+                p.starts_with("src/engine/") && p.ends_with(".rs"))){
+                return Err("다음 후손이 실행할 Rust 개선 프로그램 소스가 필요합니다.".into());
+            }
+            let roles=row["targetRoles"].as_array().filter(|items|
+                !items.is_empty() && items.len()<=24 && items.iter().all(|name|
+                    name.as_str().is_some_and(|role|named.contains(role))))
+                .ok_or("개선 원리 대상 지능 구성요소가 올바르지 않습니다.")?;
+            let domains=row["transferDomains"].as_array().filter(|items|
+                !items.is_empty() && items.len()<=8 && items.iter().all(|v|
+                    v.as_str().is_some_and(|d|crate::engine::rsi_evolve::DOMAINS.contains(&d))))
+                .ok_or("독립 실험을 전이할 분야가 올바르지 않습니다.")?;
+            let parents=row["composedFrom"].as_array().filter(|items|
+                items.len()<=8 && items.iter().all(|v|
+                    v.as_str().is_some_and(|s|s.len()<=64)))
+                .cloned().unwrap_or_default();
+            improvement_principles.push(json!({
+                "source":"model_authored_executable_principle_v1",
+                "id":id,"mechanism":mechanism,"falsifier":falsifier,
+                "prediction":prediction,"methodPaths":methods,
+                "targetRoles":roles,"transferDomains":domains,
+                "composedFrom":parents,"causalEffectProven":false
+            }));
+        }
+    }
     // A source-modifying descendant may invent and pass on a NEW
     // experimental search policy, but it cannot claim improved performance
     // until the planner module source is independently measured and adopted.
@@ -829,7 +886,7 @@ pub(crate) fn propose(
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,components,new_components,component_files,interaction_edges,experiment_policy,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
+        commit,component,components,new_components,component_files,interaction_edges,improvement_principles,experiment_policy,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
@@ -838,6 +895,7 @@ pub(crate) fn propose(
         "components":components,"newComponents":new_components,
         "componentFiles":component_files,
         "interactionEdges":interaction_edges,
+        "improvementPrinciples":improvement_principles,
         "experimentalPolicy":experiment_policy,
         "successorStages":successor_stages,
         "nextDomain":next,"hypothesis":hypothesis,
