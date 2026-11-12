@@ -21,7 +21,7 @@ concurrency:
   group: sub4-real-model-proof-${{ github.ref }}
   cancel-in-progress: true
 permissions:
-  contents: read
+  contents: write
 jobs:
   local-model-rsi:
     runs-on: ubuntu-24.04
@@ -92,6 +92,46 @@ jobs:
           done
           curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
           node scripts/sub4-live-rsi.mjs run
+      - name: Publish only independently proved and fully tested descendant commits
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          final_commit=$(python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          receipt=json.loads(Path(os.environ["SUB4_LIVE_REPORT"]).read_text())
+          proof=receipt.get("completionProof") or {}
+          assert proof.get("complete") is True, "not a proven three-generation lineage"
+          assert proof.get("maxAcceptedStreak",0)>=3
+          assert proof.get("rebuiltDescendantGenerations",0)>=2
+          assert receipt.get("status")=="completed", "unfinished campaign"
+          head=receipt.get("adoptedHeadCommit","")
+          assert re.fullmatch(r"[0-9a-f]{40}",head), "invalid adopted commit"
+          print(head)
+          PY
+          )
+          git -C "$GITHUB_WORKSPACE" cat-file -e "$final_commit^{commit}"
+          git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$GITHUB_SHA" "$final_commit"
+          git -C "$GITHUB_WORKSPACE" diff --name-only "$GITHUB_SHA" "$final_commit" \
+            | tee "$RUNNER_TEMP/sub4-adopted-changed-files.txt"
+          test -s "$RUNNER_TEMP/sub4-adopted-changed-files.txt"
+          while IFS= read -r changed; do
+            case "$changed" in
+              src/engine/*.rs) ;;
+              *) echo "Unexpected native adoption path: $changed" >&2; exit 1 ;;
+            esac
+          done < "$RUNNER_TEMP/sub4-adopted-changed-files.txt"
+          git -C "$GITHUB_WORKSPACE" worktree add --detach "$RUNNER_TEMP/sub4-verified-final" "$final_commit"
+          if [ -d "$GITHUB_WORKSPACE/web/node_modules" ]; then
+            ln -s "$GITHUB_WORKSPACE/web/node_modules" \
+              "$RUNNER_TEMP/sub4-verified-final/web/node_modules"
+          fi
+          (cd "$RUNNER_TEMP/sub4-verified-final" && cargo test --release --locked --all-targets)
+          git -C "$GITHUB_WORKSPACE" worktree remove --force "$RUNNER_TEMP/sub4-verified-final"
+          git -C "$GITHUB_WORKSPACE" push origin \
+            "$final_commit:refs/heads/dominion-sub4"
+          echo "SUB4_PROVEN_DESCENDANT_PUBLISHED=$final_commit"
       - name: Preserve native tool operation trace and edit decision
         if: always()
         shell: bash
