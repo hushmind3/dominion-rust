@@ -103,6 +103,15 @@ fn outcomes(history:&[Value],birth_position:usize,commit:&str,id:&str,birth_doma
     let mut model_trials=0u64;
     let mut model_improvements=0u64;
     let mut model_loss_delta_sum=0.0f64;
+    // A method may look successful only because a stronger API model
+    // generated its patches. Keep the actual model identity as a stratum.
+    let birth_actor=&history[birth_position]["modelEcologyExecuted"];
+    let birth_route=if birth_actor["actuallyUsedInGeneration"]==true {
+        (birth_actor["providerId"].as_str(),birth_actor["model"].as_str())
+    } else{(None,None)};
+    let mut measured_actors=BTreeSet::<String>::new();
+    let mut accepted_actors=BTreeSet::<String>::new();
+    let mut transferred_between_models=0u64;
     let mut total_reward=0.0f64;
     let mut distinct=BTreeSet::<String>::new();
     let mut records=Vec::new();
@@ -133,12 +142,31 @@ fn outcomes(history:&[Value],birth_position:usize,commit:&str,id:&str,birth_doma
                     distinct.insert(domain.clone());
                     transfer_successes+=1;
                 }
+                let actor=&g["modelEcologyExecuted"];
+                let actor_route=if actor["source"]=="real_descendant_model_usage_v1"
+                    &&actor["actuallyUsedInGeneration"]==true {
+                    (actor["providerId"].as_str(),actor["model"].as_str())
+                } else{(None,None)};
+                if let (Some(provider),Some(model))=actor_route {
+                    let id=format!("{provider}/{model}");
+                    measured_actors.insert(id.clone());
+                    if accepted {
+                        accepted_actors.insert(id);
+                        if birth_route.0.is_some() && birth_route.1.is_some()
+                            &&actor_route!=birth_route {
+                            transferred_between_models+=1;
+                        }
+                    }
+                }
                 total_reward+=value;
                 if records.len()<12{records.push(json!({
                     "generationJobId":g["jobId"],
                     "candidateId":g["candidateId"],
                     "generatorCommit":g["generatorCommit"],
                     "domain":domain,"accepted":accepted,
+                    "actualSourceWritingModel":{
+                        "providerId":actor_route.0,"model":actor_route.1
+                    },
                     "independentHoldoutReward":value
                 }));}
             }
@@ -154,6 +182,10 @@ fn outcomes(history:&[Value],birth_position:usize,commit:&str,id:&str,birth_doma
         "measuredModelAdaptationTrials":model_trials,
         "independentModelImprovements":model_improvements,
         "sumPairedWeightLossReduction":model_loss_delta_sum,
+        "sourceWritingModelStrata":measured_actors,
+        "modelStrataWithAdoptedSource":accepted_actors,
+        "observedCrossModelSourceTransferAdoptions":transferred_between_models,
+        "crossModelCausalAdvantageProven":false,
         "observedTransferAdoptions":transfer_successes,
         "distinctTransferDomains":distinct,
         "sumIndependentHoldoutReward":total_reward,
@@ -208,13 +240,17 @@ fn ranked_rule(entry:&Value)->f64{
     let avg=e["meanIndependentHoldoutReward"].as_f64().unwrap_or(0.0);
     let model_trials=e["measuredModelAdaptationTrials"].as_u64().unwrap_or(0) as f64;
     let weight_wins=e["independentModelImprovements"].as_u64().unwrap_or(0) as f64;
+    let cross_actor=e["observedCrossModelSourceTransferAdoptions"]
+        .as_u64().unwrap_or(0) as f64;
     // Weight gains inform method search, but NEVER turn an unmeasured
     // source-code change into a successful source adoption.
     let measured_weight_bonus=if model_trials==0.0{0.0}
         else{0.12*(weight_wins+1.0)/(model_trials+2.0)};
     // Uncertainty is an exploration incentive, not measured superiority.
     (wins+1.0)/(trials+2.0)+measured_weight_bonus+0.09*avg.clamp(-3.0,3.0)
-        +0.13*transfers/(trials+1.0)+0.2/(trials+1.0).sqrt()
+        +0.13*transfers/(trials+1.0)
+        +0.08*cross_actor/(trials+1.0)
+        +0.2/(trials+1.0).sqrt()
 }
 fn allowed_roles(spec:&Value)->BTreeSet<String>{
     spec["targetRoles"].as_array().into_iter().flatten().filter_map(Value::as_str)
@@ -367,14 +403,15 @@ pub(crate) fn instruction(meta:&Value)->String {
     let learning=&meta["principleLearning"];
     let archive=learning["learnedPrinciples"].as_array().into_iter().flatten()
         .take(5).map(|entry|format!(
-            "principle={} inventedAt={} mechanism={} measured={} adopted={} transfers={} regressions={} modelEvaluations={} modelGains={}",
+            "principle={} inventedAt={} mechanism={} measured={} adopted={} transfers={} regressions={} modelEvaluations={} modelGains={} sourceModelTransfers={}",
             entry["id"],entry["birthCommit"],entry["spec"]["mechanism"],
             entry["descendantEvidence"]["measuredTrials"],
             entry["descendantEvidence"]["measuredAdoptions"],
             entry["descendantEvidence"]["observedTransferAdoptions"],
             entry["descendantEvidence"]["measuredRegressions"],
             entry["descendantEvidence"]["measuredModelAdaptationTrials"],
-            entry["descendantEvidence"]["independentModelImprovements"]
+            entry["descendantEvidence"]["independentModelImprovements"],
+            entry["descendantEvidence"]["observedCrossModelSourceTransferAdoptions"]
         )).collect::<Vec<_>>().join("\n");
     let chosen=&learning["selectedEvidence"];
     format!("[LEARNED IMPROVEMENT PRINCIPLE LAB] Source-grounded principles and later independent observations:\n{archive}\n        Chosen experiment: id={} target role={} source={} falsifier={}.\n        Synthesis evidence: {}. Form new mechanisms from contrasting successes and failures.        When evidence justifies it, call rsi_system_plan with improvementPrinciples         (id, mechanism, falsifier, prediction, methodPaths, targetRoles, transferDomains, composedFrom)         and edit the REAL implementation source. Changing a Rust program, not a prose recipe,         is required. Prior accepted source is NOT evidence that a later transfer succeeds.         Model weights, memory, retrieval, learning and tools are first-class redesign         targets; a new training operator must also modify executable model and         training-harness code. The evaluator and private held-out tasks stay frozen.",

@@ -326,4 +326,68 @@ mod tests{
         assert_eq!(route["model"],"gpt-external");
         assert!(route.get("weightsUpdated").is_none());
     }
+
+    #[test] fn eligible_external_api_routes_rotate_into_real_descendant_work(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let dir=std::env::temp_dir().join(format!("sub4-actor-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),
+            web_dir:dir.join("web"),workspace:dir.clone()};
+        let store=Store::open(&config.db_path()).unwrap();
+        let state=AppState::new(config.clone(),store,Vault::open(&config.key_path()));
+        state.store.put("provider",&json!({
+            "id":"external-one","enabled":true,
+            "baseUrl":"https://example.invalid/v1","kind":"openai",
+            "model":"actor-a","capabilities":{"text":true,"tools":true}
+        })).unwrap();
+        state.store.put("provider",&json!({
+            "id":"external-two","enabled":true,
+            "baseUrl":"https://example.invalid/v1","kind":"openai",
+            "model":"actor-b","capabilities":{"text":true,"tools":true}
+        })).unwrap();
+        let input=json!({"rsiSystemEvolution":true,"rsiModelEvolution":true,
+            "selectionPolicy":"automatic",
+            "providerId":"external-one","model":"actor-a"});
+        let first=plan(&state,&[],&input,"tools","a");
+        assert_eq!(first["active"],true);
+        assert_eq!(first["selected"]["providerId"],"external-one");
+        assert!(validate(&state,&first,&input,"tools","a").is_ok());
+        let performed=json!({"modelEcologyExecuted":{
+            "source":"real_descendant_model_usage_v1",
+            "providerId":"external-one","model":"actor-a",
+            "actuallyUsedInGeneration":true,"actualModelCalls":2},
+            "generatorCommit":"a".repeat(40),
+            "candidateOrigin":"model_driven_detached_worktree",
+            "pairedMeasured":true,"accepted":true,"pairedRevalidated":true,
+            "acceptedCommit":"b".repeat(40),"domain":"tools",
+            "evaluation":{"metrics":{"eligible":true,
+                "measurements":[{"id":"held-out"}],"improvedHoldouts":1}}
+        });
+        let next=plan(&state,&[performed],&input,"tools","b");
+        assert_eq!(next["selected"]["providerId"],"external-two");
+        assert!(validate(&state,&next,&input,"tools","b").is_ok());
+        let forged=identity("external-unknown","nonexistent");
+        let mut corrupted=next.clone();
+        corrupted["selected"]=forged;
+        assert!(validate(&state,&corrupted,&input,"tools","b").is_err());
+        drop(state);
+        let _=std::fs::remove_dir_all(dir);
+    }
+    #[test] fn manual_model_route_is_never_displaced_by_ecology(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let dir=std::env::temp_dir().join(format!("sub4-fixed-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),
+            web_dir:dir.join("web"),workspace:dir.clone()};
+        let store=Store::open(&config.db_path()).unwrap();
+        let state=AppState::new(config.clone(),store,Vault::open(&config.key_path()));
+        let input=json!({"providerId":"owner-provider","model":"owner-model",
+            "selectionPolicy":"manual","rsiModelEvolution":true});
+        let chosen=plan(&state,&[],&input,"tools","a");
+        assert_eq!(chosen["selected"]["providerId"],"owner-provider");
+        assert_eq!(chosen["active"],false);
+        assert!(validate(&state,&chosen,&input,"tools","a").is_ok());
+        drop(state);
+        let _=std::fs::remove_dir_all(dir);
+    }
 }
