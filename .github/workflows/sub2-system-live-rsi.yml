@@ -4,6 +4,10 @@ name: Sub2 full-system descendant design RSI
 # The rebuilt child selects source, domain and architecture, never the old
 # coordinator. Only independent frozen A/B evidence can adopt changed code.
 # Every model-authored design and real source patch is retained.
+# 2026-11-12 real Qwen model proposed a system redesign but failed to write
+# Rust because endLine=0. Replay this causal regression through the actual
+# source tool and CAS before any live inference; only verified writes proceed
+# to compiler, A/B and successor re-planning.
 # GitHub Models inference was retired on 2026-07-30. This campaign uses a
 # REAL local Ollama model and never sends inference to the retired endpoint.
 # The rebuilt descendant (not the resident coordinator) owns the next system
@@ -80,6 +84,8 @@ jobs:
           cargo test --release --locked --bin dominion-rust architecture_frontier_rejects_unverified_adoption_and_uses_real_index -- --nocapture
           cargo test --release --locked --bin dominion-rust compiled_descendant_plans_from_its_actual_whole_source_graph -- --nocapture
           cargo test --release --locked --bin dominion-rust compiled_descendant_source_excerpt_is_real_indexed_rust_not_research_text -- --nocapture
+          cargo test --release --locked --bin dominion-rust real_model_edit_without_end_line_recovers_only_unambiguous_intent -- --nocapture
+          cargo test --release --locked --bin dominion-rust descendant_function_edit_without_end_line_writes_real_sha_pinned_rust -- --nocapture
 
       - name: Install actual local inference runtime
         run: |
