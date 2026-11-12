@@ -3436,67 +3436,8 @@ async fn run_loop(
         }
         child_input["rsiInheritedImplementations"]=json!(inherited_implementations);
         child_input["rsiAvailableTools"] =
-            json!(["code_search", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_replace_function", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose", "rsi_system_plan", "rsi_model_adapter"]);
+            json!(["code_search", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_replace_function", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose", "rsi_system_plan"]);
 
-        // A real, independently accepted LoRA checkpoint may become the
-        // NEXT compiled descendant's actual inference route, only with owner
-        // authorization. A stale provider record cannot activate a dead
-        // server, and a failed training run never qualifies.
-        child_input["rsiModelWeightLineage"]=Value::Null;
-        if child_input["rsiUsePromotedAdapterDescendants"]==true {
-            if let Some(active)=context.state.store.get("rsi_adapter_active","selected")
-                .filter(|row|row["active"]==true
-                    && row["source"]=="independently_adopted_live_model_weights_v1") {
-                if let (Some(adapter),Some(provider_id),Some(model_name))=(
-                    active["adapterId"].as_str(),
-                    active["providerId"].as_str(),active["model"].as_str()) {
-                    if let (Some(adopted),Some(provider))=(
-                        context.state.store.get("rsi_adapter",adapter)
-                            .filter(|row|row["status"]=="accepted"
-                                && row["adapterSha256"]==active["sha256"]
-                                && row["evaluation"]["eligible"]==true),
-                        context.state.store.get("provider",provider_id)
-                            .filter(|row|row["enabled"]==true
-                                && row["model"]==model_name)) {
-                        // The active owner-approved adapter is bound to an
-                        // actual local provider with a checked runtime URL.
-                        // A stale, remote or model-mismatched provider is never
-                        // inherited as the next descendant's inference model.
-                        let local_url=provider["baseUrl"].as_str()
-                            .filter(|url|url.starts_with("http://127.0.0.1:")
-                                && url.ends_with("/v1")
-                                && active["baseUrl"].as_str()==Some(*url));
-                        let health=if let Some(url)=local_url {
-                            reqwest::Client::new()
-                                .get(format!("{url}/models"))
-                                .timeout(Duration::from_secs(2))
-                                .send().await.ok()
-                        }else{None};
-                        let healthy=if let Some(reply)=health {
-                            reply.status().is_success()
-                                && reply.json::<Value>().await.ok()
-                                    .and_then(|value|value["data"]
-                                        .as_array().cloned())
-                                    .is_some_and(|list|list.iter()
-                                        .any(|row|row["id"]==model_name))
-                        }else{false};
-                        if healthy {
-                            child_input["providerId"]=json!(provider_id);
-                            child_input["model"]=json!(model_name);
-                            child_input["rsiModelWeightLineage"]=json!({
-                                "source":"adopted_parameter_evolution_used_by_descendant_v1",
-                                "adapterId":adapter,"adapterSha256":active["sha256"],
-                                "evaluationSha256":adopted["evaluationSha256"],
-                                "newGeneratorCommit":head,
-                                "providerId":provider["id"],
-                                "actualInferenceProviderVerified":true,
-                                "nextGenerationQualityNotYetProven":true
-                            });
-                        }
-                    }
-                }
-            }
-        }
         // After a measured native adoption, the descendant must be offered
         // the next domain rather than re-solving a saturated original target.
         // The new generator still independently plans, compiles and evaluates.
@@ -3534,7 +3475,6 @@ async fn run_loop(
                     || (input["rsiAutonomous"]==true
                         &&input["rsiSystemEvolution"]==true))
                     &&input["rsiLockGeneratorModel"]!=true
-                    &&child_input["rsiModelWeightLineage"].is_null()
             ).await;
         if generator_competition["selectedRouteEnabled"]==true {
             child_input["providerId"]=
@@ -3986,7 +3926,6 @@ async fn run_loop(
         generation["principleModel"]=current["input"]["rsiPrincipleModel"].clone();
         generation["principleCurriculum"]=current["input"]["rsiPrincipleCurriculum"].clone();
         generation["wholeDominionGrowth"]=current["input"]["rsiWholeDominionGrowth"].clone();
-        generation["modelWeightLineage"]=current["input"]["rsiModelWeightLineage"].clone();
         generation["generatorCompetition"]=
             current["input"]["rsiGeneratorCompetition"].clone();
         generation["controllerPlan"]=current["input"]["rsiNativePlan"]["systemAgenda"].clone();
@@ -5556,28 +5495,6 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 competition["decision"],competition["previousProviderId"],
                 competition["modelEvidenceSha256"])
         }else{String::new()};
-        let model_weights=if job["input"]["rsiAllowLocalAdapterTraining"]==true {
-            if let Some(name)=job["input"]["rsiAdapterManifestName"].as_str() {
-                format!("[SELF-EVOLVING MODEL PARAMETERS]\n\
-                    The campaign owner approved a separate local LoRA model \
-                    training experiment with manifestName={}. Use the REAL \
-                    rsi_model_adapter tool with mode=check, then mode=train, \
-                    then mode=assess. A TRAINED weight file is NOT accepted. \
-                    The independent Rust holdout assessor compares blinded \
-                    base and adapter inference, requiring cross-domain gains \
-                    and no regressions. Only if it independently adopts the \
-                    weights AND the owner set rsiAllowLocalAdapterDeployment \
-                    may mode=activate launch an actual inference provider. \
-                    The next rebuilt agent can use that provider only with \
-                    rsiUsePromotedAdapterDescendants approval. Your source \
-                    research can rewrite src/engine/rsi_weight_cycle.rs and \
-                    src/engine/rsi_adapter_cycle.py so methods of parameter \
-                    learning themselves evolve; frozen approval and holdout \
-                    verdicts remain separate. Data and model paths must \
-                    originate in the owner's manifest, not model-authored paths.\n",
-                    name)
-            }else{String::new()}
-        }else{String::new()};
         let hypothesis=&job["input"]["rsiMetaMethodHypothesis"];
         let hybrid=&job["input"]["rsiCrossLineageHypothesis"];
         let cross_lineage=job["input"]["rsiPeerLineages"]["references"].as_array()
@@ -5589,7 +5506,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
                 job["rsiInheritedMetaMethod"]["sequence"])
         }else{String::new()};
-        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{whole_growth}\n\n{model_experiment}\n\n{model_weights}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
+        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{whole_growth}\n\n{model_experiment}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
             job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let (prompt,fit)=fit_worker_generation_context(
