@@ -61,7 +61,7 @@ pub(crate) fn transition_graph(history:&[Value])->Value{
                 && implemented_roles(descendant).iter().any(|role|role==to);
             for from in implemented_roles(parent){
                 if from==to{continue;}
-                let entry=counts.entry((from,to.to_string())).or_default();
+                let entry=counts.entry((from.clone(),to.to_string())).or_default();
                 entry.0+=1;
                 if successful{entry.1+=1;}
                 if descendant["candidateId"].is_string(){entry.2+=1;}
