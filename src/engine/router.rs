@@ -207,8 +207,9 @@ mod tests {
                     "candidateOrigin":"model_driven_detached_worktree",
                     "accepted":good,
                     "acceptedCommit":if good{json!("c".repeat(40))}else{Value::Null},
-                    "evaluation":{"metrics":{"eligible":good,
-                        "holdoutEvidence":[{
+                    "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                        "evidenceSha256":"e".repeat(64),
+                        "metrics":{"eligible":good,"holdoutEvidence":[{
                             "id":"case","baselinePass":!good,"candidatePass":good,
                             "metricGains":0,"metricRegressions":0
                         }]}}
