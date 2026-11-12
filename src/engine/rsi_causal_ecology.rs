@@ -47,6 +47,8 @@ type Arms=[Vec<f64>;3];
 fn evidence(history:&[Value],left:&str,right:&str)->(Value,[usize;3]){
     let mut blocks=BTreeMap::<Block,Arms>::new();
     let mut counts=[0usize;3];
+    let mut blocks_by_baseline=BTreeMap::<(String,String),[usize;3]>::new();
+    let mut latest_baseline=None::<(String,String)>;
     let mut seen=BTreeSet::new();
     for g in history {
         let Some(arm)=observed_arm(g,left,right) else{continue};
@@ -68,7 +70,12 @@ fn evidence(history:&[Value],left:&str,right:&str)->(Value,[usize;3]){
             measured=true;
         }
         let key=(g["candidateId"].as_str().unwrap_or("").to_string(),arm);
-        if measured&&seen.insert(key){counts[arm]+=1;}
+        if measured&&seen.insert(key){
+            counts[arm]+=1;
+            let family=(base.to_string(),profile.to_string());
+            blocks_by_baseline.entry(family.clone()).or_default()[arm]+=1;
+            latest_baseline=Some(family);
+        }
     }
     let mut contrasts=Vec::new();
     for ((base,profile,id,before),arms) in blocks {
@@ -81,14 +88,22 @@ fn evidence(history:&[Value],left:&str,right:&str)->(Value,[usize;3]){
             "interactionContrast":joint-a-b,
             "causalityProven":false}));
     }
+    let aligned=latest_baseline.as_ref()
+        .and_then(|key|blocks_by_baseline.get(key))
+        .copied().unwrap_or([0usize;3]);
     let mut report=json!({"source":"matched_frozen_factorial_observation_v1",
-        "variantGenerations":{"leftOnly":counts[0],"rightOnly":counts[1],
-            "joint":counts[2]},
+        "variantGenerations":{"leftOnly":aligned[0],"rightOnly":aligned[1],
+            "joint":aligned[2]},
+        "historicalVariantGenerations":{"leftOnly":counts[0],
+            "rightOnly":counts[1],"joint":counts[2]},
+        "latestComparableBlock":latest_baseline.map(|(base,profile)|
+            json!({"generatorCommit":base,"profileSha256":profile}))
+            .unwrap_or(Value::Null),
         "matchedHoldouts":contrasts.len(),
         "contrasts":contrasts.into_iter().take(12).collect::<Vec<_>>(),
         "causalityProven":false});
     report["sha256"]=json!(sha(&report));
-    (report,counts)
+    (report,aligned)
 }
 /// Inherit the next experimental arm from an independently adopted SOURCE
 /// mutation compiled as the current descendant. A failed attempt does not
@@ -273,6 +288,24 @@ mod tests{
         let mut invalid=parent;
         invalid["pairedRevalidated"]=json!(false);
         assert!(inherited_curriculum(&[invalid],&frontier,&"b".repeat(40)).is_none());
+    }
+    #[test]
+    fn unrelated_baselines_cannot_fabricate_a_completed_factorial(){
+        let a=role("memory","src/engine/memory.rs");
+        let b=role("tools","src/engine/tools.rs");
+        let frontier=vec![a.clone(),b.clone()];
+        let pair=json!({"source":"compiled_descendant_reciprocal_evolution_v1",
+            "primary":a,"partner":b});
+        let first=generation("first",&["src/engine/memory.rs"]);
+        let mut other=generation("other",&["src/engine/tools.rs"]);
+        other["generatorCommit"]=json!("f".repeat(40));
+        other["systemDesign"]["generatorCommit"]=other["generatorCommit"].clone();
+        let p=design(&[first,other],&frontier,&pair,"current");
+        assert_eq!(p["observations"]["matchedHoldouts"],0);
+        assert_eq!(p["observations"]["historicalVariantGenerations"]["leftOnly"],1);
+        assert_eq!(p["observations"]["historicalVariantGenerations"]["rightOnly"],1);
+        assert_eq!(p["observations"]["variantGenerations"]["leftOnly"],0);
+        assert_eq!(p["phase"],"isolate_left");
     }
     #[test]
     fn claimed_roles_without_changed_sources_never_count(){
