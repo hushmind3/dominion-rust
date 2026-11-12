@@ -3291,7 +3291,10 @@ async fn run_loop(
                     && !plan["coDesignPortfolio"].is_null()) {
                 return Err("후손의 상호 지능 개선 인과 가설·복합 설계가 일치하지 않습니다.".into());
             }
-            if !crate::engine::rsi_mutual_program::valid_program(
+            if (plan["mutualProgram"].is_object()
+                && plan["metaPolicy"]["intergenerationalGraphSha256"]
+                    !=plan["mutualProgram"]["transferGraph"]["sha256"])
+                || !crate::engine::rsi_mutual_program::valid_program(
                 &plan["mutualProgram"],plan["architectureFrontier"]
                     .as_array().ok_or("후손 소스 인덱스 없음")?,
                 &head,history.len(),&plan["mutualProgram"]["transferGraph"])
@@ -4587,6 +4590,14 @@ fn validated_descendant_controller(
         || !crate::engine::rsi_meta_controller::valid_policy(&plan["metaPolicy"],history.len())
         || !crate::engine::rsi_interaction::valid_graph(&plan["interactionGraph"])
         || plan["metaPolicy"]["interactionGraphSha256"]!=plan["interactionGraph"]["sha256"]
+        || (plan["mutualProgram"].is_object()
+            && plan["metaPolicy"]["intergenerationalGraphSha256"]
+                !=plan["mutualProgram"]["transferGraph"]["sha256"])
+        || (matches!(plan["mutualProgram"]["phase"].as_str(),
+                Some("complement"|"return"))
+            && (plan["metaPolicy"]["target"]!=plan["mutualProgram"]["target"]
+                || plan["metaPolicy"]["mutualProgramRevision"]
+                    !=plan["mutualProgram"]["revision"]))
         || plan["architectureFrontier"].as_array().is_none_or(|frontier|
             !crate::engine::rsi_mutual_program::valid_program(
                 &plan["mutualProgram"],frontier,commit,history.len(),
