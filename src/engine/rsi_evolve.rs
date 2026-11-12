@@ -3680,6 +3680,14 @@ async fn run_loop(
                     && agenda["principleCurriculum"]!=*learned {
                 return Err("후손의 개선 원리 학습기와 실제 소스 계획이 다릅니다.".into());
             }
+            let whole=&record["nextGenerationPlan"]["wholeDominion"];
+            if !crate::engine::rsi_whole_agent::valid(
+                whole,agenda["frontier"].as_array()
+                    .map(Vec::as_slice).unwrap_or(&[]),&head,recorded_history.len())
+                || agenda["wholeDominionGrowth"].is_object()
+                    && agenda["wholeDominionGrowth"]!=*whole {
+                return Err("실제 후손의 전체 도미니언 성장 계획과 소스 수정 대상이 다릅니다.".into());
+            }
             let peers=&record["nextGenerationPlan"]["peerLineages"];
             let profile=crate::engine::rsi_meta_controller::comparison_profile(&child_input);
             crate::engine::rsi_meta_controller::validate_peer_lineages(
@@ -3691,6 +3699,7 @@ async fn run_loop(
             child_input["rsiRecursiveLaboratory"]=laboratory.clone();
             child_input["rsiPrincipleModel"]=predictor.clone();
             child_input["rsiPrincipleCurriculum"]=learned.clone();
+            child_input["rsiWholeDominionGrowth"]=whole.clone();
             child_input["rsiPeerLineages"]=peers.clone();
             child_input["rsiMetaMethodHypothesis"]=
                 record["nextGenerationPlan"]["metaMethodHypothesis"].clone();
@@ -3976,6 +3985,7 @@ async fn run_loop(
         generation["recursiveLaboratory"]=current["input"]["rsiRecursiveLaboratory"].clone();
         generation["principleModel"]=current["input"]["rsiPrincipleModel"].clone();
         generation["principleCurriculum"]=current["input"]["rsiPrincipleCurriculum"].clone();
+        generation["wholeDominionGrowth"]=current["input"]["rsiWholeDominionGrowth"].clone();
         generation["modelWeightLineage"]=current["input"]["rsiModelWeightLineage"].clone();
         generation["generatorCompetition"]=
             current["input"]["rsiGeneratorCompetition"].clone();
@@ -5068,6 +5078,17 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         crate::engine::rsi_principle_learner::apply(
             &mut agenda,&principle_policy);
     }
+    // The whole intelligence, not the preferred model or its meta-controller,
+    // learns the weaknesses seen in independent paired agent evaluations.
+    // The compiled child uses these weaknesses to select a real source edit.
+    let whole_dominion=if system_mode {
+        crate::engine::rsi_whole_agent::plan(
+            &history,agenda["frontier"].as_array()
+                .map(Vec::as_slice).unwrap_or(&[]),binary_commit)
+    }else{Value::Null};
+    if automatic && agenda["inheritedStage"].is_null(){
+        crate::engine::rsi_whole_agent::apply(&mut agenda,&whole_dominion);
+    }
     let mut peer_input=source_input.clone();
     peer_input["rsiIndexId"]=campaign["planIndexId"].clone();
     let peers=if system_mode {
@@ -5153,6 +5174,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "metaPolicy":meta_policy,"factorialExperiment":factorial,
         "recursiveLaboratory":laboratory,
         "principleModel":principle_model,"principleCurriculum":principle_policy,
+        "wholeDominion":whole_dominion,
         "peerLineages":peers,
         "metaMethodHypothesis":method_hypothesis,
         "crossLineageHypothesis":hybrid,
@@ -5467,6 +5489,19 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 && job["input"]["rsiSystemAgenda"]["principleCurriculum"]!=expected_curriculum {
             return Err("재컴파일된 후손의 개선 원리 모델과 능력개선 실행 계획이 다릅니다.".into());
         }
+        let expected_growth=crate::engine::rsi_whole_agent::plan(
+            &history,job["input"]["rsiSystemAgenda"]["frontier"]
+                .as_array().map(Vec::as_slice).unwrap_or(&[]),&commit);
+        if job["input"]["rsiWholeDominionGrowth"]!=expected_growth
+            || !crate::engine::rsi_whole_agent::valid(
+                &expected_growth,
+                job["input"]["rsiSystemAgenda"]["frontier"]
+                    .as_array().map(Vec::as_slice).unwrap_or(&[]),
+                &commit,history.len())
+            || job["input"]["rsiSystemAgenda"]["wholeDominionGrowth"].is_object()
+                &&job["input"]["rsiSystemAgenda"]["wholeDominionGrowth"]!=expected_growth {
+            return Err("차세대 도미니언의 전체 지능 실험 계획과 실제 실행 코드가 다릅니다.".into());
+        }
         let profile=crate::engine::rsi_meta_controller::comparison_profile(&job["input"]);
         crate::engine::rsi_meta_controller::validate_peer_lineages(
             &state,&job["input"]["rsiPeerLineages"],profile.as_deref(),campaign)?;
@@ -5511,6 +5546,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let principle=crate::engine::rsi_principle_learner::instruction(
             &job["input"]["rsiPrincipleCurriculum"],
             &job["input"]["rsiPrincipleModel"]);
+        let whole_growth=crate::engine::rsi_whole_agent::instruction(
+            &job["input"]["rsiWholeDominionGrowth"]);
         let competition=&job["input"]["rsiGeneratorCompetition"];
         let model_experiment=if competition["source"]==
             "compiled_open_model_scaffold_competition_v1" {
@@ -5552,7 +5589,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
                 job["rsiInheritedMetaMethod"]["sequence"])
         }else{String::new()};
-        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{model_experiment}\n\n{model_weights}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
+        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{whole_growth}\n\n{model_experiment}\n\n{model_weights}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
             job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let (prompt,fit)=fit_worker_generation_context(
