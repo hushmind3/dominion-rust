@@ -48,6 +48,17 @@ pub(crate) fn valid_authored(program:&Value)->bool {
     for node in nodes {
         let Some(role)=node["role"].as_str().filter(|r|
             rsi_component_birth::valid_role(r)) else{return false};
+        // Model-authored transferable abstraction keys are optional and
+        // never earn quality credit without the independent task receipt.
+        if !node["principleKeys"].is_null() {
+            let Some(keys)=node["principleKeys"].as_array()
+                .filter(|keys|!keys.is_empty()&&keys.len()<=8) else{return false};
+            let mut unique=BTreeSet::new();
+            if !keys.iter().all(|k|k.as_str().is_some_and(|key|
+                (3..=48).contains(&key.len())
+                && key.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'_')
+                && unique.insert(key.to_owned()))) {return false;}
+        }
         if !label(&node["id"]) || !ids.insert(node["id"].as_str().unwrap().to_string())
             || node["domain"].as_str().is_none_or(|d|!rsi_evolve::DOMAINS.contains(&d))
             || node["path"].as_str().is_none_or(|p|!rsi::safe_path(p))
@@ -259,6 +270,7 @@ pub(crate) fn instruction(plan:&Value)->String {
          demonstrated gain. Edit actual source, submit rsi_system_plan with \
          real changed targetFiles; you may author a COMPLETELY NEW openProgram \
          (nodes, entry, conditional edges, novel roles, cyclic dependencies, \
+         optional principleKeys reusable across different model-authored ideas, \
          meta-program rewrite targets) rather than extending an old fixed phase \
          list. Only independently adopted sources create runnable successors.",
         plan["revision"],plan["originGenerationId"],plan["nodeId"],
