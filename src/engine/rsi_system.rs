@@ -986,9 +986,26 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
         chain+=1;prior_commit=accepted.into();binaries.insert(binary.to_string());
     }
     let missing=required.iter().filter(|role|!covered.contains(**role)).copied().collect::<Vec<_>>();
+    let interaction=crate::engine::rsi_interaction::influence_graph(history,&[]);
+    let edges=interaction["edges"].as_array().cloned().unwrap_or_default();
+    let cross=edges.iter().filter(|edge|
+        edge["sourceRole"]!=edge["targetRole"]
+            && edge["isolatedGains"].as_u64().unwrap_or(0)>0).count();
+    let reciprocal=edges.iter().filter(|edge|
+        edge["sourceRole"]!=edge["targetRole"]
+            && edge["isolatedGains"].as_u64().unwrap_or(0)>0
+            && edges.iter().any(|other|
+                other["sourceRole"]==edge["targetRole"]
+                    && other["targetRole"]==edge["sourceRole"]
+                    && other["isolatedGains"].as_u64().unwrap_or(0)>0))
+        .count()/2;
     json!({"evaluationProfileId":profile["id"],"evaluationProfileSha256":profile["sha256"],"verifiedSystemGenerations":verified,"verifiedLineageLength":chain,"rebuiltHandoffs":handoffs,
         "sourceChangedComponents":covered,"requiredComponents":required,"missingComponents":missing,
         "metaImprovementObserved":meta_gain,"inventedMethodTransferred":method_transfer,
+        "crossSubsystemPairedEffects":cross,
+        "reciprocalSubsystemPairsObserved":reciprocal,
+        "crossSubsystemEvidenceSha256":interaction["sha256"],
+        "crossSubsystemAttribution":"independent_paired_observation_not_isolated_causal_proof",
         "demonstrated":chain>=3 && handoffs>=2 && missing.is_empty() && method_transfer && meta_gain,
         "coverageMeaning":"independently adopted source roles; performance is measured separately by downstream tasks"})
 }
