@@ -598,7 +598,15 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         falsifiable structural change through rsi_system_plan, and implement \
         the actual code, including new modules when justified. For coupled redesigns use \
         component=system, list components, and map every component to its \
-        targetFiles via componentFiles. Implement ALL declared target files. A changed \
+        targetFiles via componentFiles. Implement ALL declared target files. \
+        Submit successorStages in rsi_system_plan to program how the NEXT \
+        compiled agent chooses its domain, source target, learning policy, \
+        and source tool policy. Each stage needs role, domain, path, objective; \
+        learningPolicy controls retries and toolPolicy can prohibit new files. \
+        This inherited program is rebound to actual source SHA by the rebuilt \
+        descendant and competes with its meta-controller for selection. \
+        You can rewrite the source of rsi_meta_controller.rs itself to \
+        improve that selection and its prediction calibration. A changed \
         improvement procedure must be executed and evaluated in its successor.\n\
         If assigned a concrete downstream coding task: solve THAT task with \
         your current improved intelligence. Do not substitute unrelated agent \
