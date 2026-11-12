@@ -8,3 +8,13 @@ web/dist
 /bench
 
 .dominion/
+
+# Non-source outputs; keep durable evidence explicitly reviewed before adding.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+/benchmark/*.tmp
+/benchmark/.tmp/
+/reports/
