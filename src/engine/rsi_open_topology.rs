@@ -59,6 +59,17 @@ pub(crate) fn validate_proposal(
         let effect=row["improvementMechanism"].as_str()
             .filter(|s|(30..=2000).contains(&s.chars().count()))
             .ok_or("새 모듈이 다른 구성요소의 자기개선을 돕는 방법이 필요합니다.")?;
+        let symbol=row["integrationSymbol"].as_str().filter(|s|
+            !s.is_empty() && s.len()<=96
+            && s.bytes().next().is_some_and(|c|c.is_ascii_alphabetic()||c==b'_')
+            && s.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'_'))
+            .ok_or("신규 지능이 기존 실행 경로에서 호출될 함수 또는 인터페이스 기호가 필요합니다.")?;
+        let has_stage=body["successorStages"].as_array().is_some_and(|stages|
+            stages.iter().any(|stage|stage["role"]==role
+                && files.iter().any(|file|stage["path"]==*file)));
+        if !has_stage {
+            return Err("새 지능 모듈에는 다음 후손이 다시 개선할 실행 단계가 필요합니다.".into());
+        }
         let mut new_paths=BTreeSet::<String>::new();
         for file in files{
             let path=file.as_str().filter(|p|crate::engine::rsi::safe_path(p)
@@ -88,6 +99,7 @@ pub(crate) fn validate_proposal(
             "role":role,"newFiles":new_paths.into_iter().collect::<Vec<_>>(),
             "integrationFiles":consumer_paths.into_iter().collect::<Vec<_>>(),
             "interfaceContract":interface,
+            "integrationSymbol":symbol,
             "improvementMechanism":effect,
             "qualityProven":false,
             "productionReady":false
@@ -113,6 +125,18 @@ fn verified_invention(g:&Value,row:&Value,root:&Path)->Option<Value>{
     let new_files=row["newFiles"].as_array()?;
     let integration=row["integrationFiles"].as_array()?;
     if new_files.is_empty()||integration.is_empty(){return None;}
+    let symbol=row["integrationSymbol"].as_str().filter(|s|
+        !s.is_empty() && s.len()<=96)?;
+    // A successful source diff is not sufficient to make a NEW module an
+    // integrated agent capability. The new symbol must occur in its actual
+    // implementation AND in a changed consumer in the accepted revision.
+    for file in new_files.iter().chain(integration.iter()){
+        let name=file.as_str().filter(|p|crate::engine::rsi::safe_path(p))?;
+        let text=fs::read_to_string(root.join(name)).ok()?;
+        let mentions=text.split(|c:char|!c.is_ascii_alphanumeric() && c!='_')
+            .any(|token|token==symbol);
+        if !mentions{return None;}
+    }
     let entries=new_files.iter().chain(integration.iter());
     let mut hashes=BTreeMap::new();
     for value in entries {
@@ -126,6 +150,7 @@ fn verified_invention(g:&Value,row:&Value,root:&Path)->Option<Value>{
         "role":role,"newFiles":new_files,
         "integrationFiles":integration,
         "interfaceContract":row["interfaceContract"],
+        "integrationSymbol":symbol,
         "improvementMechanism":row["improvementMechanism"],
         "introductionDesignId":d["id"],
         "introductionCommit":g["acceptedCommit"],

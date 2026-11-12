@@ -78,9 +78,11 @@ pub fn definitions() -> Vec<Value> {
                     "integrationFiles":{"type":"array",
                         "minItems":1,"maxItems":8,"items":{"type":"string"}},
                     "interfaceContract":{"type":"string"},
+                    "integrationSymbol":{"type":"string",
+                        "description":"Exact identifier appearing in BOTH new implementation source and existing consumer source after edit"},
                     "improvementMechanism":{"type":"string"}
                 },"required":["role","newFiles","integrationFiles",
-                    "interfaceContract","improvementMechanism"],
+                    "interfaceContract","integrationSymbol","improvementMechanism"],
                 "additionalProperties":false}}),
             "interactionEdges":json!({"type":"array","maxItems":16,
                 "description":"Source-bound A->B improvement mechanism: both assigned sources must actually change; acceptance and descendant transfer are independently evaluated",
